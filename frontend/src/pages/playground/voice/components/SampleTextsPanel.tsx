@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { apiClient } from '../../../../lib/api'
 import { useToast } from '../../../../hooks/useToast'
+import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import { AIProvider } from '../../../../types/api'
 import { useVoicePlayground } from '../context'
 import { DEFAULT_SAMPLE_TEXTS } from '../types'
@@ -58,6 +59,7 @@ export default function SampleTextsPanel() {
   const [callImportSearch, setCallImportSearch] = useState('')
   const [selectedCallImportRowIds, setSelectedCallImportRowIds] = useState<Set<string>>(new Set())
 
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [selectedLlmProvider, setSelectedLlmProvider] = useState('')
   const [selectedLlmModel, setSelectedLlmModel] = useState('')
   const [sampleLlmConfig, setSampleLlmConfig] = useState<LLMGenerationConfig | null>(null)
@@ -80,7 +82,7 @@ export default function SampleTextsPanel() {
   })
 
   const { data: callImportRowsData, isLoading: isLoadingCallImportRows } = useQuery({
-    queryKey: ['sample-texts-call-import-rows', callImportFilter],
+    queryKey: ['sample-texts-call-import-rows', activeWorkspaceId, callImportFilter],
     queryFn: () =>
       apiClient.listVoicePlaygroundCallImportRows({
         with_recording: false,
@@ -91,7 +93,7 @@ export default function SampleTextsPanel() {
   })
 
   const { data: callImportsList } = useQuery({
-    queryKey: ['sample-texts-call-imports-list'],
+    queryKey: ['sample-texts-call-imports-list', activeWorkspaceId],
     queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
     enabled: showCallImportsModal,
   })

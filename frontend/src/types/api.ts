@@ -41,6 +41,51 @@ export interface Evaluation {
   error_message?: string | null
 }
 
+export interface DashboardSummary {
+  evaluations: {
+    total: number
+    completed: number
+    pending: number
+    failed: number
+  }
+  resources: {
+    agents: number
+    personas: number
+    scenarios: number
+    integrations: number
+    voice_bundles: number
+  }
+  setup_progress: {
+    has_integration: boolean
+    has_voice_bundle: boolean
+    has_agent: boolean
+    has_evaluation: boolean
+  }
+  metrics: {
+    total: number
+    enabled: number
+  }
+  call_imports: {
+    total: number
+  }
+  call_import_evaluations: {
+    total: number
+    completed: number
+    running: number
+    failed: number
+  }
+  recent_evaluations: Evaluation[]
+}
+
+export interface ModelConfigEntry {
+  provider: string
+  model_type: string
+  description?: string
+  featured?: boolean
+  featured_rank?: number
+  highlights?: string[]
+}
+
 export interface EvaluationCreate {
   audio_id: string
   reference_text?: string | null

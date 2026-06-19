@@ -44,6 +44,7 @@ import EvaluatorDetail from './pages/evaluators/evaluators/EvaluatorDetail'
 import Results from './pages/evaluators/results/Results'
 import EvaluatorResultDetail from './pages/evaluators/results/EvaluatorResultDetail'
 import EvaluationDetail from './pages/evaluators/results/EvaluationDetail'
+import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 
 // Observability
 import Observability from './pages/observability/Observability'
@@ -142,6 +143,7 @@ function App() {
           }
         >
           <Route index element={<Dashboard />} />
+          <Route path="evaluations" element={<EvaluationsList />} />
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="playground" element={<AgentPlayground />} />
           <Route path="playground/call-recordings/:callShortId" element={<CallRecordingDetail />} />

@@ -330,11 +330,12 @@ async def list_invitations(
     db: Session = Depends(get_db)
 ):
     """
-    List all invitations for the organization.
+    List pending invitations for the organization.
     Requires at least READER role.
     """
     invitations = db.query(Invitation).filter(
-        Invitation.organization_id == organization_id
+        Invitation.organization_id == organization_id,
+        Invitation.status == InvitationStatus.PENDING,
     ).order_by(Invitation.created_at.desc()).all()
     
     org = db.query(Organization).filter(Organization.id == organization_id).first()
@@ -342,10 +343,11 @@ async def list_invitations(
     
     result = []
     for invitation in invitations:
-        # Check if expired
-        if invitation.status == InvitationStatus.PENDING and _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
+        # Mark expired pending invites in the DB but do not surface them here.
+        if _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
+            continue
         
         result.append({
             "id": invitation.id,

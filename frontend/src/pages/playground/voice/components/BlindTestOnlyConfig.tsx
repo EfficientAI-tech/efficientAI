@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Plus, X, Mic, Upload, Volume2, FileAudio, Play, Pause } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
+import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import type {
   VoicePlaygroundBlindTestAudioRef,
   VoicePlaygroundBlindTestRefType,
@@ -223,11 +224,12 @@ function RecordingPicker({
   selectedId?: string
   onSelect: (id: string | null, label?: string) => void
 }) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [search, setSearch] = useState('')
   const [callImportFilter, setCallImportFilter] = useState<string>('')
 
   const { data, isLoading } = useQuery({
-    queryKey: ['blind-test-only-call-import-rows', callImportFilter],
+    queryKey: ['blind-test-only-call-import-rows', activeWorkspaceId, callImportFilter],
     queryFn: () =>
       apiClient.listVoicePlaygroundCallImportRows({
         with_recording: true,
@@ -236,7 +238,7 @@ function RecordingPicker({
       }),
   })
   const { data: callImportsList } = useQuery({
-    queryKey: ['blind-test-only-call-imports-list'],
+    queryKey: ['blind-test-only-call-imports-list', activeWorkspaceId],
     queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
   })
 
@@ -405,18 +407,19 @@ function PastTTSPicker({
   selectedSampleId?: string
   onSelect: (sampleId: string | null, label?: string) => void
 }) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [search, setSearch] = useState('')
   const [activeComparisonId, setActiveComparisonId] = useState<string>('')
   const [previewingId, setPreviewingId] = useState<string | null>(null)
   const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null)
 
   const { data: comparisons = [] } = useQuery({
-    queryKey: ['past-tts-comparisons-list'],
+    queryKey: ['past-tts-comparisons-list', activeWorkspaceId],
     queryFn: () => apiClient.listTTSComparisons(0, 50),
   })
 
   const { data: comparisonDetail } = useQuery({
-    queryKey: ['past-tts-comparison-detail', activeComparisonId],
+    queryKey: ['past-tts-comparison-detail', activeWorkspaceId, activeComparisonId],
     queryFn: () => apiClient.getTTSComparison(activeComparisonId),
     enabled: !!activeComparisonId,
   })

@@ -1976,6 +1976,15 @@ function MetricPartialModal({
   const [metricContent, setMetricContent] = useState<MetricPartialContent>(initialParsed)
   const [changeSummary, setChangeSummary] = useState('')
   const [error, setError] = useState('')
+  const [showAIAssist, setShowAIAssist] = useState(false)
+  const [aiMode, setAIMode] = useState<'description' | 'examples'>('description')
+  const [aiDescription, setAIDescription] = useState('')
+  const [aiExamples, setAIExamples] = useState<
+    Array<{ transcript: string; rating: string; notes: string }>
+  >([{ transcript: '', rating: '', notes: '' }])
+  const [aiProvider, setAIProvider] = useState('')
+  const [aiModel, setAIModel] = useState('')
+  const [aiLlmConfig, setAILlmConfig] = useState<LLMGenerationConfig | null>(null)
 
   useEffect(() => {
     setMetricContent((prev) => ({
@@ -2018,6 +2027,91 @@ function MetricPartialModal({
       setError(err?.response?.data?.detail || 'Failed to update metric partial')
     },
   })
+
+  const generateMetricMutation = useMutation({
+    mutationFn: (payload: {
+      mode: 'description' | 'examples'
+      description?: string
+      examples?: Array<{ transcript: string; rating: string; notes?: string }>
+      provider?: string
+      model?: string
+      llm_config?: LLMGenerationConfig
+    }) =>
+      apiClient.generateMetric({
+        ...payload,
+        surface: 'agent',
+      }),
+    onSuccess: (suggestion) => {
+      const options = suggestion.custom_config?.options
+      setName(suggestion.name)
+      setDescription(suggestion.description)
+      if (Array.isArray(options) && options.length > 0) {
+        setMetricKind('category')
+        setMetricContent({
+          schema_version: 1,
+          metric_kind: 'category',
+          description: suggestion.description,
+          children: options.map((opt) => ({
+            name: String(opt),
+            description: '',
+            example: '',
+          })),
+        })
+      } else {
+        setMetricKind('single')
+        setMetricContent({
+          schema_version: 1,
+          metric_kind: 'single',
+          description: suggestion.description,
+        })
+      }
+      setShowAIAssist(false)
+    },
+    onError: (err: any) => {
+      setError(err?.response?.data?.detail || 'Failed to generate metric suggestion')
+    },
+  })
+
+  const handleGenerateAIMetric = () => {
+    setError('')
+    const llmExtras = {
+      ...(aiProvider ? { provider: aiProvider } : {}),
+      ...(aiModel ? { model: aiModel } : {}),
+      ...(aiLlmConfig ? { llm_config: aiLlmConfig } : {}),
+    }
+    if (aiMode === 'description') {
+      if (!aiDescription.trim()) {
+        setError('Please enter a description')
+        return
+      }
+      generateMetricMutation.mutate({
+        mode: 'description',
+        description: aiDescription.trim(),
+        ...llmExtras,
+      })
+      return
+    }
+    const validExamples = aiExamples
+      .map((ex) => ({
+        transcript: ex.transcript.trim(),
+        rating: ex.rating.trim(),
+        notes: ex.notes.trim(),
+      }))
+      .filter((ex) => ex.transcript && ex.rating)
+    if (validExamples.length === 0) {
+      setError('Please add at least one example with transcript and rating')
+      return
+    }
+    generateMetricMutation.mutate({
+      mode: 'examples',
+      examples: validExamples.map((ex) => ({
+        transcript: ex.transcript,
+        rating: ex.rating,
+        notes: ex.notes || undefined,
+      })),
+      ...llmExtras,
+    })
+  }
 
   const handleSubmit = () => {
     setError('')
@@ -2117,6 +2211,153 @@ function MetricPartialModal({
                 : 'Single metric partial'}
             </div>
           )}
+
+          {!isEditing ? (
+            <div className="border border-purple-200 rounded-xl bg-purple-50/40">
+              <button
+                type="button"
+                onClick={() => setShowAIAssist((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left"
+              >
+                <span className="flex items-center gap-2 text-sm font-semibold text-purple-900">
+                  <Sparkles className="w-4 h-4 text-purple-600" />
+                  Generate with AI
+                </span>
+                <span className="text-xs text-purple-700">
+                  {showAIAssist ? 'Hide' : 'Show'}
+                </span>
+              </button>
+              {showAIAssist ? (
+                <div className="px-4 pb-4 space-y-3">
+                  <p className="text-xs text-purple-800">
+                    Describe what to measure or paste labeled examples; the form below will be prefilled.
+                  </p>
+                  <div className="border-b border-purple-200">
+                    <nav className="flex space-x-4">
+                      <button
+                        type="button"
+                        onClick={() => setAIMode('description')}
+                        className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${
+                          aiMode === 'description'
+                            ? 'border-purple-600 text-purple-700'
+                            : 'border-transparent text-purple-500 hover:text-purple-700'
+                        }`}
+                      >
+                        From description
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAIMode('examples')}
+                        className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${
+                          aiMode === 'examples'
+                            ? 'border-purple-600 text-purple-700'
+                            : 'border-transparent text-purple-500 hover:text-purple-700'
+                        }`}
+                      >
+                        From examples
+                      </button>
+                    </nav>
+                  </div>
+                  {aiMode === 'description' ? (
+                    <textarea
+                      value={aiDescription}
+                      onChange={(e) => setAIDescription(e.target.value)}
+                      rows={4}
+                      placeholder="e.g. Classify whether the agent confirmed the customer's booking date before ending the call."
+                      className="w-full rounded-lg border border-purple-200 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
+                    />
+                  ) : (
+                    <div className="space-y-2">
+                      {aiExamples.map((ex, idx) => (
+                        <div
+                          key={idx}
+                          className="border border-purple-200 rounded-lg p-2 bg-white space-y-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-medium text-purple-700">
+                              Example {idx + 1}
+                            </span>
+                            {aiExamples.length > 1 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setAIExamples((prev) => prev.filter((_, i) => i !== idx))
+                                }
+                                className="text-[11px] text-red-600 hover:text-red-800"
+                              >
+                                Remove
+                              </button>
+                            ) : null}
+                          </div>
+                          <textarea
+                            value={ex.transcript}
+                            onChange={(e) =>
+                              setAIExamples((prev) =>
+                                prev.map((row, i) =>
+                                  i === idx ? { ...row, transcript: e.target.value } : row,
+                                ),
+                              )
+                            }
+                            rows={2}
+                            placeholder="Transcript excerpt"
+                            className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 placeholder-gray-400"
+                          />
+                          <input
+                            type="text"
+                            value={ex.rating}
+                            onChange={(e) =>
+                              setAIExamples((prev) =>
+                                prev.map((row, i) =>
+                                  i === idx ? { ...row, rating: e.target.value } : row,
+                                ),
+                              )
+                            }
+                            placeholder="Rating (e.g. true, Excellent)"
+                            className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 placeholder-gray-400"
+                          />
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAIExamples((prev) => [
+                            ...prev,
+                            { transcript: '', rating: '', notes: '' },
+                          ])
+                        }
+                        className="text-xs text-purple-700 hover:text-purple-900 inline-flex items-center gap-1"
+                      >
+                        <Plus className="w-3 h-3" /> Add example
+                      </button>
+                    </div>
+                  )}
+                  <AIProviderModelPicker
+                    provider={aiProvider}
+                    model={aiModel}
+                    onProviderChange={setAIProvider}
+                    onModelChange={setAIModel}
+                    onLLMConfigChange={setAILlmConfig}
+                    llm_config={aiLlmConfig}
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleGenerateAIMetric}
+                      disabled={generateMetricMutation.isPending}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-white bg-purple-700 rounded-lg hover:bg-purple-800 disabled:opacity-50"
+                    >
+                      {generateMetricMutation.isPending ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      Generate
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <MetricPartialEditor value={metricContent} onChange={setMetricContent} />
 

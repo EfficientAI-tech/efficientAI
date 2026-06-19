@@ -1,9 +1,12 @@
 """API tests for IAM routes."""
 
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
 import pytest
 
-from app.models.database import OrganizationMember
-from app.models.enums import RoleEnum
+from app.models.database import Invitation, OrganizationMember
+from app.models.enums import InvitationStatus, RoleEnum
 
 
 @pytest.fixture
@@ -35,6 +38,29 @@ def test_invite_and_list_invitations(iam_admin_override, authenticated_client):
     list_response = authenticated_client.get("/api/v1/iam/invitations")
     assert list_response.status_code == 200
     assert len(list_response.json()) == 1
+
+
+def test_list_invitations_excludes_accepted(
+    iam_admin_override, authenticated_client, db_session, org_id, user_context
+):
+    db_session.add(
+        Invitation(
+            id=uuid4(),
+            organization_id=org_id,
+            invited_by_id=user_context["user"].id,
+            email="accepted@example.com",
+            role="reader",
+            status=InvitationStatus.ACCEPTED.value,
+            token=f"tok-{uuid4()}",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        )
+    )
+    db_session.commit()
+
+    list_response = authenticated_client.get("/api/v1/iam/invitations")
+    assert list_response.status_code == 200
+    emails = {item["email"] for item in list_response.json()}
+    assert "accepted@example.com" not in emails
 
 
 def test_update_user_role(iam_admin_override, authenticated_client, db_session, org_id, make_user):

@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, ReactNode, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../../lib/api'
+import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import type {
   VoicePlaygroundSideConfig,
   VoicePlaygroundSourceType,
@@ -241,6 +242,8 @@ export function useVoicePlayground() {
 }
 
 export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+
   // Audio player
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [playingId, setPlayingId] = useState<string | null>(null)
@@ -282,7 +285,7 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
 
   // Provider data
   const { data: providers = [], isLoading: providersLoading, refetch: refetchProviders } = useQuery<TTSProvider[]>({
-    queryKey: ['tts-providers'],
+    queryKey: ['tts-providers', activeWorkspaceId],
     queryFn: () => apiClient.listTTSProviders(),
   })
 
@@ -298,7 +301,7 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   })
 
   const { data: pastComparisons = [], refetch: refetchPast } = useQuery<TTSComparisonSummary[]>({
-    queryKey: ['tts-comparisons-list'],
+    queryKey: ['tts-comparisons-list', activeWorkspaceId],
     queryFn: () => apiClient.listTTSComparisons(),
   })
 
@@ -309,7 +312,7 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   const [benchmarkTopN, setBenchmarkTopN] = useState(10)
 
   const { data: analyticsData = [], isLoading: analyticsLoading } = useQuery<TTSAnalyticsRow[]>({
-    queryKey: ['tts-analytics'],
+    queryKey: ['tts-analytics', activeWorkspaceId],
     queryFn: () => apiClient.getTTSAnalytics(),
     enabled: activeTab === 'past-simulations' && pastSubView === 'analytics',
   })

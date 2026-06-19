@@ -4,6 +4,8 @@ import type {
   Evaluation,
   EvaluationCreate,
   EvaluationResult,
+  DashboardSummary,
+  ModelConfigEntry,
   APIKey,
   MessageResponse,
   EvaluationStatus,
@@ -2417,7 +2419,12 @@ class ApiClient {
   }
 
   // Model Config endpoints
-  async getAllModels(): Promise<Record<string, any>> {
+  async getDashboardSummary(): Promise<DashboardSummary> {
+    const response = await this.client.get('/api/v1/dashboard/summary')
+    return response.data
+  }
+
+  async getAllModels(): Promise<Record<string, ModelConfigEntry>> {
     const response = await this.client.get('/api/v1/model-config/models')
     return response.data
   }
@@ -3047,6 +3054,9 @@ class ApiClient {
     surface: 'agent' | 'voice_playground' | 'blind_test'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
+    provider?: string
+    model?: string
+    llm_config?: Record<string, any>
   }): Promise<{
     name: string
     description: string
@@ -3056,6 +3066,8 @@ class ApiClient {
     supported_surfaces: string[]
     enabled_surfaces: string[]
     suggested_tags: string[]
+    provider?: string
+    model?: string
   }> {
     const response = await this.client.post('/api/v1/metrics/generate', data)
     return response.data
