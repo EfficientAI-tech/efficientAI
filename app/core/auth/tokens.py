@@ -12,8 +12,8 @@ the IdP's JWKS directly.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
-from uuid import UUID
+from typing import Any, Dict, Optional, Tuple
+from uuid import UUID, uuid4
 
 from jose import JWTError, jwt
 
@@ -29,19 +29,26 @@ def create_access_token(
     organization_id: UUID,
     email: str,
     expires_in_minutes: Optional[int] = None,
-) -> str:
-    """Issue a short-lived Bearer token for the given user/org."""
-    ttl = expires_in_minutes or getattr(settings, "AUTH_LOCAL_TOKEN_TTL_MINUTES", 60 * 12)
+) -> Tuple[str, str, int]:
+    """Issue a short-lived Bearer token for the given user/org.
+
+    Returns:
+        Tuple of (encoded_token, jti, ttl_seconds).
+    """
+    ttl_minutes = expires_in_minutes or getattr(settings, "AUTH_LOCAL_TOKEN_TTL_MINUTES", 15)
+    ttl_seconds = ttl_minutes * 60
     now = datetime.now(timezone.utc)
+    jti = str(uuid4())
     payload: Dict[str, Any] = {
         "iss": ISSUER,
         "sub": str(user_id),
         "org_id": str(organization_id),
         "email": email,
+        "jti": jti,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=ttl)).timestamp()),
+        "exp": int((now + timedelta(minutes=ttl_minutes)).timestamp()),
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM), jti, ttl_seconds
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:

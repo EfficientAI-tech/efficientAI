@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { apiClient } from '../../lib/api'
@@ -16,6 +17,7 @@ import {
 } from '../../config/llmGenerationParams'
 
 export default function VoiceBundles() {
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -90,6 +92,40 @@ export default function VoiceBundles() {
     },
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   })
+
+  useEffect(() => {
+    const provider = searchParams.get('provider')
+    const model = searchParams.get('model')
+    if (!provider || !model || Object.keys(modelConfigs).length === 0) return
+
+    const providerEnum = Object.values(ModelProvider).includes(provider as ModelProvider)
+      ? (provider as ModelProvider)
+      : null
+    if (!providerEnum) return
+
+    const options = modelConfigs[providerEnum]
+    if (!options) return
+
+    const isStt = options.stt?.includes(model)
+    const isTts = options.tts?.includes(model)
+    const isS2s = options.s2s?.includes(model)
+
+    setFormData((prev) => ({
+      ...prev,
+      ...(isStt
+        ? { stt_provider: providerEnum, stt_model: model }
+        : isTts
+          ? { tts_provider: providerEnum, tts_model: model }
+          : isS2s
+            ? {
+                bundle_type: VoiceBundleType.S2S,
+                s2s_provider: providerEnum,
+                s2s_model: model,
+              }
+            : {}),
+    }))
+    setShowCreateModal(true)
+  }, [searchParams, modelConfigs])
 
   const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null =>
     mapIntegrationToModelProvider(platform as IntegrationPlatform)

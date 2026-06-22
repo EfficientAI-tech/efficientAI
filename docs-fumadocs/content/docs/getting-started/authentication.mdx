@@ -45,8 +45,9 @@ auth:
     - api_key
     - local_password
   local_password:
-    # Lifetime of the Bearer tokens minted at sign-in.
-    token_ttl_minutes: 720   # 12 hours
+    # Lifetime of the short-lived access token minted at sign-in.
+    token_ttl_minutes: 15
+    refresh_token_ttl_days: 7
     # Let anyone who reaches the login page create an account + new org.
     # Set to false once you've finished bootstrapping.
     allow_signup: true
@@ -56,7 +57,8 @@ The equivalent environment variables (for Docker Compose / `.env`):
 
 ```bash title=".env"
 AUTH_PROVIDERS=api_key,local_password
-AUTH_LOCAL_TOKEN_TTL_MINUTES=720
+AUTH_LOCAL_TOKEN_TTL_MINUTES=15
+AUTH_REFRESH_TOKEN_TTL_DAYS=7
 AUTH_LOCAL_ALLOW_SIGNUP=true
 
 # HS256 signing key for locally-issued Bearer tokens. Change this in prod!
@@ -80,9 +82,11 @@ new user and a new organization, and makes that user the `admin` of it. If
 you leave the organization name blank, the server derives one from the
 email's local-part.
 
-Once signed in, the SPA holds a short-lived Bearer token and silently
-re-authenticates before it expires. You can change the token lifetime with
-`token_ttl_minutes` — the default is 12 hours.
+Once signed in, the SPA holds a short-lived access token (15 minutes by
+default) plus a refresh token. The client silently refreshes the access
+token before it expires. You can change lifetimes with `token_ttl_minutes`
+and `refresh_token_ttl_days`. Logout revokes the refresh token and
+blacklists the current access token server-side.
 
 ### Linking a password to an API-key-only account
 
@@ -117,6 +121,13 @@ Rules the UI enforces:
 - Rotate `SECRET_KEY` to invalidate existing sessions.
 - Put the app behind a reverse proxy (Nginx, Caddy, Cloudflare) that
   terminates TLS and enforces HSTS.
+- The bundled FastAPI server sends `X-Frame-Options: SAMEORIGIN` on all
+  responses. If you terminate traffic at an external reverse proxy, keep
+  that header (or stricter CSP `frame-ancestors`) enabled there too.
+- Pin third-party observability container images to fixed tags and rebuild
+  external reverse-proxy images on patched runtimes. If a scanner reports
+  a Go stdlib CVE in a binary this repo does not build, identify the
+  flagged container or proxy artifact and upgrade it separately.
 - Restrict `cors.origins` to the exact domain(s) serving the SPA.
 
 ---

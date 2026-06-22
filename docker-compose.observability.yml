@@ -62,8 +62,10 @@ services:
         loki-max-backoff: "800ms"
         loki-external-labels: "service=worker-imports,environment=docker"
 
+# Pin image tags instead of :latest to reduce exposure to stale third-party
+# binaries (e.g. Go stdlib CVEs in observability tooling).
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:3.4.2
     container_name: efficientai_loki
     environment:
       # Set LOKI_CONFIG_FILE to switch between filesystem and S3 backends:
@@ -83,7 +85,7 @@ services:
     command: -config.file=/etc/loki/${LOKI_CONFIG_FILE:-loki-config.yml} -config.expand-env=true
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.2.1
     container_name: efficientai_prometheus
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -97,7 +99,7 @@ services:
       - api
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.5.2
     container_name: efficientai_grafana
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
@@ -113,7 +115,7 @@ services:
       - loki
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:latest
+    image: prometheuscommunity/postgres-exporter:v0.16.0
     container_name: efficientai_postgres_exporter
     environment:
       DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}?sslmode=disable"
@@ -124,7 +126,7 @@ services:
         condition: service_healthy
 
   redis-exporter:
-    image: oliver006/redis_exporter:latest
+    image: oliver006/redis_exporter:v1.67.0
     container_name: efficientai_redis_exporter
     environment:
       REDIS_ADDR: "redis://redis:6379"
@@ -135,7 +137,7 @@ services:
         condition: service_healthy
 
   celery-exporter:
-    image: danihodovic/celery-exporter:latest
+    image: danihodovic/celery-exporter:0.12.0
     container_name: efficientai_celery_exporter
     environment:
       CE_BROKER_URL: "redis://redis:6379/0"

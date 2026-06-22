@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2, Upload, FileAudio, Mic, X, Volume2 } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
 import type { VoicePlaygroundSourceType } from '../../../../lib/api'
+import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import ProviderPanel from './ProviderPanel'
 import { TTSVoice, TTSProvider } from '../types'
@@ -155,11 +156,12 @@ function CallImportRowsPicker({
   selectedIds: string[]
   onChange: (ids: string[]) => void
 }) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [search, setSearch] = useState('')
   const [callImportFilter, setCallImportFilter] = useState<string>('')
 
   const { data, isLoading } = useQuery({
-    queryKey: ['voice-playground-call-import-rows', callImportFilter],
+    queryKey: ['voice-playground-call-import-rows', activeWorkspaceId, callImportFilter],
     queryFn: () =>
       apiClient.listVoicePlaygroundCallImportRows({
         with_recording: true,
@@ -169,7 +171,7 @@ function CallImportRowsPicker({
   })
 
   const { data: callImportsList } = useQuery({
-    queryKey: ['voice-playground-call-imports-list'],
+    queryKey: ['voice-playground-call-imports-list', activeWorkspaceId],
     queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
   })
 

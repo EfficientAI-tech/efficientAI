@@ -21,7 +21,8 @@ from app.models.schemas import (
     InvitationCreate, InvitationResponse, OrganizationMemberResponse,
     RoleUpdate, MessageResponse, UserResponse
 )
-from app.core.password import hash_password
+from app.core.password import hash_password, validate_password_strength
+from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
 
 router = APIRouter(prefix="/iam", tags=["IAM"])
 
@@ -330,11 +331,12 @@ async def list_invitations(
     db: Session = Depends(get_db)
 ):
     """
-    List all invitations for the organization.
+    List pending invitations for the organization.
     Requires at least READER role.
     """
     invitations = db.query(Invitation).filter(
-        Invitation.organization_id == organization_id
+        Invitation.organization_id == organization_id,
+        Invitation.status == InvitationStatus.PENDING,
     ).order_by(Invitation.created_at.desc()).all()
     
     org = db.query(Organization).filter(Organization.id == organization_id).first()
@@ -342,10 +344,11 @@ async def list_invitations(
     
     result = []
     for invitation in invitations:
-        # Check if expired
-        if invitation.status == InvitationStatus.PENDING and _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
+        # Mark expired pending invites in the DB but do not surface them here.
+        if _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
+            continue
         
         result.append({
             "id": invitation.id,
@@ -519,7 +522,7 @@ async def cancel_invitation(
 class AdminPasswordReset(BaseModel):
     """Payload for an admin resetting another member's password."""
 
-    new_password: str = Field(min_length=8, max_length=256)
+    new_password: str = Field(min_length=8, max_length=32)
 
 
 class AdminPasswordResetResponse(BaseModel):
@@ -583,9 +586,15 @@ async def admin_reset_user_password(
             detail="User not found",
         )
 
+    try:
+        validate_password_strength(payload.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     target.password_hash = hash_password(payload.new_password)
     if not target.auth_provider:
         target.auth_provider = "local"
+    revoke_all_user_refresh_tokens(db, target.id)
     db.commit()
     db.refresh(target)
 

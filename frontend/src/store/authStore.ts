@@ -26,11 +26,12 @@ type AuthUser = {
 interface AuthState {
   apiKey: string | null
   accessToken: string | null
+  refreshToken: string | null
   user: AuthUser | null
   isLoading: boolean
 
   setApiKey: (key: string) => void
-  setSession: (token: string, user: AuthUser) => void
+  setSession: (token: string, user: AuthUser, refreshToken?: string | null) => void
   switchOrg: (organizationId: string) => Promise<AuthUser>
   logout: () => void
   validate: () => Promise<boolean>
@@ -38,6 +39,7 @@ interface AuthState {
 
 const STORAGE_API_KEY = 'apiKey'
 const STORAGE_ACCESS_TOKEN = 'accessToken'
+const STORAGE_REFRESH_TOKEN = 'refreshToken'
 const STORAGE_USER = 'authUser'
 
 function readStoredUser(): AuthUser | null {
@@ -49,9 +51,10 @@ function readStoredUser(): AuthUser | null {
   }
 }
 
-export const useAuthStore = create<AuthState>((set) => {
+export const useAuthStore = create<AuthState>((set, get) => {
   const storedKey = localStorage.getItem(STORAGE_API_KEY)
   const storedToken = localStorage.getItem(STORAGE_ACCESS_TOKEN)
+  const storedRefreshToken = localStorage.getItem(STORAGE_REFRESH_TOKEN)
 
   if (storedKey) {
     apiClient.setApiKey(storedKey)
@@ -59,10 +62,14 @@ export const useAuthStore = create<AuthState>((set) => {
   if (storedToken) {
     apiClient.setAccessToken(storedToken)
   }
+  if (storedRefreshToken) {
+    apiClient.setRefreshToken(storedRefreshToken)
+  }
 
   return {
     apiKey: storedKey,
     accessToken: storedToken,
+    refreshToken: storedRefreshToken,
     user: readStoredUser(),
     isLoading: false,
 
@@ -72,41 +79,51 @@ export const useAuthStore = create<AuthState>((set) => {
       set({ apiKey: key })
     },
 
-    setSession: (token: string, user: AuthUser) => {
+    setSession: (token: string, user: AuthUser, refreshToken?: string | null) => {
       apiClient.setAccessToken(token)
       localStorage.setItem(STORAGE_ACCESS_TOKEN, token)
       localStorage.setItem(STORAGE_USER, JSON.stringify(user))
-      set({ accessToken: token, user })
+      if (refreshToken) {
+        apiClient.setRefreshToken(refreshToken)
+        localStorage.setItem(STORAGE_REFRESH_TOKEN, refreshToken)
+      }
+      set({
+        accessToken: token,
+        refreshToken: refreshToken ?? get().refreshToken,
+        user,
+      })
     },
 
-    // Exchange the current Bearer token for one pinned to a different
-    // organization. Requires an existing Bearer session - API keys are
-    // single-tenant and will be rejected by the backend.
     switchOrg: async (organizationId: string) => {
-      const { access_token, user } = await apiClient.switchOrganization(organizationId)
+      const { access_token, refresh_token, user } = await apiClient.switchOrganization(organizationId)
       apiClient.setAccessToken(access_token)
       localStorage.setItem(STORAGE_ACCESS_TOKEN, access_token)
       localStorage.setItem(STORAGE_USER, JSON.stringify(user))
-      // Workspaces are per-org. The previous selection points at the
-      // OLD org's workspace; clear it so the next request falls back
-      // to the new org's Default workspace and the WorkspaceSwitcher
-      // UI re-resolves to a valid id.
+      if (refresh_token) {
+        apiClient.setRefreshToken(refresh_token)
+        localStorage.setItem(STORAGE_REFRESH_TOKEN, refresh_token)
+      }
       useWorkspaceStore.getState().clearActiveWorkspaceId()
-      set({ accessToken: access_token, user })
+      set({
+        accessToken: access_token,
+        refreshToken: refresh_token ?? get().refreshToken,
+        user,
+      })
       return user
     },
 
     logout: () => {
-      // Fire-and-forget: server is stateless for local tokens, but we still
-      // hit /logout so future hooks (SSO backchannel, audit) can run.
-      apiClient.logout().catch(() => {})
+      const refreshToken = get().refreshToken
+      apiClient.logout(refreshToken).catch(() => {})
       apiClient.clearApiKey()
       apiClient.clearAccessToken()
+      apiClient.clearRefreshToken()
       localStorage.removeItem(STORAGE_API_KEY)
       localStorage.removeItem(STORAGE_ACCESS_TOKEN)
+      localStorage.removeItem(STORAGE_REFRESH_TOKEN)
       localStorage.removeItem(STORAGE_USER)
       useWorkspaceStore.getState().clearActiveWorkspaceId()
-      set({ apiKey: null, accessToken: null, user: null })
+      set({ apiKey: null, accessToken: null, refreshToken: null, user: null })
     },
 
     validate: async () => {

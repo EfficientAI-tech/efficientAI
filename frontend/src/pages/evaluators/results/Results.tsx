@@ -14,15 +14,16 @@ interface EvaluatorResult {
   timestamp: string
   duration_seconds: number | null
   status: 'queued' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
-  metric_scores: Record<string, { value: any; type: string; metric_name: string }> | null
+  metric_scores: Record<string, { value: any; type: string; metric_name: string; parent_metric_id?: string | null }> | null
   error_message: string | null
 }
 
 interface Metric {
   id: string
   name: string
-  metric_type: 'number' | 'boolean' | 'rating'
+  metric_type: 'number' | 'boolean' | 'rating' | 'text' | 'category'
   enabled: boolean
+  parent_metric_id?: string | null
 }
 
 interface AudioFile {
@@ -191,6 +192,7 @@ export default function Results() {
   const enabledMetrics = metrics.filter((m: Metric) => m.enabled)
   
   const columnMetrics = enabledMetrics.filter((m: Metric) => {
+    if (m.parent_metric_id) return false
     if (!COLUMN_METRICS.includes(m.name)) return false
     return results.some((result: EvaluatorResult) => {
       const score = result.metric_scores?.[m.id]
@@ -273,17 +275,7 @@ export default function Results() {
     
     if (normalizedType === 'boolean') {
       const boolValue = value === true || value === 1 || value === '1' || value === 'true'
-      return boolValue ? (
-        <span className="inline-flex items-center gap-1 text-emerald-600">
-          <CheckCircle className="w-3.5 h-3.5" />
-          <span className="text-xs font-medium">Yes</span>
-        </span>
-      ) : (
-        <span className="inline-flex items-center gap-1 text-rose-600">
-          <XCircle className="w-3.5 h-3.5" />
-          <span className="text-xs font-medium">No</span>
-        </span>
-      )
+      return <span className="text-sm font-medium text-gray-900">{boolValue ? 'Yes' : 'No'}</span>
     }
     
     if (normalizedType === 'rating') {

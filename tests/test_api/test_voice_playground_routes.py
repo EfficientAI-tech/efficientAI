@@ -1,5 +1,19 @@
 """API tests for voice-playground routes."""
 
+from uuid import uuid4
+
+from app.dependencies import get_workspace_id
+from app.models.database import (
+    CallImport,
+    CallImportRow,
+    TTSComparison,
+    TTSComparisonStatus,
+    TTSSample,
+    TTSSampleStatus,
+    Workspace,
+)
+from app.models.enums import CallImportRowStatus, CallImportStatus
+
 
 def test_list_tts_providers(authenticated_client, monkeypatch, make_ai_provider):
     from app.api.v1.routes import voice_playground as vp_routes
@@ -72,3 +86,218 @@ def test_tts_comparison_crud_and_actions(authenticated_client):
     delete_response = authenticated_client.delete(f"/api/v1/voice-playground/comparisons/{comparison_id}")
     assert delete_response.status_code == 200
     assert delete_response.json()["message"] == "Comparison deleted"
+
+
+def test_voice_playground_call_import_rows_scope_to_workspace(
+    authenticated_client, db_session, org_id, default_workspace
+):
+    workspace_b = Workspace(
+        id=uuid4(),
+        organization_id=org_id,
+        name="Workspace B",
+        slug="workspace_b",
+        is_default=False,
+    )
+    db_session.add(workspace_b)
+    db_session.commit()
+
+    default_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=default_workspace.id,
+        provider="exotel",
+        original_filename="default.csv",
+        column_mapping={"external_call_id": "CallID"},
+        extra_columns=[],
+        custom_column_mapping={},
+        total_rows=1,
+        completed_rows=1,
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    other_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_b.id,
+        provider="exotel",
+        original_filename="other.csv",
+        column_mapping={"external_call_id": "CallID"},
+        extra_columns=[],
+        custom_column_mapping={},
+        total_rows=1,
+        completed_rows=1,
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    db_session.add_all([default_import, other_import])
+    db_session.flush()
+
+    db_session.add(
+        CallImportRow(
+            id=uuid4(),
+            organization_id=org_id,
+            call_import_id=default_import.id,
+            row_index=0,
+            conversation_id="conv-default",
+            recording_s3_key="organizations/test/default.wav",
+            status=CallImportRowStatus.COMPLETED,
+        )
+    )
+    db_session.add(
+        CallImportRow(
+            id=uuid4(),
+            organization_id=org_id,
+            call_import_id=other_import.id,
+            row_index=0,
+            conversation_id="conv-other",
+            recording_s3_key="organizations/test/other.wav",
+            status=CallImportRowStatus.COMPLETED,
+        )
+    )
+    db_session.commit()
+
+    default_rows = authenticated_client.get(
+        "/api/v1/voice-playground/call-import-rows"
+    ).json()["items"]
+    assert {row["conversation_id"] for row in default_rows} == {"conv-default"}
+
+    app = authenticated_client.app
+    previous = app.dependency_overrides[get_workspace_id]
+    app.dependency_overrides[get_workspace_id] = lambda: workspace_b.id
+    try:
+        other_rows = authenticated_client.get(
+            "/api/v1/voice-playground/call-import-rows"
+        ).json()["items"]
+    finally:
+        app.dependency_overrides[get_workspace_id] = previous
+
+    assert {row["conversation_id"] for row in other_rows} == {"conv-other"}
+
+
+def test_voice_playground_comparisons_scope_to_workspace(
+    authenticated_client, db_session, org_id, default_workspace
+):
+    workspace_b = Workspace(
+        id=uuid4(),
+        organization_id=org_id,
+        name="Workspace B",
+        slug="workspace_b",
+        is_default=False,
+    )
+    db_session.add(workspace_b)
+    db_session.commit()
+
+    default_comparison = TTSComparison(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=default_workspace.id,
+        simulation_id="sim001",
+        name="Default workspace sim",
+        status=TTSComparisonStatus.COMPLETED.value,
+        mode="benchmark",
+        provider_a="openai",
+        model_a="gpt-4o-mini-tts",
+        voices_a=[{"id": "alloy", "name": "Alloy"}],
+        sample_texts=["hello"],
+        num_runs=1,
+    )
+    other_comparison = TTSComparison(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_b.id,
+        simulation_id="sim002",
+        name="Other workspace sim",
+        status=TTSComparisonStatus.COMPLETED.value,
+        mode="benchmark",
+        provider_a="openai",
+        model_a="gpt-4o-mini-tts",
+        voices_a=[{"id": "alloy", "name": "Alloy"}],
+        sample_texts=["hello"],
+        num_runs=1,
+    )
+    db_session.add_all([default_comparison, other_comparison])
+    db_session.commit()
+
+    listing = authenticated_client.get("/api/v1/voice-playground/comparisons").json()
+    assert len(listing) == 1
+    assert listing[0]["name"] == "Default workspace sim"
+
+    app = authenticated_client.app
+    previous = app.dependency_overrides[get_workspace_id]
+    app.dependency_overrides[get_workspace_id] = lambda: workspace_b.id
+    try:
+        listing = authenticated_client.get("/api/v1/voice-playground/comparisons").json()
+    finally:
+        app.dependency_overrides[get_workspace_id] = previous
+
+    assert len(listing) == 1
+    assert listing[0]["name"] == "Other workspace sim"
+
+
+def test_blind_test_only_rejects_cross_workspace_tts_sample(
+    authenticated_client, db_session, org_id, default_workspace
+):
+    workspace_b = Workspace(
+        id=uuid4(),
+        organization_id=org_id,
+        name="Workspace B",
+        slug="workspace_b",
+        is_default=False,
+    )
+    db_session.add(workspace_b)
+    db_session.commit()
+
+    other_comparison = TTSComparison(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_b.id,
+        simulation_id="sim-b",
+        name="Other workspace sim",
+        status=TTSComparisonStatus.COMPLETED.value,
+        mode="benchmark",
+        provider_a="openai",
+        model_a="gpt-4o-mini-tts",
+        voices_a=[{"id": "alloy", "name": "Alloy"}],
+        sample_texts=["hello"],
+        num_runs=1,
+    )
+    db_session.add(other_comparison)
+    db_session.flush()
+
+    other_sample = TTSSample(
+        id=uuid4(),
+        comparison_id=other_comparison.id,
+        organization_id=org_id,
+        workspace_id=workspace_b.id,
+        provider="openai",
+        model="gpt-4o-mini-tts",
+        voice_id="alloy",
+        voice_name="Alloy",
+        side="A",
+        sample_index=0,
+        run_index=0,
+        text="hello",
+        audio_s3_key="organizations/test/sample.wav",
+        status=TTSSampleStatus.COMPLETED.value,
+        source_type="tts",
+    )
+    db_session.add(other_sample)
+    db_session.commit()
+
+    response = authenticated_client.post(
+        "/api/v1/voice-playground/comparisons",
+        json={
+            "mode": "blind_test_only",
+            "name": "Cross workspace blind test",
+            "pairs": [
+                {
+                    "text": "Pair 1",
+                    "x": {"type": "tts_sample", "tts_sample_id": str(other_sample.id)},
+                    "y": {"type": "tts_sample", "tts_sample_id": str(other_sample.id)},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 404
+

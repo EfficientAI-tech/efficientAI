@@ -10,6 +10,7 @@ import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useIsAdmin } from '../../hooks/useRole'
 import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
+import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 
 type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
 
@@ -227,6 +228,11 @@ export default function IAM() {
     if (!memberToResetPassword) return
     if (resetPassword.length < 8) {
       setResetPasswordError('Password must be at least 8 characters long')
+      return
+    }
+    const policy = validatePasswordPolicy(resetPassword)
+    if (!policy.valid) {
+      setResetPasswordError(policy.message || 'Invalid password')
       return
     }
     if (resetPassword !== resetPasswordConfirm) {
@@ -774,10 +780,11 @@ export default function IAM() {
                     type={showResetPasswordPlain ? 'text' : 'password'}
                     required
                     minLength={8}
+                    maxLength={32}
                     value={resetPassword}
                     onChange={(e) => setResetPassword(e.target.value)}
                     className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="At least 8 characters"
+                    placeholder={PASSWORD_POLICY_HINT}
                     autoComplete="new-password"
                   />
                   <button
@@ -807,6 +814,7 @@ export default function IAM() {
                   type={showResetPasswordPlain ? 'text' : 'password'}
                   required
                   minLength={8}
+                  maxLength={32}
                   value={resetPasswordConfirm}
                   onChange={(e) => setResetPasswordConfirm(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"

@@ -91,7 +91,10 @@
   },
   "gpt-4o-mini-tts": {
     "provider": "openai",
-    "model_type": "tts"
+    "model_type": "tts",
+    "featured": true,
+    "featured_rank": 3,
+    "highlights": ["Natural prosody", "Multiple voices", "Studio quality"]
   },
   "claude-3-opus": {
     "provider": "anthropic",
@@ -253,7 +256,10 @@
   "gemini-2.5-flash-stt": {
     "provider": "google",
     "model_type": "stt",
-    "description": "Gemini 2.5 Flash used for audio transcription via LiteLLM proxy (fast, cost-efficient)"
+    "description": "Gemini 2.5 Flash used for audio transcription via LiteLLM proxy (fast, cost-efficient)",
+    "featured": true,
+    "featured_rank": 6,
+    "highlights": ["Fast transcription", "Cost-efficient", "Gemini 2.5"]
   },
   "gemini-2.5-flash-lite-stt": {
     "provider": "google",
@@ -323,7 +329,10 @@
   "deepgram-flux": {
     "provider": "deepgram",
     "model_type": "stt",
-    "description": "Conversational STT with integrated turn detection for voice agents"
+    "description": "Conversational STT with integrated turn detection for voice agents",
+    "featured": true,
+    "featured_rank": 4,
+    "highlights": ["Turn detection", "Voice agents", "Low latency"]
   },
   "deepgram-nova-3": {
     "provider": "deepgram",
@@ -351,7 +360,10 @@
   "cartesia-sonic-3": {
     "provider": "cartesia",
     "model_type": "tts",
-    "description": "Flagship streaming TTS with laughter, volume/speed/emotion controls, 42 languages"
+    "description": "Flagship streaming TTS with laughter, volume/speed/emotion controls, 42 languages",
+    "featured": true,
+    "featured_rank": 1,
+    "highlights": ["Ultra-low latency", "42 languages", "Emotion controls"]
   },
   "cartesia-sonic-3-mini": {
     "provider": "cartesia",
@@ -388,7 +400,10 @@
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "Ultra-fast model optimized for real-time use (~75ms)",
-    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi"
+    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi",
+    "featured": true,
+    "featured_rank": 2,
+    "highlights": ["~75ms latency", "Real-time", "Multilingual"]
   },
   "eleven_flash_v2": {
     "provider": "elevenlabs",
@@ -434,7 +449,10 @@
     "provider": "elevenlabs",
     "model_type": "stt",
     "description": "Real-time speech recognition model",
-    "languages": "90+ languages"
+    "languages": "90+ languages",
+    "featured": true,
+    "featured_rank": 5,
+    "highlights": ["Real-time STT", "90+ languages", "Streaming"]
   },
   "scribe_v2": {
     "provider": "elevenlabs",

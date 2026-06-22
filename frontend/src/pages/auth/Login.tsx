@@ -4,6 +4,7 @@ import { useAuthStore } from '../../store/authStore'
 import { apiClient, isLoginOrgSelectionResponse } from '../../lib/api'
 import type { AuthConfigResponse, AuthProviderConfig, LoginOrgOption } from '../../lib/api'
 import { buildAuthorizeUrl } from '../../lib/oidc'
+import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
@@ -85,7 +86,7 @@ export default function Login() {
         setLoginStep('org-select')
         return
       }
-      setSession(res.access_token, res.user)
+      setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Invalid email or password')
@@ -103,7 +104,7 @@ export default function Login() {
         setError('Organization selection failed — try again')
         return
       }
-      setSession(res.access_token, res.user)
+      setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Could not sign in to the selected organization')
@@ -115,6 +116,11 @@ export default function Login() {
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+    const policy = validatePasswordPolicy(password)
+    if (!policy.valid) {
+      setError(policy.message || 'Invalid password')
+      return
+    }
     setIsLoading(true)
     try {
       const res = await apiClient.signup({
@@ -124,7 +130,7 @@ export default function Login() {
         first_name: firstName || undefined,
         last_name: lastName || undefined,
       })
-      setSession(res.access_token, res.user)
+      setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Sign up failed')
@@ -315,12 +321,13 @@ export default function Login() {
                 <div className="relative">
                   <input
                     type={showPassword ? 'text' : 'password'}
-                    placeholder="Password (min 8 chars)"
+                    placeholder={`Password (${PASSWORD_POLICY_HINT})`}
                     autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                     minLength={8}
+                    maxLength={32}
                     className="w-full px-4 py-3 pr-12 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
                   />
                   <button

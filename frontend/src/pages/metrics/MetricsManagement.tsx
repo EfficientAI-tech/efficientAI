@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import Button from '../../components/Button'
+import AIProviderModelPicker from '../../components/AIProviderModelPicker'
+import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { useToast } from '../../hooks/useToast'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import {
@@ -292,6 +294,9 @@ export default function MetricsManagement() {
   const [aiExamples, setAIExamples] = useState<Array<{ transcript: string; rating: string; notes: string }>>([
     { transcript: '', rating: '', notes: '' },
   ])
+  const [aiProvider, setAIProvider] = useState('')
+  const [aiModel, setAIModel] = useState('')
+  const [aiLlmConfig, setAILlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [sortField, setSortField] = useState<'type' | 'method'>('type')
@@ -824,6 +829,9 @@ export default function MetricsManagement() {
       surface: MetricSurface
       description?: string
       examples?: Array<{ transcript: string; rating: any; notes?: string }>
+      provider?: string
+      model?: string
+      llm_config?: LLMGenerationConfig
     }) => apiClient.generateMetric(payload),
     onSuccess: (suggestion) => {
       const cfg = suggestion.custom_config || {}
@@ -904,10 +912,18 @@ export default function MetricsManagement() {
     setAIMode('description')
     setAIDescription('')
     setAIExamples([{ transcript: '', rating: '', notes: '' }])
+    setAIProvider('')
+    setAIModel('')
+    setAILlmConfig(null)
   }
 
   const handleGenerateAIMetric = () => {
     const surface: MetricSurface = formData.supported_surfaces[0] || 'agent'
+    const llmExtras = {
+      ...(aiProvider ? { provider: aiProvider } : {}),
+      ...(aiModel ? { model: aiModel } : {}),
+      ...(aiLlmConfig ? { llm_config: aiLlmConfig } : {}),
+    }
     if (aiMode === 'description') {
       if (!aiDescription.trim()) {
         showToast('Please enter a description', 'error')
@@ -917,6 +933,7 @@ export default function MetricsManagement() {
         mode: 'description',
         surface,
         description: aiDescription.trim(),
+        ...llmExtras,
       })
     } else {
       const validExamples = aiExamples
@@ -934,6 +951,7 @@ export default function MetricsManagement() {
           rating: ex.rating,
           notes: ex.notes || undefined,
         })),
+        ...llmExtras,
       })
     }
   }
@@ -1949,6 +1967,15 @@ export default function MetricsManagement() {
                             </button>
                           </div>
                         )}
+
+                        <AIProviderModelPicker
+                          provider={aiProvider}
+                          model={aiModel}
+                          onProviderChange={setAIProvider}
+                          onModelChange={setAIModel}
+                          onLLMConfigChange={setAILlmConfig}
+                          llm_config={aiLlmConfig}
+                        />
 
                         <div className="flex justify-end">
                           <Button

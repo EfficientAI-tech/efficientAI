@@ -870,6 +870,11 @@ def list_metrics(
             Metric.workspace_id.is_(None),
         ),
         ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
+        ~and_(
+            Metric.is_default == True,
+            Metric.metric_category == MetricCategory.USER_INSIGHT.value,
+            Metric.metric_origin == "default",
+        ),
     )
     metrics = (
         query.order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
@@ -1111,7 +1116,7 @@ def update_metric(
 # Deprecated default metrics that can be deleted
 DEPRECATED_DEFAULT_METRICS = {"Response Time", "Customer Satisfaction", "Clarity and Empathy"}
 # Removed default metrics should no longer be listed/seeded/evaluated.
-REMOVED_DEFAULT_METRICS = {"Clarity and Empathy"}
+REMOVED_DEFAULT_METRICS = {"Clarity and Empathy", "Problem Resolution"}
 
 
 @router.delete("/{metric_id}", status_code=204)
@@ -1184,16 +1189,6 @@ def seed_default_metrics(
             "name": "Professionalism",
             "description": "Assesses the professional tone and behavior throughout the conversation",
             "metric_type": MetricType.RATING,
-            "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
-            "metric_origin": "default",
-            "supported_surfaces": ["agent"],
-            "enabled_surfaces": ["agent"],
-        },
-        {
-            "name": "Problem Resolution",
-            "description": "Measures the effectiveness in resolving customer issues",
-            "metric_type": MetricType.BOOLEAN,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
             "metric_origin": "default",
@@ -1318,82 +1313,6 @@ def seed_default_metrics(
         },
     ]
 
-    user_insight_groups = [
-        {
-            "name": "Caller Context Distribution",
-            "description": "Classifies the caller's context at the start of the call, including whether this is a new issue, a status check, or a repeat/follow-up context.",
-            "selection_mode": "single_choice",
-            "children": [
-                "First-time, new issue",
-                "Status check on prior unresolved ticket",
-                "Repeat caller, ticket not on this number",
-                "Follow-up after delayed callback",
-                "Unable to classify",
-            ],
-        },
-        {
-            "name": "Product Identification Mode",
-            "description": "Classifies how the user identifies the product or service they are calling about.",
-            "selection_mode": "single_choice",
-            "children": [
-                "Names product directly",
-                "Describes by function or symptom",
-                "Bot misheard product name",
-                "Names variant or model number",
-                "Unable to identify",
-            ],
-        },
-        {
-            "name": "Out-of-Scope Query Distribution",
-            "description": "Classifies whether the user's query belongs to the supported scope or a neighboring/unrelated business area.",
-            "selection_mode": "single_choice",
-            "children": [
-                "In-scope",
-                "Related external division",
-                "Completely unrelated",
-                "Other out-of-scope",
-                "Unable to classify",
-            ],
-        },
-        {
-            "name": "Caller-User Identity Match",
-            "description": "Classifies whether the caller is the actual end user/customer or a proxy such as a dealer, shopkeeper, or family member.",
-            "selection_mode": "single_choice",
-            "children": [
-                "Caller is customer at product location",
-                "Caller is dealer or shopkeeper",
-                "Caller is family or proxy",
-                "Caller is customer not at product location",
-                "Unable to classify",
-            ],
-        },
-        {
-            "name": "Frustration Trigger Distribution",
-            "description": "Classifies the reason behind user frustration when frustration appears in the transcript.",
-            "selection_mode": "multi_label",
-            "children": [
-                "Repeated complaint, no resolution",
-                "Technician did not visit",
-                "OTP or verification not received",
-                "Service area not covered",
-                "Pincode or area mismatch",
-                "Other",
-            ],
-        },
-        {
-            "name": "Video Call Offer Reception",
-            "description": "Classifies how the user responds when a video-call or remote-support option is offered.",
-            "selection_mode": "single_choice",
-            "children": [
-                "Declined - prefers physical visit",
-                "Accepted",
-                "Confused by the offer",
-                "Declined - cost concern",
-                "Declined - no phone capability",
-            ],
-        },
-    ]
-
     # Names of default voice metrics that must always be enabled on the
     # voice_playground surface for existing organizations. These are the
     # qualitative audio metrics computed by qualitative_voice_service that
@@ -1454,68 +1373,19 @@ def seed_default_metrics(
                     existing.enabled_surfaces = enabled_surfaces
                     existing.enabled = True
 
-    for group in user_insight_groups:
-        existing_parent = (
-            db.query(Metric)
-            .filter(
-                and_(
-                    Metric.name == group["name"],
-                    Metric.organization_id == organization_id,
-                    Metric.workspace_id == workspace_id,
-                    Metric.parent_metric_id.is_(None),
-                )
-            )
-            .first()
+    # Disable legacy default user-insight metrics (no longer seeded).
+    legacy_user_insights = db.query(Metric).filter(
+        and_(
+            Metric.organization_id == organization_id,
+            Metric.workspace_id == workspace_id,
+            Metric.is_default == True,
+            Metric.metric_category == MetricCategory.USER_INSIGHT.value,
+            Metric.metric_origin == "default",
+            Metric.enabled == True,
         )
-        if existing_parent:
-            existing_parent.metric_category = MetricCategory.USER_INSIGHT.value
-            existing_parent.allow_discovery = True
-            existing_parent.supported_surfaces = ["call_import"]
-            existing_parent.enabled_surfaces = ["call_import"]
-            continue
-
-        parent = Metric(
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            name=group["name"],
-            description=group["description"],
-            metric_type=MetricType.TEXT,
-            metric_category=MetricCategory.USER_INSIGHT.value,
-            trigger=MetricTrigger.ALWAYS,
-            enabled=True,
-            is_default=True,
-            metric_origin="default",
-            supported_surfaces=["call_import"],
-            enabled_surfaces=["call_import"],
-            custom_data_type="enum",
-            custom_config={},
-            capture_rationale=True,
-            selection_mode=group["selection_mode"],
-            allow_discovery=True,
-        )
-        db.add(parent)
-        db.flush()
-        created_metrics.append(parent)
-        for child_name in group["children"]:
-            child = Metric(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                name=child_name,
-                description=f"User-insight label under {group['name']}.",
-                metric_type=MetricType.BOOLEAN,
-                metric_category=MetricCategory.USER_INSIGHT.value,
-                trigger=MetricTrigger.ALWAYS,
-                enabled=True,
-                is_default=True,
-                metric_origin="default",
-                supported_surfaces=["call_import"],
-                enabled_surfaces=["call_import"],
-                custom_data_type="boolean",
-                custom_config={},
-                capture_rationale=False,
-                parent_metric_id=parent.id,
-            )
-            db.add(child)
+    ).all()
+    for metric in legacy_user_insights:
+        metric.enabled = False
 
     # Ensure removed defaults are disabled in the active workspace
     # (a sibling workspace's data is left alone; users who want the
@@ -1561,6 +1431,9 @@ class MetricGenerateRequest(BaseModel):
         default=None,
         description="Labeled examples used to infer the metric (mode=examples).",
     )
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class MetricGenerateResponse(BaseModel):
@@ -1573,6 +1446,8 @@ class MetricGenerateResponse(BaseModel):
     supported_surfaces: List[str]
     enabled_surfaces: List[str]
     suggested_tags: List[str] = []
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _build_metric_generation_messages(req: MetricGenerateRequest) -> List[Dict[str, str]]:
@@ -1674,18 +1549,23 @@ def generate_metric(
         raise HTTPException(status_code=400, detail="At least one example is required when mode='examples'")
 
     from app.services.ai.llm_service import llm_service
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
 
     messages = _build_metric_generation_messages(req)
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, req.provider, req.model
+    )
 
     try:
         llm_result = llm_service.generate_response(
             messages=messages,
-            llm_provider=ModelProvider.OPENAI,
-            llm_model="gpt-4o",
+            llm_provider=provider_enum,
+            llm_model=model_str,
             organization_id=organization_id,
             db=db,
-            temperature=0.4,
-            max_tokens=800,
+            llm_config=req.llm_config,
+            task_defaults={"temperature": 0.4, "max_tokens": 800},
         )
     except Exception as e:
         logger.error(f"[Metric Generate] LLM call failed: {e}")
@@ -1760,6 +1640,8 @@ def generate_metric(
         supported_surfaces=supported,
         enabled_surfaces=enabled_surfaces,
         suggested_tags=[str(t) for t in (parsed.get("suggested_tags") or [])][:8],
+        provider=provider_enum.value,
+        model=model_str,
     )
 
 

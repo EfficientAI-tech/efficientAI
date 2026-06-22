@@ -255,6 +255,23 @@ class User(Base):
     organization_memberships = relationship("OrganizationMember", back_populates="user", cascade="all, delete-orphan")
     api_keys = relationship("APIKey", back_populates="user")
     invitations = relationship("Invitation", back_populates="invited_user", foreign_keys="Invitation.invited_user_id")
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+
+
+class RefreshToken(Base):
+    """Opaque refresh token for extending local-password sessions."""
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="refresh_tokens")
 
 
 class OrganizationMember(Base):

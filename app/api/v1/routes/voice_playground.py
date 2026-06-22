@@ -753,13 +753,15 @@ def _normalize_benchmark_side(
 
 
 def _load_call_import_row(
-    row_id: UUID, organization_id: UUID, db: Session
+    row_id: UUID, organization_id: UUID, workspace_id: UUID, db: Session
 ) -> CallImportRow:
     row = (
         db.query(CallImportRow)
+        .join(CallImport, CallImportRow.call_import_id == CallImport.id)
         .filter(
             CallImportRow.id == row_id,
             CallImportRow.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
         )
         .first()
     )
@@ -786,7 +788,7 @@ def _validate_upload_key(key: str, organization_id: UUID) -> str:
 
 
 def _resolve_audio_ref(
-    ref: BlindTestPairAudioRef, organization_id: UUID, db: Session
+    ref: BlindTestPairAudioRef, organization_id: UUID, workspace_id: UUID, db: Session
 ) -> Dict[str, Any]:
     """Resolve a blind-test audio ref to a dict with audio_s3_key / metadata.
 
@@ -798,7 +800,7 @@ def _resolve_audio_ref(
     if ref.type == "recording":
         if not ref.call_import_row_id:
             raise HTTPException(400, "call_import_row_id is required for recording refs")
-        row = _load_call_import_row(ref.call_import_row_id, organization_id, db)
+        row = _load_call_import_row(ref.call_import_row_id, organization_id, workspace_id, db)
         return {
             "audio_s3_key": row.recording_s3_key,
             "source_type": "recording",
@@ -833,6 +835,7 @@ def _resolve_audio_ref(
             .filter(
                 TTSSample.id == ref.tts_sample_id,
                 TTSSample.organization_id == organization_id,
+                TTSSample.workspace_id == workspace_id,
             )
             .first()
         )
@@ -928,7 +931,8 @@ def _build_benchmark_side_samples(
                 f"to match sample_texts (got {len(row_ids)})",
             )
         resolved = [
-            _load_call_import_row(rid, organization_id, db) for rid in row_ids[: len(sample_texts)]
+            _load_call_import_row(rid, organization_id, workspace_id, db)
+            for rid in row_ids[: len(sample_texts)]
         ]
         for run in range(num_runs):
             for idx, txt in enumerate(sample_texts):
@@ -996,6 +1000,7 @@ async def list_voice_playground_call_import_rows(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -1003,7 +1008,10 @@ async def list_voice_playground_call_import_rows(
     query = (
         db.query(CallImportRow, CallImport.original_filename)
         .join(CallImport, CallImportRow.call_import_id == CallImport.id)
-        .filter(CallImportRow.organization_id == organization_id)
+        .filter(
+            CallImportRow.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
     )
     if call_import_id is not None:
         query = query.filter(CallImportRow.call_import_id == call_import_id)
@@ -1157,8 +1165,8 @@ async def create_comparison(
 
         # Resolve all refs first so we can populate provider/voices summary.
         for idx, pair in enumerate(data.pairs):
-            x = _resolve_audio_ref(pair.x, organization_id, db)
-            y = _resolve_audio_ref(pair.y, organization_id, db)
+            x = _resolve_audio_ref(pair.x, organization_id, workspace_id, db)
+            y = _resolve_audio_ref(pair.y, organization_id, workspace_id, db)
 
             for letter, info in [("A", x), ("B", y)]:
                 db.add(
@@ -1183,8 +1191,8 @@ async def create_comparison(
 
         # Populate the legacy provider_a/voices_a summary from the first pair
         # so the share modal / results view show meaningful labels.
-        first_x = _resolve_audio_ref(data.pairs[0].x, organization_id, db)
-        first_y = _resolve_audio_ref(data.pairs[0].y, organization_id, db)
+        first_x = _resolve_audio_ref(data.pairs[0].x, organization_id, workspace_id, db)
+        first_y = _resolve_audio_ref(data.pairs[0].y, organization_id, workspace_id, db)
         comparison.provider_a = first_x["provider"] or first_x["source_type"]
         comparison.model_a = first_x["model"]
         comparison.voices_a = [

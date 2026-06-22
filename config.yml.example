@@ -117,8 +117,9 @@ auth:
 
   local_password:
     # Lifetime of the Bearer tokens minted at POST /auth/login (in minutes).
-    # Keep this short; clients re-authenticate silently.
-    token_ttl_minutes: 720  # 12 hours
+    # Keep this short; clients refresh silently via refresh tokens.
+    token_ttl_minutes: 15
+    refresh_token_ttl_days: 7
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
 

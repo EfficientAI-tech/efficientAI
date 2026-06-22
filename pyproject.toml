@@ -5,7 +5,10 @@ description = "Voice AI Evaluation Platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.104.0",
+    # Cap below 0.137: FastAPI 0.137+ uses _IncludedRouter without .path, which
+    # breaks prometheus-fastapi-instrumentator on every API request when
+    # OBSERVABILITY_ENABLED is true. See prometheus-fastapi-instrumentator#370.
+    "fastapi>=0.104.0,<0.137",
     "uvicorn[standard]>=0.24.0",
     "sqlalchemy>=2.0.0",
     "alembic>=1.12.0",
@@ -30,6 +33,7 @@ dependencies = [
     "google-cloud-storage>=2.14.0",
     "cartesia>=0.1.0",
     "deepgram-sdk>=3.0.0,<4.0.0",
+    "sarvamai>=0.1.0",
     "loguru>=0.7.0",
     "retell-sdk>=0.1.0",
     "livekit>=0.11.0",
@@ -39,7 +43,7 @@ dependencies = [
     "croniter>=2.0.0",
     "pytz>=2024.1",
     "jiwer>=3.0.0",
-    "litellm>=1.60.0,<=1.82.6",
+    "litellm>=1.84.0,<2.0.0",
     "jinja2>=3.1.0",
     "wait-for2>=0.4.0",
     "docstring-parser>=0.15",
@@ -105,9 +109,6 @@ qualitative-voice = [
 # NVIDIA NeMo ASR for TTS hallucination detection (WER/CER via Conformer CTC)
 nemo-asr = [
     "nemo_toolkit[asr]>=1.20.0",
-]
-sarvam = [
-    "sarvamai>=0.1.0",
 ]
 # Google AI services (Gemini, Cloud TTS, Cloud Speech)
 google = [

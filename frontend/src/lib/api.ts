@@ -4,6 +4,8 @@ import type {
   Evaluation,
   EvaluationCreate,
   EvaluationResult,
+  DashboardSummary,
+  ModelConfigEntry,
   APIKey,
   MessageResponse,
   EvaluationStatus,
@@ -137,6 +139,7 @@ export interface AuthUserSummary {
 
 export interface TokenResponse {
   access_token: string
+  refresh_token?: string
   token_type: string
   expires_in: number
   user: AuthUserSummary
@@ -253,6 +256,8 @@ type TTSReportOptionsPayload = {
 const API_BASE_URL = import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
+let refreshPromise: Promise<string | null> | null = null
+
 class ApiClient {
   private client: AxiosInstance
 
@@ -293,7 +298,7 @@ class ApiClient {
       return config
     })
 
-    // Add response interceptor for error handling
+    // Add response interceptor for error handling and silent token refresh
     this.client.interceptors.response.use(
       (response) => response,
       async (error) => {
@@ -310,16 +315,66 @@ class ApiClient {
           }
         }
 
-        // Only log out on 401 (authentication failure)
-        // 403 errors are authorization failures that should be handled by the calling code
-        if (response?.status === 401) {
-          // API key invalid, clear it
+        const originalRequest = error.config
+        if (
+          response?.status === 401 &&
+          originalRequest &&
+          !originalRequest._retry
+        ) {
+          const url = String(originalRequest.url || '')
+          const isAuthEndpoint =
+            url.includes('/auth/login') ||
+            url.includes('/auth/signup') ||
+            url.includes('/auth/refresh')
+
+          if (!isAuthEndpoint) {
+            originalRequest._retry = true
+            const newToken = await this.tryRefreshAccessToken()
+            if (newToken) {
+              originalRequest.headers.Authorization = `Bearer ${newToken}`
+              return this.client(originalRequest)
+            }
+          }
+
           localStorage.removeItem('apiKey')
+          localStorage.removeItem('accessToken')
+          localStorage.removeItem('refreshToken')
+          localStorage.removeItem('authUser')
           window.location.href = '/login'
         }
         return Promise.reject(error)
       },
     )
+  }
+
+  private async tryRefreshAccessToken(): Promise<string | null> {
+    const refreshToken = localStorage.getItem('refreshToken')
+    if (!refreshToken) {
+      return null
+    }
+
+    if (!refreshPromise) {
+      refreshPromise = axios
+        .post(
+          `${API_BASE_URL}/api/v1/auth/refresh`,
+          { refresh_token: refreshToken },
+          { headers: { 'Content-Type': 'application/json' } },
+        )
+        .then((res) => {
+          const { access_token, refresh_token: rotatedRefresh } = res.data as TokenResponse
+          this.setAccessToken(access_token)
+          if (rotatedRefresh) {
+            this.setRefreshToken(rotatedRefresh)
+          }
+          return access_token as string
+        })
+        .catch(() => null)
+        .finally(() => {
+          refreshPromise = null
+        })
+    }
+
+    return refreshPromise
   }
 
   setApiKey(apiKey: string) {
@@ -336,6 +391,14 @@ class ApiClient {
 
   clearAccessToken() {
     localStorage.removeItem('accessToken')
+  }
+
+  setRefreshToken(refreshToken: string) {
+    localStorage.setItem('refreshToken', refreshToken)
+  }
+
+  clearRefreshToken() {
+    localStorage.removeItem('refreshToken')
   }
 
   // Workspace endpoints (in-org isolation boundary for call imports + metrics).
@@ -470,8 +533,19 @@ class ApiClient {
     return response.data
   }
 
-  async logout(): Promise<{ success: boolean; auth_method: string }> {
-    const response = await this.client.post('/api/v1/auth/logout')
+  async logout(refreshToken?: string | null): Promise<{ success: boolean; auth_method: string }> {
+    const response = await this.client.post('/api/v1/auth/logout', {
+      refresh_token: refreshToken || localStorage.getItem('refreshToken') || undefined,
+    })
+    return response.data
+  }
+
+  async refreshSession(refreshToken: string): Promise<TokenResponse> {
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/auth/refresh`,
+      { refresh_token: refreshToken },
+      { headers: { 'Content-Type': 'application/json' } },
+    )
     return response.data
   }
 
@@ -2417,7 +2491,12 @@ class ApiClient {
   }
 
   // Model Config endpoints
-  async getAllModels(): Promise<Record<string, any>> {
+  async getDashboardSummary(): Promise<DashboardSummary> {
+    const response = await this.client.get('/api/v1/dashboard/summary')
+    return response.data
+  }
+
+  async getAllModels(): Promise<Record<string, ModelConfigEntry>> {
     const response = await this.client.get('/api/v1/model-config/models')
     return response.data
   }
@@ -3047,6 +3126,9 @@ class ApiClient {
     surface: 'agent' | 'voice_playground' | 'blind_test'
     description?: string
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
+    provider?: string
+    model?: string
+    llm_config?: Record<string, any>
   }): Promise<{
     name: string
     description: string
@@ -3056,6 +3138,8 @@ class ApiClient {
     supported_surfaces: string[]
     enabled_surfaces: string[]
     suggested_tags: string[]
+    provider?: string
+    model?: string
   }> {
     const response = await this.client.post('/api/v1/metrics/generate', data)
     return response.data
