@@ -23,15 +23,24 @@ from datetime import datetime, timezone
 from typing import List, Optional, Union
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.auth import Principal, get_principal
-from app.core.auth.tokens import create_access_token
+from app.core.auth.principal import AuthMethod
+from app.core.auth.refresh_tokens import (
+    issue_refresh_token,
+    revoke_all_user_refresh_tokens,
+    revoke_refresh_token,
+    validate_refresh_token,
+)
+from app.core.auth.token_revocation import revoke_access_jti
+from app.core.auth.tokens import create_access_token, decode_access_token
 from app.core.license import get_enabled_features, has_auth_feature
-from app.core.password import hash_password, verify_password
+from app.core.password import hash_password, validate_password_strength, verify_password
 from app.database import get_db
 from app.dependencies import get_api_key
 from app.models.database import (
@@ -73,7 +82,7 @@ class AuthConfigResponse(BaseModel):
 
 class SignupRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=256)
+    password: str = Field(min_length=8, max_length=32)
     organization_name: Optional[str] = Field(default=None, max_length=255)
     first_name: Optional[str] = Field(default=None, max_length=255)
     last_name: Optional[str] = Field(default=None, max_length=255)
@@ -98,6 +107,7 @@ class LoginOrgSelectionResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "Bearer"
     expires_in: int  # seconds
     user: "UserSummary"
@@ -126,6 +136,14 @@ class APIKeyResponse(BaseModel):
     name: Optional[str] = None
     is_active: bool
     created_at: Optional[str] = None
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
 
 
 LoginResponse = Union[TokenResponse, LoginOrgSelectionResponse]
@@ -213,6 +231,48 @@ def _user_to_summary(user: User, organization_id, role: Optional[str]) -> UserSu
     )
 
 
+def _validate_password_or_400(password: str) -> None:
+    try:
+        validate_password_strength(password)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+def _issue_session_tokens(
+    db: Session,
+    *,
+    user: User,
+    organization_id,
+    role_value: Optional[str],
+) -> TokenResponse:
+    access_token, _jti, _ttl = create_access_token(
+        user_id=user.id,
+        organization_id=organization_id,
+        email=user.email,
+    )
+    refresh_token = issue_refresh_token(
+        db,
+        user_id=user.id,
+        organization_id=organization_id,
+    )
+    db.commit()
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
+        user=_user_to_summary(user, organization_id, role_value),
+    )
+
+
 @router.post("/signup", response_model=TokenResponse)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """
@@ -237,6 +297,7 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
         )
 
     org_name = (payload.organization_name or payload.email.split("@")[0] + "'s Org").strip()
+    _validate_password_or_400(payload.password)
 
     user = User(
         email=payload.email,
@@ -268,15 +329,12 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
     db.refresh(user)
     db.refresh(organization)
 
-    token = create_access_token(
-        user_id=user.id,
+    role_value = RoleEnum.ADMIN.value
+    return _issue_session_tokens(
+        db,
+        user=user,
         organization_id=organization.id,
-        email=user.email,
-    )
-    return TokenResponse(
-        access_token=token,
-        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
-        user=_user_to_summary(user, organization.id, RoleEnum.ADMIN.value),
+        role_value=role_value,
     )
 
 
@@ -352,16 +410,12 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
-    token = create_access_token(
-        user_id=user.id,
-        organization_id=target_organization_id,
-        email=user.email,
-    )
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
-    return TokenResponse(
-        access_token=token,
-        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
-        user=_user_to_summary(user, target_organization_id, role_value),
+    return _issue_session_tokens(
+        db,
+        user=user,
+        organization_id=target_organization_id,
+        role_value=role_value,
     )
 
 
@@ -391,16 +445,73 @@ def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_
 
 
 @router.post("/logout")
-def logout(principal: Principal = Depends(get_principal)) -> dict:
-    """
-    Log the current session out.
+def logout(
+    payload: Optional[LogoutRequest] = None,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Revoke the current session's refresh token and blacklist the access token."""
+    bearer = _extract_bearer(authorization)
+    if bearer and principal.auth_method == AuthMethod.LOCAL_PASSWORD:
+        try:
+            claims = decode_access_token(bearer)
+            jti = claims.get("jti")
+            exp = claims.get("exp")
+            if jti and exp:
+                ttl = max(int(exp) - int(datetime.now(timezone.utc).timestamp()), 1)
+                revoke_access_jti(jti, ttl)
+        except JWTError:
+            pass
 
-    The app-signed tokens are stateless and short-lived, so logout is a
-    client-side gesture: the frontend clears the stored token. We return 200
-    so the client can call this uniformly regardless of provider, and so we
-    have a single place to plug in token-revocation lists later if needed.
-    """
+    if payload and payload.refresh_token:
+        revoke_refresh_token(db, payload.refresh_token)
+        db.commit()
+
     return {"success": True, "auth_method": principal.auth_method.value}
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    """Rotate a refresh token and issue a new short-lived access token."""
+    _local_password_enabled()
+    try:
+        row = validate_refresh_token(db, payload.refresh_token)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+    user = db.query(User).filter(User.id == row.user_id, User.is_active == True).first()  # noqa: E712
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User no longer active.",
+        )
+
+    membership = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.user_id == user.id,
+            OrganizationMember.organization_id == row.organization_id,
+        )
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is not a member of this organization.",
+        )
+
+    revoke_refresh_token(db, payload.refresh_token)
+    role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
+    return _issue_session_tokens(
+        db,
+        user=user,
+        organization_id=row.organization_id,
+        role_value=role_value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -488,18 +599,14 @@ def switch_organization(
     db.commit()
     db.refresh(user)
 
-    token = create_access_token(
-        user_id=user.id,
-        organization_id=membership.organization_id,
-        email=user.email,
-    )
     role_value = (
         membership.role.value if hasattr(membership.role, "value") else membership.role
     )
-    return TokenResponse(
-        access_token=token,
-        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
-        user=_user_to_summary(user, membership.organization_id, role_value),
+    return _issue_session_tokens(
+        db,
+        user=user,
+        organization_id=membership.organization_id,
+        role_value=role_value,
     )
 
 
@@ -521,8 +628,8 @@ def switch_organization(
 
 
 class SetPasswordRequest(BaseModel):
-    new_password: str = Field(min_length=8, max_length=256)
-    current_password: Optional[str] = Field(default=None, max_length=256)
+    new_password: str = Field(min_length=8, max_length=32)
+    current_password: Optional[str] = Field(default=None, max_length=32)
     email: Optional[EmailStr] = None
 
 
@@ -596,9 +703,11 @@ def set_password(
             )
         user.email = payload.email
 
+    _validate_password_or_400(payload.new_password)
     user.password_hash = hash_password(payload.new_password)
     if not user.auth_provider:
         user.auth_provider = "local"
+    revoke_all_user_refresh_tokens(db, user.id)
     db.commit()
     db.refresh(user)
 

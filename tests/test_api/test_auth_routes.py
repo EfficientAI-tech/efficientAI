@@ -28,6 +28,8 @@ from app.models.database import (
 )
 from app.services.organization_provisioning import provision_default_workspace
 
+TEST_PASSWORD = "TestPass1!"
+
 
 def _bind_api_key_to_user(db_session, *, api_key: str, org_id: UUID, user: User) -> APIKey:
     """Point the shared test API key at ``user``, replacing any bootstrap binding."""
@@ -193,7 +195,7 @@ def test_signup_creates_user_org_and_admin_membership(
         "/api/v1/auth/signup",
         json={
             "email": "alice@example.com",
-            "password": "correct-horse-battery",
+            "password": "Correct1!Horse",
             "first_name": "Alice",
             "last_name": "Nguyen",
             "organization_name": "Acme Inc",
@@ -238,7 +240,7 @@ def test_signup_rejects_duplicate_email(client, db_session, enable_local_passwor
     db_session.add(
         User(
             email="taken@example.com",
-            password_hash=hash_password("pre-existing"),
+            password_hash=hash_password("Existing1!"),
             is_active=True,
         )
     )
@@ -246,7 +248,7 @@ def test_signup_rejects_duplicate_email(client, db_session, enable_local_passwor
 
     response = client.post(
         "/api/v1/auth/signup",
-        json={"email": "taken@example.com", "password": "new-password"},
+        json={"email": "taken@example.com", "password": "NewPass1!"},
     )
 
     assert response.status_code == 409
@@ -258,7 +260,7 @@ def test_signup_returns_403_when_self_service_signup_is_disabled(
 ):
     response = client.post(
         "/api/v1/auth/signup",
-        json={"email": "blocked@example.com", "password": "some-password"},
+        json={"email": "blocked@example.com", "password": "SomePass1!"},
     )
 
     assert response.status_code == 403
@@ -270,7 +272,7 @@ def test_signup_returns_404_when_local_password_disabled(client, monkeypatch):
 
     response = client.post(
         "/api/v1/auth/signup",
-        json={"email": "nope@example.com", "password": "some-password"},
+        json={"email": "nope@example.com", "password": "SomePass1!"},
     )
 
     assert response.status_code == 404
@@ -302,11 +304,11 @@ def _seed_user_with_org(db_session, email, password, *, role=RoleEnum.ADMIN.valu
 def test_login_with_correct_password_returns_token(
     client, db_session, enable_local_password
 ):
-    _seed_user_with_org(db_session, "bob@example.com", "correct-password")
+    _seed_user_with_org(db_session, "bob@example.com", "TestPass1!")
 
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "bob@example.com", "password": "correct-password"},
+        json={"email": "bob@example.com", "password": "TestPass1!"},
     )
 
     assert response.status_code == 200
@@ -320,7 +322,7 @@ def test_login_with_correct_password_returns_token(
 def test_login_rejects_wrong_password_with_401(
     client, db_session, enable_local_password
 ):
-    _seed_user_with_org(db_session, "bob@example.com", "correct-password")
+    _seed_user_with_org(db_session, "bob@example.com", "TestPass1!")
 
     response = client.post(
         "/api/v1/auth/login",
@@ -349,7 +351,7 @@ def test_login_rejects_user_without_membership_with_403(
     db_session.add(
         User(
             email="lonely@example.com",
-            password_hash=hash_password("the-password"),
+            password_hash=hash_password("ThePass1!"),
             is_active=True,
         )
     )
@@ -357,7 +359,7 @@ def test_login_rejects_user_without_membership_with_403(
 
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "lonely@example.com", "password": "the-password"},
+        json={"email": "lonely@example.com", "password": "ThePass1!"},
     )
 
     assert response.status_code == 403
@@ -389,11 +391,11 @@ def _seed_user_with_multiple_orgs(db_session, email, password):
 def test_login_with_multiple_orgs_requires_selection(
     client, db_session, enable_local_password
 ):
-    _seed_user_with_multiple_orgs(db_session, "multi@example.com", "correct-password")
+    _seed_user_with_multiple_orgs(db_session, "multi@example.com", "TestPass1!")
 
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "multi@example.com", "password": "correct-password"},
+        json={"email": "multi@example.com", "password": "TestPass1!"},
     )
 
     assert response.status_code == 200
@@ -409,14 +411,14 @@ def test_login_with_organization_id_returns_scoped_token(
     client, db_session, enable_local_password
 ):
     _user, org_a, org_b = _seed_user_with_multiple_orgs(
-        db_session, "multi@example.com", "correct-password"
+        db_session, "multi@example.com", "TestPass1!"
     )
 
     response = client.post(
         "/api/v1/auth/login",
         json={
             "email": "multi@example.com",
-            "password": "correct-password",
+            "password": "TestPass1!",
             "organization_id": str(org_b.id),
         },
     )
@@ -431,13 +433,13 @@ def test_login_with_organization_id_returns_scoped_token(
 def test_login_rejects_invalid_organization_id_with_403(
     client, db_session, enable_local_password
 ):
-    _seed_user_with_multiple_orgs(db_session, "multi@example.com", "correct-password")
+    _seed_user_with_multiple_orgs(db_session, "multi@example.com", "TestPass1!")
 
     response = client.post(
         "/api/v1/auth/login",
         json={
             "email": "multi@example.com",
-            "password": "correct-password",
+            "password": "TestPass1!",
             "organization_id": str(uuid4()),
         },
     )
@@ -487,7 +489,7 @@ def test_api_key_user_can_attach_password_and_real_email(
     response = authenticated_client.post(
         "/api/v1/auth/password",
         json={
-            "new_password": "a-fresh-strong-password",
+            "new_password": "FreshPass1!",
             "email": "alice@example.com",
         },
     )
@@ -519,7 +521,7 @@ def test_set_password_rejects_email_change_for_non_placeholder_user(
     response = authenticated_client.post(
         "/api/v1/auth/password",
         json={
-            "new_password": "a-fresh-strong-password",
+            "new_password": "FreshPass1!",
             "email": "different@example.com",
         },
     )
@@ -536,7 +538,7 @@ def test_rotating_password_requires_current_password(
     user = User(
         id=uuid4(),
         email="rotator@example.com",
-        password_hash=hash_password("original-password"),
+        password_hash=hash_password("Original1!"),
         is_active=True,
     )
     db_session.add(user)
@@ -546,7 +548,7 @@ def test_rotating_password_requires_current_password(
     # Missing current_password -> 401.
     missing_current = authenticated_client.post(
         "/api/v1/auth/password",
-        json={"new_password": "brand-new-password"},
+        json={"new_password": "BrandNew1!"},
     )
     assert missing_current.status_code == 401
 
@@ -554,7 +556,7 @@ def test_rotating_password_requires_current_password(
     wrong_current = authenticated_client.post(
         "/api/v1/auth/password",
         json={
-            "new_password": "brand-new-password",
+            "new_password": "BrandNew1!",
             "current_password": "not-the-real-one",
         },
     )
@@ -564,8 +566,8 @@ def test_rotating_password_requires_current_password(
     correct = authenticated_client.post(
         "/api/v1/auth/password",
         json={
-            "new_password": "brand-new-password",
-            "current_password": "original-password",
+            "new_password": "BrandNew1!",
+            "current_password": "Original1!",
         },
     )
     assert correct.status_code == 200
@@ -573,8 +575,8 @@ def test_rotating_password_requires_current_password(
     db_session.refresh(user)
     from app.core.password import verify_password
 
-    assert verify_password("brand-new-password", user.password_hash) is True
-    assert verify_password("original-password", user.password_hash) is False
+    assert verify_password("BrandNew1!", user.password_hash) is True
+    assert verify_password("Original1!", user.password_hash) is False
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +588,7 @@ def test_switch_org_mints_token_for_target_org(
 ):
     """Happy path: user is a member of two orgs and switches into the second."""
     user, source_org = _seed_user_with_org(
-        db_session, "multi@example.com", "the-password"
+        db_session, "multi@example.com", "ThePass1!"
     )
 
     target_org = Organization(id=uuid4(), name="Target Org")
@@ -647,7 +649,7 @@ def test_switch_org_rejects_api_key_caller_with_403(client, db_session, seed_org
 
 def test_switch_org_rejects_non_member_target_with_403(client, db_session):
     user, source_org = _seed_user_with_org(
-        db_session, "outsider@example.com", "the-password"
+        db_session, "outsider@example.com", "ThePass1!"
     )
     forbidden_org = Organization(id=uuid4(), name="Not Your Org")
     db_session.add(forbidden_org)
@@ -674,7 +676,7 @@ def test_switch_org_rejects_non_member_target_with_403(client, db_session):
 
 def test_switch_org_rejects_non_uuid_target_with_400(client, db_session):
     user, source_org = _seed_user_with_org(
-        db_session, "typo@example.com", "the-password"
+        db_session, "typo@example.com", "ThePass1!"
     )
     principal = Principal(
         organization_id=source_org.id,
@@ -693,3 +695,84 @@ def test_switch_org_rejects_non_uuid_target_with_400(client, db_session):
 
     assert response.status_code == 400
     assert "must be a valid uuid" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Refresh tokens, logout revocation, password policy
+# ---------------------------------------------------------------------------
+
+def test_signup_rejects_weak_password(client, enable_local_password):
+    response = client.post(
+        "/api/v1/auth/signup",
+        json={"email": "weak@example.com", "password": "alllowercase"},
+    )
+    assert response.status_code == 400
+    assert "uppercase" in response.json()["detail"].lower()
+
+
+def test_login_returns_refresh_token(client, db_session, enable_local_password):
+    _seed_user_with_org(db_session, "bob@example.com", TEST_PASSWORD)
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "bob@example.com", "password": TEST_PASSWORD},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"]
+    assert body["refresh_token"]
+
+
+def test_refresh_rotates_tokens(client, db_session, enable_local_password):
+    _seed_user_with_org(db_session, "bob@example.com", TEST_PASSWORD)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "bob@example.com", "password": TEST_PASSWORD},
+    ).json()
+    old_refresh = login["refresh_token"]
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": old_refresh},
+    )
+    assert refreshed.status_code == 200
+    body = refreshed.json()
+    assert body["access_token"]
+    assert body["refresh_token"]
+    assert body["refresh_token"] != old_refresh
+
+    stale = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": old_refresh},
+    )
+    assert stale.status_code == 401
+
+
+def test_logout_revokes_access_and_refresh_tokens(
+    client, db_session, enable_local_password
+):
+    _seed_user_with_org(db_session, "bob@example.com", TEST_PASSWORD)
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "bob@example.com", "password": TEST_PASSWORD},
+    ).json()
+    access_token = login["access_token"]
+    refresh_token = login["refresh_token"]
+
+    logout = client.post(
+        "/api/v1/auth/logout",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"refresh_token": refresh_token},
+    )
+    assert logout.status_code == 200
+
+    me = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert me.status_code == 401
+
+    refresh = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": refresh_token},
+    )
+    assert refresh.status_code == 401

@@ -5,6 +5,7 @@ import { Profile as ProfileType, Invitation, UserUpdate, InvitationStatus } from
 import { User, Mail, Building2, CheckCircle, XCircle, KeyRound, AlertTriangle, ArrowRightLeft, Loader2 } from 'lucide-react'
 import Button from '../../components/Button'
 import { useAuthStore } from '../../store/authStore'
+import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 
 export default function Profile() {
   const queryClient = useQueryClient()
@@ -75,6 +76,11 @@ export default function Profile() {
     setPwSuccess('')
     if (pwNew.length < 8) {
       setPwError('Password must be at least 8 characters.')
+      return
+    }
+    const policy = validatePasswordPolicy(pwNew)
+    if (!policy.valid) {
+      setPwError(policy.message || 'Invalid password')
       return
     }
     if (pwNew !== pwConfirm) {
@@ -457,6 +463,8 @@ export default function Profile() {
                   onChange={(e) => setPwNew(e.target.value)}
                   required
                   minLength={8}
+                  maxLength={32}
+                  placeholder={PASSWORD_POLICY_HINT}
                   autoComplete="new-password"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 />
@@ -470,6 +478,7 @@ export default function Profile() {
                   onChange={(e) => setPwConfirm(e.target.value)}
                   required
                   minLength={8}
+                  maxLength={32}
                   autoComplete="new-password"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 />

@@ -13,6 +13,7 @@ from app.config import load_config_from_file, settings, validate_auth_configurat
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.migrations import check_migrations_status, ensure_migrations_directory, run_migrations
 from app.core.rbac_middleware import ReaderReadOnlyMiddleware
+from app.core.security_headers_middleware import SecurityHeadersMiddleware
 from app.database import init_db
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(SecurityHeadersMiddleware)
 
     if settings.OBSERVABILITY_ENABLED:
         from prometheus_fastapi_instrumentator import Instrumentator

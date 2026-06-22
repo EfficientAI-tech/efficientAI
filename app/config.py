@@ -72,7 +72,8 @@ class Settings(BaseSettings):
     # Authentication
     AUTH_PROVIDERS: List[str] = ["api_key"]
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
-    AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 720
+    AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 15
+    AUTH_REFRESH_TOKEN_TTL_DAYS: int = 7
     AUTH_OIDC_ISSUER: Optional[str] = None
     AUTH_OIDC_CLIENT_ID: Optional[str] = None
     AUTH_OIDC_AUDIENCE: Optional[str] = None
@@ -475,6 +476,8 @@ def load_config_from_file(config_path: str) -> None:
                 settings.AUTH_LOCAL_ALLOW_SIGNUP = bool(local_config["allow_signup"])
             if "token_ttl_minutes" in local_config:
                 settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_config["token_ttl_minutes"])
+            if "refresh_token_ttl_days" in local_config:
+                settings.AUTH_REFRESH_TOKEN_TTL_DAYS = int(local_config["refresh_token_ttl_days"])
 
         oidc_config = auth_config.get("oidc", {})
         if isinstance(oidc_config, dict):

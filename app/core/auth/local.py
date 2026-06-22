@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.core.auth.principal import AuthMethod, Principal
 from app.core.auth.providers import AuthError, AuthProvider, RawCredential
 from app.core.auth.tokens import ISSUER, decode_access_token
+from app.core.auth.token_revocation import is_access_jti_revoked
 
 
 class LocalPasswordProvider(AuthProvider):
@@ -53,6 +54,10 @@ class LocalPasswordProvider(AuthProvider):
             org_id = UUID(claims["org_id"])
         except (KeyError, ValueError) as e:
             raise AuthError(f"Malformed token: {e}")
+
+        jti = claims.get("jti")
+        if jti and is_access_jti_revoked(jti):
+            raise AuthError("Token has been revoked")
 
         # Confirm the user still exists and is active.
         from app.models.database import OrganizationMember, User
