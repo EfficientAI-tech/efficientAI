@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
@@ -10,6 +10,23 @@ import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
 import { useToast } from '../../../hooks/useToast'
 
+const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
+  'yes',
+  'no',
+  'true',
+  'false',
+  'same',
+  'different',
+])
+
+function isLegacyCategoryLabelMetric(metric: {
+  type?: string | null
+  metric_name?: string | null
+}): boolean {
+  if ((metric.type || '').toLowerCase() !== 'boolean') return false
+  const name = (metric.metric_name || '').trim().toLowerCase()
+  return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
+}
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
   description: string
@@ -180,7 +197,7 @@ interface EvaluatorResultDetail {
     start: number
     end: number
   }> | null
-  metric_scores: Record<string, { value: any; type: string; metric_name: string }> | null
+  metric_scores: Record<string, { value: any; type: string; metric_name: string; parent_metric_id?: string | null }> | null
   error_message: string | null
   call_event?: string | null
   provider_call_id?: string | null
@@ -322,6 +339,37 @@ export default function EvaluatorResultDetailPage() {
       return inProgress ? 2000 : false
     },
   })
+
+  const { data: metrics = [] } = useQuery({
+    queryKey: ['metrics'],
+    queryFn: () => apiClient.listMetrics(),
+  })
+
+  const childMetricIds = useMemo(() => {
+    const ids = new Set<string>()
+    const visit = (metric: { id?: string; parent_metric_id?: string | null; children?: any[] }) => {
+      if (metric.parent_metric_id && metric.id) ids.add(metric.id)
+      for (const child of metric.children || []) {
+        if (child?.id) ids.add(child.id)
+        visit(child)
+      }
+    }
+    for (const metric of metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>) {
+      visit(metric)
+    }
+    return ids
+  }, [metrics])
+
+  const shouldHideMetricScore = (
+    metricId: string,
+    metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
+  ) => {
+    return Boolean(
+      metric.parent_metric_id ||
+        childMetricIds.has(metricId) ||
+        isLegacyCategoryLabelMetric(metric),
+    )
+  }
 
   const { data: presignedUrl } = useQuery({
     queryKey: ['audio-presigned-url', result?.audio_s3_key],
@@ -484,21 +532,7 @@ export default function EvaluatorResultDetailPage() {
     
     if (normalizedType === 'boolean') {
       const boolValue = value === true || value === 1 || value === '1' || value === 'true'
-      return boolValue ? (
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center">
-            <CheckCircle className="w-4 h-4 text-emerald-600" />
-          </div>
-          <span className="text-lg font-bold text-emerald-700">Yes</span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-rose-100 flex items-center justify-center">
-            <XCircle className="w-4 h-4 text-rose-600" />
-          </div>
-          <span className="text-lg font-bold text-rose-700">No</span>
-        </div>
-      )
+      return <span className="block text-base font-semibold text-gray-900">{boolValue ? 'Yes' : 'No'}</span>
     }
     
     if (normalizedType === 'rating') {
@@ -567,7 +601,7 @@ export default function EvaluatorResultDetailPage() {
       )
     }
 
-    return <span className="text-2xl font-bold text-gray-900">{String(value)}</span>
+    return <span className="block max-w-full text-base font-semibold leading-snug text-gray-900 whitespace-normal break-words">{String(value)}</span>
   }
 
   if (isLoading) {
@@ -777,22 +811,25 @@ export default function EvaluatorResultDetailPage() {
               }
               
               const acousticMetrics = Object.entries(resultData.metric_scores).filter(
-                ([, metric]) => {
+                ([metricId, metric]) => {
                   if (!hasValidValue(metric)) return false
+                  if (shouldHideMetricScore(metricId, metric)) return false
                   const info = getMetricInfo(metric.metric_name || '')
                   return info?.category === 'acoustic'
                 }
               )
               const aiVoiceMetrics = Object.entries(resultData.metric_scores).filter(
-                ([, metric]) => {
+                ([metricId, metric]) => {
                   if (!hasValidValue(metric)) return false
+                  if (shouldHideMetricScore(metricId, metric)) return false
                   const info = getMetricInfo(metric.metric_name || '')
                   return info?.category === 'ai_voice'
                 }
               )
               const llmMetrics = Object.entries(resultData.metric_scores).filter(
-                ([, metric]) => {
+                ([metricId, metric]) => {
                   if (!hasValidValue(metric)) return false
+                  if (shouldHideMetricScore(metricId, metric)) return false
                   const info = getMetricInfo(metric.metric_name || '')
                   return !info || info.category === 'llm'
                 }
@@ -808,11 +845,11 @@ export default function EvaluatorResultDetailPage() {
                         <h3 className="text-sm font-semibold text-purple-800 uppercase tracking-wide">AI Voice Quality</h3>
                         <span className="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">ML Analysis</span>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                         {aiVoiceMetrics.map(([metricId, metric]) => (
-                          <div key={metricId} className="border border-purple-200 bg-purple-50/50 rounded-lg p-4">
-                            <div className="text-sm font-medium text-purple-700 mb-2 flex items-center">
-                              <span>{metric.metric_name || metricId}</span>
+                          <div key={metricId} className="min-w-0 overflow-hidden border border-purple-200 bg-purple-50/50 rounded-lg p-4">
+                            <div className="text-sm font-medium text-purple-700 mb-2 flex min-w-0 items-start gap-1.5">
+                              <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
@@ -830,11 +867,11 @@ export default function EvaluatorResultDetailPage() {
                         <h3 className="text-sm font-semibold text-violet-800 uppercase tracking-wide">Acoustic Metrics</h3>
                         <span className="px-2 py-0.5 text-xs bg-violet-100 text-violet-700 rounded-full">Signal Analysis</span>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                         {acousticMetrics.map(([metricId, metric]) => (
-                          <div key={metricId} className="border border-violet-200 bg-violet-50/50 rounded-lg p-4">
-                            <div className="text-sm font-medium text-violet-700 mb-2 flex items-center">
-                              <span>{metric.metric_name || metricId}</span>
+                          <div key={metricId} className="min-w-0 overflow-hidden border border-violet-200 bg-violet-50/50 rounded-lg p-4">
+                            <div className="text-sm font-medium text-violet-700 mb-2 flex min-w-0 items-start gap-1.5">
+                              <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
@@ -852,11 +889,11 @@ export default function EvaluatorResultDetailPage() {
                         <h3 className="text-sm font-semibold text-emerald-800 uppercase tracking-wide">Conversation Metrics</h3>
                         <span className="px-2 py-0.5 text-xs bg-emerald-100 text-emerald-700 rounded-full">LLM Evaluation</span>
                       </div>
-                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                         {llmMetrics.map(([metricId, metric]) => (
-                          <div key={metricId} className="border border-gray-200 rounded-lg p-4">
-                            <div className="text-sm font-medium text-gray-500 mb-2 flex items-center">
-                              <span>{metric.metric_name || metricId}</span>
+                          <div key={metricId} className="min-w-0 overflow-hidden border border-gray-200 rounded-lg p-4">
+                            <div className="text-sm font-medium text-gray-500 mb-2 flex min-w-0 items-start gap-1.5">
+                              <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
@@ -12,6 +12,23 @@ import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLab
 import CustomWebSocketCallDetails from '../../../components/call-recordings/CustomWebSocketCallDetails'
 import SmallestCallDetails from '../../../components/call-recordings/SmallestCallDetails'
 
+const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
+  'yes',
+  'no',
+  'true',
+  'false',
+  'same',
+  'different',
+])
+
+function isLegacyCategoryLabelMetric(metric: {
+  type?: string | null
+  metric_name?: string | null
+}): boolean {
+  if ((metric.type || '').toLowerCase() !== 'boolean') return false
+  const name = (metric.metric_name || '').trim().toLowerCase()
+  return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
+}
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
   description: string
@@ -136,7 +153,7 @@ const MetricTooltip = ({ metricName }: { metricName: string }) => {
   if (!info) return null
   
   return (
-    <div className="relative inline-block ml-1">
+    <div className="relative inline-flex flex-shrink-0 ml-1 mt-0.5">
       <button
         type="button"
         className="text-gray-400 hover:text-gray-600 focus:outline-none transition-colors"
@@ -199,24 +216,14 @@ const formatMetricValue = (value: any, type: string, metricName?: string): React
   // Handle boolean metrics
   if (normalizedType === 'boolean') {
     const boolValue = value === true || value === 1 || value === '1' || value === 'true'
-    return boolValue ? (
-      <div className="flex items-center space-x-1.5 text-green-600">
-        <CheckCircle className="w-5 h-5" />
-        <span className="font-semibold">Yes</span>
-      </div>
-    ) : (
-      <div className="flex items-center space-x-1.5 text-red-600">
-        <XCircle className="w-5 h-5" />
-        <span className="font-semibold">No</span>
-      </div>
-    )
+    return <span className="block text-base font-semibold text-gray-900">{boolValue ? 'Yes' : 'No'}</span>
   }
   
   // Handle rating metrics with progress bar
   if (normalizedType === 'rating') {
     if (typeof value === 'string' && isNaN(parseFloat(value))) {
       return (
-        <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-purple-100 text-purple-700 font-semibold capitalize">
+        <span className="inline-flex max-w-full items-center px-3 py-1.5 rounded-full bg-purple-100 text-purple-700 font-semibold capitalize whitespace-normal break-words text-left leading-snug">
           {value}
         </span>
       )
@@ -265,7 +272,7 @@ const formatMetricValue = (value: any, type: string, metricName?: string): React
     return <span className="text-2xl font-bold text-gray-900">{numValue.toFixed(1)}</span>
   }
   
-  return <span className="text-2xl font-bold text-gray-900">{String(value)}</span>
+  return <span className="block max-w-full text-base font-semibold leading-snug text-gray-900 whitespace-normal break-words">{String(value)}</span>
 }
 
 // Helper to check if a metric has a valid value
@@ -390,6 +397,36 @@ export default function CallRecordingDetail() {
     },
   })
 
+  const { data: metrics = [] } = useQuery({
+    queryKey: ['metrics'],
+    queryFn: () => apiClient.listMetrics(),
+  })
+
+  const childMetricIds = useMemo(() => {
+    const ids = new Set<string>()
+    const visit = (metric: { id?: string; parent_metric_id?: string | null; children?: any[] }) => {
+      if (metric.parent_metric_id && metric.id) ids.add(metric.id)
+      for (const child of metric.children || []) {
+        if (child?.id) ids.add(child.id)
+        visit(child)
+      }
+    }
+    for (const metric of metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>) {
+      visit(metric)
+    }
+    return ids
+  }, [metrics])
+
+  const shouldHideMetricScore = (
+    metricId: string,
+    metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
+  ) => {
+    return Boolean(
+      metric.parent_metric_id ||
+        childMetricIds.has(metricId) ||
+        isLegacyCategoryLabelMetric(metric),
+    )
+  }
   // Clear optimistic re-eval state once the backend confirms a terminal status
   useEffect(() => {
     if (reEvalInProgress && callRecording?.evaluation?.status && ['completed', 'failed'].includes(callRecording.evaluation.status)) {
@@ -595,22 +632,25 @@ export default function CallRecordingDetail() {
                 
                 // Categorize metrics - only include those with valid values
                 const acousticMetrics = Object.entries(metricScores).filter(
-                  ([, metric]: [string, any]) => {
+                  ([metricId, metric]: [string, any]) => {
                     if (!hasValidValue(metric)) return false
+                    if (shouldHideMetricScore(metricId, metric)) return false
                     const info = getMetricInfo(metric.metric_name || '')
                     return info?.category === 'acoustic'
                   }
                 )
                 const aiVoiceMetrics = Object.entries(metricScores).filter(
-                  ([, metric]: [string, any]) => {
+                  ([metricId, metric]: [string, any]) => {
                     if (!hasValidValue(metric)) return false
+                    if (shouldHideMetricScore(metricId, metric)) return false
                     const info = getMetricInfo(metric.metric_name || '')
                     return info?.category === 'ai_voice'
                   }
                 )
                 const llmMetrics = Object.entries(metricScores).filter(
-                  ([, metric]: [string, any]) => {
+                  ([metricId, metric]: [string, any]) => {
                     if (!hasValidValue(metric)) return false
+                    if (shouldHideMetricScore(metricId, metric)) return false
                     const info = getMetricInfo(metric.metric_name || '')
                     return !info || info.category === 'llm'
                   }
@@ -647,11 +687,11 @@ export default function CallRecordingDetail() {
                           <h3 className="text-sm font-semibold text-purple-800 uppercase tracking-wide">AI Voice Quality</h3>
                           <span className="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">ML Analysis</span>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                           {aiVoiceMetrics.map(([metricId, metric]: [string, any]) => (
-                            <div key={metricId} className="border border-purple-200 bg-purple-50/50 rounded-lg p-4">
-                              <div className="text-sm font-medium text-purple-700 mb-2 flex items-center">
-                                <span>{metric.metric_name || metricId}</span>
+                            <div key={metricId} className="min-w-0 overflow-hidden border border-purple-200 bg-purple-50/50 rounded-lg p-4">
+                              <div className="text-sm font-medium text-purple-700 mb-2 flex min-w-0 items-start gap-1.5">
+                                <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                                 <MetricTooltip metricName={metric.metric_name || metricId} />
                               </div>
                               <div>
@@ -671,11 +711,11 @@ export default function CallRecordingDetail() {
                           <h3 className="text-sm font-semibold text-violet-800 uppercase tracking-wide">Acoustic Metrics</h3>
                           <span className="px-2 py-0.5 text-xs bg-violet-100 text-violet-700 rounded-full">Signal Analysis</span>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                           {acousticMetrics.map(([metricId, metric]: [string, any]) => (
-                            <div key={metricId} className="border border-violet-200 bg-violet-50/50 rounded-lg p-4">
-                              <div className="text-sm font-medium text-violet-700 mb-2 flex items-center">
-                                <span>{metric.metric_name || metricId}</span>
+                            <div key={metricId} className="min-w-0 overflow-hidden border border-violet-200 bg-violet-50/50 rounded-lg p-4">
+                              <div className="text-sm font-medium text-violet-700 mb-2 flex min-w-0 items-start gap-1.5">
+                                <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                                 <MetricTooltip metricName={metric.metric_name || metricId} />
                               </div>
                               <div>
@@ -695,11 +735,11 @@ export default function CallRecordingDetail() {
                           <h3 className="text-sm font-semibold text-emerald-800 uppercase tracking-wide">Conversation Metrics</h3>
                           <span className="px-2 py-0.5 text-xs bg-emerald-100 text-emerald-700 rounded-full">LLM Evaluation</span>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                           {llmMetrics.map(([metricId, metric]: [string, any]) => (
-                            <div key={metricId} className="border border-gray-200 rounded-lg p-4">
-                              <div className="text-sm font-medium text-gray-500 mb-2 flex items-center">
-                                <span>{metric.metric_name || metricId}</span>
+                            <div key={metricId} className="min-w-0 overflow-hidden border border-gray-200 rounded-lg p-4">
+                              <div className="text-sm font-medium text-gray-500 mb-2 flex min-w-0 items-start gap-1.5">
+                                <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                                 <MetricTooltip metricName={metric.metric_name || metricId} />
                               </div>
                               <div>

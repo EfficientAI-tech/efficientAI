@@ -1,5 +1,6 @@
-import { Mic, History, Headphones, RotateCcw, X, Share2 } from 'lucide-react'
+import { Mic, History, Headphones, RotateCcw, Share2 } from 'lucide-react'
 import Button from '../../../components/Button'
+import ConfirmModal from '../../../components/ConfirmModal'
 import { VoicePlaygroundProvider, useVoicePlayground } from './context'
 import { PlaygroundTab, VoicesTab, SimulationsTab, BlindTestsTab } from './components'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
@@ -141,42 +142,19 @@ function VoicePlaygroundContent() {
       {activeTab === 'blind-tests' && <BlindTestsTab />}
 
       {/* Delete Confirmation Modal */}
-      {deleteConfirm && (
-        <div
-          className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
-          onClick={() => setDeleteConfirm(null)}
-        >
-          <div
-            className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">Confirm Delete</h3>
-              <button
-                onClick={() => setDeleteConfirm(null)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-gray-600 mb-6">{deleteConfirm.message}</p>
-            <div className="flex gap-3 justify-end">
-              <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                onClick={() => {
-                  deleteConfirm.onConfirm()
-                  setDeleteConfirm(null)
-                }}
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmModal
+        isOpen={!!deleteConfirm}
+        title="Confirm Delete"
+        description={deleteConfirm?.message}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        onCancel={() => setDeleteConfirm(null)}
+        onConfirm={() => {
+          deleteConfirm?.onConfirm()
+          setDeleteConfirm(null)
+        }}
+      />
     </div>
   )
 }
