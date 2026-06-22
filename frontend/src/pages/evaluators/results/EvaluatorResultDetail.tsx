@@ -847,8 +847,8 @@ export default function EvaluatorResultDetailPage() {
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                         {aiVoiceMetrics.map(([metricId, metric]) => (
-                          <div key={metricId} className="min-w-0 overflow-hidden border border-purple-200 bg-purple-50/50 rounded-lg p-4">
-                            <div className="text-sm font-medium text-purple-700 mb-2 flex min-w-0 items-start gap-1.5">
+                          <div key={metricId} className="min-w-0 border border-purple-200 bg-purple-50/50 rounded-lg p-4">
+                            <div className="text-xs font-bold uppercase text-purple-800 mb-2 flex min-w-0 items-start gap-1.5">
                               <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
@@ -869,8 +869,8 @@ export default function EvaluatorResultDetailPage() {
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                         {acousticMetrics.map(([metricId, metric]) => (
-                          <div key={metricId} className="min-w-0 overflow-hidden border border-violet-200 bg-violet-50/50 rounded-lg p-4">
-                            <div className="text-sm font-medium text-violet-700 mb-2 flex min-w-0 items-start gap-1.5">
+                          <div key={metricId} className="min-w-0 border border-violet-200 bg-violet-50/50 rounded-lg p-4">
+                            <div className="text-xs font-bold uppercase text-violet-800 mb-2 flex min-w-0 items-start gap-1.5">
                               <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
@@ -891,8 +891,8 @@ export default function EvaluatorResultDetailPage() {
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                         {llmMetrics.map(([metricId, metric]) => (
-                          <div key={metricId} className="min-w-0 overflow-hidden border border-gray-200 rounded-lg p-4">
-                            <div className="text-sm font-medium text-gray-500 mb-2 flex min-w-0 items-start gap-1.5">
+                          <div key={metricId} className="min-w-0 border border-gray-200 rounded-lg p-4">
+                            <div className="text-xs font-bold uppercase text-gray-700 mb-2 flex min-w-0 items-start gap-1.5">
                               <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{metric.metric_name || metricId}</span>
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
