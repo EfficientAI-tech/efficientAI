@@ -21,6 +21,10 @@ def operational_client(monkeypatch):
     monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
     monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
     monkeypatch.setattr(settings, "DEBUG", True)
+    monkeypatch.setattr(
+        "app.core.health.check_migrations_status",
+        lambda: (True, []),
+    )
 
     app = FastAPI()
     app.add_middleware(MigrationCheckMiddleware)
