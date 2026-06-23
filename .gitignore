@@ -54,9 +54,6 @@ uv.lock
 .encryption_key
 .data/
 
-# Docker
-.dockerignore
-
 # Uploads
 uploads/
 *.wav

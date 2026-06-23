@@ -4,14 +4,17 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import load_config_from_file, settings, validate_auth_configuration
+from app.core.auth.rbac import require_admin
+from app.core.health import build_health_status
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.migrations import check_migrations_status, ensure_migrations_directory, run_migrations
+from app.core.operational_access_middleware import OperationalAccessMiddleware
 from app.core.rbac_middleware import ReaderReadOnlyMiddleware
 from app.core.security_headers_middleware import SecurityHeadersMiddleware
 from app.database import init_db
@@ -99,8 +102,9 @@ def create_app() -> FastAPI:
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
         description="EfficientAI Voice AI Evaluation Platform API",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if settings.DEBUG else None,
+        redoc_url="/redoc" if settings.DEBUG else None,
+        openapi_url="/openapi.json" if settings.DEBUG else None,
         lifespan=lifespan,
     )
 
@@ -120,6 +124,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(OperationalAccessMiddleware)
 
     if settings.OBSERVABILITY_ENABLED:
         from prometheus_fastapi_instrumentator import Instrumentator
@@ -137,20 +142,15 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check():
-        """
-        Health check endpoint.
-        Returns migration status to help diagnose issues.
-        """
-        is_up_to_date, pending = check_migrations_status()
+        """Minimal health probe for load balancers (see OperationalAccessMiddleware)."""
+        payload, status_code = build_health_status(detailed=False)
+        return JSONResponse(content=payload, status_code=status_code)
 
-        if is_up_to_date:
-            return {"status": "healthy", "migrations": "up_to_date"}
-        return {
-            "status": "degraded",
-            "migrations": "pending",
-            "pending_migrations": pending,
-            "message": f"{len(pending)} migration(s) pending: {', '.join(pending)}",
-        }
+    @app.get("/health/detail")
+    async def health_detail(_admin=Depends(require_admin)):
+        """Authenticated migration diagnostics for operators."""
+        payload, status_code = build_health_status(detailed=True)
+        return JSONResponse(content=payload, status_code=status_code)
 
     frontend_dist = Path(settings.FRONTEND_DIR)
     if frontend_dist.exists() and frontend_dist.is_dir():
@@ -167,6 +167,7 @@ def create_app() -> FastAPI:
                 or full_path.startswith("redoc")
                 or full_path.startswith("assets/")
                 or full_path == "health"
+                or full_path == "health/detail"
                 or full_path == "metrics"
             ):
                 return {"detail": "Not found"}

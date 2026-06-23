@@ -83,7 +83,29 @@ class Settings(BaseSettings):
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
-    
+
+    # Content Security Policy (Report-Only by default; set CSP_REPORT_ONLY=false to enforce)
+    CSP_ENABLED: bool = True
+    CSP_REPORT_ONLY: bool = True
+    CSP_POLICY: str = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https:; "
+        "connect-src 'self' wss: ws:; "
+        "media-src 'self' blob: https:; "
+        "frame-src 'self' blob:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'self'"
+    )
+
+    # Operational endpoints (/health, /metrics)
+    OPERATIONAL_PUBLIC: bool = False
+    OPERATIONAL_TRUSTED_IPS: List[str] = []
+
     # SMTP / Email Notifications (for Alerts)
     SMTP_HOST: Optional[str] = None  # e.g., "smtp.gmail.com"
     SMTP_PORT: int = 587
@@ -544,6 +566,13 @@ def load_config_from_file(config_path: str) -> None:
             settings.JUDGE_ALIGNMENT_ENABLED = bool(ja_cfg["enabled"])
         if "csv_max_rows" in ja_cfg:
             settings.JUDGE_ALIGNMENT_CSV_MAX_ROWS = int(ja_cfg["csv_max_rows"])
+
+    if "operational" in config_data:
+        operational_config = config_data["operational"]
+        if "public" in operational_config:
+            settings.OPERATIONAL_PUBLIC = bool(operational_config["public"])
+        if "trusted_ips" in operational_config:
+            settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:
