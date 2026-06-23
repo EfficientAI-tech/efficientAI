@@ -1,0 +1,47 @@
+# Git and IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Python artifacts
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.venv
+venv
+env
+newenv
+*.egg-info
+dist
+build
+
+# Local config and secrets
+.env
+.env.*
+config.yml
+config.docker.yml
+.encryption_key
+.data
+secrets
+uploads
+
+# Frontend (built in Docker; avoid shipping host node_modules)
+frontend/node_modules
+frontend/dist
+
+# Docs and dev-only content
+docs-fumadocs
+*.md
+!README.md
+
+# Tests
+tests
+
+# Logs and temp files
+*.log
+logs
+tmp
+temp

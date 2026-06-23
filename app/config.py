@@ -83,7 +83,25 @@ class Settings(BaseSettings):
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
-    
+
+    # Content Security Policy (Report-Only by default; set CSP_REPORT_ONLY=false to enforce)
+    CSP_ENABLED: bool = True
+    CSP_REPORT_ONLY: bool = True
+    CSP_POLICY: str = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https:; "
+        "connect-src 'self' wss: ws:; "
+        "media-src 'self' blob: https:; "
+        "frame-src 'self' blob:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'self'"
+    )
+
     # SMTP / Email Notifications (for Alerts)
     SMTP_HOST: Optional[str] = None  # e.g., "smtp.gmail.com"
     SMTP_PORT: int = 587

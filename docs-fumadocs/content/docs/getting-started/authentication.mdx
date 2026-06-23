@@ -121,9 +121,12 @@ Rules the UI enforces:
 - Rotate `SECRET_KEY` to invalidate existing sessions.
 - Put the app behind a reverse proxy (Nginx, Caddy, Cloudflare) that
   terminates TLS and enforces HSTS.
-- The bundled FastAPI server sends `X-Frame-Options: SAMEORIGIN` on all
-  responses. If you terminate traffic at an external reverse proxy, keep
-  that header (or stricter CSP `frame-ancestors`) enabled there too.
+- The bundled FastAPI server sends baseline security headers on all
+  responses (`X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`,
+  `Cache-Control`, and `Content-Security-Policy-Report-Only` by default). If
+  you terminate traffic at an external reverse proxy, keep those headers (or
+  stricter CSP `frame-ancestors`) enabled there too. After reviewing CSP
+  violation reports, set `CSP_REPORT_ONLY=false` to enforce the policy.
 - Pin third-party observability container images to fixed tags and rebuild
   external reverse-proxy images on patched runtimes. If a scanner reports
   a Go stdlib CVE in a binary this repo does not build, identify the

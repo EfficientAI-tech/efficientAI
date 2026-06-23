@@ -1,10 +1,26 @@
+# ============================================================
+# Stage 1: Frontend build (Node only — not shipped to runtime)
+# ============================================================
+FROM node:18-bookworm-slim AS frontend-builder
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+
+COPY frontend/ ./
+RUN npm run build
+
+# ============================================================
+# Stage 2: API runtime (Python only — no node_modules / esbuild)
+# ============================================================
 FROM python:3.11-slim
 
-# Install Node.js, npm, build tools, and WeasyPrint system libraries.
+# Install build tools and WeasyPrint system libraries.
 # build-essential + cmake: packages like praat-parselmouth on arm64/Apple Silicon
 # libgobject/libpango/libcairo/libgdk-pixbuf/libffi/shared-mime-info: PDF rendering
 RUN apt-get update && apt-get install -y \
-    curl \
     build-essential \
     cmake \
     libgobject-2.0-0 \
@@ -14,15 +30,12 @@ RUN apt-get update && apt-get install -y \
     libgdk-pixbuf-2.0-0 \
     libffi-dev \
     shared-mime-info \
-    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv via pip to get the glibc-linked binary (the musl-linked binary
 # from ghcr.io/astral-sh/uv has DNS resolution issues inside Docker)
 RUN pip install --no-cache-dir uv
 
-# Set working directory
 WORKDIR /app
 
 # ============================================================
@@ -43,28 +56,13 @@ RUN if find /usr/local/lib/ -name "litellm_init.pth" 2>/dev/null | grep -q .; th
     fi
 
 # ============================================================
-# LAYER 2: Frontend dependencies (cached unless package.json changes)
+# LAYER 2: Frontend static assets (built in stage 1, dist only)
 # ============================================================
-COPY frontend/package.json frontend/package-lock.json* ./frontend/
-WORKDIR /app/frontend
-
-# Install all dependencies (including dev dependencies needed for build)
-# Use --legacy-peer-deps to resolve peer dependency conflicts with HeroUI and Tailwind
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 
 # ============================================================
-# LAYER 3: Frontend build (rebuilds on frontend code changes)
+# LAYER 3: Backend code (rebuilds on backend code changes)
 # ============================================================
-COPY frontend/ ./
-
-# Build frontend for production
-RUN npm run build
-
-# ============================================================
-# LAYER 4: Backend code (rebuilds on backend code changes)
-# ============================================================
-WORKDIR /app
 COPY src/ ./src/
 COPY app/ ./app/
 COPY scripts/ ./scripts/
@@ -74,8 +72,6 @@ RUN uv pip install --system -e .
 # Create uploads directory
 RUN mkdir -p /app/uploads
 
-# Expose port
 EXPOSE 8000
 
-# Run the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
