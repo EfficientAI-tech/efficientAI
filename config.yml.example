@@ -12,6 +12,14 @@ server:
   host: "0.0.0.0"
   port: 8000
 
+# Operational endpoints (/health, /metrics)
+# Keep public: false in production/sandbox. ALB health checks use the
+# ELB-HealthChecker user-agent; Prometheus scrapers should use trusted_ips.
+operational:
+  public: false
+  trusted_ips:
+    - "10.0.0.0/8"
+
 # Database Configuration
 database:
   url: "postgresql://efficientai:password@localhost:5432/efficientai"

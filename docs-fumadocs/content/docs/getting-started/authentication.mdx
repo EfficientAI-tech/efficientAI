@@ -132,6 +132,14 @@ Rules the UI enforces:
   a Go stdlib CVE in a binary this repo does not build, identify the
   flagged container or proxy artifact and upgrade it separately.
 - Restrict `cors.origins` to the exact domain(s) serving the SPA.
+- Set `app.debug: false` in production so `/docs`, `/redoc`, and `/openapi.json`
+  are not served on the public hostname.
+- Keep `operational.public: false` so `/health` and `/metrics` return **404**
+  to anonymous public clients (including vulnerability scanners hitting your ALB
+  hostname). AWS ALB target health checks still succeed via the
+  `ELB-HealthChecker` user-agent. Add your VPC CIDRs to
+  `operational.trusted_ips` for internal Prometheus scrapers. Full migration
+  diagnostics are available at `GET /health/detail` for org admins.
 
 ---
 

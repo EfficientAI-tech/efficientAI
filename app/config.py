@@ -102,6 +102,10 @@ class Settings(BaseSettings):
         "frame-ancestors 'self'"
     )
 
+    # Operational endpoints (/health, /metrics)
+    OPERATIONAL_PUBLIC: bool = False
+    OPERATIONAL_TRUSTED_IPS: List[str] = []
+
     # SMTP / Email Notifications (for Alerts)
     SMTP_HOST: Optional[str] = None  # e.g., "smtp.gmail.com"
     SMTP_PORT: int = 587
@@ -562,6 +566,13 @@ def load_config_from_file(config_path: str) -> None:
             settings.JUDGE_ALIGNMENT_ENABLED = bool(ja_cfg["enabled"])
         if "csv_max_rows" in ja_cfg:
             settings.JUDGE_ALIGNMENT_CSV_MAX_ROWS = int(ja_cfg["csv_max_rows"])
+
+    if "operational" in config_data:
+        operational_config = config_data["operational"]
+        if "public" in operational_config:
+            settings.OPERATIONAL_PUBLIC = bool(operational_config["public"])
+        if "trusted_ips" in operational_config:
+            settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

@@ -3,9 +3,11 @@ Middleware to ensure migrations are up to date before serving requests.
 Blocks API requests if migrations are pending.
 """
 
-from fastapi import Request, HTTPException, status
+from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.config import settings
 from app.core.migrations import check_migrations_status
 import logging
 
@@ -16,32 +18,30 @@ _migrations_checked = False
 _migrations_up_to_date = False
 
 
+def _migration_bypass_paths() -> list[str]:
+    paths = ["/health"]
+    if settings.DEBUG:
+        paths.extend(["/docs", "/redoc", "/openapi.json"])
+    return paths
+
+
 class MigrationCheckMiddleware(BaseHTTPMiddleware):
     """
     Middleware that blocks API requests if database migrations are pending.
     Allows health checks and migration-related endpoints to pass through.
     """
-    
-    # Endpoints that should be allowed even if migrations are pending
-    ALLOWED_PATHS = [
-        "/health",
-        "/docs",
-        "/redoc",
-        "/openapi.json",
-    ]
-    
+
     async def dispatch(self, request: Request, call_next):
-        # Allow health checks and docs
-        if any(request.url.path.startswith(path) for path in self.ALLOWED_PATHS):
+        if any(request.url.path.startswith(path) for path in _migration_bypass_paths()):
             return await call_next(request)
-        
+
         # Allow static assets (frontend)
         if request.url.path.startswith("/assets/"):
             return await call_next(request)
-        
+
         # Check migration status
         is_up_to_date, pending = check_migrations_status()
-        
+
         if not is_up_to_date:
             # Block API requests if migrations are pending
             if request.url.path.startswith("/api/"):
@@ -56,6 +56,5 @@ class MigrationCheckMiddleware(BaseHTTPMiddleware):
                         "message": f"Application is starting up. {len(pending)} migration(s) need to be applied: {', '.join(pending)}"
                     }
                 )
-        
-        return await call_next(request)
 
+        return await call_next(request)
