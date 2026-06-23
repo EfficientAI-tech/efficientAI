@@ -13,8 +13,9 @@ server:
   port: 8000
 
 # Operational endpoints (/health, /metrics)
-# Keep public: false in production/sandbox. ALB health checks use the
-# ELB-HealthChecker user-agent; Prometheus scrapers should use trusted_ips.
+# Keep public: false in production/sandbox. ALB health checks connect
+# directly from VPC addresses (no X-Forwarded-For). Include your VPC/LB CIDRs
+# in trusted_ips so probes and internal scrapers are allowed.
 operational:
   public: false
   trusted_ips:

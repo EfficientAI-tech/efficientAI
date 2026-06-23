@@ -136,10 +136,10 @@ Rules the UI enforces:
   are not served on the public hostname.
 - Keep `operational.public: false` so `/health` and `/metrics` return **404**
   to anonymous public clients (including vulnerability scanners hitting your ALB
-  hostname). AWS ALB target health checks still succeed via the
-  `ELB-HealthChecker` user-agent. Add your VPC CIDRs to
-  `operational.trusted_ips` for internal Prometheus scrapers. Full migration
-  diagnostics are available at `GET /health/detail` for org admins.
+  hostname). AWS ALB target health checks connect directly from VPC addresses
+  (no `X-Forwarded-For`); include your VPC/LB CIDRs in
+  `operational.trusted_ips`. Full migration diagnostics are available at
+  `GET /health/detail` for org admins.
 
 ---
 

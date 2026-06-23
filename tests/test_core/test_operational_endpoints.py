@@ -9,11 +9,34 @@ import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from app.config import settings
 from app.core.health import build_health_status
 from app.core.migration_middleware import MigrationCheckMiddleware
-from app.core.operational_access_middleware import OperationalAccessMiddleware
+from app.core.operational_access_middleware import (
+    OperationalAccessMiddleware,
+    is_operational_access_allowed,
+)
+
+
+def _request(
+    *,
+    client_host: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+    path: str = "/health",
+) -> Request:
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": path,
+        "headers": headers or [],
+        "client": (client_host, 12345),
+        "scheme": "http",
+        "server": ("testserver", 80),
+    }
+    return Request(scope)
 
 
 @pytest.fixture
@@ -52,24 +75,61 @@ def test_public_health_via_alb_is_blocked(operational_client):
     assert response.status_code == 404
 
 
-def test_alb_health_probe_is_allowed(operational_client):
-    response = operational_client.get(
-        "/health",
-        headers={"User-Agent": "ELB-HealthChecker/2.0"},
+def test_spoofed_user_agent_does_not_bypass_gate(monkeypatch):
+    monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
+
+    request = _request(
+        client_host="203.0.113.1",
+        headers=[(b"user-agent", b"ELB-HealthChecker/2.0")],
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "healthy"}
+    assert is_operational_access_allowed(request) is False
 
 
-def test_health_allowed_for_trusted_client_ip(operational_client):
-    response = operational_client.get(
-        "/health",
-        headers={"X-Forwarded-For": "10.1.2.3", "User-Agent": "Mozilla/5.0"},
+def test_direct_trusted_peer_without_xff_allowed(monkeypatch):
+    monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
+
+    request = _request(client_host="10.1.2.3")
+
+    assert is_operational_access_allowed(request) is True
+
+
+def test_health_allowed_for_trusted_client_ip_via_proxy(monkeypatch):
+    monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
+
+    request = _request(
+        client_host="10.0.0.50",
+        headers=[(b"x-forwarded-for", b"10.1.2.3")],
     )
 
-    assert response.status_code == 200
-    assert set(response.json().keys()) == {"status"}
+    assert is_operational_access_allowed(request) is True
+
+
+def test_public_client_via_trusted_proxy_is_blocked(monkeypatch):
+    monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
+
+    request = _request(
+        client_host="10.0.0.50",
+        headers=[(b"x-forwarded-for", b"203.0.113.1")],
+    )
+
+    assert is_operational_access_allowed(request) is False
+
+
+def test_spoofed_leftmost_xff_without_trusted_peer_is_blocked(monkeypatch):
+    monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
+
+    request = _request(
+        client_host="203.0.113.1",
+        headers=[(b"x-forwarded-for", b"10.0.0.1")],
+    )
+
+    assert is_operational_access_allowed(request) is False
 
 
 def test_metrics_blocked_for_public_client(operational_client):
@@ -81,14 +141,17 @@ def test_metrics_blocked_for_public_client(operational_client):
     assert response.status_code == 404
 
 
-def test_metrics_allowed_for_trusted_client_ip(operational_client):
-    response = operational_client.get(
-        "/metrics",
-        headers={"X-Forwarded-For": "10.1.2.3"},
+def test_metrics_allowed_for_trusted_client_ip(operational_client, monkeypatch):
+    monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
+    monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
+
+    request = _request(
+        client_host="10.0.0.50",
+        path="/metrics",
+        headers=[(b"x-forwarded-for", b"10.1.2.3")],
     )
 
-    assert response.status_code == 200
-    assert response.json() == "metrics"
+    assert is_operational_access_allowed(request) is True
 
 
 def test_operational_public_allows_anonymous_health(monkeypatch):
