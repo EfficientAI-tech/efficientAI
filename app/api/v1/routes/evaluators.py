@@ -1,10 +1,10 @@
 """Evaluator routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from uuid import UUID
+from uuid import UUID, uuid4
 import random
 from typing import List
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
+from app.services.billing.flexprice_service import record_evaluator_run_requested
 from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle, Metric
 from app.models.schemas import (
     EvaluatorCreate,
@@ -548,6 +549,7 @@ def delete_evaluator(
 @router.post("/run", response_model=RunEvaluatorsResponse, status_code=200)
 def run_evaluators(
     request: RunEvaluatorsRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -649,7 +651,15 @@ def run_evaluators(
     
     if not task_ids:
         raise HTTPException(status_code=500, detail="Failed to create any tasks")
-    
+
+    background_tasks.add_task(
+        record_evaluator_run_requested,
+        organization_id,
+        uuid4(),
+        workspace_id=workspace_id,
+        quantity=len(request.evaluator_ids),
+    )
+
     return RunEvaluatorsResponse(
         task_ids=task_ids,
         evaluator_results=evaluator_results

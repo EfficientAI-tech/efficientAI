@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -21,6 +21,7 @@ from app.dependencies import (
     get_api_key,
     require_enterprise_feature,
 )
+from app.services.billing.flexprice_service import record_prompt_optimization_run_started
 from app.models.database import (
     Agent,
     Evaluator,
@@ -99,6 +100,7 @@ class CandidateResponse(BaseModel):
 @router.post("/runs", response_model=OptimizationRunResponse, status_code=201)
 def create_optimization_run(
     data: OptimizationRunCreate,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -155,6 +157,18 @@ def create_optimization_run(
     task = run_prompt_optimization_task.delay(str(run.id))
     run.celery_task_id = task.id
     db.commit()
+
+    config = run.config if isinstance(run.config, dict) else {}
+    max_metric_calls = config.get("max_metric_calls")
+
+    background_tasks.add_task(
+        record_prompt_optimization_run_started,
+        organization_id,
+        run.id,
+        workspace_id=workspace_id,
+        agent_id=agent.id,
+        max_metric_calls=max_metric_calls,
+    )
 
     logger.info(f"[GEPA] Created optimization run {run.id} for agent {agent.name}")
     return run

@@ -19,7 +19,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Body, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
 from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
@@ -31,6 +31,10 @@ from app.dependencies import (
     get_organization_id,
     get_workspace_id,
     require_enterprise_feature,
+)
+from app.services.billing.flexprice_service import (
+    record_call_import_batch_created,
+    record_call_import_row_imported,
 )
 from app.models.database import (
     CallImport,
@@ -1556,6 +1560,7 @@ async def update_call_import_mapping(
 async def start_call_import(
     call_import_id: UUID,
     payload: CallImportStartRequest,
+    background_tasks: BackgroundTasks,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -1682,6 +1687,16 @@ async def start_call_import(
     db.commit()
     db.refresh(call_import)
 
+    background_tasks.add_task(
+        record_call_import_batch_created,
+        organization_id,
+        call_import.id,
+        workspace_id=workspace_id,
+        total_rows=call_import.total_rows,
+        source="csv",
+        provider=call_import.provider,
+    )
+
     _enqueue_row_tasks(db, call_import, row_models)
 
     return CallImportUploadResponse(
@@ -1705,6 +1720,7 @@ async def start_call_import(
     deprecated=True,
 )
 async def upload_call_import_csv(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     provider: Optional[str] = Form(
         None,
@@ -1886,6 +1902,16 @@ async def upload_call_import_csv(
     db.commit()
     db.refresh(call_import)
 
+    background_tasks.add_task(
+        record_call_import_batch_created,
+        organization_id,
+        call_import.id,
+        workspace_id=workspace_id,
+        total_rows=call_import.total_rows,
+        source="csv",
+        provider=call_import.provider,
+    )
+
     _enqueue_row_tasks(db, call_import, row_models)
 
     return CallImportUploadResponse(
@@ -1908,6 +1934,7 @@ async def upload_call_import_csv(
     operation_id="uploadCallImportAudio",
 )
 async def upload_call_import_audio(
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(
         ...,
         description="One or more manual call recording audio files.",
@@ -1999,6 +2026,7 @@ async def upload_call_import_audio(
     )
     total_size = sum(len(item["contents"]) for item in prepared)
     uploaded_keys: List[str] = []
+    imported_row_ids: List[UUID] = []
 
     from app.services.storage.s3_service import s3_service
 
@@ -2058,6 +2086,7 @@ async def upload_call_import_audio(
             row.recording_s3_key = key
             row.recording_content_type = item["content_type"]
             row.recording_size_bytes = len(item["contents"])
+            imported_row_ids.append(row.id)
 
         db.commit()
     except Exception as exc:
@@ -2076,6 +2105,23 @@ async def upload_call_import_audio(
         ) from exc
 
     db.refresh(call_import)
+    background_tasks.add_task(
+        record_call_import_batch_created,
+        organization_id,
+        call_import.id,
+        workspace_id=workspace_id,
+        total_rows=call_import.total_rows,
+        source="audio",
+        provider=None,
+    )
+    for row_id in imported_row_ids:
+        background_tasks.add_task(
+            record_call_import_row_imported,
+            organization_id,
+            row_id,
+            workspace_id=workspace_id,
+            call_import_id=call_import.id,
+        )
     return CallImportUploadResponse(
         id=call_import.id,
         total_rows=call_import.total_rows,

@@ -1059,6 +1059,20 @@ def evaluate_call_import_row_task(
         _rollup_parent(db, evaluation)
         db.commit()
 
+        if eval_row.status == "completed":
+            from app.services.billing.flexprice_service import (
+                record_call_import_evaluation_row_completed,
+            )
+
+            record_call_import_evaluation_row_completed(
+                evaluation.organization_id,
+                evaluation.id,
+                source_row.id,
+                workspace_id=evaluation.workspace_id,
+                call_import_id=evaluation.call_import_id,
+                metrics_scored=len(eval_row.metric_scores or {}),
+            )
+
         return {
             "status": eval_row.status,
             "eval_row_id": eval_row_id,

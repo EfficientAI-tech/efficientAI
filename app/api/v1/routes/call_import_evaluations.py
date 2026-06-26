@@ -15,7 +15,7 @@ from uuid import UUID
 
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
@@ -32,6 +32,7 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
+from app.services.billing.flexprice_service import record_call_import_evaluation_started
 from app.services.workspace_rbac import resolve_workspace_capabilities
 from app.models.database import (
     AIProvider,
@@ -557,6 +558,7 @@ def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> 
 async def create_call_import_evaluation(
     call_import_id: UUID,
     payload: CallImportEvaluationCreate,
+    background_tasks: BackgroundTasks,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -1090,6 +1092,16 @@ async def create_call_import_evaluation(
     db.commit()
     for evaluation in created_evaluations:
         db.refresh(evaluation)
+        if evaluation.status == "running":
+            background_tasks.add_task(
+                record_call_import_evaluation_started,
+                organization_id,
+                evaluation.id,
+                workspace_id=call_import.workspace_id,
+                call_import_id=call_import.id,
+                row_count=evaluation.total_rows,
+                metric_count=len(leaf_metric_ids),
+            )
     return _serialize_eval(
         db, primary_evaluation, sibling_evaluation_ids=sibling_ids
     )

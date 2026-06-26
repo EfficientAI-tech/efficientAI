@@ -65,6 +65,7 @@ dependencies = [
     "plivo>=4.47.0",
     "openpyxl>=3.1.0",
     "weasyprint>=62.0",
+    "flexprice>=2.1.0",
 ]
 
 [project.optional-dependencies]

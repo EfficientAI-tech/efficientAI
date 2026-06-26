@@ -8,7 +8,7 @@ import random
 
 import uuid as _uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, UploadFile, File, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Dict, Any, List, Literal, Optional
@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key, require_enterprise_feature
+from app.services.billing.flexprice_service import (
+    record_blind_test_share_created,
+    record_tts_generation_started,
+    record_tts_report_requested,
+)
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -1371,6 +1376,7 @@ async def get_comparison(
 @router.post("/comparisons/{comparison_id}/generate", operation_id="generateTTSComparison")
 async def generate_comparison(
     comparison_id: UUID,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1432,6 +1438,13 @@ async def generate_comparison(
         comparison.celery_task_id = task.id
         db.commit()
         logger.info(f"[VoicePlayground] Dispatched generation task {task.id} for comparison {comparison.id}")
+        background_tasks.add_task(
+            record_tts_generation_started,
+            organization_id,
+            comparison.id,
+            workspace_id=workspace_id,
+            sample_count=pending_tts_samples,
+        )
     except Exception as e:
         comparison.status = TTSComparisonStatus.FAILED.value
         comparison.error_message = str(e)
@@ -1468,6 +1481,7 @@ async def submit_blind_test(
 async def create_blind_test_share(
     comparison_id: UUID,
     data: BlindTestShareCreate,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1539,6 +1553,15 @@ async def create_blind_test_share(
 
     db.commit()
     db.refresh(share)
+
+    if not existing:
+        background_tasks.add_task(
+            record_blind_test_share_created,
+            organization_id,
+            share.id,
+            workspace_id=workspace_id,
+            comparison_id=comparison.id,
+        )
 
     _recompute_summary(comparison, db)
     return _serialize_share(share, db, include_aggregates=True)
@@ -1891,6 +1914,7 @@ async def download_tts_comparison_report(
 @router.post("/comparisons/{comparison_id}/reports", operation_id="createTTSComparisonReportJob")
 async def create_tts_comparison_report_job(
     comparison_id: UUID,
+    background_tasks: BackgroundTasks,
     data: Optional[TTSReportJobCreate] = None,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -1924,6 +1948,13 @@ async def create_tts_comparison_report_job(
         task = generate_tts_report_pdf_task.delay(str(report_job.id), options_dict)
         report_job.celery_task_id = task.id
         db.commit()
+        background_tasks.add_task(
+            record_tts_report_requested,
+            organization_id,
+            report_job.id,
+            workspace_id=workspace_id,
+            comparison_id=comparison.id,
+        )
     except Exception as e:
         report_job.status = TTSReportJobStatus.FAILED.value
         report_job.error_message = f"Failed to queue report task: {str(e)}"

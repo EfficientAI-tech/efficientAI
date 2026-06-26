@@ -591,6 +591,27 @@ def process_evaluator_result_task(self, result_id: str):
             result.status = EvaluatorResultStatus.COMPLETED.value
             db.commit()
 
+            from app.models.database import CallRecording, CallRecordingSource
+            from app.services.billing.flexprice_service import (
+                record_playground_evaluation_completed,
+            )
+
+            call_recording = (
+                db.query(CallRecording)
+                .filter(
+                    CallRecording.evaluator_result_id == result.id,
+                    CallRecording.source == CallRecordingSource.PLAYGROUND,
+                )
+                .first()
+            )
+            if call_recording:
+                record_playground_evaluation_completed(
+                    result.organization_id,
+                    call_recording.call_short_id,
+                    workspace_id=result.workspace_id,
+                    duration_seconds=result.duration_seconds,
+                )
+
             total_time = time.time() - task_start_time
             logger.info(
                 f"[EvaluatorResult {result.result_id}] Completed in {total_time:.2f}s, "

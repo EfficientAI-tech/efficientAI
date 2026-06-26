@@ -163,3 +163,11 @@ judge_alignment:
 # license:
 #   key: "eyJhbGciOi..."
 
+# Flexprice usage-based billing (optional). When disabled or api_key is unset,
+# no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
+# true and provide FLEXPRICE_API_KEY (env var overrides api_key below).
+# flexprice:
+#   enabled: false
+#   api_key: null
+#   api_host: "https://us.api.flexprice.io/v1"
+

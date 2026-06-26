@@ -301,3 +301,99 @@ def test_blind_test_only_rejects_cross_workspace_tts_sample(
 
     assert response.status_code == 404
 
+
+def _seed_blind_test_ready_comparison(db_session, org_id, workspace_id):
+    comparison = TTSComparison(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        simulation_id="sim-blind-share",
+        name="Blind share metering test",
+        status=TTSComparisonStatus.COMPLETED.value,
+        mode="benchmark",
+        provider_a="openai",
+        provider_b="elevenlabs",
+        model_a="gpt-4o-mini-tts",
+        model_b="eleven_multilingual_v2",
+        voices_a=[{"id": "alloy", "name": "Alloy"}],
+        voices_b=[{"id": "rachel", "name": "Rachel"}],
+        sample_texts=["hello"],
+        num_runs=1,
+    )
+    db_session.add(comparison)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            TTSSample(
+                id=uuid4(),
+                comparison_id=comparison.id,
+                organization_id=org_id,
+                workspace_id=workspace_id,
+                provider="openai",
+                model="gpt-4o-mini-tts",
+                voice_id="alloy",
+                voice_name="Alloy",
+                side="A",
+                sample_index=0,
+                run_index=0,
+                text="hello",
+                audio_s3_key="organizations/test/a.wav",
+                status=TTSSampleStatus.COMPLETED.value,
+                source_type="tts",
+            ),
+            TTSSample(
+                id=uuid4(),
+                comparison_id=comparison.id,
+                organization_id=org_id,
+                workspace_id=workspace_id,
+                provider="elevenlabs",
+                model="eleven_multilingual_v2",
+                voice_id="rachel",
+                voice_name="Rachel",
+                side="B",
+                sample_index=0,
+                run_index=0,
+                text="hello",
+                audio_s3_key="organizations/test/b.wav",
+                status=TTSSampleStatus.COMPLETED.value,
+                source_type="tts",
+            ),
+        ]
+    )
+    db_session.commit()
+    return comparison
+
+
+def test_create_blind_test_share_meters_only_on_first_create(
+    authenticated_client, db_session, org_id, default_workspace, monkeypatch
+):
+    from app.api.v1.routes import voice_playground as vp_routes
+
+    comparison = _seed_blind_test_ready_comparison(db_session, org_id, default_workspace.id)
+    calls = []
+
+    def _record_metering(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(vp_routes, "record_blind_test_share_created", _record_metering)
+
+    payload = {"title": "Public blind test", "custom_metrics": []}
+    first = authenticated_client.post(
+        f"/api/v1/voice-playground/comparisons/{comparison.id}/share",
+        json=payload,
+    )
+    assert first.status_code == 200
+
+    second = authenticated_client.post(
+        f"/api/v1/voice-playground/comparisons/{comparison.id}/share",
+        json={"title": "Updated title", "custom_metrics": []},
+    )
+    assert second.status_code == 200
+
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == org_id
+    assert kwargs["comparison_id"] == comparison.id
+    assert kwargs["workspace_id"] == default_workspace.id
+

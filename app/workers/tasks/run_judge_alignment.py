@@ -88,6 +88,18 @@ def run_judge_alignment_task(
             _fail(db, run, str(exc))
             return {"error": str(exc)}
 
+        from app.services.billing.flexprice_service import (
+            record_judge_alignment_run_completed,
+        )
+
+        record_judge_alignment_run_completed(
+            run.organization_id,
+            run.id,
+            workspace_id=run.workspace_id,
+            dataset_id=run.dataset_id,
+            samples_scored=len(samples),
+        )
+
         return {"judge_run_id": judge_run_id, "metrics": metrics}
 
     finally:
