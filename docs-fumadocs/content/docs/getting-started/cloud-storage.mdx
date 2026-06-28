@@ -12,15 +12,16 @@ EfficientAI can store audio files and recordings in the cloud using **one active
 
 - **Amazon S3** (or any S3-compatible service such as MinIO, DigitalOcean Spaces, Cloudflare R2)
 - **Google Cloud Storage (GCS)**
+- **Azure Blob Storage**
 
 Cloud storage is useful for:
 
 - Storing large audio files outside your application server
 - Scaling storage independently from compute
-- Integrating with existing AWS or GCP infrastructure
+- Integrating with existing AWS, GCP, or Azure infrastructure
 - Browsing, uploading, and managing audio from the **Data Sources** page in the UI
 
-Select the backend with `storage.blob_provider` in `config.yml` (`s3` or `gcs`), then enable and configure the matching block below.
+Select the backend with `storage.blob_provider` in `config.yml` (`s3`, `gcs`, or `azure`), then enable and configure the matching block below.
 
 ---
 
@@ -30,7 +31,7 @@ Select the backend with `storage.blob_provider` in `config.yml` (`s3` or `gcs`),
 storage:
   upload_dir: "./uploads"
   max_file_size_mb: 500
-  blob_provider: s3  # s3 | gcs — single active cloud blob backend
+  blob_provider: s3  # s3 | gcs | azure — single active cloud blob backend
   allowed_audio_formats:
     - "wav"
     - "mp3"
@@ -42,7 +43,7 @@ storage:
 |--------|-------------|
 | `upload_dir` | Local fallback directory for uploads when cloud storage is disabled |
 | `max_file_size_mb` | Maximum upload size in megabytes |
-| `blob_provider` | Active cloud backend: `s3` or `gcs` |
+| `blob_provider` | Active cloud backend: `s3`, `gcs`, or `azure` |
 | `allowed_audio_formats` | File extensions accepted for audio uploads |
 
 ---
@@ -167,6 +168,56 @@ Object layout under `prefix` matches S3 (organization-scoped paths), so you can 
 
 ---
 
+## Azure Blob Storage
+
+### Configuration
+
+Set `storage.blob_provider: azure` and enable the `azure` block:
+
+```yaml
+storage:
+  blob_provider: azure
+
+azure:
+  enabled: true
+  account_name: "your-storage-account"
+  account_key: "your-account-key"
+  connection_string: null  # Optional; takes precedence over account_name + account_key
+  container_name: "your-container"
+  prefix: "audio/"
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `enabled` | Yes | Set to `true` to enable Azure Blob Storage |
+| `container_name` | Yes | Name of your Azure storage container |
+| `account_name` | Yes* | Azure storage account name (*not required if `connection_string` is set) |
+| `account_key` | Yes* | Storage account access key (*not required if `connection_string` is set) |
+| `connection_string` | No | Full Azure storage connection string (overrides `account_name` + `account_key`) |
+| `prefix` | No | Folder prefix for uploaded files (default: `audio/`) |
+
+### Authentication
+
+EfficientAI resolves Azure credentials in this order:
+
+1. `azure.connection_string` in `config.yml`
+2. `azure.account_name` + `azure.account_key`
+
+Managed Identity is not supported in this release; use a connection string or account key.
+
+**SAS URLs** (temporary download links in the UI) require an account key. Connection strings include the key automatically.
+
+### Azure setup
+
+1. **Create a Storage Account** in the Azure Portal (or via `az storage account create`).
+2. **Create a container** (e.g., `efficientai-audio`) under that account.
+3. Copy the **connection string** or **access key** from Storage Account → Access keys.
+4. Set `storage.blob_provider: azure`, `azure.enabled: true`, and fill in `container_name` plus credentials.
+
+Object layout under `prefix` matches S3 and GCS (organization-scoped paths).
+
+---
+
 ## Data Sources UI
 
 Once cloud storage is configured and connected, open **Configuration → Data Sources** to:
@@ -175,7 +226,7 @@ Once cloud storage is configured and connected, open **Configuration → Data So
 - Upload new audio files
 - Preview playback in the browser
 - Delete files
-- Test the connection (labels show **Amazon S3** or **Google Cloud Storage** based on `blob_provider`)
+- Test the connection (labels show **Amazon S3**, **Google Cloud Storage**, or **Azure Blob Storage** based on `blob_provider`)
 
 ---
 
@@ -202,4 +253,7 @@ Use **Test Connection** on the Data Sources page, or upload a test file and conf
 | GCS `Forbidden` | Confirm service account has `storage.objects.*` on the bucket |
 | GCS bucket not found | Verify `bucket_name`, `project_id`, and that the bucket exists |
 | GCS auth failure | Set `credentials_path` or `GOOGLE_APPLICATION_CREDENTIALS`; on GCP VMs you can use ADC |
-| Wrong provider in UI | Ensure `storage.blob_provider` matches the enabled block (`s3` vs `gcs`) |
+| Wrong provider in UI | Ensure `storage.blob_provider` matches the enabled block (`s3`, `gcs`, or `azure`) |
+| Azure container not found | Verify `container_name` and that the container exists in the storage account |
+| Azure auth failure | Set `connection_string` or `account_name` + `account_key` |
+| Azure SAS URL failure | SAS generation requires an account key (included in connection strings) |

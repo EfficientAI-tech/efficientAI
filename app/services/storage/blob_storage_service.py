@@ -1,4 +1,4 @@
-"""Provider facade for cloud blob storage (S3 or GCS)."""
+"""Provider facade for cloud blob storage (S3, GCS, or Azure)."""
 
 from typing import List, Optional
 import uuid
@@ -13,6 +13,7 @@ class BlobStorageService:
     def __init__(self):
         self._s3 = S3Service()
         self._gcs = None
+        self._azure = None
 
     def _get_gcs(self):
         if self._gcs is None:
@@ -20,6 +21,13 @@ class BlobStorageService:
 
             self._gcs = GcsService()
         return self._gcs
+
+    def _get_azure(self):
+        if self._azure is None:
+            from app.services.storage.azure_blob_service import AzureBlobService
+
+            self._azure = AzureBlobService()
+        return self._azure
 
     @property
     def provider_name(self) -> str:
@@ -30,6 +38,8 @@ class BlobStorageService:
         provider = settings.BLOB_STORAGE_PROVIDER
         if provider == "gcs":
             return self._get_gcs()
+        if provider == "azure":
+            return self._get_azure()
         return self._s3
 
     @property
@@ -41,6 +51,8 @@ class BlobStorageService:
         self._s3.reset_connection()
         if self._gcs is not None:
             self._gcs.reset_connection()
+        if self._azure is not None:
+            self._azure.reset_connection()
 
     def is_enabled(self) -> bool:
         return self._backend().is_enabled()

@@ -54,7 +54,7 @@ celery:
 storage:
   upload_dir: "/app/uploads"
   max_file_size_mb: 500
-  blob_provider: s3        # s3 | gcs — single active cloud blob backend
+  blob_provider: s3        # s3 | gcs | azure — single active cloud blob backend
   allowed_audio_formats: ["wav", "mp3", "flac", "m4a"]
 
 # S3 (optional, used by the Data Sources feature when blob_provider is s3)
@@ -73,6 +73,15 @@ gcs:
   bucket_name: "your-gcs-bucket-name"
   project_id: "your-gcp-project-id"
   credentials_path: null     # service-account JSON; or GOOGLE_APPLICATION_CREDENTIALS / ADC
+  prefix: "audio/"
+
+# Azure Blob Storage (optional, used when blob_provider is azure)
+azure:
+  enabled: false
+  account_name: "your-storage-account"
+  account_key: "your-account-key"
+  connection_string: null     # optional; takes precedence over account_name + account_key
+  container_name: "your-container"
   prefix: "audio/"
 
 # CORS

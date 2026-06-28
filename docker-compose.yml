@@ -59,6 +59,11 @@ services:
       # GCS_BUCKET_NAME: your-gcs-bucket
       # GCS_PROJECT_ID: your-gcp-project
       # GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa.json
+      # Optional Azure Blob Storage (set storage.blob_provider: azure in config.docker.yml):
+      # BLOB_STORAGE_PROVIDER: azure
+      # AZURE_BLOB_ENABLED: "true"
+      # AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=https;AccountName=...
+      # AZURE_CONTAINER_NAME: your-container
     volumes:
       - ./uploads:/app/uploads
       - ./.data:/app/.data

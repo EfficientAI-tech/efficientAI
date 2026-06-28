@@ -903,12 +903,12 @@ def test_audio_upload_rejects_invalid_inputs(
     assert too_large.status_code == 413
 
 
-def test_audio_upload_rejects_when_s3_unavailable(
+def test_audio_upload_rejects_when_blob_storage_unavailable(
     authenticated_client, seed_org
 ):
     fake_s3 = SimpleNamespace(
         is_enabled=lambda: False,
-        get_status_message=lambda: "S3 disabled",
+        get_status_message=lambda: "Blob storage disabled",
         prefix="",
     )
     with _patched_s3(fake_s3):
@@ -919,7 +919,7 @@ def test_audio_upload_rejects_when_s3_unavailable(
         )
 
     assert response.status_code == 503
-    assert "s3" in response.json()["detail"].lower()
+    assert "blob storage" in response.json()["detail"].lower()
 
 
 def test_upload_rejects_when_provider_does_not_match_integration(
