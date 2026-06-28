@@ -48,7 +48,7 @@ celery:
 storage:
   upload_dir: "./uploads"
   max_file_size_mb: 500
-  blob_provider: s3  # s3 | gcs — single active cloud blob backend
+  blob_provider: s3  # s3 | gcs | azure — single active cloud blob backend
   allowed_audio_formats:
     - "wav"
     - "mp3"
@@ -72,6 +72,15 @@ gcs:
   project_id: "your-gcp-project-id"
   credentials_path: null  # Optional path to service-account JSON; falls back to GOOGLE_APPLICATION_CREDENTIALS / ADC
   prefix: "audio/"  # Prefix for audio files in bucket (same layout as S3)
+
+# Azure Blob Storage Configuration (alternative when storage.blob_provider is azure)
+azure:
+  enabled: false
+  account_name: "your-storage-account"
+  account_key: "your-account-key"
+  connection_string: null  # Optional; takes precedence over account_name + account_key
+  container_name: "your-container"
+  prefix: "audio/"  # Prefix for audio files in container (same layout as S3/GCS)
 
 # Speaker Diarization (pyannote.audio)
 # For accurate speaker identification in transcripts, configure pyannote.audio:

@@ -149,7 +149,7 @@ class TranscriptionService:
                 logger.warning(f"Database lookup failed for {audio_file_key}: {e}")
 
         # If all else fails, raise error
-        raise StorageError(f"Failed to download audio file: S3 is not enabled and local file not found for key: {audio_file_key}")
+        raise StorageError(f"Failed to download audio file: Cloud blob storage is not enabled and local file not found for key: {audio_file_key}")
 
     # Provider-specific transcription is delegated to app.services.ai.stt_clients
 

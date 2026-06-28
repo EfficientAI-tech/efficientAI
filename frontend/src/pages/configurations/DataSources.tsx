@@ -28,12 +28,14 @@ import Button from '../../components/Button'
 
 function getBlobStorageLabel(provider?: string | null): string {
   if (provider === 'gcs') return 'Google Cloud Storage'
+  if (provider === 'azure') return 'Azure Blob Storage'
   if (provider === 's3') return 'Amazon S3'
   return 'Cloud Storage'
 }
 
 function getBlobStorageShortLabel(provider?: string | null): string {
   if (provider === 'gcs') return 'GCS'
+  if (provider === 'azure') return 'Azure'
   if (provider === 's3') return 'S3'
   return 'Cloud'
 }
