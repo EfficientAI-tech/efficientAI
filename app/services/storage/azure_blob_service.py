@@ -256,9 +256,12 @@ class AzureBlobService:
             raise StorageError(error_msg)
 
         try:
+            _, _, _, _, ContentSettings = _get_azure_libs()
             blob_client = self.container_client.get_blob_client(key)
             blob_client.upload_blob(
-                file_content, overwrite=True, content_type=content_type
+                file_content,
+                overwrite=True,
+                content_settings=ContentSettings(content_type=content_type),
             )
             return key
         except Exception as e:
