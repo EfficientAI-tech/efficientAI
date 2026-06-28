@@ -27,6 +27,7 @@ def _get_azure_libs() -> Tuple[Any, Any, Any, Any, Any]:
             from azure.storage.blob import (
                 BlobSasPermissions,
                 BlobServiceClient,
+                ContentSettings,
                 generate_blob_sas,
             )
         except ImportError as exc:
@@ -39,7 +40,7 @@ def _get_azure_libs() -> Tuple[Any, Any, Any, Any, Any]:
             ResourceNotFoundError,
             generate_blob_sas,
             BlobSasPermissions,
-            Exception,
+            ContentSettings,
         )
     return _AZURE_LIBS
 
