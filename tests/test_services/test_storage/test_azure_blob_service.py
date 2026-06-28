@@ -30,7 +30,7 @@ class _FakeBlobClient:
         self.container = container
         self.url = f"https://account.blob.core.windows.net/{container.name}/{name}"
 
-    def upload_blob(self, data, overwrite=True, content_type=None):
+    def upload_blob(self, data, overwrite=True, content_type=None, content_settings=None, **kwargs):
         self.container.objects[self.name] = data
 
     def download_blob(self):
