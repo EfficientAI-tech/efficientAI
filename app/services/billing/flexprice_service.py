@@ -102,6 +102,41 @@ def log_startup_status(*, component: str = "app") -> None:
         _mask_api_key(settings.FLEXPRICE_API_KEY),
     )
 
+    connectivity_error = _verify_connectivity()
+    if connectivity_error:
+        logger.warning(
+            "Flexprice connectivity check FAILED for {} — host={} error={}. "
+            "Config looks valid but outbound calls may be blocked (check AWS egress/NAT/SG).",
+            component,
+            settings.FLEXPRICE_API_HOST,
+            connectivity_error,
+        )
+    else:
+        logger.info(
+            "Flexprice connectivity check OK for {} — host={}",
+            component,
+            settings.FLEXPRICE_API_HOST,
+        )
+
+
+def _verify_connectivity() -> Optional[str]:
+    """Best-effort reachability probe; returns error text or None when OK."""
+    try:
+        import httpx
+
+        base = settings.FLEXPRICE_API_HOST.rstrip("/")
+        response = httpx.get(
+            f"{base}/customers",
+            headers={"x-api-key": settings.FLEXPRICE_API_KEY or ""},
+            params={"limit": 1},
+            timeout=10.0,
+        )
+        if response.status_code < 400:
+            return None
+        return f"HTTP {response.status_code}: {response.text[:200]}"
+    except Exception as exc:
+        return str(exc)
+
 
 def _is_customer_already_exists(exc: Exception) -> bool:
     message = str(exc).lower()
