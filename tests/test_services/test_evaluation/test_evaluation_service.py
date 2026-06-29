@@ -49,9 +49,13 @@ class _FakeEvaluationResult:
 def test_process_evaluation_success(monkeypatch):
     evaluation_id = uuid4()
     audio_id = uuid4()
+    org_id = uuid4()
+    workspace_id = uuid4()
     evaluation = SimpleNamespace(
         id=evaluation_id,
         audio_id=audio_id,
+        organization_id=org_id,
+        workspace_id=workspace_id,
         model_name="base",
         metrics_requested=["wer", "latency"],
         reference_text="hello world",
@@ -71,6 +75,10 @@ def test_process_evaluation_success(monkeypatch):
         lambda **_kwargs: {"wer": 0.0, "latency_s": 0.5, "latency_ms": 500.0},
     )
     monkeypatch.setattr(evaluation_module, "EvaluationResult", _FakeEvaluationResult)
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_evaluation_completed",
+        lambda *_a, **_k: None,
+    )
 
     service = EvaluationService()
     result = service.process_evaluation(evaluation_id, db)

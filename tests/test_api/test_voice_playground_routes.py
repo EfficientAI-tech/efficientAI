@@ -307,7 +307,7 @@ def _seed_blind_test_ready_comparison(db_session, org_id, workspace_id):
         id=uuid4(),
         organization_id=org_id,
         workspace_id=workspace_id,
-        simulation_id="sim-blind-share",
+        simulation_id="sim003",
         name="Blind share metering test",
         status=TTSComparisonStatus.COMPLETED.value,
         mode="benchmark",
