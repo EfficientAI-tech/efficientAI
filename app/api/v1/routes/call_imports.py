@@ -32,10 +32,7 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
-from app.services.billing.flexprice_service import (
-    record_call_import_batch_created,
-    record_call_import_row_imported,
-)
+from app.services.billing.flexprice_service import record_call_import_batch_created
 from app.models.database import (
     CallImport,
     CallImportRow,
@@ -2026,7 +2023,6 @@ async def upload_call_import_audio(
     )
     total_size = sum(len(item["contents"]) for item in prepared)
     uploaded_keys: List[str] = []
-    imported_row_ids: List[UUID] = []
 
     from app.services.storage.s3_service import s3_service
 
@@ -2086,7 +2082,6 @@ async def upload_call_import_audio(
             row.recording_s3_key = key
             row.recording_content_type = item["content_type"]
             row.recording_size_bytes = len(item["contents"])
-            imported_row_ids.append(row.id)
 
         db.commit()
     except Exception as exc:
@@ -2114,14 +2109,6 @@ async def upload_call_import_audio(
         source="audio",
         provider=None,
     )
-    for row_id in imported_row_ids:
-        background_tasks.add_task(
-            record_call_import_row_imported,
-            organization_id,
-            row_id,
-            workspace_id=workspace_id,
-            call_import_id=call_import.id,
-        )
     return CallImportUploadResponse(
         id=call_import.id,
         total_rows=call_import.total_rows,

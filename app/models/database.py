@@ -2248,6 +2248,11 @@ class CallImportEvaluation(Base):
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
     failed_rows = Column(Integer, nullable=False, default=0)
+    # Flexprice pass-level delta billing watermark: rows already emitted
+    # on ``call_import.evaluation_completed`` for this evaluation run.
+    billed_completed_rows = Column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     error_message = Column(Text, nullable=True)
     celery_group_id = Column(String(255), nullable=True)
 

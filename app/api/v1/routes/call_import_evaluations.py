@@ -32,7 +32,6 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
-from app.services.billing.flexprice_service import record_call_import_evaluation_started
 from app.services.workspace_rbac import resolve_workspace_capabilities
 from app.models.database import (
     AIProvider,
@@ -1092,16 +1091,6 @@ async def create_call_import_evaluation(
     db.commit()
     for evaluation in created_evaluations:
         db.refresh(evaluation)
-        if evaluation.status == "running":
-            background_tasks.add_task(
-                record_call_import_evaluation_started,
-                organization_id,
-                evaluation.id,
-                workspace_id=call_import.workspace_id,
-                call_import_id=call_import.id,
-                row_count=evaluation.total_rows,
-                metric_count=len(leaf_metric_ids),
-            )
     return _serialize_eval(
         db, primary_evaluation, sibling_evaluation_ids=sibling_ids
     )

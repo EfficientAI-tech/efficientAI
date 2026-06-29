@@ -433,15 +433,6 @@ def process_call_import_row_task(self, row_id: str):
         _rollup_parent_status(db, call_import)
         db.commit()
 
-        from app.services.billing.flexprice_service import record_call_import_row_imported
-
-        record_call_import_row_imported(
-            row.organization_id,
-            row.id,
-            workspace_id=call_import.workspace_id,
-            call_import_id=call_import.id,
-        )
-
         return {
             "status": "completed",
             "row_id": row_id,

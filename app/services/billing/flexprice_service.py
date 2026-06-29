@@ -30,6 +30,7 @@ TTS_REPORT_COMPLETED = "tts.report_completed"
 CALL_IMPORT_BATCH_CREATED = "call_import.batch_created"
 CALL_IMPORT_ROW_IMPORTED = "call_import.row_imported"
 CALL_IMPORT_EVALUATION_STARTED = "call_import.evaluation_started"
+CALL_IMPORT_EVALUATION_COMPLETED = "call_import.evaluation_completed"
 CALL_IMPORT_EVALUATION_ROW_COMPLETED = "call_import.evaluation_row_completed"
 PLAYGROUND_WEB_CALL_STARTED = "playground.web_call_started"
 PLAYGROUND_WEBSOCKET_SESSION_STARTED = "playground.websocket_session_started"
@@ -77,17 +78,20 @@ def _ingest_usage_event(client, payload: dict) -> None:
         ingest(request=payload)
 
 
-def _coerce_properties(properties: Optional[dict[str, Any]]) -> dict[str, Any]:
+def _coerce_properties(properties: Optional[dict[str, Any]]) -> dict[str, str]:
+    """Normalize event properties for Flexprice ingest (SDK expects string values)."""
     if not properties:
         return {}
-    out: dict[str, Any] = {}
+    out: dict[str, str] = {}
     for key, value in properties.items():
         if value is None:
             continue
-        if isinstance(value, UUID):
+        if isinstance(value, bool):
+            out[key] = "true" if value else "false"
+        elif isinstance(value, (int, float, UUID)):
             out[key] = str(value)
         else:
-            out[key] = value
+            out[key] = str(value)
     return out
 
 
@@ -313,81 +317,40 @@ def record_call_import_batch_created(
             "feature": FEATURE_CALL_IMPORTS,
             "call_import_id": call_import_id,
             "total_rows": total_rows,
+            "quantity": total_rows,
             "source": source,
             "provider": provider,
         },
     )
 
 
-def record_call_import_row_imported(
-    organization_id: UUID,
-    row_id: UUID,
-    *,
-    workspace_id: UUID,
-    call_import_id: UUID,
-    duration_seconds: Optional[float] = None,
-) -> None:
-    record_event(
-        CALL_IMPORT_ROW_IMPORTED,
-        organization_id,
-        row_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "row_id": row_id,
-            "duration_seconds": duration_seconds,
-            "quantity": 1,
-        },
-    )
+# --- Call imports (evaluations) ---
 
 
-def record_call_import_evaluation_started(
+def record_call_import_evaluation_completed(
     organization_id: UUID,
     evaluation_id: UUID,
     *,
     workspace_id: UUID,
     call_import_id: UUID,
-    row_count: int,
-    metric_count: int,
+    rows_billed: int,
+    completed_total: int,
+    metric_count: int = 0,
 ) -> None:
+    """Bill one pass of an evaluation run for newly completed rows."""
     record_event(
-        CALL_IMPORT_EVALUATION_STARTED,
+        CALL_IMPORT_EVALUATION_COMPLETED,
         organization_id,
-        evaluation_id,
+        f"{evaluation_id}:{completed_total}",
         properties={
             "workspace_id": workspace_id,
             "feature": FEATURE_CALL_IMPORTS,
             "call_import_id": call_import_id,
             "evaluation_id": evaluation_id,
-            "row_count": row_count,
+            "rows_billed": rows_billed,
+            "completed_total": completed_total,
             "metric_count": metric_count,
-            "quantity": row_count * metric_count,
-        },
-    )
-
-
-def record_call_import_evaluation_row_completed(
-    organization_id: UUID,
-    evaluation_id: UUID,
-    row_id: UUID,
-    *,
-    workspace_id: UUID,
-    call_import_id: UUID,
-    metrics_scored: int,
-) -> None:
-    record_event(
-        CALL_IMPORT_EVALUATION_ROW_COMPLETED,
-        organization_id,
-        f"{evaluation_id}:{row_id}",
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "evaluation_id": evaluation_id,
-            "row_id": row_id,
-            "metrics_scored": metrics_scored,
-            "quantity": 1,
+            "quantity": rows_billed,
         },
     )
 

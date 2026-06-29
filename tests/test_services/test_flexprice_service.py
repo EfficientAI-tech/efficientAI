@@ -185,45 +185,47 @@ def test_record_call_import_batch_created_includes_volume_properties(mock_flexpr
     mock_client.events.ingest_event.assert_called_once()
     payload = mock_client.events.ingest_event.call_args.kwargs
     assert payload["event_name"] == "call_import.batch_created"
-    assert payload["properties"]["total_rows"] == 42
+    assert payload["properties"]["total_rows"] == "42"
+    assert payload["properties"]["quantity"] == "42"
     assert payload["properties"]["feature"] == "call_imports"
 
 
 @patch("flexprice.Flexprice")
-def test_record_call_import_evaluation_row_completed_uses_composite_event_id(mock_flexprice):
+def test_record_call_import_evaluation_completed_meters_pass_delta(mock_flexprice):
     settings.FLEXPRICE_ENABLED = True
     settings.FLEXPRICE_API_KEY = "test-key"
 
     org_id = uuid4()
     evaluation_id = uuid4()
-    row_id = uuid4()
     workspace_id = uuid4()
     call_import_id = uuid4()
 
     mock_client = MagicMock()
     mock_flexprice.return_value.__enter__.return_value = mock_client
 
-    svc.record_call_import_evaluation_row_completed(
+    svc.record_call_import_evaluation_completed(
         org_id,
         evaluation_id,
-        row_id,
         workspace_id=workspace_id,
         call_import_id=call_import_id,
-        metrics_scored=3,
+        rows_billed=50,
+        completed_total=1950,
+        metric_count=5,
     )
 
     mock_client.events.ingest_event.assert_called_once_with(
-        event_name="call_import.evaluation_row_completed",
+        event_name="call_import.evaluation_completed",
         external_customer_id=str(org_id),
-        event_id=f"{evaluation_id}:{row_id}",
+        event_id=f"{evaluation_id}:1950",
         source="efficientai",
         properties={
             "workspace_id": str(workspace_id),
             "feature": "call_imports",
             "call_import_id": str(call_import_id),
             "evaluation_id": str(evaluation_id),
-            "row_id": str(row_id),
-            "metrics_scored": 3,
-            "quantity": 1,
+            "rows_billed": "50",
+            "completed_total": "1950",
+            "metric_count": "5",
+            "quantity": "50",
         },
     )
