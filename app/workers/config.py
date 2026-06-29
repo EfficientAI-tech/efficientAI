@@ -116,3 +116,11 @@ celery_app.conf.task_routes = {
     "generate_agent_flowchart": {"queue": "imports"},
     "map_agent_flowchart_prompt_sections": {"queue": "imports"},
 }
+
+
+@celery_app.on_after_configure.connect
+def _log_flexprice_on_worker_configure(sender, **kwargs) -> None:
+    del sender, kwargs
+    from app.services.billing.flexprice_service import log_startup_status
+
+    log_startup_status(component="celery-worker")

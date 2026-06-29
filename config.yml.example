@@ -179,4 +179,6 @@ judge_alignment:
 #   enabled: false
 #   api_key: null
 #   api_host: "https://us.api.flexprice.io/v1"
+# Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
+# Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 

@@ -8,6 +8,7 @@ Every event uses ``external_customer_id=str(organization.id)`` and a stable
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional, Union
 from uuid import UUID
 
@@ -19,6 +20,9 @@ EVENT_SOURCE = "efficientai"
 FEATURE_CALL_IMPORTS = "call_imports"
 FEATURE_VOICE_PLAYGROUND = "voice_playground"
 FEATURE_GEPA = "gepa_optimization"
+
+# Log once when metering is inactive so AWS/worker misconfig is obvious.
+_disabled_skip_logged = False
 
 # Event names
 BLIND_TEST_SHARE_CREATED = "blind_test.share_created"
@@ -52,9 +56,51 @@ METRICS_LLM_ASSIST = "metrics.llm_assist"
 CHAT_COMPLETION = "chat.completion"
 
 
+def _verbose_logging() -> bool:
+    """Extra per-event logs when FLEXPRICE_VERBOSE=1 (useful on AWS)."""
+    return os.getenv("FLEXPRICE_VERBOSE", "").lower() in {"1", "true", "yes"}
+
+
+def _mask_api_key(api_key: Optional[str]) -> str:
+    if not api_key:
+        return "(missing)"
+    if len(api_key) <= 8:
+        return "****"
+    return f"****{api_key[-4:]}"
+
+
+def disabled_reason() -> Optional[str]:
+    """Human-readable reason metering is off, or None when active."""
+    if not settings.FLEXPRICE_ENABLED:
+        return "flexprice.enabled is false (or FLEXPRICE_ENABLED unset)"
+    if not settings.FLEXPRICE_API_KEY:
+        return "flexprice.api_key is unset (or FLEXPRICE_API_KEY env missing)"
+    return None
+
+
 def is_enabled() -> bool:
     """Return True only when Flexprice is explicitly enabled with an API key."""
-    return bool(settings.FLEXPRICE_ENABLED and settings.FLEXPRICE_API_KEY)
+    return disabled_reason() is None
+
+
+def log_startup_status(*, component: str = "app") -> None:
+    """Log Flexprice config at process start (API + Celery worker)."""
+    reason = disabled_reason()
+    if reason:
+        logger.info(
+            "Flexprice metering INACTIVE for {} — {} (api_host={})",
+            component,
+            reason,
+            settings.FLEXPRICE_API_HOST,
+        )
+        return
+
+    logger.info(
+        "Flexprice metering ACTIVE for {} — api_host={} api_key={}",
+        component,
+        settings.FLEXPRICE_API_HOST,
+        _mask_api_key(settings.FLEXPRICE_API_KEY),
+    )
 
 
 def _is_customer_already_exists(exc: Exception) -> bool:
@@ -103,8 +149,28 @@ def record_event(
     properties: Optional[dict[str, Any]] = None,
 ) -> None:
     """Ingest a usage event. No-op when Flexprice is disabled; never raises."""
-    if not is_enabled():
+    global _disabled_skip_logged
+
+    inactive_reason = disabled_reason()
+    if inactive_reason:
+        if not _disabled_skip_logged:
+            logger.warning(
+                "Flexprice metering inactive — {}. Usage events will be dropped until fixed.",
+                inactive_reason,
+            )
+            _disabled_skip_logged = True
+        if _verbose_logging():
+            logger.info(
+                "Flexprice SKIP {} org={} event_id={} ({})",
+                event_name,
+                organization_id,
+                event_id,
+                inactive_reason,
+            )
         return
+
+    coerced = _coerce_properties(properties)
+    quantity = coerced.get("quantity")
 
     try:
         from flexprice import Flexprice
@@ -113,21 +179,29 @@ def record_event(
             server_url=settings.FLEXPRICE_API_HOST,
             api_key_auth=settings.FLEXPRICE_API_KEY,
         ) as client:
-            _ingest_usage_event(
-                client,
-                {
-                    "event_name": event_name,
-                    "external_customer_id": str(organization_id),
-                    "event_id": str(event_id),
-                    "source": EVENT_SOURCE,
-                    "properties": _coerce_properties(properties),
-                },
-            )
+            payload = {
+                "event_name": event_name,
+                "external_customer_id": str(organization_id),
+                "event_id": str(event_id),
+                "source": EVENT_SOURCE,
+                "properties": coerced,
+            }
+            _ingest_usage_event(client, payload)
+
+        logger.info(
+            "Flexprice ingested {} org={} event_id={} quantity={}",
+            event_name,
+            organization_id,
+            event_id,
+            quantity if quantity is not None else "n/a",
+        )
     except Exception as exc:
         logger.warning(
-            "Flexprice {} ingest failed (event_id={}): {}",
+            "Flexprice {} ingest FAILED org={} event_id={} host={} error={}",
             event_name,
+            organization_id,
             event_id,
+            settings.FLEXPRICE_API_HOST,
             exc,
         )
 
@@ -139,7 +213,14 @@ def ensure_customer(
     email: Optional[str] = None,
 ) -> None:
     """Register an organization as a Flexprice customer. No-op when disabled."""
-    if not is_enabled():
+    inactive_reason = disabled_reason()
+    if inactive_reason:
+        if _verbose_logging():
+            logger.info(
+                "Flexprice SKIP ensure_customer org={} ({})",
+                organization_id,
+                inactive_reason,
+            )
         return
 
     try:
@@ -154,12 +235,22 @@ def ensure_customer(
                 name=name,
                 email=email,
             )
+        logger.info(
+            "Flexprice ensure_customer ok org={} name={}",
+            organization_id,
+            name,
+        )
     except Exception as exc:
         if _is_customer_already_exists(exc):
+            logger.debug(
+                "Flexprice ensure_customer already exists org={}",
+                organization_id,
+            )
             return
         logger.warning(
-            "Flexprice ensure_customer failed for org {}: {}",
+            "Flexprice ensure_customer FAILED org={} host={} error={}",
             organization_id,
+            settings.FLEXPRICE_API_HOST,
             exc,
         )
 

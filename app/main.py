@@ -87,6 +87,10 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("All migrations are up to date")
 
+    from app.services.billing.flexprice_service import log_startup_status
+
+    log_startup_status(component="api")
+
     logger.info("=" * 60)
     logger.info("Application startup complete - Ready to serve requests")
     logger.info("=" * 60)

@@ -15,12 +15,15 @@ def reset_flexprice_settings():
         settings.FLEXPRICE_ENABLED,
         settings.FLEXPRICE_API_KEY,
         settings.FLEXPRICE_API_HOST,
+        svc._disabled_skip_logged,
     )
+    svc._disabled_skip_logged = False
     yield
     (
         settings.FLEXPRICE_ENABLED,
         settings.FLEXPRICE_API_KEY,
         settings.FLEXPRICE_API_HOST,
+        svc._disabled_skip_logged,
     ) = previous
 
 
@@ -40,6 +43,13 @@ def test_is_enabled_true_when_configured():
     settings.FLEXPRICE_ENABLED = True
     settings.FLEXPRICE_API_KEY = "test-key"
     assert svc.is_enabled() is True
+
+
+def test_disabled_reason_when_api_key_missing():
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = None
+    assert svc.disabled_reason() is not None
+    assert "api_key" in svc.disabled_reason()
 
 
 @patch("flexprice.Flexprice")
