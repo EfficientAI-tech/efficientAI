@@ -231,7 +231,7 @@ async def upload_report_branding_images(
     from app.services.storage.s3_service import s3_service
 
     if not s3_service.is_enabled():
-        detail = s3_service.get_status_message() or "S3 is not enabled or configured."
+        detail = s3_service.get_status_message() or "Cloud blob storage is not enabled or configured."
         raise HTTPException(status_code=503, detail=detail)
 
     raw = dict(workspace.report_branding or {})

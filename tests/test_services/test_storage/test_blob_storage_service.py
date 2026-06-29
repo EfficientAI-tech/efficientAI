@@ -33,20 +33,22 @@ class _FakeBackend:
 def facade_with_fakes(monkeypatch):
     fake_s3 = _FakeBackend("s3")
     fake_gcs = _FakeBackend("gcs")
+    fake_azure = _FakeBackend("azure")
     service = blob_module.BlobStorageService()
     service._s3 = fake_s3
     service._gcs = fake_gcs
-    return service, fake_s3, fake_gcs
+    service._azure = fake_azure
+    return service, fake_s3, fake_gcs, fake_azure
 
 
 def test_provider_name_reflects_settings(monkeypatch, facade_with_fakes):
-    service, _, _ = facade_with_fakes
+    service, _, _, _ = facade_with_fakes
     monkeypatch.setattr(blob_module.settings, "BLOB_STORAGE_PROVIDER", "gcs", raising=False)
     assert service.provider_name == "gcs"
 
 
 def test_delegates_to_s3_when_provider_is_s3(monkeypatch, facade_with_fakes):
-    service, fake_s3, fake_gcs = facade_with_fakes
+    service, fake_s3, fake_gcs, fake_azure = facade_with_fakes
     monkeypatch.setattr(blob_module.settings, "BLOB_STORAGE_PROVIDER", "s3", raising=False)
 
     file_id = uuid4()
@@ -55,10 +57,11 @@ def test_delegates_to_s3_when_provider_is_s3(monkeypatch, facade_with_fakes):
     assert key == "s3/key.wav"
     assert fake_s3.upload_calls
     assert not fake_gcs.upload_calls
+    assert not fake_azure.upload_calls
 
 
 def test_delegates_to_gcs_when_provider_is_gcs(monkeypatch, facade_with_fakes):
-    service, fake_s3, fake_gcs = facade_with_fakes
+    service, fake_s3, fake_gcs, fake_azure = facade_with_fakes
     monkeypatch.setattr(blob_module.settings, "BLOB_STORAGE_PROVIDER", "gcs", raising=False)
 
     file_id = uuid4()
@@ -67,19 +70,37 @@ def test_delegates_to_gcs_when_provider_is_gcs(monkeypatch, facade_with_fakes):
     assert key == "gcs/key.mp3"
     assert fake_gcs.upload_calls
     assert not fake_s3.upload_calls
+    assert not fake_azure.upload_calls
 
 
-def test_reset_connection_resets_both_backends(facade_with_fakes):
-    service, fake_s3, fake_gcs = facade_with_fakes
+def test_delegates_to_azure_when_provider_is_azure(monkeypatch, facade_with_fakes):
+    service, fake_s3, fake_gcs, fake_azure = facade_with_fakes
+    monkeypatch.setattr(blob_module.settings, "BLOB_STORAGE_PROVIDER", "azure", raising=False)
+
+    file_id = uuid4()
+    key = service.upload_file(b"data", file_id, "flac")
+
+    assert key == "azure/key.flac"
+    assert fake_azure.upload_calls
+    assert not fake_s3.upload_calls
+    assert not fake_gcs.upload_calls
+
+
+def test_reset_connection_resets_all_backends(facade_with_fakes):
+    service, fake_s3, fake_gcs, fake_azure = facade_with_fakes
 
     service.reset_connection()
 
     assert fake_s3.reset_called is True
     assert fake_gcs.reset_called is True
+    assert fake_azure.reset_called is True
 
 
 def test_prefix_comes_from_active_backend(monkeypatch, facade_with_fakes):
-    service, fake_s3, fake_gcs = facade_with_fakes
+    service, fake_s3, fake_gcs, fake_azure = facade_with_fakes
     monkeypatch.setattr(blob_module.settings, "BLOB_STORAGE_PROVIDER", "gcs", raising=False)
 
     assert service.prefix == fake_gcs.prefix
+
+    monkeypatch.setattr(blob_module.settings, "BLOB_STORAGE_PROVIDER", "azure", raising=False)
+    assert service.prefix == fake_azure.prefix

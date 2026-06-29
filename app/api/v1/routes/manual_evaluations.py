@@ -74,7 +74,7 @@ async def list_audio_files(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Cloud blob storage is not enabled or not configured.",
         )
     
     try:
@@ -121,7 +121,7 @@ async def get_presigned_url(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Cloud blob storage is not enabled or not configured.",
         )
     
     try:
@@ -165,7 +165,7 @@ async def transcribe_audio(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Cloud blob storage is not enabled or not configured.",
         )
     
     try:

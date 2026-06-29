@@ -1140,19 +1140,19 @@ def _enqueue_row_tasks(
     db.commit()
 
 
-def _ensure_s3_enabled() -> None:
-    """Hard-fail UPLOAD if S3 isn't configured (no local fallback)."""
+def _ensure_blob_storage_enabled() -> None:
+    """Hard-fail UPLOAD if cloud blob storage isn't configured (no local fallback)."""
     from app.services.storage.s3_service import s3_service
 
     if not s3_service.is_enabled():
         err = (
             s3_service.get_status_message()
-            or "S3 is not enabled or not configured"
+            or "Cloud blob storage is not enabled or not configured"
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Call uploads require S3 storage so the file can be "
+                "Call uploads require cloud blob storage so the file can be "
                 f"persisted between stages: {err}"
             ),
         )
@@ -1348,7 +1348,7 @@ async def create_call_import(
 
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
-    _ensure_s3_enabled()
+    _ensure_blob_storage_enabled()
 
     # Pre-generate the id so we can compute a deterministic S3 key
     # before the row is persisted, keeping ``source_s3_key`` consistent
@@ -1969,7 +1969,7 @@ async def upload_call_import_audio(
             detail="At least one audio file is required.",
         )
 
-    _ensure_s3_enabled()
+    _ensure_blob_storage_enabled()
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
     max_bytes = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024

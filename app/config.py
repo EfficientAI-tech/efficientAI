@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_AUDIO_FORMATS: List[str] = ["wav", "mp3", "flac", "m4a"]
-    BLOB_STORAGE_PROVIDER: str = "s3"  # "s3" or "gcs"
+    BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
 
     # S3 Configuration
     S3_ENABLED: bool = False
@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     GCS_PROJECT_ID: Optional[str] = None
     GCS_CREDENTIALS_PATH: Optional[str] = None
     GCS_PREFIX: str = "audio/"
+
+    # Azure Blob Storage Configuration
+    AZURE_BLOB_ENABLED: bool = False
+    AZURE_ACCOUNT_NAME: Optional[str] = None
+    AZURE_ACCOUNT_KEY: Optional[str] = None
+    AZURE_CONNECTION_STRING: Optional[str] = None
+    AZURE_CONTAINER_NAME: Optional[str] = None
+    AZURE_PREFIX: str = "audio/"
 
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
@@ -446,12 +454,37 @@ def load_config_from_file(config_path: str) -> None:
         if "prefix" in gcs_config:
             settings.GCS_PREFIX = gcs_config["prefix"]
 
-    # Backward compatibility: infer s3 provider when blob_provider not set explicitly
+    if "azure" in config_data:
+        azure_config = config_data["azure"]
+        if "enabled" in azure_config:
+            settings.AZURE_BLOB_ENABLED = azure_config["enabled"]
+        if "account_name" in azure_config:
+            settings.AZURE_ACCOUNT_NAME = azure_config["account_name"]
+        if "account_key" in azure_config:
+            settings.AZURE_ACCOUNT_KEY = azure_config["account_key"]
+        if "connection_string" in azure_config:
+            settings.AZURE_CONNECTION_STRING = azure_config["connection_string"]
+        if "container_name" in azure_config:
+            settings.AZURE_CONTAINER_NAME = azure_config["container_name"]
+        if "prefix" in azure_config:
+            settings.AZURE_PREFIX = azure_config["prefix"]
+
+    # Backward compatibility: infer provider when blob_provider not set explicitly
     if "storage" not in config_data or "blob_provider" not in (config_data.get("storage") or {}):
-        if settings.S3_ENABLED and not settings.GCS_ENABLED:
-            settings.BLOB_STORAGE_PROVIDER = "s3"
-        elif settings.GCS_ENABLED and not settings.S3_ENABLED:
-            settings.BLOB_STORAGE_PROVIDER = "gcs"
+        enabled_providers = sum(
+            [
+                settings.S3_ENABLED,
+                settings.GCS_ENABLED,
+                settings.AZURE_BLOB_ENABLED,
+            ]
+        )
+        if enabled_providers == 1:
+            if settings.S3_ENABLED:
+                settings.BLOB_STORAGE_PROVIDER = "s3"
+            elif settings.GCS_ENABLED:
+                settings.BLOB_STORAGE_PROVIDER = "gcs"
+            elif settings.AZURE_BLOB_ENABLED:
+                settings.BLOB_STORAGE_PROVIDER = "azure"
 
     if "smtp" in config_data:
         smtp_config = config_data["smtp"]

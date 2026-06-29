@@ -397,11 +397,11 @@ def process_call_import_row_task(self, row_id: str):
         if not s3_service.is_enabled():
             err = (
                 s3_service.get_status_message()
-                or "S3 is not enabled or not configured"
+                or "Cloud blob storage is not enabled or not configured"
             )
-            logger.error("S3 unavailable for row {}: {}", row_id, err)
+            logger.error("Cloud blob storage unavailable for row {}: {}", row_id, err)
             row.status = CallImportRowStatus.FAILED
-            row.error_message = f"S3 unavailable: {err}"
+            row.error_message = f"Cloud blob storage unavailable: {err}"
             db.commit()
             _rollup_parent_status(db, call_import)
             db.commit()

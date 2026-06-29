@@ -16,6 +16,8 @@ def _patch_storage(
 
     if blob_provider == "gcs":
         monkeypatch.setattr(settings, "GCS_PREFIX", prefix.rstrip("/"), raising=False)
+    elif blob_provider == "azure":
+        monkeypatch.setattr(settings, "AZURE_PREFIX", prefix.rstrip("/"), raising=False)
     else:
         monkeypatch.setattr(settings, "S3_PREFIX", prefix.rstrip("/"), raising=False)
 
@@ -51,7 +53,10 @@ def _patch_storage(
     monkeypatch.setattr(data_routes.s3_service, "delete_file_by_key", lambda _key: None)
 
 
-@pytest.mark.parametrize("blob_provider,prefix", [("s3", "audio/"), ("gcs", "gcs-audio/")])
+@pytest.mark.parametrize(
+    "blob_provider,prefix",
+    [("s3", "audio/"), ("gcs", "gcs-audio/"), ("azure", "azure-audio/")],
+)
 def test_s3_status_list_presigned_and_delete(
     authenticated_client, monkeypatch, org_id, blob_provider, prefix
 ):
@@ -83,7 +88,10 @@ def test_s3_status_list_presigned_and_delete(
     assert delete_response.status_code == 200
 
 
-@pytest.mark.parametrize("blob_provider,prefix", [("s3", "audio/"), ("gcs", "gcs-audio/")])
+@pytest.mark.parametrize(
+    "blob_provider,prefix",
+    [("s3", "audio/"), ("gcs", "gcs-audio/"), ("azure", "azure-audio/")],
+)
 def test_blob_routes_reject_cross_tenant_keys(
     authenticated_client, monkeypatch, org_id, blob_provider, prefix
 ):
@@ -115,7 +123,10 @@ def test_blob_routes_reject_cross_tenant_keys(
     assert delete_response.status_code == 403
 
 
-@pytest.mark.parametrize("blob_provider,prefix", [("s3", "audio/"), ("gcs", "gcs-audio/")])
+@pytest.mark.parametrize(
+    "blob_provider,prefix",
+    [("s3", "audio/"), ("gcs", "gcs-audio/"), ("azure", "azure-audio/")],
+)
 def test_blob_download_allows_own_org_key(
     authenticated_client, monkeypatch, org_id, blob_provider, prefix
 ):
