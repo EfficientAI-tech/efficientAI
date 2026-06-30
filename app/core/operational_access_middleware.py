@@ -108,7 +108,10 @@ def is_operational_access_allowed(request: Request) -> bool:
 
 def is_operational_path(path: str) -> bool:
     # /health must stay reachable for load balancers (ALB/kube) without auth.
-    return path.startswith(_METRICS_PREFIX)
+    # Match the Prometheus scrape endpoint exactly — ``path.startswith("/metrics")``
+    # would also gate frontend SPA routes such as ``/metrics-management``.
+    normalized = path.rstrip("/") or "/"
+    return normalized == _METRICS_PREFIX
 
 
 class OperationalAccessMiddleware(BaseHTTPMiddleware):

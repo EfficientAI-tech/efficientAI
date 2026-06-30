@@ -7,7 +7,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.config import settings
-from app.core.operational_access_middleware import OperationalAccessMiddleware
+from app.core.operational_access_middleware import (
+    OperationalAccessMiddleware,
+    is_operational_path,
+)
 
 
 @pytest.fixture
@@ -39,3 +42,10 @@ def test_health_allowed_without_trusted_ips(operational_client):
 def test_metrics_blocked_without_trusted_ips(operational_client):
     response = operational_client.get("/metrics")
     assert response.status_code == 404
+
+
+def test_is_operational_path_matches_prometheus_only():
+    assert is_operational_path("/metrics") is True
+    assert is_operational_path("/metrics/") is True
+    assert is_operational_path("/metrics-management") is False
+    assert is_operational_path("/health") is False
