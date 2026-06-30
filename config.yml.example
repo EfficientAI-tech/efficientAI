@@ -12,10 +12,8 @@ server:
   host: "0.0.0.0"
   port: 8000
 
-# Operational endpoints (/health, /metrics)
-# Keep public: false in production/sandbox. ALB health checks connect
-# directly from VPC addresses (no X-Forwarded-For). Include your VPC/LB CIDRs
-# in trusted_ips so probes and internal scrapers are allowed.
+# Operational endpoints (/metrics). /health is always open for ALB/kube probes.
+# Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
   trusted_ips:

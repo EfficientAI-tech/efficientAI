@@ -20,14 +20,15 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.models.database import AIProvider, ModelProvider
+from app.models.database import AIProvider, Integration, ModelProvider
+from app.models.enums import IntegrationPlatform
 from app.services.ai.model_config_service import model_config_service
 
 
 # Providers that ship LLM models we can use as a judge. We deliberately
 # exclude STT/TTS-only vendors (Deepgram, Cartesia, ElevenLabs, Murf,
-# Sarvam, Voicemaker, Smallest) because LiteLLM has no LLM completion
-# route for them.
+# Voicemaker, Smallest) because LiteLLM has no LLM completion route for
+# them. Sarvam is included because it exposes chat models via LiteLLM.
 _LLM_CAPABLE_PROVIDERS = {
     ModelProvider.OPENAI.value,
     ModelProvider.ANTHROPIC.value,
@@ -43,6 +44,13 @@ _LLM_CAPABLE_PROVIDERS = {
     ModelProvider.AWS.value,
     ModelProvider.OPENROUTER.value,
     ModelProvider.CUSTOM.value,
+    ModelProvider.SARVAM.value,
+}
+
+# Voice-platform integrations that also expose LLM models (credentials
+# live in the Integration table rather than AIProvider).
+_INTEGRATION_LLM_PLATFORMS = {
+    IntegrationPlatform.SARVAM.value: ModelProvider.SARVAM.value,
 }
 
 
@@ -63,6 +71,7 @@ def _provider_label(provider_value: str) -> str:
         "aws": "AWS",
         "openrouter": "OpenRouter",
         "custom": "Custom",
+        "sarvam": "Sarvam",
     }
     return overrides.get(provider_value.lower(), provider_value.title())
 
@@ -98,11 +107,29 @@ def list_judge_capable_models(
         .all()
     )
 
+    configured_provider_values: set[str] = {
+        (ai_provider.provider or "").lower()
+        for ai_provider in providers
+    }
+
+    integrations: List[Integration] = (
+        db.query(Integration)
+        .filter(
+            Integration.organization_id == organization_id,
+            Integration.is_active == True,  # noqa: E712 - SQLAlchemy comparison
+        )
+        .all()
+    )
+    for integration in integrations:
+        platform = (integration.platform or "").lower()
+        mapped = _INTEGRATION_LLM_PLATFORMS.get(platform)
+        if mapped:
+            configured_provider_values.add(mapped)
+
     catalog: List[Dict[str, str]] = []
     seen: set = set()
 
-    for ai_provider in providers:
-        provider_value = (ai_provider.provider or "").lower()
+    for provider_value in configured_provider_values:
         if provider_value not in _LLM_CAPABLE_PROVIDERS:
             continue
 

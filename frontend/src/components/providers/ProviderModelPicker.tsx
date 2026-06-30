@@ -131,6 +131,11 @@ const AUDIO_CAPABLE_MODEL_MATCHERS: Record<string, RegExp[]> = {
 }
 const AUDIO_CAPABLE_PROVIDERS = Object.keys(AUDIO_CAPABLE_MODEL_MATCHERS)
 
+// Voice-platform integrations that also expose LLM models. Credentials
+// for these providers live in the Integration table (Configurations →
+// Integrations → Voice Platform), not AIProvider.
+const INTEGRATION_LLM_PLATFORMS = new Set(['sarvam'])
+
 function isAudioCapableModel(provider: string, model: string): boolean {
   const matchers = AUDIO_CAPABLE_MODEL_MATCHERS[provider]
   if (!matchers) return false
@@ -161,8 +166,31 @@ export default function ProviderModelPicker({
   const { data: integrations = [] } = useQuery<Integration[]>({
     queryKey: ['integrations'],
     queryFn: () => apiClient.listIntegrations(),
-    enabled: kind === 'stt',
+    enabled: kind === 'stt' || kind === 'llm',
   })
+
+  const integrationCredentialRows: CredentialRow[] =
+    kind === 'stt'
+      ? integrations.map<CredentialRow>((i) => ({
+          id: i.id,
+          provider: (i.platform || '').toLowerCase(),
+          is_active: i.is_active,
+          is_default: i.is_default,
+          name: i.name ?? null,
+          source: 'integration',
+        }))
+      : integrations
+          .filter((i) =>
+            INTEGRATION_LLM_PLATFORMS.has((i.platform || '').toLowerCase()),
+          )
+          .map<CredentialRow>((i) => ({
+            id: i.id,
+            provider: (i.platform || '').toLowerCase(),
+            is_active: i.is_active,
+            is_default: i.is_default,
+            name: i.name ?? null,
+            source: 'integration',
+          }))
 
   const allCredentials: CredentialRow[] = [
     ...aiProviders.map<CredentialRow>((p) => ({
@@ -173,18 +201,7 @@ export default function ProviderModelPicker({
       name: p.name ?? null,
       source: 'aiprovider',
     })),
-    // Only merge integrations for STT — LLM credentials never live in
-    // that table, so skipping it keeps the LLM picker unchanged.
-    ...(kind === 'stt'
-      ? integrations.map<CredentialRow>((i) => ({
-          id: i.id,
-          provider: (i.platform || '').toLowerCase(),
-          is_active: i.is_active,
-          is_default: i.is_default,
-          name: i.name ?? null,
-          source: 'integration',
-        }))
-      : []),
+    ...integrationCredentialRows,
   ]
 
   const allowSet = providerAllowList

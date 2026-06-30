@@ -332,7 +332,7 @@ export default function Integrations() {
     {
       id: IntegrationPlatform.SARVAM,
       name: 'Sarvam',
-      description: 'Connect your Sarvam STT & TTS voice AI',
+      description: 'Connect your Sarvam STT, TTS & LLM voice AI',
       image: '/sarvam.png',
     },
     {
