@@ -24,7 +24,10 @@ from app.core.auth.principal import Principal
 from app.core.auth.providers import AuthError
 from app.models.database import Organization, OrganizationMember, User
 from app.models.enums import RoleEnum
-from app.services.organization_provisioning import provision_default_workspace
+from app.services.organization_provisioning import (
+    provision_billing_customer,
+    provision_default_workspace,
+)
 
 
 # -- JWKS cache ---------------------------------------------------------------
@@ -195,6 +198,11 @@ def upsert_user_and_membership(
             db,
             organization_id=organization.id,
             created_by_user_id=user.id,
+        )
+        provision_billing_customer(
+            organization_id=organization.id,
+            name=organization_name,
+            email=email,
         )
         logger.info(f"Provisioned new organization '{organization_name}' for {email}")
 

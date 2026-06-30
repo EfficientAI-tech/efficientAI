@@ -14,7 +14,13 @@ import json
 import uuid as _uuid
 from datetime import datetime
 
-from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
+from app.services.billing.flexprice_service import (
+    record_playground_call_evaluated,
+    record_playground_web_call_started,
+    record_playground_websocket_session_started,
+)
+from app.database import get_db
+from app.dependencies import get_organization_id, get_workspace_id, get_api_key
 from app.models.database import (
     Agent,
     Integration,
@@ -671,6 +677,14 @@ async def create_web_call(
             db.add(call_recording)
             db.commit()
             db.refresh(call_recording)
+
+            background_tasks.add_task(
+                record_playground_web_call_started,
+                organization_id,
+                call_short_id,
+                workspace_id=workspace_id,
+                agent_id=agent.id,
+            )
             
             # Start background task to poll for call metrics
             # Note: We need to pass the decrypted API key, but we should be careful with security
@@ -777,6 +791,7 @@ async def list_call_recordings(
 
 @router.post("/custom-websocket-sessions", response_model=Dict[str, Any])
 async def create_custom_websocket_session(
+    background_tasks: BackgroundTasks,
     agent_id: str = Form(...),
     websocket_url: str = Form(...),
     transcript_entries: str = Form("[]"),
@@ -902,6 +917,13 @@ async def create_custom_websocket_session(
     db.commit()
     db.refresh(call_recording)
 
+    background_tasks.add_task(
+        record_playground_websocket_session_started,
+        organization_id,
+        call_short_id,
+        workspace_id=workspace_id,
+    )
+
     return {
         "message": "Custom websocket session saved",
         "call_short_id": call_short_id,
@@ -913,6 +935,7 @@ async def create_custom_websocket_session(
 @router.post("/custom-websocket-sessions/{call_short_id}/evaluate", response_model=Dict[str, Any])
 async def evaluate_custom_websocket_session(
     call_short_id: str,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -998,6 +1021,14 @@ async def evaluate_custom_websocket_session(
     except Exception as e:
         logger.error(f"[Custom WebSocket] Failed to trigger evaluation worker: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger evaluation worker")
+
+    background_tasks.add_task(
+        record_playground_call_evaluated,
+        organization_id,
+        call_short_id,
+        workspace_id=workspace_id,
+        metric_count=0,
+    )
 
     return {
         "message": "Evaluation queued",
@@ -1366,6 +1397,14 @@ async def re_evaluate_call_recording(
     except Exception as e:
         logger.error(f"[Re-evaluate] Failed to trigger Celery task: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger evaluation worker")
+
+    background_tasks.add_task(
+        record_playground_call_evaluated,
+        organization_id,
+        call_short_id,
+        workspace_id=workspace_id,
+        metric_count=0,
+    )
 
     return {
         "message": "Re-evaluation started",

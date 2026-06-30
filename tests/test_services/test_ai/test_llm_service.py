@@ -21,11 +21,15 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         LLMService._litellm_model_name(ModelProvider.FIREWORKS, "deepseek-v4-pro")
         == "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
     )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.SARVAM, "sarvam-30b")
+        == "sarvam/sarvam-30b"
+    )
 
 
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
     service = LLMService()
-    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("AI provider sarvam not configured for this organization.")))
 
     with pytest.raises(RuntimeError, match="not configured"):
         service.generate_response(
@@ -41,12 +45,9 @@ def test_generate_response_success_with_normalized_usage(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(
         service,
-        "_get_ai_provider",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="encrypted-key"),
+        "_resolve_api_key",
+        lambda *_args, **_kwargs: "decrypted-key",
     )
-
-    encryption_module = importlib.import_module("app.core.encryption")
-    monkeypatch.setattr(encryption_module, "decrypt_api_key", lambda value: f"decrypted::{value}")
 
     # ``llm_service.generate_response`` reads ``finish_reason`` off the
     # first choice to flag truncated outputs (so JSON-parsing callers
@@ -82,12 +83,10 @@ def test_generate_response_wraps_litellm_errors(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(
         service,
-        "_get_ai_provider",
-        lambda *_args, **_kwargs: SimpleNamespace(api_key="encrypted-key"),
+        "_resolve_api_key",
+        lambda *_args, **_kwargs: "decrypted-key",
     )
 
-    encryption_module = importlib.import_module("app.core.encryption")
-    monkeypatch.setattr(encryption_module, "decrypt_api_key", lambda value: value)
     monkeypatch.setattr(
         llm_module.litellm,
         "completion",

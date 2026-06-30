@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     JUDGE_ALIGNMENT_ENABLED: bool = True
     JUDGE_ALIGNMENT_CSV_MAX_ROWS: int = 5000
 
+    # Flexprice usage-based billing (optional; disabled when unset)
+    FLEXPRICE_ENABLED: bool = False
+    FLEXPRICE_API_KEY: Optional[str] = None
+    FLEXPRICE_API_HOST: str = "https://us.api.flexprice.io/v1"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -606,6 +611,15 @@ def load_config_from_file(config_path: str) -> None:
             settings.OPERATIONAL_PUBLIC = bool(operational_config["public"])
         if "trusted_ips" in operational_config:
             settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
+
+    if "flexprice" in config_data:
+        flexprice_config = config_data["flexprice"]
+        if "enabled" in flexprice_config:
+            settings.FLEXPRICE_ENABLED = bool(flexprice_config["enabled"])
+        if flexprice_config.get("api_key"):
+            settings.FLEXPRICE_API_KEY = flexprice_config["api_key"]
+        if flexprice_config.get("api_host"):
+            settings.FLEXPRICE_API_HOST = flexprice_config["api_host"]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

@@ -25,7 +25,7 @@ import secrets
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,7 @@ from app.models.database import (
     TTSSampleStatus,
 )
 from app.services.storage.s3_service import s3_service
+from app.services.billing.flexprice_service import record_blind_test_response_submitted
 
 
 router = APIRouter(
@@ -225,6 +226,7 @@ async def submit_public_blind_test_response(
     share_token: str,
     data: PublicBlindResponseSubmit,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """Accept a rater's submission and merge into the comparison summary."""
@@ -351,8 +353,19 @@ async def submit_public_blind_test_response(
             detail="This email has already submitted a response for this blind test.",
         )
 
+    db.refresh(record)
+
     # Re-aggregate into the comparison's evaluation_summary
     from app.api.v1.routes.voice_playground import _recompute_summary
     _recompute_summary(comparison, db)
+
+    background_tasks.add_task(
+        record_blind_test_response_submitted,
+        share.organization_id,
+        record.id,
+        share_id=share.id,
+        workspace_id=share.workspace_id,
+        response_count=len(cleaned_entries),
+    )
 
     return {"message": "Thanks for your response!"}

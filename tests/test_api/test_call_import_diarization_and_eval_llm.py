@@ -1313,3 +1313,83 @@ def test_compact_diarisation_error_strips_details_block():
     assert _compact_diarisation_error(raw) == (
         "Diarisation LLM provider/model not configured."
     )
+
+
+def test_estimate_diarisation_max_tokens_scales_with_transcript():
+    from app.workers.tasks.helpers import llm_diarisation
+
+    short = llm_diarisation._estimate_diarisation_max_tokens(text_length=500)
+    long = llm_diarisation._estimate_diarisation_max_tokens(text_length=40_000)
+    assert short >= llm_diarisation._DIARISATION_MIN_MAX_TOKENS
+    assert long > short
+    assert long <= llm_diarisation._DIARISATION_MAX_MAX_TOKENS
+
+
+def test_diariser_passes_scaled_max_tokens(monkeypatch):
+    from app.workers.tasks.helpers import llm_diarisation
+
+    captured: dict = {}
+
+    def _fake_generate_response(**kwargs):
+        captured.update(kwargs)
+        return {
+            "text": '{"turns": [{"speaker": "agent", "text": "Hi"}]}',
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        _fake_generate_response,
+    )
+
+    llm_diarisation.diarize_transcript_with_llm(
+        "Hi there.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+
+    assert captured["task_defaults"]["max_tokens"] >= (
+        llm_diarisation._DIARISATION_MIN_MAX_TOKENS
+    )
+
+
+def test_diariser_retries_when_first_response_truncated(monkeypatch):
+    from app.workers.tasks.helpers import llm_diarisation
+
+    budgets: list[int] = []
+
+    def _fake_generate_response(**kwargs):
+        budgets.append(kwargs["task_defaults"]["max_tokens"])
+        if len(budgets) == 1:
+            return {
+                "text": '{"turns": [{"speaker": "agent", "text": "partial',
+                "truncated": True,
+            }
+        return {
+            "text": '{"turns": [{"speaker": "agent", "text": "Done"}]}',
+            "truncated": False,
+        }
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        _fake_generate_response,
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "word " * 500,
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+
+    assert len(budgets) == 2
+    assert budgets[1] == min(
+        llm_diarisation._DIARISATION_MAX_MAX_TOKENS,
+        budgets[0] * 2,
+    )
+    assert turns[0]["text"] == "Done"

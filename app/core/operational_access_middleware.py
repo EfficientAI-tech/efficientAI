@@ -1,4 +1,4 @@
-"""Restrict operational endpoints (/health, /metrics) from the public internet."""
+"""Restrict /metrics from the public internet (/health stays open for load balancers)."""
 
 from __future__ import annotations
 
@@ -107,11 +107,15 @@ def is_operational_access_allowed(request: Request) -> bool:
 
 
 def is_operational_path(path: str) -> bool:
-    return path == _HEALTH_PATH or path.startswith(_METRICS_PREFIX)
+    # /health must stay reachable for load balancers (ALB/kube) without auth.
+    # Match the Prometheus scrape endpoint exactly — ``path.startswith("/metrics")``
+    # would also gate frontend SPA routes such as ``/metrics-management``.
+    normalized = path.rstrip("/") or "/"
+    return normalized == _METRICS_PREFIX
 
 
 class OperationalAccessMiddleware(BaseHTTPMiddleware):
-    """Block anonymous public access to /health and /metrics."""
+    """Block anonymous public access to /metrics (/health is always allowed for LB probes)."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if is_operational_path(request.url.path) and not is_operational_access_allowed(request):

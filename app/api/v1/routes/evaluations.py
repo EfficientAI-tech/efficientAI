@@ -1,6 +1,6 @@
 """Evaluation routes."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
@@ -13,6 +13,7 @@ from app.models.schemas import (
     EvaluationStatusResponse,
     MessageResponse,
 )
+from app.services.billing.flexprice_service import record_evaluation_created
 from app.workers.celery_app import process_evaluation_task
 from app.core.exceptions import EvaluationNotFoundError
 
@@ -22,6 +23,7 @@ router = APIRouter(prefix="/evaluations", tags=["Evaluations"])
 @router.post("/create", response_model=EvaluationResponse, status_code=201)
 def create_evaluation(
     evaluation_data: EvaluationCreate,
+    background_tasks: BackgroundTasks,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -54,6 +56,15 @@ def create_evaluation(
     db.add(evaluation)
     db.commit()
     db.refresh(evaluation)
+
+    background_tasks.add_task(
+        record_evaluation_created,
+        organization_id,
+        evaluation.id,
+        workspace_id=workspace_id,
+        audio_id=evaluation.audio_id,
+        metrics_requested=len(evaluation.metrics_requested or []),
+    )
 
     # Queue async task
     process_evaluation_task.delay(str(evaluation.id))

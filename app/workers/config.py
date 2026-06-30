@@ -66,6 +66,10 @@ if _config_path.exists():
     except Exception as e:
         logger.warning(f"⚠️  Celery worker: Could not load config.yml: {e}")
 
+from app.services.billing.flexprice_service import log_startup_status  # noqa: E402
+
+log_startup_status(component="celery-worker")
+
 # Create Celery app
 celery_app = Celery(
     "efficientai",

@@ -364,6 +364,7 @@ def _build_parent_groups(
 
 
 def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
+    previous_status = evaluation.status
     rows = (
         db.query(CallImportEvaluationRow.status)
         .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
@@ -393,6 +394,26 @@ def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
         evaluation.status = "failed"
     else:
         evaluation.status = "partial"
+
+    if previous_status == "running":
+        already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
+        delta = completed - already_billed
+        if delta > 0:
+            from app.services.billing.flexprice_service import (
+                record_call_import_evaluation_completed,
+            )
+
+            metric_count = len(evaluation.selected_metric_ids or [])
+            record_call_import_evaluation_completed(
+                evaluation.organization_id,
+                evaluation.id,
+                workspace_id=evaluation.workspace_id,
+                call_import_id=evaluation.call_import_id,
+                rows_billed=delta,
+                completed_total=completed,
+                metric_count=metric_count,
+            )
+        evaluation.billed_completed_rows = completed
 
 
 # Per-task time limits keep a wedged audio evaluation (e.g. torch.hub UTMOS

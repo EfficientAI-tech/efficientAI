@@ -18,7 +18,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.database import ModelProvider, AIProvider
-from app.services.credentials import resolve_ai_provider
+from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
 
 # LiteLLM will silently drop params the target provider doesn't support
@@ -36,6 +36,7 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "groq": "groq",
     "xai": "xai",
     "fireworks": "fireworks_ai",
+    "sarvam": "sarvam",
 }
 
 # Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
@@ -160,6 +161,43 @@ class LLMService:
             provider, db, organization_id, credential_id=credential_id
         )
 
+    def _resolve_api_key(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ) -> str:
+        """Resolve and decrypt an API key from AIProvider or Integration tables."""
+        from app.core.encryption import decrypt_api_key
+
+        ai_provider = self._get_ai_provider(
+            provider, db, organization_id, credential_id=credential_id
+        )
+        if ai_provider:
+            try:
+                return decrypt_api_key(ai_provider.api_key)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to decrypt API key for provider {provider}: {e}"
+                )
+
+        integration = resolve_integration(
+            provider, db, organization_id, credential_id=credential_id
+        )
+        if integration:
+            try:
+                return decrypt_api_key(integration.api_key)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to decrypt API key for provider {provider}: {e}"
+                )
+
+        provider_label = provider.value if hasattr(provider, "value") else str(provider)
+        raise RuntimeError(
+            f"AI provider {provider_label} not configured for this organization."
+        )
+
     @staticmethod
     def _litellm_model_name(provider: ModelProvider, model: str) -> str:
         """Build the ``provider/model`` string that LiteLLM expects."""
@@ -208,22 +246,9 @@ class LLMService:
         start_time = time.time()
 
         # --- resolve API key from database --------------------------------
-        ai_provider = self._get_ai_provider(
+        api_key = self._resolve_api_key(
             llm_provider, db, organization_id, credential_id=credential_id
         )
-        if not ai_provider:
-            raise RuntimeError(
-                f"AI provider {llm_provider} not configured for this organization."
-            )
-
-        from app.core.encryption import decrypt_api_key
-
-        try:
-            api_key = decrypt_api_key(ai_provider.api_key)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to decrypt API key for provider {llm_provider}: {e}"
-            )
 
         # --- call LiteLLM --------------------------------------------------
         model_str = self._litellm_model_name(llm_provider, llm_model)

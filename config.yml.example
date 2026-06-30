@@ -12,10 +12,8 @@ server:
   host: "0.0.0.0"
   port: 8000
 
-# Operational endpoints (/health, /metrics)
-# Keep public: false in production/sandbox. ALB health checks connect
-# directly from VPC addresses (no X-Forwarded-For). Include your VPC/LB CIDRs
-# in trusted_ips so probes and internal scrapers are allowed.
+# Operational endpoints (/metrics). /health is always open for ALB/kube probes.
+# Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
   trusted_ips:
@@ -171,4 +169,14 @@ judge_alignment:
 # call_imports.
 # license:
 #   key: "eyJhbGciOi..."
+
+# Flexprice usage-based billing (optional). When disabled or api_key is unset,
+# no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
+# true and provide FLEXPRICE_API_KEY (env var overrides api_key below).
+# flexprice:
+#   enabled: false
+#   api_key: null
+#   api_host: "https://us.api.flexprice.io/v1"
+# Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
+# Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 

@@ -13,6 +13,13 @@ server:
   host: "0.0.0.0"
   port: 8000
 
+# Operational endpoints (/metrics). /health is always open for load balancers.
+# Add VPC CIDRs here if Prometheus scrapes /metrics from inside the VPC.
+operational:
+  public: false
+  trusted_ips:
+    - "10.0.0.0/8"
+
 # Database Configuration (Docker service name)
 database:
   url: "postgresql://efficientai:password@db:5432/efficientai"
