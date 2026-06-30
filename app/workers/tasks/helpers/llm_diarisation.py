@@ -128,6 +128,79 @@ DEFAULT_DIARIZATION_PROMPT = (
 # transcript so a 1 MB CSV cell can't blow up the prompt window.
 _MAX_TRANSCRIPT_CHARS = 60_000
 
+# Output token budget for the diariser LLM. The JSON mirrors the input
+# transcript (split into agent/user turns) plus structural overhead per
+# turn. Without an explicit ``max_tokens`` many providers default to a
+# low cap (e.g. 4096) and truncate mid-JSON on longer calls.
+_DIARISATION_MIN_MAX_TOKENS = 4096
+_DIARISATION_MAX_MAX_TOKENS = 16_384
+
+
+def _estimate_diarisation_max_tokens(
+    *, text_length: int = 0, audio_bytes: int = 0
+) -> int:
+    """Scale the diariser output budget to the input payload size."""
+    if text_length > 0:
+        # ~0.45 tokens/char covers JSON keys + per-turn wrapping.
+        estimated = int(text_length * 0.45) + 512
+    elif audio_bytes > 0:
+        # Rough proxy: ~150 spoken chars/sec, ~320 KiB/min mono 16 kHz.
+        estimated_chars = (audio_bytes / 320_000) * 150 * 60
+        estimated = int(estimated_chars * 0.45) + 512
+    else:
+        estimated = _DIARISATION_MIN_MAX_TOKENS
+    return min(
+        _DIARISATION_MAX_MAX_TOKENS,
+        max(_DIARISATION_MIN_MAX_TOKENS, estimated),
+    )
+
+
+def _generate_diarisation_response(
+    *,
+    messages: List[Dict[str, Any]],
+    provider_enum: ModelProvider,
+    llm_model: str,
+    organization_id: UUID,
+    db: Session,
+    temperature: float,
+    credential_id: Optional[UUID],
+    config: Dict[str, Any],
+    content_length: int = 0,
+    audio_bytes: int = 0,
+) -> Dict[str, Any]:
+    """Call the diariser LLM with a scaled ``max_tokens`` and one retry."""
+    base_budget = _estimate_diarisation_max_tokens(
+        text_length=content_length,
+        audio_bytes=audio_bytes,
+    )
+    retry_budget = min(_DIARISATION_MAX_MAX_TOKENS, base_budget * 2)
+    budgets = [base_budget] if retry_budget <= base_budget else [base_budget, retry_budget]
+
+    response: Dict[str, Any] = {}
+    for attempt_idx, max_tokens in enumerate(budgets):
+        response = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            temperature=temperature,
+            credential_id=credential_id,
+            config=config,
+            task_defaults={"max_tokens": max_tokens},
+        )
+        if not response.get("truncated"):
+            return response
+        if attempt_idx < len(budgets) - 1:
+            logger.warning(
+                "Diariser LLM response truncated at max_tokens={} "
+                "(model={}); retrying with max_tokens={}.",
+                max_tokens,
+                llm_model,
+                budgets[attempt_idx + 1],
+            )
+    return response
+
 
 # Synonym keys we accept from over-creative LLMs that don't follow the
 # canonical ``{"speaker": ..., "text": ...}`` schema verbatim. Without
@@ -460,15 +533,16 @@ def diarize_transcript_with_llm(
     # other providers.
     config = {"response_format": {"type": "json_object"}}
 
-    response = llm_service.generate_response(
+    response = _generate_diarisation_response(
         messages=messages,
-        llm_provider=provider_enum,
+        provider_enum=provider_enum,
         llm_model=llm_model,
         organization_id=organization_id,
         db=db,
         temperature=temperature,
         credential_id=credential_id,
         config=config,
+        content_length=len(cleaned),
     )
 
     turns = _parse_turns_from_response(response)
@@ -1042,15 +1116,16 @@ def diarize_audio_with_llm(
     config = {"response_format": {"type": "json_object"}}
 
     try:
-        response = llm_service.generate_response(
+        response = _generate_diarisation_response(
             messages=messages,
-            llm_provider=provider_enum,
+            provider_enum=provider_enum,
             llm_model=llm_model,
             organization_id=organization_id,
             db=db,
             temperature=temperature,
             credential_id=credential_id,
             config=config,
+            audio_bytes=len(audio_bytes),
         )
     except Exception as exc:
         # LiteLLM surfaces "model does not support audio input" as a
