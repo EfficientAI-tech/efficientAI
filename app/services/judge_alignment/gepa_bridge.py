@@ -25,13 +25,13 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
-import litellm
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.core.encryption import decrypt_api_key
+from app.services.ai.llm_gateway import apply_llm_gateway, litellm_completion, resolve_litellm_api_key
+from app.services.credentials import resolve_ai_provider
+
 from app.models.database import (
-    AIProvider,
     Evaluator,
     JudgeDataset,
     JudgeRun,
@@ -59,19 +59,11 @@ def _resolve_litellm_model(provider: str, model: str) -> str:
 
 def _resolve_api_key(
     provider: str, organization_id: UUID, db: Session
-) -> str:
-    ai_provider = (
-        db.query(AIProvider)
-        .filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.provider == provider,
-            AIProvider.is_active == True,  # noqa: E712
-        )
-        .first()
-    )
+) -> Optional[str]:
+    ai_provider = resolve_ai_provider(provider, db, organization_id)
     if not ai_provider:
         raise RuntimeError(f"No active AIProvider for {provider!r}")
-    return decrypt_api_key(ai_provider.api_key)
+    return resolve_litellm_api_key(organization_id, db, ai_provider)
 
 
 def start_gepa_for_dataset(
@@ -247,13 +239,17 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
                 },
             ]
             try:
-                resp = litellm.completion(
-                    model=lm_identifier,
-                    messages=messages,
-                    api_key=api_key,
-                    temperature=0.0,
-                    max_tokens=300,
-                )
+                sample_kwargs: Dict[str, Any] = {
+                    "organization_id": run.organization_id,
+                    "db": db,
+                    "model": lm_identifier,
+                    "messages": messages,
+                    "temperature": 0.0,
+                    "max_tokens": 300,
+                }
+                if api_key is not None:
+                    sample_kwargs["api_key"] = api_key
+                resp = litellm_completion(**sample_kwargs)
                 text = resp.choices[0].message.content if resp.choices else ""
                 parsed = _parse_judge_response(text)
             except Exception as exc:
@@ -300,10 +296,19 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
         }
     ]
 
+    batch_kwargs: Dict[str, Any] = {}
+    if api_key is not None:
+        batch_kwargs["api_key"] = api_key
+    batch_kwargs = apply_llm_gateway(
+        batch_kwargs,
+        organization_id=run.organization_id,
+        db=db,
+    )
+
     adapter = DefaultAdapter(
         model=lm_identifier,
         evaluator=evaluator_fn,
-        litellm_batch_completion_kwargs={"api_key": api_key},
+        litellm_batch_completion_kwargs=batch_kwargs,
     )
 
     # Custom evaluator wrapper to inject the candidate prompt into `data`
@@ -321,11 +326,15 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
     adapter.evaluator = _capturing_evaluator  # type: ignore[attr-defined]
 
     def reflection_lm(prompt: str) -> str:
-        resp = litellm.completion(
-            model=lm_identifier,
-            messages=[{"role": "user", "content": prompt}],
-            api_key=api_key,
-        )
+        reflection_kwargs: Dict[str, Any] = {
+            "organization_id": run.organization_id,
+            "db": db,
+            "model": lm_identifier,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if api_key is not None:
+            reflection_kwargs["api_key"] = api_key
+        resp = litellm_completion(**reflection_kwargs)
         return resp.choices[0].message.content
 
     run.status = PromptOptimizationStatus.RUNNING.value

@@ -669,7 +669,13 @@ class S3UploadResponse(BaseModel):
 class AIProviderCreate(BaseModel):
     """Schema for creating an AI Provider."""
     provider: ModelProvider
-    api_key: str = Field(..., min_length=1)
+    api_key: Optional[str] = Field(
+        None,
+        description=(
+            "Provider API key. Optional when the platform uses Bifrost "
+            "gateway-managed credentials (passthrough_provider_keys: false)."
+        ),
+    )
     name: Optional[str] = None
     is_default: Optional[bool] = Field(
         None,
@@ -678,6 +684,14 @@ class AIProviderCreate(BaseModel):
             "If omitted and no default exists yet, this row becomes the default."
         ),
     )
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
 
 
 class AIProviderUpdate(BaseModel):
@@ -695,6 +709,7 @@ class AIProviderResponse(BaseModel):
     name: Optional[str]
     is_active: bool
     is_default: bool = False
+    gateway_managed: bool = False
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]

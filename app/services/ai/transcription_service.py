@@ -47,6 +47,7 @@ from uuid import UUID
 from pathlib import Path
 
 from app.models.database import ModelProvider, AIProvider, Integration
+from app.core.encryption import decrypt_api_key
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
@@ -89,13 +90,13 @@ class TranscriptionService:
         preferred in either table; otherwise the row marked ``is_default``
         wins, with a back-compat fallback to the most recent active row.
         """
-        from app.core.encryption import decrypt_api_key
+        from app.services.ai.bifrost_gateway import resolve_litellm_api_key
 
         ai_provider = self._get_ai_provider(
             provider, db, organization_id, credential_id=credential_id
         )
         if ai_provider:
-            return decrypt_api_key(ai_provider.api_key)
+            return resolve_litellm_api_key(organization_id, db, ai_provider)
 
         integration = resolve_integration(
             provider, db, organization_id, credential_id=credential_id
@@ -507,7 +508,7 @@ class TranscriptionService:
         api_key = self._get_api_key_for_provider(
             stt_provider, db, organization_id, credential_id=credential_id
         )
-        if not api_key:
+        if not api_key and stt_provider != ModelProvider.GOOGLE:
             logger.warning(
                 f"[TranscriptionService] No API key found for {stt_provider} "
                 f"(checked AIProvider and Integration tables) for org {organization_id}"
@@ -531,7 +532,10 @@ class TranscriptionService:
             elif stt_provider == ModelProvider.ELEVENLABS:
                 result = transcribe_elevenlabs(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.GOOGLE:
-                result = transcribe_google(audio_file_path, stt_model, api_key, language)
+                result = transcribe_google(
+                    audio_file_path, stt_model, api_key, language,
+                    organization_id=organization_id, db=db,
+                )
             elif stt_provider == ModelProvider.SARVAM:
                 result = transcribe_sarvam(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:
@@ -570,7 +574,7 @@ class TranscriptionService:
             api_key = self._get_api_key_for_provider(
                 stt_provider, db, organization_id, credential_id=credential_id
             )
-            if not api_key:
+            if not api_key and stt_provider != ModelProvider.GOOGLE:
                 raise RuntimeError(
                     f"No API key found for {stt_provider} (checked AIProvider and Integration tables). "
                     f"Please configure the provider in Settings."
@@ -608,7 +612,10 @@ class TranscriptionService:
                 # are routed through LiteLLM as multimodal completions.
                 # Legacy ``google-speech-v2`` would also land here, but
                 # we don't yet have a Cloud Speech client wired up.
-                result = transcribe_google(temp_file_path, stt_model, api_key, language)
+                result = transcribe_google(
+                    temp_file_path, stt_model, api_key, language,
+                    organization_id=organization_id, db=db,
+                )
             elif stt_provider == ModelProvider.AZURE:
                 raise NotImplementedError("Azure Speech Services not yet implemented")
             elif stt_provider == ModelProvider.AWS:

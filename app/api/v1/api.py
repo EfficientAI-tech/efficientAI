@@ -42,6 +42,7 @@ from app.api.v1.routes import (
     workspaces,
     workspace_iam,
     dashboard,
+    llm_gateway,
 )
 
 api_router = APIRouter()
@@ -87,3 +88,4 @@ api_router.include_router(judge_alignment.router)
 api_router.include_router(workspaces.router)
 api_router.include_router(workspace_iam.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(llm_gateway.router)

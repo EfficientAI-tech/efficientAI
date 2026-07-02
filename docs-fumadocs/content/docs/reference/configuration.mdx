@@ -127,6 +127,16 @@ auth:
 # voice_playground, gepa_optimization, scim_provisioning, saml_sso.
 # license:
 #   key: "eyJhbGciOi..."
+
+# LLM gateway (optional). Routes batch/eval LLM calls through a proxy.
+# Per-org overrides in Integrations UI.
+# llm_gateway:
+#   enabled: false
+#   type: bifrost              # bifrost | litellm_proxy
+#   base_url: "http://localhost:8080/litellm"
+#   virtual_key: null
+#   master_key: null
+#   passthrough_provider_keys: true
 ```
 
 :::tip
