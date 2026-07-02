@@ -3,8 +3,13 @@ import { apiClient } from '../../lib/api'
 import type { TelephonyIntegrationResponse } from '../../lib/api'
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star } from 'lucide-react'
+import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star, Network } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
+import type {
+  LLMGatewayMode,
+  LLMGatewaySettings,
+  LLMGatewayType,
+} from '../../lib/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import {
@@ -69,6 +74,42 @@ export default function Integrations() {
   const [telephonySipDomain, setTelephonySipDomain] = useState('')
   const [telephonyProviderFilter, setTelephonyProviderFilter] = useState<TelephonyProvider>(TelephonyProvider.PLIVO)
 
+  const [llmGatewayMode, setLlmGatewayMode] = useState<LLMGatewayMode>('inherit')
+  const [llmGatewayType, setLlmGatewayType] = useState<LLMGatewayType>('inherit')
+  const [llmGatewayBaseUrl, setLlmGatewayBaseUrl] = useState('')
+  const [llmGatewayVirtualKey, setLlmGatewayVirtualKey] = useState('')
+  const [llmGatewayMasterKey, setLlmGatewayMasterKey] = useState('')
+  const [clearLlmGatewayVirtualKey, setClearLlmGatewayVirtualKey] = useState(false)
+  const [clearLlmGatewayMasterKey, setClearLlmGatewayMasterKey] = useState(false)
+  const [showLlmGatewayModal, setShowLlmGatewayModal] = useState(false)
+
+  const syncLlmGatewayFormFromSettings = () => {
+    if (!llmGatewaySettings) return
+    setLlmGatewayMode(llmGatewaySettings.mode)
+    setLlmGatewayType(llmGatewaySettings.gateway_type)
+    setLlmGatewayBaseUrl(llmGatewaySettings.base_url || '')
+    setLlmGatewayVirtualKey('')
+    setLlmGatewayMasterKey('')
+    setClearLlmGatewayVirtualKey(false)
+    setClearLlmGatewayMasterKey(false)
+  }
+
+  const openLlmGatewayModal = () => {
+    syncLlmGatewayFormFromSettings()
+    setShowLlmGatewayModal(true)
+  }
+
+  const closeLlmGatewayModal = () => {
+    setShowLlmGatewayModal(false)
+    syncLlmGatewayFormFromSettings()
+  }
+
+  const llmGatewayRoutingLabel = (routing: LLMGatewaySettings['effective_routing']) => {
+    if (routing === 'bifrost') return 'Bifrost'
+    if (routing === 'litellm_proxy') return 'LiteLLM Proxy'
+    return 'Direct'
+  }
+
   const renderModal = (content: ReactNode) => {
     if (typeof document === 'undefined') return null
     return createPortal(content, document.body)
@@ -88,6 +129,51 @@ export default function Integrations() {
     queryKey: ['telephony-configs'],
     queryFn: () => apiClient.listTelephonyConfigs(),
     retry: false,
+  })
+
+  const { data: llmGatewaySettings } = useQuery<LLMGatewaySettings>({
+    queryKey: ['llm-gateway-settings'],
+    queryFn: () => apiClient.getLLMGatewaySettings(),
+  })
+
+  const effectiveLlmGatewayType =
+    llmGatewayType !== 'inherit'
+      ? llmGatewayType
+      : llmGatewaySettings?.platform_gateway_type || 'bifrost'
+
+  const showLlmGatewayConfigOptions = llmGatewayMode !== 'disabled'
+
+  useEffect(() => {
+    if (!llmGatewaySettings || showLlmGatewayModal) return
+    syncLlmGatewayFormFromSettings()
+  }, [llmGatewaySettings, showLlmGatewayModal])
+
+  const updateLlmGatewayMutation = useMutation({
+    mutationFn: () =>
+      apiClient.updateLLMGatewaySettings({
+        mode: llmGatewayMode,
+        gateway_type: llmGatewayType,
+        base_url: llmGatewayBaseUrl.trim() || null,
+        virtual_key: llmGatewayVirtualKey.trim() || undefined,
+        master_key: llmGatewayMasterKey.trim() || undefined,
+        clear_virtual_key: clearLlmGatewayVirtualKey,
+        clear_master_key: clearLlmGatewayMasterKey,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['llm-gateway-settings'] })
+      showToast('LLM gateway settings saved', 'success')
+      setLlmGatewayVirtualKey('')
+      setLlmGatewayMasterKey('')
+      setClearLlmGatewayVirtualKey(false)
+      setClearLlmGatewayMasterKey(false)
+      setShowLlmGatewayModal(false)
+    },
+    onError: (error: any) => {
+      showToast(
+        `Failed to save LLM gateway settings: ${error.response?.data?.detail || error.message}`,
+        'error',
+      )
+    },
   })
 
   // Pick the visible config: default-row preferred, then any row, scoped to
@@ -277,8 +363,19 @@ export default function Integrations() {
         if (Object.keys(updateData).length === 0) { resetForm(); return }
         updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
       } else {
-        if (!selectedProvider || !apiKey.trim()) { showToast('Please select a provider and enter an API key', 'error'); return }
-        createAIProviderMutation.mutate({ provider: selectedProvider, api_key: apiKey, name: name || null })
+        if (!selectedProvider) {
+          showToast('Please select a provider', 'error')
+          return
+        }
+        if (!aiIntegrationGatewayManaged && !apiKey.trim()) {
+          showToast('Please enter an API key', 'error')
+          return
+        }
+        createAIProviderMutation.mutate({
+          provider: selectedProvider,
+          api_key: apiKey.trim() || undefined,
+          name: name || null,
+        })
       }
     } else if (integrationType === 'telephony_provider') {
       saveTelephonyConfigMutation.mutate()
@@ -365,6 +462,10 @@ export default function Integrations() {
     aiIntegrationProviders.length > 0 ||
     hasTelephony
 
+  const aiIntegrationGatewayManaged = Boolean(
+    llmGatewaySettings?.gateway_managed_credentials,
+  )
+
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
     return platforms.find(p => p.id === platformId)
   }
@@ -378,6 +479,24 @@ export default function Integrations() {
           <p className="text-gray-600 mt-1">Connect with voice AI platforms, AI providers, and telephony providers</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <Button
+            variant="outline"
+            onClick={openLlmGatewayModal}
+            leftIcon={<Network className="h-5 w-5" />}
+          >
+            LLM Gateway
+            {llmGatewaySettings && (
+              <span
+                className={`ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded ${
+                  llmGatewaySettings.effective_routing !== 'direct'
+                    ? 'bg-indigo-100 text-indigo-700'
+                    : 'bg-gray-100 text-gray-600'
+                }`}
+              >
+                {llmGatewayRoutingLabel(llmGatewaySettings.effective_routing)}
+              </span>
+            )}
+          </Button>
           <Button variant="primary" onClick={() => setShowModal(true)} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
           <WalkthroughToggleButton />
         </div>
@@ -506,6 +625,11 @@ export default function Integrations() {
                                 <Star className="h-3 w-3 fill-current" /> Default
                               </span>
                             )}
+                            {provider.gateway_managed && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
+                                Gateway managed
+                              </span>
+                            )}
                             {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                           </div>
                         </div>
@@ -620,6 +744,176 @@ export default function Integrations() {
           <Plug className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations configured</h3>
           <p className="text-gray-500">Get started by adding a voice platform, AI provider, or telephony provider</p>
+        </div>
+      )}
+
+      {showLlmGatewayModal && renderModal(
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <div className="flex items-center gap-2 min-w-0">
+                <Network className="h-5 w-5 text-indigo-600 flex-shrink-0" />
+                <h3 className="text-lg font-semibold text-gray-900 truncate">LLM Gateway</h3>
+              </div>
+              <button onClick={closeLlmGatewayModal} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-600">
+                Route batch and evaluation LLM calls through Bifrost or a self-hosted LiteLLM Proxy. Real-time voice agents are unaffected.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`px-2.5 py-1 text-xs font-medium rounded-full ${
+                    llmGatewaySettings?.effective_routing !== 'direct'
+                      ? 'bg-indigo-100 text-indigo-800'
+                      : 'bg-gray-100 text-gray-700'
+                  }`}
+                >
+                  Effective routing: {llmGatewayRoutingLabel(llmGatewaySettings?.effective_routing || 'direct')}
+                </span>
+                {llmGatewaySettings?.effective_base_url && (
+                  <span className="text-xs text-gray-500 truncate max-w-full">
+                    {llmGatewaySettings.effective_base_url}
+                  </span>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Organization mode</label>
+                <select
+                  value={llmGatewayMode}
+                  onChange={(e) => setLlmGatewayMode(e.target.value as LLMGatewayMode)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                >
+                  <option value="inherit">Inherit platform default</option>
+                  <option value="enabled">Enabled (use gateway)</option>
+                  <option value="disabled">Disabled (direct to providers)</option>
+                </select>
+              </div>
+
+              {showLlmGatewayConfigOptions ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Gateway type</label>
+                    <select
+                      value={llmGatewayType}
+                      onChange={(e) => setLlmGatewayType(e.target.value as LLMGatewayType)}
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                    >
+                      <option value="inherit">
+                        Inherit platform ({llmGatewaySettings?.platform_gateway_type === 'litellm_proxy' ? 'LiteLLM Proxy' : 'Bifrost'})
+                      </option>
+                      <option value="bifrost">Bifrost</option>
+                      <option value="litellm_proxy">LiteLLM Proxy</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Base URL override</label>
+                    <input
+                      type="url"
+                      value={llmGatewayBaseUrl}
+                      onChange={(e) => setLlmGatewayBaseUrl(e.target.value)}
+                      placeholder={
+                        llmGatewaySettings?.platform_base_url ||
+                        (effectiveLlmGatewayType === 'litellm_proxy'
+                          ? 'http://localhost:4000'
+                          : 'http://localhost:8080/litellm')
+                      }
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      {effectiveLlmGatewayType === 'litellm_proxy'
+                        ? 'LiteLLM Proxy base URL (e.g. http://localhost:4000). Leave blank to inherit the platform URL.'
+                        : 'Bifrost URL must include the /litellm path. Leave blank to inherit the platform URL.'}
+                    </p>
+                  </div>
+
+                  {effectiveLlmGatewayType === 'bifrost' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Virtual key (x-bf-vk)</label>
+                      <input
+                        type="password"
+                        value={llmGatewayVirtualKey}
+                        onChange={(e) => setLlmGatewayVirtualKey(e.target.value)}
+                        placeholder={
+                          llmGatewaySettings?.has_virtual_key
+                            ? '•••••••• (stored — enter new value to replace)'
+                            : 'Optional Bifrost virtual key'
+                        }
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                      />
+                      {llmGatewaySettings?.has_virtual_key && (
+                        <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                          <input
+                            type="checkbox"
+                            checked={clearLlmGatewayVirtualKey}
+                            onChange={(e) => setClearLlmGatewayVirtualKey(e.target.checked)}
+                          />
+                          Remove stored virtual key
+                        </label>
+                      )}
+                    </div>
+                  )}
+
+                  {effectiveLlmGatewayType === 'litellm_proxy' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Master key</label>
+                      <input
+                        type="password"
+                        value={llmGatewayMasterKey}
+                        onChange={(e) => setLlmGatewayMasterKey(e.target.value)}
+                        placeholder={
+                          llmGatewaySettings?.has_master_key
+                            ? '•••••••• (stored — enter new value to replace)'
+                            : 'Optional LiteLLM Proxy master key'
+                        }
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                      />
+                      {llmGatewaySettings?.has_master_key && (
+                        <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                          <input
+                            type="checkbox"
+                            checked={clearLlmGatewayMasterKey}
+                            onChange={(e) => setClearLlmGatewayMasterKey(e.target.checked)}
+                          />
+                          Remove stored master key
+                        </label>
+                      )}
+                    </div>
+                  )}
+
+                  {llmGatewaySettings?.gateway_managed_credentials && (
+                    <p className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-md px-3 py-2">
+                      Gateway-managed credentials are enabled. AI provider integrations can omit API keys when the gateway is active.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  This organization will call LLM providers directly. Enable the gateway or inherit the platform default to configure gateway type, URL, and keys.
+                </p>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <Button type="button" variant="outline" onClick={closeLlmGatewayModal} className="flex-1">
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={() => updateLlmGatewayMutation.mutate()}
+                  isLoading={updateLlmGatewayMutation.isPending}
+                  className="flex-1"
+                >
+                  Save Gateway Settings
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -761,11 +1055,34 @@ export default function Integrations() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      API Key {isEditMode ? <span className="text-gray-500 font-normal">(leave empty to keep current)</span> : '*'}
+                      API Key{' '}
+                      {isEditMode ? (
+                        <span className="text-gray-500 font-normal">(leave empty to keep current)</span>
+                      ) : aiIntegrationGatewayManaged ? (
+                        <span className="text-gray-500 font-normal">(optional — gateway managed)</span>
+                      ) : (
+                        '*'
+                      )}
                     </label>
-                    <input type="password" required={!isEditMode} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                      placeholder={isEditMode ? "Enter new API key (optional)" : "Enter API key"} />
-                    <p className="mt-1 text-xs text-gray-500">Your API key will be encrypted and stored securely</p>
+                    <input
+                      type="password"
+                      required={!isEditMode && !aiIntegrationGatewayManaged}
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                      placeholder={
+                        isEditMode
+                          ? 'Enter new API key (optional)'
+                          : aiIntegrationGatewayManaged
+                            ? 'Leave blank to use gateway-managed credentials'
+                            : 'Enter API key'
+                      }
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      {aiIntegrationGatewayManaged
+                        ? 'When blank, provider secrets are resolved by your LLM gateway. You can still override with a local key if needed.'
+                        : 'Your API key will be encrypted and stored securely'}
+                    </p>
                   </div>
                 </>
               )}

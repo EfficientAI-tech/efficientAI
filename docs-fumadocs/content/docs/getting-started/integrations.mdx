@@ -88,6 +88,103 @@ Telephony integrations connect your phone-network provider to EfficientAI.
 
 These integrations handle telephony-specific setup like credentials, number sync, and routing-related configuration used by call workflows.
 
+## LLM Gateway (batch/eval routing)
+
+Batch and evaluation LLM workloads (evaluators, GEPA, call-import LLM steps) can be routed through an optional **LLM Gateway** instead of calling providers directly. Real-time voice agents are **not** routed through the gateway.
+
+Configure a **platform default** in `config.yml` and optional **per-organization overrides** from **Configurations → Integrations → LLM Gateway**.
+
+Supported gateway types:
+
+- **Bifrost** — point at your Bifrost LiteLLM proxy (URL must include the `/litellm` path, e.g. `http://localhost:8080/litellm`).
+- **LiteLLM Proxy** — point at a self-hosted LiteLLM Proxy instance (e.g. `http://localhost:4000`).
+
+### Platform default (`config.yml`)
+
+```yaml
+llm_gateway:
+  enabled: true
+  type: bifrost              # bifrost | litellm_proxy
+  base_url: "http://localhost:8080/litellm"
+  virtual_key: null          # Bifrost only (sent as x-bf-vk)
+  master_key: null           # LiteLLM Proxy only
+  passthrough_provider_keys: false   # false = provider keys live in the gateway
+```
+
+When `passthrough_provider_keys` is `false`, AI provider integrations can omit API keys and use a **Gateway managed** placeholder instead. That setting is **platform-wide only** — it cannot be overridden per organization.
+
+### Organization settings (Integrations UI)
+
+Each organization can choose how it uses the gateway. The modal shows an **Effective routing** badge after save — that is the merged result actually used for LLM calls (`Bifrost`, `LiteLLM Proxy`, or `Direct`).
+
+#### Organization mode
+
+| Mode | Behavior |
+|------|----------|
+| **Inherit platform default** | Follows the platform `llm_gateway.enabled` flag. When the platform has the gateway enabled, this org uses the gateway. Choose **Disabled** to opt out, or override type, URL, or keys below. |
+| **Enabled (use gateway)** | Forces gateway routing for this org even if the platform default is disabled. You must have a resolvable base URL (org override or platform default). |
+| **Disabled (direct to providers)** | Opts this org out entirely. LLM calls go straight to provider APIs; gateway type, URL, and key overrides are ignored. |
+
+#### Partial overrides (while inheriting)
+
+When organization mode is **Inherit** or **Enabled**, you can override individual fields without replacing the whole configuration. Anything left blank or set to **Inherit platform** falls back to the platform default.
+
+| Field | Inherit / blank | Org override |
+|-------|-----------------|--------------|
+| **Gateway type** | Platform `type` | Org value (`Bifrost` or `LiteLLM Proxy`) |
+| **Base URL** | Platform `base_url` | Org URL |
+| **Virtual key** (Bifrost) | Platform `virtual_key` | Org-stored key (org wins if set) |
+| **Master key** (LiteLLM Proxy) | Platform `master_key` | Org-stored key (org wins if set) |
+| **Passthrough provider keys** | Platform setting only | Not configurable per org |
+
+**Important:** Inherit mode does **not** mean “ignore my overrides.” You can inherit platform enablement while still overriding gateway type, base URL, or keys. Those overrides are applied on top of the inherited on/off decision.
+
+If organization mode is **Inherit** but the platform has the gateway **disabled**, the org routes **direct** regardless of any stored type or URL overrides (overrides remain saved but inactive until the platform enables the gateway or you switch the org to **Enabled**).
+
+### How settings merge
+
+Resolution is field-by-field:
+
+1. **On/off** — org **Disabled** → direct. Org **Enabled** → gateway on. Org **Inherit** → follow platform `enabled`.
+2. **Gateway type** — org override if set, else platform `type`.
+3. **Base URL** — org override if set, else platform `base_url`. If no URL resolves, the org falls back to direct routing.
+4. **Keys** — org virtual key / master key if stored, else platform keys.
+
+### Examples
+
+Platform default:
+
+```yaml
+llm_gateway:
+  enabled: true
+  type: bifrost
+  base_url: "http://localhost:8080/litellm"
+  passthrough_provider_keys: false
+```
+
+| Org mode | Gateway type | Base URL override | Effective result |
+|----------|--------------|-------------------|------------------|
+| Inherit | Inherit | *(blank)* | Bifrost @ platform URL, platform keys |
+| Inherit | Inherit | `http://customer:9090/litellm` | Bifrost @ org URL, platform keys |
+| Inherit | LiteLLM Proxy | `http://org-proxy:4000` | LiteLLM Proxy @ org URL |
+| Inherit | LiteLLM Proxy | *(blank)* | LiteLLM Proxy type + **platform URL** — override the URL too if the platform URL is Bifrost-specific |
+| Enabled | Bifrost | `http://customer:9090/litellm` | Gateway forced on even if platform is disabled |
+| Disabled | *(any)* | *(any)* | Direct to providers |
+
+### Practical guidance
+
+- **Different Bifrost instance for one customer?** Keep mode and gateway type on inherit; set **Base URL override** only.
+- **Different gateway product for one org?** Override **both** gateway type and base URL so they match.
+- **Different auth for one org?** Set an org **virtual key** (Bifrost) or **master key** (LiteLLM Proxy). Org keys take precedence over platform keys.
+- **Confirm behavior** — after saving, check the **Effective routing** badge and resolved base URL shown in the LLM Gateway modal.
+
+### Scope and limitations
+
+- Routes batch/eval LiteLLM calls only (evaluators, GEPA, call-import LLM steps).
+- Does not route real-time voice agent sessions.
+- Gemini and other native-path providers are automatically sent through the gateway’s OpenAI-compatible chat-completions API (not provider-native URLs like `:generateContent`).
+- File uploads used by some Gemini diarisation flows (`litellm.create_file`) are not proxied through the gateway.
+
 ## What integrations enable in practice
 
 Once linked, an agent can:

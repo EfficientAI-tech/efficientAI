@@ -166,6 +166,17 @@ judge_alignment:
   enabled: true            # operator-level kill switch
   csv_max_rows: 5000       # safety limit for CSV uploads
 
+# LLM gateway (optional). Routes batch/eval LiteLLM calls through a proxy
+# instead of directly to providers. Supports Bifrost and self-hosted LiteLLM Proxy.
+# Per-org overrides (type, URL, keys, opt-out) are configured in Integrations UI.
+# llm_gateway:
+#   enabled: false
+#   type: bifrost              # bifrost | litellm_proxy
+#   base_url: "http://localhost:8080/litellm"
+#   virtual_key: null          # Bifrost only (x-bf-vk header)
+#   master_key: null           # LiteLLM Proxy only (LITELLM_MASTER_KEY)
+#   passthrough_provider_keys: true   # false = keys in gateway; AI integrations can omit api_key
+
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization,
 # call_imports.

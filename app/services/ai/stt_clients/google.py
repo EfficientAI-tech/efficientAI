@@ -24,6 +24,7 @@ import base64
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,11 @@ def _build_transcription_prompt(language: Optional[str]) -> str:
 def transcribe_google(
     audio_file_path: str,
     model: str,
-    api_key: str,
+    api_key: Optional[str] = None,
     language: Optional[str] = None,
+    *,
+    organization_id: Optional["UUID"] = None,
+    db: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Transcribe an audio file via Gemini through LiteLLM.
 
@@ -122,12 +126,22 @@ def transcribe_google(
     ]
 
     try:
-        response = litellm.completion(
-            model=litellm_model,
-            messages=messages,
-            api_key=api_key,
-            temperature=0.0,
-        )
+        call_kwargs: Dict[str, Any] = {
+            "model": litellm_model,
+            "messages": messages,
+            "temperature": 0.0,
+        }
+        if api_key is not None:
+            call_kwargs["api_key"] = api_key
+        if organization_id is not None and db is not None:
+            from app.services.ai.llm_gateway import apply_llm_gateway
+
+            call_kwargs = apply_llm_gateway(
+                call_kwargs,
+                organization_id=organization_id,
+                db=db,
+            )
+        response = litellm.completion(**call_kwargs)
     except Exception as e:
         logger.error(
             f"[transcribe_google] LiteLLM call failed for {litellm_model}: {e}"

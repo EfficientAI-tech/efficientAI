@@ -9,7 +9,6 @@ entry-point consumed by the Celery task.
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import litellm
 from loguru import logger
 
 from app.models.database import (
@@ -23,6 +22,7 @@ from app.models.database import (
 from app.services.optimization.data_preparation import build_trainset
 from app.services.optimization.evaluator import build_evaluator
 from app.services.optimization.lm_resolver import resolve_api_key, resolve_lm
+from app.services.ai.llm_gateway import apply_llm_gateway, litellm_completion
 
 _gepa_install_attempted = False
 
@@ -96,7 +96,7 @@ def run_optimization(
 
     seed_prompt = agent.provider_prompt or agent.description or ""
     lm_identifier = resolve_lm(voice_bundle, evaluator)
-    api_key = resolve_api_key(lm_identifier, ai_providers)
+    api_key = resolve_api_key(lm_identifier, ai_providers, organization_id, db)
 
     trainset = build_trainset(training_data, metrics)
     if not trainset:
@@ -109,18 +109,31 @@ def run_optimization(
         f"with {len(trainset)} training examples, LM={lm_identifier}"
     )
 
+    batch_kwargs: Dict[str, Any] = {}
+    if api_key is not None:
+        batch_kwargs["api_key"] = api_key
+    batch_kwargs = apply_llm_gateway(
+        batch_kwargs,
+        organization_id=organization_id,
+        db=db,
+    )
+
     adapter = DefaultAdapter(
         model=lm_identifier,
         evaluator=evaluator_fn,
-        litellm_batch_completion_kwargs={"api_key": api_key},
+        litellm_batch_completion_kwargs=batch_kwargs,
     )
 
     def reflection_lm(prompt: str) -> str:
-        resp = litellm.completion(
-            model=lm_identifier,
-            messages=[{"role": "user", "content": prompt}],
-            api_key=api_key,
-        )
+        reflection_kwargs: Dict[str, Any] = {
+            "organization_id": organization_id,
+            "db": db,
+            "model": lm_identifier,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if api_key is not None:
+            reflection_kwargs["api_key"] = api_key
+        resp = litellm_completion(**reflection_kwargs)
         return resp.choices[0].message.content
 
     result = gepa_optimize(
