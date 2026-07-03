@@ -91,6 +91,15 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
 
                 db.commit()
 
+                from app.services.billing.flexprice_service import record_evaluator_run_completed
+
+                record_evaluator_run_completed(
+                    evaluator.organization_id,
+                    result.result_id,
+                    workspace_id=evaluator.workspace_id,
+                    evaluator_id=evaluator.id,
+                )
+
                 return {
                     "evaluator_id": evaluator_id,
                     "result_id": evaluator_result_id,

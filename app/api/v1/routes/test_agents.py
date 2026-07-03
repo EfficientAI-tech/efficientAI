@@ -3,7 +3,7 @@ Test Agents API Routes
 API endpoints for managing test agent conversations.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List, Optional
@@ -15,6 +15,10 @@ from app.models.schemas import (
     TestAgentConversationCreate,
     TestAgentConversationUpdate,
     TestAgentConversationResponse
+)
+from app.services.billing.flexprice_service import (
+    record_test_agent_conversation_ended,
+    record_test_agent_conversation_started,
 )
 from app.services.testing.test_agent_service import test_agent_service
 
@@ -86,6 +90,7 @@ async def get_conversation(
 @router.post("/conversations/{conversation_id}/start", response_model=TestAgentConversationResponse, operation_id="startTestAgentConversation")
 async def start_conversation(
     conversation_id: UUID,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
@@ -96,6 +101,12 @@ async def start_conversation(
             conversation_id=conversation_id,
             organization_id=organization_id,
             db=db
+        )
+        background_tasks.add_task(
+            record_test_agent_conversation_started,
+            organization_id,
+            conversation_id,
+            workspace_id=workspace_id,
         )
         return conversation
     except ValueError as e:
@@ -209,8 +220,10 @@ async def get_response_audio(
 @router.post("/conversations/{conversation_id}/end", response_model=TestAgentConversationResponse, operation_id="endTestAgentConversation")
 async def end_conversation(
     conversation_id: UUID,
+    background_tasks: BackgroundTasks,
     final_audio_key: Optional[str] = None,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
     """End a test agent conversation."""
@@ -220,6 +233,15 @@ async def end_conversation(
             organization_id=organization_id,
             db=db,
             final_audio_key=final_audio_key
+        )
+        turn_count = len(conversation.live_transcription or [])
+        background_tasks.add_task(
+            record_test_agent_conversation_ended,
+            organization_id,
+            conversation_id,
+            workspace_id=workspace_id,
+            duration_seconds=conversation.duration_seconds,
+            turn_count=turn_count,
         )
         return conversation
     except ValueError as e:

@@ -379,6 +379,19 @@ def _all_audio_scores_download_failed(audio_scores: dict[str, dict[str, object]]
     )
 
 
+def _playground_call_recording(db, result):
+    from app.models.database import CallRecording, CallRecordingSource
+
+    return (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.evaluator_result_id == result.id,
+            CallRecording.source == CallRecordingSource.PLAYGROUND,
+        )
+        .first()
+    )
+
+
 @celery_app.task(name="process_evaluator_result", bind=True, max_retries=3)
 def process_evaluator_result_task(self, result_id: str):
     """
@@ -487,6 +500,23 @@ def process_evaluator_result_task(self, result_id: str):
 
             has_audio = bool(result.audio_s3_key)
             llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)
+            selected_metric_count = len(llm_metrics) + len(audio_metrics)
+
+            call_recording = _playground_call_recording(db, result)
+            if call_recording:
+                from app.services.billing.flexprice_service import (
+                    record_playground_call_evaluated,
+                )
+
+                evaluation_attempt_id = f"{result.id}:{self.request.id}"
+                record_playground_call_evaluated(
+                    result.organization_id,
+                    evaluation_attempt_id,
+                    evaluator_result_id=result.id,
+                    workspace_id=result.workspace_id,
+                    call_short_id=call_recording.call_short_id,
+                    metric_count=selected_metric_count,
+                )
 
             evaluation_time = None
 
@@ -590,6 +620,22 @@ def process_evaluator_result_task(self, result_id: str):
                 result.call_data = _make_json_serializable(result.call_data)
             result.status = EvaluatorResultStatus.COMPLETED.value
             db.commit()
+
+            from app.services.billing.flexprice_service import (
+                record_playground_evaluation_completed,
+            )
+
+            call_recording = _playground_call_recording(db, result)
+            if call_recording:
+                record_playground_evaluation_completed(
+                    result.organization_id,
+                    f"{result.id}:{self.request.id}",
+                    evaluator_result_id=result.id,
+                    workspace_id=result.workspace_id,
+                    call_short_id=call_recording.call_short_id,
+                    duration_seconds=result.duration_seconds,
+                    metric_count=len(metric_scores) or selected_metric_count,
+                )
 
             total_time = time.time() - task_start_time
             logger.info(

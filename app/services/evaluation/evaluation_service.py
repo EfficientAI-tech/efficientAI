@@ -135,6 +135,14 @@ class EvaluationService:
             evaluation.completed_at = datetime.now(UTC)
             db.commit()
 
+            from app.services.billing.flexprice_service import record_evaluation_completed
+
+            record_evaluation_completed(
+                evaluation.organization_id,
+                evaluation.id,
+                workspace_id=evaluation.workspace_id,
+            )
+
             return {
                 "evaluation_id": str(evaluation.id),
                 "status": "completed",

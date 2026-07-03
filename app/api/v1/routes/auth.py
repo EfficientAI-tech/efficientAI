@@ -50,7 +50,10 @@ from app.models.database import (
     RoleEnum,
     User,
 )
-from app.services.organization_provisioning import provision_default_workspace
+from app.services.organization_provisioning import (
+    provision_billing_customer,
+    provision_default_workspace,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -323,6 +326,11 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
         db,
         organization_id=organization.id,
         created_by_user_id=user.id,
+    )
+    provision_billing_customer(
+        organization_id=organization.id,
+        name=org_name,
+        email=payload.email,
     )
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()

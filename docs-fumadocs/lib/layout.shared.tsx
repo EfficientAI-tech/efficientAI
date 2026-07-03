@@ -5,7 +5,7 @@ export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
       title: <Logo />,
-      url: '/docs/intro',
+      url: '/docs/intro/',
     },
     themeSwitch: { enabled: false },
   };

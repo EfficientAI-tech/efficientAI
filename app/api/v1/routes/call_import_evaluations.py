@@ -15,7 +15,7 @@ from uuid import UUID
 
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
@@ -557,6 +557,7 @@ def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> 
 async def create_call_import_evaluation(
     call_import_id: UUID,
     payload: CallImportEvaluationCreate,
+    background_tasks: BackgroundTasks,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),

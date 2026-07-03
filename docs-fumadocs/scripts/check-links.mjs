@@ -55,6 +55,13 @@ function isSkippable(href) {
   );
 }
 
+function docsRouteNeedsTrailingSlash(href) {
+  const pathOnly = href.split('#')[0].split('?')[0];
+  if (!pathOnly.startsWith('/docs')) return false;
+  if (pathOnly === '/docs' || pathOnly === '/docs/') return false;
+  return !pathOnly.endsWith('/');
+}
+
 const errors = [];
 for (const file of walkDocs(docsRoot)) {
   const content = fs.readFileSync(file, 'utf8');
@@ -67,6 +74,9 @@ for (const file of walkDocs(docsRoot)) {
     if (href.startsWith('/docs')) {
       if (!routeExists(href)) {
         errors.push(`${rel}: broken docs route ${originalHref}`);
+      }
+      if (docsRouteNeedsTrailingSlash(href)) {
+        errors.push(`${rel}: docs route missing trailing slash ${originalHref}`);
       }
       continue;
     }

@@ -66,13 +66,14 @@ def operational_client(monkeypatch):
         yield client
 
 
-def test_public_health_via_alb_is_blocked(operational_client):
+def test_public_health_via_alb_is_allowed_for_lb_probes(operational_client):
+    """/health stays open for ALB/kube probes; only /metrics is gated."""
     response = operational_client.get(
         "/health",
         headers={"X-Forwarded-For": "203.0.113.1", "User-Agent": "SecurityScanner/1.0"},
     )
 
-    assert response.status_code == 404
+    assert response.status_code == 200
 
 
 def test_spoofed_user_agent_does_not_bypass_gate(monkeypatch):

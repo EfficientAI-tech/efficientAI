@@ -75,7 +75,7 @@ function buildRecords() {
     const title = parseTitle(frontmatter, body, fallbackTitle);
     const segments = featureId.split('/');
     const breadcrumbs = segments.slice(0, -1).map(toLabel);
-    const url = `/docs/${featureId}`;
+    const url = `/docs/${featureId}/`;
     return {
       id: featureId,
       url,

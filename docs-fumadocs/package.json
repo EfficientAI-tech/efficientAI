@@ -12,7 +12,8 @@
     "search:generate": "node scripts/generate-search-index.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
     "check:links": "node scripts/check-links.mjs",
-    "ci:check": "npm run validate:docs && npm run check:links && npm run types:check && npm run build"
+    "verify:routes": "node scripts/verify-static-routes.mjs",
+    "ci:check": "npm run validate:docs && npm run check:links && npm run types:check && npm run build && npm run verify:routes"
   },
   "dependencies": {
     "fumadocs-core": "16.8.11",

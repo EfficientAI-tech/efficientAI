@@ -5,11 +5,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id
+from app.services.billing.flexprice_service import (
+    record_observability_call_evaluated,
+    record_observability_call_ingested,
+)
 from app.models.database import (
     Agent, APIKey, CallRecording, CallRecordingStatus, CallRecordingSource,
     Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario, Workspace,
@@ -188,6 +192,13 @@ def _upsert_call_recording(
 
     response = _serialize_call_recording(call_recording, include_data=True)
     response["action"] = action
+    if action == "created":
+        record_observability_call_ingested(
+            organization_id,
+            call_recording.call_short_id,
+            workspace_id=workspace_id,
+            provider=provider_platform,
+        )
     return response
 
 
@@ -466,6 +477,7 @@ def _messages_to_speaker_segments(messages: List[Dict[str, Any]]) -> List[Dict[s
 async def evaluate_call(
     call_short_id: str,
     payload: EvaluateCallPayload,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -574,6 +586,13 @@ async def evaluate_call(
         db.commit()
     except Exception:
         pass
+
+    background_tasks.add_task(
+        record_observability_call_evaluated,
+        organization_id,
+        call_short_id,
+        workspace_id=workspace_id,
+    )
 
     return {
         "evaluator_result_id": str(evaluator_result.id),

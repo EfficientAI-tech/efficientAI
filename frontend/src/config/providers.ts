@@ -100,7 +100,7 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
   [ModelProvider.SARVAM]: {
     label: 'Sarvam',
     logo: '/sarvam.png',
-    description: 'Sarvam STT & TTS',
+    description: 'Sarvam STT, TTS & LLM',
   },
   [ModelProvider.VOICEMAKER]: {
     label: 'VoiceMaker',
@@ -162,7 +162,7 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
   [IntegrationPlatform.SARVAM]: {
     label: 'Sarvam',
     logo: '/sarvam.png',
-    description: 'Sarvam STT & TTS for voice AI',
+    description: 'Sarvam STT, TTS & LLM for voice AI',
     modelProvider: ModelProvider.SARVAM,
   },
   [IntegrationPlatform.VOICEMAKER]: {

@@ -2,16 +2,17 @@
 
 import json
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
-from uuid import UUID
+from uuid import UUID, uuid4
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key, get_workspace_id
+from app.services.billing.flexprice_service import record_metrics_llm_assist
 from app.models.database import Metric, MetricCategory, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
     MetricCreate,
@@ -1539,7 +1540,9 @@ def _parse_metric_generation_response(text: str) -> Dict[str, Any]:
 @router.post("/generate", response_model=MetricGenerateResponse)
 def generate_metric(
     req: MetricGenerateRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Use an LLM to suggest a metric definition. Does NOT persist anything."""
@@ -1630,6 +1633,14 @@ def generate_metric(
         ).first():
             suffix += 1
         name = f"{name} ({suffix})"
+
+    background_tasks.add_task(
+        record_metrics_llm_assist,
+        organization_id,
+        uuid4(),
+        workspace_id=workspace_id,
+        mode=req.mode,
+    )
 
     return MetricGenerateResponse(
         name=name,
@@ -1953,7 +1964,9 @@ def _ensure_unique_metric_name(
 @router.post("/parse-bulk", response_model=MetricParseBulkResponse)
 def parse_bulk_metric(
     req: MetricParseBulkRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Parse a multi-label rubric into a *list* of independent metric drafts.
@@ -2076,6 +2089,14 @@ def parse_bulk_metric(
                 source_label=label,
             )
         )
+
+    background_tasks.add_task(
+        record_metrics_llm_assist,
+        organization_id,
+        uuid4(),
+        workspace_id=workspace_id,
+        mode="parse-bulk",
+    )
 
     return MetricParseBulkResponse(metrics=drafts, parent=parent_payload)
 

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ from app.dependencies import (
     get_workspace_id,
     Principal,
 )
+from app.services.billing.flexprice_service import record_judge_alignment_run_started
 from app.models.database import (
     Agent,
     Evaluator,
@@ -617,6 +618,7 @@ def list_runs(
 def trigger_judge_run(
     dataset_id: UUID,
     body: JudgeRunCreate,
+    background_tasks: BackgroundTasks,
     principal: Principal = Depends(get_principal),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -662,6 +664,19 @@ def trigger_judge_run(
             ),
         )
 
+    from app.services.judge_alignment.judge_runner import select_samples_for_split
+
+    sample_id_strs = (
+        [str(s) for s in (body.sample_ids or [])] if body.split != "all" else None
+    )
+    selected_samples = select_samples_for_split(
+        dataset_id=dataset.id,
+        split=body.split,
+        db=db,
+        sample_ids=sample_id_strs,
+    )
+    sample_count = len(selected_samples)
+
     judge_run = JudgeRun(
         dataset_id=dataset.id,
         organization_id=organization_id,
@@ -679,10 +694,6 @@ def trigger_judge_run(
     db.commit()
     db.refresh(judge_run)
 
-    sample_id_strs = (
-        [str(s) for s in (body.sample_ids or [])] if body.split != "all" else None
-    )
-
     try:
         from app.workers.tasks.run_judge_alignment import run_judge_alignment_task
 
@@ -692,6 +703,14 @@ def trigger_judge_run(
         judge_run.celery_task_id = async_result.id
         db.commit()
         db.refresh(judge_run)
+        background_tasks.add_task(
+            record_judge_alignment_run_started,
+            organization_id,
+            judge_run.id,
+            workspace_id=workspace_id,
+            dataset_id=dataset.id,
+            sample_count=sample_count,
+        )
     except Exception as exc:
         logger.error(f"[JudgeAlignment] Failed to enqueue judge task: {exc}")
         judge_run.status = "failed"

@@ -291,6 +291,18 @@ def generate_tts_comparison_task(self, comparison_id: str):
                 sample.status = TTSSampleStatus.COMPLETED.value
                 db.commit()
 
+                from app.services.billing.flexprice_service import record_tts_sample_synthesized
+
+                record_tts_sample_synthesized(
+                    comp.organization_id,
+                    sample.id,
+                    workspace_id=comp.workspace_id,
+                    comparison_id=comp.id,
+                    provider=sample.provider,
+                    side=sample.side,
+                    duration_seconds=sample.duration_seconds,
+                )
+
                 logger.info(
                     f"[TTS Generate] Sample {sample.id} done – "
                     f"{sample.provider}/{sample.voice_name} ttfb={ttfb_ms:.0f}ms total={latency_ms:.0f}ms"

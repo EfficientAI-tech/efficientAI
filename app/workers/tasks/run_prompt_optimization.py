@@ -141,6 +141,18 @@ def run_prompt_optimization_task(self, optimization_run_id: str):
             f"Best score: {run.best_score}"
         )
 
+        from app.services.billing.flexprice_service import (
+            record_prompt_optimization_run_completed,
+        )
+
+        record_prompt_optimization_run_completed(
+            run.organization_id,
+            run.id,
+            workspace_id=run.workspace_id,
+            agent_id=run.agent_id,
+            candidates_count=len(result.get("candidates", [])),
+        )
+
     except Exception as e:
         logger.error(f"[GEPA] Optimization run {optimization_run_id} failed: {e}", exc_info=True)
         try:

@@ -79,6 +79,15 @@ def generate_tts_report_pdf_task(self, report_job_id: str, report_options: dict 
         report_job.error_message = None
         db.commit()
 
+        from app.services.billing.flexprice_service import record_tts_report_completed
+
+        record_tts_report_completed(
+            report_job.organization_id,
+            report_job.id,
+            workspace_id=report_job.workspace_id,
+            comparison_id=comparison.id,
+        )
+
         return {"status": "completed", "s3_key": s3_key}
     except Exception as exc:
         logger.error(f"[TTS Report] Task failed: {exc}", exc_info=True)

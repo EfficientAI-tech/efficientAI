@@ -23,7 +23,10 @@ from uuid import UUID
 
 from app.database import SessionLocal, init_db
 from app.models.database import APIKey, Organization
-from app.services.organization_provisioning import provision_default_workspace
+from app.services.organization_provisioning import (
+    provision_billing_customer,
+    provision_default_workspace,
+)
 
 
 def main() -> int:
@@ -61,6 +64,10 @@ def main() -> int:
             db.add(org)
             db.flush()
             provision_default_workspace(db, organization_id=org.id)
+            provision_billing_customer(
+                organization_id=org.id,
+                name=args.new_org,
+            )
 
         api_key = secrets.token_urlsafe(32)
         db_key = APIKey(

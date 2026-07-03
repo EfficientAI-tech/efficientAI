@@ -510,6 +510,16 @@
     "model_type": "tts",
     "description": "Smallest Lightning v3.1 low-latency neural TTS"
   },
+  "sarvam-30b": {
+    "provider": "sarvam",
+    "model_type": "llm",
+    "description": "Sarvam 30B — balanced Indian-language + English chat model (64K context)"
+  },
+  "sarvam-105b": {
+    "provider": "sarvam",
+    "model_type": "llm",
+    "description": "Sarvam 105B — flagship MoE for complex reasoning, coding, and agentic workflows (128K context)"
+  },
   "saarika:v2.5": {
     "provider": "sarvam",
     "model_type": "stt",

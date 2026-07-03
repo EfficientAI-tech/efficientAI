@@ -2,14 +2,15 @@
 Chat/Inference API Routes
 For generating responses from AI models
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Dict, Optional, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 
-from app.dependencies import get_db, get_organization_id
+from app.dependencies import get_db, get_organization_id, get_workspace_id
 from app.services.ai.llm_service import llm_service
+from app.services.billing.flexprice_service import record_chat_completion
 from app.models.schemas import ModelProvider
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -39,7 +40,9 @@ class ChatResponse(BaseModel):
 @router.post("/completion", response_model=ChatResponse)
 async def chat_completion(
     request: ChatRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
     """Generate a chat completion using the specified AI provider and model."""
@@ -59,6 +62,14 @@ async def chat_completion(
             task_defaults={"temperature": 0.7},
         )
         
+        background_tasks.add_task(
+            record_chat_completion,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            model=result.get("model", request.model),
+        )
+
         return ChatResponse(
             text=result.get("text", ""),
             model=result.get("model", request.model),

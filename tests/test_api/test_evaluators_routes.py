@@ -61,3 +61,36 @@ def test_run_evaluators_returns_task_ids(
     body = response.json()
     assert body["task_ids"] == ["task-1", "task-2"]
     assert len(body["evaluator_results"]) == 2
+
+
+def test_run_evaluators_bills_only_successfully_queued_tasks(
+    authenticated_client, monkeypatch, make_evaluator
+):
+    from app.workers import celery_app
+
+    evaluator = make_evaluator()
+    counter = {"i": 0}
+    billed = []
+
+    def _fake_delay(*_args, **_kwargs):
+        counter["i"] += 1
+        if counter["i"] > 1:
+            raise RuntimeError("queue failed")
+        return _FakeTaskResult(f"task-{counter['i']}")
+
+    def _capture_billing(*_args, **kwargs):
+        billed.append(kwargs)
+
+    monkeypatch.setattr(celery_app.run_evaluator_task, "delay", _fake_delay)
+    monkeypatch.setattr(
+        "app.api.v1.routes.evaluators.record_evaluator_run_requested",
+        _capture_billing,
+    )
+
+    payload = {"evaluator_ids": [str(evaluator.id), str(evaluator.id)]}
+    response = authenticated_client.post("/api/v1/evaluators/run", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["task_ids"] == ["task-1"]
+    assert len(billed) == 1
+    assert billed[0]["quantity"] == 1
