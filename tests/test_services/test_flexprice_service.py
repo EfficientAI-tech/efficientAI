@@ -260,12 +260,13 @@ def test_record_event_returns_false_when_disabled(mock_flexprice):
 
 
 @patch("flexprice.Flexprice")
-def test_record_playground_call_evaluated_uses_evaluator_result_id(mock_flexprice):
+def test_record_playground_call_evaluated_uses_per_attempt_event_id(mock_flexprice):
     settings.FLEXPRICE_ENABLED = True
     settings.FLEXPRICE_API_KEY = "test-key"
 
     org_id = uuid4()
     evaluator_result_id = uuid4()
+    evaluation_attempt_id = f"{evaluator_result_id}:celery-task-abc"
     workspace_id = uuid4()
 
     mock_client = MagicMock()
@@ -273,7 +274,8 @@ def test_record_playground_call_evaluated_uses_evaluator_result_id(mock_flexpric
 
     svc.record_playground_call_evaluated(
         org_id,
-        evaluator_result_id,
+        evaluation_attempt_id,
+        evaluator_result_id=evaluator_result_id,
         workspace_id=workspace_id,
         call_short_id="123456",
         metric_count=4,
@@ -282,12 +284,13 @@ def test_record_playground_call_evaluated_uses_evaluator_result_id(mock_flexpric
     mock_client.events.ingest_event.assert_called_once_with(
         event_name="playground.call_evaluated",
         external_customer_id=str(org_id),
-        event_id=str(evaluator_result_id),
+        event_id=evaluation_attempt_id,
         source="efficientai",
         properties={
             "workspace_id": str(workspace_id),
             "call_short_id": "123456",
             "evaluator_result_id": str(evaluator_result_id),
+            "evaluation_attempt_id": evaluation_attempt_id,
             "metric_count": "4",
         },
     )

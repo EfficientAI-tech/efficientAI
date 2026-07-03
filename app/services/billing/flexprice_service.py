@@ -528,8 +528,9 @@ def record_playground_websocket_session_started(
 
 def record_playground_call_evaluated(
     organization_id: UUID,
-    evaluator_result_id: UUID,
+    evaluation_attempt_id: Union[str, UUID],
     *,
+    evaluator_result_id: UUID,
     workspace_id: UUID,
     call_short_id: str,
     metric_count: int,
@@ -537,11 +538,12 @@ def record_playground_call_evaluated(
     record_event(
         PLAYGROUND_CALL_EVALUATED,
         organization_id,
-        evaluator_result_id,
+        evaluation_attempt_id,
         properties={
             "workspace_id": workspace_id,
             "call_short_id": call_short_id,
             "evaluator_result_id": evaluator_result_id,
+            "evaluation_attempt_id": evaluation_attempt_id,
             "metric_count": metric_count,
         },
     )
@@ -549,8 +551,9 @@ def record_playground_call_evaluated(
 
 def record_playground_evaluation_completed(
     organization_id: UUID,
-    evaluator_result_id: UUID,
+    evaluation_attempt_id: Union[str, UUID],
     *,
+    evaluator_result_id: UUID,
     workspace_id: UUID,
     call_short_id: str,
     duration_seconds: Optional[float] = None,
@@ -559,11 +562,12 @@ def record_playground_evaluation_completed(
     record_event(
         PLAYGROUND_EVALUATION_COMPLETED,
         organization_id,
-        evaluator_result_id,
+        evaluation_attempt_id,
         properties={
             "workspace_id": workspace_id,
             "call_short_id": call_short_id,
             "evaluator_result_id": evaluator_result_id,
+            "evaluation_attempt_id": evaluation_attempt_id,
             "duration_seconds": duration_seconds,
             "metric_count": metric_count,
         },

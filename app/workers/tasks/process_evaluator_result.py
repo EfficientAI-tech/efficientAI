@@ -508,9 +508,11 @@ def process_evaluator_result_task(self, result_id: str):
                     record_playground_call_evaluated,
                 )
 
+                evaluation_attempt_id = f"{result.id}:{self.request.id}"
                 record_playground_call_evaluated(
                     result.organization_id,
-                    result.id,
+                    evaluation_attempt_id,
+                    evaluator_result_id=result.id,
                     workspace_id=result.workspace_id,
                     call_short_id=call_recording.call_short_id,
                     metric_count=selected_metric_count,
@@ -627,7 +629,8 @@ def process_evaluator_result_task(self, result_id: str):
             if call_recording:
                 record_playground_evaluation_completed(
                     result.organization_id,
-                    result.id,
+                    f"{result.id}:{self.request.id}",
+                    evaluator_result_id=result.id,
                     workspace_id=result.workspace_id,
                     call_short_id=call_recording.call_short_id,
                     duration_seconds=result.duration_seconds,

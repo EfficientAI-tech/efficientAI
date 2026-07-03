@@ -419,8 +419,6 @@ def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
         )
         if billing_accepted:
             evaluation.billed_completed_rows = completed
-    elif completed <= already_billed:
-        evaluation.billed_completed_rows = completed
 
 
 # Per-task time limits keep a wedged audio evaluation (e.g. torch.hub UTMOS

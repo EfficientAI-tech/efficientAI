@@ -1034,3 +1034,43 @@ def test_rollup_parent_retries_billing_after_failed_ingest(db_session, monkeypat
     assert len(recorded) == 2
     assert recorded[0]["rows_billed"] == 2
     assert recorded[1]["rows_billed"] == 2
+
+
+def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
+    db_session, monkeypatch
+):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    recorded = []
+
+    def _capture(*_args, **kwargs):
+        recorded.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        _capture,
+    )
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=8)
+    evaluation.status = "running"
+    evaluation.billed_completed_rows = 8
+    for idx in range(8):
+        eval_rows[idx].status = "completed"
+    db_session.commit()
+
+    eval_rows[7].status = "running"
+    db_session.commit()
+    _rollup_parent(db_session, evaluation)
+
+    assert evaluation.completed_rows == 7
+    assert evaluation.billed_completed_rows == 8
+    assert recorded == []
+
+    eval_rows[7].status = "completed"
+    db_session.commit()
+    _rollup_parent(db_session, evaluation)
+
+    assert evaluation.completed_rows == 8
+    assert evaluation.billed_completed_rows == 8
+    assert recorded == []
