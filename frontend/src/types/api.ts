@@ -288,6 +288,8 @@ export interface AIProvider {
   is_active: boolean
   /** True if this row is the default credential for (org, provider). */
   is_default?: boolean
+  /** True when provider secrets are resolved by the Bifrost gateway. */
+  gateway_managed?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -295,7 +297,7 @@ export interface AIProvider {
 
 export interface AIProviderCreate {
   provider: ModelProvider
-  api_key: string
+  api_key?: string | null
   name?: string | null
   /** Mark the new credential as the default for (org, provider). */
   is_default?: boolean

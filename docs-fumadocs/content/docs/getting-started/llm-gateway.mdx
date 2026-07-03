@@ -1,0 +1,112 @@
+---
+id: llm-gateway
+title: LLM Gateway
+sidebar_position: 5
+---
+
+# LLM Gateway
+
+EfficientAI routes batch and evaluation LLM workloads through [LiteLLM](https://docs.litellm.ai/). You can optionally point those calls at an enterprise or self-hosted gateway instead of calling provider APIs directly.
+
+Supported gateway types:
+
+| Type | Description |
+|------|-------------|
+| **Direct** | Default — LiteLLM calls providers using org AI Provider credentials |
+| **Bifrost** | [Bifrost](https://docs.getbifrost.ai/) `/litellm` proxy with optional `x-bf-vk` virtual key |
+| **LiteLLM Proxy** | Self-hosted [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/quick_start) with optional master key |
+
+## What is routed through the gateway
+
+When enabled, these workloads use the configured gateway:
+
+- Evaluators and metrics
+- Call import transcription, diarisation, and evaluation LLM steps
+- GEPA prompt optimization
+- Gemini batch STT via LiteLLM
+
+**Not affected:** real-time voice agents (they use the EfficientAI SDK directly, not LiteLLM).
+
+## Platform configuration
+
+Operators enable a gateway globally in `config.yml`:
+
+```yaml
+llm_gateway:
+  enabled: true
+  type: bifrost              # bifrost | litellm_proxy
+  base_url: "http://localhost:8080/litellm"
+  virtual_key: null          # Bifrost only (x-bf-vk header)
+  master_key: null           # LiteLLM Proxy only (LITELLM_MASTER_KEY)
+  passthrough_provider_keys: false
+```
+
+| Setting | Description |
+|---------|-------------|
+| `enabled` | Platform-wide toggle for orgs that inherit the default |
+| `type` | Gateway implementation: `bifrost` or `litellm_proxy` |
+| `base_url` | Gateway endpoint (Bifrost: must end with `/litellm`; LiteLLM Proxy: e.g. `http://localhost:4000`) |
+| `virtual_key` | Optional Bifrost `x-bf-vk` header |
+| `master_key` | Optional LiteLLM Proxy master key |
+| `passthrough_provider_keys` | When `true`, org AI provider API keys are still sent through the gateway |
+
+When routing through a gateway, Gemini models automatically use OpenAI-compatible proxy endpoints (`/v1/chat/completions`) instead of native Gemini `:generateContent` URLs. This is required for Bifrost and LiteLLM Proxy compatibility.
+
+### Gateway-managed credentials
+
+When `passthrough_provider_keys` is `false`, provider secrets live in the gateway. You can add AI provider integrations in EfficientAI **without an API key** — the integration row marks which provider to use, and the gateway supplies the secret at call time. Integrations created this way show a **Gateway managed** badge in the UI.
+
+Requirements:
+
+1. Platform `passthrough_provider_keys: false`
+2. LLM gateway active for the organization (platform and/or org Integrations settings)
+3. Real provider keys configured in the gateway
+
+EfficientAI sends a harmless placeholder `api_key` to satisfy LiteLLM's OpenAI client constructor; the gateway ignores it when provider keys are configured server-side.
+
+Voice agents and non-LiteLLM paths still require direct provider credentials.
+
+## Organization overrides (Integrations UI)
+
+On **Configurations → Integrations**, open **LLM Gateway** to configure per-organization settings:
+
+- **Inherit platform default** — follow `config.yml`
+- **Enabled** — force routing through the gateway (optionally with org-specific type, URL, and keys)
+- **Disabled** — opt out and call providers directly, even when the platform gateway is enabled
+
+Org virtual keys and LiteLLM Proxy master keys are encrypted at rest like AI provider credentials.
+
+## Provider compatibility
+
+Only providers supported by **both** LiteLLM and your gateway deployment work through the proxy. EfficientAI's LiteLLM integration covers OpenAI, Anthropic, Google/Gemini, Azure, AWS Bedrock, DeepSeek, Groq, xAI, and Fireworks.
+
+## Known limitations
+
+- **Gemini Files API uploads** (`litellm.create_file` used during LLM diarisation for large audio) go directly to Google. Only the subsequent `litellm.completion` diarisation call is proxied.
+- **Voice agents** are not routed through the LLM gateway.
+
+## Example call shapes
+
+**Bifrost:**
+
+```python
+litellm.completion(
+    model="openai/gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello!"}],
+    api_base="http://localhost:8080/litellm",
+    extra_headers={"x-bf-vk": "your-virtual-key"},
+)
+```
+
+**LiteLLM Proxy:**
+
+```python
+litellm.completion(
+    model="openai/gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello!"}],
+    api_base="http://localhost:4000",
+    api_key="your-master-key",
+)
+```
+
+EfficientAI injects `api_base`, headers, and keys automatically when the gateway is active.

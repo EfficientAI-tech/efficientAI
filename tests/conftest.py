@@ -347,6 +347,7 @@ def client(db_session, api_key, org_id):
         alerts,
         audio,
         auth,
+        llm_gateway,
         call_import_evaluations,
         call_import_schemas,
         call_import_tags,
@@ -394,6 +395,7 @@ def client(db_session, api_key, org_id):
     app.include_router(audio.router, prefix="/api/v1")
     app.include_router(integrations.router, prefix="/api/v1")
     app.include_router(aiproviders.router, prefix="/api/v1")
+    app.include_router(llm_gateway.router, prefix="/api/v1")
     app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(evaluator_results.router, prefix="/api/v1")
     app.include_router(voicebundles.router, prefix="/api/v1")

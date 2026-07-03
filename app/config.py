@@ -163,6 +163,14 @@ class Settings(BaseSettings):
     JUDGE_ALIGNMENT_ENABLED: bool = True
     JUDGE_ALIGNMENT_CSV_MAX_ROWS: int = 5000
 
+    # LLM gateway (optional platform-wide proxy for batch LLM calls).
+    LLM_GATEWAY_ENABLED: bool = False
+    LLM_GATEWAY_TYPE: str = "bifrost"  # bifrost | litellm_proxy
+    LLM_GATEWAY_BASE_URL: Optional[str] = None
+    LLM_GATEWAY_VIRTUAL_KEY: Optional[str] = None
+    LLM_GATEWAY_MASTER_KEY: Optional[str] = None
+    LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -599,6 +607,28 @@ def load_config_from_file(config_path: str) -> None:
             settings.JUDGE_ALIGNMENT_ENABLED = bool(ja_cfg["enabled"])
         if "csv_max_rows" in ja_cfg:
             settings.JUDGE_ALIGNMENT_CSV_MAX_ROWS = int(ja_cfg["csv_max_rows"])
+
+    def _apply_llm_gateway_settings(gateway_cfg: dict, *, gateway_type: str) -> None:
+        if "enabled" in gateway_cfg:
+            settings.LLM_GATEWAY_ENABLED = bool(gateway_cfg["enabled"])
+        settings.LLM_GATEWAY_TYPE = gateway_type
+        if gateway_cfg.get("base_url"):
+            settings.LLM_GATEWAY_BASE_URL = gateway_cfg["base_url"]
+        if gateway_cfg.get("virtual_key"):
+            settings.LLM_GATEWAY_VIRTUAL_KEY = gateway_cfg["virtual_key"]
+        if gateway_cfg.get("master_key"):
+            settings.LLM_GATEWAY_MASTER_KEY = gateway_cfg["master_key"]
+        if "passthrough_provider_keys" in gateway_cfg:
+            settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS = bool(
+                gateway_cfg["passthrough_provider_keys"]
+            )
+
+    if "llm_gateway" in config_data:
+        llm_cfg = config_data["llm_gateway"]
+        gateway_type = (llm_cfg.get("type") or "bifrost").strip().lower()
+        if gateway_type not in ("bifrost", "litellm_proxy"):
+            gateway_type = "bifrost"
+        _apply_llm_gateway_settings(llm_cfg, gateway_type=gateway_type)
 
     if "operational" in config_data:
         operational_config = config_data["operational"]

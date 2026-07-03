@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
@@ -22,11 +22,16 @@ from app.models.schemas import (
 )
 from app.core.encryption import encrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
+from app.services.ai.llm_gateway import (
+    GATEWAY_MANAGED_KEY_SENTINEL,
+    gateway_managed_credentials_enabled,
+    is_gateway_managed_stored_key,
+)
 
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
 
 
-def _scrub_for_response(db: Session, instance: AIProvider) -> AIProvider:
+def _scrub_for_response(db: Session, instance: AIProvider) -> AIProviderResponse:
     """Detach the row from the session before clearing ``api_key``.
 
     The same SQLAlchemy session is reused across requests in tests; if we
@@ -34,9 +39,27 @@ def _scrub_for_response(db: Session, instance: AIProvider) -> AIProvider:
     treats it as a pending UPDATE and tries to flush ``api_key=NULL`` on
     the next request — which violates the column's NOT NULL constraint.
     """
+    gateway_managed = is_gateway_managed_stored_key(instance.api_key)
     db.expunge(instance)
     instance.api_key = None
-    return instance
+    response = AIProviderResponse.model_validate(instance)
+    return response.model_copy(update={"gateway_managed": gateway_managed})
+
+
+def _encrypt_provider_api_key(api_key: Optional[str]) -> str:
+    trimmed = (api_key or "").strip()
+    if trimmed:
+        return encrypt_api_key(trimmed)
+    if gateway_managed_credentials_enabled():
+        return encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL)
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            "api_key is required. When LLM gateway-managed credentials "
+            "are enabled (passthrough_provider_keys: false), you can omit "
+            "the key and provider secrets will be resolved by the gateway."
+        ),
+    )
 
 
 @router.post("", response_model=AIProviderResponse, status_code=status.HTTP_201_CREATED, operation_id="createAIProvider")
@@ -63,7 +86,7 @@ async def create_aiprovider(
     requested_default = bool(aiprovider.is_default)
     will_be_default = requested_default or existing_default is None
 
-    encrypted_api_key = encrypt_api_key(aiprovider.api_key)
+    encrypted_api_key = _encrypt_provider_api_key(aiprovider.api_key)
     db_aiprovider = AIProvider(
         organization_id=organization_id,
         provider=provider_value,

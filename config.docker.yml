@@ -115,6 +115,15 @@ judge_alignment:
   enabled: true
   csv_max_rows: 5000
 
+# LLM gateway (optional). Per-org overrides in Integrations UI.
+# llm_gateway:
+#   enabled: false
+#   type: bifrost              # bifrost | litellm_proxy
+#   base_url: "http://localhost:8080/litellm"
+#   virtual_key: null
+#   master_key: null
+#   passthrough_provider_keys: true
+
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
 # license:

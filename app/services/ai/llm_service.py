@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider
 from app.services.ai.llm_generation_config import build_litellm_kwargs
+from app.services.ai.llm_gateway import apply_llm_gateway, resolve_litellm_api_key
 
 # LiteLLM will silently drop params the target provider doesn't support
 # rather than raising an error.
@@ -216,14 +217,7 @@ class LLMService:
                 f"AI provider {llm_provider} not configured for this organization."
             )
 
-        from app.core.encryption import decrypt_api_key
-
-        try:
-            api_key = decrypt_api_key(ai_provider.api_key)
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to decrypt API key for provider {llm_provider}: {e}"
-            )
+        api_key = resolve_litellm_api_key(organization_id, db, ai_provider)
 
         # --- call LiteLLM --------------------------------------------------
         model_str = self._litellm_model_name(llm_provider, llm_model)
@@ -231,9 +225,10 @@ class LLMService:
         call_kwargs: Dict[str, Any] = {
             "model": model_str,
             "messages": messages,
-            "api_key": api_key,
             "temperature": temperature,
         }
+        if api_key is not None:
+            call_kwargs["api_key"] = api_key
         # Gemini "thinking" families (2.5 + 3.x) ship with reasoning
         # enabled by default. For structured-JSON workloads (the
         # diariser and evaluator) chain-of-thought is wasted output
@@ -264,6 +259,12 @@ class LLMService:
             call_kwargs["max_tokens"] = effective_max_tokens
         if config:
             call_kwargs.update(config)
+
+        call_kwargs = apply_llm_gateway(
+            call_kwargs,
+            organization_id=organization_id,
+            db=db,
+        )
 
         try:
             response = litellm.completion(**call_kwargs)

@@ -169,6 +169,37 @@ export interface OrganizationSummary {
   name: string
 }
 
+export type LLMGatewayMode = 'inherit' | 'enabled' | 'disabled'
+export type LLMGatewayType = 'inherit' | 'bifrost' | 'litellm_proxy'
+export type LLMGatewayRouting = 'direct' | 'bifrost' | 'litellm_proxy'
+
+export interface LLMGatewaySettings {
+  mode: LLMGatewayMode
+  gateway_type: LLMGatewayType
+  base_url?: string | null
+  has_virtual_key: boolean
+  has_master_key: boolean
+  platform_enabled: boolean
+  platform_gateway_type: 'bifrost' | 'litellm_proxy'
+  platform_base_url?: string | null
+  effective_routing: LLMGatewayRouting
+  effective_gateway_type?: 'bifrost' | 'litellm_proxy' | null
+  effective_base_url?: string | null
+  effective_has_virtual_key: boolean
+  effective_has_master_key: boolean
+  gateway_managed_credentials: boolean
+}
+
+export interface LLMGatewaySettingsUpdate {
+  mode: LLMGatewayMode
+  gateway_type?: LLMGatewayType
+  base_url?: string | null
+  virtual_key?: string | null
+  master_key?: string | null
+  clear_virtual_key?: boolean
+  clear_master_key?: boolean
+}
+
 export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
@@ -1000,6 +1031,16 @@ class ApiClient {
 
   async testAIProvider(aiproviderId: string): Promise<any> {
     const response = await this.client.post(`/api/v1/aiproviders/${aiproviderId}/test`)
+    return response.data
+  }
+
+  async getLLMGatewaySettings(): Promise<LLMGatewaySettings> {
+    const response = await this.client.get('/api/v1/organizations/llm-gateway')
+    return response.data
+  }
+
+  async updateLLMGatewaySettings(data: LLMGatewaySettingsUpdate): Promise<LLMGatewaySettings> {
+    const response = await this.client.put('/api/v1/organizations/llm-gateway', data)
     return response.data
   }
 

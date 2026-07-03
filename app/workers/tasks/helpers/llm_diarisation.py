@@ -750,6 +750,10 @@ def _upload_audio_to_gemini_files(
       / retry surface as the eventual ``litellm.completion`` call, and
       the returned ``file.id`` is already in the exact shape LiteLLM's
       Gemini transformation expects to see in a ``file`` content part.
+    * Bifrost gateway routing is **not** applied here — the Gemini Files
+      API upload goes directly to Google. Only the subsequent
+      ``litellm.completion`` diarisation call is proxied when Bifrost
+      is enabled (via ``LLMService``).
     * The ``(filename, bytes, content_type)`` tuple form is mandatory —
       passing raw bytes makes LiteLLM default the Content-Type header
       to ``application/octet-stream``, which Gemini then rejects as
