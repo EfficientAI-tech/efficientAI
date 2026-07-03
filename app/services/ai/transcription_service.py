@@ -90,7 +90,7 @@ class TranscriptionService:
         preferred in either table; otherwise the row marked ``is_default``
         wins, with a back-compat fallback to the most recent active row.
         """
-        from app.services.ai.bifrost_gateway import resolve_litellm_api_key
+        from app.services.ai.llm_gateway import resolve_litellm_api_key
 
         ai_provider = self._get_ai_provider(
             provider, db, organization_id, credential_id=credential_id
