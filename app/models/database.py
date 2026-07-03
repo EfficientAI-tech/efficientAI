@@ -54,6 +54,8 @@ class Organization(Base):
     # Shape: {"min_labels_to_evaluate": int, "min_labels_to_optimize": int}
     # Falls back to system defaults (20 / 50) when null.
     judge_alignment_settings = Column(JSON, nullable=True)
+    # Per-org LLM gateway overrides (enabled, gateway_type, base_url, keys).
+    llm_gateway_settings = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

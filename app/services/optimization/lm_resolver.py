@@ -7,9 +7,12 @@ passed explicitly on every LiteLLM call -- no environment variables mutated.
 """
 
 from typing import List, Optional
+from uuid import UUID
 
-from app.core.encryption import decrypt_api_key
+from sqlalchemy.orm import Session
+
 from app.models.database import AIProvider, Evaluator, VoiceBundle
+from app.services.ai.llm_gateway import resolve_litellm_api_key
 
 
 def resolve_lm(
@@ -27,17 +30,22 @@ def resolve_lm(
     return "openai/gpt-4o"
 
 
-def resolve_api_key(lm_identifier: str, ai_providers: List[AIProvider]) -> str:
+def resolve_api_key(
+    lm_identifier: str,
+    ai_providers: List[AIProvider],
+    organization_id: UUID,
+    db: Session,
+) -> Optional[str]:
     """
     Given ``"openai/gpt-5.4"`` and the org's provider list, decrypt and
-    return the matching API key.
+    return the matching API key, or None when Bifrost manages provider keys.
     """
     provider_prefix = lm_identifier.split("/")[0].lower()
     for p in ai_providers:
         if not p.is_active or not p.api_key:
             continue
         if p.provider.lower() == provider_prefix:
-            return decrypt_api_key(p.api_key)
+            return resolve_litellm_api_key(organization_id, db, p)
     raise RuntimeError(
         f"No active AI provider matching '{provider_prefix}' found. "
         "Add one in Settings > AI Providers."
