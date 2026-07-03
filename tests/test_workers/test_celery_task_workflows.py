@@ -379,6 +379,7 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
                 enabled_surfaces=["agent"],
             )
         )
+    db_session.flush()
     db_session.add(
         CallRecording(
             id=uuid4(),
