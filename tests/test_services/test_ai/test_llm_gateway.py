@@ -293,3 +293,39 @@ def test_apply_gateway_leaves_openai_models_unmodified():
 
     assert "custom_llm_provider" not in result
     assert result["model"] == "openai/gpt-4o-mini"
+
+
+def test_apply_gateway_without_model_skips_gemini_proxy_routing():
+    """GEPA batch kwargs must include model for native-path routing."""
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://localhost:8080/litellm",
+        passthrough=False,
+    )
+    org_id, db = _org_db({"enabled": True})
+    result = apply_llm_gateway(
+        {"api_key": "google-key"},
+        organization_id=org_id,
+        db=db,
+    )
+
+    assert "custom_llm_provider" not in result
+
+
+def test_apply_gateway_with_model_enables_gemini_proxy_routing_for_gepa_batch():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://localhost:8080/litellm",
+        passthrough=False,
+    )
+    org_id, db = _org_db({"enabled": True})
+    result = apply_llm_gateway(
+        {"model": "gemini/gemini-2.5-flash", "api_key": "google-key"},
+        organization_id=org_id,
+        db=db,
+    )
+
+    assert result["custom_llm_provider"] == "openai"
+    assert result["model"] == "gemini/gemini-2.5-flash"
