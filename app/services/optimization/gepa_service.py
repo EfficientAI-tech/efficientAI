@@ -102,20 +102,27 @@ def run_optimization(
     if not trainset:
         raise ValueError("No evaluator results with transcripts available for optimization")
 
-    evaluator_fn = build_evaluator(metrics, ai_providers, organization_id, db)
+    evaluator_fn = build_evaluator(
+        metrics,
+        ai_providers,
+        organization_id,
+        db,
+        lm_identifier=lm_identifier,
+    )
 
     logger.info(
         f"[GEPA] Starting optimization for agent '{agent.name}' "
         f"with {len(trainset)} training examples, LM={lm_identifier}"
     )
 
-    batch_kwargs: Dict[str, Any] = {"model": lm_identifier}
+    batch_kwargs: Dict[str, Any] = {}
     if api_key is not None:
         batch_kwargs["api_key"] = api_key
     batch_kwargs = apply_llm_gateway(
         batch_kwargs,
         organization_id=organization_id,
         db=db,
+        model=lm_identifier,
     )
 
     adapter = DefaultAdapter(

@@ -296,7 +296,7 @@ def test_apply_gateway_leaves_openai_models_unmodified():
 
 
 def test_apply_gateway_without_model_skips_gemini_proxy_routing():
-    """GEPA batch kwargs must include model for native-path routing."""
+    """Without model in kwargs or routing param, native-path routing is skipped."""
     _set_platform_gateway(
         enabled=True,
         gateway_type="bifrost",
@@ -313,7 +313,7 @@ def test_apply_gateway_without_model_skips_gemini_proxy_routing():
     assert "custom_llm_provider" not in result
 
 
-def test_apply_gateway_with_model_enables_gemini_proxy_routing_for_gepa_batch():
+def test_apply_gateway_routing_model_enables_gemini_proxy_routing_for_gepa_batch():
     _set_platform_gateway(
         enabled=True,
         gateway_type="bifrost",
@@ -322,10 +322,11 @@ def test_apply_gateway_with_model_enables_gemini_proxy_routing_for_gepa_batch():
     )
     org_id, db = _org_db({"enabled": True})
     result = apply_llm_gateway(
-        {"model": "gemini/gemini-2.5-flash", "api_key": "google-key"},
+        {"api_key": "google-key"},
         organization_id=org_id,
         db=db,
+        model="gemini/gemini-2.5-flash",
     )
 
     assert result["custom_llm_provider"] == "openai"
-    assert result["model"] == "gemini/gemini-2.5-flash"
+    assert "model" not in result

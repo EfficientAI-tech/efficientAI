@@ -296,13 +296,14 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
         }
     ]
 
-    batch_kwargs: Dict[str, Any] = {"model": lm_identifier}
+    batch_kwargs: Dict[str, Any] = {}
     if api_key is not None:
         batch_kwargs["api_key"] = api_key
     batch_kwargs = apply_llm_gateway(
         batch_kwargs,
         organization_id=run.organization_id,
         db=db,
+        model=lm_identifier,
     )
 
     adapter = DefaultAdapter(

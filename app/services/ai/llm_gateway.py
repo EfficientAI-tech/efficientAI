@@ -252,10 +252,15 @@ def _model_uses_native_provider_path(model: Any) -> bool:
     return any(model_str.startswith(prefix) for prefix in _NATIVE_GATEWAY_MODEL_PREFIXES)
 
 
-def _apply_proxy_compatible_routing(call_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_proxy_compatible_routing(
+    call_kwargs: Dict[str, Any],
+    *,
+    routing_model: Optional[str] = None,
+) -> Dict[str, Any]:
     """Route native-path providers through the gateway's chat-completions API."""
     result = dict(call_kwargs)
-    if _model_uses_native_provider_path(result.get("model")):
+    model_for_routing = result.get("model") or routing_model
+    if _model_uses_native_provider_path(model_for_routing):
         result["custom_llm_provider"] = "openai"
     return result
 
@@ -268,7 +273,12 @@ def _strip_provider_keys(result: Dict[str, Any]) -> None:
         result.pop("api_key", None)
 
 
-def _apply_bifrost_gateway(call_kwargs: Dict[str, Any], config: LLMGatewayConfig) -> Dict[str, Any]:
+def _apply_bifrost_gateway(
+    call_kwargs: Dict[str, Any],
+    config: LLMGatewayConfig,
+    *,
+    routing_model: Optional[str] = None,
+) -> Dict[str, Any]:
     result = dict(call_kwargs)
     result["api_base"] = config.api_base
 
@@ -283,7 +293,7 @@ def _apply_bifrost_gateway(call_kwargs: Dict[str, Any], config: LLMGatewayConfig
     if not result.get("api_key"):
         result["api_key"] = config.virtual_key or LITELLM_GATEWAY_PLACEHOLDER_API_KEY
 
-    model = result.get("model", "")
+    model = result.get("model") or routing_model or ""
     if model and "/" not in str(model):
         logger.warning(
             "Routing model '{}' through Bifrost without a provider prefix; "
@@ -291,10 +301,15 @@ def _apply_bifrost_gateway(call_kwargs: Dict[str, Any], config: LLMGatewayConfig
             model,
         )
 
-    return _apply_proxy_compatible_routing(result)
+    return _apply_proxy_compatible_routing(result, routing_model=routing_model)
 
 
-def _apply_litellm_proxy_gateway(call_kwargs: Dict[str, Any], config: LLMGatewayConfig) -> Dict[str, Any]:
+def _apply_litellm_proxy_gateway(
+    call_kwargs: Dict[str, Any],
+    config: LLMGatewayConfig,
+    *,
+    routing_model: Optional[str] = None,
+) -> Dict[str, Any]:
     result = dict(call_kwargs)
     result["api_base"] = config.api_base
 
@@ -304,7 +319,7 @@ def _apply_litellm_proxy_gateway(call_kwargs: Dict[str, Any], config: LLMGateway
     if not result.get("api_key"):
         result["api_key"] = config.master_key or LITELLM_GATEWAY_PLACEHOLDER_API_KEY
 
-    return _apply_proxy_compatible_routing(result)
+    return _apply_proxy_compatible_routing(result, routing_model=routing_model)
 
 
 def apply_llm_gateway(
@@ -312,15 +327,21 @@ def apply_llm_gateway(
     *,
     organization_id: UUID,
     db: Session,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Merge gateway proxy settings into LiteLLM ``completion`` kwargs."""
+    """Merge gateway proxy settings into LiteLLM ``completion`` kwargs.
+
+    Pass ``model`` when the caller supplies the model separately (e.g. GEPA
+    ``DefaultAdapter``) so native-path routing still applies without putting
+    ``model`` in the returned kwargs.
+    """
     config = resolve_llm_gateway(organization_id, db)
     if config is None:
         return call_kwargs
 
     if config.gateway_type == "bifrost":
-        return _apply_bifrost_gateway(call_kwargs, config)
-    return _apply_litellm_proxy_gateway(call_kwargs, config)
+        return _apply_bifrost_gateway(call_kwargs, config, routing_model=model)
+    return _apply_litellm_proxy_gateway(call_kwargs, config, routing_model=model)
 
 
 def litellm_completion(
