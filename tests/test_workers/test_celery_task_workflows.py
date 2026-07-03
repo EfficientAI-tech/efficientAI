@@ -397,13 +397,23 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
 
     billing = {"evaluated": [], "completed": []}
 
+    def _capture_evaluated(_org_id, evaluator_result_id, **kw):
+        billing["evaluated"].append(
+            {"evaluator_result_id": evaluator_result_id, **kw}
+        )
+
+    def _capture_completed(_org_id, evaluator_result_id, **kw):
+        billing["completed"].append(
+            {"evaluator_result_id": evaluator_result_id, **kw}
+        )
+
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_playground_call_evaluated",
-        lambda *_a, **kw: billing["evaluated"].append(kw),
+        _capture_evaluated,
     )
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_playground_evaluation_completed",
-        lambda *_a, **kw: billing["completed"].append(kw),
+        _capture_completed,
     )
     monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
     monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_a, **_k: False)
@@ -427,8 +437,11 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
     assert result["status"] == "completed"
     assert len(billing["evaluated"]) == 1
     assert billing["evaluated"][0]["metric_count"] == 3
+    assert billing["evaluated"][0]["evaluator_result_id"] == eval_result.id
+    assert billing["evaluated"][0]["call_short_id"] == "123456"
     assert len(billing["completed"]) == 1
     assert billing["completed"][0]["metric_count"] == 3
+    assert billing["completed"][0]["evaluator_result_id"] == eval_result.id
 
 
 def test_process_evaluator_result_categorizes_audio_metrics_as_skipped_without_audio(db_session):

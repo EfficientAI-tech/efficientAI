@@ -213,7 +213,7 @@ def test_record_call_import_evaluation_completed_meters_pass_delta(mock_flexpric
     mock_client = MagicMock()
     mock_flexprice.return_value.__enter__.return_value = mock_client
 
-    svc.record_call_import_evaluation_completed(
+    accepted = svc.record_call_import_evaluation_completed(
         org_id,
         evaluation_id,
         workspace_id=workspace_id,
@@ -237,5 +237,57 @@ def test_record_call_import_evaluation_completed_meters_pass_delta(mock_flexpric
             "completed_total": "1950",
             "metric_count": "5",
             "quantity": "50",
+        },
+    )
+    assert accepted is True
+
+
+@patch("flexprice.Flexprice")
+def test_record_event_returns_false_when_disabled(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = False
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    assert (
+        svc.record_event(
+            "chat.completion",
+            uuid4(),
+            uuid4(),
+            properties={"quantity": 1},
+        )
+        is False
+    )
+    mock_flexprice.assert_not_called()
+
+
+@patch("flexprice.Flexprice")
+def test_record_playground_call_evaluated_uses_evaluator_result_id(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    evaluator_result_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_playground_call_evaluated(
+        org_id,
+        evaluator_result_id,
+        workspace_id=workspace_id,
+        call_short_id="123456",
+        metric_count=4,
+    )
+
+    mock_client.events.ingest_event.assert_called_once_with(
+        event_name="playground.call_evaluated",
+        external_customer_id=str(org_id),
+        event_id=str(evaluator_result_id),
+        source="efficientai",
+        properties={
+            "workspace_id": str(workspace_id),
+            "call_short_id": "123456",
+            "evaluator_result_id": str(evaluator_result_id),
+            "metric_count": "4",
         },
     )

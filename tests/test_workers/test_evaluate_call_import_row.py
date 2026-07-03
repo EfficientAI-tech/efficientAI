@@ -849,6 +849,8 @@ def test_rollup_parent_emits_pass_delta_when_leaving_running(db_session, monkeyp
 
     def _capture(*_args, **kwargs):
         recorded.append(kwargs)
+        return True
+        return True
 
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
@@ -877,6 +879,7 @@ def test_rollup_parent_bills_only_retry_delta(db_session, monkeypatch):
 
     def _capture(*_args, **kwargs):
         recorded.append(kwargs)
+        return True
 
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
@@ -915,6 +918,7 @@ def test_rollup_parent_repeat_call_does_not_double_bill(db_session, monkeypatch)
 
     def _capture(*_args, **kwargs):
         recorded.append(kwargs)
+        return True
 
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
@@ -948,6 +952,7 @@ def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
 
     def _capture(*_args, **kwargs):
         recorded.append(kwargs)
+        return True
 
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
@@ -965,3 +970,67 @@ def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
 
     assert evaluation.billed_completed_rows == 5
     assert recorded == []
+
+
+def test_rollup_parent_does_not_advance_watermark_when_billing_fails(
+    db_session, monkeypatch
+):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    recorded = []
+
+    def _billing_fails(*_args, **kwargs):
+        recorded.append(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        _billing_fails,
+    )
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=10)
+    evaluation.status = "running"
+    evaluation.billed_completed_rows = 8
+    for idx in range(10):
+        eval_rows[idx].status = "completed"
+    db_session.commit()
+
+    _rollup_parent(db_session, evaluation)
+
+    assert evaluation.billed_completed_rows == 8
+    assert len(recorded) == 1
+    assert recorded[0]["rows_billed"] == 2
+
+
+def test_rollup_parent_retries_billing_after_failed_ingest(db_session, monkeypatch):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    recorded = []
+    attempts = {"count": 0}
+
+    def _billing_succeeds_on_retry(*_args, **kwargs):
+        recorded.append(kwargs)
+        attempts["count"] += 1
+        return attempts["count"] >= 2
+
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        _billing_succeeds_on_retry,
+    )
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=10)
+    evaluation.status = "running"
+    evaluation.billed_completed_rows = 8
+    for idx in range(10):
+        eval_rows[idx].status = "completed"
+    db_session.commit()
+
+    _rollup_parent(db_session, evaluation)
+    assert evaluation.billed_completed_rows == 8
+    assert len(recorded) == 1
+
+    _rollup_parent(db_session, evaluation)
+    assert evaluation.billed_completed_rows == 10
+    assert len(recorded) == 2
+    assert recorded[0]["rows_billed"] == 2
+    assert recorded[1]["rows_billed"] == 2

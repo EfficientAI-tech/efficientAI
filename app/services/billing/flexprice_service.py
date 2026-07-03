@@ -182,8 +182,12 @@ def record_event(
     event_id: Union[str, UUID],
     *,
     properties: Optional[dict[str, Any]] = None,
-) -> None:
-    """Ingest a usage event. No-op when Flexprice is disabled; never raises."""
+) -> bool:
+    """Ingest a usage event. No-op when Flexprice is disabled; never raises.
+
+    Returns ``True`` when Flexprice accepted the event, ``False`` when metering
+    is inactive or ingest failed (callers can retry billing later).
+    """
     global _disabled_skip_logged
 
     inactive_reason = disabled_reason()
@@ -202,7 +206,7 @@ def record_event(
                 event_id,
                 inactive_reason,
             )
-        return
+        return False
 
     coerced = _coerce_properties(properties)
     quantity = coerced.get("quantity")
@@ -230,6 +234,7 @@ def record_event(
             event_id,
             quantity if quantity is not None else "n/a",
         )
+        return True
     except Exception as exc:
         logger.warning(
             "Flexprice {} ingest FAILED org={} event_id={} host={} error={}",
@@ -239,6 +244,7 @@ def record_event(
             settings.FLEXPRICE_API_HOST,
             exc,
         )
+        return False
 
 
 def ensure_customer(
@@ -462,9 +468,9 @@ def record_call_import_evaluation_completed(
     rows_billed: int,
     completed_total: int,
     metric_count: int = 0,
-) -> None:
+) -> bool:
     """Bill one pass of an evaluation run for newly completed rows."""
-    record_event(
+    return record_event(
         CALL_IMPORT_EVALUATION_COMPLETED,
         organization_id,
         f"{evaluation_id}:{completed_total}",
@@ -522,18 +528,20 @@ def record_playground_websocket_session_started(
 
 def record_playground_call_evaluated(
     organization_id: UUID,
-    call_short_id: str,
+    evaluator_result_id: UUID,
     *,
     workspace_id: UUID,
+    call_short_id: str,
     metric_count: int,
 ) -> None:
     record_event(
         PLAYGROUND_CALL_EVALUATED,
         organization_id,
-        call_short_id,
+        evaluator_result_id,
         properties={
             "workspace_id": workspace_id,
             "call_short_id": call_short_id,
+            "evaluator_result_id": evaluator_result_id,
             "metric_count": metric_count,
         },
     )
@@ -541,19 +549,21 @@ def record_playground_call_evaluated(
 
 def record_playground_evaluation_completed(
     organization_id: UUID,
-    call_short_id: str,
+    evaluator_result_id: UUID,
     *,
     workspace_id: UUID,
+    call_short_id: str,
     duration_seconds: Optional[float] = None,
     metric_count: int = 0,
 ) -> None:
     record_event(
         PLAYGROUND_EVALUATION_COMPLETED,
         organization_id,
-        call_short_id,
+        evaluator_result_id,
         properties={
             "workspace_id": workspace_id,
             "call_short_id": call_short_id,
+            "evaluator_result_id": evaluator_result_id,
             "duration_seconds": duration_seconds,
             "metric_count": metric_count,
         },
