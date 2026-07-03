@@ -2,6 +2,7 @@
 
 import importlib
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -23,12 +24,23 @@ def test_resolve_api_key_returns_decrypted_key(monkeypatch):
         SimpleNamespace(provider="openai", api_key="enc-1", is_active=True),
         SimpleNamespace(provider="anthropic", api_key="enc-2", is_active=True),
     ]
-    monkeypatch.setattr(resolver_module, "decrypt_api_key", lambda v: f"dec::{v}")
+    monkeypatch.setattr(
+        resolver_module,
+        "resolve_litellm_api_key",
+        lambda _org_id, _db, provider: f"dec::{provider.api_key}",
+    )
 
-    assert resolver_module.resolve_api_key("openai/gpt-4o", providers) == "dec::enc-1"
+    org_id = uuid4()
+    db = SimpleNamespace()
+    assert (
+        resolver_module.resolve_api_key("openai/gpt-4o", providers, org_id, db)
+        == "dec::enc-1"
+    )
 
 
 def test_resolve_api_key_raises_for_missing_provider():
     providers = [SimpleNamespace(provider="anthropic", api_key="enc-2", is_active=True)]
+    org_id = uuid4()
+    db = SimpleNamespace()
     with pytest.raises(RuntimeError, match="No active AI provider"):
-        resolver_module.resolve_api_key("openai/gpt-4o", providers)
+        resolver_module.resolve_api_key("openai/gpt-4o", providers, org_id, db)

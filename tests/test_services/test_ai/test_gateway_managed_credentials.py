@@ -63,7 +63,7 @@ def test_resolve_litellm_api_key_returns_none_for_gateway_managed_credential():
     )
     db = SimpleNamespace(
         query=lambda *_args, **_kwargs: SimpleNamespace(
-            filter=lambda *_a, **_k: SimpleNamespace(first=lambda: SimpleNamespace(bifrost_gateway_settings={}))
+            filter=lambda *_a, **_k: SimpleNamespace(first=lambda: SimpleNamespace(llm_gateway_settings={}))
         )
     )
 
