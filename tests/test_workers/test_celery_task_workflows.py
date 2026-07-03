@@ -346,6 +346,90 @@ def test_process_evaluator_result_excludes_metrics_not_enabled_for_agent_surface
         verify_session.close()
 
 
+def test_process_evaluator_result_emits_playground_billing_with_metric_count(
+    db_session, monkeypatch
+):
+    from app.models.database import CallRecording, CallRecordingSource
+    from app.models.enums import CallRecordingStatus
+    from app.workers.tasks import process_evaluator_result as task_module
+
+    org = _seed_org(db_session)
+    workspace_id = _default_workspace_id(db_session, org.id)
+    eval_result = EvaluatorResult(
+        id=uuid4(),
+        result_id="710010",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        status="queued",
+        transcription="existing transcript",
+    )
+    db_session.add(eval_result)
+    for name in ("Metric A", "Metric B", "Metric C"):
+        db_session.add(
+            Metric(
+                id=uuid4(),
+                organization_id=org.id,
+                workspace_id=workspace_id,
+                name=name,
+                metric_type="rating",
+                trigger="always",
+                enabled=True,
+                is_default=False,
+                supported_surfaces=["agent"],
+                enabled_surfaces=["agent"],
+            )
+        )
+    db_session.add(
+        CallRecording(
+            id=uuid4(),
+            organization_id=org.id,
+            workspace_id=workspace_id,
+            call_short_id="123456",
+            status=CallRecordingStatus.UPDATED,
+            source=CallRecordingSource.PLAYGROUND,
+            provider_call_id="provider-1",
+            provider_platform="custom_websocket",
+            evaluator_result_id=eval_result.id,
+        )
+    )
+    db_session.commit()
+
+    billing = {"evaluated": [], "completed": []}
+
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_playground_call_evaluated",
+        lambda *_a, **kw: billing["evaluated"].append(kw),
+    )
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_playground_evaluation_completed",
+        lambda *_a, **kw: billing["completed"].append(kw),
+    )
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        task_module,
+        "_load_related_entities",
+        lambda *_a, **_k: (types.SimpleNamespace(custom_prompt="custom"), None, None, None),
+    )
+    monkeypatch.setattr(
+        task_module,
+        "evaluate_with_llm",
+        lambda transcription, llm_metrics, **_k: (
+            {str(m.id): {"value": 0.9, "type": "rating", "metric_name": m.name} for m in llm_metrics},
+            0.5,
+        ),
+    )
+    monkeypatch.setattr(task_module, "_generate_call_analysis", lambda *_a, **_k: None)
+
+    result = task_module.process_evaluator_result_task.run(str(eval_result.id))
+
+    assert result["status"] == "completed"
+    assert len(billing["evaluated"]) == 1
+    assert billing["evaluated"][0]["metric_count"] == 3
+    assert len(billing["completed"]) == 1
+    assert billing["completed"][0]["metric_count"] == 3
+
+
 def test_process_evaluator_result_categorizes_audio_metrics_as_skipped_without_audio(db_session):
     from app.workers.tasks import process_evaluator_result as task_module
 

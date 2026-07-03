@@ -15,7 +15,6 @@ import uuid as _uuid
 from datetime import datetime
 
 from app.services.billing.flexprice_service import (
-    record_playground_call_evaluated,
     record_playground_web_call_started,
     record_playground_websocket_session_started,
 )
@@ -935,7 +934,6 @@ async def create_custom_websocket_session(
 @router.post("/custom-websocket-sessions/{call_short_id}/evaluate", response_model=Dict[str, Any])
 async def evaluate_custom_websocket_session(
     call_short_id: str,
-    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1021,14 +1019,6 @@ async def evaluate_custom_websocket_session(
     except Exception as e:
         logger.error(f"[Custom WebSocket] Failed to trigger evaluation worker: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger evaluation worker")
-
-    background_tasks.add_task(
-        record_playground_call_evaluated,
-        organization_id,
-        call_short_id,
-        workspace_id=workspace_id,
-        metric_count=0,
-    )
 
     return {
         "message": "Evaluation queued",
@@ -1195,7 +1185,6 @@ async def delete_call_recording(
 @router.post("/call-recordings/{call_short_id}/re-evaluate", response_model=Dict[str, Any])
 async def re_evaluate_call_recording(
     call_short_id: str,
-    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1397,14 +1386,6 @@ async def re_evaluate_call_recording(
     except Exception as e:
         logger.error(f"[Re-evaluate] Failed to trigger Celery task: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger evaluation worker")
-
-    background_tasks.add_task(
-        record_playground_call_evaluated,
-        organization_id,
-        call_short_id,
-        workspace_id=workspace_id,
-        metric_count=0,
-    )
 
     return {
         "message": "Re-evaluation started",

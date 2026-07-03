@@ -908,6 +908,37 @@ def test_rollup_parent_bills_only_retry_delta(db_session, monkeypatch):
     assert recorded[0]["completed_total"] == 10
 
 
+def test_rollup_parent_repeat_call_does_not_double_bill(db_session, monkeypatch):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    recorded = []
+
+    def _capture(*_args, **kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_call_import_evaluation_completed",
+        _capture,
+    )
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=10)
+    evaluation.status = "running"
+    evaluation.billed_completed_rows = 8
+    for idx in range(10):
+        eval_rows[idx].status = "completed"
+    db_session.commit()
+
+    _rollup_parent(db_session, evaluation)
+    db_session.commit()
+    _rollup_parent(db_session, evaluation)
+    db_session.commit()
+
+    assert evaluation.billed_completed_rows == 10
+    assert len(recorded) == 1
+    assert recorded[0]["rows_billed"] == 2
+    assert recorded[0]["completed_total"] == 10
+
+
 def test_rollup_parent_skips_billing_when_metric_rerun_unchanged(
     db_session, monkeypatch
 ):

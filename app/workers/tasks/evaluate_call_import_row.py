@@ -364,6 +364,12 @@ def _build_parent_groups(
 
 
 def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation.id)
+        .with_for_update()
+        .one()
+    )
     previous_status = evaluation.status
     rows = (
         db.query(CallImportEvaluationRow.status)

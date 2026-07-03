@@ -247,15 +247,15 @@ class LLMService:
         start_time = time.time()
 
         # --- resolve API key from database --------------------------------
-        api_key = self._resolve_api_key(
+        ai_provider = self._get_ai_provider(
             llm_provider, db, organization_id, credential_id=credential_id
         )
-        if not ai_provider:
-            raise RuntimeError(
-                f"AI provider {llm_provider} not configured for this organization."
+        if ai_provider:
+            api_key = resolve_litellm_api_key(organization_id, db, ai_provider)
+        else:
+            api_key = self._resolve_api_key(
+                llm_provider, db, organization_id, credential_id=credential_id
             )
-
-        api_key = resolve_litellm_api_key(organization_id, db, ai_provider)
 
         # --- call LiteLLM --------------------------------------------------
         model_str = self._litellm_model_name(llm_provider, llm_model)

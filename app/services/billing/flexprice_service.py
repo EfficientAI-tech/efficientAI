@@ -545,6 +545,7 @@ def record_playground_evaluation_completed(
     *,
     workspace_id: UUID,
     duration_seconds: Optional[float] = None,
+    metric_count: int = 0,
 ) -> None:
     record_event(
         PLAYGROUND_EVALUATION_COMPLETED,
@@ -554,6 +555,7 @@ def record_playground_evaluation_completed(
             "workspace_id": workspace_id,
             "call_short_id": call_short_id,
             "duration_seconds": duration_seconds,
+            "metric_count": metric_count,
         },
     )
 

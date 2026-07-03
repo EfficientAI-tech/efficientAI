@@ -657,7 +657,7 @@ def run_evaluators(
         organization_id,
         uuid4(),
         workspace_id=workspace_id,
-        quantity=len(request.evaluator_ids),
+        quantity=len(task_ids),
     )
 
     return RunEvaluatorsResponse(

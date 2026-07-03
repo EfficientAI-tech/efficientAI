@@ -61,6 +61,7 @@ def test_litellm_model_name_maps_known_provider_prefixes():
 
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
     service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("AI provider sarvam not configured for this organization.")))
 
     with pytest.raises(RuntimeError, match="not configured"):
@@ -75,6 +76,7 @@ def test_generate_response_raises_when_provider_not_configured(monkeypatch):
 
 def test_generate_response_success_with_normalized_usage(monkeypatch):
     service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_resolve_api_key",
@@ -162,6 +164,7 @@ def test_generate_response_applies_llm_gateway(monkeypatch):
 
 def test_generate_response_wraps_litellm_errors(monkeypatch):
     service = LLMService()
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_resolve_api_key",
