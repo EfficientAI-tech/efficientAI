@@ -219,7 +219,7 @@ def _create_audio_recorder_class():
     return AudioRecorder
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -241,6 +241,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     conversation_turns = []
     
     try:
+        transport_serializer = serializer or imports["ProtobufFrameSerializer"]()
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
@@ -248,7 +249,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 audio_out_enabled=True,
                 add_wav_header=False,
                 vad_analyzer=imports["SileroVADAnalyzer"](),
-                serializer=imports["ProtobufFrameSerializer"](),
+                serializer=transport_serializer,
             ),
         )
 
@@ -290,8 +291,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
 
         context_aggregator = imports["LLMContextAggregatorPair"](context)
 
-        # RTVI events for efficientai client UI
-        rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
+        recorder_sample_rate = 8000 if telephony_mode else 24000
 
         # Create temporary files for recording
         user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
@@ -301,44 +301,81 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         
         # Use a common start time for synchronization
         start_time = time.time()
-        user_recorder = AudioRecorder(user_audio_path, start_time, recorder_name="UserAudioRecorder")
-        bot_recorder = AudioRecorder(bot_audio_path, start_time, recorder_name="BotAudioRecorder")
-
-        pipeline = imports["Pipeline"](
-            [
-                ws_transport.input(),
-                user_recorder,
-                context_aggregator.user(),
-                rtvi,
-                llm,
-                bot_recorder,
-                ws_transport.output(),
-                context_aggregator.assistant(),
-            ]
+        user_recorder = AudioRecorder(
+            user_audio_path, start_time, target_sample_rate=recorder_sample_rate, recorder_name="UserAudioRecorder"
+        )
+        bot_recorder = AudioRecorder(
+            bot_audio_path, start_time, target_sample_rate=recorder_sample_rate, recorder_name="BotAudioRecorder"
         )
 
-        task = imports["PipelineTask"](
-            pipeline,
-            params=imports["PipelineParams"](
-                enable_metrics=True,
-                enable_usage_metrics=True,
-            ),
-            observers=[imports["RTVIObserver"](rtvi)],
-        )
+        if telephony_mode:
+            pipeline = imports["Pipeline"](
+                [
+                    ws_transport.input(),
+                    user_recorder,
+                    context_aggregator.user(),
+                    llm,
+                    bot_recorder,
+                    ws_transport.output(),
+                    context_aggregator.assistant(),
+                ]
+            )
+            task = imports["PipelineTask"](
+                pipeline,
+                params=imports["PipelineParams"](
+                    enable_metrics=True,
+                    enable_usage_metrics=True,
+                ),
+            )
 
-        @rtvi.event_handler("on_client_ready")
-        async def on_client_ready(rtvi):
-            await rtvi.set_bot_ready()
-            await task.queue_frames([imports["LLMRunFrame"]()])
+            @ws_transport.event_handler("on_client_connected")
+            async def on_client_connected(transport, client):
+                logger.info("Vobiz telephony client connected via WebSocket")
+                await task.queue_frames([imports["LLMRunFrame"]()])
 
-        @ws_transport.event_handler("on_client_connected")
-        async def on_client_connected(transport, client):
-            logger.info("efficientai client connected via WebSocket")
+            @ws_transport.event_handler("on_client_disconnected")
+            async def on_client_disconnected(transport, client):
+                logger.info("Vobiz telephony client disconnected")
+                await task.cancel()
+        else:
+            # RTVI events for efficientai client UI
+            rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
 
-        @ws_transport.event_handler("on_client_disconnected")
-        async def on_client_disconnected(transport, client):
-            logger.info("efficientai Client disconnected")
-            await task.cancel()
+            pipeline = imports["Pipeline"](
+                [
+                    ws_transport.input(),
+                    user_recorder,
+                    context_aggregator.user(),
+                    rtvi,
+                    llm,
+                    bot_recorder,
+                    ws_transport.output(),
+                    context_aggregator.assistant(),
+                ]
+            )
+
+            task = imports["PipelineTask"](
+                pipeline,
+                params=imports["PipelineParams"](
+                    enable_metrics=True,
+                    enable_usage_metrics=True,
+                ),
+                observers=[imports["RTVIObserver"](rtvi)],
+            )
+
+            @rtvi.event_handler("on_client_ready")
+            async def on_client_ready(rtvi):
+                await rtvi.set_bot_ready()
+                await task.queue_frames([imports["LLMRunFrame"]()])
+
+            @ws_transport.event_handler("on_client_connected")
+            async def on_client_connected(transport, client):
+                logger.info("efficientai client connected via WebSocket")
+
+            @ws_transport.event_handler("on_client_disconnected")
+            async def on_client_disconnected(transport, client):
+                logger.info("efficientai Client disconnected")
+                await task.cancel()
 
         # Verify WebSocket is still open before starting
         if websocket_client.client_state.name != "CONNECTED":

@@ -142,6 +142,71 @@ def _gemini_thinking_kwargs(model: str) -> Dict[str, Any]:
     return {"reasoning_effort": "low"}
 
 
+def _looks_like_url(value: str) -> bool:
+    lowered = value.strip().lower()
+    return lowered.startswith("http://") or lowered.startswith("https://")
+
+
+def _normalize_azure_endpoint(raw: str) -> tuple[str, Optional[str]]:
+    """Normalize Azure endpoint URLs for LiteLLM.
+
+    Accepts resource roots and OpenAI-compatible v1 URLs such as
+    ``https://resource.openai.azure.com/openai/v1/chat/completions``.
+    Returns ``(api_base, api_version_hint)`` where ``api_version_hint`` is
+    ``"v1"`` for Foundry / v1-compatible endpoints.
+    """
+    from urllib.parse import urlparse
+
+    url = raw.strip().rstrip("/")
+    for suffix in ("/chat/completions", "/completions", "/responses"):
+        if url.lower().endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+
+    if "/openai/v1" in url.lower():
+        parsed = urlparse(url)
+        resource_root = f"{parsed.scheme}://{parsed.netloc}"
+        return resource_root, "v1"
+
+    return url, None
+
+
+def _azure_has_direct_endpoint(
+    ai_provider: Optional[AIProvider],
+    config: Optional[Dict[str, Any]],
+) -> bool:
+    if config and (config.get("azure_endpoint") or config.get("api_base")):
+        return True
+    if ai_provider and ai_provider.name and _looks_like_url(ai_provider.name.strip()):
+        return True
+    return False
+
+
+def _build_azure_litellm_kwargs(
+    ai_provider: Optional[AIProvider],
+    config: Optional[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """Inject Azure OpenAI endpoint/version kwargs for direct (non-gateway) calls."""
+    extra = dict(config or {})
+    azure_endpoint = extra.pop("azure_endpoint", None) or extra.pop("api_base", None)
+    api_version = extra.pop("api_version", None)
+
+    if not azure_endpoint and ai_provider and ai_provider.name:
+        candidate = ai_provider.name.strip()
+        if _looks_like_url(candidate):
+            azure_endpoint = candidate
+
+    if not azure_endpoint:
+        return {}, extra or None
+
+    api_base, version_hint = _normalize_azure_endpoint(azure_endpoint)
+    kwargs: Dict[str, Any] = {
+        "api_base": api_base,
+        "azure_endpoint": api_base,
+        "api_version": api_version or version_hint or "2024-08-01-preview",
+    }
+    return kwargs, extra or None
+
+
 class LLMService:
     """Service for generating text responses using various LLM providers."""
 
@@ -295,14 +360,25 @@ class LLMService:
             if gemini_family is not None and effective_max_tokens < 4096:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
-        if config:
-            call_kwargs.update(config)
+        provider_value = llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        remaining_config = config
+        if provider_value.lower() == "azure":
+            azure_kwargs, remaining_config = _build_azure_litellm_kwargs(ai_provider, config)
+            call_kwargs.update(azure_kwargs)
+        if remaining_config:
+            call_kwargs.update(remaining_config)
 
-        call_kwargs = apply_llm_gateway(
-            call_kwargs,
-            organization_id=organization_id,
-            db=db,
+        use_direct_azure = (
+            provider_value.lower() == "azure"
+            and api_key is not None
+            and _azure_has_direct_endpoint(ai_provider, config)
         )
+        if not use_direct_azure:
+            call_kwargs = apply_llm_gateway(
+                call_kwargs,
+                organization_id=organization_id,
+                db=db,
+            )
 
         try:
             response = litellm.completion(**call_kwargs)

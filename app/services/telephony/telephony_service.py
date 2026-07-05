@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -26,6 +27,11 @@ from app.services.credentials.resolver import clear_other_defaults
 from app.services.telephony.exotel_client import build_exotel_client_from_integration
 from app.services.telephony.plivo_client import PlivoClient, normalize_e164
 from app.services.telephony.plivo_xml import dial_number, reject_call, speak_and_hangup
+from app.services.telephony.vobiz_client import build_vobiz_client_for_org
+from app.services.telephony.vobiz_xml import (
+    speak_and_hangup as vobiz_speak_and_hangup,
+    stream_to_agent as vobiz_stream_to_agent,
+)
 
 
 class TelephonyService:
@@ -69,6 +75,11 @@ class TelephonyService:
         provider: str,
         credential_id: Optional[UUID] = None,
     ):
+        provider_key = (provider or "").lower()
+        if provider_key == "vobiz":
+            client, _ = build_vobiz_client_for_org(db, org_id, credential_id=credential_id)
+            return client
+
         integration = self.get_org_integration(
             org_id, db, provider=provider, credential_id=credential_id
         )
@@ -242,14 +253,143 @@ class TelephonyService:
         db.refresh(integration)
         return integration
 
+    def delete_integration(self, org_id: UUID, integration_id: UUID, db: Session) -> None:
+        """Delete a telephony credential, unlinking dependent phone numbers first."""
+        integration = (
+            db.query(TelephonyIntegration)
+            .filter(
+                TelephonyIntegration.id == integration_id,
+                TelephonyIntegration.organization_id == org_id,
+            )
+            .first()
+        )
+        if not integration:
+            raise ValueError("Telephony integration not found")
+
+        active_masking = (
+            db.query(TelephonyMaskedSession)
+            .filter(
+                TelephonyMaskedSession.organization_id == org_id,
+                TelephonyMaskedSession.telephony_integration_id == integration_id,
+                TelephonyMaskedSession.status == "active",
+            )
+            .count()
+        )
+        if active_masking:
+            raise ValueError(
+                "Cannot delete telephony credential while active number-masking sessions "
+                "reference it. End those sessions first."
+            )
+
+        linked_numbers = (
+            db.query(TelephonyPhoneNumber)
+            .filter(
+                TelephonyPhoneNumber.organization_id == org_id,
+                TelephonyPhoneNumber.telephony_integration_id == integration_id,
+            )
+            .all()
+        )
+        for number in linked_numbers:
+            number.telephony_integration_id = None
+
+        was_default = bool(integration.is_default)
+        provider_value = integration.provider
+        db.delete(integration)
+        db.flush()
+
+        if was_default:
+            from sqlalchemy import desc, func
+
+            replacement = (
+                db.query(TelephonyIntegration)
+                .filter(
+                    TelephonyIntegration.organization_id == org_id,
+                    func.lower(TelephonyIntegration.provider) == provider_value.lower(),
+                    TelephonyIntegration.is_active.is_(True),
+                )
+                .order_by(
+                    desc(TelephonyIntegration.updated_at),
+                    desc(TelephonyIntegration.created_at),
+                )
+                .first()
+            )
+            if replacement:
+                replacement.is_default = True
+
+        db.commit()
+
     def list_numbers(self, org_id: UUID, db: Session, provider: Optional[str] = None) -> List[TelephonyPhoneNumber]:
-        query = db.query(TelephonyPhoneNumber).filter(TelephonyPhoneNumber.organization_id == org_id)
+        query = db.query(TelephonyPhoneNumber).filter(
+            TelephonyPhoneNumber.organization_id == org_id,
+            TelephonyPhoneNumber.is_active.is_(True),
+        )
         if provider:
-            query = query.join(
+            provider_key = provider.lower()
+            query = query.outerjoin(
                 TelephonyIntegration,
                 TelephonyIntegration.id == TelephonyPhoneNumber.telephony_integration_id,
-            ).filter(TelephonyIntegration.provider == provider)
+            ).filter(
+                or_(
+                    TelephonyIntegration.provider == provider_key,
+                    and_(
+                        TelephonyPhoneNumber.telephony_integration_id.is_(None),
+                        provider_key == "vobiz",
+                    ),
+                )
+            )
         return query.order_by(TelephonyPhoneNumber.created_at.desc()).all()
+
+    def list_numbers_enriched(
+        self, org_id: UUID, db: Session, provider: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return telephony number rows with provider and linked agent name."""
+        numbers = self.list_numbers(org_id, db, provider=provider)
+        if not numbers:
+            return []
+
+        agent_ids = {n.agent_id for n in numbers if n.agent_id}
+        agents: Dict[UUID, str] = {}
+        if agent_ids:
+            for agent in db.query(Agent).filter(Agent.id.in_(agent_ids)).all():
+                agents[agent.id] = agent.name
+
+        integration_ids = {n.telephony_integration_id for n in numbers if n.telephony_integration_id}
+        providers: Dict[UUID, str] = {}
+        if integration_ids:
+            for integration in (
+                db.query(TelephonyIntegration)
+                .filter(TelephonyIntegration.id.in_(integration_ids))
+                .all()
+            ):
+                providers[integration.id] = integration.provider
+
+        enriched: List[Dict[str, Any]] = []
+        for number in numbers:
+            number_provider = (
+                providers.get(number.telephony_integration_id)
+                if number.telephony_integration_id
+                else "vobiz"
+            )
+            enriched.append(
+                {
+                    "id": number.id,
+                    "phone_number": number.phone_number,
+                    "country_iso2": number.country_iso2,
+                    "region": number.region,
+                    "number_type": number.number_type,
+                    "capabilities": number.capabilities,
+                    "is_masking_pool": number.is_masking_pool,
+                    "inbound_enabled": number.inbound_enabled,
+                    "outbound_enabled": number.outbound_enabled,
+                    "source": number.source,
+                    "agent_id": number.agent_id,
+                    "linked_agent_name": agents.get(number.agent_id) if number.agent_id else None,
+                    "provider": number_provider,
+                    "is_active": number.is_active,
+                    "created_at": number.created_at,
+                }
+            )
+        return enriched
 
     def initiate_outbound_call(
         self, org_id: UUID, from_number: str, to_number: str, agent_id: Optional[UUID], db: Session
@@ -433,6 +573,30 @@ class TelephonyService:
         session.status = "ended"
         session.ended_at = datetime.now(timezone.utc)
         db.commit()
+
+    def handle_vobiz_answer_webhook(
+        self,
+        params: Dict[str, Any],
+        db: Session,
+        *,
+        ws_url: str,
+        record_action_url: Optional[str] = None,
+    ) -> str:
+        """Return Vobiz XML that streams the call into a Pipecat WebSocket."""
+        to_number = params.get("To") or params.get("to")
+        if not to_number:
+            return vobiz_speak_and_hangup("Call could not be routed.")
+
+        to_number = normalize_e164(to_number)
+        number = db.query(TelephonyPhoneNumber).filter(TelephonyPhoneNumber.phone_number == to_number).first()
+        if not number or not number.agent_id:
+            return vobiz_speak_and_hangup("No active routing found for this number.")
+
+        agent = db.query(Agent).filter(Agent.id == number.agent_id).first()
+        if not agent:
+            return vobiz_speak_and_hangup("No active routing found for this number.")
+
+        return vobiz_stream_to_agent(ws_url, record_action_url=record_action_url)
 
     def handle_answer_webhook(self, params: Dict[str, Any], db: Session) -> str:
         to_number = params.get("To") or params.get("to")

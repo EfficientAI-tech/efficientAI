@@ -4,9 +4,10 @@ import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIn
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
 import { VoiceBundle, Integration, AIProvider, IntegrationPlatform, ModelProvider } from '../../../types/api'
-import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
+import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
+import { TelephonyProvider } from '../../../types/api'
 
 interface FormData {
   name: string
@@ -70,17 +71,12 @@ export default function AgentEditForm({
     queryFn: () => apiClient.getModelOptions(aiProvider),
     enabled: !!aiProvider,
   })
-  const { data: telephonyConfig, isError: isTelephonyConfigError } = useQuery<TelephonyIntegrationResponse>({
-    queryKey: ['telephony-config', 'plivo'],
-    queryFn: () => apiClient.getTelephonyConfig('plivo'),
-    enabled: formData.call_medium === 'phone_call',
-    retry: false,
-  })
-  const { data: telephonyNumbers = [] } = useQuery<TelephonyPhoneNumberResponse[]>({
-    queryKey: ['telephony-numbers'],
-    queryFn: () => apiClient.listTelephonyNumbers(),
-    enabled: formData.call_medium === 'phone_call',
-  })
+  const {
+    hasTelephony,
+    inboundNumbers: telephonyNumbers,
+    defaultConfig: telephonyConfig,
+  } = useOrgTelephony(formData.call_medium === 'phone_call')
+  const isTelephonyConfigError = !hasTelephony
 
   const llmModels = modelOptions?.llm || []
 
@@ -227,8 +223,8 @@ export default function AgentEditForm({
 
                 {(!telephonyConfig || isTelephonyConfigError) && (
                   <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                    No telephony provider is configured yet. You can still enter a custom number, or configure
-                    telephony in Integrations.
+                    No telephony provider is configured yet. You can still enter a custom number, configure
+                    telephony in Integrations, or import numbers on the Telephony Numbers page.
                   </p>
                 )}
 
@@ -255,6 +251,9 @@ export default function AgentEditForm({
                         disabled={!!number.agent_id && number.id !== formData.telephony_phone_number_id}
                       >
                         {number.phone_number}
+                        {number.provider
+                          ? ` [${getTelephonyProviderLabel(number.provider as TelephonyProvider)}]`
+                          : ''}
                         {number.region ? ` - ${number.region}` : ''}
                         {number.country_iso2 ? ` (${number.country_iso2})` : ''}
                         {number.agent_id ? ' [In use]' : ''}

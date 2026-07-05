@@ -181,6 +181,20 @@ judge_alignment:
 # license:
 #   key: "eyJhbGciOi..."
 
+# Vobiz Telephony (platform-level). Shared account credentials used for
+# inbound/outbound PSTN calls bridged into agent Pipecat pipelines.
+# vobiz:
+#   auth_id: "MA_XXXXXXXX"
+#   auth_token: "your-token-here"
+#   api_base: "https://api.vobiz.ai"
+#   media_base: "https://media.vobiz.ai"
+#   webhook_base_url: "https://your-public-host.example.com"
+#   from_number: "+918011223344"
+#   outbound_pool:
+#     - "+918011223344"
+#     - "+918011223345"
+#   outbound_pool_max_concurrent_per_org: 5
+
 # Flexprice usage-based billing (optional). When disabled or api_key is unset,
 # no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
 # true and provide FLEXPRICE_API_KEY (env var overrides api_key below).

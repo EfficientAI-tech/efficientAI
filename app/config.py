@@ -149,10 +149,22 @@ class Settings(BaseSettings):
     PLIVO_VERIFY_APP_UUID: str = ""
     PLIVO_WEBHOOK_BASE_URL: str = ""
 
+    # Vobiz Telephony (platform-level, optional)
+    VOBIZ_AUTH_ID: str = ""
+    VOBIZ_AUTH_TOKEN: str = ""
+    VOBIZ_API_BASE: str = "https://api.vobiz.ai"
+    VOBIZ_MEDIA_BASE: str = "https://media.vobiz.ai"
+    VOBIZ_WEBHOOK_BASE_URL: str = ""
+    VOBIZ_FROM_NUMBER: str = ""
+    VOBIZ_OUTBOUND_POOL: List[str] = []
+    VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: int = 5
+    VOBIZ_DEFAULT_COUNTRY_CODE: str = "91"
+
     # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
     RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
         "exotel.com",
         "plivo.com",
+        "vobiz.ai",
         "amazonaws.com",
         "cloudfront.net",
     ]
@@ -604,6 +616,29 @@ def load_config_from_file(config_path: str) -> None:
             settings.PLIVO_VERIFY_APP_UUID = plivo_cfg["verify_app_uuid"]
         if plivo_cfg.get("webhook_base_url"):
             settings.PLIVO_WEBHOOK_BASE_URL = plivo_cfg["webhook_base_url"]
+
+    if "vobiz" in config_data:
+        vobiz_cfg = config_data["vobiz"]
+        if vobiz_cfg.get("auth_id"):
+            settings.VOBIZ_AUTH_ID = vobiz_cfg["auth_id"]
+        if vobiz_cfg.get("auth_token"):
+            settings.VOBIZ_AUTH_TOKEN = vobiz_cfg["auth_token"]
+        if vobiz_cfg.get("api_base"):
+            settings.VOBIZ_API_BASE = vobiz_cfg["api_base"]
+        if vobiz_cfg.get("media_base"):
+            settings.VOBIZ_MEDIA_BASE = vobiz_cfg["media_base"]
+        if vobiz_cfg.get("webhook_base_url"):
+            settings.VOBIZ_WEBHOOK_BASE_URL = vobiz_cfg["webhook_base_url"]
+        if vobiz_cfg.get("from_number"):
+            settings.VOBIZ_FROM_NUMBER = vobiz_cfg["from_number"]
+        if vobiz_cfg.get("outbound_pool"):
+            settings.VOBIZ_OUTBOUND_POOL = list(vobiz_cfg["outbound_pool"])
+        if vobiz_cfg.get("outbound_pool_max_concurrent_per_org") is not None:
+            settings.VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG = int(
+                vobiz_cfg["outbound_pool_max_concurrent_per_org"]
+            )
+        if vobiz_cfg.get("default_country_code"):
+            settings.VOBIZ_DEFAULT_COUNTRY_CODE = str(vobiz_cfg["default_country_code"]).lstrip("+")
 
     if "judge_alignment" in config_data:
         ja_cfg = config_data["judge_alignment"]

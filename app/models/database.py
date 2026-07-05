@@ -1572,7 +1572,7 @@ class TelephonyPhoneNumber(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     telephony_integration_id = Column(
-        UUID(as_uuid=True), ForeignKey("telephony_integrations.id"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("telephony_integrations.id"), nullable=True, index=True
     )
 
     phone_number = Column(String(20), nullable=False, index=True)
@@ -1583,6 +1583,9 @@ class TelephonyPhoneNumber(Base):
     provider_app_id = Column(String(255), nullable=True)
 
     is_masking_pool = Column(Boolean, default=False, nullable=False)
+    inbound_enabled = Column(Boolean, default=True, nullable=False)
+    outbound_enabled = Column(Boolean, default=True, nullable=False)
+    source = Column(String(20), nullable=False, default="imported")
     agent_id = Column(
         UUID(as_uuid=True),
         ForeignKey(

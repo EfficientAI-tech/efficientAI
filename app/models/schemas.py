@@ -2033,7 +2033,12 @@ class TelephonyPhoneNumberResponse(BaseModel):
     number_type: Optional[str]
     capabilities: Optional[Dict[str, Any]]
     is_masking_pool: bool
+    inbound_enabled: bool = True
+    outbound_enabled: bool = True
+    source: str = "imported"
     agent_id: Optional[UUID]
+    linked_agent_name: Optional[str] = None
+    provider: Optional[str] = None
     is_active: bool
     created_at: datetime
 

@@ -264,6 +264,7 @@ async def create_agent(
         description=agent.description,
         call_type=agent.call_type,
         call_medium=agent.call_medium,
+        telephony_phone_number_id=agent.telephony_phone_number_id,
         voice_bundle_id=agent.voice_bundle_id,
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
@@ -271,6 +272,11 @@ async def create_agent(
     )
     db.add(db_agent)
     db.commit()
+    db.refresh(db_agent)
+
+    from app.services.telephony.phone_routing import sync_agent_telephony_number_link
+
+    sync_agent_telephony_number_link(db, db_agent)
     db.refresh(db_agent)
 
     if agent.voice_ai_integration_id and agent.voice_ai_agent_id:
@@ -436,6 +442,12 @@ async def update_agent(
     
     db.commit()
     db.refresh(db_agent)
+
+    from app.services.telephony.phone_routing import sync_agent_telephony_number_link
+
+    if "telephony_phone_number_id" in update_data or "phone_number" in update_data:
+        sync_agent_telephony_number_link(db, db_agent)
+        db.refresh(db_agent)
 
     if "voice_ai_agent_id" in update_data or "voice_ai_integration_id" in update_data:
         integration_id = db_agent.voice_ai_integration_id

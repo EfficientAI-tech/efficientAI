@@ -60,6 +60,7 @@ import AlertHistory from './pages/alerting/AlertHistory'
 import DataSources from './pages/configurations/DataSources'
 import VoiceBundles from './pages/configurations/VoiceBundles'
 import Integrations from './pages/configurations/Integrations'
+import TelephonyNumbers from './pages/configurations/TelephonyNumbers'
 import Settings from './pages/configurations/Settings'
 import CronJobs from './pages/configurations/CronJobs'
 
@@ -154,6 +155,7 @@ function App() {
           <Route path="scenarios" element={<Scenarios />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="integrations" element={<Integrations />} />
+          <Route path="telephony-numbers" element={<TelephonyNumbers />} />
           <Route path="data-sources" element={<DataSources />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />

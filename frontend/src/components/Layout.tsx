@@ -113,6 +113,7 @@ const navigationSections: NavSection[] = [
       { name: 'Cloud Storage', href: '/data-sources', icon: Database },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
+      { name: 'Telephony Numbers', href: '/telephony-numbers', icon: Phone },
       { name: 'API Keys', href: '/settings', icon: Key },
       { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],

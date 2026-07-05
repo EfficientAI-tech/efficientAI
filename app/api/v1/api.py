@@ -34,6 +34,7 @@ from app.api.v1.routes import (
     prompt_partials,
     prompt_optimization,
     telephony,
+    vobiz_telephony,
     call_imports,
     call_import_schemas,
     call_import_tags,
@@ -80,6 +81,7 @@ api_router.include_router(public_blind_test.router)
 api_router.include_router(prompt_partials.router)
 api_router.include_router(prompt_optimization.router)
 api_router.include_router(telephony.router)
+api_router.include_router(vobiz_telephony.router)
 api_router.include_router(call_imports.router)
 api_router.include_router(call_import_schemas.router)
 api_router.include_router(call_import_tags.router)

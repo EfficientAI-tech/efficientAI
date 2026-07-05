@@ -252,9 +252,62 @@ export interface TelephonyPhoneNumberResponse {
   number_type?: string | null
   capabilities?: Record<string, any> | null
   is_masking_pool: boolean
+  inbound_enabled?: boolean
+  outbound_enabled?: boolean
+  source?: string
   agent_id?: string | null
+  linked_agent_name?: string | null
+  provider?: string | null
   is_active: boolean
   created_at: string
+}
+
+export interface VobizAvailableNumber {
+  e164: string
+  provider_number_id?: string | null
+  country?: string | null
+  region?: string | null
+  capabilities?: Record<string, any> | null
+  status?: string | null
+  application_id?: string | null
+  already_imported: boolean
+  imported_number_id?: string | null
+}
+
+export interface VobizImportNumberResult {
+  number: string
+  success: boolean
+  message: string
+  answer_url: string
+  webhook_configured?: boolean | null
+  imported_number_id?: string | null
+  application_id?: string | null
+}
+
+export interface VobizImportNumbersResponse {
+  results: VobizImportNumberResult[]
+  answer_url: string
+}
+
+export interface VobizOutboundPoolResponse {
+  numbers: string[]
+  max_concurrent_per_org: number
+  shared_across_orgs: boolean
+}
+
+export interface VobizOutboundCallRequest {
+  to_number: string
+  agent_id: string
+  from_number?: string
+}
+
+export interface VobizOutboundCallResponse {
+  provider_request_uuid: string
+  call_status: string
+  from_number: string
+  to_number: string
+  call_ref: string
+  message: string
 }
 
 type TTSReportOptionsPayload = {
@@ -1217,6 +1270,33 @@ class ApiClient {
     const response = await this.client.get('/api/v1/telephony/numbers', {
       params: provider ? { provider } : undefined,
     })
+    return response.data
+  }
+
+  async listVobizAvailableNumbers(): Promise<VobizAvailableNumber[]> {
+    const response = await this.client.get('/api/v1/telephony/vobiz/numbers/available')
+    return response.data
+  }
+
+  async importVobizNumbers(numbers: string[], agentId?: string): Promise<VobizImportNumbersResponse> {
+    const response = await this.client.post('/api/v1/telephony/vobiz/numbers/import', {
+      numbers,
+      agent_id: agentId || undefined,
+    })
+    return response.data
+  }
+
+  async deleteImportedVobizNumber(numberId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/vobiz/numbers/${numberId}`)
+  }
+
+  async listVobizOutboundPool(): Promise<VobizOutboundPoolResponse> {
+    const response = await this.client.get('/api/v1/telephony/vobiz/outbound-pool')
+    return response.data
+  }
+
+  async createVobizOutboundCall(data: VobizOutboundCallRequest): Promise<VobizOutboundCallResponse> {
+    const response = await this.client.post('/api/v1/telephony/vobiz/calls/outbound', data)
     return response.data
   }
 

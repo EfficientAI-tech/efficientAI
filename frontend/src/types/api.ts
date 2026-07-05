@@ -230,6 +230,7 @@ export enum IntegrationPlatform {
 export enum TelephonyProvider {
   PLIVO = 'plivo',
   EXOTEL = 'exotel',
+  VOBIZ = 'vobiz',
 }
 
 export interface Integration {

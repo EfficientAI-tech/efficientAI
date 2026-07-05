@@ -185,3 +185,39 @@ def test_generate_response_wraps_litellm_errors(monkeypatch):
             organization_id=uuid4(),
             db=_mock_org_db(),
         )
+
+
+def test_build_azure_litellm_kwargs_from_provider_name():
+    provider = SimpleNamespace(name="https://my-resource.openai.azure.com/")
+    kwargs, remaining = llm_module._build_azure_litellm_kwargs(provider, None)
+
+    assert kwargs["api_base"] == "https://my-resource.openai.azure.com"
+    assert kwargs["azure_endpoint"] == "https://my-resource.openai.azure.com"
+    assert kwargs["api_version"] == "2024-08-01-preview"
+    assert remaining is None
+
+
+def test_build_azure_litellm_kwargs_normalizes_v1_chat_completions_url():
+    provider = SimpleNamespace(
+        name="https://eaitest-resource.openai.azure.com/openai/v1/chat/completions"
+    )
+    kwargs, remaining = llm_module._build_azure_litellm_kwargs(provider, None)
+
+    assert kwargs["api_base"] == "https://eaitest-resource.openai.azure.com"
+    assert kwargs["api_version"] == "v1"
+    assert remaining is None
+
+
+def test_build_azure_litellm_kwargs_from_config():
+    kwargs, remaining = llm_module._build_azure_litellm_kwargs(
+        None,
+        {
+            "azure_endpoint": "https://foundry.example.com",
+            "api_version": "2024-10-21",
+            "temperature": 0.2,
+        },
+    )
+
+    assert kwargs["api_base"] == "https://foundry.example.com"
+    assert kwargs["api_version"] == "2024-10-21"
+    assert remaining == {"temperature": 0.2}

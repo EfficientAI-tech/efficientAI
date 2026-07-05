@@ -139,41 +139,17 @@ async def delete_telephony_config(
     """Delete a telephony credential row.
 
     If the deleted row was the default, the most recently updated active
-    row is auto-promoted in its place.
+    row is auto-promoted in its place. Org-owned phone numbers linked to
+    this credential are kept but unlinked so they can fall back to another
+    credential or the platform account.
     """
     del api_key
-    integration = (
-        db.query(TelephonyIntegration)
-        .filter(
-            TelephonyIntegration.id == integration_id,
-            TelephonyIntegration.organization_id == organization_id,
-        )
-        .first()
-    )
-    if not integration:
-        raise HTTPException(status_code=404, detail="Telephony integration not found")
-
-    was_default = bool(integration.is_default)
-    provider_value = integration.provider
-    db.delete(integration)
-    db.flush()
-
-    if was_default:
-        from sqlalchemy import desc, func
-        replacement = (
-            db.query(TelephonyIntegration)
-            .filter(
-                TelephonyIntegration.organization_id == organization_id,
-                func.lower(TelephonyIntegration.provider) == provider_value.lower(),
-                TelephonyIntegration.is_active.is_(True),
-            )
-            .order_by(desc(TelephonyIntegration.updated_at), desc(TelephonyIntegration.created_at))
-            .first()
-        )
-        if replacement:
-            replacement.is_default = True
-
-    db.commit()
+    try:
+        telephony_service.delete_integration(organization_id, integration_id, db)
+    except ValueError as e:
+        if str(e) == "Telephony integration not found":
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -185,7 +161,7 @@ async def list_telephony_numbers(
     db: Session = Depends(get_db),
 ):
     del api_key
-    return telephony_service.list_numbers(organization_id, db, provider=provider)
+    return telephony_service.list_numbers_enriched(organization_id, db, provider=provider)
 
 
 @router.post("/calls/outbound", response_model=TelephonyOutboundCallResponse)

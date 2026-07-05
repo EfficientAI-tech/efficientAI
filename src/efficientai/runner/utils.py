@@ -458,6 +458,16 @@ async def _create_telephony_transport(
             auth_id=os.getenv("PLIVO_AUTH_ID", ""),
             auth_token=os.getenv("PLIVO_AUTH_TOKEN", ""),
         )
+    elif transport_type == "vobiz":
+        from efficientai.serializers.vobiz import VobizFrameSerializer
+
+        params.serializer = VobizFrameSerializer(
+            stream_id=call_data["stream_id"],
+            call_id=call_data["call_id"],
+            auth_id=os.getenv("VOBIZ_AUTH_ID", ""),
+            auth_token=os.getenv("VOBIZ_AUTH_TOKEN", ""),
+            params=VobizFrameSerializer.InputParams(api_base=os.getenv("VOBIZ_API_BASE", "https://api.vobiz.ai")),
+        )
     elif transport_type == "exotel":
         from efficientai.serializers.exotel import ExotelFrameSerializer
 

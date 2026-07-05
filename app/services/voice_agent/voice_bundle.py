@@ -474,6 +474,8 @@ async def run_voice_bundle_fastapi(
     stt_api_key: str | None = None,
     tts_api_key: str | None = None,
     llm_api_key: str | None = None,
+    serializer=None,
+    telephony_mode: bool = False,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -537,6 +539,8 @@ async def run_voice_bundle_fastapi(
         raise ValueError(f"Missing required API keys for voice bundle: {', '.join(missing)}")
 
     try:
+        transport_serializer = serializer or imports["ProtobufFrameSerializer"]()
+        audio_sample_rate = 8000 if telephony_mode else 24000
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
@@ -544,7 +548,7 @@ async def run_voice_bundle_fastapi(
                 audio_out_enabled=True,
                 add_wav_header=False,
                 vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
-                serializer=imports["ProtobufFrameSerializer"](),
+                serializer=transport_serializer,
             ),
         )
 
@@ -604,18 +608,15 @@ async def run_voice_bundle_fastapi(
         context = imports["LLMContext"](messages)
         context_aggregator = imports["LLMContextAggregatorPair"](context)
 
-        # RTVI events for efficientai client UI
-        rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
-
         # Use AudioBufferProcessor for proper conversation recording
         audio_buffer_input = imports["AudioBufferProcessor"](
-            sample_rate=24000,
+            sample_rate=audio_sample_rate,
             num_channels=1,
         )
         
         # Second buffer to capture OutputAudioRawFrame (bot audio)
         audio_buffer_output = imports["AudioBufferProcessor"](
-            sample_rate=24000,
+            sample_rate=audio_sample_rate,
             num_channels=1,
         )
         
@@ -643,44 +644,78 @@ async def run_voice_bundle_fastapi(
         pipeline = imports["Pipeline"](
             [
                 ws_transport.input(),
-                audio_buffer_input,  # Capture user input audio here
+                audio_buffer_input,
                 stt,
                 context_aggregator.user(),
-                rtvi,
                 llm,
                 tts,
-                audio_buffer_output,  # Capture bot output audio here
+                audio_buffer_output,
                 ws_transport.output(),
                 context_aggregator.assistant(),
             ]
         )
 
-        task = imports["PipelineTask"](
-            pipeline,
-            params=imports["PipelineParams"](
-                enable_metrics=True,
-                enable_usage_metrics=True,
-            ),
-            observers=[imports["RTVIObserver"](rtvi)],
-        )
+        if telephony_mode:
+            task = imports["PipelineTask"](
+                pipeline,
+                params=imports["PipelineParams"](
+                    enable_metrics=True,
+                    enable_usage_metrics=True,
+                ),
+            )
 
-        @rtvi.event_handler("on_client_ready")
-        async def on_client_ready(rtvi):
-            await rtvi.set_bot_ready()
-            # Start recording on both buffers when client is ready
-            await audio_buffer_input.start_recording()
-            await audio_buffer_output.start_recording()
-            logger.info("AudioBufferProcessors started recording (input + output)")
-            await task.queue_frames([imports["LLMRunFrame"]()])
+            @ws_transport.event_handler("on_client_connected")
+            async def on_client_connected(transport, client):
+                logger.info("Vobiz telephony client connected via WebSocket (voice bundle)")
+                await audio_buffer_input.start_recording()
+                await audio_buffer_output.start_recording()
+                await task.queue_frames([imports["LLMRunFrame"]()])
 
-        @ws_transport.event_handler("on_client_connected")
-        async def on_client_connected(transport, client):
-            logger.info("efficientai client connected via WebSocket (voice bundle)")
+            @ws_transport.event_handler("on_client_disconnected")
+            async def on_client_disconnected(transport, client):
+                logger.info("Vobiz telephony client disconnected (voice bundle)")
+                await task.cancel()
+        else:
+            rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
+            pipeline = imports["Pipeline"](
+                [
+                    ws_transport.input(),
+                    audio_buffer_input,
+                    stt,
+                    context_aggregator.user(),
+                    rtvi,
+                    llm,
+                    tts,
+                    audio_buffer_output,
+                    ws_transport.output(),
+                    context_aggregator.assistant(),
+                ]
+            )
+            task = imports["PipelineTask"](
+                pipeline,
+                params=imports["PipelineParams"](
+                    enable_metrics=True,
+                    enable_usage_metrics=True,
+                ),
+                observers=[imports["RTVIObserver"](rtvi)],
+            )
 
-        @ws_transport.event_handler("on_client_disconnected")
-        async def on_client_disconnected(transport, client):
-            logger.info("efficientai Client disconnected (voice bundle)")
-            await task.cancel()
+            @rtvi.event_handler("on_client_ready")
+            async def on_client_ready(rtvi):
+                await rtvi.set_bot_ready()
+                await audio_buffer_input.start_recording()
+                await audio_buffer_output.start_recording()
+                logger.info("AudioBufferProcessors started recording (input + output)")
+                await task.queue_frames([imports["LLMRunFrame"]()])
+
+            @ws_transport.event_handler("on_client_connected")
+            async def on_client_connected(transport, client):
+                logger.info("efficientai client connected via WebSocket (voice bundle)")
+
+            @ws_transport.event_handler("on_client_disconnected")
+            async def on_client_disconnected(transport, client):
+                logger.info("efficientai Client disconnected (voice bundle)")
+                await task.cancel()
 
         if websocket_client.client_state.name != "CONNECTED":
             raise Exception(f"WebSocket is not in CONNECTED state: {websocket_client.client_state.name}")
@@ -739,7 +774,7 @@ async def run_voice_bundle_fastapi(
                     from efficientai.audio.utils import mix_audio
                     
                     # Use the sample rate from the buffer (default to 24000 if not set)
-                    sample_rate = recorded_audio_data.get("sample_rate") or 24000
+                    sample_rate = recorded_audio_data.get("sample_rate") or audio_sample_rate
                     num_channels = 1  # Output is always mono mixed audio
                     
                     # Mix the two audio streams into one mono stream

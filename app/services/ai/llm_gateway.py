@@ -237,13 +237,15 @@ def resolve_llm_gateway(
 
 
 # Providers whose LiteLLM handlers build native API paths (e.g. Gemini
-# ``:generateContent``) when ``api_base`` is set. Gateways like Bifrost and
-# LiteLLM Proxy expect OpenAI-compatible ``/v1/chat/completions`` instead.
+# ``:generateContent``, Azure OpenAI SDK) when ``api_base`` is set.
+# Gateways like Bifrost and LiteLLM Proxy expect OpenAI-compatible
+# ``/v1/chat/completions`` instead.
 _NATIVE_GATEWAY_MODEL_PREFIXES = (
     "gemini/",
     "google/",
     "vertex/",
     "vertex_ai/",
+    "azure/",
 )
 
 

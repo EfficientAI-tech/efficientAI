@@ -4,9 +4,9 @@ import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneInc
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
-import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, ModelProvider } from '../../../types/api'
-import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
+import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, ModelProvider, TelephonyProvider } from '../../../types/api'
+import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 
 interface FormData {
   name: string
@@ -86,17 +86,12 @@ export default function CreateAgentModal({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
   })
-  const { data: telephonyConfig, isError: isTelephonyConfigError } = useQuery<TelephonyIntegrationResponse>({
-    queryKey: ['telephony-config', 'plivo'],
-    queryFn: () => apiClient.getTelephonyConfig('plivo'),
-    enabled: isOpen && formData.call_medium === 'phone_call',
-    retry: false,
-  })
-  const { data: telephonyNumbers = [] } = useQuery<TelephonyPhoneNumberResponse[]>({
-    queryKey: ['telephony-numbers'],
-    queryFn: () => apiClient.listTelephonyNumbers(),
-    enabled: isOpen && formData.call_medium === 'phone_call',
-  })
+  const {
+    hasTelephony,
+    inboundNumbers: telephonyNumbers,
+    defaultConfig: telephonyConfig,
+  } = useOrgTelephony(isOpen && formData.call_medium === 'phone_call')
+  const isTelephonyConfigError = !hasTelephony
 
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', aiProvider],
@@ -383,8 +378,8 @@ export default function CreateAgentModal({
 
               {(!telephonyConfig || isTelephonyConfigError) && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  No telephony provider is configured yet. You can still enter a custom number, or configure
-                  telephony in Integrations.
+                  No telephony provider is configured yet. You can still enter a custom number, configure
+                  telephony in Integrations, or import numbers on the Telephony Numbers page.
                 </p>
               )}
 
@@ -407,6 +402,9 @@ export default function CreateAgentModal({
                   {telephonyNumbers.map((number) => (
                     <option key={number.id} value={number.id} disabled={!!number.agent_id}>
                       {number.phone_number}
+                      {number.provider
+                        ? ` [${getTelephonyProviderLabel(number.provider as TelephonyProvider)}]`
+                        : ''}
                       {number.region ? ` - ${number.region}` : ''}
                       {number.country_iso2 ? ` (${number.country_iso2})` : ''}
                       {number.agent_id ? ' [In use]' : ''}

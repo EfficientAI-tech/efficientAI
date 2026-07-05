@@ -107,6 +107,7 @@ class TelephonyProvider(str, enum.Enum):
     """Telephony provider enumeration - extensible for future providers."""
     PLIVO = "plivo"
     EXOTEL = "exotel"
+    VOBIZ = "vobiz"
 
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""

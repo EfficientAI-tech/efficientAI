@@ -8,6 +8,7 @@ import { useToast } from '../../hooks/useToast'
 import { TestAgentConversation, VoiceBundle, Integration } from '../../types/api'
 import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
 import AgentEditForm from './components/AgentEditForm'
+import AgentOutboundCallPanel from './components/AgentOutboundCallPanel'
 import { Save, X } from 'lucide-react'
 
 interface FormData {
@@ -332,6 +333,15 @@ export default function AgentDetail() {
           />
         )}
       </div>
+
+      {!isEditMode && (
+        <AgentOutboundCallPanel
+          agentId={agent.id}
+          agentPhoneNumber={agent.phone_number}
+          callMedium={agent.call_medium}
+          showToast={showToast}
+        />
+      )}
 
       <DeleteAgentModal
         isOpen={showDeleteModal}

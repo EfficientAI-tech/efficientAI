@@ -9,19 +9,77 @@ except ImportError:  # pragma: no cover - environment-dependent optional depende
     plivo = None
 
 
-def normalize_e164(phone_number: str) -> str:
+def normalize_e164(phone_number: str, *, default_country_code: str = "91") -> str:
     """Normalize and validate an E.164 phone number."""
     if not phone_number:
         raise ValueError("Phone number is required")
 
-    normalized = phone_number.strip().replace(" ", "")
+    normalized = phone_number.strip().replace(" ", "").replace("-", "")
+    country_code = (default_country_code or "91").lstrip("+")
+
     if not normalized.startswith("+"):
-        raise ValueError("Phone number must be in E.164 format and start with '+'")
+        digits = normalized
+        if not digits.isdigit():
+            raise ValueError("Phone number must contain digits only")
+
+        # Indian/local trunk prefix: 0 + 10-digit national number.
+        if digits.startswith("0") and len(digits) == 11:
+            normalized = f"+{country_code}{digits[1:]}"
+        elif digits.startswith(country_code) and len(digits) >= len(country_code) + 8:
+            normalized = f"+{digits}"
+        elif len(digits) == 10 and digits[0] in "6789":
+            normalized = f"+{country_code}{digits}"
+        else:
+            normalized = f"+{digits}"
+    else:
+        normalized = normalized
+
     if len(normalized) < 8 or len(normalized) > 20:
         raise ValueError("Phone number must be between 8 and 20 chars in E.164 format")
     if not normalized[1:].isdigit():
         raise ValueError("Phone number must contain digits only after '+'")
     return normalized
+
+
+def expand_phone_candidates(
+    phone_number: Optional[str],
+    *,
+    default_country_code: Optional[str] = None,
+) -> list[str]:
+    """Return deduplicated E.164 variants for provider webhook matching."""
+    if not phone_number:
+        return []
+
+    from app.config import settings
+
+    country_code = (default_country_code or settings.VOBIZ_DEFAULT_COUNTRY_CODE or "91").lstrip("+")
+    raw = str(phone_number).strip().replace(" ", "").replace("-", "")
+    if not raw:
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Optional[str]) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            candidates.append(value)
+
+    try:
+        _add(normalize_e164(raw, default_country_code=country_code))
+    except ValueError:
+        pass
+
+    digits = raw[1:] if raw.startswith("+") else raw
+    if digits.isdigit():
+        if digits.startswith("0") and len(digits) == 11:
+            _add(f"+{country_code}{digits[1:]}")
+        if digits.startswith(country_code):
+            _add(f"+{digits}")
+        if len(digits) == 10 and digits[0] in "6789":
+            _add(f"+{country_code}{digits}")
+
+    return candidates
 
 
 class PlivoClient:
