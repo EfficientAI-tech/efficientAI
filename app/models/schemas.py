@@ -184,8 +184,8 @@ class AgentCreate(BaseModel):
     telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
-    voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
-    voice_ai_agent_id: str = Field(..., min_length=1, description="Voice AI agent ID is required")
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
 
     @field_validator('description')
     @classmethod
@@ -202,6 +202,14 @@ class AgentCreate(BaseModel):
             if not re.fullmatch(r'[\d+]+', v):
                 raise ValueError('Phone number must contain only digits and the + character.')
         return v
+
+    @model_validator(mode='after')
+    def validate_voice_config(self):
+        if self.voice_ai_integration_id and not self.voice_ai_agent_id:
+            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
+        if self.voice_ai_agent_id and not self.voice_ai_integration_id:
+            raise ValueError('voice_ai_integration_id is required when voice_ai_agent_id is provided.')
+        return self
 
     @model_validator(mode='after')
     def validate_phone_number(self):
@@ -677,6 +685,10 @@ class AIProviderCreate(BaseModel):
         ),
     )
     name: Optional[str] = None
+    endpoint_url: Optional[str] = Field(
+        None,
+        description="Azure OpenAI resource endpoint URL (Azure provider only).",
+    )
     is_default: Optional[bool] = Field(
         None,
         description=(
@@ -693,12 +705,42 @@ class AIProviderCreate(BaseModel):
         trimmed = v.strip()
         return trimmed or None
 
+    @field_validator("endpoint_url")
+    @classmethod
+    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        lowered = trimmed.lower()
+        if not (lowered.startswith("http://") or lowered.startswith("https://")):
+            raise ValueError("endpoint_url must be an http(s) URL")
+        return trimmed
+
 
 class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
     api_key: Optional[str] = Field(None, min_length=1)
     name: Optional[str] = None
+    endpoint_url: Optional[str] = Field(
+        None,
+        description="Azure OpenAI resource endpoint URL (Azure provider only).",
+    )
     is_active: Optional[bool] = None
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        lowered = trimmed.lower()
+        if not (lowered.startswith("http://") or lowered.startswith("https://")):
+            raise ValueError("endpoint_url must be an http(s) URL")
+        return trimmed
 
 
 class AIProviderResponse(BaseModel):
@@ -707,6 +749,7 @@ class AIProviderResponse(BaseModel):
     provider: ModelProvider
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
+    endpoint_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     gateway_managed: bool = False
@@ -2041,6 +2084,27 @@ class TelephonyPhoneNumberResponse(BaseModel):
     provider: Optional[str] = None
     is_active: bool
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyDialTargetCreate(BaseModel):
+    phone_number: str
+    label: Optional[str] = None
+
+
+class TelephonyDialTargetUpdate(BaseModel):
+    label: Optional[str] = None
+    phone_number: Optional[str] = None
+
+
+class TelephonyDialTargetResponse(BaseModel):
+    id: UUID
+    phone_number: str
+    label: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True

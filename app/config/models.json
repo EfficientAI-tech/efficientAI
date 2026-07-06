@@ -2,7 +2,7 @@
   "whisper-1": {
     "provider": "openai",
     "model_type": "stt",
-    "description": "Original Whisper transcription API (verbose_json + word/segment timestamps)"
+    "description": "General-purpose speech recognition (verbose_json + word/segment timestamps)"
   },
   "gpt-4o-transcribe": {
     "provider": "openai",
@@ -14,62 +14,20 @@
     "model_type": "stt",
     "description": "Cheaper / faster GPT-4o transcription; no granular word timestamps"
   },
-  "gpt-4.1": {
+  "gpt-4o-transcribe-diarize": {
     "provider": "openai",
-    "model_type": "llm"
+    "model_type": "stt",
+    "description": "Transcription model that identifies who's speaking when"
   },
-  "gpt-4.1-mini": {
+  "gpt-realtime-whisper": {
     "provider": "openai",
-    "model_type": "llm"
+    "model_type": "stt",
+    "description": "Streaming speech-to-text for realtime transcription"
   },
-  "gpt-4.1-nano": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "o3": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "o3-mini": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "o4-mini": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-mini": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-nano": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5.2": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5.2-pro": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5.3-codex": {
+  "gpt-5.6": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Most capable agentic coding model"
-  },
-  "gpt-5.4": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5.4-pro": {
-    "provider": "openai",
-    "model_type": "llm"
+    "description": "Preview frontier model for select partners; broad availability coming soon"
   },
   "gpt-5.5": {
     "provider": "openai",
@@ -81,20 +39,328 @@
     "model_type": "llm",
     "description": "Higher-accuracy GPT-5.5 variant with parallel test-time compute"
   },
+  "gpt-5.4": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Affordable frontier model for coding and professional work"
+  },
+  "gpt-5.4-pro": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Higher-accuracy GPT-5.4 variant"
+  },
+  "gpt-5.4-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Strong mini model for coding, computer use, and subagents"
+  },
+  "gpt-5.4-nano": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Cheapest GPT-5.4-class model for simple high-volume tasks"
+  },
+  "gpt-5.3-codex": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Most capable agentic coding model"
+  },
+  "gpt-5.2": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Previous frontier model for professional work with configurable reasoning"
+  },
+  "gpt-5.2-pro": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Previous pro model for professional work"
+  },
+  "gpt-5.2-codex": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Intelligent coding model optimized for long-horizon agentic tasks (deprecated)"
+  },
+  "gpt-5.1": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Best model for coding and agentic tasks with configurable reasoning effort"
+  },
+  "gpt-5.1-codex": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.1 optimized for agentic coding in Codex (deprecated)"
+  },
+  "gpt-5.1-codex-max": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.1-codex optimized for long-running tasks (deprecated)"
+  },
+  "gpt-5.1-codex-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Smaller, cost-effective GPT-5.1-Codex variant (deprecated)"
+  },
+  "gpt-5": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Intelligent reasoning model for coding and agentic tasks"
+  },
+  "gpt-5-pro": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Higher-accuracy GPT-5 variant"
+  },
+  "gpt-5-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Near-frontier intelligence for cost-sensitive, low-latency workloads"
+  },
+  "gpt-5-nano": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Fastest, most cost-efficient GPT-5 variant"
+  },
+  "gpt-5-codex": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5 optimized for agentic coding in Codex (deprecated)"
+  },
+  "codex-mini-latest": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Fast reasoning model optimized for the Codex CLI (deprecated)"
+  },
+  "o3-pro": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "o3 with more compute for better responses"
+  },
+  "o3": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Reasoning model for complex tasks (succeeded by GPT-5)"
+  },
+  "o3-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Small o3 alternative (deprecated)"
+  },
+  "o3-deep-research": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Most powerful deep research model (deprecated)"
+  },
+  "o4-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Fast, cost-efficient reasoning model (succeeded by GPT-5 mini)"
+  },
+  "o4-mini-deep-research": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Faster, more affordable deep research model (deprecated)"
+  },
+  "o1-pro": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "o1 with more compute for better responses (deprecated)"
+  },
+  "o1": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Previous full o-series reasoning model (deprecated)"
+  },
+  "o1-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Small o1 alternative (deprecated)"
+  },
+  "o1-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Preview of the first o-series reasoning model (deprecated)"
+  },
+  "gpt-4.1": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Smartest non-reasoning GPT-4.x model"
+  },
+  "gpt-4.1-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Smaller, faster GPT-4.1 variant"
+  },
+  "gpt-4.1-nano": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Fastest, most cost-efficient GPT-4.1 variant (deprecated)"
+  },
+  "gpt-4o": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Fast, intelligent, flexible GPT model (deprecated)"
+  },
+  "gpt-4o-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Fast, affordable small model for focused tasks (deprecated)"
+  },
+  "gpt-4o-search-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-4o with web search in Chat Completions (deprecated)"
+  },
+  "gpt-4o-mini-search-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-4o mini with web search in Chat Completions (deprecated)"
+  },
+  "gpt-4-turbo": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Older high-intelligence GPT model (deprecated)"
+  },
+  "gpt-4-turbo-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Older fast GPT model preview (deprecated)"
+  },
+  "gpt-4": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Older high-intelligence GPT model (deprecated)"
+  },
+  "gpt-4.5-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Deprecated large GPT preview model"
+  },
+  "gpt-3.5-turbo": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Legacy GPT model for cheaper chat tasks (deprecated)"
+  },
+  "computer-use-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Specialized model for computer use tool (deprecated)"
+  },
+  "gpt-4o-audio-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-4o with audio input/output on Chat Completions (deprecated)"
+  },
+  "gpt-4o-mini-audio-preview": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-4o mini with audio input/output on Chat Completions (deprecated)"
+  },
+  "gpt-audio-1.5": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Best voice model for audio in/out with Chat Completions"
+  },
+  "gpt-audio": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Audio inputs and outputs with Chat Completions API"
+  },
+  "gpt-audio-mini": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Cost-efficient audio in/out with Chat Completions (deprecated)"
+  },
+  "chat-latest": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Latest Instant model used in ChatGPT; not recommended for most API use"
+  },
+  "gpt-5.3-chat": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.3 Instant model used in ChatGPT (deprecated)"
+  },
+  "gpt-5.2-chat": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.2 model used in ChatGPT (deprecated)"
+  },
+  "gpt-5.1-chat": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.1 model used in ChatGPT (deprecated)"
+  },
+  "gpt-5-chat": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5 model used in ChatGPT (deprecated)"
+  },
+  "chatgpt-4o-latest": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-4o model used in ChatGPT (deprecated)"
+  },
+  "gpt-oss-120b": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Most powerful OpenAI open-weight model (Apache 2.0)"
+  },
+  "gpt-oss-20b": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Medium-sized OpenAI open-weight model for low latency (Apache 2.0)"
+  },
   "tts-1": {
     "provider": "openai",
-    "model_type": "tts"
+    "model_type": "tts",
+    "description": "Text-to-speech optimized for speed"
   },
   "tts-1-hd": {
     "provider": "openai",
-    "model_type": "tts"
+    "model_type": "tts",
+    "description": "Text-to-speech optimized for quality"
   },
   "gpt-4o-mini-tts": {
     "provider": "openai",
     "model_type": "tts",
+    "description": "Text-to-speech powered by GPT-4o mini (deprecated)",
     "featured": true,
     "featured_rank": 3,
     "highlights": ["Natural prosody", "Multiple voices", "Studio quality"]
+  },
+  "gpt-realtime-2": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Reasoning model for realtime voice interactions"
+  },
+  "gpt-realtime-translate": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Streaming speech-to-speech translation"
+  },
+  "gpt-realtime-1.5": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Best voice model for audio in, audio out"
+  },
+  "gpt-realtime": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Realtime text and audio inputs and outputs"
+  },
+  "gpt-realtime-mini": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Cost-efficient GPT-Realtime variant"
+  },
+  "gpt-4o-realtime": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Realtime text and audio model (deprecated)"
+  },
+  "gpt-4o-mini-realtime": {
+    "provider": "openai",
+    "model_type": "s2s",
+    "description": "Smaller realtime text and audio model (deprecated)"
   },
   "claude-3-opus": {
     "provider": "anthropic",
@@ -304,15 +570,83 @@
   },
   "azure-speech-v1": {
     "provider": "azure",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "Azure Speech-to-text (batch and realtime)"
   },
   "azure-openai-gpt4": {
     "provider": "azure",
-    "model_type": "llm"
+    "model_type": "llm",
+    "description": "Legacy alias — maps to gpt-4 deployment; prefer azure-gpt-5-mini if that is your deployment name"
+  },
+  "azure-gpt-4o": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4o — catalog key maps to deployment name gpt-4o"
+  },
+  "azure-gpt-4o-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4o mini"
+  },
+  "azure-gpt-4.1": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4.1"
+  },
+  "azure-gpt-4.1-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4.1 mini"
+  },
+  "azure-gpt-4.1-nano": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-4.1 nano"
+  },
+  "azure-gpt-5": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5"
+  },
+  "azure-gpt-5-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5 mini — pick this if your deployment is named gpt-5-mini"
+  },
+  "azure-gpt-5-nano": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5 nano"
+  },
+  "azure-gpt-5.1": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.1"
+  },
+  "azure-gpt-5.2": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI GPT-5.2"
+  },
+  "azure-o3": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI o3 reasoning model"
+  },
+  "azure-o3-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI o3 mini"
+  },
+  "azure-o4-mini": {
+    "provider": "azure",
+    "model_type": "llm",
+    "description": "Azure OpenAI o4 mini"
   },
   "azure-tts-v1": {
     "provider": "azure",
-    "model_type": "tts"
+    "model_type": "tts",
+    "description": "Azure neural text-to-speech"
   },
   "aws-transcribe": {
     "provider": "aws",

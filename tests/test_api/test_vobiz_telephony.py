@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.database import Organization, TelephonyIntegration, TelephonyPhoneNumber, Workspace
+from app.models.database import CallRecording, Organization, TelephonyIntegration, TelephonyPhoneNumber, Workspace
 from app.models.enums import TelephonyProvider
 from app.services.telephony.vobiz_session import create_call_session
 
@@ -88,6 +88,36 @@ def test_vobiz_answer_webhook_uses_outbound_call_ref(client, db_session, org_id,
     assert response.status_code == 200
     assert f"session={session.call_ref}" in response.text
     assert f"agent_id={agent.id}" in response.text
+
+
+def test_vobiz_answer_webhook_includes_persona_scenario_from_session(
+    client, org_id, seed_org, make_agent, make_persona, make_scenario, monkeypatch
+):
+    agent = make_agent()
+    persona = make_persona()
+    scenario = make_scenario()
+
+    session = create_call_session(
+        agent_id=str(agent.id),
+        organization_id=str(org_id),
+        direction="outbound",
+        persona_id=str(persona.id),
+        scenario_id=str(scenario.id),
+    )
+
+    monkeypatch.setattr(
+        "app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url",
+        lambda: "https://public.example.com",
+    )
+
+    response = client.post(
+        f"/api/v1/telephony/vobiz/webhooks/answer?call_ref={session.call_ref}",
+        data={"To": "+919111111111", "From": "+919876543210", "CallUUID": "uuid-3"},
+    )
+
+    assert response.status_code == 200
+    assert f"persona_id={persona.id}" in response.text
+    assert f"scenario_id={scenario.id}" in response.text
 
 
 def test_vobiz_answer_webhook_rejects_unconfigured_number(client, db_session, org_id, seed_org):
@@ -209,3 +239,142 @@ def test_delete_inactive_imported_vobiz_number(client, db_session, org_id, seed_
         .first()
         is None
     )
+
+
+@patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
+@patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
+@patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
+def test_create_vobiz_outbound_call_stamps_workspace_id(
+    mock_base_url,
+    mock_resolve_from,
+    mock_build_client,
+    client,
+    db_session,
+    org_id,
+    seed_org,
+    make_agent,
+):
+    agent = make_agent()
+    mock_base_url.return_value = "https://public.example.com"
+    mock_resolve_from.return_value = ("+919876543210", False)
+
+    mock_client = MagicMock()
+    mock_client.create_outbound_call.return_value = {
+        "request_uuid": "f0a44fcd-a5b7-4f64-9efb-f35711d8d980",
+        "message": "call queued",
+        "api_id": "702e6a5a-444c-49fd-b78f-468d2a12fa4c",
+    }
+    mock_build_client.return_value = (mock_client, None)
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/calls/outbound",
+        json={
+            "to_number": "+919111111111",
+            "agent_id": str(agent.id),
+            "from_number": "+919876543210",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider_request_uuid"] == "f0a44fcd-a5b7-4f64-9efb-f35711d8d980"
+    assert body["call_ref"]
+
+    recording = (
+        db_session.query(CallRecording)
+        .filter(CallRecording.provider_call_id == "f0a44fcd-a5b7-4f64-9efb-f35711d8d980")
+        .first()
+    )
+    assert recording is not None
+    assert recording.workspace_id == agent.workspace_id
+    assert recording.agent_id == agent.id
+    assert recording.organization_id == org_id
+
+
+@patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
+@patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
+@patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
+def test_create_vobiz_outbound_call_stores_persona_scenario_in_session(
+    mock_base_url,
+    mock_resolve_from,
+    mock_build_client,
+    client,
+    org_id,
+    seed_org,
+    make_agent,
+    make_persona,
+    make_scenario,
+):
+    from app.services.telephony.vobiz_session import get_call_session
+
+    agent = make_agent()
+    persona = make_persona()
+    scenario = make_scenario()
+    mock_base_url.return_value = "https://public.example.com"
+    mock_resolve_from.return_value = ("+919876543210", False)
+
+    mock_client = MagicMock()
+    mock_client.create_outbound_call.return_value = {
+        "request_uuid": "uuid-persona-scenario",
+        "message": "call queued",
+    }
+    mock_build_client.return_value = (mock_client, None)
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/calls/outbound",
+        json={
+            "to_number": "+919111111111",
+            "agent_id": str(agent.id),
+            "persona_id": str(persona.id),
+            "scenario_id": str(scenario.id),
+        },
+    )
+
+    assert response.status_code == 200
+    call_ref = response.json()["call_ref"]
+    session = get_call_session(call_ref)
+    assert session is not None
+    assert session.persona_id == str(persona.id)
+    assert session.scenario_id == str(scenario.id)
+
+
+@patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
+@patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
+@patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
+def test_create_vobiz_outbound_call_resolves_evaluator_context(
+    mock_base_url,
+    mock_resolve_from,
+    mock_build_client,
+    client,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+):
+    from app.services.telephony.vobiz_session import get_call_session
+
+    agent = make_agent()
+    persona = make_persona()
+    scenario = make_scenario()
+    evaluator = make_evaluator(agent_id=agent.id, persona_id=persona.id, scenario_id=scenario.id)
+
+    mock_base_url.return_value = "https://public.example.com"
+    mock_resolve_from.return_value = ("+919876543210", False)
+    mock_client = MagicMock()
+    mock_client.create_outbound_call.return_value = {"request_uuid": "uuid-eval", "message": "queued"}
+    mock_build_client.return_value = (mock_client, None)
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/calls/outbound",
+        json={
+            "to_number": "+919111111111",
+            "agent_id": str(agent.id),
+            "evaluator_id": str(evaluator.id),
+        },
+    )
+
+    assert response.status_code == 200
+    session = get_call_session(response.json()["call_ref"])
+    assert session.persona_id == str(persona.id)
+    assert session.scenario_id == str(scenario.id)
+    assert session.evaluator_id == str(evaluator.id)

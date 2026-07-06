@@ -7,8 +7,9 @@ import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { TestAgentConversation, VoiceBundle, Integration } from '../../types/api'
 import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
+import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
-import AgentOutboundCallPanel from './components/AgentOutboundCallPanel'
+import AgentTalkSidebar, { type AgentTalkMode } from './components/AgentTalkSidebar'
 import { Save, X } from 'lucide-react'
 
 interface FormData {
@@ -31,6 +32,9 @@ export default function AgentDetail() {
   const { showToast, ToastContainer } = useToast()
   
   const [isEditMode, setIsEditMode] = useState(false)
+  const [activeTab, setActiveTab] = useState<AgentDetailTab>('overview')
+  const [talkSidebarOpen, setTalkSidebarOpen] = useState(false)
+  const [talkMode, setTalkMode] = useState<AgentTalkMode>('test_agent')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [blockingConversations, setBlockingConversations] = useState<TestAgentConversation[]>([])
   const [showSavePromptModal, setShowSavePromptModal] = useState(false)
@@ -194,18 +198,6 @@ export default function AgentDetail() {
   const handleSave = (e?: React.FormEvent) => {
     if (e) e.preventDefault()
 
-    const hasVoiceBundle = formData.voice_bundle_id?.trim()
-    const hasVoiceAIIntegration =
-      formData.voice_ai_integration_id?.trim() && formData.voice_ai_agent_id?.trim()
-
-    if (!hasVoiceBundle && !hasVoiceAIIntegration) {
-      showToast(
-        'Please configure at least one: Voice Bundle (Test Voice AI Agents) or Voice AI Integration (Provider + Agent ID)',
-        'error'
-      )
-      return
-    }
-
     if (formData.voice_ai_integration_id && !formData.voice_ai_agent_id) {
       showToast('Agent ID is required when Integration Provider is selected', 'error')
       return
@@ -274,6 +266,15 @@ export default function AgentDetail() {
     })
   }
 
+  const openTalkSidebar = (mode: AgentTalkMode) => {
+    setTalkMode(mode)
+    setTalkSidebarOpen(true)
+  }
+
+  const handleEditVoiceBundle = (bundleId: string) => {
+    navigate(`/voicebundles?edit=${bundleId}&return=${encodeURIComponent(`/agents/${id}`)}`)
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -294,7 +295,7 @@ export default function AgentDetail() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className={`space-y-6 transition-[margin] ${talkSidebarOpen ? 'lg:mr-[28rem]' : ''}`}>
       <AgentDetailHeader
         agentId={agent.agent_id}
         isEditMode={isEditMode}
@@ -304,44 +305,64 @@ export default function AgentDetail() {
         onSave={handleSave}
       />
 
-      <div className="bg-white rounded-lg shadow p-6">
-        {!isEditMode ? (
-          <AgentInfoView
-            agent={agent}
-            voiceBundles={voiceBundles}
-            integrations={integrations}
-            onSyncProviderPrompt={() => syncPromptMutation.mutate()}
-            isSyncingPrompt={syncPromptMutation.isPending}
-          />
-        ) : (
-          <AgentEditForm
-            formData={formData}
-            onChange={setFormData}
-            onSubmit={handleSave}
-            onDelete={handleDelete}
-            voiceBundles={voiceBundles}
-            integrations={integrations}
-            showToast={showToast}
-            createdAt={agent.created_at}
-            updatedAt={agent.updated_at}
-            onSaveSystemPrompt={() =>
-              openSavePromptModal(
-                formData.description || '',
-                `${formData.name || agent.name} System Prompt`
-              )
-            }
-          />
-        )}
-      </div>
+      <div className="bg-white rounded-lg shadow">
+        <div className="border-b border-gray-200 px-6">
+          <nav className="-mb-px flex space-x-8" aria-label="Agent detail tabs">
+            {(
+              [
+                { id: 'overview' as const, label: 'Overview' },
+                { id: 'test_agent' as const, label: 'Test Agent' },
+                { id: 'voice_ai_agent' as const, label: 'Voice AI Agent' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeTab === tab.id
+                    ? 'border-primary-500 text-primary-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
 
-      {!isEditMode && (
-        <AgentOutboundCallPanel
-          agentId={agent.id}
-          agentPhoneNumber={agent.phone_number}
-          callMedium={agent.call_medium}
-          showToast={showToast}
-        />
-      )}
+        <div className="p-6">
+          {!isEditMode ? (
+            <AgentInfoView
+              agent={agent}
+              voiceBundles={voiceBundles}
+              integrations={integrations}
+              activeTab={activeTab}
+              onSyncProviderPrompt={() => syncPromptMutation.mutate()}
+              isSyncingPrompt={syncPromptMutation.isPending}
+              onTalk={openTalkSidebar}
+              onEditVoiceBundle={handleEditVoiceBundle}
+            />
+          ) : (
+            <AgentEditForm
+              formData={formData}
+              onChange={setFormData}
+              onSubmit={handleSave}
+              onDelete={handleDelete}
+              voiceBundles={voiceBundles}
+              integrations={integrations}
+              showToast={showToast}
+              activeTab={activeTab}
+              onSaveSystemPrompt={() =>
+                openSavePromptModal(
+                  formData.description || '',
+                  `${formData.name || agent.name} System Prompt`
+                )
+              }
+            />
+          )}
+        </div>
+      </div>
 
       <DeleteAgentModal
         isOpen={showDeleteModal}
@@ -436,6 +457,17 @@ export default function AgentDetail() {
             </div>
           </div>
         </div>
+      )}
+
+      {agent && (
+        <AgentTalkSidebar
+          isOpen={talkSidebarOpen}
+          mode={talkMode}
+          agent={agent}
+          integrations={integrations}
+          onClose={() => setTalkSidebarOpen(false)}
+          showToast={showToast}
+        />
       )}
 
       <ToastContainer />

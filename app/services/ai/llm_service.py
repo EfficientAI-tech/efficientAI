@@ -167,44 +167,102 @@ def _normalize_azure_endpoint(raw: str) -> tuple[str, Optional[str]]:
         resource_root = f"{parsed.scheme}://{parsed.netloc}"
         return resource_root, "v1"
 
+    parsed = urlparse(url)
+    if parsed.netloc.lower().endswith(".openai.azure.com"):
+        return url, "v1"
+
     return url, None
+
+
+def _azure_openai_v1_api_base(resource_root: str) -> str:
+    """Build the OpenAI-compatible v1 base URL for Azure Foundry."""
+    base = resource_root.rstrip("/")
+    if base.lower().endswith("/openai/v1"):
+        return base
+    return f"{base}/openai/v1"
+
+
+def _azure_uses_openai_v1_routing(api_version: Optional[str], version_hint: Optional[str]) -> bool:
+    resolved = (api_version or version_hint or "").strip().lower()
+    return resolved == "v1"
+
+
+def _resolve_azure_endpoint_from_provider(
+    ai_provider: Optional[AIProvider],
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Resolve Azure OpenAI endpoint from call config or credential row."""
+    extra = config or {}
+    azure_endpoint = extra.get("azure_endpoint") or extra.get("api_base")
+    if azure_endpoint:
+        return str(azure_endpoint).strip()
+    if ai_provider:
+        endpoint_url = getattr(ai_provider, "endpoint_url", None)
+        if endpoint_url and str(endpoint_url).strip():
+            return str(endpoint_url).strip()
+        if ai_provider.name and _looks_like_url(ai_provider.name.strip()):
+            return ai_provider.name.strip()
+    return None
 
 
 def _azure_has_direct_endpoint(
     ai_provider: Optional[AIProvider],
     config: Optional[Dict[str, Any]],
 ) -> bool:
-    if config and (config.get("azure_endpoint") or config.get("api_base")):
-        return True
-    if ai_provider and ai_provider.name and _looks_like_url(ai_provider.name.strip()):
-        return True
-    return False
+    return _resolve_azure_endpoint_from_provider(ai_provider, config) is not None
 
 
 def _build_azure_litellm_kwargs(
     ai_provider: Optional[AIProvider],
     config: Optional[Dict[str, Any]],
-) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
-    """Inject Azure OpenAI endpoint/version kwargs for direct (non-gateway) calls."""
+) -> tuple[Dict[str, Any], Optional[Dict[str, Any]], bool]:
+    """Inject Azure OpenAI endpoint kwargs for direct (non-gateway) calls.
+
+    Returns ``(litellm_kwargs, remaining_config, uses_openai_v1_routing)``.
+    Foundry / v1 endpoints use the OpenAI-compatible ``/openai/v1`` path and
+    must not pass ``azure_endpoint`` (the v1 API rejects it).
+    """
     extra = dict(config or {})
     azure_endpoint = extra.pop("azure_endpoint", None) or extra.pop("api_base", None)
     api_version = extra.pop("api_version", None)
 
-    if not azure_endpoint and ai_provider and ai_provider.name:
-        candidate = ai_provider.name.strip()
-        if _looks_like_url(candidate):
-            azure_endpoint = candidate
+    if not azure_endpoint:
+        azure_endpoint = _resolve_azure_endpoint_from_provider(ai_provider, None)
 
     if not azure_endpoint:
-        return {}, extra or None
+        return {}, extra or None, False
 
     api_base, version_hint = _normalize_azure_endpoint(azure_endpoint)
-    kwargs: Dict[str, Any] = {
-        "api_base": api_base,
-        "azure_endpoint": api_base,
-        "api_version": api_version or version_hint or "2024-08-01-preview",
-    }
-    return kwargs, extra or None
+    if _azure_uses_openai_v1_routing(api_version, version_hint):
+        return (
+            {"api_base": _azure_openai_v1_api_base(api_base)},
+            extra or None,
+            True,
+        )
+
+    return (
+        {
+            "api_base": api_base,
+            "azure_endpoint": api_base,
+            "api_version": api_version or version_hint or "2024-08-01-preview",
+        },
+        extra or None,
+        False,
+    )
+
+
+def _azure_deployment_name(catalog_model: str) -> str:
+    """Map Azure catalog keys to LiteLLM deployment names.
+
+    Catalog entries use an ``azure-`` prefix to avoid colliding with
+    OpenAI keys in ``models.json``. LiteLLM expects the actual Azure
+    deployment name (e.g. ``gpt-5-mini``), not the catalog alias.
+    """
+    if catalog_model == "azure-openai-gpt4":
+        return "gpt-4"
+    if catalog_model.startswith("azure-"):
+        return catalog_model[len("azure-") :]
+    return catalog_model
 
 
 class LLMService:
@@ -269,6 +327,8 @@ class LLMService:
         """Build the ``provider/model`` string that LiteLLM expects."""
         provider_value = provider.value if hasattr(provider, "value") else str(provider)
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
+        if provider_value.lower() == "azure":
+            model = _azure_deployment_name(model)
         if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
             model = f"accounts/fireworks/models/{model}"
         return f"{prefix}/{model}"
@@ -363,8 +423,13 @@ class LLMService:
         provider_value = llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
         remaining_config = config
         if provider_value.lower() == "azure":
-            azure_kwargs, remaining_config = _build_azure_litellm_kwargs(ai_provider, config)
+            azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
+                ai_provider, config
+            )
             call_kwargs.update(azure_kwargs)
+            if azure_v1_routing:
+                model_str = f"openai/{_azure_deployment_name(llm_model)}"
+                call_kwargs["model"] = model_str
         if remaining_config:
             call_kwargs.update(remaining_config)
 

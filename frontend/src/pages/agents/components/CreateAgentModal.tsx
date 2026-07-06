@@ -34,6 +34,14 @@ interface PromptPartial {
   description?: string | null
 }
 
+const CREATE_STEPS = [
+  { id: 1, title: 'Basics', description: 'Name, call settings, and telephony' },
+  { id: 2, title: 'Prompt', description: 'Describe what this agent does' },
+  { id: 3, title: 'Voice setup', description: 'Optional integrations' },
+] as const
+
+type CreateStep = (typeof CREATE_STEPS)[number]['id']
+
 const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
   IntegrationPlatform.RETELL,
   IntegrationPlatform.VAPI,
@@ -58,7 +66,7 @@ export default function CreateAgentModal({
   const [savedPromptSearch, setSavedPromptSearch] = useState('')
   const [selectedSavedPromptId, setSelectedSavedPromptId] = useState('')
   const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
-  
+  const [currentStep, setCurrentStep] = useState<CreateStep>(1)
   const [formData, setFormData] = useState<FormData>({
     name: '',
     phone_number: '',
@@ -235,44 +243,70 @@ export default function CreateAgentModal({
     setShowUseSavedModal(false)
     setSavedPromptSearch('')
     setSelectedSavedPromptId('')
+    setCurrentStep(1)
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    const descriptionWords = formData.description.trim().split(/\s+/).filter(Boolean)
-    if (descriptionWords.length < 10) {
-      showToast('Description must be at least 10 words.', 'error')
-      return
+  const validateStep1 = (): boolean => {
+    if (!formData.name.trim()) {
+      showToast('Name is required.', 'error')
+      return false
     }
-
     if (formData.call_medium === 'phone_call') {
       if (phoneNumberInputMode === 'provider') {
         if (!formData.telephony_phone_number_id) {
           showToast('Please select a telephony number from your provider.', 'error')
-          return
+          return false
         }
-      } else {
-        if (!formData.phone_number || formData.phone_number.trim() === '') {
-          showToast('Phone number is required for phone calls.', 'error')
-          return
-        }
-        if (!/^[\d+]+$/.test(formData.phone_number)) {
-          showToast('Phone number must contain only digits and the + character.', 'error')
-          return
-        }
+      } else if (!formData.phone_number?.trim()) {
+        showToast('Phone number is required for phone calls.', 'error')
+        return false
+      } else if (!/^[\d+]+$/.test(formData.phone_number)) {
+        showToast('Phone number must contain only digits and the + character.', 'error')
+        return false
       }
     }
+    return true
+  }
 
-    if (!formData.voice_ai_integration_id || formData.voice_ai_integration_id.trim() === '') {
-      showToast('Voice AI Integration Provider is required.', 'error')
-      return
+  const validateStep2 = (): boolean => {
+    const descriptionWords = formData.description.trim().split(/\s+/).filter(Boolean)
+    if (descriptionWords.length < 10) {
+      showToast('Description must be at least 10 words.', 'error')
+      return false
     }
-    if (!formData.voice_ai_agent_id || formData.voice_ai_agent_id.trim() === '') {
-      showToast('Voice AI Agent ID is required.', 'error')
-      return
-    }
+    return true
+  }
 
+  const validateStep3 = (): boolean => {
+    if (formData.voice_ai_integration_id && !formData.voice_ai_agent_id?.trim()) {
+      showToast('Agent ID is required when Integration Provider is selected', 'error')
+      return false
+    }
+    if (formData.voice_ai_agent_id?.trim() && !formData.voice_ai_integration_id) {
+      showToast('Integration Provider is required when Agent ID is provided', 'error')
+      return false
+    }
+    return true
+  }
+
+  const handleNext = (e?: React.MouseEvent | React.SyntheticEvent) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
+    if (currentStep === 1 && !validateStep1()) return
+    if (currentStep === 2 && !validateStep2()) return
+    // Defer so the same click cannot land on the submit button that replaces Next.
+    window.setTimeout(() => {
+      setCurrentStep((step) => Math.min(step + 1, 3) as CreateStep)
+    }, 0)
+  }
+
+  const handleBack = () => {
+    setCurrentStep((step) => Math.max(step - 1, 1) as CreateStep)
+  }
+
+  const handleCreate = () => {
+    if (currentStep !== 3) return
+    if (!validateStep1() || !validateStep2() || !validateStep3()) return
     createMutation.mutate(formData)
   }
 
@@ -292,13 +326,53 @@ export default function CreateAgentModal({
     <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-900">Create Test Agent</h2>
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">Create Test Agent</h2>
+            <p className="text-sm text-gray-500 mt-0.5">Step {currentStep} of {CREATE_STEPS.length}</p>
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        <div className="mb-6">
+          <div className="flex items-center">
+            {CREATE_STEPS.map((step, index) => {
+              const isComplete = currentStep > step.id
+              const isCurrent = currentStep === step.id
+              return (
+                <div key={step.id} className={`flex items-center ${index < CREATE_STEPS.length - 1 ? 'flex-1' : ''}`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                        isComplete
+                          ? 'bg-primary-600 text-white'
+                          : isCurrent
+                            ? 'border-2 border-primary-600 text-primary-600 bg-white'
+                            : 'border-2 border-gray-300 text-gray-400 bg-white'
+                      }`}
+                    >
+                      {step.id}
+                    </div>
+                    <div className="hidden sm:block min-w-0">
+                      <p className={`text-sm font-medium ${isCurrent ? 'text-gray-900' : 'text-gray-500'}`}>
+                        {step.title}
+                      </p>
+                      <p className="text-xs text-gray-400 truncate">{step.description}</p>
+                    </div>
+                  </div>
+                  {index < CREATE_STEPS.length - 1 && (
+                    <div className={`mx-3 h-0.5 flex-1 ${isComplete ? 'bg-primary-600' : 'bg-gray-200'}`} />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
         
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="space-y-4">
+          {currentStep === 1 && (
+            <>
           {/* Name */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
@@ -467,7 +541,11 @@ export default function CreateAgentModal({
               ))}
             </div>
           </div>
+            </>
+          )}
 
+          {currentStep === 2 && (
+            <>
           {/* Description with AI Generate */}
           <div>
             <div className="flex items-center justify-between mb-1">
@@ -646,15 +724,14 @@ export default function CreateAgentModal({
             {/* Editor / Preview */}
             {descriptionEditorMode === 'write' ? (
               <textarea
-                required
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm"
-                rows={6}
+                className="w-full min-h-[320px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
+                rows={14}
                 placeholder="Describe the agent's purpose, behavior, and expected interactions... Markdown is supported (at least 10 words)"
               />
             ) : (
-              <div className="min-h-[150px] max-h-[300px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
+              <div className="min-h-[320px] max-h-[480px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
                 {formData.description ? (
                   <ReactMarkdown>{formData.description}</ReactMarkdown>
                 ) : (
@@ -666,15 +743,23 @@ export default function CreateAgentModal({
               {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
             </p>
           </div>
+            </>
+          )}
+
+          {currentStep === 3 && (
+            <>
+          <p className="text-sm text-gray-600">
+            Voice configuration is optional. Skip this step if you have not integrated a platform yet — you can add it later from the agent detail page.
+          </p>
 
           {/* Voice Configuration */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Test Voice AI Agents */}
             <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
               <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Configure your test agent</h3>
-              <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using Voice Bundles for testing purposes</p>
+              <p className="text-sm text-gray-600 mb-4 flex-grow">Optional — for simulated test caller in evaluator runs and playground</p>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle</label>
                 <select
                   value={formData.voice_bundle_id}
                   onChange={(e) => setFormData({ ...formData, voice_bundle_id: e.target.value })}
@@ -693,11 +778,11 @@ export default function CreateAgentModal({
 
             {/* Voice AI Agent */}
             <div className="border border-blue-200 rounded-lg p-4 bg-blue-50 flex flex-col h-full">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent *</h3>
-              <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs, Smallest)</p>
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
+              <p className="text-sm text-gray-600 mb-4 flex-grow">Optional — for supported platforms (Retell, Vapi, ElevenLabs, Smallest)</p>
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
                   <div className="flex items-center gap-3">
                     <select
                       value={formData.voice_ai_integration_id}
@@ -732,7 +817,7 @@ export default function CreateAgentModal({
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Agent ID *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Agent ID</label>
                   <input
                     type="text"
                     value={formData.voice_ai_agent_id}
@@ -745,17 +830,40 @@ export default function CreateAgentModal({
               </div>
             </div>
           </div>
+            </>
+          )}
 
           {/* Actions */}
-          <div className="flex gap-3 pt-4">
-            <Button type="button" variant="outline" onClick={onClose} className="flex-1">
+          <div className="flex gap-3 pt-4 border-t border-gray-200">
+            <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" className="flex-1" isLoading={createMutation.isPending}>
-              Create Agent
-            </Button>
+            {currentStep > 1 && (
+              <Button type="button" variant="outline" onClick={handleBack}>
+                Back
+              </Button>
+            )}
+            <div className="flex-1" />
+            {currentStep < 3 ? (
+              <Button
+                type="button"
+                variant="primary"
+                onClick={(e) => handleNext(e as React.MouseEvent)}
+              >
+                Next
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="primary"
+                onClick={handleCreate}
+                isLoading={createMutation.isPending}
+              >
+                Create Agent
+              </Button>
+            )}
           </div>
-        </form>
+        </div>
       </div>
 
       {showUseSavedModal && (

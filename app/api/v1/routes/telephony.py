@@ -7,11 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id
-from app.models.database import TelephonyIntegration, TelephonyMaskedSession
+from app.models.database import TelephonyIntegration, TelephonyMaskedSession, TelephonyDialTarget
 from app.models.schemas import (
     TelephonyIntegrationCreate,
     TelephonyIntegrationResponse,
     TelephonyIntegrationUpdate,
+    TelephonyDialTargetCreate,
+    TelephonyDialTargetResponse,
+    TelephonyDialTargetUpdate,
     TelephonyMaskingSessionCreate,
     TelephonyMaskingSessionResponse,
     TelephonyOutboundCallRequest,
@@ -23,6 +26,7 @@ from app.models.schemas import (
     TelephonyVerifyStartResponse,
 )
 from app.services.telephony.telephony_service import telephony_service
+from app.services.telephony.plivo_client import normalize_e164
 from app.services.telephony.webhook_auth import verify_plivo_webhook
 
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
@@ -162,6 +166,125 @@ async def list_telephony_numbers(
 ):
     del api_key
     return telephony_service.list_numbers_enriched(organization_id, db, provider=provider)
+
+
+@router.get("/dial-targets", response_model=List[TelephonyDialTargetResponse])
+async def list_dial_targets(
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    return (
+        db.query(TelephonyDialTarget)
+        .filter(TelephonyDialTarget.organization_id == organization_id)
+        .order_by(TelephonyDialTarget.label.asc().nullslast(), TelephonyDialTarget.created_at.desc())
+        .all()
+    )
+
+
+@router.post("/dial-targets", response_model=TelephonyDialTargetResponse, status_code=status.HTTP_201_CREATED)
+async def create_dial_target(
+    payload: TelephonyDialTargetCreate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    try:
+        phone_number = normalize_e164(payload.phone_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    existing = (
+        db.query(TelephonyDialTarget)
+        .filter(
+            TelephonyDialTarget.organization_id == organization_id,
+            TelephonyDialTarget.phone_number == phone_number,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="This number is already saved for your organization")
+
+    row = TelephonyDialTarget(
+        organization_id=organization_id,
+        phone_number=phone_number,
+        label=payload.label.strip() if payload.label and payload.label.strip() else None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/dial-targets/{target_id}", response_model=TelephonyDialTargetResponse)
+async def update_dial_target(
+    target_id: UUID,
+    payload: TelephonyDialTargetUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    row = (
+        db.query(TelephonyDialTarget)
+        .filter(
+            TelephonyDialTarget.id == target_id,
+            TelephonyDialTarget.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Dial target not found")
+
+    if payload.phone_number is not None:
+        try:
+            phone_number = normalize_e164(payload.phone_number)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        duplicate = (
+            db.query(TelephonyDialTarget)
+            .filter(
+                TelephonyDialTarget.organization_id == organization_id,
+                TelephonyDialTarget.phone_number == phone_number,
+                TelephonyDialTarget.id != target_id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="This number is already saved for your organization")
+        row.phone_number = phone_number
+
+    if payload.label is not None:
+        row.label = payload.label.strip() if payload.label.strip() else None
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/dial-targets/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dial_target(
+    target_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    row = (
+        db.query(TelephonyDialTarget)
+        .filter(
+            TelephonyDialTarget.id == target_id,
+            TelephonyDialTarget.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Dial target not found")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/calls/outbound", response_model=TelephonyOutboundCallResponse)

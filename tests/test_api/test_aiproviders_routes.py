@@ -34,3 +34,35 @@ def test_delete_aiprovider(authenticated_client, make_ai_provider):
     response = authenticated_client.delete(f"/api/v1/aiproviders/{provider.id}")
 
     assert response.status_code == 204
+
+
+def test_create_azure_aiprovider_with_endpoint_url(authenticated_client):
+    payload = {
+        "provider": "azure",
+        "api_key": "azure-key",
+        "name": "Azure Production",
+        "endpoint_url": "https://eaitest-resource.openai.azure.com",
+    }
+    create_response = authenticated_client.post("/api/v1/aiproviders", json=payload)
+
+    assert create_response.status_code == 201
+    body = create_response.json()
+    assert body["provider"] == "azure"
+    assert body["endpoint_url"] == "https://eaitest-resource.openai.azure.com"
+    assert body["name"] == "Azure Production"
+
+
+def test_update_azure_endpoint_url(authenticated_client, make_ai_provider):
+    provider = make_ai_provider(
+        provider="azure",
+        name="Azure Key",
+        endpoint_url="https://old-resource.openai.azure.com",
+    )
+
+    response = authenticated_client.put(
+        f"/api/v1/aiproviders/{provider.id}",
+        json={"endpoint_url": "https://new-resource.openai.azure.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["endpoint_url"] == "https://new-resource.openai.azure.com"

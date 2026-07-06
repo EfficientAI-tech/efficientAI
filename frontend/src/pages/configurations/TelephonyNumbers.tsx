@@ -7,6 +7,7 @@ import { useToast } from '../../hooks/useToast'
 import { useOrgTelephony } from '../../hooks/useOrgTelephony'
 import {
   apiClient,
+  TelephonyDialTargetResponse,
   TelephonyPhoneNumberResponse,
   VobizAvailableNumber,
   VobizImportNumbersResponse,
@@ -26,6 +27,14 @@ export default function TelephonyNumbers() {
   const [showVobizImportModal, setShowVobizImportModal] = useState(false)
   const [selectedVobizNumbers, setSelectedVobizNumbers] = useState<string[]>([])
   const [vobizImportResults, setVobizImportResults] = useState<VobizImportNumbersResponse | null>(null)
+  const [newDialPhone, setNewDialPhone] = useState('')
+  const [newDialLabel, setNewDialLabel] = useState('')
+
+  const { data: dialTargets = [], isLoading: dialTargetsLoading } = useQuery<TelephonyDialTargetResponse[]>({
+    queryKey: ['telephony-dial-targets'],
+    queryFn: () => apiClient.listDialTargets(),
+    retry: false,
+  })
 
   const { data: outboundPool, isLoading: poolLoading } = useQuery<VobizOutboundPoolResponse>({
     queryKey: ['vobiz-outbound-pool'],
@@ -78,6 +87,30 @@ export default function TelephonyNumbers() {
     },
     onError: (error: any) => {
       showToast(error?.response?.data?.detail || error?.message || 'Failed to remove number', 'error')
+    },
+  })
+
+  const createDialTargetMutation = useMutation({
+    mutationFn: (data: { phone_number: string; label?: string }) => apiClient.createDialTarget(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['telephony-dial-targets'] })
+      setNewDialPhone('')
+      setNewDialLabel('')
+      showToast('Dial target saved', 'success')
+    },
+    onError: (error: any) => {
+      showToast(error?.response?.data?.detail || error?.message || 'Failed to save dial target', 'error')
+    },
+  })
+
+  const deleteDialTargetMutation = useMutation({
+    mutationFn: (targetId: string) => apiClient.deleteDialTarget(targetId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['telephony-dial-targets'] })
+      showToast('Dial target removed', 'success')
+    },
+    onError: (error: any) => {
+      showToast(error?.response?.data?.detail || error?.message || 'Failed to remove dial target', 'error')
     },
   })
 
@@ -214,6 +247,84 @@ export default function TelephonyNumbers() {
       </div>
 
       <div className="bg-white rounded-lg shadow">
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Saved dial targets</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Frequently called destination numbers for outbound test calls from evaluators.
+          </p>
+        </div>
+        <div className="px-6 py-4 border-b border-gray-100">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <input
+              type="text"
+              value={newDialPhone}
+              onChange={(e) => setNewDialPhone(e.target.value.replace(/[^\d+]/g, ''))}
+              placeholder="+919876543210"
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500"
+            />
+            <input
+              type="text"
+              value={newDialLabel}
+              onChange={(e) => setNewDialLabel(e.target.value)}
+              placeholder="Label (optional)"
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500"
+            />
+            <Button
+              variant="secondary"
+              leftIcon={<Plus className="h-4 w-4" />}
+              disabled={!newDialPhone.trim()}
+              isLoading={createDialTargetMutation.isPending}
+              onClick={() =>
+                createDialTargetMutation.mutate({
+                  phone_number: newDialPhone.trim(),
+                  label: newDialLabel.trim() || undefined,
+                })
+              }
+            >
+              Add target
+            </Button>
+          </div>
+        </div>
+        {dialTargetsLoading ? (
+          <div className="px-6 py-8 text-center text-gray-500 text-sm">Loading dial targets...</div>
+        ) : dialTargets.length === 0 ? (
+          <div className="px-6 py-8 text-center text-gray-500 text-sm">No saved dial targets yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Label</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Number</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {dialTargets.map((target) => (
+                  <tr key={target.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 text-sm text-gray-900">{target.label || '—'}</td>
+                    <td className="px-6 py-4 text-sm font-mono text-gray-900">{target.phone_number}</td>
+                    <td className="px-6 py-4 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        leftIcon={<Trash2 className="h-4 w-4" />}
+                        isLoading={deleteDialTargetMutation.isPending && deleteDialTargetMutation.variables === target.id}
+                        onClick={() => deleteDialTargetMutation.mutate(target.id)}
+                      >
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg shadow">
         <div className="px-6 py-4 border-b border-gray-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             {getTelephonyProviderLogo(TelephonyProvider.VOBIZ) && (
@@ -272,8 +383,11 @@ export default function TelephonyNumbers() {
             <strong>Inbound:</strong> assign a number to an agent (Agent → Phone call → Select from provider).
           </li>
           <li>
-            <strong>Outbound:</strong> place a call from the agent detail page, or use the Vobiz outbound API.
-            Caller ID uses your selection, org numbers, or the platform pool automatically.
+            <strong>Outbound:</strong> place a call from an evaluator detail page (standard evaluators with phone-call agents),
+            or use the Vobiz outbound API. Caller ID uses your selection, org numbers, or the platform pool automatically.
+          </li>
+          <li>
+            <strong>Saved dial targets:</strong> store frequently used destination numbers above for quick selection when placing outbound test calls.
           </li>
         </ul>
       </div>

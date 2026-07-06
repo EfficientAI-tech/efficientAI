@@ -9,6 +9,7 @@ import { ArrowLeft, Edit, Save, X, Phone, Globe, Trash2, AlertCircle, Brain, Che
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 import LLMAdvancedOptionsPanel from '../../../components/providers/LLMAdvancedOptionsPanel'
+import EvaluatorOutboundCallPanel from '../components/EvaluatorOutboundCallPanel'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 
 interface Evaluator {
@@ -642,6 +643,7 @@ export default function EvaluatorDetail() {
                     Loading details...
                   </div>
                 ) : details ? (
+                  <>
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                     <div className="space-y-6">
                       {/* Agent metadata */}
@@ -966,6 +968,25 @@ export default function EvaluatorDetail() {
                       </div>
                     </div>
                   </div>
+
+                  {!isEditing &&
+                    details.agent &&
+                    evaluator.agent_id &&
+                    evaluator.persona_id &&
+                    evaluator.scenario_id && (
+                      <EvaluatorOutboundCallPanel
+                        evaluatorId={evaluator.id}
+                        agentId={evaluator.agent_id}
+                        personaId={evaluator.persona_id}
+                        scenarioId={evaluator.scenario_id}
+                        personaName={details.persona?.name}
+                        scenarioName={details.scenario?.name}
+                        agentPhoneNumber={details.agent.phone_number}
+                        callMedium={details.agent.call_medium || 'phone_call'}
+                        showToast={showToast}
+                      />
+                    )}
+                  </>
                 ) : (
                   <div className="bg-white shadow rounded-lg p-6 text-center text-gray-500">
                     Failed to load details.

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.dependencies import get_api_key, get_db, get_organization_id
-from app.models.database import Agent, CallRecording, CallRecordingSource, TelephonyPhoneNumber
+from app.models.database import Agent, CallRecording, CallRecordingSource, Evaluator, TelephonyPhoneNumber
 from app.models.enums import CallRecordingStatus
 from app.services.telephony.phone_routing import resolve_inbound_agent_for_number
 from app.services.telephony.plivo_client import normalize_e164
@@ -51,6 +51,7 @@ class VobizOutboundCallRequest(BaseModel):
     from_number: Optional[str] = None
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
+    evaluator_id: Optional[UUID] = None
 
 
 class VobizOutboundCallResponse(BaseModel):
@@ -226,6 +227,28 @@ async def create_vobiz_outbound_call(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found for organization")
 
+    persona_id = payload.persona_id
+    scenario_id = payload.scenario_id
+    evaluator_id = payload.evaluator_id
+
+    if payload.evaluator_id:
+        evaluator = db.query(Evaluator).filter(
+            Evaluator.id == payload.evaluator_id,
+            Evaluator.organization_id == organization_id,
+        ).first()
+        if not evaluator:
+            raise HTTPException(status_code=404, detail="Evaluator not found for organization")
+        if evaluator.agent_id:
+            agent = db.query(Agent).filter(
+                Agent.id == evaluator.agent_id,
+                Agent.organization_id == organization_id,
+            ).first()
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found for evaluator")
+            payload = payload.model_copy(update={"agent_id": agent.id})
+        persona_id = persona_id or evaluator.persona_id
+        scenario_id = scenario_id or evaluator.scenario_id
+
     try:
         from_number, used_pool = resolve_outbound_from_number(
             db,
@@ -244,6 +267,9 @@ async def create_vobiz_outbound_call(
         from_number=from_number,
         to_number=to_number,
         used_pool=used_pool,
+        persona_id=str(persona_id) if persona_id else None,
+        scenario_id=str(scenario_id) if scenario_id else None,
+        evaluator_id=str(evaluator_id) if evaluator_id else None,
     )
 
     base = vobiz_webhook_base_url()
@@ -278,11 +304,12 @@ async def create_vobiz_outbound_call(
     db.add(
         CallRecording(
             organization_id=organization_id,
+            workspace_id=agent.workspace_id,
             call_short_id=call_short_id,
             status=CallRecordingStatus.PENDING,
             source=CallRecordingSource.WEBHOOK,
             call_event="outbound_initiated",
-            call_data={**response, "call_ref": session.call_ref, "recording_callback": recording_url, "used_pool": used_pool},
+            call_data={**response, "call_ref": session.call_ref, "recording_callback": recording_url, "used_pool": used_pool, "evaluator_id": str(evaluator_id) if evaluator_id else None},
             provider_call_id=call_uuid or None,
             provider_platform="vobiz",
             agent_id=agent.id,
@@ -332,8 +359,19 @@ async def vobiz_answer_webhook(
             to_number=params.get("to"),
         )
         session_token = session.call_ref
+        persona_id = None
+        scenario_id = None
+    else:
+        existing_session = get_call_session(session_token)
+        persona_id = existing_session.persona_id if existing_session else None
+        scenario_id = existing_session.scenario_id if existing_session else None
 
-    ws_url = build_vobiz_ws_url(agent_id=str(agent_id), session=session_token)
+    ws_url = build_vobiz_ws_url(
+        agent_id=str(agent_id),
+        session=session_token,
+        persona_id=persona_id,
+        scenario_id=scenario_id,
+    )
     record_action_url = f"{vobiz_webhook_base_url()}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
     xml = stream_to_agent(ws_url, record_action_url=record_action_url)
     return Response(content=xml, media_type="application/xml")

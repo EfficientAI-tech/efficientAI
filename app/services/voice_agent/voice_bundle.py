@@ -149,6 +149,9 @@ def _get_service(service_name: str):
     elif service_name == "GoogleLLMService":
         from efficientai.services.google.llm import GoogleLLMService
         service_class = GoogleLLMService
+    elif service_name == "AzureLLMService":
+        from efficientai.services.azure.llm import AzureLLMService
+        service_class = AzureLLMService
     
     # Optional: Smart Turn Analyzer
     elif service_name == "LocalSmartTurnAnalyzerV3":
@@ -335,6 +338,16 @@ def _get_llm_providers():
                 **({"params": params} if params else {}),
             ),
         },
+        "azure": {
+            "env_key": "AZURE_OPENAI_API_KEY",
+            "default_model": "gpt-4.1",
+            # Azure is instantiated with endpoint metadata in run_voice_bundle_fastapi.
+            "factory": lambda api_key, model, params=None: _get_service("OpenAILLMService")(
+                api_key=api_key,
+                model=model,
+                **({"params": params} if params else {}),
+            ),
+        },
     }
 
 
@@ -474,6 +487,7 @@ async def run_voice_bundle_fastapi(
     stt_api_key: str | None = None,
     tts_api_key: str | None = None,
     llm_api_key: str | None = None,
+    llm_endpoint_url: str | None = None,
     serializer=None,
     telephony_mode: bool = False,
 ):
@@ -566,6 +580,12 @@ async def run_voice_bundle_fastapi(
             build_efficientai_input_params,
             merge_llm_config,
         )
+        from app.services.ai.llm_service import (
+            _azure_deployment_name,
+            _azure_openai_v1_api_base,
+            _azure_uses_openai_v1_routing,
+            _normalize_azure_endpoint,
+        )
 
         llm_params = build_efficientai_input_params(
             llm_provider_value,
@@ -575,7 +595,31 @@ async def run_voice_bundle_fastapi(
                 legacy_max_tokens=getattr(voice_bundle, "llm_max_tokens", None),
             ),
         )
-        llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model, params=llm_params)
+        if llm_provider_value == "azure":
+            if not llm_endpoint_url:
+                raise ValueError(
+                    "Azure LLM requires an endpoint URL on the AI provider credential "
+                    "(Integrations → AI Provider → Azure → Azure Endpoint URL)."
+                )
+            api_base, version_hint = _normalize_azure_endpoint(llm_endpoint_url)
+            deployment_model = _azure_deployment_name(llm_model)
+            if _azure_uses_openai_v1_routing(None, version_hint):
+                llm = _get_service("OpenAILLMService")(
+                    api_key=llm_api_key,
+                    model=deployment_model,
+                    base_url=_azure_openai_v1_api_base(api_base),
+                    params=llm_params,
+                )
+            else:
+                llm = _get_service("AzureLLMService")(
+                    api_key=llm_api_key,
+                    endpoint=api_base,
+                    model=deployment_model,
+                    api_version=version_hint or "2024-08-01-preview",
+                    params=llm_params,
+                )
+        else:
+            llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model, params=llm_params)
 
         # Build context with provided system instruction or a default
         base_instruction = (

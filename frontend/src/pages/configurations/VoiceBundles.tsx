@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { apiClient } from '../../lib/api'
@@ -17,7 +17,9 @@ import {
 } from '../../config/llmGenerationParams'
 
 export default function VoiceBundles() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const autoEditOpenedRef = useRef<string | null>(null)
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -245,10 +247,20 @@ export default function VoiceBundles() {
       apiClient.updateVoiceBundle(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['voicebundles'] })
+      showToast('VoiceBundle updated successfully!', 'success')
       setShowEditModal(false)
       setSelectedBundle(null)
       resetForm()
-      showToast('VoiceBundle updated successfully!', 'success')
+      autoEditOpenedRef.current = null
+      const returnTo = searchParams.get('return')
+      const next = new URLSearchParams(searchParams)
+      next.delete('edit')
+      next.delete('return')
+      if (returnTo) {
+        navigate(returnTo)
+      } else if (next.toString() !== searchParams.toString()) {
+        setSearchParams(next, { replace: true })
+      }
     },
     onError: (error: any) => {
       showToast(`Failed to update VoiceBundle: ${error.response?.data?.detail || error.message}`, 'error')
@@ -349,6 +361,34 @@ export default function VoiceBundles() {
     })
     setShowEditModal(true)
   }
+
+  const closeEditModal = () => {
+    setShowEditModal(false)
+    setSelectedBundle(null)
+    resetForm()
+    autoEditOpenedRef.current = null
+    const returnTo = searchParams.get('return')
+    const next = new URLSearchParams(searchParams)
+    next.delete('edit')
+    next.delete('return')
+    if (returnTo) {
+      navigate(returnTo)
+    } else if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true })
+    }
+  }
+
+  useEffect(() => {
+    const editId = searchParams.get('edit')
+    if (!editId || voicebundles.length === 0) return
+    if (autoEditOpenedRef.current === editId) return
+    const bundle = voicebundles.find((b: VoiceBundle) => b.id === editId)
+    if (bundle) {
+      autoEditOpenedRef.current = editId
+      openEditModal(bundle)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per ?edit= id
+  }, [searchParams, voicebundles])
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
@@ -660,11 +700,7 @@ export default function VoiceBundles() {
           formData={formData}
           setFormData={setFormData}
           onSubmit={handleUpdate}
-          onClose={() => {
-            setShowEditModal(false)
-            setSelectedBundle(null)
-            resetForm()
-          }}
+          onClose={closeEditModal}
           isLoading={updateMutation.isPending}
           updateModelOptions={updateModelOptions}
           configuredProviders={configuredProviders}

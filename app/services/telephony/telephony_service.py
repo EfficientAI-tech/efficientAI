@@ -20,6 +20,7 @@ from app.models.database import (
     TelephonyMaskedSession,
     TelephonyPhoneNumber,
     TelephonyVerifySession,
+    Workspace,
 )
 from app.models.enums import CallRecordingStatus
 from app.services.credentials import resolve_telephony_integration
@@ -430,9 +431,31 @@ class TelephonyService:
 
         call_short_id = "".join(random.choices(string.digits, k=6))
         call_uuid = response.get("request_uuid") or response.get("message_uuid") or response.get("api_id")
+
+        workspace_id = None
+        effective_agent_id = agent_id or number_row.agent_id
+        if effective_agent_id:
+            agent = (
+                db.query(Agent)
+                .filter(Agent.id == effective_agent_id, Agent.organization_id == org_id)
+                .first()
+            )
+            if agent:
+                workspace_id = agent.workspace_id
+        if workspace_id is None:
+            default_workspace = (
+                db.query(Workspace)
+                .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+                .first()
+            )
+            if not default_workspace:
+                raise ValueError("No default workspace found for organization")
+            workspace_id = default_workspace.id
+
         db.add(
             CallRecording(
                 organization_id=org_id,
+                workspace_id=workspace_id,
                 call_short_id=call_short_id,
                 status=CallRecordingStatus.PENDING,
                 source=CallRecordingSource.WEBHOOK,

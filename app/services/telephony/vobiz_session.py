@@ -31,6 +31,9 @@ class VobizCallSession:
     from_number: Optional[str] = None
     to_number: Optional[str] = None
     used_pool: bool = False
+    persona_id: Optional[str] = None
+    scenario_id: Optional[str] = None
+    evaluator_id: Optional[str] = None
 
 
 def _get_redis() -> redis.Redis:
@@ -55,6 +58,9 @@ def create_call_session(
     from_number: Optional[str] = None,
     to_number: Optional[str] = None,
     used_pool: bool = False,
+    persona_id: Optional[str] = None,
+    scenario_id: Optional[str] = None,
+    evaluator_id: Optional[str] = None,
     ttl_seconds: int = _DEFAULT_TTL_SECONDS,
 ) -> VobizCallSession:
     """Create and persist a call session, returning its opaque call_ref."""
@@ -66,6 +72,9 @@ def create_call_session(
         "from_number": from_number,
         "to_number": to_number,
         "used_pool": used_pool,
+        "persona_id": persona_id,
+        "scenario_id": scenario_id,
+        "evaluator_id": evaluator_id,
     }
     ttl = max(int(ttl_seconds), 60)
     key = f"{_SESSION_PREFIX}{call_ref}"
@@ -83,6 +92,9 @@ def create_call_session(
         from_number=from_number,
         to_number=to_number,
         used_pool=used_pool,
+        persona_id=persona_id,
+        scenario_id=scenario_id,
+        evaluator_id=evaluator_id,
     )
 
 
@@ -114,6 +126,9 @@ def get_call_session(call_ref: str) -> Optional[VobizCallSession]:
         from_number=data.get("from_number"),
         to_number=data.get("to_number"),
         used_pool=bool(data.get("used_pool")),
+        persona_id=data.get("persona_id"),
+        scenario_id=data.get("scenario_id"),
+        evaluator_id=data.get("evaluator_id"),
     )
 
 

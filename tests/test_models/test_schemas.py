@@ -42,9 +42,18 @@ def test_agent_create_requires_phone_number_for_phone_call():
             description="This description has enough words to satisfy minimum word count requirement.",
             call_type="outbound",
             call_medium="phone_call",
-            voice_ai_integration_id=uuid4(),
-            voice_ai_agent_id="agent_1",
         )
+
+
+def test_agent_create_allows_missing_voice_ai_integration():
+    agent = AgentCreate(
+        name="Placeholder Agent",
+        description="This description has enough words to satisfy minimum word count requirement.",
+        call_type="outbound",
+        call_medium="web_call",
+    )
+    assert agent.voice_ai_integration_id is None
+    assert agent.voice_ai_agent_id is None
 
 
 def test_agent_response_converts_legacy_enum_strings():

@@ -92,6 +92,7 @@ async def create_aiprovider(
         provider=provider_value,
         api_key=encrypted_api_key,
         name=aiprovider.name,
+        endpoint_url=aiprovider.endpoint_url,
         is_default=will_be_default,
     )
     db.add(db_aiprovider)

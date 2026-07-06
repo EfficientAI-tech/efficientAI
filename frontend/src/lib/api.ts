@@ -299,6 +299,17 @@ export interface VobizOutboundCallRequest {
   to_number: string
   agent_id: string
   from_number?: string
+  persona_id?: string
+  scenario_id?: string
+  evaluator_id?: string
+}
+
+export interface TelephonyDialTargetResponse {
+  id: string
+  phone_number: string
+  label?: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface VobizOutboundCallResponse {
@@ -1298,6 +1309,28 @@ class ApiClient {
   async createVobizOutboundCall(data: VobizOutboundCallRequest): Promise<VobizOutboundCallResponse> {
     const response = await this.client.post('/api/v1/telephony/vobiz/calls/outbound', data)
     return response.data
+  }
+
+  async listDialTargets(): Promise<TelephonyDialTargetResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/dial-targets')
+    return response.data
+  }
+
+  async createDialTarget(data: { phone_number: string; label?: string }): Promise<TelephonyDialTargetResponse> {
+    const response = await this.client.post('/api/v1/telephony/dial-targets', data)
+    return response.data
+  }
+
+  async updateDialTarget(
+    targetId: string,
+    data: { phone_number?: string; label?: string },
+  ): Promise<TelephonyDialTargetResponse> {
+    const response = await this.client.put(`/api/v1/telephony/dial-targets/${targetId}`, data)
+    return response.data
+  }
+
+  async deleteDialTarget(targetId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/dial-targets/${targetId}`)
   }
 
   // Data Sources endpoints

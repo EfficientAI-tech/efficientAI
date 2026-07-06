@@ -286,6 +286,8 @@ export interface AIProvider {
   provider: ModelProvider
   api_key?: string | null
   name?: string | null
+  /** Azure OpenAI resource endpoint URL (Azure provider only). */
+  endpoint_url?: string | null
   is_active: boolean
   /** True if this row is the default credential for (org, provider). */
   is_default?: boolean
@@ -300,6 +302,8 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key?: string | null
   name?: string | null
+  /** Azure OpenAI resource endpoint URL (Azure provider only). */
+  endpoint_url?: string | null
   /** Mark the new credential as the default for (org, provider). */
   is_default?: boolean
 }
@@ -307,6 +311,7 @@ export interface AIProviderCreate {
 export interface AIProviderUpdate {
   api_key?: string | null
   name?: string | null
+  endpoint_url?: string | null
   is_active?: boolean
 }
 

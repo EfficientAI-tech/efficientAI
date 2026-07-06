@@ -14,6 +14,7 @@ from app.dependencies import get_organization_id, get_api_key
 from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from app.services.storage.s3_service import s3_service
 
@@ -200,6 +201,26 @@ async def websocket_endpoint(
 
             logger.warning(f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'")
             return None
+
+        def resolve_azure_endpoint_for_provider(provider: ModelProvider) -> str | None:
+            """Resolve Azure OpenAI endpoint URL from the org's AIProvider credential."""
+            from sqlalchemy import func
+
+            provider_value = provider.value if hasattr(provider, "value") else provider
+            ai_provider_rec = db.query(AIProvider).filter(
+                AIProvider.organization_id == organization_id,
+                AIProvider.provider == provider_value,
+                AIProvider.is_active == True,
+            ).first()
+            if not ai_provider_rec:
+                ai_provider_rec = db.query(AIProvider).filter(
+                    AIProvider.organization_id == organization_id,
+                    func.lower(AIProvider.provider) == provider_value.lower(),
+                    AIProvider.is_active == True,
+                ).first()
+            if not ai_provider_rec:
+                return None
+            return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
 
         # Determine which AI Provider to use (only needed for S2S/Gemini path)
         # Priority: 1) Agent's ai_provider_id, 2) Default Google
@@ -451,6 +472,13 @@ async def websocket_endpoint(
                 stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
                 tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
                 llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+                llm_endpoint_url = (
+                    resolve_azure_endpoint_for_provider(llm_provider)
+                    if llm_provider and (
+                        llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+                    ).lower() == "azure"
+                    else None
+                )
 
                 # If in bridge mode, we need to bridge test agent to Retell call
                 # For now, we'll run the voice bundle normally and note that bridging
@@ -479,6 +507,7 @@ async def websocket_endpoint(
                     stt_api_key=stt_api_key,
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
+                    llm_endpoint_url=llm_endpoint_url,
                 )
             else:
                 call_metadata = await run_bot(

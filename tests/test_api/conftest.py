@@ -332,6 +332,7 @@ def make_ai_provider(db_session, org_id, seed_org):
             provider=overrides.get("provider", "openai"),
             api_key=overrides.get("api_key", "enc-api-key"),
             name=overrides.get("name", "OpenAI Key"),
+            endpoint_url=overrides.get("endpoint_url"),
             is_active=overrides.get("is_active", True),
         )
         db_session.add(provider)
