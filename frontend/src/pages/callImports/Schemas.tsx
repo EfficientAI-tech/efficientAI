@@ -62,6 +62,20 @@ function makeConversationIdParameter(): EditableParameter {
   }
 }
 
+function makeRecordingUrlParameter(): EditableParameter {
+  return {
+    key: 'recording_url',
+    name: 'recording_url',
+    type: 'recording_url',
+    description: 'URL of the call recording for each imported row.',
+    is_required: true,
+  }
+}
+
+function isSystemRequiredParameter(param: EditableParameter): boolean {
+  return param.type === 'conversation_id' || param.type === 'recording_url'
+}
+
 function parametersFromSchema(
   parameters: CallImportSchemaParameter[],
 ): EditableParameter[] {
@@ -95,6 +109,9 @@ function validateParameters(params: EditableParameter[]): string | null {
   if (convCount !== 1) {
     return 'Exactly one parameter must be of type "conversation_id".'
   }
+  if (recordingCount !== 1) {
+    return 'Exactly one parameter must be of type "recording_url".'
+  }
   if (recordingDateCount > 1) {
     return 'At most one parameter can be of type "recording_date".'
   }
@@ -121,12 +138,16 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   const [parameters, setParameters] = useState<EditableParameter[]>(
     schema
       ? parametersFromSchema(schema.parameters)
-      : [makeConversationIdParameter()],
+      : [makeConversationIdParameter(), makeRecordingUrlParameter()],
   )
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const conversationIdIdx = useMemo(
     () => parameters.findIndex((p) => p.type === 'conversation_id'),
+    [parameters],
+  )
+  const recordingUrlIdx = useMemo(
+    () => parameters.findIndex((p) => p.type === 'recording_url'),
     [parameters],
   )
 
@@ -139,7 +160,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
       setParameters(
         schema
           ? parametersFromSchema(schema.parameters)
-          : [makeConversationIdParameter()],
+          : [makeConversationIdParameter(), makeRecordingUrlParameter()],
       )
       setErrorMsg(null)
     }
@@ -154,8 +175,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           name: p.name.trim(),
           type: p.type,
           description: p.description.trim() || null,
-          is_required:
-            p.type === 'conversation_id' ? true : p.is_required,
+          is_required: isSystemRequiredParameter(p) ? true : p.is_required,
         })),
       }),
     onSuccess: () => {
@@ -178,8 +198,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           name: p.name.trim(),
           type: p.type,
           description: p.description.trim() || null,
-          is_required:
-            p.type === 'conversation_id' ? true : p.is_required,
+          is_required: isSystemRequiredParameter(p) ? true : p.is_required,
         })),
       })
     },
@@ -222,7 +241,16 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   }
 
   const removeParameter = (idx: number) => {
-    setParameters((prev) => prev.filter((_, i) => i !== idx))
+    setParameters((prev) => {
+      const param = prev[idx]
+      if (
+        param?.type === 'conversation_id' ||
+        param?.type === 'recording_url'
+      ) {
+        return prev
+      }
+      return prev.filter((_, i) => i !== idx)
+    })
   }
 
   const moveParameter = (idx: number, direction: 'up' | 'down') => {
@@ -230,11 +258,14 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
       const next = [...prev]
       const target = direction === 'up' ? idx - 1 : idx + 1
       if (target < 0 || target >= next.length) return prev
-      // Keep the conversation_id row pinned at the top — it must always
-      // be index 0 so the UI can lock it visually.
+      // Keep the system rows pinned — conversation_id at the top and
+      // recording_url immediately after it.
+      const pinnedTypes = new Set(['conversation_id', 'recording_url'])
       if (
-        next[idx].type === 'conversation_id' ||
-        next[target].type === 'conversation_id'
+        pinnedTypes.has(next[idx].type) ||
+        pinnedTypes.has(next[target].type) ||
+        target <= conversationIdIdx ||
+        (recordingUrlIdx >= 0 && target <= recordingUrlIdx)
       ) {
         return prev
       }
@@ -319,17 +350,19 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               <div className="divide-y divide-gray-100">
                 {parameters.map((p, idx) => {
                   const isConversationId = p.type === 'conversation_id'
-                  const locked = isConversationId
-                  const isSystemRequired = isConversationId
+                  const isRecordingUrl = p.type === 'recording_url'
+                  const nameLocked = isConversationId
+                  const typeLocked = isConversationId || isRecordingUrl
+                  const isSystemRequired = isSystemRequiredParameter(p)
                   return (
                     <div
                       key={p.key}
                       className={`grid grid-cols-[24px_1fr_1fr_2fr_auto_auto] gap-2 items-center px-3 py-2 ${
-                        locked ? 'bg-primary-50/30' : ''
+                        typeLocked ? 'bg-primary-50/30' : ''
                       }`}
                     >
                       <div className="flex flex-col items-center text-gray-400">
-                        {locked ? (
+                        {typeLocked ? (
                           <Lock className="h-3.5 w-3.5" />
                         ) : (
                           <>
@@ -339,7 +372,8 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                               disabled={
                                 isSubmitting ||
                                 idx === 0 ||
-                                idx - 1 === conversationIdIdx
+                                idx - 1 === conversationIdIdx ||
+                                idx - 1 === recordingUrlIdx
                               }
                               className="leading-none text-[10px] disabled:opacity-30"
                               aria-label="Move up"
@@ -351,7 +385,10 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                               type="button"
                               onClick={() => moveParameter(idx, 'down')}
                               disabled={
-                                isSubmitting || idx === parameters.length - 1
+                                isSubmitting ||
+                                idx === parameters.length - 1 ||
+                                idx + 1 === conversationIdIdx ||
+                                idx + 1 === recordingUrlIdx
                               }
                               className="leading-none text-[10px] disabled:opacity-30"
                               aria-label="Move down"
@@ -368,15 +405,15 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                           onChange={(e) =>
                             updateParameter(idx, { name: e.target.value })
                           }
-                          disabled={locked || isSubmitting}
+                          disabled={nameLocked || isSubmitting}
                           placeholder="parameter_name"
                           className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
                         />
                       </div>
                       <div>
-                        {locked ? (
+                        {typeLocked ? (
                           <span className="inline-flex items-center px-2 py-1 text-xs font-medium rounded bg-primary-100 text-primary-700">
-                            Conversation ID
+                            {isConversationId ? 'Conversation ID' : 'Recording URL'}
                           </span>
                         ) : (
                           <select
@@ -386,13 +423,21 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                                 .value as CallImportSchemaParameterType
                               updateParameter(idx, {
                                 type: nextType,
-                                is_required: p.is_required,
+                                is_required:
+                                  nextType === 'conversation_id' ||
+                                  nextType === 'recording_url'
+                                    ? true
+                                    : p.is_required,
                               })
                             }}
                             disabled={isSubmitting}
                             className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-primary-500"
                           >
-                            {PARAMETER_TYPES.map((t) => (
+                            {PARAMETER_TYPES.filter(
+                              (t) =>
+                                t.value !== 'conversation_id' &&
+                                t.value !== 'recording_url',
+                            ).map((t) => (
                               <option key={t.value} value={t.value}>
                                 {t.label}
                               </option>
@@ -426,7 +471,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                         />
                       </div>
                       <div>
-                        {!locked && (
+                        {!typeLocked && (
                           <button
                             type="button"
                             onClick={() => removeParameter(idx)}
@@ -446,11 +491,12 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
             <p className="mt-1 text-xs text-gray-500">
               Every schema must include exactly one{' '}
               <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
-              parameter (required). Add{' '}
-              <code className="bg-gray-100 px-1 rounded">recording_date</code>,{' '}
-              <code className="bg-gray-100 px-1 rounded">recording_url</code>, or{' '}
-              <code className="bg-gray-100 px-1 rounded">transcript</code> only
-              when your uploads include those columns.
+              and one{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_url</code>{' '}
+              parameter (both required). Add{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_date</code> or{' '}
+              <code className="bg-gray-100 px-1 rounded">transcript</code> when
+              your uploads include those columns.
             </p>
           </div>
 
@@ -696,7 +742,9 @@ export default function CallImportSchemasPage() {
           Define reusable, typed Input Parameters that drive the Call Uploads
           mapping UI. Every schema must have a single{' '}
           <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
-          parameter — that's the mandatory identifier on every imported row.
+          and a single{' '}
+          <code className="bg-gray-100 px-1 rounded">recording_url</code>{' '}
+          parameter — both are required on every imported row.
         </p>
       </div>
 

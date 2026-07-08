@@ -19,6 +19,16 @@ DEFAULT_API_BASE = "https://api.exotel.com"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_MAX_RECORDING_BYTES = 50 * 1024 * 1024  # 50 MB
 
+# Recognized Exotel REST API bases. ``sip_domain`` on integrations is also
+# used by Plivo for SIP routing; for Exotel we only treat values matching
+# these patterns as Calls API hosts — legacy SIP routing hosts are ignored.
+_KNOWN_EXOTEL_API_HOSTS = frozenset(
+    {
+        "api.exotel.com",
+        "api.in.exotel.com",
+    }
+)
+
 
 class ExotelAuthError(Exception):
     """Exotel rejected the credentials (HTTP 401/403). Not retryable."""
@@ -159,14 +169,87 @@ class ExotelClient:
         )
 
 
+def _hostname_from_api_host_value(value: str) -> str:
+    """Extract a lowercase hostname from a bare host, host:port, or URL."""
+    from urllib.parse import urlparse
+
+    raw = value.strip().rstrip("/")
+    if "://" in raw:
+        parsed = urlparse(raw)
+        host = parsed.hostname or ""
+    else:
+        host = raw.split("/", 1)[0].split("@", 1)[-1]
+        if ":" in host and not host.startswith("["):
+            host = host.rsplit(":", 1)[0]
+    return host.lower()
+
+
+def is_exotel_rest_api_host(api_host: Optional[str]) -> bool:
+    """Return True when ``api_host`` is a known Exotel REST API base.
+
+    SIP routing domains (``sip.*``, customer SIP hosts, etc.) must not be
+    used for Calls API lookups — those integrations fall back to the
+    configured default instead.
+    """
+    if not api_host or not api_host.strip():
+        return False
+    host = _hostname_from_api_host_value(api_host)
+    if host in _KNOWN_EXOTEL_API_HOSTS:
+        return True
+    # Future Exotel REST shards that follow api.<region>.exotel.com.
+    return host.startswith("api.") and host.endswith(".exotel.com")
+
+
+def validate_exotel_api_host_for_save(api_host: Optional[str]) -> None:
+    """Reject non-empty Exotel API host values that are not REST API bases."""
+    if not api_host or not str(api_host).strip():
+        return
+    if not is_exotel_rest_api_host(str(api_host)):
+        raise ValueError(
+            "Exotel API Host must be a REST API base such as api.exotel.com or "
+            "api.in.exotel.com. SIP routing domains belong on Plivo integrations, "
+            "not here."
+        )
+
+
+def resolve_exotel_api_base(api_host: Optional[str] = None) -> str:
+    """Pick the Exotel REST base URL for call-import / telephony clients.
+
+    Priority: per-integration API Host (``sip_domain``) when it matches a
+    recognized Exotel REST host → ``EXOTEL_API_BASE`` in config → Singapore
+    default. Unrecognized ``sip_domain`` values (e.g. legacy SIP routing
+    hosts) are ignored with a warning so call-id lookup does not hit the
+    wrong service.
+    """
+    if api_host and api_host.strip():
+        if is_exotel_rest_api_host(api_host):
+            host = api_host.strip().rstrip("/")
+            if not host.startswith(("http://", "https://")):
+                host = f"https://{host}"
+            return host
+        logger.warning(
+            "Ignoring Exotel integration API host {!r}: not a recognized REST "
+            "API base (expected api.exotel.com or api.in.exotel.com). "
+            "Falling back to configured default.",
+            api_host.strip(),
+        )
+
+    configured = getattr(settings, "EXOTEL_API_BASE", None)
+    if configured and str(configured).strip():
+        return str(configured).strip().rstrip("/")
+
+    return DEFAULT_API_BASE
+
+
 def build_exotel_client_from_integration(
     auth_id: str,
     auth_token: str,
     account_sid: Optional[str] = None,
+    api_host: Optional[str] = None,
 ) -> ExotelClient:
-    """Helper that reads any optional overrides from settings."""
+    """Helper that reads optional API-host and timeout overrides from settings."""
 
-    api_base = getattr(settings, "EXOTEL_API_BASE", None) or DEFAULT_API_BASE
+    api_base = resolve_exotel_api_base(api_host)
     timeout = float(getattr(settings, "EXOTEL_HTTP_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
     max_bytes = int(
         getattr(settings, "EXOTEL_MAX_RECORDING_BYTES", DEFAULT_MAX_RECORDING_BYTES)

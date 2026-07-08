@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     GCS_BUCKET_NAME: Optional[str] = None
     GCS_PROJECT_ID: Optional[str] = None
     GCS_CREDENTIALS_PATH: Optional[str] = None
+    GCS_SIGNING_SERVICE_ACCOUNT_EMAIL: Optional[str] = None
     GCS_PREFIX: str = "audio/"
 
     # Azure Blob Storage Configuration
@@ -458,6 +459,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.GCS_PROJECT_ID = gcs_config["project_id"]
         if "credentials_path" in gcs_config:
             settings.GCS_CREDENTIALS_PATH = gcs_config["credentials_path"]
+        if "signing_service_account_email" in gcs_config:
+            settings.GCS_SIGNING_SERVICE_ACCOUNT_EMAIL = gcs_config[
+                "signing_service_account_email"
+            ]
         if "prefix" in gcs_config:
             settings.GCS_PREFIX = gcs_config["prefix"]
 

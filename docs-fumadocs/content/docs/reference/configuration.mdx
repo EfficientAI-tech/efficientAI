@@ -73,6 +73,7 @@ gcs:
   bucket_name: "your-gcs-bucket-name"
   project_id: "your-gcp-project-id"
   credentials_path: null     # service-account JSON; or GOOGLE_APPLICATION_CREDENTIALS / ADC
+  signing_service_account_email: null  # optional override for IAM signBlob (GKE Workload Identity)
   prefix: "audio/"
 
 # Azure Blob Storage (optional, used when blob_provider is azure)

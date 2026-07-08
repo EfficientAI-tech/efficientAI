@@ -1814,13 +1814,10 @@ export default function CallImportDetail() {
 
       {preImport && data.source_s3_key && (
         <>
-          {data.status === 'uploaded' && <MappingPanel callImport={data} />}
-          {data.status === 'mapped' && (
-            <>
-              <MappingPanel callImport={data} />
-              <ImportPanel callImport={data} />
-            </>
+          {(data.status === 'uploaded' || data.status === 'mapped') && (
+            <MappingPanel callImport={data} />
           )}
+          {data.status === 'mapped' && <ImportPanel callImport={data} />}
         </>
       )}
 

@@ -154,6 +154,16 @@ export function hydrateMappingFromPersisted(
   return { parameterMapping, skipped }
 }
 
+export function isRequiredSchemaParameter(
+  param: CallImportSchemaParameter,
+): boolean {
+  return (
+    param.is_required ||
+    param.type === 'conversation_id' ||
+    param.type === 'recording_url'
+  )
+}
+
 export function validateMapping(
   parameters: CallImportSchemaParameter[],
   headers: string[],
@@ -163,7 +173,7 @@ export function validateMapping(
   const usageCount: Record<string, number> = {}
   for (const param of parameters) {
     const header = (state.parameterMapping[param.name] || '').trim()
-    if (param.is_required && !header) {
+    if (isRequiredSchemaParameter(param) && !header) {
       missingRequired.push(param.name)
     }
     if (header) {
@@ -259,6 +269,7 @@ export default function ParameterMappingTable({
               const selected =
                 state.parameterMapping[param.name] || NOT_USED
               const isLocked = param.type === 'conversation_id'
+              const isRequired = isRequiredSchemaParameter(param)
               return (
                 <div
                   key={param.name}
@@ -269,7 +280,7 @@ export default function ParameterMappingTable({
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="truncate font-medium">{param.name}</span>
-                        {param.is_required && (
+                        {isRequired && (
                           <span className="text-[10px] uppercase tracking-wide text-red-600">
                             required
                           </span>
@@ -296,7 +307,7 @@ export default function ParameterMappingTable({
                       className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-primary-500 disabled:opacity-60"
                     >
                       <option value={NOT_USED}>
-                        {param.is_required
+                        {isRequired
                           ? '— Select source column —'
                           : '— Not used —'}
                       </option>

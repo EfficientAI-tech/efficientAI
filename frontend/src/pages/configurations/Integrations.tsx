@@ -1155,7 +1155,7 @@ export default function Integrations() {
                             {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Host' : 'SIP Domain'} <span className="text-gray-400 font-normal">(optional)</span>
                           </label>
                           <input type="text" value={telephonySipDomain} onChange={(e) => setTelephonySipDomain(e.target.value)}
-                            placeholder={selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Optional: api.exotel.com' : 'Optional: SIP domain'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
+                            placeholder={selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Optional: api.exotel.com or api.in.exotel.com' : 'Optional: SIP domain'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
                         </div>
                       </div>
                       <p className="text-xs text-gray-500">Credentials are encrypted and stored securely. Your browser never displays stored secrets.</p>

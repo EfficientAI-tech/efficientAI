@@ -86,6 +86,7 @@ def _standard_params() -> list[CallImportSchemaParameter]:
         _param(
             name="recording_url",
             type_=CallImportParameterType.RECORDING_URL,
+            is_required=True,
             ordering=2,
         ),
         _param(
@@ -194,27 +195,25 @@ def test_parse_csv_rejects_missing_mapped_required_header():
     assert "conversation_id" in exc.value.detail.lower()
 
 
-def test_parse_csv_allows_optional_param_without_mapping():
+def test_parse_csv_rejects_unmapped_required_recording_url():
     csv_text = (
         "CallID,Recording Date,Transcript\n"
         "abc-1,18/05/2026,Hello world\n"
     )
-    # Drop the recording_url mapping entry so it is treated as "not used".
     mapping = {
         "conversation_id": "CallID",
         "recording_date": "Recording Date",
         "transcript": "Transcript",
     }
-    rows = _parse_csv(
-        _csv_bytes(csv_text),
-        _standard_params(),
-        mapping,
-        _standard_skipped(),
-    )
-    assert len(rows) == 1
-    assert rows[0]["conversation_id"] == "abc-1"
-    assert rows[0]["recording_url"] is None
-    assert rows[0]["transcript"] == "Hello world"
+    with pytest.raises(HTTPException) as exc:
+        _parse_csv(
+            _csv_bytes(csv_text),
+            _standard_params(),
+            mapping,
+            _standard_skipped(),
+        )
+    assert exc.value.status_code == 400
+    assert "recording_url" in exc.value.detail.lower()
 
 
 def test_parse_csv_rejects_row_missing_conversation_id():
@@ -703,7 +702,7 @@ def _seed_schema(
             schema_id=schema.id,
             name="recording_url",
             type=CallImportParameterType.RECORDING_URL.value,
-            is_required=False,
+            is_required=True,
             ordering=2,
         ),
         CallImportSchemaParameter(

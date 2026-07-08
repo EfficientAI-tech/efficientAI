@@ -136,6 +136,7 @@ gcs:
   bucket_name: "your-gcs-bucket-name"
   project_id: "your-gcp-project-id"
   credentials_path: null  # Optional path to service-account JSON
+  signing_service_account_email: null  # Optional override for IAM signBlob (GKE Workload Identity)
   prefix: "audio/"
 ```
 
@@ -145,6 +146,7 @@ gcs:
 | `bucket_name` | Yes | Name of your GCS bucket |
 | `project_id` | Yes | GCP project ID |
 | `credentials_path` | No | Path to a service-account JSON key file |
+| `signing_service_account_email` | No | Override service account email for signed URL generation when ADC does not expose it |
 | `prefix` | No | Folder prefix for uploaded files (default: `audio/`) |
 
 ### Authentication
@@ -155,14 +157,31 @@ EfficientAI resolves GCS credentials in this order:
 2. `GOOGLE_APPLICATION_CREDENTIALS` environment variable
 3. Application Default Credentials (ADC) on GCE, GKE, or Cloud Run
 
+Uploads and server-side downloads work with ADC alone (including **GKE Workload Identity**). **Signed URLs** for browser playback require either a service account JSON key with a private key, or Workload Identity plus IAM signBlob (see below).
+
 The `google-cloud-storage` client is included in the standard EfficientAI install (`pip install -e .`); no extra Python package step is required for GCS.
 
 ### GCP setup
 
 1. **Create a GCS bucket** in your project (Console or `gcloud storage buckets create`).
 2. **Create a service account** with object read/write access (e.g., `roles/storage.objectAdmin` on the bucket, or a tighter custom role).
-3. **Download a JSON key** and set `credentials_path`, or mount the key and set `GOOGLE_APPLICATION_CREDENTIALS`.
+3. **Authenticate the app** using one of:
+   - **GKE Workload Identity (recommended):** bind your Kubernetes service account to the GCP service account. Enable the [IAM Credentials API](https://cloud.google.com/iam/docs/reference/credentials/rest) and grant the GCP service account `roles/iam.serviceAccountTokenCreator` **on itself** so EfficientAI can sign playback URLs without a JSON key.
+   - **Service account JSON key:** download a key and set `credentials_path`, or mount the key and set `GOOGLE_APPLICATION_CREDENTIALS`.
 4. Set `storage.blob_provider: gcs`, `gcs.enabled: true`, and fill in `bucket_name` and `project_id`.
+
+Example IAM binding for Workload Identity signed URLs:
+
+```bash
+gcloud services enable iamcredentials.googleapis.com
+
+gcloud iam service-accounts add-iam-policy-binding \
+  WORKLOAD_SA@PROJECT.iam.gserviceaccount.com \
+  --role=roles/iam.serviceAccountTokenCreator \
+  --member="serviceAccount:WORKLOAD_SA@PROJECT.iam.gserviceaccount.com"
+```
+
+If ADC does not expose the service account email (some federation setups), set `gcs.signing_service_account_email` to the workload GCP service account email.
 
 Object layout under `prefix` matches S3 (organization-scoped paths), so you can migrate between providers without changing application logic.
 
@@ -253,6 +272,7 @@ Use **Test Connection** on the Data Sources page, or upload a test file and conf
 | GCS `Forbidden` | Confirm service account has `storage.objects.*` on the bucket |
 | GCS bucket not found | Verify `bucket_name`, `project_id`, and that the bucket exists |
 | GCS auth failure | Set `credentials_path` or `GOOGLE_APPLICATION_CREDENTIALS`; on GCP VMs you can use ADC |
+| GCS signed URL failure on GKE | Enable IAM Credentials API; grant `roles/iam.serviceAccountTokenCreator` to the workload SA on itself; optionally set `signing_service_account_email` |
 | Wrong provider in UI | Ensure `storage.blob_provider` matches the enabled block (`s3`, `gcs`, or `azure`) |
 | Azure container not found | Verify `container_name` and that the container exists in the storage account |
 | Azure auth failure | Set `connection_string` or `account_name` + `account_key` |
