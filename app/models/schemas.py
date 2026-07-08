@@ -2209,9 +2209,10 @@ class CallImportSchemaParameterBase(BaseModel):
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
             "datetime / url. Exactly one parameter of type "
-            "'conversation_id' must be present; at most one each of "
-            "'recording_url', 'recording_date', and 'transcript'. Only "
-            "'conversation_id' is forced required."
+            "'conversation_id' and exactly one of type 'recording_url' "
+            "must be present; at most one each of 'recording_date' and "
+            "'transcript'. Both conversation_id and recording_url are "
+            "forced required."
         ),
     )
     description: Optional[str] = Field(
@@ -2223,8 +2224,9 @@ class CallImportSchemaParameterBase(BaseModel):
         default=False,
         description=(
             "When True, the parameter must be mapped to a CSV column on "
-            "every upload. The ``conversation_id`` parameter is always "
-            "required and is force-set to True by the server."
+            "every upload. The ``conversation_id`` and ``recording_url`` "
+            "parameters are always required and are force-set to True by "
+            "the server."
         ),
     )
 
@@ -2278,6 +2280,11 @@ def _validate_schema_parameters(
         raise ValueError(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
+        )
+    if rec_url_count != 1:
+        raise ValueError(
+            "Schema must contain exactly one parameter of type "
+            "'recording_url'."
         )
     if recording_date_count > 1:
         raise ValueError(

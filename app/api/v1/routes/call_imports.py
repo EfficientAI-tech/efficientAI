@@ -378,6 +378,20 @@ def _coerce_parameter_value(
     return cell
 
 
+def _parameter_is_required(param: CallImportSchemaParameter) -> bool:
+    """Return whether a schema parameter must be mapped on every upload."""
+    if param.is_required:
+        return True
+    try:
+        param_type = CallImportParameterType(param.type)
+    except ValueError:
+        return False
+    return param_type in (
+        CallImportParameterType.CONVERSATION_ID,
+        CallImportParameterType.RECORDING_URL,
+    )
+
+
 def _apply_schema_mapping(
     fieldnames: List[str],
     rows_iter: Iterable[Dict[str, str]],
@@ -439,7 +453,7 @@ def _apply_schema_mapping(
             if mapped_header
             else None
         )
-        if param.is_required and canonical is None:
+        if _parameter_is_required(param) and canonical is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -543,7 +557,7 @@ def _apply_schema_mapping(
                 row_idx=idx,
                 param_name=param.name,
             )
-            if param.is_required and coerced is None:
+            if _parameter_is_required(param) and coerced is None:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
@@ -2248,6 +2262,37 @@ async def list_call_import_datasets(
     return [row[0] for row in rows if row[0]]
 
 
+@router.get(
+    "/diarisation-prompt-default",
+    response_model=CallImportDiarisationPromptDefaultResponse,
+    operation_id="getCallImportDiarisationPromptDefault",
+)
+async def get_call_import_diarisation_prompt_default(
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+) -> CallImportDiarisationPromptDefaultResponse:
+    """Return the canonical LLM diariser prompt.
+
+    The Transcribe / Run Evaluation modals call this on open so they
+    can pre-fill the prompt textarea. Returning the constant from the
+    backend (rather than hard-coding it in the frontend) keeps the
+    fallback used by the worker and the placeholder shown in the UI
+    in lock-step — operators always see the *actual* default they'd
+    get if they leave the field blank.
+
+    Registered before ``GET /{call_import_id}`` so the static path is
+    not mistaken for a UUID import id (which would 422).
+    """
+    del api_key, organization_id
+    from app.workers.tasks.helpers.llm_diarisation import (
+        DEFAULT_DIARIZATION_PROMPT,
+    )
+
+    return CallImportDiarisationPromptDefaultResponse(
+        prompt=DEFAULT_DIARIZATION_PROMPT
+    )
+
+
 @router.patch(
     "/{call_import_id}",
     response_model=CallImportResponse,
@@ -2981,34 +3026,6 @@ async def bulk_delete_call_import_rows(
 # ---------------------------------------------------------------------------
 # Diarization / transcription endpoints
 # ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/diarisation-prompt-default",
-    response_model=CallImportDiarisationPromptDefaultResponse,
-    operation_id="getCallImportDiarisationPromptDefault",
-)
-async def get_call_import_diarisation_prompt_default(
-    api_key: str = Depends(get_api_key),
-    organization_id: UUID = Depends(get_organization_id),
-) -> CallImportDiarisationPromptDefaultResponse:
-    """Return the canonical LLM diariser prompt.
-
-    The Transcribe / Run Evaluation modals call this on open so they
-    can pre-fill the prompt textarea. Returning the constant from the
-    backend (rather than hard-coding it in the frontend) keeps the
-    fallback used by the worker and the placeholder shown in the UI
-    in lock-step — operators always see the *actual* default they'd
-    get if they leave the field blank.
-    """
-    del api_key, organization_id
-    from app.workers.tasks.helpers.llm_diarisation import (
-        DEFAULT_DIARIZATION_PROMPT,
-    )
-
-    return CallImportDiarisationPromptDefaultResponse(
-        prompt=DEFAULT_DIARIZATION_PROMPT
-    )
 
 
 def _select_rows_for_transcription(

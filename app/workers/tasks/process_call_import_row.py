@@ -39,6 +39,13 @@ from app.workers.config import celery_app
 _RETRYABLE_COUNTDOWN_SECONDS = 60
 
 
+def _use_credentialed_recording_download(call_import, client) -> bool:
+    """True when CSV recording URLs should be fetched with provider auth."""
+    if client is None or not hasattr(client, "download_recording"):
+        return False
+    return (call_import.provider or "").lower() == "exotel"
+
+
 def _is_direct_url_import(call_import) -> bool:
     """True only when the batch was explicitly imported without telephony creds.
 
@@ -181,6 +188,7 @@ def process_call_import_row_task(self, row_id: str):
         provider_lookup_supported = (
             not direct_url_mode
             and bool(row.conversation_id)
+            and not original_csv_url
             and client is not None
             and hasattr(client, "get_call_recording_url")
         )
@@ -308,7 +316,10 @@ def process_call_import_row_task(self, row_id: str):
 
             if audio_bytes is None and original_csv_url:
                 try:
-                    fetched = download_public_recording(original_csv_url)
+                    if _use_credentialed_recording_download(call_import, client):
+                        fetched = client.download_recording(original_csv_url)
+                    else:
+                        fetched = download_public_recording(original_csv_url)
                     audio_bytes, content_type = fetched
                     used_url = original_csv_url
                     if primary_failure is not None:

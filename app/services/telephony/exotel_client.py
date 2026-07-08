@@ -159,14 +159,34 @@ class ExotelClient:
         )
 
 
+def resolve_exotel_api_base(api_host: Optional[str] = None) -> str:
+    """Pick the Exotel REST base URL for call-import / telephony clients.
+
+    Priority: per-integration API Host (``sip_domain``) → ``EXOTEL_API_BASE``
+    in config → Singapore default.
+    """
+    if api_host and api_host.strip():
+        host = api_host.strip().rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = f"https://{host}"
+        return host
+
+    configured = getattr(settings, "EXOTEL_API_BASE", None)
+    if configured and str(configured).strip():
+        return str(configured).strip().rstrip("/")
+
+    return DEFAULT_API_BASE
+
+
 def build_exotel_client_from_integration(
     auth_id: str,
     auth_token: str,
     account_sid: Optional[str] = None,
+    api_host: Optional[str] = None,
 ) -> ExotelClient:
-    """Helper that reads any optional overrides from settings."""
+    """Helper that reads optional API-host and timeout overrides from settings."""
 
-    api_base = getattr(settings, "EXOTEL_API_BASE", None) or DEFAULT_API_BASE
+    api_base = resolve_exotel_api_base(api_host)
     timeout = float(getattr(settings, "EXOTEL_HTTP_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
     max_bytes = int(
         getattr(settings, "EXOTEL_MAX_RECORDING_BYTES", DEFAULT_MAX_RECORDING_BYTES)

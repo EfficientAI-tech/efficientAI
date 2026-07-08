@@ -1737,6 +1737,12 @@ async def export_call_import_evaluation_csv(
                     continue  # would clobber a real column
                 custom_export.append((name, csv_header))
 
+    if (
+        call_import.source_format == "audio"
+        and "conversation_id" not in standard_export_headers
+    ):
+        standard_export_headers.insert(0, "conversation_id")
+
     # Build the metric columns: each parent (if any) gets a value column
     # and (when capture_rationale=true) a "<Parent> - LLM Rationale"
     # column. The per-child boolean columns are intentionally suppressed
@@ -1824,6 +1830,8 @@ async def export_call_import_evaluation_csv(
             )
             for header in standard_export_headers:
                 value = raw.get(header)
+                if value is None and header == "conversation_id":
+                    value = source_row.conversation_id
                 row_out[header] = "" if value is None else str(value)
             for export_header, csv_header in custom_export:
                 value = raw.get(csv_header)

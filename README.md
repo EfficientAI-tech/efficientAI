@@ -429,6 +429,7 @@ gcs:
   bucket_name: "your-gcs-bucket-name"
   project_id: "your-gcp-project-id"
   credentials_path: null  # Optional; falls back to GOOGLE_APPLICATION_CREDENTIALS / ADC
+  signing_service_account_email: null  # Optional override for IAM signBlob (GKE Workload Identity)
   prefix: "audio/"  # Same object key layout as S3
 
 # CORS Settings

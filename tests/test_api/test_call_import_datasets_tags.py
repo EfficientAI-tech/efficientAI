@@ -105,7 +105,7 @@ def upload_schema(db_session, org_id, seed_org):
                 schema_id=schema.id,
                 name=name,
                 type=ptype.value,
-                is_required=name in {"conversation_id", "recording_date"},
+                is_required=name in {"conversation_id", "recording_date", "recording_url"},
                 ordering=idx,
             )
         )

@@ -1251,6 +1251,21 @@ def test_diarisation_prompt_default_endpoint_returns_canonical_constant():
     assert response.prompt == DEFAULT_DIARIZATION_PROMPT
 
 
+def test_diarisation_prompt_default_http_route_not_shadowed_by_import_id(
+    authenticated_client,
+):
+    """Static path must be registered before ``GET /{call_import_id}``."""
+    from app.workers.tasks.helpers.llm_diarisation import (
+        DEFAULT_DIARIZATION_PROMPT,
+    )
+
+    response = authenticated_client.get(
+        "/api/v1/call-imports/diarisation-prompt-default"
+    )
+    assert response.status_code == 200
+    assert response.json()["prompt"] == DEFAULT_DIARIZATION_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # Transcribe request schema validation
 # ---------------------------------------------------------------------------

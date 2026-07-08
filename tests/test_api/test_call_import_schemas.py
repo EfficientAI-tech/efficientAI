@@ -53,7 +53,7 @@ def _minimal_payload(name: str = "Standard QA") -> dict:
             {
                 "name": "recording_url",
                 "type": "recording_url",
-                "is_required": False,
+                "is_required": True,
             },
             {
                 "name": "recording_date",
@@ -102,14 +102,14 @@ def test_create_schema_happy_path(authenticated_client, db_session, org_id, seed
     assert len(schema.parameters) == 4
 
 
-def test_create_schema_forces_conversation_id_required(
+def test_create_schema_forces_system_required_parameters(
     authenticated_client, db_session, org_id, seed_org
 ):
-    """Even if the client sends is_required=False for conversation_id,
-    the server stamps it back to True (the parameter is mandatory by
-    definition). recording_date stays optional when the client omits it."""
+    """Even if the client sends is_required=False for conversation_id or
+    recording_url, the server stamps them back to True."""
     payload = _minimal_payload()
     payload["parameters"][0]["is_required"] = False
+    payload["parameters"][1]["is_required"] = False
     payload["parameters"][2]["is_required"] = False
 
     response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
@@ -118,10 +118,14 @@ def test_create_schema_forces_conversation_id_required(
     conv_param = next(
         p for p in body["parameters"] if p["type"] == "conversation_id"
     )
+    rec_param = next(
+        p for p in body["parameters"] if p["type"] == "recording_url"
+    )
     date_param = next(
         p for p in body["parameters"] if p["type"] == "recording_date"
     )
     assert conv_param["is_required"] is True
+    assert rec_param["is_required"] is True
     assert date_param["is_required"] is False
 
 
@@ -139,6 +143,18 @@ def test_create_schema_rejects_missing_conversation_id(
     response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
     assert response.status_code == 422
     assert "conversation_id" in response.text.lower()
+
+
+def test_create_schema_rejects_missing_recording_url(
+    authenticated_client, db_session, org_id, seed_org
+):
+    payload = _minimal_payload()
+    payload["parameters"] = [
+        p for p in payload["parameters"] if p["type"] != "recording_url"
+    ]
+    response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
+    assert response.status_code == 422
+    assert "recording_url" in response.text.lower()
 
 
 def test_create_schema_accepts_missing_recording_date(
@@ -322,6 +338,7 @@ def test_update_schema_replaces_parameters(
 
     new_params = [
         {"name": "conversation_id", "type": "conversation_id", "is_required": True},
+        {"name": "recording_url", "type": "recording_url", "is_required": True},
         {"name": "recording_date", "type": "recording_date", "is_required": True},
         {"name": "agent_name", "type": "text"},
         {"name": "latency_ms", "type": "number"},
@@ -334,7 +351,13 @@ def test_update_schema_replaces_parameters(
     body = response.json()
     assert body["name"] == "Renamed"
     names = [p["name"] for p in body["parameters"]]
-    assert names == ["conversation_id", "recording_date", "agent_name", "latency_ms"]
+    assert names == [
+        "conversation_id",
+        "recording_url",
+        "recording_date",
+        "agent_name",
+        "latency_ms",
+    ]
 
     # The old parameters were actually deleted, not appended.
     persisted = (
@@ -342,9 +365,10 @@ def test_update_schema_replaces_parameters(
         .filter(CallImportSchemaParameter.schema_id == UUID(created["id"]))
         .all()
     )
-    assert len(persisted) == 4
+    assert len(persisted) == 5
     assert {p.name for p in persisted} == {
         "conversation_id",
+        "recording_url",
         "recording_date",
         "agent_name",
         "latency_ms",
@@ -407,13 +431,35 @@ def test_update_schema_accepts_dropping_recording_date(
         json={
             "parameters": [
                 {"name": "conversation_id", "type": "conversation_id"},
+                {"name": "recording_url", "type": "recording_url"},
                 {"name": "agent_name", "type": "text"},
             ]
         },
     )
     assert response.status_code == 200, response.text
     names = [p["name"] for p in response.json()["parameters"]]
-    assert names == ["conversation_id", "agent_name"]
+    assert names == ["conversation_id", "recording_url", "agent_name"]
+
+
+def test_update_schema_rejects_dropping_recording_url(
+    authenticated_client, db_session, org_id, seed_org
+):
+    created = authenticated_client.post(
+        "/api/v1/call-import-schemas", json=_minimal_payload()
+    ).json()
+
+    response = authenticated_client.patch(
+        f"/api/v1/call-import-schemas/{created['id']}",
+        json={
+            "parameters": [
+                {"name": "conversation_id", "type": "conversation_id"},
+                {"name": "transcript", "type": "transcript"},
+                {"name": "agent_name", "type": "text"},
+            ]
+        },
+    )
+    assert response.status_code == 422
+    assert "recording_url" in response.text.lower()
 
 
 # ---------------------------------------------------------------------------

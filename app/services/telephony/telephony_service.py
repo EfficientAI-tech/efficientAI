@@ -82,6 +82,7 @@ class TelephonyService:
                 auth_id=auth_id,
                 auth_token=auth_token,
                 account_sid=integration.voice_app_id,
+                api_host=integration.sip_domain,
             )
         raise ValueError(f"Unsupported telephony provider: {provider}")
 
