@@ -95,11 +95,11 @@ export default function CreateAgentModal({
     queryFn: () => apiClient.listAIProviders(),
   })
   const {
-    hasTelephony,
-    inboundNumbers: telephonyNumbers,
-    defaultConfig: telephonyConfig,
+    canUseProviderNumbers,
+    numbersForCallType,
   } = useOrgTelephony(isOpen && formData.call_medium === 'phone_call')
-  const isTelephonyConfigError = !hasTelephony
+  const telephonyNumbers = numbersForCallType(formData.call_type)
+  const isTelephonyConfigError = !canUseProviderNumbers
 
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', aiProvider],
@@ -124,7 +124,7 @@ export default function CreateAgentModal({
     if (formData.call_medium !== 'phone_call') {
       return
     }
-    const hasProviderNumbers = !!telephonyConfig && telephonyNumbers.length > 0
+    const hasProviderNumbers = canUseProviderNumbers && telephonyNumbers.length > 0
     if (!hasProviderNumbers && phoneNumberInputMode !== 'custom') {
       setPhoneNumberInputMode('custom')
       setFormData((prev) => ({ ...prev, telephony_phone_number_id: '' }))
@@ -138,9 +138,10 @@ export default function CreateAgentModal({
     }
   }, [
     formData.call_medium,
+    formData.call_type,
     formData.telephony_phone_number_id,
     phoneNumberInputMode,
-    telephonyConfig,
+    canUseProviderNumbers,
     telephonyNumbers,
   ])
 
@@ -424,7 +425,7 @@ export default function CreateAgentModal({
                       setPhoneNumberInputMode('provider')
                       setFormData((prev) => ({ ...prev, phone_number: '' }))
                     }}
-                    disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                    disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
                     className={`px-3 py-1 text-xs font-medium ${
                       phoneNumberInputMode === 'provider'
                         ? 'bg-primary-600 text-white'
@@ -450,10 +451,10 @@ export default function CreateAgentModal({
                 </div>
               </div>
 
-              {(!telephonyConfig || isTelephonyConfigError) && (
+              {isTelephonyConfigError && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  No telephony provider is configured yet. You can still enter a custom number, configure
-                  telephony in Integrations, or import numbers on the Telephony Numbers page.
+                  No synced telephony numbers found yet. Import numbers on the Telephony Numbers page,
+                  configure a provider in Integrations, or enter a custom number below.
                 </p>
               )}
 
@@ -470,7 +471,7 @@ export default function CreateAgentModal({
                     }))
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                  disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                  disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
                 >
                   <option value="">Select a synced telephony number</option>
                   {telephonyNumbers.map((number) => (
@@ -528,7 +529,17 @@ export default function CreateAgentModal({
                 <button
                   key={type}
                   type="button"
-                  onClick={() => setFormData({ ...formData, call_type: type })}
+                  onClick={() => {
+                    const nextNumbers = numbersForCallType(type)
+                    const stillValid = nextNumbers.some((n) => n.id === formData.telephony_phone_number_id)
+                    setFormData({
+                      ...formData,
+                      call_type: type,
+                      ...(stillValid
+                        ? {}
+                        : { telephony_phone_number_id: '', phone_number: '' }),
+                    })
+                  }}
                   className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
                     formData.call_type === type
                       ? 'bg-primary-600 text-white'

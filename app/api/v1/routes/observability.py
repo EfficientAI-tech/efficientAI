@@ -67,11 +67,23 @@ class CallIngestionPayload(BaseModel):
 
 def _serialize_call_recording(call_recording: CallRecording, include_data: bool = False) -> Dict[str, Any]:
     """Serialize call recording for API responses."""
+    call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    live_events = {
+        "outbound_initiated",
+        "ringing",
+        "call_started",
+        "call_in_progress",
+        "in-progress",
+        "answered",
+    }
+    call_event = call_recording.call_event or ""
     payload: Dict[str, Any] = {
         "id": str(call_recording.id),
         "call_short_id": call_recording.call_short_id,
         "status": call_recording.status.value if call_recording.status else None,
-        "call_event": call_recording.call_event,
+        "call_event": call_event,
+        "is_live": call_event in live_events,
+        "direction": call_data.get("direction"),
         "source": call_recording.source.value if call_recording.source else None,
         "provider_platform": call_recording.provider_platform,
         "provider_call_id": call_recording.provider_call_id,
@@ -82,6 +94,8 @@ def _serialize_call_recording(call_recording: CallRecording, include_data: bool 
 
     if include_data:
         payload["call_data"] = call_recording.call_data
+    else:
+        payload["live_transcript"] = call_data.get("live_transcript") or []
 
     return payload
 
@@ -399,7 +413,177 @@ async def get_call(
             detail="Call not found",
         )
 
+    # region agent log
+    from app.utils.debug_agent_log import agent_debug_log
+
+    call_data_dbg = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    agent_debug_log(
+        "observability.py:get_call",
+        "call detail fetched",
+        {
+            "call_short_id": call_short_id,
+            "call_event": call_recording.call_event,
+            "live_transcript_count": len(call_data_dbg.get("live_transcript") or []),
+            "messages_count": len(call_data_dbg.get("messages") or []),
+            "has_recording_s3_key": bool(call_data_dbg.get("recording_s3_key")),
+            "has_recording_url": bool(call_data_dbg.get("recording_url")),
+        },
+        "H5",
+    )
+    # endregion
+
     return _serialize_call_recording(call_recording, include_data=True)
+
+
+@router.get("/calls/{call_short_id}/live-events")
+async def stream_call_live_events(
+    call_short_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Server-sent events stream for live transcript turns during an active call."""
+    import asyncio
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    del api_key
+
+    call_recording = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.call_short_id == call_short_id,
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+            CallRecording.source == CallRecordingSource.WEBHOOK,
+        )
+        .first()
+    )
+    if not call_recording:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found")
+
+    live_events = {
+        "outbound_initiated",
+        "ringing",
+        "call_started",
+        "call_in_progress",
+        "in-progress",
+        "answered",
+    }
+
+    async def event_generator():
+        from app.database import SessionLocal
+
+        seen = 0
+        while True:
+            session = SessionLocal()
+            try:
+                row = (
+                    session.query(CallRecording)
+                    .filter(CallRecording.call_short_id == call_short_id)
+                    .first()
+                )
+                if not row:
+                    break
+                data = row.call_data if isinstance(row.call_data, dict) else {}
+                transcript = data.get("live_transcript") or []
+                if len(transcript) > seen:
+                    for entry in transcript[seen:]:
+                        yield f"data: {json.dumps(entry)}\n\n"
+                    seen = len(transcript)
+                if (row.call_event or "") not in live_events:
+                    break
+            finally:
+                session.close()
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/calls/{call_short_id}/audio")
+async def stream_observability_call_audio(
+    call_short_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Stream call recording audio for observability calls (S3 or provider URL)."""
+    from io import BytesIO
+
+    from fastapi.responses import RedirectResponse, StreamingResponse
+
+    del api_key
+
+    call_recording = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.call_short_id == call_short_id,
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+            CallRecording.source == CallRecordingSource.WEBHOOK,
+        )
+        .first()
+    )
+    if not call_recording:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found")
+
+    call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    recording_url = call_data.get("recording_url")
+    if recording_url:
+        return RedirectResponse(recording_url)
+
+    s3_key = call_data.get("recording_s3_key")
+    if not s3_key:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available")
+
+    # region agent log
+    from app.utils.debug_agent_log import agent_debug_log
+
+    agent_debug_log(
+        "observability.py:stream_observability_call_audio",
+        "serving observability audio",
+        {
+            "call_short_id": call_short_id,
+            "has_recording_s3_key": True,
+            "has_recording_url": bool(recording_url),
+        },
+        "H6",
+        run_id="post-fix",
+    )
+    # endregion
+
+    from app.services.storage.s3_service import s3_service
+
+    if not s3_service.is_enabled():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 storage is not configured")
+
+    try:
+        audio_bytes = s3_service.download_file_by_key(s3_key)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage") from exc
+
+    extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "wav"
+    content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
+    content_type = content_type_map.get(extension, "audio/wav")
+
+    return StreamingResponse(
+        BytesIO(audio_bytes),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="call_{call_short_id}.{extension}"',
+        },
+    )
 
 
 @router.delete("/calls/{call_short_id}", response_model=Dict[str, Any])
@@ -446,24 +630,63 @@ def _messages_to_transcript(messages: List[Dict[str, Any]]) -> str:
     """Convert a list of message dicts to a plain-text transcript."""
     lines: List[str] = []
     for msg in messages:
-        role = msg.get("role", "unknown")
-        label = "Agent" if role == "bot" else "Caller" if role == "user" else role.capitalize()
+        role = str(msg.get("role", "unknown")).lower()
+        if role in {"bot", "assistant", "agent"}:
+            label = "Agent"
+        elif role == "user":
+            label = "Caller"
+        else:
+            label = role.capitalize()
         lines.append(f"{label}: {msg.get('content', '')}")
     return "\n".join(lines)
+
+
+def _resolve_call_duration_seconds(call_data: Dict[str, Any]) -> Optional[float]:
+    """Resolve duration from observability or telephony call_data shapes."""
+    duration = call_data.get("duration_seconds")
+    if isinstance(duration, (int, float)) and duration > 0:
+        return float(duration)
+
+    started_raw = call_data.get("startedAt") or call_data.get("started_at")
+    ended_raw = call_data.get("endedAt") or call_data.get("ended_at")
+    if started_raw and ended_raw:
+        try:
+            started = datetime.fromisoformat(str(started_raw).replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(str(ended_raw).replace("Z", "+00:00"))
+            diff = (ended - started).total_seconds()
+            if diff > 0:
+                return diff
+        except (ValueError, TypeError):
+            pass
+
+    duration_ms = call_data.get("duration_ms")
+    if isinstance(duration_ms, (int, float)) and duration_ms > 0:
+        return float(duration_ms) / 1000.0
+    return None
 
 
 def _messages_to_speaker_segments(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert messages to speaker_segments format expected by the evaluation UI."""
     segments: List[Dict[str, Any]] = []
-    for msg in messages:
-        role = msg.get("role", "unknown")
-        speaker = "Speaker 0" if role == "bot" else "Speaker 1"
+    for index, msg in enumerate(messages):
+        role = str(msg.get("role", "unknown")).lower()
+        if role == "user":
+            speaker = "Speaker 1"
+        elif role in {"bot", "assistant", "agent"}:
+            speaker = "Speaker 2"
+        else:
+            speaker = "Speaker 2"
         start = msg.get("start_time", 0)
         end = msg.get("end_time", 0)
         if isinstance(start, (int, float)) and start > 1e10:
             start = start / 1000.0
         if isinstance(end, (int, float)) and end > 1e10:
             end = end / 1000.0
+        if not end and isinstance(start, (int, float)):
+            end = start
+        if not start and not end:
+            start = float(index)
+            end = float(index)
         segments.append({
             "speaker": speaker,
             "text": msg.get("content", ""),
@@ -503,8 +726,16 @@ async def evaluate_call(
     if not call_recording:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found")
 
-    call_data = call_recording.call_data or {}
+    call_data = dict(call_recording.call_data or {})
+    call_data.setdefault("call_short_id", call_recording.call_short_id)
     messages = call_data.get("messages")
+    if not messages or not isinstance(messages, list) or len(messages) == 0:
+        live_transcript = call_data.get("live_transcript")
+        if isinstance(live_transcript, list) and live_transcript:
+            from app.services.telephony.call_recording_lifecycle import live_transcript_to_messages
+
+            messages = live_transcript_to_messages(live_transcript)
+            call_data["messages"] = messages
     if not messages or not isinstance(messages, list) or len(messages) == 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -545,14 +776,8 @@ async def evaluate_call(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate unique result ID")
 
     transcript = _messages_to_transcript(messages)
-    duration_seconds: Optional[float] = None
-    if call_data.get("startedAt") and call_data.get("endedAt"):
-        try:
-            started = datetime.fromisoformat(call_data["startedAt"].replace("Z", "+00:00"))
-            ended = datetime.fromisoformat(call_data["endedAt"].replace("Z", "+00:00"))
-            duration_seconds = (ended - started).total_seconds()
-        except (ValueError, TypeError):
-            pass
+    duration_seconds = _resolve_call_duration_seconds(call_data)
+    audio_s3_key = call_data.get("recording_s3_key")
 
     evaluator_result = EvaluatorResult(
         result_id=result_id,
@@ -566,8 +791,8 @@ async def evaluate_call(
         duration_seconds=duration_seconds,
         status=EvaluatorResultStatus.QUEUED.value,
         transcription=transcript,
-        # Keep transcript structure in provider call_data; derive speaker segments on read.
-        speaker_segments=None,
+        speaker_segments=_messages_to_speaker_segments(messages),
+        audio_s3_key=audio_s3_key,
         provider_call_id=call_recording.provider_call_id,
         provider_platform=call_recording.provider_platform,
         call_data=call_data,

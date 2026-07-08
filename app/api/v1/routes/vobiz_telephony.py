@@ -24,6 +24,14 @@ from app.services.telephony.vobiz_agent_context import (
     resolve_vobiz_agent_context,
     vobiz_webhook_base_url,
 )
+from app.services.telephony.call_recording_lifecycle import (
+    create_inbound_call_recording,
+    finalize_call_on_media_disconnect,
+    find_call_recording,
+    link_provider_call_id,
+    mark_call_in_progress,
+    update_call_from_vobiz_event,
+)
 from app.services.telephony.vobiz_client import build_vobiz_client_for_org
 from app.services.telephony.vobiz_number_service import (
     deactivate_imported_number,
@@ -43,6 +51,7 @@ from efficientai.runner.utils import parse_telephony_websocket
 from efficientai.serializers.vobiz import VobizFrameSerializer
 
 router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony"])
+ws_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Media"])
 
 
 class VobizOutboundCallRequest(BaseModel):
@@ -60,6 +69,7 @@ class VobizOutboundCallResponse(BaseModel):
     from_number: str
     to_number: str
     call_ref: str
+    call_short_id: str = ""
     message: str = "Outbound call initiated"
 
 
@@ -216,7 +226,7 @@ async def create_vobiz_outbound_call(
 ):
     del api_key
     try:
-        client, _ = build_vobiz_client_for_org(db, organization_id)
+        build_vobiz_client_for_org(db, organization_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -277,52 +287,59 @@ async def create_vobiz_outbound_call(
         f"{base}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/answer"
         f"?call_ref={session.call_ref}"
     )
-    events_url = f"{base}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/events"
+    events_url = (
+        f"{base}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/events"
+        f"?call_ref={session.call_ref}"
+    )
     recording_url = f"{base}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
 
-    try:
-        response = client.create_outbound_call(
-            from_=from_number,
-            to_=to_number,
-            answer_url=answer_url,
-            hangup_url=events_url,
-        )
-    except ValueError as e:
-        delete_call_session(session.call_ref)
-        if used_pool:
-            release_pool_slot(organization_id)
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    call_uuid = (
-        response.get("request_uuid")
-        or response.get("message_uuid")
-        or response.get("api_id")
-        or response.get("call_uuid")
-        or ""
-    )
     call_short_id = "".join(random.choices(string.digits, k=6))
-    db.add(
-        CallRecording(
-            organization_id=organization_id,
-            workspace_id=agent.workspace_id,
-            call_short_id=call_short_id,
-            status=CallRecordingStatus.PENDING,
-            source=CallRecordingSource.WEBHOOK,
-            call_event="outbound_initiated",
-            call_data={**response, "call_ref": session.call_ref, "recording_callback": recording_url, "used_pool": used_pool, "evaluator_id": str(evaluator_id) if evaluator_id else None},
-            provider_call_id=call_uuid or None,
-            provider_platform="vobiz",
-            agent_id=agent.id,
-        )
+    recording = CallRecording(
+        organization_id=organization_id,
+        workspace_id=agent.workspace_id,
+        call_short_id=call_short_id,
+        status=CallRecordingStatus.PENDING,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="outbound_initiated",
+        call_data={
+            "call_ref": session.call_ref,
+            "call_short_id": call_short_id,
+            "recording_callback": recording_url,
+            "used_pool": used_pool,
+            "evaluator_id": str(evaluator_id) if evaluator_id else None,
+            "direction": "outbound",
+            "from_number": from_number,
+            "to_number": to_number,
+            "live_transcript": [],
+        },
+        provider_call_id=None,
+        provider_platform="vobiz",
+        agent_id=agent.id,
     )
+    db.add(recording)
     db.commit()
+    db.refresh(recording)
+
+    from app.workers.tasks.initiate_vobiz_outbound import initiate_vobiz_outbound_call_task
+
+    initiate_vobiz_outbound_call_task.delay(
+        organization_id=str(organization_id),
+        call_ref=session.call_ref,
+        from_number=from_number,
+        to_number=to_number,
+        answer_url=answer_url,
+        events_url=events_url,
+        used_pool=used_pool,
+        call_recording_id=str(recording.id),
+    )
 
     return VobizOutboundCallResponse(
-        provider_request_uuid=str(call_uuid or ""),
-        call_status=str(response.get("message") or response.get("status") or "initiated"),
+        provider_request_uuid="",
+        call_status="queued",
         from_number=from_number,
         to_number=to_number,
         call_ref=session.call_ref,
+        call_short_id=call_short_id,
     )
 
 
@@ -361,10 +378,39 @@ async def vobiz_answer_webhook(
         session_token = session.call_ref
         persona_id = None
         scenario_id = None
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        if agent:
+            inbound_row = create_inbound_call_recording(
+                db,
+                agent=agent,
+                organization_id=organization_id,
+                call_ref=session_token,
+                from_number=params.get("from"),
+                to_number=params.get("to"),
+                provider_call_id=params.get("call_uuid"),
+            )
+            # region agent log
+            from app.utils.debug_agent_log import agent_debug_log
+
+            agent_debug_log(
+                "vobiz_telephony.py:answer_webhook",
+                "inbound CallRecording created",
+                {
+                    "call_ref": session_token,
+                    "call_short_id": inbound_row.call_short_id,
+                    "provider_call_id": params.get("call_uuid"),
+                },
+                "H1",
+            )
+            # endregion
     else:
         existing_session = get_call_session(session_token)
         persona_id = existing_session.persona_id if existing_session else None
         scenario_id = existing_session.scenario_id if existing_session else None
+
+    call_uuid = params.get("call_uuid")
+    if session_token and call_uuid:
+        link_provider_call_id(db, call_ref=session_token, provider_call_id=call_uuid)
 
     ws_url = build_vobiz_ws_url(
         agent_id=str(agent_id),
@@ -372,7 +418,10 @@ async def vobiz_answer_webhook(
         persona_id=persona_id,
         scenario_id=scenario_id,
     )
-    record_action_url = f"{vobiz_webhook_base_url()}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
+    record_action_url = (
+        f"{vobiz_webhook_base_url()}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
+        f"?call_ref={session_token}"
+    )
     xml = stream_to_agent(ws_url, record_action_url=record_action_url)
     return Response(content=xml, media_type="application/xml")
 
@@ -388,16 +437,20 @@ async def vobiz_events_webhook(
     if not call_uuid:
         return {"status": "ignored"}
 
-    row = db.query(CallRecording).filter(CallRecording.provider_call_id == call_uuid).first()
-    if row:
-        row.status = CallRecordingStatus.UPDATED
-        row.call_event = (params.get("call_status") or "updated").lower()
-        current = row.call_data if isinstance(row.call_data, dict) else {}
-        current["last_event"] = payload
-        row.call_data = current
-        db.commit()
-
     call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
+    update_call_from_vobiz_event(
+        db,
+        provider_call_id=call_uuid,
+        call_status=params.get("call_status"),
+        payload=payload,
+        call_ref=call_ref,
+    )
+
+    row = find_call_recording(
+        db,
+        provider_call_id=call_uuid,
+        call_ref=call_ref,
+    )
     terminal_statuses = {
         "completed",
         "hangup",
@@ -435,18 +488,52 @@ async def vobiz_recording_ready_webhook(
         recording_url,
     )
     if call_uuid:
-        row = db.query(CallRecording).filter(CallRecording.provider_call_id == call_uuid).first()
+        call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
+        row = find_call_recording(
+            db,
+            provider_call_id=call_uuid,
+            call_ref=call_ref,
+        )
         if row:
-            current = row.call_data if isinstance(row.call_data, dict) else {}
+            from sqlalchemy.orm.attributes import flag_modified
+
+            current = dict(row.call_data) if isinstance(row.call_data, dict) else {}
             current["recording"] = payload
             if recording_url:
                 current["recording_url"] = recording_url
             row.call_data = current
+            flag_modified(row, "call_data")
             db.commit()
+            # region agent log
+            from app.utils.debug_agent_log import agent_debug_log
+
+            agent_debug_log(
+                "vobiz_telephony.py:recording_ready",
+                "recording webhook persisted",
+                {
+                    "call_short_id": row.call_short_id,
+                    "call_ref": call_ref,
+                    "call_uuid": call_uuid,
+                    "has_recording_url": bool(recording_url),
+                },
+                "H4",
+            )
+            # endregion
+        else:
+            # region agent log
+            from app.utils.debug_agent_log import agent_debug_log
+
+            agent_debug_log(
+                "vobiz_telephony.py:recording_ready",
+                "recording webhook: no CallRecording match",
+                {"call_uuid": call_uuid, "call_ref": call_ref},
+                "H4",
+            )
+            # endregion
     return {"status": "ok"}
 
 
-@router.websocket("/ws")
+@ws_router.websocket("/ws")
 async def vobiz_media_websocket(websocket: WebSocket):
     agent_id = websocket.query_params.get("agent_id")
     session_token = websocket.query_params.get("session")
@@ -467,13 +554,38 @@ async def vobiz_media_websocket(websocket: WebSocket):
 
     await websocket.accept()
     db = next(get_db())
+    call_row = find_call_recording(db, call_ref=session_token, provider_call_id=None)
+    call_short_id = call_row.call_short_id if call_row else None
+    # region agent log
+    from app.utils.debug_agent_log import agent_debug_log
+
+    agent_debug_log(
+        "vobiz_telephony.py:media_websocket",
+        "CallRecording lookup for media session",
+        {
+            "call_ref": session_token,
+            "call_short_id": call_short_id,
+            "found_row": call_row is not None,
+            "provider_call_id": call_row.provider_call_id if call_row else None,
+        },
+        "H1",
+    )
+    # endregion
+    if not call_short_id:
+        logger.warning(
+            "No CallRecording for Vobiz session {}; live transcript and recording will not be linked",
+            session_token,
+        )
     try:
+        mark_call_in_progress(db, call_ref=session_token)
         try:
             transport_type, call_data = await parse_telephony_websocket(websocket)
             if transport_type not in {"plivo", "unknown"}:
                 logger.warning("Unexpected telephony transport type for Vobiz: {}", transport_type)
             stream_id = call_data.get("stream_id") or ""
             call_id = call_data.get("call_id")
+            if call_id:
+                link_provider_call_id(db, call_ref=session_token, provider_call_id=str(call_id))
             if not stream_id:
                 await websocket.close(code=1011, reason="Missing stream id from Vobiz")
                 return
@@ -510,6 +622,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     llm_api_key=context.llm_api_key,
                     serializer=serializer,
                     telephony_mode=True,
+                    call_short_id=call_short_id,
                 )
             else:
                 if not context.google_api_key:
@@ -526,6 +639,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     model_name=context.model_name,
                     serializer=serializer,
                     telephony_mode=True,
+                    call_short_id=call_short_id,
                 )
         except ValueError as e:
             logger.error("Vobiz media websocket setup failed: {}", e)
@@ -539,6 +653,13 @@ async def vobiz_media_websocket(websocket: WebSocket):
             except Exception:
                 pass
         finally:
+            from app.database import SessionLocal
+
+            finalize_db = SessionLocal()
+            try:
+                finalize_call_on_media_disconnect(finalize_db, call_ref=session_token)
+            finally:
+                finalize_db.close()
             delete_call_session(session_token)
     finally:
         db.close()

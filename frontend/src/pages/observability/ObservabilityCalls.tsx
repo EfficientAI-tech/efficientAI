@@ -33,6 +33,12 @@ export default function ObservabilityCalls() {
   } = useQuery({
     queryKey: ['observability-calls'],
     queryFn: () => apiClient.listObservabilityCalls(),
+    refetchInterval: (query) => {
+      const data = query.state.data as any[]
+      if (!data || !Array.isArray(data)) return false
+      const hasLive = data.some((call: any) => call.is_live)
+      return hasLive ? 3000 : false
+    },
   })
 
   const summaryStats = useMemo(() => {
@@ -311,7 +317,31 @@ export default function ObservabilityCalls() {
 function EventBadge({ event }: { event?: string }) {
   if (!event) return <span className="text-gray-400">&mdash;</span>
 
-  const variants: Record<string, { label: string; bg: string; text: string; border: string; dot: string }> = {
+  const variants: Record<string, { label: string; bg: string; text: string; border: string; dot: string; pulse?: boolean }> = {
+    outbound_initiated: {
+      label: 'Ringing',
+      bg: 'bg-amber-50',
+      text: 'text-amber-700',
+      border: 'border-amber-200',
+      dot: 'bg-amber-500',
+      pulse: true,
+    },
+    ringing: {
+      label: 'Ringing',
+      bg: 'bg-amber-50',
+      text: 'text-amber-700',
+      border: 'border-amber-200',
+      dot: 'bg-amber-500',
+      pulse: true,
+    },
+    call_in_progress: {
+      label: 'In Progress',
+      bg: 'bg-sky-50',
+      text: 'text-sky-700',
+      border: 'border-sky-200',
+      dot: 'bg-sky-500',
+      pulse: true,
+    },
     call_started: {
       label: 'Call Started',
       bg: 'bg-blue-50',
@@ -325,6 +355,13 @@ function EventBadge({ event }: { event?: string }) {
       text: 'text-emerald-700',
       border: 'border-emerald-200',
       dot: 'bg-emerald-500',
+    },
+    failed: {
+      label: 'Failed',
+      bg: 'bg-rose-50',
+      text: 'text-rose-700',
+      border: 'border-rose-200',
+      dot: 'bg-rose-500',
     },
     call_analyzed: {
       label: 'Call Analyzed',
@@ -347,7 +384,7 @@ function EventBadge({ event }: { event?: string }) {
     <span
       className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${variant.bg} ${variant.text} ${variant.border}`}
     >
-      <span className={`w-1.5 h-1.5 rounded-full ${variant.dot}`} />
+      <span className={`w-1.5 h-1.5 rounded-full ${variant.dot} ${variant.pulse ? 'animate-pulse' : ''}`} />
       {variant.label}
     </span>
   )

@@ -19,6 +19,7 @@ from app.workers.tasks import (
     run_prompt_optimization_task,
     process_call_import_row_task,
     run_judge_alignment_task,
+    initiate_vobiz_outbound_call_task,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "run_prompt_optimization_task",
     "process_call_import_row_task",
     "run_judge_alignment_task",
+    "initiate_vobiz_outbound_call_task",
 ]

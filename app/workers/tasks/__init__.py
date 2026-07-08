@@ -18,6 +18,7 @@ from . import generate_evaluation_tldr_insights
 from . import generate_evaluation_metric_clusters
 from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
+from . import initiate_vobiz_outbound
 
 __all__ = [
     "celery_app",
@@ -38,6 +39,7 @@ __all__ = [
     "generate_evaluation_prompt_improvements_task",
     "generate_agent_flowchart_task",
     "map_agent_flowchart_prompt_sections_task",
+    "initiate_vobiz_outbound_call_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -69,3 +71,4 @@ generate_agent_flowchart_task = agent_flowchart_jobs.generate_agent_flowchart_ta
 map_agent_flowchart_prompt_sections_task = (
     agent_flowchart_jobs.map_agent_flowchart_prompt_sections_task
 )
+initiate_vobiz_outbound_call_task = initiate_vobiz_outbound.initiate_vobiz_outbound_call_task

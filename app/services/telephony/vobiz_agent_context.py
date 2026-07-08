@@ -263,10 +263,13 @@ def build_vobiz_ws_url(
     scenario_id: Optional[str] = None,
 ) -> str:
     from app.config import settings
+    from app.services.media_urls import media_ws_base_url
     from urllib.parse import quote
 
-    base = vobiz_webhook_base_url()
-    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    ws_base = media_ws_base_url()
+    if not ws_base:
+        base = vobiz_webhook_base_url()
+        ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
     query = f"agent_id={quote(agent_id)}&session={quote(session)}"
     if persona_id:
         query += f"&persona_id={quote(persona_id)}"
@@ -302,6 +305,12 @@ def extract_webhook_params(payload: Dict[str, Any]) -> Dict[str, Any]:
             or payload.get("CallId")
         ),
         "call_status": payload.get("CallStatus") or payload.get("Event") or payload.get("Status"),
-        "recording_url": payload.get("RecordUrl") or payload.get("recording_url"),
+        "recording_url": (
+            payload.get("RecordUrl")
+            or payload.get("RecordingUrl")
+            or payload.get("recording_url")
+            or payload.get("RecordFile")
+            or payload.get("record_file")
+        ),
         "recording_id": payload.get("RecordingID") or payload.get("recording_id"),
     }

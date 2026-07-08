@@ -5,8 +5,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.database import CallRecording, Organization, TelephonyIntegration, TelephonyPhoneNumber, Workspace
-from app.models.enums import TelephonyProvider
+from app.models.database import CallRecording, CallRecordingSource, Organization, TelephonyIntegration, TelephonyPhoneNumber, Workspace
+from app.models.enums import CallRecordingStatus, TelephonyProvider
 from app.services.telephony.vobiz_session import create_call_session
 
 
@@ -241,6 +241,75 @@ def test_delete_inactive_imported_vobiz_number(client, db_session, org_id, seed_
     )
 
 
+def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_id, seed_org, make_agent):
+    agent = make_agent()
+    call_ref = "outbound-ref-1"
+    row = CallRecording(
+        organization_id=org_id,
+        workspace_id=agent.workspace_id,
+        call_short_id="111222",
+        status=CallRecordingStatus.PENDING,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="call_in_progress",
+        call_data={"call_ref": call_ref, "live_transcript": []},
+        provider_call_id="request-uuid-events",
+        provider_platform="vobiz",
+        agent_id=agent.id,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/telephony/vobiz/webhooks/events?call_ref={call_ref}",
+        data={"CallUUID": "call-uuid-events", "CallStatus": "completed"},
+    )
+    assert response.status_code == 200
+
+    db_session.expire_all()
+    updated = db_session.query(CallRecording).filter(CallRecording.id == row.id).first()
+    assert updated.call_event == "call_ended"
+    assert updated.call_data.get("ended_at")
+
+
+def test_vobiz_recording_ready_webhook_finds_call_by_request_uuid(
+    client, db_session, org_id, seed_org, make_agent
+):
+    agent = make_agent()
+    call_ref = "outbound-ref-2"
+    row = CallRecording(
+        organization_id=org_id,
+        workspace_id=agent.workspace_id,
+        call_short_id="333444",
+        status=CallRecordingStatus.PENDING,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="call_ended",
+        call_data={
+            "call_ref": call_ref,
+            "request_uuid": "request-uuid-rec",
+            "live_transcript": [],
+        },
+        provider_call_id="request-uuid-rec",
+        provider_platform="vobiz",
+        agent_id=agent.id,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/webhooks/recording-ready",
+        data={
+            "CallUUID": "request-uuid-rec",
+            "RecordUrl": "https://recordings.example.com/call.wav",
+        },
+    )
+    assert response.status_code == 200
+
+    db_session.expire_all()
+    updated = db_session.query(CallRecording).filter(CallRecording.id == row.id).first()
+    assert updated.call_data.get("recording_url") == "https://recordings.example.com/call.wav"
+
+
+@patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")
 @patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
 @patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
 @patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
@@ -248,6 +317,7 @@ def test_create_vobiz_outbound_call_stamps_workspace_id(
     mock_base_url,
     mock_resolve_from,
     mock_build_client,
+    mock_outbound_task,
     client,
     db_session,
     org_id,
@@ -257,14 +327,8 @@ def test_create_vobiz_outbound_call_stamps_workspace_id(
     agent = make_agent()
     mock_base_url.return_value = "https://public.example.com"
     mock_resolve_from.return_value = ("+919876543210", False)
-
-    mock_client = MagicMock()
-    mock_client.create_outbound_call.return_value = {
-        "request_uuid": "f0a44fcd-a5b7-4f64-9efb-f35711d8d980",
-        "message": "call queued",
-        "api_id": "702e6a5a-444c-49fd-b78f-468d2a12fa4c",
-    }
-    mock_build_client.return_value = (mock_client, None)
+    mock_build_client.return_value = (MagicMock(), None)
+    mock_outbound_task.delay.return_value = None
 
     response = client.post(
         "/api/v1/telephony/vobiz/calls/outbound",
@@ -277,12 +341,16 @@ def test_create_vobiz_outbound_call_stamps_workspace_id(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["provider_request_uuid"] == "f0a44fcd-a5b7-4f64-9efb-f35711d8d980"
+    assert body["call_status"] == "queued"
     assert body["call_ref"]
+    assert body["call_short_id"]
+    mock_outbound_task.delay.assert_called_once()
+    task_kwargs = mock_outbound_task.delay.call_args.kwargs
+    assert f"call_ref={body['call_ref']}" in task_kwargs["events_url"]
 
     recording = (
         db_session.query(CallRecording)
-        .filter(CallRecording.provider_call_id == "f0a44fcd-a5b7-4f64-9efb-f35711d8d980")
+        .filter(CallRecording.call_short_id == body["call_short_id"])
         .first()
     )
     assert recording is not None
@@ -291,6 +359,7 @@ def test_create_vobiz_outbound_call_stamps_workspace_id(
     assert recording.organization_id == org_id
 
 
+@patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")
 @patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
 @patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
 @patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
@@ -298,6 +367,7 @@ def test_create_vobiz_outbound_call_stores_persona_scenario_in_session(
     mock_base_url,
     mock_resolve_from,
     mock_build_client,
+    mock_outbound_task,
     client,
     org_id,
     seed_org,
@@ -312,13 +382,8 @@ def test_create_vobiz_outbound_call_stores_persona_scenario_in_session(
     scenario = make_scenario()
     mock_base_url.return_value = "https://public.example.com"
     mock_resolve_from.return_value = ("+919876543210", False)
-
-    mock_client = MagicMock()
-    mock_client.create_outbound_call.return_value = {
-        "request_uuid": "uuid-persona-scenario",
-        "message": "call queued",
-    }
-    mock_build_client.return_value = (mock_client, None)
+    mock_build_client.return_value = (MagicMock(), None)
+    mock_outbound_task.delay.return_value = None
 
     response = client.post(
         "/api/v1/telephony/vobiz/calls/outbound",
@@ -338,6 +403,7 @@ def test_create_vobiz_outbound_call_stores_persona_scenario_in_session(
     assert session.scenario_id == str(scenario.id)
 
 
+@patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")
 @patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
 @patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
 @patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
@@ -345,6 +411,7 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
     mock_base_url,
     mock_resolve_from,
     mock_build_client,
+    mock_outbound_task,
     client,
     make_agent,
     make_persona,
@@ -360,9 +427,8 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
 
     mock_base_url.return_value = "https://public.example.com"
     mock_resolve_from.return_value = ("+919876543210", False)
-    mock_client = MagicMock()
-    mock_client.create_outbound_call.return_value = {"request_uuid": "uuid-eval", "message": "queued"}
-    mock_build_client.return_value = (mock_client, None)
+    mock_build_client.return_value = (MagicMock(), None)
+    mock_outbound_task.delay.return_value = None
 
     response = client.post(
         "/api/v1/telephony/vobiz/calls/outbound",

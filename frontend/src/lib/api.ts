@@ -2983,9 +2983,44 @@ class ApiClient {
     return response.data
   }
 
+  private buildAuthenticatedApiUrl(path: string): string {
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`
+    const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
+    const url = configuredBase
+      ? new URL(`${configuredBase}${normalizedPath}`)
+      : new URL(normalizedPath, window.location.origin)
+
+    const accessToken = localStorage.getItem('accessToken')
+    const apiKey = localStorage.getItem('apiKey')
+    const workspaceId = localStorage.getItem('activeWorkspaceId')
+    if (accessToken) {
+      url.searchParams.set('token', accessToken)
+    } else if (apiKey) {
+      url.searchParams.set('api_key', apiKey)
+    }
+    if (workspaceId) {
+      url.searchParams.set('workspace_id', workspaceId)
+    }
+    return url.toString()
+  }
+
   async getObservabilityCall(callShortId: string): Promise<any> {
     const response = await this.client.get(`/api/v1/observability/calls/${callShortId}`)
     return response.data
+  }
+
+  getObservabilityCallLiveEventsUrl(callShortId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/observability/calls/${callShortId}/live-events`,
+    )
+  }
+
+  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/observability/calls/${callShortId}/audio`,
+      { responseType: 'blob' },
+    )
+    return URL.createObjectURL(response.data)
   }
 
   async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {

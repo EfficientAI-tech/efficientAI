@@ -73,11 +73,11 @@ export default function AgentEditForm({
     enabled: !!aiProvider,
   })
   const {
-    hasTelephony,
-    inboundNumbers: telephonyNumbers,
-    defaultConfig: telephonyConfig,
+    canUseProviderNumbers,
+    numbersForCallType,
   } = useOrgTelephony(formData.call_medium === 'phone_call')
-  const isTelephonyConfigError = !hasTelephony
+  const telephonyNumbers = numbersForCallType(formData.call_type)
+  const isTelephonyConfigError = !canUseProviderNumbers
 
   const llmModels = modelOptions?.llm || []
 
@@ -97,7 +97,7 @@ export default function AgentEditForm({
       return
     }
 
-    if (!telephonyConfig || telephonyNumbers.length === 0) {
+    if (!canUseProviderNumbers || telephonyNumbers.length === 0) {
       setPhoneNumberInputMode('custom')
       return
     }
@@ -110,7 +110,7 @@ export default function AgentEditForm({
     formData,
     onChange,
     phoneNumberInputMode,
-    telephonyConfig,
+    canUseProviderNumbers,
     telephonyNumbers,
   ])
 
@@ -192,7 +192,7 @@ export default function AgentEditForm({
                       setPhoneNumberInputMode('provider')
                       onChange({ ...formData, phone_number: '' })
                     }}
-                    disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                    disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
                     className={`px-3 py-1 text-xs font-medium ${
                       phoneNumberInputMode === 'provider'
                         ? 'bg-primary-600 text-white'
@@ -218,10 +218,10 @@ export default function AgentEditForm({
                 </div>
               </div>
 
-              {(!telephonyConfig || isTelephonyConfigError) && (
+              {isTelephonyConfigError && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  No telephony provider is configured yet. You can still enter a custom number, configure
-                  telephony in Integrations, or import numbers on the Telephony Numbers page.
+                  No synced telephony numbers found yet. Import numbers on the Telephony Numbers page,
+                  configure a provider in Integrations, or enter a custom number below.
                 </p>
               )}
 
@@ -238,7 +238,7 @@ export default function AgentEditForm({
                     })
                   }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                  disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                  disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
                 >
                   <option value="">Select a synced telephony number</option>
                   {telephonyNumbers.map((number) => (
@@ -298,7 +298,18 @@ export default function AgentEditForm({
                 <button
                   key={type}
                   type="button"
-                  onClick={() => onChange({ ...formData, call_type: type })}
+                  onClick={() => {
+                    const nextType = type
+                    const nextNumbers = numbersForCallType(nextType)
+                    const stillValid = nextNumbers.some((n) => n.id === formData.telephony_phone_number_id)
+                    onChange({
+                      ...formData,
+                      call_type: nextType,
+                      ...(stillValid
+                        ? {}
+                        : { telephony_phone_number_id: '', phone_number: '' }),
+                    })
+                  }}
                   className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
                     formData.call_type === type
                       ? 'bg-primary-600 text-white'

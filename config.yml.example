@@ -189,6 +189,7 @@ judge_alignment:
 #   api_base: "https://api.vobiz.ai"
 #   media_base: "https://media.vobiz.ai"
 #   webhook_base_url: "https://your-public-host.example.com"
+#   media_ws_base_url: "ws://localhost:8001"
 #   from_number: "+918011223344"
 #   outbound_pool:
 #     - "+918011223344"

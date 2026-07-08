@@ -390,6 +390,118 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         sys.exit(1)
 
 
+@main.command("telephony-worker")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--host", default=None, help="Host to bind (default from config)")
+@click.option("--port", default=None, type=int, help="Media server port (default 8001)")
+def telephony_worker(config: str, host: Optional[str], port: Optional[int]):
+    """Start the media server for live voice WebSocket connections."""
+    from app.config import load_config_from_file, settings
+
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+
+    try:
+        load_config_from_file(str(config_path))
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}", err=True)
+        sys.exit(1)
+
+    os.environ["SERVICE_MODE"] = "media"
+    bind_host = host or settings.HOST
+    bind_port = port or settings.MEDIA_PORT
+
+    import uvicorn
+
+    click.echo(f"🎙️  Starting EfficientAI media server on {bind_host}:{bind_port}")
+    uvicorn.run(
+        "app.media_main:app",
+        host=bind_host,
+        port=bind_port,
+        reload=False,
+    )
+
+
+@main.command("start-worker-all")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--loglevel", "-l", default="info", help="Celery log level")
+@click.option("--media-port", default=None, type=int, help="Media server port (default 8001)")
+def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
+    """Start Celery worker and media server together."""
+    import signal
+    import atexit
+
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+
+    from app.config import load_config_from_file, settings
+
+    load_config_from_file(str(config_path))
+
+    media_proc = None
+    celery_proc = None
+
+    def cleanup():
+        nonlocal media_proc, celery_proc
+        for proc, label in ((media_proc, "media server"), (celery_proc, "Celery worker")):
+            if proc is None or proc.poll() is not None:
+                continue
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+                click.echo(f"✅ {label} stopped")
+            except Exception:
+                proc.kill()
+
+    atexit.register(cleanup)
+
+    def _handle_signal(sig, frame):
+        cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    port = media_port or settings.MEDIA_PORT
+    media_proc = subprocess.Popen(
+        ["eai", "telephony-worker", "--config", str(config_path), "--port", str(port)],
+    )
+    celery_proc = subprocess.Popen(
+        ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"],
+    )
+    click.echo(f"🚀 Started media server (pid={media_proc.pid}) and Celery worker (pid={celery_proc.pid})")
+
+    try:
+        while True:
+            if media_proc.poll() is not None:
+                click.echo("❌ Media server exited", err=True)
+                break
+            if celery_proc.poll() is not None:
+                click.echo("❌ Celery worker exited", err=True)
+                break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cleanup()
+
+
 @main.command()
 @click.option(
     "--config",

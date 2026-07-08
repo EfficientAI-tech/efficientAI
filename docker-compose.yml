@@ -64,6 +64,8 @@ services:
       # AZURE_BLOB_ENABLED: "true"
       # AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=https;AccountName=...
       # AZURE_CONTAINER_NAME: your-container
+      SERVICE_MODE: api
+      MEDIA_WS_BASE_URL: ws://localhost:8001
     volumes:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
@@ -97,6 +99,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      SERVICE_MODE: media
       # Optional GCS blob storage (match api service env when using gcs):
       # GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa.json
     depends_on:
@@ -110,7 +113,9 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    command: eai worker --config /app/config.yml --loglevel info
+    ports:
+      - "8001:8001"
+    command: eai start-worker-all --config /app/config.yml --loglevel info --media-port 8001
 
   # Dedicated worker for the call-import fan-out so large CSV imports
   # don't starve synthetic-calling, audio generation, and evaluation jobs

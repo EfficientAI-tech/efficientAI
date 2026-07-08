@@ -8,6 +8,7 @@ import Button from '../../../components/Button'
 import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
+import VobizCallDetails from '../../../components/call-recordings/VobizCallDetails'
 import { useToast } from '../../../hooks/useToast'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
@@ -26,6 +27,17 @@ function isLegacyCategoryLabelMetric(metric: {
   if ((metric.type || '').toLowerCase() !== 'boolean') return false
   const name = (metric.metric_name || '').trim().toLowerCase()
   return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
+}
+
+function getVobizPhoneNumbers(callData: any): { from: string | null; to: string | null } {
+  return {
+    from: callData?.from_phone_number || callData?.from_number || callData?.From || null,
+    to: callData?.to_phone_number || callData?.to_number || callData?.To || null,
+  }
+}
+
+function getResultAudioS3Key(result: any): string | null {
+  return result?.audio_s3_key || result?.call_data?.recording_s3_key || null
 }
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -371,13 +383,16 @@ export default function EvaluatorResultDetailPage() {
     )
   }
 
+  const audioS3Key = getResultAudioS3Key(result)
+  const observabilityCallShortId = result?.call_data?.call_short_id as string | undefined
+
   const { data: presignedUrl } = useQuery({
-    queryKey: ['audio-presigned-url', result?.audio_s3_key],
+    queryKey: ['audio-presigned-url', audioS3Key],
     queryFn: () => {
-      if (!result?.audio_s3_key) return null
-      return apiClient.getAudioPresignedUrl(result.audio_s3_key)
+      if (!audioS3Key) return null
+      return apiClient.getAudioPresignedUrl(audioS3Key)
     },
-    enabled: !!result?.audio_s3_key,
+    enabled: !!audioS3Key,
   })
 
   const reEvaluateMutation = useMutation({
@@ -411,8 +426,31 @@ export default function EvaluatorResultDetailPage() {
     }
     if (presignedUrl?.url) {
       setAudioUrl(presignedUrl.url)
+      return
     }
-  }, [presignedUrl, result?.call_data])
+    setAudioUrl(null)
+  }, [presignedUrl, result?.call_data?.recording_url])
+
+  useEffect(() => {
+    const callShortId = observabilityCallShortId
+    const hasS3Recording = !!audioS3Key
+    if (!callShortId || !hasS3Recording || result?.call_data?.recording_url) {
+      return
+    }
+
+    let cancelled = false
+    apiClient.getObservabilityCallAudioUrl(callShortId)
+      .then((url) => {
+        if (!cancelled) setAudioUrl(url)
+      })
+      .catch(() => {
+        if (!cancelled && presignedUrl?.url) setAudioUrl(presignedUrl.url)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [observabilityCallShortId, audioS3Key, result?.call_data?.recording_url, presignedUrl?.url])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -468,6 +506,18 @@ export default function EvaluatorResultDetailPage() {
   const getEffectiveDuration = (): number | null => {
     if (result?.call_data?.duration_ms) {
       return result.call_data.duration_ms / 1000
+    }
+    if (typeof result?.call_data?.duration_seconds === 'number' && result.call_data.duration_seconds > 0) {
+      return result.call_data.duration_seconds
+    }
+    const started = result?.call_data?.startedAt || result?.call_data?.started_at
+    const ended = result?.call_data?.endedAt || result?.call_data?.ended_at
+    if (started && ended) {
+      const startMs = new Date(started).getTime()
+      const endMs = new Date(ended).getTime()
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs) {
+        return (endMs - startMs) / 1000
+      }
     }
     if (audioDuration && audioDuration > 0) {
       return audioDuration
@@ -634,6 +684,14 @@ export default function EvaluatorResultDetailPage() {
 
   const resultData = result as EvaluatorResultDetail
   const statusConfig = getStatusConfig(resultData.status)
+  const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
+  const hasCallMediaOrTranscript = Boolean(
+    audioS3Key ||
+    resultData.call_data?.recording_url ||
+    resultData.transcription ||
+    resultData.speaker_segments?.length ||
+    (Array.isArray(resultData.call_data?.messages) && resultData.call_data.messages.length > 0)
+  )
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -916,7 +974,7 @@ export default function EvaluatorResultDetailPage() {
       </div>
 
       {/* Provider-specific call details (Call Analysis, Cost, Latency, System Details) */}
-      {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.call_id?.startsWith('call_')) && (
+      {resultData.call_data && (resultData.provider_platform === 'retell' || (resultData.call_data.call_id?.startsWith('call_') && resultData.provider_platform !== 'vobiz')) && (
         <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
@@ -964,8 +1022,24 @@ export default function EvaluatorResultDetailPage() {
         </div>
       )}
 
+      {resultData.call_data && resultData.provider_platform === 'vobiz' && (
+        <div className="mb-6 bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+            <Phone className="w-5 h-5 mr-2" />
+            Provider Call Details
+            <span className="ml-2 px-2 py-0.5 text-xs bg-teal-100 text-teal-800 rounded-full">vobiz</span>
+            {(resultData.provider_call_id || resultData.call_data.call_ref) && (
+              <span className="ml-2 text-xs text-gray-500 font-mono">
+                {resultData.provider_call_id || resultData.call_data.call_ref}
+              </span>
+            )}
+          </h2>
+          <VobizCallDetails callData={resultData.call_data} />
+        </div>
+      )}
+
       {/* Unified Transcript & Call Details Section */}
-      {(resultData.audio_s3_key || resultData.transcription || resultData.speaker_segments) ? (
+      {hasCallMediaOrTranscript ? (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           {/* Tab Navigation */}
           <div className="px-6 border-b border-gray-100 flex items-center gap-0">
@@ -1124,20 +1198,27 @@ export default function EvaluatorResultDetailPage() {
                       )}
 
                       {/* Call metadata from call_data (live calls, provider calls) */}
-                      {(resultData.call_data?.from_phone_number || resultData.call_data?.to_phone_number) && (
+                      {(resultData.call_data?.from_phone_number ||
+                        resultData.call_data?.to_phone_number ||
+                        vobizPhoneNumbers.from ||
+                        vobizPhoneNumbers.to) && (
                         <div className="p-3 bg-white rounded-lg border border-gray-100">
                           <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Phone Numbers</p>
                           <div className="space-y-2 mt-1.5">
-                            {resultData.call_data.from_phone_number && (
+                            {(resultData.call_data.from_phone_number || vobizPhoneNumbers.from) && (
                               <div className="flex items-center gap-2">
                                 <PhoneOutgoing className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-sm text-gray-700 font-mono">{resultData.call_data.from_phone_number}</span>
+                                <span className="text-sm text-gray-700 font-mono">
+                                  {resultData.call_data.from_phone_number || vobizPhoneNumbers.from}
+                                </span>
                               </div>
                             )}
-                            {resultData.call_data.to_phone_number && (
+                            {(resultData.call_data.to_phone_number || vobizPhoneNumbers.to) && (
                               <div className="flex items-center gap-2">
                                 <PhoneIncoming className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-sm text-gray-700 font-mono">{resultData.call_data.to_phone_number}</span>
+                                <span className="text-sm text-gray-700 font-mono">
+                                  {resultData.call_data.to_phone_number || vobizPhoneNumbers.to}
+                                </span>
                               </div>
                             )}
                           </div>
@@ -1170,18 +1251,31 @@ export default function EvaluatorResultDetailPage() {
                         </div>
                       )}
 
-                      {resultData.call_data?.recording_url && (
+                      {(resultData.call_data?.recording_url || audioS3Key) && (
                         <div className="p-3 bg-white rounded-lg border border-gray-100">
                           <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Recording</p>
-                          <a
-                            href={resultData.call_data.recording_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 mt-1"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                            Open Recording
-                          </a>
+                          {resultData.call_data?.recording_url ? (
+                            <a
+                              href={resultData.call_data.recording_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-800"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              Open provider recording
+                            </a>
+                          ) : (
+                            <p className="text-sm text-gray-600">Recording available in player above</p>
+                          )}
+                          {resultData.call_data?.call_short_id && (
+                            <a
+                              href={`/observability/calls/${resultData.call_data.call_short_id}`}
+                              className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              View in Observability
+                            </a>
+                          )}
                         </div>
                       )}
                     </div>

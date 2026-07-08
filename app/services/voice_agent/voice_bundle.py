@@ -490,6 +490,7 @@ async def run_voice_bundle_fastapi(
     llm_endpoint_url: str | None = None,
     serializer=None,
     telephony_mode: bool = False,
+    call_short_id: str | None = None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -685,19 +686,36 @@ async def run_voice_bundle_fastapi(
             recorded_audio_data["sample_rate"] = sample_rate
             recorded_audio_data["num_channels"] = num_channels
 
-        pipeline = imports["Pipeline"](
-            [
-                ws_transport.input(),
-                audio_buffer_input,
-                stt,
-                context_aggregator.user(),
-                llm,
-                tts,
-                audio_buffer_output,
-                ws_transport.output(),
-                context_aggregator.assistant(),
-            ]
-        )
+        pipeline_processors = [
+            ws_transport.input(),
+            audio_buffer_input,
+            stt,
+        ]
+        if telephony_mode and call_short_id:
+            from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
+
+            user_transcript_processor = create_live_transcript_processor(call_short_id)
+            agent_transcript_processor = create_live_transcript_processor(call_short_id)
+            if user_transcript_processor:
+                pipeline_processors.append(user_transcript_processor)
+        else:
+            user_transcript_processor = None
+            agent_transcript_processor = None
+
+        pipeline_processors.append(context_aggregator.user())
+        pipeline_processors.append(llm)
+
+        if telephony_mode and call_short_id and agent_transcript_processor:
+            pipeline_processors.append(agent_transcript_processor)
+
+        pipeline_processors.extend([
+            tts,
+            audio_buffer_output,
+            ws_transport.output(),
+            context_aggregator.assistant(),
+        ])
+
+        pipeline = imports["Pipeline"](pipeline_processors)
 
         if telephony_mode:
             task = imports["PipelineTask"](
@@ -788,6 +806,10 @@ async def run_voice_bundle_fastapi(
                     content = msg.get("content", "")
                     if not content or role == "system":
                         continue
+                    from app.services.telephony.call_recording_lifecycle import is_bootstrap_user_message
+
+                    if role == "user" and is_bootstrap_user_message(content):
+                        continue
                     speaker = "user" if role == "user" else "assistant"
                     turn_duration = max(1.0, len(content.split()) * 0.4)
                     conversation_turns.append({
@@ -853,6 +875,39 @@ async def run_voice_bundle_fastapi(
                     logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
             else:
                 logger.warning("No audio data captured or audio too small to upload")
+
+            if telephony_mode and call_short_id:
+                from app.database import SessionLocal
+                from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
+
+                db = SessionLocal()
+                try:
+                    persist_telephony_call_artifacts(
+                        db,
+                        call_short_id=call_short_id,
+                        conversation_turns=conversation_turns,
+                        transcript_text=transcript_text,
+                        s3_key=s3_key_result,
+                        duration=duration_result,
+                    )
+                finally:
+                    db.close()
+                # region agent log
+                from app.utils.debug_agent_log import agent_debug_log
+
+                agent_debug_log(
+                    "voice_bundle.py:finally",
+                    "voice bundle cleanup complete",
+                    {
+                        "call_short_id": call_short_id,
+                        "conversation_turns_count": len(conversation_turns),
+                        "input_audio_bytes": len(total_input_audio),
+                        "output_audio_bytes": len(total_output_audio),
+                        "s3_key_set": bool(s3_key_result),
+                    },
+                    "H4",
+                )
+                # endregion
                 
     except Exception as e:
         logger.error(f"Error in run_voice_bundle_fastapi: {e}", exc_info=True)

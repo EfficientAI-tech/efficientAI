@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    # api = CRUD + quick webhooks only; media = live voice WebSockets only; all = single-process dev
+    SERVICE_MODE: str = "all"
+    MEDIA_WS_BASE_URL: str = ""
+    MEDIA_PORT: int = 8001
 
     # Database
     DATABASE_URL: Optional[str] = None
@@ -629,6 +633,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.VOBIZ_MEDIA_BASE = vobiz_cfg["media_base"]
         if vobiz_cfg.get("webhook_base_url"):
             settings.VOBIZ_WEBHOOK_BASE_URL = vobiz_cfg["webhook_base_url"]
+        if vobiz_cfg.get("media_ws_base_url"):
+            settings.MEDIA_WS_BASE_URL = vobiz_cfg["media_ws_base_url"]
         if vobiz_cfg.get("from_number"):
             settings.VOBIZ_FROM_NUMBER = vobiz_cfg["from_number"]
         if vobiz_cfg.get("outbound_pool"):

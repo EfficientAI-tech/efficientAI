@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { useMemo } from 'react'
 import { apiClient, TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../lib/api'
 
 export function useOrgTelephony(enabled = true) {
@@ -24,6 +25,19 @@ export function useOrgTelephony(enabled = true) {
   const activeNumbers = telephonyNumbers.filter((n) => n.is_active)
   const inboundNumbers = activeNumbers.filter((n) => n.inbound_enabled)
   const outboundNumbers = activeNumbers.filter((n) => n.outbound_enabled)
+  const hasSyncedNumbers = activeNumbers.length > 0
+  /** True when provider credentials exist OR synced/imported numbers are available (e.g. Vobiz). */
+  const canUseProviderNumbers = hasTelephony || hasSyncedNumbers
+
+  const numbersForCallType = useMemo(
+    () =>
+      (callType: string): TelephonyPhoneNumberResponse[] => {
+        if (callType === 'inbound') return inboundNumbers
+        if (callType === 'outbound') return outboundNumbers
+        return activeNumbers
+      },
+    [activeNumbers, inboundNumbers, outboundNumbers],
+  )
 
   return {
     telephonyConfigs,
@@ -33,6 +47,9 @@ export function useOrgTelephony(enabled = true) {
     inboundNumbers,
     outboundNumbers,
     hasTelephony,
+    hasSyncedNumbers,
+    canUseProviderNumbers,
+    numbersForCallType,
     defaultConfig,
     isLoading: configsLoading || numbersLoading,
   }

@@ -219,7 +219,7 @@ def _create_audio_recorder_class():
     return AudioRecorder
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -308,18 +308,31 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             bot_audio_path, start_time, target_sample_rate=recorder_sample_rate, recorder_name="BotAudioRecorder"
         )
 
+        from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
+
+        live_transcript_processor = create_live_transcript_processor(call_short_id) if telephony_mode else None
+        user_transcript_processor = live_transcript_processor
+        agent_transcript_processor = (
+            create_live_transcript_processor(call_short_id) if telephony_mode and call_short_id else None
+        )
+
         if telephony_mode:
-            pipeline = imports["Pipeline"](
-                [
-                    ws_transport.input(),
-                    user_recorder,
-                    context_aggregator.user(),
-                    llm,
-                    bot_recorder,
-                    ws_transport.output(),
-                    context_aggregator.assistant(),
-                ]
-            )
+            pipeline_processors = [
+                ws_transport.input(),
+                user_recorder,
+                context_aggregator.user(),
+            ]
+            if user_transcript_processor:
+                pipeline_processors.append(user_transcript_processor)
+            pipeline_processors.append(llm)
+            if agent_transcript_processor:
+                pipeline_processors.append(agent_transcript_processor)
+            pipeline_processors.extend([
+                bot_recorder,
+                ws_transport.output(),
+                context_aggregator.assistant(),
+            ])
+            pipeline = imports["Pipeline"](pipeline_processors)
             task = imports["PipelineTask"](
                 pipeline,
                 params=imports["PipelineParams"](
@@ -411,6 +424,10 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                     content = msg.get("content", "")
                     if not content or role == "system":
                         continue
+                    from app.services.telephony.call_recording_lifecycle import is_bootstrap_user_message
+
+                    if role == "user" and is_bootstrap_user_message(content):
+                        continue
                     speaker = "user" if role == "user" else "assistant"
                     turn_duration = max(1.0, len(content.split()) * 0.4)
                     conversation_turns.append({
@@ -427,6 +444,23 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 logger.warning(f"Failed to extract conversation context: {ctx_err}")
                 conversation_turns = []
                 transcript_text = None
+
+            if telephony_mode and call_short_id:
+                from app.database import SessionLocal
+                from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
+
+                db = SessionLocal()
+                try:
+                    persist_telephony_call_artifacts(
+                        db,
+                        call_short_id=call_short_id,
+                        conversation_turns=conversation_turns,
+                        transcript_text=transcript_text,
+                        s3_key=s3_key_result,
+                        duration=duration_result,
+                    )
+                finally:
+                    db.close()
 
     except Exception as e:
         logger.error(f"Error in run_bot: {e}", exc_info=True)

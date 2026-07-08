@@ -19,9 +19,10 @@ from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
+ws_router = APIRouter(prefix="/voice-agent", tags=["voice-agent-media"])
 
 
-@router.websocket("/ws")
+@ws_router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
 ):
@@ -733,21 +734,21 @@ async def bot_connect(
             return None
         return token.strip()
 
-    # Bearer / access token: header, cookie, query param.
+    # Bearer / access token: header, query param, then cookie.
     bearer_token = (
         _extract_bearer(request.headers.get("Authorization"))
-        or request.cookies.get("access_token")
         or request.query_params.get("token")
         or request.query_params.get("access_token")
+        or request.cookies.get("access_token")
     )
 
-    # API key: header, cookie, query param.
+    # API key: header, query param, then cookie.
     api_key = (
         request.headers.get("X-API-Key")
         or request.headers.get("X-EFFICIENTAI-API-KEY")
-        or request.cookies.get("api_key")
         or request.query_params.get("X-API-Key")
         or request.query_params.get("api_key")
+        or request.cookies.get("api_key")
     )
 
     print(
@@ -921,28 +922,23 @@ async def bot_connect(
         
         print(f"[BACKEND] ✅ Voice bundle providers configured")
     
-    # Determine WebSocket protocol based on request
-    scheme = "wss" if request.url.scheme == "https" else "ws"
-    host = request.headers.get("host", f"localhost:{settings.PORT}")
-    base_url = f"{scheme}://{host}"
-
-    # The WebSocket endpoint accepts either a bearer token (?token=...) or an
-    # API key (?X-API-Key=...). Embed whichever credential authenticated this
-    # /connect request so the client doesn't need to re-supply it.
+    # Determine WebSocket URL — prefer dedicated media server when configured.
     from urllib.parse import quote
+
+    from app.services.media_urls import build_voice_agent_ws_url
+
     if bearer_token:
         ws_auth_query = f"token={quote(bearer_token, safe='')}"
     else:
         ws_auth_query = f"X-API-Key={quote(api_key or '', safe='')}"
-    ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?{ws_auth_query}"
 
-    # Append agent_id, persona_id and scenario_id if present
-    if agent_id:
-        ws_url += f"&agent_id={agent_id}"
-    if persona_id:
-        ws_url += f"&persona_id={persona_id}"
-    if scenario_id:
-        ws_url += f"&scenario_id={scenario_id}"
+    ws_url = build_voice_agent_ws_url(
+        auth_query=ws_auth_query,
+        agent_id=agent_id,
+        persona_id=persona_id,
+        scenario_id=scenario_id,
+        fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
+    )
     
     # Return the response in the format Pipecat expects
     # Pipecat expects a JSON response with ws_url field

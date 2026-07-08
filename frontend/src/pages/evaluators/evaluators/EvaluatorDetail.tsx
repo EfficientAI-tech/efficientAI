@@ -10,6 +10,7 @@ import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 import LLMAdvancedOptionsPanel from '../../../components/providers/LLMAdvancedOptionsPanel'
 import EvaluatorOutboundCallPanel from '../components/EvaluatorOutboundCallPanel'
+import EvaluatorInboundCallPanel from '../components/EvaluatorInboundCallPanel'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 
 interface Evaluator {
@@ -644,6 +645,34 @@ export default function EvaluatorDetail() {
                   </div>
                 ) : details ? (
                   <>
+                  {!isEditing &&
+                    details.agent &&
+                    evaluator.agent_id &&
+                    evaluator.persona_id &&
+                    evaluator.scenario_id && (
+                      <>
+                        <EvaluatorOutboundCallPanel
+                          evaluatorId={evaluator.id}
+                          agentId={evaluator.agent_id}
+                          personaId={evaluator.persona_id}
+                          scenarioId={evaluator.scenario_id}
+                          personaName={details.persona?.name}
+                          scenarioName={details.scenario?.name}
+                          agentPhoneNumber={details.agent.phone_number}
+                          callMedium={details.agent.call_medium || 'phone_call'}
+                          callType={details.agent.call_type || 'outbound'}
+                          showToast={showToast}
+                        />
+                        <EvaluatorInboundCallPanel
+                          agentPhoneNumber={details.agent.phone_number}
+                          personaName={details.persona?.name}
+                          scenarioName={details.scenario?.name}
+                          callMedium={details.agent.call_medium || 'phone_call'}
+                          callType={details.agent.call_type || 'outbound'}
+                        />
+                      </>
+                    )}
+
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                     <div className="space-y-6">
                       {/* Agent metadata */}
@@ -654,7 +683,7 @@ export default function EvaluatorDetail() {
                           </div>
                           <div className="p-6 space-y-3">
                             <p className="text-base font-medium text-gray-900">{details.agent.name}</p>
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               {details.agent.call_medium === 'web_call' ? (
                                 <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
                                   <Globe className="w-3.5 h-3.5 mr-1.5" />
@@ -670,6 +699,9 @@ export default function EvaluatorDetail() {
                                   No phone number
                                 </span>
                               )}
+                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-300 capitalize">
+                                {details.agent.call_type || 'outbound'}
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -968,24 +1000,6 @@ export default function EvaluatorDetail() {
                       </div>
                     </div>
                   </div>
-
-                  {!isEditing &&
-                    details.agent &&
-                    evaluator.agent_id &&
-                    evaluator.persona_id &&
-                    evaluator.scenario_id && (
-                      <EvaluatorOutboundCallPanel
-                        evaluatorId={evaluator.id}
-                        agentId={evaluator.agent_id}
-                        personaId={evaluator.persona_id}
-                        scenarioId={evaluator.scenario_id}
-                        personaName={details.persona?.name}
-                        scenarioName={details.scenario?.name}
-                        agentPhoneNumber={details.agent.phone_number}
-                        callMedium={details.agent.call_medium || 'phone_call'}
-                        showToast={showToast}
-                      />
-                    )}
                   </>
                 ) : (
                   <div className="bg-white shadow rounded-lg p-6 text-center text-gray-500">

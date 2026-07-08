@@ -6,12 +6,18 @@ import { useAgentStore } from '../../../store/agentStore'
 import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
 import Button from '../../../components/Button'
 import ProviderLogo from '../../../components/shared/ProviderLogo'
-import { Plus, Trash2, Play, X, CheckSquare, Square, Brain, ChevronDown, AlertTriangle, Info, AlertCircle } from 'lucide-react'
+import { Plus, Trash2, Play, X, CheckSquare, Square, Brain, ChevronDown, Info, AlertCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
+import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
+import {
+  buildAgentsById,
+  partitionEvaluatorsForRun,
+  PartitionedEvaluatorsForRun,
+} from '../utils/evaluatorRunStrategy'
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -63,6 +69,7 @@ export default function EvaluateTestAgents() {
   const [selectedEvaluatorIds, setSelectedEvaluatorIds] = useState<Set<string>>(new Set())
   const [showRunModal, setShowRunModal] = useState(false)
   const [runCount, setRunCount] = useState(1)
+  const [runPartition, setRunPartition] = useState<PartitionedEvaluatorsForRun | null>(null)
   const [showDeleteSelectedModal, setShowDeleteSelectedModal] = useState(false)
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [modalAgentId, setModalAgentId] = useState<string>('')
@@ -406,18 +413,23 @@ export default function EvaluateTestAgents() {
       showToast('Please select at least one evaluator to run', 'error')
       return
     }
-    // Show the run modal to select how many times to run
+    const selected = evaluators.filter((e) => selectedEvaluatorIds.has(e.id))
+    const partition = partitionEvaluatorsForRun(selected, buildAgentsById(agents))
+    setRunPartition(partition)
     setRunCount(1)
     setShowRunModal(true)
   }
 
-  const executeRuns = async () => {
+  const executeWebRuns = async () => {
+    if (!runPartition || runPartition.webBridge.length === 0) {
+      return
+    }
     try {
-      const evaluatorIdsArray = Array.from(selectedEvaluatorIds)
+      const evaluatorIdsArray = runPartition.webBridge.map((e) => e.id)
       setRunningEvaluatorIds(new Set(evaluatorIdsArray))
       setShowRunModal(false)
+      setRunPartition(null)
 
-      // Create an array with each evaluator ID repeated runCount times
       const expandedIds: string[] = []
       for (const id of evaluatorIdsArray) {
         for (let i = 0; i < runCount; i++) {
@@ -427,13 +439,9 @@ export default function EvaluateTestAgents() {
 
       await apiClient.runEvaluators(expandedIds)
 
-      // Invalidate queries to refresh results
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-
-      // Clear selection after starting
       setSelectedEvaluatorIds(new Set())
 
-      // Show success toast
       const totalRuns = evaluatorIdsArray.length * runCount
       showToast(`🚀 Queued ${totalRuns} evaluation${totalRuns > 1 ? 's' : ''}! Check Results for progress.`, 'success')
     } catch (error: any) {
@@ -1214,98 +1222,26 @@ export default function EvaluateTestAgents() {
           </div>
         )}
 
-        {/* Run Count Modal */}
-        {showRunModal && (
-          <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="flex min-h-screen items-center justify-center p-4">
-              <div
-                className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-                onClick={() => setShowRunModal(false)}
-              />
-              <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-gray-900">Run Evaluators</h2>
-                  <button
-                    onClick={() => setShowRunModal(false)}
-                    className="text-gray-400 hover:text-gray-500"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="text-sm text-gray-600">
-                      <span className="font-medium text-gray-900">{selectedEvaluatorIds.size}</span> evaluator{selectedEvaluatorIds.size > 1 ? 's' : ''} selected
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      How many times to run each evaluator?
-                    </label>
-                    <div className="flex items-center space-x-3">
-                      <button
-                        type="button"
-                        onClick={() => setRunCount(Math.max(1, runCount - 1))}
-                        className="w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 transition-colors"
-                      >
-                        -
-                      </button>
-                      <input
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={runCount}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value)
-                          if (!isNaN(val) && val >= 1 && val <= 50) {
-                            setRunCount(val)
-                          }
-                        }}
-                        className="w-20 text-center px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 text-lg font-semibold"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setRunCount(Math.min(50, runCount + 1))}
-                        className="w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 transition-colors"
-                      >
-                        +
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">Maximum 50 runs per evaluator</p>
-                  </div>
-
-                  <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
-                    <p className="text-sm text-blue-800">
-                      <span className="font-semibold">{selectedEvaluatorIds.size * runCount}</span> total evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''} will be queued and run in parallel.
-                    </p>
-                  </div>
-
-                  <div className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                    <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-amber-700">
-                      First-time runs may take longer as ML models required for audio evaluation metrics are downloaded and cached locally. Subsequent runs will be significantly faster.
-                    </p>
-                  </div>
-
-                  <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
-                    <Button variant="ghost" onClick={() => setShowRunModal(false)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="success"
-                      onClick={executeRuns}
-                      leftIcon={<Play className="w-4 h-4" />}
-                    >
-                      Run {selectedEvaluatorIds.size * runCount} Evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+        {/* Smart Run Modal */}
+        {showRunModal && runPartition && (
+          <EvaluatorSmartRunModal
+            partition={runPartition}
+            evaluators={evaluators}
+            agentsById={buildAgentsById(agents)}
+            personasById={Object.fromEntries(personas.map((p: any) => [p.id, p]))}
+            scenariosById={Object.fromEntries(scenarios.map((s: any) => [s.id, s]))}
+            runCount={runCount}
+            onRunCountChange={setRunCount}
+            onClose={() => {
+              setShowRunModal(false)
+              setRunPartition(null)
+            }}
+            onExecuteWebRuns={executeWebRuns}
+            isExecutingWebRuns={runningEvaluatorIds.size > 0}
+            showToast={showToast}
+          />
         )}
+
         {/* Delete Selected Evaluators Confirmation Modal */}
         {showDeleteSelectedModal && (
           <div className="fixed inset-0 z-50 overflow-y-auto">

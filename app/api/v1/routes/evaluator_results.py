@@ -151,6 +151,47 @@ def _derive_speaker_segments_from_call_data(
                 speaker = "Speaker 2" if speaker_label.strip().lower() in ("agent", "assistant", "ai", "bot") else "Speaker 1"
                 _append_segment(speaker, text, 0, 0)
 
+    elif platform == "vobiz":
+        from app.services.telephony.call_recording_lifecycle import (
+            live_transcript_to_messages,
+            _timestamp_to_ms,
+        )
+
+        messages = call_data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            live_transcript = call_data.get("live_transcript")
+            if isinstance(live_transcript, list) and live_transcript:
+                messages = live_transcript_to_messages(live_transcript)
+        call_start_ms = _timestamp_to_ms(call_data.get("started_at")) or _timestamp_to_ms(
+            call_data.get("startedAt")
+        )
+        if isinstance(messages, list):
+            for index, msg in enumerate(messages):
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role", "")).lower()
+                speaker = "Speaker 1" if role == "user" else "Speaker 2"
+                start_raw = msg.get("start_time", msg.get("secondsFromStart", 0))
+                end_raw = msg.get("end_time", msg.get("endTime"))
+                start = 0.0
+                end = 0.0
+                if isinstance(start_raw, (int, float)):
+                    if start_raw > 1e10 and call_start_ms:
+                        start = max(0.0, (float(start_raw) - float(call_start_ms)) / 1000.0)
+                    else:
+                        start = float(start_raw / 1000.0 if start_raw > 1e10 else start_raw)
+                if isinstance(end_raw, (int, float)):
+                    if end_raw > 1e10 and call_start_ms:
+                        end = max(start, (float(end_raw) - float(call_start_ms)) / 1000.0)
+                    else:
+                        end = float(end_raw / 1000.0 if end_raw > 1e10 else end_raw)
+                elif start:
+                    end = start
+                else:
+                    start = float(index)
+                    end = float(index)
+                _append_segment(speaker, msg.get("content", "") or msg.get("message", ""), start, end)
+
     return segments or None
 
 
