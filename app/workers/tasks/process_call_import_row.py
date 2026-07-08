@@ -188,7 +188,6 @@ def process_call_import_row_task(self, row_id: str):
         provider_lookup_supported = (
             not direct_url_mode
             and bool(row.conversation_id)
-            and not original_csv_url
             and client is not None
             and hasattr(client, "get_call_recording_url")
         )

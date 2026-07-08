@@ -259,10 +259,10 @@ def test_process_call_import_row_completes_and_rolls_up_to_completed(db_session,
     assert call_import.failed_rows == 0
     assert call_import.status == CallImportStatus.COMPLETED
 
-    # Rows with a CSV-supplied recording_url skip Calls API lookup and download
-    # the URL directly with Exotel credentials.
-    assert fake_client.resolved_calls == []
-    assert fake_client.calls == [original_csv_url]
+    # Tier 1 (Calls API lookup) is preferred even when the CSV supplies a URL.
+    assert fake_client.resolved_calls == [row.conversation_id]
+    expected_url = f"https://api.exotel.com/recordings/{row.conversation_id}.mp3"
+    assert fake_client.calls == [expected_url]
     # CSV-supplied URL is preserved on the row when present (only the
     # resolver-derived URL gets persisted when the CSV had none).
     assert row.recording_url == original_csv_url
@@ -412,15 +412,30 @@ def test_process_call_import_row_resolves_url_when_csv_omits_it(db_session, monk
 def test_process_call_import_row_exotel_csv_url_uses_credentialed_download(
     db_session, monkeypatch
 ):
-    """When the CSV already includes a recording URL, Exotel batches download
-    it with Basic Auth and skip Calls API lookup."""
+    """When call-id lookup fails, Exotel batches fall back to the CSV URL
+    using credentialed download."""
 
     _, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
     csv_url = row.recording_url
     assert csv_url
 
-    fake_client = _FakeExotelClient(audio=b"csv-url-audio", content_type="audio/mpeg")
+    from app.services.telephony.exotel_client import ExotelNotFoundError
+
+    class _LookupFailsCsvSucceeds:
+        def __init__(self):
+            self.resolved_calls = []
+            self.calls = []
+
+        def get_call_recording_url(self, call_sid):
+            self.resolved_calls.append(call_sid)
+            raise ExotelNotFoundError(f"call {call_sid} not found in API")
+
+        def download_recording(self, recording_url):
+            self.calls.append(recording_url)
+            return b"csv-url-audio", "audio/mpeg"
+
+    fake_client = _LookupFailsCsvSucceeds()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
     public_calls = _patch_public_download(
@@ -432,17 +447,16 @@ def test_process_call_import_row_exotel_csv_url_uses_credentialed_download(
 
     assert result["status"] == "completed"
     db_session.refresh(row)
-    assert fake_client.resolved_calls == []
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [csv_url]
     assert public_calls == []
     assert row.status == CallImportRowStatus.COMPLETED
 
 
-def test_process_call_import_row_falls_back_to_csv_url_when_lookup_fails(
+def test_process_call_import_row_fails_when_lookup_fails_without_csv_url(
     db_session, monkeypatch
 ):
-    """When recording_url is absent and call-id lookup fails, there is no CSV
-    fallback — the row fails. (Credentialed Exotel CSV URLs skip lookup.)"""
+    """When recording_url is absent and call-id lookup fails, the row fails."""
 
     _, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
@@ -481,6 +495,62 @@ def test_process_call_import_row_falls_back_to_csv_url_when_lookup_fails(
     assert row.status == CallImportRowStatus.FAILED
 
 
+def test_process_call_import_row_fails_when_lookup_and_csv_url_both_fail(
+    db_session, monkeypatch
+):
+    """When call-id lookup and CSV URL download both fail, the row is marked failed."""
+
+    _, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    assert row.recording_url
+
+    from app.services.telephony.exotel_client import ExotelAuthError, ExotelNotFoundError
+
+    class _BothTiersFail:
+        def __init__(self):
+            self.resolved_calls = []
+            self.calls = []
+
+        def get_call_recording_url(self, call_sid):
+            self.resolved_calls.append(call_sid)
+            raise ExotelNotFoundError(f"call {call_sid} not found")
+
+        def download_recording(self, recording_url):
+            self.calls.append(recording_url)
+            raise ExotelAuthError(f"auth rejected for {recording_url}")
+
+    fake_client = _BothTiersFail()
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    _patch_public_download(
+        monkeypatch,
+        side_effect=lambda url: (_ for _ in ()).throw(
+            ExotelAuthError(f"public auth rejected for {url}")
+        ),
+    )
+
+    monkeypatch.setattr(
+        task_module.process_call_import_row_task,
+        "retry",
+        lambda exc, countdown: (_ for _ in ()).throw(RetryCalled((exc, countdown))),
+    )
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "non_retryable_provider_error"
+
+    db_session.refresh(row)
+    db_session.refresh(call_import)
+    assert row.status == CallImportRowStatus.FAILED
+    assert fake_client.resolved_calls == [row.conversation_id]
+    assert fake_client.calls == [row.recording_url]
+    assert "call-id lookup" in (row.error_message or "")
+    assert "recording URL" in (row.error_message or "")
+    assert call_import.status == CallImportStatus.FAILED
+    assert fake_s3.uploads == []
+
+
 def test_process_call_import_row_fails_when_exotel_csv_url_download_fails(
     db_session, monkeypatch
 ):
@@ -490,7 +560,7 @@ def test_process_call_import_row_fails_when_exotel_csv_url_download_fails(
     row = rows[0]
     assert row.recording_url
 
-    from app.services.telephony.exotel_client import ExotelAuthError
+    from app.services.telephony.exotel_client import ExotelAuthError, ExotelNotFoundError
 
     class _CsvUrlAuthFails:
         def __init__(self):
@@ -499,7 +569,7 @@ def test_process_call_import_row_fails_when_exotel_csv_url_download_fails(
 
         def get_call_recording_url(self, call_sid):
             self.resolved_calls.append(call_sid)
-            raise AssertionError("lookup should not run when CSV URL is present")
+            raise ExotelNotFoundError(f"call {call_sid} not found")
 
         def download_recording(self, recording_url):
             self.calls.append(recording_url)
@@ -529,7 +599,7 @@ def test_process_call_import_row_fails_when_exotel_csv_url_download_fails(
     db_session.refresh(row)
     db_session.refresh(call_import)
     assert row.status == CallImportRowStatus.FAILED
-    assert fake_client.resolved_calls == []
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [row.recording_url]
     assert "recording URL" in (row.error_message or "")
     assert "auth rejected" in (row.error_message or "")
@@ -630,27 +700,30 @@ def test_process_call_import_row_recovers_via_csv_url_after_transient_lookup(
 def test_process_call_import_row_retries_when_exotel_csv_url_transient(
     db_session, monkeypatch
 ):
-    """When Exotel credentialed CSV-URL download hits a transient error, retry."""
+    """When call-id lookup fails and credentialed CSV-URL download is transient, retry."""
 
     _, _call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
 
-    from app.services.telephony.exotel_client import ExotelTransientError
+    from app.services.telephony.exotel_client import (
+        ExotelNotFoundError,
+        ExotelTransientError,
+    )
 
-    class _CsvUrlTransient:
+    class _LookupFailsCsvTransient:
         def __init__(self):
             self.resolved_calls = []
             self.calls = []
 
         def get_call_recording_url(self, call_sid):
             self.resolved_calls.append(call_sid)
-            raise AssertionError("lookup should not run when CSV URL is present")
+            raise ExotelNotFoundError(f"call {call_sid} not found")
 
         def download_recording(self, recording_url):
             self.calls.append(recording_url)
             raise ExotelTransientError("503 fetching recording")
 
-    fake_client = _CsvUrlTransient()
+    fake_client = _LookupFailsCsvTransient()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
     public_calls = _patch_public_download(
@@ -672,7 +745,7 @@ def test_process_call_import_row_retries_when_exotel_csv_url_transient(
     db_session.refresh(row)
     assert row.status == CallImportRowStatus.PENDING
     assert "Transient" in (row.error_message or "")
-    assert fake_client.resolved_calls == []
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [row.recording_url]
     assert public_calls == []
 
@@ -681,7 +754,7 @@ def test_process_call_import_row_uses_conversation_id_when_provider_set_without_
     db_session, monkeypatch
 ):
     """Legacy/credentialed batches with provider but no pinned credential id
-    still download CSV recording URLs with Exotel auth when present."""
+    still resolve recordings via call-id lookup when conversation_id is set."""
     _, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
     call_import.telephony_integration_id = None
@@ -701,8 +774,9 @@ def test_process_call_import_row_uses_conversation_id_when_provider_set_without_
     assert result["status"] == "completed"
     db_session.refresh(row)
     assert row.status == CallImportRowStatus.COMPLETED
-    assert fake_client.resolved_calls == []
-    assert fake_client.calls == [row.recording_url]
+    assert fake_client.resolved_calls == [row.conversation_id]
+    expected_url = f"https://api.exotel.com/recordings/{row.conversation_id}.mp3"
+    assert fake_client.calls == [expected_url]
     assert public_calls == []
 
 

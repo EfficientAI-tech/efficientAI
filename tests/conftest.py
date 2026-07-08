@@ -298,6 +298,24 @@ def client(db_session, api_key, org_id):
         fake_workers_tasks_pkg.__path__ = []
         sys.modules["app.workers.tasks"] = fake_workers_tasks_pkg
 
+    # ``app.workers.tasks`` is stubbed with an empty ``__path__`` so Celery
+    # task modules are not eagerly imported, but several API routes and tests
+    # still need the real ``helpers`` subpackage (e.g. the diariser default
+    # prompt endpoint). Register it explicitly so
+    # ``app.workers.tasks.helpers.llm_diarisation`` resolves normally.
+    if "app.workers.tasks.helpers" not in sys.modules:
+        helpers_pkg = types.ModuleType("app.workers.tasks.helpers")
+        helpers_pkg.__path__ = [
+            str(
+                Path(__file__).resolve().parents[1]
+                / "app"
+                / "workers"
+                / "tasks"
+                / "helpers"
+            )
+        ]
+        sys.modules["app.workers.tasks.helpers"] = helpers_pkg
+
     fake_run_prompt_opt_module = sys.modules.get("app.workers.tasks.run_prompt_optimization")
     if fake_run_prompt_opt_module is None:
         fake_run_prompt_opt_module = types.ModuleType("app.workers.tasks.run_prompt_optimization")
