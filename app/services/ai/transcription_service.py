@@ -90,13 +90,22 @@ class TranscriptionService:
         preferred in either table; otherwise the row marked ``is_default``
         wins, with a back-compat fallback to the most recent active row.
         """
-        from app.services.ai.llm_gateway import resolve_litellm_api_key
+        from app.services.ai.llm_gateway import (
+            resolve_litellm_api_key,
+            routing_context_from_ai_provider,
+        )
 
         ai_provider = self._get_ai_provider(
             provider, db, organization_id, credential_id=credential_id
         )
         if ai_provider:
-            return resolve_litellm_api_key(organization_id, db, ai_provider)
+            credential_ctx = routing_context_from_ai_provider(ai_provider)
+            return resolve_litellm_api_key(
+                organization_id,
+                db,
+                ai_provider,
+                credential=credential_ctx,
+            )
 
         integration = resolve_integration(
             provider, db, organization_id, credential_id=credential_id
@@ -104,6 +113,22 @@ class TranscriptionService:
         if integration:
             return decrypt_api_key(integration.api_key)
 
+        return None
+
+    def _get_credential_context_for_provider(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ):
+        from app.services.ai.llm_gateway import routing_context_from_ai_provider
+
+        ai_provider = self._get_ai_provider(
+            provider, db, organization_id, credential_id=credential_id
+        )
+        if ai_provider:
+            return routing_context_from_ai_provider(ai_provider)
         return None
 
     def _download_audio_to_temp(self, audio_file_key: str, db: Optional[Session] = None) -> str:
@@ -508,6 +533,9 @@ class TranscriptionService:
         api_key = self._get_api_key_for_provider(
             stt_provider, db, organization_id, credential_id=credential_id
         )
+        credential_ctx = self._get_credential_context_for_provider(
+            stt_provider, db, organization_id, credential_id=credential_id
+        )
         if not api_key and stt_provider != ModelProvider.GOOGLE:
             logger.warning(
                 f"[TranscriptionService] No API key found for {stt_provider} "
@@ -535,6 +563,7 @@ class TranscriptionService:
                 result = transcribe_google(
                     audio_file_path, stt_model, api_key, language,
                     organization_id=organization_id, db=db,
+                    credential=credential_ctx,
                 )
             elif stt_provider == ModelProvider.SARVAM:
                 result = transcribe_sarvam(audio_file_path, stt_model, api_key, language)
@@ -572,6 +601,9 @@ class TranscriptionService:
             temp_file_path = self._download_audio_to_temp(audio_file_key, db=db)
 
             api_key = self._get_api_key_for_provider(
+                stt_provider, db, organization_id, credential_id=credential_id
+            )
+            credential_ctx = self._get_credential_context_for_provider(
                 stt_provider, db, organization_id, credential_id=credential_id
             )
             if not api_key and stt_provider != ModelProvider.GOOGLE:
@@ -615,6 +647,7 @@ class TranscriptionService:
                 result = transcribe_google(
                     temp_file_path, stt_model, api_key, language,
                     organization_id=organization_id, db=db,
+                    credential=credential_ctx,
                 )
             elif stt_provider == ModelProvider.AZURE:
                 raise NotImplementedError("Azure Speech Services not yet implemented")

@@ -556,6 +556,8 @@ class Integration(Base):
     # A partial unique index in migration 028 enforces at most one default
     # per (org, platform) at the DB level.
     is_default = Column(Boolean, default=False, nullable=False)
+    # inherit | gateway | direct — per-credential LLM routing override
+    routing_mode = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
@@ -627,6 +629,10 @@ class AIProvider(Base):
     # marks the row resolved when no explicit credential id is selected.
     # A partial unique index in migration 028 enforces at most one default.
     is_default = Column(Boolean, default=False, nullable=False)
+    # inherit | gateway | direct — per-credential LLM routing override
+    routing_mode = Column(String(20), nullable=False, default="inherit", server_default="inherit")
+    # Bifrost custom model ID used when routing via gateway
+    gateway_model = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated

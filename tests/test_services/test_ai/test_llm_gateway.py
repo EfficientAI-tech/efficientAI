@@ -9,7 +9,10 @@ from app.config import settings
 from app.services.ai import llm_gateway as gateway_module
 from app.services.ai.llm_gateway import (
     apply_llm_gateway,
+    CredentialRoutingContext,
     LITELLM_GATEWAY_PLACEHOLDER_API_KEY,
+    resolve_effective_routing,
+    resolve_litellm_model,
     resolve_llm_gateway,
 )
 
@@ -330,3 +333,74 @@ def test_apply_gateway_routing_model_enables_gemini_proxy_routing_for_gepa_batch
 
     assert result["custom_llm_provider"] == "openai"
     assert "model" not in result
+
+
+def test_credential_direct_overrides_org_gateway():
+    _set_platform_gateway(
+        enabled=True,
+        base_url="http://bifrost.example.com/litellm",
+    )
+    org_id, db = _org_db({"enabled": True})
+    ctx = CredentialRoutingContext(routing_mode="direct")
+    config, effective = resolve_effective_routing(org_id, db, ctx)
+    assert config is None
+    assert effective == "direct"
+    assert resolve_llm_gateway(org_id, db, credential=ctx) is None
+
+
+def test_credential_gateway_overrides_org_opt_out():
+    _set_platform_gateway(
+        enabled=True,
+        base_url="http://bifrost.example.com/litellm",
+        virtual_key="platform-vk",
+    )
+    org_id, db = _org_db({"enabled": False})
+    ctx = CredentialRoutingContext(routing_mode="gateway")
+    config, effective = resolve_effective_routing(org_id, db, ctx)
+    assert config is not None
+    assert effective == "bifrost"
+    assert config.api_base == "http://bifrost.example.com/litellm"
+
+
+def test_credential_gateway_raises_when_no_base_url():
+    _set_platform_gateway(enabled=False)
+    org_id, db = _org_db({"enabled": False})
+    ctx = CredentialRoutingContext(routing_mode="gateway")
+    with pytest.raises(RuntimeError, match="no base_url"):
+        resolve_effective_routing(org_id, db, ctx)
+
+
+def test_resolve_litellm_model_uses_gateway_model_when_active():
+    ctx = CredentialRoutingContext(routing_mode="gateway", gateway_model="production-gpt4")
+    assert resolve_litellm_model(
+        workload_model_str="openai/gpt-4o",
+        gateway_active=True,
+        credential=ctx,
+    ) == "production-gpt4"
+
+
+def test_resolve_litellm_model_keeps_workload_model_when_direct():
+    ctx = CredentialRoutingContext(routing_mode="direct", gateway_model="production-gpt4")
+    assert resolve_litellm_model(
+        workload_model_str="openai/gpt-4o",
+        gateway_active=False,
+        credential=ctx,
+    ) == "openai/gpt-4o"
+
+
+def test_apply_gateway_skips_injection_for_direct_credential():
+    _set_platform_gateway(
+        enabled=True,
+        base_url="http://localhost:8080/litellm",
+        virtual_key="vk-123",
+    )
+    org_id, db = _org_db({"enabled": True})
+    ctx = CredentialRoutingContext(routing_mode="direct")
+    result = apply_llm_gateway(
+        {"model": "openai/gpt-4o-mini", "api_key": "sk-test", "messages": []},
+        organization_id=org_id,
+        db=db,
+        credential=ctx,
+    )
+    assert "api_base" not in result
+    assert result["api_key"] == "sk-test"

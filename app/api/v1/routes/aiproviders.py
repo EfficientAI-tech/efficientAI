@@ -17,6 +17,7 @@ from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
 from app.models.database import AIProvider
+from app.models.enums import CredentialRoutingMode
 from app.models.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderResponse
 )
@@ -25,33 +26,92 @@ from app.services.credentials.resolver import clear_other_defaults
 from app.services.ai.llm_gateway import (
     GATEWAY_MANAGED_KEY_SENTINEL,
     gateway_managed_credentials_enabled,
+    get_credential_effective_routing_label,
     is_gateway_managed_stored_key,
 )
 
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
 
 
-def _scrub_for_response(db: Session, instance: AIProvider) -> AIProviderResponse:
-    """Detach the row from the session before clearing ``api_key``.
-
-    The same SQLAlchemy session is reused across requests in tests; if we
-    leave the instance attached and assign ``api_key = None``, SQLAlchemy
-    treats it as a pending UPDATE and tries to flush ``api_key=NULL`` on
-    the next request — which violates the column's NOT NULL constraint.
-    """
+def _scrub_for_response(
+    db: Session,
+    instance: AIProvider,
+    organization_id: UUID,
+) -> AIProviderResponse:
+    """Detach the row from the session before clearing ``api_key``."""
     gateway_managed = is_gateway_managed_stored_key(instance.api_key)
+    effective_routing = get_credential_effective_routing_label(
+        organization_id,
+        db,
+        instance.routing_mode,
+    )
     db.expunge(instance)
     instance.api_key = None
     response = AIProviderResponse.model_validate(instance)
-    return response.model_copy(update={"gateway_managed": gateway_managed})
+    return response.model_copy(
+        update={
+            "gateway_managed": gateway_managed,
+            "effective_routing": effective_routing,
+        }
+    )
 
 
-def _encrypt_provider_api_key(api_key: Optional[str]) -> str:
+def _validate_routing_and_api_key(
+    *,
+    routing_mode: CredentialRoutingMode,
+    api_key: Optional[str],
+    gateway_model: Optional[str],
+    has_existing_key: bool = False,
+) -> None:
+    mode = routing_mode.value if hasattr(routing_mode, "value") else str(routing_mode)
+    trimmed_key = (api_key or "").strip()
+
+    if mode == CredentialRoutingMode.DIRECT.value and not trimmed_key and not has_existing_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="api_key is required when routing_mode is direct.",
+        )
+
+    if mode == CredentialRoutingMode.GATEWAY.value:
+        if gateway_managed_credentials_enabled():
+            return
+        if not trimmed_key and not has_existing_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "api_key is required when routing_mode is gateway and "
+                    "passthrough_provider_keys is enabled."
+                ),
+            )
+
+    if mode == CredentialRoutingMode.INHERIT.value:
+        if not trimmed_key and not has_existing_key and not gateway_managed_credentials_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "api_key is required. When LLM gateway-managed credentials "
+                    "are enabled (passthrough_provider_keys: false), you can "
+                    "omit the key and provider secrets will be resolved by the gateway."
+                ),
+            )
+
+
+def _encrypt_provider_api_key(
+    api_key: Optional[str],
+    *,
+    routing_mode: CredentialRoutingMode,
+) -> str:
     trimmed = (api_key or "").strip()
     if trimmed:
         return encrypt_api_key(trimmed)
-    if gateway_managed_credentials_enabled():
+
+    mode = routing_mode.value if hasattr(routing_mode, "value") else str(routing_mode)
+    if mode in (
+        CredentialRoutingMode.GATEWAY.value,
+        CredentialRoutingMode.INHERIT.value,
+    ) and gateway_managed_credentials_enabled():
         return encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL)
+
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=(
@@ -68,14 +128,14 @@ async def create_aiprovider(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """Create a new AI Provider credential row.
-
-    Multiple credentials per (org, provider) are now allowed. The first
-    row created for a given provider is auto-promoted to default;
-    subsequent rows are stored as additional keys and can be promoted via
-    ``set-default``.
-    """
+    """Create a new AI Provider credential row."""
     provider_value = aiprovider.provider.value if hasattr(aiprovider.provider, 'value') else aiprovider.provider
+
+    _validate_routing_and_api_key(
+        routing_mode=aiprovider.routing_mode,
+        api_key=aiprovider.api_key,
+        gateway_model=aiprovider.gateway_model,
+    )
 
     existing_default = db.query(AIProvider).filter(
         AIProvider.organization_id == organization_id,
@@ -86,13 +146,18 @@ async def create_aiprovider(
     requested_default = bool(aiprovider.is_default)
     will_be_default = requested_default or existing_default is None
 
-    encrypted_api_key = _encrypt_provider_api_key(aiprovider.api_key)
+    encrypted_api_key = _encrypt_provider_api_key(
+        aiprovider.api_key,
+        routing_mode=aiprovider.routing_mode,
+    )
     db_aiprovider = AIProvider(
         organization_id=organization_id,
         provider=provider_value,
         api_key=encrypted_api_key,
         name=aiprovider.name,
         is_default=will_be_default,
+        routing_mode=aiprovider.routing_mode.value,
+        gateway_model=aiprovider.gateway_model,
     )
     db.add(db_aiprovider)
     db.flush()
@@ -110,7 +175,7 @@ async def create_aiprovider(
     db.commit()
     db.refresh(db_aiprovider)
 
-    return _scrub_for_response(db, db_aiprovider)
+    return _scrub_for_response(db, db_aiprovider, organization_id)
 
 
 @router.get("", response_model=List[AIProviderResponse], operation_id="listAIProviders")
@@ -126,7 +191,10 @@ async def list_aiproviders(
         .all()
     )
 
-    return [_scrub_for_response(db, provider) for provider in aiproviders]
+    return [
+        _scrub_for_response(db, provider, organization_id)
+        for provider in aiproviders
+    ]
 
 
 @router.get("/{aiprovider_id}", response_model=AIProviderResponse)
@@ -146,7 +214,7 @@ async def get_aiprovider(
             status_code=404, detail=f"AI Provider {aiprovider_id} not found"
         )
 
-    return _scrub_for_response(db, aiprovider)
+    return _scrub_for_response(db, aiprovider, organization_id)
 
 
 @router.put("/{aiprovider_id}", response_model=AIProviderResponse, operation_id="updateAIProvider")
@@ -168,17 +236,34 @@ async def update_aiprovider(
         )
 
     update_data = aiprovider_update.model_dump(exclude_unset=True)
+    next_routing_mode = update_data.get(
+        "routing_mode",
+        CredentialRoutingMode(db_aiprovider.routing_mode),
+    )
+    next_gateway_model = update_data.get("gateway_model", db_aiprovider.gateway_model)
+    next_api_key = update_data.get("api_key")
+
+    if "routing_mode" in update_data or "api_key" in update_data or "gateway_model" in update_data:
+        _validate_routing_and_api_key(
+            routing_mode=next_routing_mode,
+            api_key=next_api_key,
+            gateway_model=next_gateway_model,
+            has_existing_key=bool(db_aiprovider.api_key),
+        )
+
     for field, value in update_data.items():
         if field == 'api_key' and value:
             encrypted_api_key = encrypt_api_key(value)
             db_aiprovider.api_key = encrypted_api_key
+        elif field == 'routing_mode' and value is not None:
+            db_aiprovider.routing_mode = value.value
         else:
             setattr(db_aiprovider, field, value)
 
     db.commit()
     db.refresh(db_aiprovider)
 
-    return _scrub_for_response(db, db_aiprovider)
+    return _scrub_for_response(db, db_aiprovider, organization_id)
 
 
 @router.post(
@@ -219,7 +304,7 @@ async def set_default_aiprovider(
     db.commit()
     db.refresh(db_aiprovider)
 
-    return _scrub_for_response(db, db_aiprovider)
+    return _scrub_for_response(db, db_aiprovider, organization_id)
 
 
 @router.delete("/{aiprovider_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteAIProvider")

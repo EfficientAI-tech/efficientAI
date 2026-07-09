@@ -76,6 +76,26 @@ On **Configurations → Integrations**, open **LLM Gateway** to configure per-or
 
 Org virtual keys and LiteLLM Proxy master keys are encrypted at rest like AI provider credentials.
 
+## Per-integration routing (AI Providers and Voice Platforms)
+
+Each **AI Provider** and **Voice Platform** credential can override org-level gateway behavior:
+
+| Routing mode | Behavior |
+|--------------|----------|
+| **Inherit org default** | Follow org/platform LLM gateway settings |
+| **Route via gateway** | Force batch/eval LiteLLM calls through the gateway, even if the org opted out |
+| **Direct API key** | Always call the provider directly, even when the org gateway is enabled |
+
+### Bifrost custom models (AI Providers)
+
+When creating or editing an AI Provider with gateway routing, you can set an optional **Gateway Model** — a Bifrost custom model ID (e.g. `production-gpt4` or `openai/gpt-4o`). When set, batch/eval workloads that use this credential send that model string to the gateway instead of the workload-selected model.
+
+Workload UIs (evaluators, voice bundles, call import) continue to pick provider + model + credential as before. The selected credential controls routing and optional gateway model override.
+
+### Voice platform limitations
+
+Voice platform integrations store routing preferences for consistency, but **real-time voice agents always use direct API keys**. Retell, Vapi, and native STT/TTS SDK paths are not routed through the LLM gateway today.
+
 ## Provider compatibility
 
 Only providers supported by **both** LiteLLM and your gateway deployment work through the proxy. EfficientAI's LiteLLM integration covers OpenAI, Anthropic, Google/Gemini, Azure, AWS Bedrock, DeepSeek, Groq, xAI, and Fireworks.

@@ -7,7 +7,7 @@ from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
-    IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
+    IntegrationPlatform, ModelProvider, CredentialRoutingMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
@@ -555,6 +555,10 @@ class IntegrationCreate(BaseModel):
     api_key: str = Field(..., description="Private API key for the platform")
     public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
+    routing_mode: CredentialRoutingMode = Field(
+        CredentialRoutingMode.INHERIT,
+        description="LLM routing preference: inherit org default, force gateway, or direct API key.",
+    )
     is_default: Optional[bool] = Field(
         None,
         description=(
@@ -570,6 +574,7 @@ class IntegrationUpdate(BaseModel):
     api_key: Optional[str] = None
     public_key: Optional[str] = None
     is_active: Optional[bool] = None
+    routing_mode: Optional[CredentialRoutingMode] = None
 
 
 class IntegrationResponse(BaseModel):
@@ -581,6 +586,8 @@ class IntegrationResponse(BaseModel):
     public_key: Optional[str] = None
     is_active: bool
     is_default: bool = False
+    routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
+    effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime] = None
@@ -603,6 +610,18 @@ class IntegrationResponse(BaseModel):
                     if enum_member.name == v or enum_member.value == v:
                         return enum_member
                 raise ValueError(f"Invalid IntegrationPlatform value: {v}")
+        return v
+
+    @field_validator('routing_mode', mode='before')
+    @classmethod
+    def convert_routing_mode(cls, v):
+        if v is None:
+            return CredentialRoutingMode.INHERIT
+        if isinstance(v, str):
+            try:
+                return CredentialRoutingMode(v.lower())
+            except ValueError:
+                return CredentialRoutingMode.INHERIT
         return v
 
     model_config = ConfigDict(from_attributes=True)
@@ -672,11 +691,21 @@ class AIProviderCreate(BaseModel):
     api_key: Optional[str] = Field(
         None,
         description=(
-            "Provider API key. Optional when the platform uses Bifrost "
+            "Provider API key. Optional when routing via gateway with "
             "gateway-managed credentials (passthrough_provider_keys: false)."
         ),
     )
     name: Optional[str] = None
+    routing_mode: CredentialRoutingMode = Field(
+        CredentialRoutingMode.INHERIT,
+        description="LLM routing preference: inherit org default, force gateway, or direct API key.",
+    )
+    gateway_model: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Bifrost custom model ID sent when routing via gateway.",
+    )
     is_default: Optional[bool] = Field(
         None,
         description=(
@@ -693,12 +722,30 @@ class AIProviderCreate(BaseModel):
         trimmed = v.strip()
         return trimmed or None
 
+    @field_validator("gateway_model")
+    @classmethod
+    def validate_gateway_model(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
 
 class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
     api_key: Optional[str] = Field(None, min_length=1)
     name: Optional[str] = None
     is_active: Optional[bool] = None
+    routing_mode: Optional[CredentialRoutingMode] = None
+    gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
+
+    @field_validator("gateway_model")
+    @classmethod
+    def validate_gateway_model(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
 
 
 class AIProviderResponse(BaseModel):
@@ -709,7 +756,10 @@ class AIProviderResponse(BaseModel):
     name: Optional[str]
     is_active: bool
     is_default: bool = False
+    routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
+    gateway_model: Optional[str] = None
     gateway_managed: bool = False
+    effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]
@@ -729,6 +779,18 @@ class AIProviderResponse(BaseModel):
                     if enum_member.name == v or enum_member.value == v:
                         return enum_member
                 raise ValueError(f"Invalid ModelProvider value: {v}")
+        return v
+
+    @field_validator('routing_mode', mode='before')
+    @classmethod
+    def convert_routing_mode(cls, v):
+        if v is None:
+            return CredentialRoutingMode.INHERIT
+        if isinstance(v, str):
+            try:
+                return CredentialRoutingMode(v.lower())
+            except ValueError:
+                return CredentialRoutingMode.INHERIT
         return v
     
     model_config = ConfigDict(from_attributes=True)

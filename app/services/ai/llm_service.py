@@ -20,7 +20,13 @@ from sqlalchemy.orm import Session
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
-from app.services.ai.llm_gateway import apply_llm_gateway, resolve_litellm_api_key
+from app.services.ai.llm_gateway import (
+    apply_llm_gateway,
+    resolve_effective_routing,
+    resolve_litellm_api_key,
+    resolve_litellm_model,
+    routing_context_from_ai_provider,
+)
 
 # LiteLLM will silently drop params the target provider doesn't support
 # rather than raising an error.
@@ -250,15 +256,31 @@ class LLMService:
         ai_provider = self._get_ai_provider(
             llm_provider, db, organization_id, credential_id=credential_id
         )
+        credential_ctx = (
+            routing_context_from_ai_provider(ai_provider) if ai_provider else None
+        )
         if ai_provider:
-            api_key = resolve_litellm_api_key(organization_id, db, ai_provider)
+            api_key = resolve_litellm_api_key(
+                organization_id,
+                db,
+                ai_provider,
+                credential=credential_ctx,
+            )
         else:
             api_key = self._resolve_api_key(
                 llm_provider, db, organization_id, credential_id=credential_id
             )
 
         # --- call LiteLLM --------------------------------------------------
-        model_str = self._litellm_model_name(llm_provider, llm_model)
+        workload_model_str = self._litellm_model_name(llm_provider, llm_model)
+        _, effective_routing = resolve_effective_routing(
+            organization_id, db, credential_ctx
+        )
+        model_str = resolve_litellm_model(
+            workload_model_str=workload_model_str,
+            gateway_active=effective_routing != "direct",
+            credential=credential_ctx,
+        )
 
         call_kwargs: Dict[str, Any] = {
             "model": model_str,
@@ -302,6 +324,8 @@ class LLMService:
             call_kwargs,
             organization_id=organization_id,
             db=db,
+            model=model_str,
+            credential=credential_ctx,
         )
 
         try:

@@ -3,13 +3,14 @@ LLM gateway resolver for batch/eval LiteLLM workloads.
 
 Supports Bifrost (/litellm proxy) and self-hosted LiteLLM Proxy gateways.
 Platform defaults live in ``config.yml``; per-org overrides are stored in
-``organizations.llm_gateway_settings`` JSON.
+``organizations.llm_gateway_settings`` JSON. Per-credential overrides live on
+``aiproviders`` and ``integrations`` rows.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from app.config import settings
 
 
 GatewayType = Literal["bifrost", "litellm_proxy"]
+RoutingMode = Literal["inherit", "gateway", "direct"]
 EffectiveRouting = Literal["direct", "bifrost", "litellm_proxy"]
 
 # Backward-compatible alias used by stored AI provider credentials.
@@ -44,13 +46,63 @@ def is_gateway_managed_stored_key(encrypted_api_key: str) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class CredentialRoutingContext:
+    """Per-credential routing preferences."""
+
+    routing_mode: RoutingMode = "inherit"
+    gateway_model: Optional[str] = None
+
+
+def _normalize_routing_mode(value: Any) -> RoutingMode:
+    mode = value.value if hasattr(value, "value") else value
+    mode = str(mode or "inherit").strip().lower()
+    if mode in ("inherit", "gateway", "direct"):
+        return mode  # type: ignore[return-value]
+    return "inherit"
+
+
+def routing_context_from_ai_provider(provider: Any) -> CredentialRoutingContext:
+    """Build routing context from an ``AIProvider`` row."""
+    gateway_model = getattr(provider, "gateway_model", None)
+    if gateway_model:
+        gateway_model = str(gateway_model).strip() or None
+    return CredentialRoutingContext(
+        routing_mode=_normalize_routing_mode(getattr(provider, "routing_mode", "inherit")),
+        gateway_model=gateway_model,
+    )
+
+
+def routing_context_from_integration(integration: Any) -> CredentialRoutingContext:
+    """Build routing context from a voice-platform ``Integration`` row."""
+    return CredentialRoutingContext(
+        routing_mode=_normalize_routing_mode(getattr(integration, "routing_mode", "inherit")),
+    )
+
+
+def resolve_litellm_model(
+    *,
+    workload_model_str: str,
+    gateway_active: bool,
+    credential: Optional[CredentialRoutingContext],
+) -> str:
+    """Pick a Bifrost custom model or use the workload-built model string."""
+    if gateway_active and credential and credential.gateway_model:
+        return credential.gateway_model
+    return workload_model_str
+
+
 def resolve_litellm_api_key(
     organization_id: UUID,
     db: Session,
     ai_provider: Any,
+    *,
+    credential: Optional[CredentialRoutingContext] = None,
 ) -> Optional[str]:
     """Decrypt the org credential, or return None when the gateway supplies the key."""
     from app.core.encryption import decrypt_api_key
+
+    ctx = credential or routing_context_from_ai_provider(ai_provider)
 
     try:
         raw_key = decrypt_api_key(ai_provider.api_key)
@@ -59,16 +111,26 @@ def resolve_litellm_api_key(
             f"Failed to decrypt API key for provider {ai_provider.provider}: {exc}"
         ) from exc
 
+    gateway_config, effective = resolve_effective_routing(organization_id, db, ctx)
+
+    if effective == "direct":
+        if raw_key == GATEWAY_MANAGED_KEY_SENTINEL:
+            raise RuntimeError(
+                "AI provider is configured for gateway-managed credentials, "
+                "but routing is set to direct. Add a provider API key or "
+                "change routing mode to gateway."
+            )
+        return raw_key
+
     if raw_key != GATEWAY_MANAGED_KEY_SENTINEL:
         return raw_key
 
-    gateway = resolve_llm_gateway(organization_id, db)
-    if gateway and not gateway.passthrough_provider_keys:
+    if gateway_config and not gateway_config.passthrough_provider_keys:
         return None
 
     raise RuntimeError(
         "AI provider is configured for gateway-managed credentials, "
-        "but the LLM gateway is not active for this organization. "
+        "but the LLM gateway is not active for this credential. "
         "Enable the LLM Gateway or add a provider API key."
     )
 
@@ -179,49 +241,59 @@ def _resolve_gateway_type(org: Dict[str, Any], platform: Dict[str, Any]) -> Gate
     return "bifrost"
 
 
-def resolve_llm_gateway(
-    organization_id: UUID,
-    db: Session,
-) -> Optional[LLMGatewayConfig]:
-    """Return effective LLM gateway config, or ``None`` for direct routing."""
-    platform = _platform_config()
-    org = _get_org_raw_settings(organization_id, db)
+def _org_wants_gateway(
+    org: Dict[str, Any],
+    platform: Dict[str, Any],
+    *,
+    credential_mode: RoutingMode,
+) -> bool:
+    """Return whether org/platform settings want gateway routing for inherit mode."""
+    if credential_mode == "gateway":
+        return True
+    if credential_mode == "direct":
+        return False
 
     org_enabled = org.get("enabled")
     if org_enabled is False:
-        return None
-
+        return False
     if org_enabled is True:
-        use_gateway = True
-    elif platform["enabled"]:
-        use_gateway = True
-    else:
-        return None
+        return True
+    return bool(platform["enabled"])
 
-    if not use_gateway:
-        return None
 
+def _build_gateway_config(
+    organization_id: UUID,
+    org: Dict[str, Any],
+    platform: Dict[str, Any],
+    *,
+    credential_mode: RoutingMode,
+    strict: bool,
+) -> Optional[LLMGatewayConfig]:
+    """Resolve gateway connection details from org/platform settings."""
     gateway_type = _resolve_gateway_type(org, platform)
-
     base_url = (org.get("base_url") or platform["base_url"] or "").strip()
+
     if not base_url:
-        logger.warning(
-            "LLM gateway ({}) enabled for org {} but no base_url is configured; "
-            "falling back to direct provider routing.",
-            gateway_type,
-            organization_id,
+        message = (
+            f"LLM gateway ({gateway_type}) is required for credential routing "
+            f"mode '{credential_mode}' but no base_url is configured for org "
+            f"{organization_id}."
         )
+        if strict:
+            raise RuntimeError(message)
+        logger.warning("{} Falling back to direct provider routing.", message)
         return None
 
     try:
         api_base = _normalize_base_url(base_url, gateway_type)
     except ValueError as exc:
-        logger.warning(
-            "Invalid LLM gateway base_url for org {} ({}): {}; falling back to direct routing.",
-            organization_id,
-            gateway_type,
-            exc,
+        message = (
+            f"Invalid LLM gateway base_url for org {organization_id} "
+            f"({gateway_type}): {exc}"
         )
+        if strict:
+            raise RuntimeError(message) from exc
+        logger.warning("{} Falling back to direct provider routing.", message)
         return None
 
     virtual_key = _decrypt_org_virtual_key(org) or platform["virtual_key"]
@@ -234,6 +306,61 @@ def resolve_llm_gateway(
         master_key=master_key,
         passthrough_provider_keys=platform["passthrough_provider_keys"],
     )
+
+
+def resolve_effective_routing(
+    organization_id: UUID,
+    db: Session,
+    credential: Optional[CredentialRoutingContext] = None,
+) -> Tuple[Optional[LLMGatewayConfig], EffectiveRouting]:
+    """Merge org/platform gateway config with per-credential override."""
+    platform = _platform_config()
+    org = _get_org_raw_settings(organization_id, db)
+    credential_mode = credential.routing_mode if credential else "inherit"
+
+    if credential_mode == "direct":
+        return None, "direct"
+
+    use_gateway = _org_wants_gateway(org, platform, credential_mode=credential_mode)
+    if not use_gateway:
+        return None, "direct"
+
+    strict = credential_mode == "gateway"
+    config = _build_gateway_config(
+        organization_id,
+        org,
+        platform,
+        credential_mode=credential_mode,
+        strict=strict,
+    )
+    if config is None:
+        return None, "direct"
+
+    return config, config.gateway_type
+
+
+def resolve_llm_gateway(
+    organization_id: UUID,
+    db: Session,
+    *,
+    credential: Optional[CredentialRoutingContext] = None,
+) -> Optional[LLMGatewayConfig]:
+    """Return effective LLM gateway config, or ``None`` for direct routing."""
+    config, effective = resolve_effective_routing(organization_id, db, credential)
+    if effective == "direct":
+        return None
+    return config
+
+
+def get_credential_effective_routing_label(
+    organization_id: UUID,
+    db: Session,
+    routing_mode: Any,
+) -> EffectiveRouting:
+    """Resolved routing label for API responses."""
+    ctx = CredentialRoutingContext(routing_mode=_normalize_routing_mode(routing_mode))
+    _, effective = resolve_effective_routing(organization_id, db, ctx)
+    return effective
 
 
 # Providers whose LiteLLM handlers build native API paths (e.g. Gemini
@@ -328,6 +455,7 @@ def apply_llm_gateway(
     organization_id: UUID,
     db: Session,
     model: Optional[str] = None,
+    credential: Optional[CredentialRoutingContext] = None,
 ) -> Dict[str, Any]:
     """Merge gateway proxy settings into LiteLLM ``completion`` kwargs.
 
@@ -335,7 +463,7 @@ def apply_llm_gateway(
     ``DefaultAdapter``) so native-path routing still applies without putting
     ``model`` in the returned kwargs.
     """
-    config = resolve_llm_gateway(organization_id, db)
+    config = resolve_llm_gateway(organization_id, db, credential=credential)
     if config is None:
         return call_kwargs
 
@@ -348,10 +476,16 @@ def litellm_completion(
     *,
     organization_id: UUID,
     db: Session,
+    credential: Optional[CredentialRoutingContext] = None,
     **kwargs: Any,
 ):
     """Call ``litellm.completion`` with LLM gateway settings applied."""
     import litellm
 
-    kwargs = apply_llm_gateway(kwargs, organization_id=organization_id, db=db)
+    kwargs = apply_llm_gateway(
+        kwargs,
+        organization_id=organization_id,
+        db=db,
+        credential=credential,
+    )
     return litellm.completion(**kwargs)

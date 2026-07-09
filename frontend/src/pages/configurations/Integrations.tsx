@@ -4,7 +4,7 @@ import type { TelephonyIntegrationResponse } from '../../lib/api'
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star, Network } from 'lucide-react'
-import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
+import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider, CredentialRoutingMode } from '../../types/api'
 import type {
   LLMGatewayMode,
   LLMGatewaySettings,
@@ -55,6 +55,8 @@ export default function Integrations() {
   const [apiKey, setApiKey] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [name, setName] = useState('')
+  const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('inherit')
+  const [gatewayModel, setGatewayModel] = useState('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDeleteAIProviderModal, setShowDeleteAIProviderModal] = useState(false)
   const [showDeleteTelephonyModal, setShowDeleteTelephonyModal] = useState(false)
@@ -108,6 +110,14 @@ export default function Integrations() {
     if (routing === 'bifrost') return 'Bifrost'
     if (routing === 'litellm_proxy') return 'LiteLLM Proxy'
     return 'Direct'
+  }
+
+  const credentialRoutingLabel = (routing?: string) => {
+    if (routing === 'bifrost') return 'Bifrost'
+    if (routing === 'litellm_proxy') return 'LiteLLM Proxy'
+    if (routing === 'gateway') return 'Gateway'
+    if (routing === 'direct') return 'Direct'
+    return 'Inherit'
   }
 
   const renderModal = (content: ReactNode) => {
@@ -309,6 +319,7 @@ export default function Integrations() {
     setShowModal(false); setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
     setApiKey(''); setPublicKey(''); setName('')
+    setCredentialRoutingMode('inherit'); setGatewayModel('')
     setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonyVoiceAppId(''); setTelephonySipDomain('')
     setEditingTelephonyConfigId(null); setTelephonyName('')
   }
@@ -320,13 +331,15 @@ export default function Integrations() {
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
+    setCredentialRoutingMode(integration.routing_mode || 'inherit')
     setIsEditMode(true)
     setShowModal(true)
   }
 
   const handleEditAIProvider = (provider: AIProvider) => {
     setIntegrationType('ai_provider'); setSelectedAIProvider(provider); setSelectedProvider(provider.provider)
-    setName(provider.name || ''); setApiKey(''); setShowProviderDropdown(false); setIsEditMode(true); setShowModal(true)
+    setName(provider.name || ''); setApiKey(''); setCredentialRoutingMode(provider.routing_mode || 'inherit')
+    setGatewayModel(provider.gateway_model || ''); setShowProviderDropdown(false); setIsEditMode(true); setShowModal(true)
   }
 
   const handleEditTelephony = (config?: TelephonyIntegrationResponse) => {
@@ -349,17 +362,33 @@ export default function Integrations() {
         if (name !== (selectedIntegration.name || '')) updateData.name = name || undefined
         if (apiKey) updateData.api_key = apiKey
         if (publicKey !== (selectedIntegration.public_key || '')) updateData.public_key = publicKey || undefined
+        if (credentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')) {
+          updateData.routing_mode = credentialRoutingMode
+        }
         if (Object.keys(updateData).length > 0) updateIntegrationMutation.mutate({ id: selectedIntegration.id, data: updateData })
         else resetForm()
       } else {
         if (!selectedPlatform || !apiKey) return
-        createIntegrationMutation.mutate({ platform: selectedPlatform as IntegrationPlatform, api_key: apiKey, public_key: publicKey || undefined, name: name || undefined })
+        createIntegrationMutation.mutate({
+          platform: selectedPlatform as IntegrationPlatform,
+          api_key: apiKey,
+          public_key: publicKey || undefined,
+          name: name || undefined,
+          routing_mode: credentialRoutingMode,
+        })
       }
     } else if (integrationType === 'ai_provider') {
       if (isEditMode && selectedAIProvider) {
         const updateData: Partial<AIProviderCreate> = {}
         if (apiKey.trim()) updateData.api_key = apiKey
         if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
+        if (credentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')) {
+          updateData.routing_mode = credentialRoutingMode
+        }
+        const trimmedGatewayModel = gatewayModel.trim()
+        if (trimmedGatewayModel !== (selectedAIProvider.gateway_model || '')) {
+          updateData.gateway_model = trimmedGatewayModel || null
+        }
         if (Object.keys(updateData).length === 0) { resetForm(); return }
         updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
       } else {
@@ -367,7 +396,7 @@ export default function Integrations() {
           showToast('Please select a provider', 'error')
           return
         }
-        if (!aiIntegrationGatewayManaged && !apiKey.trim()) {
+        if (aiProviderRequiresApiKey && !apiKey.trim()) {
           showToast('Please enter an API key', 'error')
           return
         }
@@ -375,6 +404,8 @@ export default function Integrations() {
           provider: selectedProvider,
           api_key: apiKey.trim() || undefined,
           name: name || null,
+          routing_mode: credentialRoutingMode,
+          gateway_model: gatewayModel.trim() || undefined,
         })
       }
     } else if (integrationType === 'telephony_provider') {
@@ -466,6 +497,18 @@ export default function Integrations() {
     llmGatewaySettings?.gateway_managed_credentials,
   )
 
+  const showGatewayModelField =
+    integrationType === 'ai_provider' &&
+    (credentialRoutingMode === 'gateway' ||
+      (credentialRoutingMode === 'inherit' &&
+        llmGatewaySettings?.effective_routing &&
+        llmGatewaySettings.effective_routing !== 'direct'))
+
+  const aiProviderRequiresApiKey =
+    credentialRoutingMode === 'direct' ||
+    (credentialRoutingMode === 'gateway' && !aiIntegrationGatewayManaged) ||
+    (credentialRoutingMode === 'inherit' && !aiIntegrationGatewayManaged)
+
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
     return platforms.find(p => p.id === platformId)
   }
@@ -552,6 +595,16 @@ export default function Integrations() {
                                   <Star className="h-3 w-3 fill-current" /> Default
                                 </span>
                               )}
+                              {integration.routing_mode && integration.routing_mode !== 'inherit' && (
+                                <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 rounded">
+                                  {integration.routing_mode === 'gateway' ? 'Gateway' : 'Direct'}
+                                </span>
+                              )}
+                              {integration.effective_routing && integration.effective_routing !== 'direct' && (
+                                <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
+                                  {credentialRoutingLabel(integration.effective_routing)}
+                                </span>
+                              )}
                               {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                             </div>
                           </div>
@@ -628,6 +681,21 @@ export default function Integrations() {
                             {provider.gateway_managed && (
                               <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
                                 Gateway managed
+                              </span>
+                            )}
+                            {provider.routing_mode && provider.routing_mode !== 'inherit' && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 rounded">
+                                {provider.routing_mode === 'gateway' ? 'Gateway' : 'Direct'}
+                              </span>
+                            )}
+                            {provider.effective_routing && provider.effective_routing !== 'direct' && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
+                                {credentialRoutingLabel(provider.effective_routing)}
+                              </span>
+                            )}
+                            {provider.gateway_model && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-violet-100 text-violet-700 rounded truncate max-w-[180px]" title={provider.gateway_model}>
+                                {provider.gateway_model}
                               </span>
                             )}
                             {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
@@ -1007,6 +1075,21 @@ export default function Integrations() {
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="Integration name" />
                   </div>
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
+                    <select
+                      value={credentialRoutingMode}
+                      onChange={(e) => setCredentialRoutingMode(e.target.value as CredentialRoutingMode)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                    >
+                      <option value="inherit">Inherit org default</option>
+                      <option value="gateway">Route via gateway</option>
+                      <option value="direct">Direct API key</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Applies to batch LLM workloads when this credential is used. Real-time voice agents always use direct API keys.
+                    </p>
+                  </div>
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">{selectedPlatform === IntegrationPlatform.VAPI ? 'Private API Key' : 'API Key'} {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}</label>
                     <input type="password" required={!isEditMode} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
                       placeholder={isEditMode ? "Enter new API key (optional)" : `Enter ${selectedPlatform === IntegrationPlatform.VAPI ? 'private ' : ''}API key`} />
@@ -1054,34 +1137,66 @@ export default function Integrations() {
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="e.g., OpenAI Production Key" />
                   </div>
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
+                    <select
+                      value={credentialRoutingMode}
+                      onChange={(e) => setCredentialRoutingMode(e.target.value as CredentialRoutingMode)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                    >
+                      <option value="inherit">Inherit org default</option>
+                      <option value="gateway">Route via gateway</option>
+                      <option value="direct">Direct API key</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Controls whether batch/eval LLM calls use your org gateway or call the provider directly.
+                    </p>
+                  </div>
+                  {showGatewayModelField && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Model (Optional)</label>
+                      <input
+                        type="text"
+                        value={gatewayModel}
+                        onChange={(e) => setGatewayModel(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="e.g., production-gpt4 or openai/gpt-4o"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Bifrost custom model ID sent when routing via gateway. Leave blank to use the workload-selected model.
+                      </p>
+                    </div>
+                  )}
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       API Key{' '}
                       {isEditMode ? (
                         <span className="text-gray-500 font-normal">(leave empty to keep current)</span>
-                      ) : aiIntegrationGatewayManaged ? (
-                        <span className="text-gray-500 font-normal">(optional — gateway managed)</span>
-                      ) : (
+                      ) : aiProviderRequiresApiKey ? (
                         '*'
+                      ) : (
+                        <span className="text-gray-500 font-normal">(optional — gateway managed)</span>
                       )}
                     </label>
                     <input
                       type="password"
-                      required={!isEditMode && !aiIntegrationGatewayManaged}
+                      required={!isEditMode && aiProviderRequiresApiKey}
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
                       placeholder={
                         isEditMode
                           ? 'Enter new API key (optional)'
-                          : aiIntegrationGatewayManaged
-                            ? 'Leave blank to use gateway-managed credentials'
-                            : 'Enter API key'
+                          : aiProviderRequiresApiKey
+                            ? 'Enter API key'
+                            : 'Leave blank to use gateway-managed credentials'
                       }
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      {aiIntegrationGatewayManaged
-                        ? 'When blank, provider secrets are resolved by your LLM gateway. You can still override with a local key if needed.'
-                        : 'Your API key will be encrypted and stored securely'}
+                      {credentialRoutingMode === 'direct'
+                        ? 'Direct routing always requires a provider API key.'
+                        : aiIntegrationGatewayManaged
+                          ? 'When blank, provider secrets are resolved by your LLM gateway. You can still override with a local key if needed.'
+                          : 'Your API key will be encrypted and stored securely'}
                     </p>
                   </div>
                 </>

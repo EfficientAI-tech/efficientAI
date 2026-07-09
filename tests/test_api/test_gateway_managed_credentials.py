@@ -15,11 +15,13 @@ def _set_platform_gateway_passthrough(passthrough: bool):
 def _reset_gateway_settings():
     original = (
         settings.LLM_GATEWAY_ENABLED,
+        settings.LLM_GATEWAY_BASE_URL,
         settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS,
     )
     yield
     (
         settings.LLM_GATEWAY_ENABLED,
+        settings.LLM_GATEWAY_BASE_URL,
         settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS,
     ) = original
 
@@ -45,6 +47,48 @@ def test_create_aiprovider_without_key_when_gateway_managed(
     )
     assert row is not None
     assert is_gateway_managed_stored_key(row.api_key) is True
+
+
+def test_create_aiprovider_with_gateway_routing_and_custom_model(
+    authenticated_client, db_session, org_id
+):
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://bifrost.example.com/litellm"
+
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "OpenAI via Bifrost",
+            "routing_mode": "gateway",
+            "gateway_model": "production-gpt4",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["routing_mode"] == "gateway"
+    assert data["gateway_model"] == "production-gpt4"
+    assert data["gateway_managed"] is True
+    assert data["effective_routing"] == "bifrost"
+
+    row = (
+        db_session.query(AIProvider)
+        .filter(AIProvider.organization_id == org_id)
+        .first()
+    )
+    assert row.routing_mode == "gateway"
+    assert row.gateway_model == "production-gpt4"
+
+
+def test_create_aiprovider_direct_requires_api_key(authenticated_client):
+    _set_platform_gateway_passthrough(True)
+
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={"provider": "openai", "routing_mode": "direct"},
+    )
+    assert response.status_code == 400
 
 
 def test_create_aiprovider_without_key_rejected_when_passthrough_enabled(

@@ -108,6 +108,14 @@ class TelephonyProvider(str, enum.Enum):
     PLIVO = "plivo"
     EXOTEL = "exotel"
 
+
+class CredentialRoutingMode(str, enum.Enum):
+    """Per-credential LLM routing preference."""
+    INHERIT = "inherit"
+    GATEWAY = "gateway"
+    DIRECT = "direct"
+
+
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
     OPENAI = "openai"

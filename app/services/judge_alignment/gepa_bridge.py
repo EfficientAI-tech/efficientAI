@@ -28,7 +28,15 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.services.ai.llm_gateway import apply_llm_gateway, litellm_completion, resolve_litellm_api_key
+from app.services.ai.llm_gateway import (
+    apply_llm_gateway,
+    CredentialRoutingContext,
+    litellm_completion,
+    resolve_effective_routing,
+    resolve_litellm_api_key,
+    resolve_litellm_model,
+    routing_context_from_ai_provider,
+)
 from app.services.credentials import resolve_ai_provider
 
 from app.models.database import (
@@ -57,13 +65,32 @@ def _resolve_litellm_model(provider: str, model: str) -> str:
     return LLMService._litellm_model_name(provider, model)  # type: ignore[arg-type]
 
 
-def _resolve_api_key(
-    provider: str, organization_id: UUID, db: Session
-) -> Optional[str]:
+def _resolve_lm_call(
+    provider: str,
+    model: str,
+    organization_id: UUID,
+    db: Session,
+) -> tuple[str, Optional[str], Optional[CredentialRoutingContext]]:
     ai_provider = resolve_ai_provider(provider, db, organization_id)
     if not ai_provider:
         raise RuntimeError(f"No active AIProvider for {provider!r}")
-    return resolve_litellm_api_key(organization_id, db, ai_provider)
+    credential_ctx = routing_context_from_ai_provider(ai_provider)
+    workload_model_str = _resolve_litellm_model(provider, model)
+    _, effective_routing = resolve_effective_routing(
+        organization_id, db, credential_ctx
+    )
+    model_str = resolve_litellm_model(
+        workload_model_str=workload_model_str,
+        gateway_active=effective_routing != "direct",
+        credential=credential_ctx,
+    )
+    api_key = resolve_litellm_api_key(
+        organization_id,
+        db,
+        ai_provider,
+        credential=credential_ctx,
+    )
+    return model_str, api_key, credential_ctx
 
 
 def start_gepa_for_dataset(
@@ -216,8 +243,12 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
     dataset_output_field = judge_dataset.output_field if judge_dataset else None
 
     provider_value = (evaluator.llm_provider or "").lower()
-    api_key = _resolve_api_key(provider_value, run.organization_id, db)
-    lm_identifier = _resolve_litellm_model(provider_value, evaluator.llm_model)
+    lm_identifier, api_key, credential_ctx = _resolve_lm_call(
+        provider_value,
+        evaluator.llm_model,
+        run.organization_id,
+        db,
+    )
 
     gepa_optimize, DefaultAdapter = _ensure_gepa()
 
@@ -249,7 +280,7 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
                 }
                 if api_key is not None:
                     sample_kwargs["api_key"] = api_key
-                resp = litellm_completion(**sample_kwargs)
+                resp = litellm_completion(**sample_kwargs, credential=credential_ctx)
                 text = resp.choices[0].message.content if resp.choices else ""
                 parsed = _parse_judge_response(text)
             except Exception as exc:
@@ -304,6 +335,7 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
         organization_id=run.organization_id,
         db=db,
         model=lm_identifier,
+        credential=credential_ctx,
     )
 
     adapter = DefaultAdapter(
@@ -335,7 +367,7 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
         }
         if api_key is not None:
             reflection_kwargs["api_key"] = api_key
-        resp = litellm_completion(**reflection_kwargs)
+        resp = litellm_completion(**reflection_kwargs, credential=credential_ctx)
         return resp.choices[0].message.content
 
     run.status = PromptOptimizationStatus.RUNNING.value
