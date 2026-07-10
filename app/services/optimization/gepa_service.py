@@ -21,7 +21,7 @@ from app.models.database import (
 )
 from app.services.optimization.data_preparation import build_trainset
 from app.services.optimization.evaluator import build_evaluator
-from app.services.optimization.lm_resolver import resolve_api_key, resolve_lm
+from app.services.optimization.lm_resolver import resolve_lm_call
 from app.services.ai.llm_gateway import apply_llm_gateway, litellm_completion
 
 _gepa_install_attempted = False
@@ -95,8 +95,13 @@ def run_optimization(
     minibatch_size = config.get("minibatch_size", 5)
 
     seed_prompt = agent.provider_prompt or agent.description or ""
-    lm_identifier = resolve_lm(voice_bundle, evaluator)
-    api_key = resolve_api_key(lm_identifier, ai_providers, organization_id, db)
+    lm_identifier, api_key, credential_ctx = resolve_lm_call(
+        voice_bundle,
+        evaluator,
+        ai_providers,
+        organization_id,
+        db,
+    )
 
     trainset = build_trainset(training_data, metrics)
     if not trainset:
@@ -123,6 +128,7 @@ def run_optimization(
         organization_id=organization_id,
         db=db,
         model=lm_identifier,
+        credential=credential_ctx,
     )
 
     adapter = DefaultAdapter(
@@ -140,7 +146,7 @@ def run_optimization(
         }
         if api_key is not None:
             reflection_kwargs["api_key"] = api_key
-        resp = litellm_completion(**reflection_kwargs)
+        resp = litellm_completion(**reflection_kwargs, credential=credential_ctx)
         return resp.choices[0].message.content
 
     result = gepa_optimize(

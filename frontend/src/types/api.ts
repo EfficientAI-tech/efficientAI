@@ -232,6 +232,16 @@ export enum TelephonyProvider {
   EXOTEL = 'exotel',
 }
 
+export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'
+export type GatewayInterfaceMode = 'inherit' | 'litellm_shim' | 'native_openai'
+
+export type EffectiveCredentialRouting =
+  | 'inherit'
+  | 'direct'
+  | 'gateway'
+  | 'bifrost'
+  | 'litellm_proxy'
+
 export interface Integration {
   id: string
   organization_id: string
@@ -241,6 +251,8 @@ export interface Integration {
   is_active: boolean
   /** True if this row is the default credential for (org, platform). */
   is_default?: boolean
+  routing_mode?: CredentialRoutingMode
+  effective_routing?: EffectiveCredentialRouting
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -251,6 +263,7 @@ export interface IntegrationCreate {
   api_key: string
   public_key?: string
   name?: string | null
+  routing_mode?: CredentialRoutingMode
   /** Mark the new credential as the default for (org, platform). */
   is_default?: boolean
 }
@@ -288,8 +301,18 @@ export interface AIProvider {
   is_active: boolean
   /** True if this row is the default credential for (org, provider). */
   is_default?: boolean
+  routing_mode?: CredentialRoutingMode
+  gateway_model?: string | null
+  gateway_interface?: GatewayInterfaceMode
+  gateway_base_url?: string | null
+  gateway_auth_header?: string | null
+  gateway_auth_secret_env?: string | null
+  has_gateway_auth_secret?: boolean
+  gateway_extra_headers?: Record<string, string> | null
   /** True when provider secrets are resolved by the Bifrost gateway. */
   gateway_managed?: boolean
+  effective_routing?: EffectiveCredentialRouting
+  effective_gateway_interface?: 'litellm_shim' | 'native_openai'
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -299,6 +322,14 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key?: string | null
   name?: string | null
+  routing_mode?: CredentialRoutingMode
+  gateway_model?: string | null
+  gateway_interface?: GatewayInterfaceMode
+  gateway_base_url?: string | null
+  gateway_auth_header?: string | null
+  gateway_auth_secret_env?: string | null
+  gateway_auth_secret?: string | null
+  gateway_extra_headers?: Record<string, string> | null
   /** Mark the new credential as the default for (org, provider). */
   is_default?: boolean
 }
@@ -307,6 +338,15 @@ export interface AIProviderUpdate {
   api_key?: string | null
   name?: string | null
   is_active?: boolean
+  routing_mode?: CredentialRoutingMode
+  gateway_model?: string | null
+  gateway_interface?: GatewayInterfaceMode
+  gateway_base_url?: string | null
+  gateway_auth_header?: string | null
+  gateway_auth_secret_env?: string | null
+  gateway_auth_secret?: string | null
+  clear_gateway_auth_secret?: boolean
+  gateway_extra_headers?: Record<string, string> | null
 }
 
 export enum VoiceBundleType {

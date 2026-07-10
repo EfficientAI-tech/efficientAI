@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
@@ -30,6 +30,10 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
+import {
+  usesGatewayDirectModel,
+} from '../../lib/gatewayRouting'
+import type { AIProvider } from '../../types/api'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import AgentFlowChart from './components/AgentFlowChart'
 import MetricPartialEditor from './components/MetricPartialEditor'
@@ -56,13 +60,6 @@ import {
   flowchartNeedsPromptMapping,
   nodeHasValidMapping,
 } from './flowchartUtils'
-
-interface AIProvider {
-  id: string
-  provider: string
-  name: string | null
-  is_active: boolean
-}
 
 interface PromptPartial {
   id: string
@@ -128,13 +125,15 @@ const PROVIDER_LABELS: Record<string, string> = {
 }
 
 function LLMProviderSelector({
-  selectedProvider,
+  selectedCredentialId,
   selectedModel,
+  onCredentialIdChange,
   onProviderChange,
   onModelChange,
 }: {
-  selectedProvider: string
+  selectedCredentialId: string
   selectedModel: string
+  onCredentialIdChange: (credentialId: string) => void
   onProviderChange: (provider: string) => void
   onModelChange: (model: string) => void
 }) {
@@ -145,19 +144,51 @@ function LLMProviderSelector({
 
   const activeProviders = aiProviders.filter((p) => p.is_active)
 
+  const activeCredential = useMemo(
+    () =>
+      selectedCredentialId
+        ? activeProviders.find((p) => p.id === selectedCredentialId)
+        : undefined,
+    [activeProviders, selectedCredentialId],
+  )
+
+  const gatewayDirectModel = usesGatewayDirectModel(activeCredential)
+    ? activeCredential?.gateway_model?.trim()
+    : null
+
+  const resolvedProvider = activeCredential?.provider || ''
+
   const { data: modelOptions } = useQuery({
-    queryKey: ['model-options', selectedProvider],
-    queryFn: () => apiClient.getModelOptions(selectedProvider),
-    enabled: !!selectedProvider,
+    queryKey: ['model-options', resolvedProvider],
+    queryFn: () => apiClient.getModelOptions(resolvedProvider),
+    enabled: !!resolvedProvider && !gatewayDirectModel,
   })
 
   const llmModels = modelOptions?.llm || []
 
   useEffect(() => {
-    if (selectedProvider && llmModels.length > 0 && !llmModels.includes(selectedModel)) {
+    if (gatewayDirectModel) {
+      if (selectedModel) onModelChange('')
+      return
+    }
+    if (resolvedProvider && llmModels.length > 0 && !llmModels.includes(selectedModel)) {
       onModelChange(llmModels[0])
     }
-  }, [selectedProvider, llmModels, selectedModel, onModelChange])
+  }, [resolvedProvider, llmModels, selectedModel, onModelChange, gatewayDirectModel])
+
+  const handleCredentialChange = (nextId: string) => {
+    if (!nextId) {
+      onCredentialIdChange('')
+      onProviderChange('')
+      onModelChange('')
+      return
+    }
+    const row = activeProviders.find((p) => p.id === nextId)
+    if (!row) return
+    onCredentialIdChange(row.id)
+    onProviderChange(row.provider)
+    onModelChange('')
+  }
 
   return (
     <div className="flex gap-3">
@@ -167,18 +198,16 @@ function LLMProviderSelector({
           LLM Provider
         </label>
         <select
-          value={selectedProvider}
-          onChange={(e) => {
-            onProviderChange(e.target.value)
-            onModelChange('')
-          }}
+          value={selectedCredentialId}
+          onChange={(e) => handleCredentialChange(e.target.value)}
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
         >
           <option value="">Auto-detect (use first available)</option>
           {activeProviders.map((p) => (
-            <option key={p.id} value={p.provider}>
+            <option key={p.id} value={p.id}>
               {PROVIDER_LABELS[p.provider] || p.provider}
               {p.name ? ` — ${p.name}` : ''}
+              {p.is_default ? ' (default)' : ''}
             </option>
           ))}
         </select>
@@ -189,25 +218,42 @@ function LLMProviderSelector({
         )}
       </div>
       <div className="flex-1">
-        <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-        <select
-          value={selectedModel}
-          onChange={(e) => onModelChange(e.target.value)}
-          disabled={!selectedProvider}
-          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-        >
-          {!selectedProvider ? (
-            <option value="">Select a provider first</option>
-          ) : llmModels.length === 0 ? (
-            <option value="">Loading models...</option>
-          ) : (
-            llmModels.map((m: string) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))
-          )}
-        </select>
+        {gatewayDirectModel ? (
+          <>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Gateway model</label>
+            <div
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+              title={gatewayDirectModel}
+            >
+              {gatewayDirectModel}
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              Model is fixed on the integration — Bifrost gateway routing applies.
+            </p>
+          </>
+        ) : (
+          <>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
+            <select
+              value={selectedModel}
+              onChange={(e) => onModelChange(e.target.value)}
+              disabled={!resolvedProvider}
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+            >
+              {!resolvedProvider ? (
+                <option value="">Select a provider first</option>
+              ) : llmModels.length === 0 ? (
+                <option value="">Loading models...</option>
+              ) : (
+                llmModels.map((m: string) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))
+              )}
+            </select>
+          </>
+        )}
       </div>
     </div>
   )
@@ -233,6 +279,7 @@ export default function PromptPartials() {
   const [compareVersion, setCompareVersion] = useState<PromptPartialVersion | null>(null)
   const [showAIGenerateModal, setShowAIGenerateModal] = useState(false)
   const [pickerProvider, setPickerProvider] = useState('')
+  const [pickerCredentialId, setPickerCredentialId] = useState('')
   const [pickerModel, setPickerModel] = useState('')
   const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
@@ -303,6 +350,7 @@ export default function PromptPartials() {
         regenerate,
         provider: pickerProvider || undefined,
         model: pickerModel || undefined,
+        credential_id: pickerCredentialId || undefined,
       }),
     onSuccess: () => {
       setFlowchartError(null)
@@ -333,6 +381,7 @@ export default function PromptPartials() {
     }
     if (llmPickerTouched) return
     setPickerProvider('')
+    setPickerCredentialId('')
     setPickerModel('')
   }, [partialDetail?.agent_flowchart, llmPickerTouched])
 
@@ -371,6 +420,7 @@ export default function PromptPartials() {
       apiClient.mapAgentFlowchartPromptSections(selectedPartial!.id, {
         provider: pickerProvider || undefined,
         model: pickerModel || undefined,
+        credential_id: pickerCredentialId || undefined,
       }),
     onSuccess: () => {
       setNodeMapError(null)
@@ -872,10 +922,15 @@ export default function PromptPartials() {
                         </div>
                         <AIProviderModelPicker
                           provider={pickerProvider}
+                          credentialId={pickerCredentialId}
                           model={pickerModel}
                           onProviderChange={(next) => {
                             setLlmPickerTouched(true)
                             setPickerProvider(next)
+                          }}
+                          onCredentialIdChange={(next) => {
+                            setLlmPickerTouched(true)
+                            setPickerCredentialId(next)
                           }}
                           onModelChange={(next) => {
                             setLlmPickerTouched(true)
@@ -1274,10 +1329,11 @@ function PromptPartialModal({
   const [showImprovePanel, setShowImprovePanel] = useState(false)
   const [improveInstructions, setImproveInstructions] = useState('')
   const [improveProvider, setImproveProvider] = useState('')
+  const [improveCredentialId, setImproveCredentialId] = useState('')
   const [improveModel, setImproveModel] = useState('')
 
   const improveMutation = useMutation({
-    mutationFn: (data: { content: string; instructions?: string; provider?: string; model?: string }) =>
+    mutationFn: (data: { content: string; instructions?: string; provider?: string; model?: string; credential_id?: string }) =>
       apiClient.improvePromptWithAI(data),
     onSuccess: (data) => {
       setContent(data.content)
@@ -1552,8 +1608,9 @@ function PromptPartialModal({
                 </p>
                 <div className="mb-3">
                   <LLMProviderSelector
-                    selectedProvider={improveProvider}
+                    selectedCredentialId={improveCredentialId}
                     selectedModel={improveModel}
+                    onCredentialIdChange={setImproveCredentialId}
                     onProviderChange={setImproveProvider}
                     onModelChange={setImproveModel}
                   />
@@ -1578,6 +1635,7 @@ function PromptPartialModal({
                         content,
                         instructions: improveInstructions || undefined,
                         ...(improveProvider ? { provider: improveProvider } : {}),
+                        ...(improveCredentialId ? { credential_id: improveCredentialId } : {}),
                         ...(improveModel ? { model: improveModel } : {}),
                       })
                     }
@@ -1664,6 +1722,7 @@ function AIGenerateModal({
   const [aiTone, setAiTone] = useState('professional')
   const [aiFormat, setAiFormat] = useState('structured')
   const [aiProvider, setAiProvider] = useState('')
+  const [aiCredentialId, setAiCredentialId] = useState('')
   const [aiModel, setAiModel] = useState('')
   const [generatedContent, setGeneratedContent] = useState('')
   const [promptName, setPromptName] = useState('')
@@ -1673,7 +1732,14 @@ function AIGenerateModal({
   const [error, setError] = useState('')
 
   const generateMutation = useMutation({
-    mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
+    mutationFn: (data: {
+      description: string
+      tone?: string
+      format_style?: string
+      provider?: string
+      model?: string
+      credential_id?: string
+    }) =>
       apiClient.generatePromptWithAI(data),
     onSuccess: (data) => {
       setGeneratedContent(data.content)
@@ -1705,6 +1771,7 @@ function AIGenerateModal({
       tone: aiTone,
       format_style: aiFormat,
       ...(aiProvider ? { provider: aiProvider } : {}),
+      ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
       ...(aiModel ? { model: aiModel } : {}),
     })
   }
@@ -1800,8 +1867,9 @@ function AIGenerateModal({
 
               {/* LLM Provider / Model selector */}
               <LLMProviderSelector
-                selectedProvider={aiProvider}
+                selectedCredentialId={aiCredentialId}
                 selectedModel={aiModel}
+                onCredentialIdChange={setAiCredentialId}
                 onProviderChange={setAiProvider}
                 onModelChange={setAiModel}
               />
@@ -1983,6 +2051,7 @@ function MetricPartialModal({
     Array<{ transcript: string; rating: string; notes: string }>
   >([{ transcript: '', rating: '', notes: '' }])
   const [aiProvider, setAIProvider] = useState('')
+  const [aiCredentialId, setAICredentialId] = useState('')
   const [aiModel, setAIModel] = useState('')
   const [aiLlmConfig, setAILlmConfig] = useState<LLMGenerationConfig | null>(null)
 
@@ -2076,6 +2145,7 @@ function MetricPartialModal({
     setError('')
     const llmExtras = {
       ...(aiProvider ? { provider: aiProvider } : {}),
+      ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
       ...(aiModel ? { model: aiModel } : {}),
       ...(aiLlmConfig ? { llm_config: aiLlmConfig } : {}),
     }
@@ -2333,8 +2403,10 @@ function MetricPartialModal({
                   )}
                   <AIProviderModelPicker
                     provider={aiProvider}
+                    credentialId={aiCredentialId}
                     model={aiModel}
                     onProviderChange={setAIProvider}
+                    onCredentialIdChange={setAICredentialId}
                     onModelChange={setAIModel}
                     onLLMConfigChange={setAILlmConfig}
                     llm_config={aiLlmConfig}

@@ -23,14 +23,18 @@
  * can implement an "Auto" / "Use run default" affordance by clearing
  * both fields.
  */
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Bot, AudioLines } from 'lucide-react'
 
 import { apiClient } from '../../lib/api'
-import type { Integration } from '../../types/api'
+import type { AIProvider, Integration } from '../../types/api'
 import LLMAdvancedOptionsPanel from './LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import {
+  resolveActiveAIProvider,
+  usesGatewayDirectModel,
+} from '../../lib/gatewayRouting'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -57,14 +61,6 @@ export interface ProviderModelValue {
   model: string | null
   credential_id?: string | null
   llm_config?: LLMGenerationConfig | null
-}
-
-interface AIProviderRow {
-  id: string
-  provider: string
-  is_active: boolean
-  is_default?: boolean
-  name?: string | null
 }
 
 /** Origin of a credential row, used for de-duplication + tooltip copy. */
@@ -154,9 +150,9 @@ export default function ProviderModelPicker({
   audioCapableOnly = false,
   showAdvancedOptions = true,
 }: ProviderModelPickerProps) {
-  const { data: aiProviders = [] } = useQuery<AIProviderRow[]>({
+  const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
-    queryFn: () => apiClient.listAIProviders() as Promise<AIProviderRow[]>,
+    queryFn: () => apiClient.listAIProviders(),
   })
   // STT credentials (Deepgram, Sarvam, Smallest, ElevenLabs, …) are
   // typically stored in the Integration table when the user adds them
@@ -226,10 +222,24 @@ export default function ProviderModelPicker({
     new Set(eligibleProviders.map((p) => p.provider)),
   )
 
+  const activeCredential = useMemo(() => {
+    if (kind !== 'llm' || !value.provider) return undefined
+    return resolveActiveAIProvider(
+      aiProviders,
+      value.provider,
+      value.credential_id,
+    )
+  }, [aiProviders, kind, value.provider, value.credential_id])
+
+  const gatewayDirectModel =
+    kind === 'llm' && usesGatewayDirectModel(activeCredential)
+      ? activeCredential?.gateway_model?.trim()
+      : null
+
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', value.provider],
     queryFn: () => apiClient.getModelOptions(value.provider as string),
-    enabled: !!value.provider,
+    enabled: !!value.provider && !gatewayDirectModel,
   })
 
   const rawModels =
@@ -246,11 +256,15 @@ export default function ProviderModelPicker({
   // empty-model state after the user picks a provider.
   useEffect(() => {
     if (!value.provider) return
+    if (gatewayDirectModel) {
+      if (value.model) onChange({ ...value, model: null })
+      return
+    }
     if (!models.length) return
     if (value.model && models.includes(value.model)) return
     onChange({ ...value, model: models[0] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value.provider, models])
+  }, [value.provider, models, gatewayDirectModel])
 
   // When the audio-capable toggle flips ON after the user has already
   // picked a non-audio provider/model (e.g. Anthropic + Claude), clear
@@ -310,44 +324,63 @@ export default function ProviderModelPicker({
           )}
         </div>
         <div className="flex-1">
-          <label className="block text-xs font-medium text-gray-600 mb-1">
-            Model
-          </label>
-          <select
-            value={value.model ?? ''}
-            disabled={disabled || !value.provider}
-            onChange={(e) =>
-              onChange({ ...value, model: e.target.value || null })
-            }
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-          >
-            {!value.provider ? (
-              <option value="">Pick a provider first</option>
-            ) : models.length === 0 ? (
-              <option value="">
-                {audioCapableOnly && kind === 'llm' && rawModels.length > 0
-                  ? 'No audio-capable models for this provider'
-                  : 'Loading models...'}
-              </option>
-            ) : (
-              models.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))
-            )}
-          </select>
-          {audioCapableOnly &&
-            kind === 'llm' &&
-            value.provider &&
-            rawModels.length > 0 &&
-            models.length === 0 && (
-              <p className="mt-1 text-xs text-amber-600">
-                This provider has no audio-capable Chat Completions
-                models. Use OpenAI's gpt-4o-audio-preview /
-                gpt-4o-mini-audio-preview, or a Google Gemini 1.5+ model.
+          {gatewayDirectModel ? (
+            <>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Gateway model
+              </label>
+              <div
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                title={gatewayDirectModel}
+              >
+                {gatewayDirectModel}
+              </div>
+              <p className="mt-1 text-xs text-gray-500">
+                Model is fixed on the integration — Bifrost gateway routing applies.
               </p>
-            )}
+            </>
+          ) : (
+            <>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Model
+              </label>
+              <select
+                value={value.model ?? ''}
+                disabled={disabled || !value.provider}
+                onChange={(e) =>
+                  onChange({ ...value, model: e.target.value || null })
+                }
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+              >
+                {!value.provider ? (
+                  <option value="">Pick a provider first</option>
+                ) : models.length === 0 ? (
+                  <option value="">
+                    {audioCapableOnly && kind === 'llm' && rawModels.length > 0
+                      ? 'No audio-capable models for this provider'
+                      : 'Loading models...'}
+                  </option>
+                ) : (
+                  models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))
+                )}
+              </select>
+              {audioCapableOnly &&
+                kind === 'llm' &&
+                value.provider &&
+                rawModels.length > 0 &&
+                models.length === 0 && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    This provider has no audio-capable Chat Completions
+                    models. Use OpenAI's gpt-4o-audio-preview /
+                    gpt-4o-mini-audio-preview, or a Google Gemini 1.5+ model.
+                  </p>
+                )}
+            </>
+          )}
         </div>
       </div>
       {showCredentialPicker && (
@@ -377,7 +410,7 @@ export default function ProviderModelPicker({
           </select>
         </div>
       )}
-      {kind === 'llm' && showAdvancedOptions && value.provider && (
+      {kind === 'llm' && showAdvancedOptions && value.provider && !gatewayDirectModel && (
         <LLMAdvancedOptionsPanel
           provider={value.provider}
           value={value.llm_config ?? null}

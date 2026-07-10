@@ -14,6 +14,7 @@ Supported gateway types:
 |------|-------------|
 | **Direct** | Default — LiteLLM calls providers using org AI Provider credentials |
 | **Bifrost** | [Bifrost](https://docs.getbifrost.ai/) `/litellm` proxy with optional `x-bf-vk` virtual key |
+| **Bifrost (native)** | Bifrost root OpenAI-compatible API (`/v1/chat/completions`) without the `/litellm` shim |
 | **LiteLLM Proxy** | Self-hosted [LiteLLM Proxy](https://docs.litellm.ai/docs/proxy/quick_start) with optional master key |
 
 ## What is routed through the gateway
@@ -39,16 +40,18 @@ llm_gateway:
   virtual_key: null          # Bifrost only (x-bf-vk header)
   master_key: null           # LiteLLM Proxy only (LITELLM_MASTER_KEY)
   passthrough_provider_keys: false
+  gateway_interface: litellm_shim   # litellm_shim | native_openai (Bifrost only)
 ```
 
 | Setting | Description |
 |---------|-------------|
 | `enabled` | Platform-wide toggle for orgs that inherit the default |
 | `type` | Gateway implementation: `bifrost` or `litellm_proxy` |
-| `base_url` | Gateway endpoint (Bifrost: must end with `/litellm`; LiteLLM Proxy: e.g. `http://localhost:4000`) |
+| `base_url` | Gateway endpoint (Bifrost shim: include `/litellm`; native: host root e.g. `http://localhost:8080` — EfficientAI appends `/v1` for LiteLLM; LiteLLM Proxy: e.g. `http://localhost:4000`) |
 | `virtual_key` | Optional Bifrost `x-bf-vk` header |
 | `master_key` | Optional LiteLLM Proxy master key |
 | `passthrough_provider_keys` | When `true`, org AI provider API keys are still sent through the gateway |
+| `gateway_interface` | Bifrost API surface: `litellm_shim` (default) or `native_openai` for custom models that fail through `/litellm` |
 
 When routing through a gateway, Gemini models automatically use OpenAI-compatible proxy endpoints (`/v1/chat/completions`) instead of native Gemini `:generateContent` URLs. This is required for Bifrost and LiteLLM Proxy compatibility.
 
@@ -76,6 +79,58 @@ On **Configurations → Integrations**, open **LLM Gateway** to configure per-or
 
 Org virtual keys and LiteLLM Proxy master keys are encrypted at rest like AI provider credentials.
 
+## Per-integration routing (AI Providers and Voice Platforms)
+
+Each **AI Provider** and **Voice Platform** credential can override org-level gateway behavior:
+
+| Routing mode | Behavior |
+|--------------|----------|
+| **Inherit org default** | Follow org/platform LLM gateway settings |
+| **Route via gateway** | Force batch/eval LiteLLM calls through the gateway, even if the org opted out |
+| **Direct API key** | Always call the provider directly, even when the org gateway is enabled |
+
+### Bifrost custom models (AI Providers)
+
+When creating or editing an AI Provider with gateway routing, you can set an optional **Gateway Model** — a Bifrost custom model ID (e.g. `production-gpt4` or `openai/gpt-4o`). When set, batch/eval workloads that use this credential send that model string to the gateway instead of the workload-selected model.
+
+You can also override **Bifrost API surface** per credential:
+
+| Interface | `api_base` | Use case |
+|-----------|------------|----------|
+| **LiteLLM shim** (default) | `http://bifrost:8080/litellm` | Standard models through Bifrost's LiteLLM integration |
+| **Native OpenAI-compatible** | `http://bifrost:8080` (no `/litellm`) | Custom models (e.g. Gemma on customer cloud) that only work on Bifrost's native API |
+
+Optional **Gateway Base URL** on the credential overrides the org/platform URL for that integration only.
+
+### Per-credential gateway auth (no org virtual key required)
+
+Each AI Provider can override Bifrost authentication independently of org LLM Gateway settings:
+
+| Field | Maps to | Description |
+|-------|---------|-------------|
+| **Gateway Model** | `model` | Bifrost model ID, e.g. `inhouse-llm-server-v2//models/gemma-4-31B-it-AWQ-4bit` |
+| **Gateway Base URL** | `endpoint` | Per-credential Bifrost host, e.g. `http://localhost:8080` |
+| **Gateway Auth Header** | `authHeaderName` | Header name (default `x-bf-vk`; also supports `Authorization`, `x-api-key`, etc.) |
+| **Gateway Auth Secret Env Var** | `authSecretName` | Runtime env var holding the virtual key, e.g. `BIFROST_PRD_VK_GEMMA_4_31B` |
+| **Gateway Auth Secret** | inline secret | Alternative to env var — encrypted at rest in the DB |
+| **Gateway Extra Headers** | arbitrary headers | JSON object of additional HTTP headers, e.g. `{"X-Custom-Tenant": "prod"}` |
+
+Auth secret resolution order: credential env var → credential inline secret → org virtual key → platform virtual key. Configured auth header wins over the same key in **Gateway Extra Headers**.
+
+**Example — custom Gemma credential via Bifrost (no org VK configured):**
+
+1. AI Provider: `routing_mode=gateway`, `gateway_interface=native_openai`
+2. Gateway Model: `inhouse-llm-server-v2//models/gemma-4-31B-it-AWQ-4bit`
+3. Gateway Base URL: `http://localhost:8080`
+4. Gateway Auth Header: `x-bf-vk`
+5. Gateway Auth Secret Env Var: `BIFROST_PRD_VK_GEMMA_4_31B` (mounted in the EfficientAI deployment)
+
+Workload UIs (evaluators, voice bundles, call import) continue to pick provider + model + credential as before. The selected credential controls routing, API surface, URL override, auth header/secret, and optional gateway model override.
+
+### Voice platform limitations
+
+Voice platform integrations store routing preferences for consistency, but **real-time voice agents always use direct API keys**. Retell, Vapi, and native STT/TTS SDK paths are not routed through the LLM gateway today.
+
 ## Provider compatibility
 
 Only providers supported by **both** LiteLLM and your gateway deployment work through the proxy. EfficientAI's LiteLLM integration covers OpenAI, Anthropic, Google/Gemini, Azure, AWS Bedrock, DeepSeek, Groq, xAI, and Fireworks.
@@ -87,13 +142,24 @@ Only providers supported by **both** LiteLLM and your gateway deployment work th
 
 ## Example call shapes
 
-**Bifrost:**
+**Bifrost (LiteLLM shim):**
 
 ```python
 litellm.completion(
     model="openai/gpt-4o-mini",
     messages=[{"role": "user", "content": "Hello!"}],
     api_base="http://localhost:8080/litellm",
+    extra_headers={"x-bf-vk": "your-virtual-key"},
+)
+```
+
+**Bifrost (native OpenAI-compatible):**
+
+```python
+litellm.completion(
+    model="custom-gemma-model",
+    messages=[{"role": "user", "content": "Hello!"}],
+    api_base="http://localhost:8080",
     extra_headers={"x-bf-vk": "your-virtual-key"},
 )
 ```

@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.models.enums import CredentialRoutingMode
 from app.config import settings
 from app.core.encryption import encrypt_api_key
 from app.services.ai.llm_gateway import (
@@ -70,14 +71,42 @@ def test_resolve_litellm_api_key_returns_none_for_gateway_managed_credential():
     assert resolve_litellm_api_key(org_id, db, provider) is None
 
 
-def test_encrypt_provider_api_key_uses_sentinel_when_missing_and_gateway_managed():
-    _sync_gateway_settings(passthrough=False)
-    encrypted = aiproviders_routes._encrypt_provider_api_key(None)
+def test_encrypt_provider_api_key_uses_sentinel_when_missing_for_gateway_mode():
+    _sync_gateway_settings(passthrough=True)
+    encrypted = aiproviders_routes._encrypt_provider_api_key(
+        None,
+        routing_mode=CredentialRoutingMode.GATEWAY,
+    )
     assert is_gateway_managed_stored_key(encrypted) is True
 
 
-def test_encrypt_provider_api_key_requires_value_when_passthrough_enabled():
+def test_encrypt_provider_api_key_requires_value_for_direct_mode():
     _sync_gateway_settings(passthrough=True)
     with pytest.raises(HTTPException) as exc:
-        aiproviders_routes._encrypt_provider_api_key(None)
+        aiproviders_routes._encrypt_provider_api_key(
+            None,
+            routing_mode=CredentialRoutingMode.DIRECT,
+        )
     assert exc.value.status_code == 400
+
+
+def test_resolve_litellm_api_key_returns_none_for_gateway_credential_with_passthrough_enabled():
+    _sync_gateway_settings(
+        enabled=True,
+        base_url="http://localhost:8080",
+        passthrough=True,
+    )
+
+    org_id = uuid4()
+    provider = SimpleNamespace(
+        provider="openai",
+        api_key=encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL),
+        routing_mode="gateway",
+    )
+    db = SimpleNamespace(
+        query=lambda *_args, **_kwargs: SimpleNamespace(
+            filter=lambda *_a, **_k: SimpleNamespace(first=lambda: SimpleNamespace(llm_gateway_settings={}))
+        )
+    )
+
+    assert resolve_litellm_api_key(org_id, db, provider) is None

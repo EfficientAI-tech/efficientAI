@@ -175,6 +175,7 @@ judge_alignment:
 #   virtual_key: null          # Bifrost only (x-bf-vk header)
 #   master_key: null           # LiteLLM Proxy only (LITELLM_MASTER_KEY)
 #   passthrough_provider_keys: true   # false = keys in gateway; AI integrations can omit api_key
+#   gateway_interface: litellm_shim   # litellm_shim | native_openai (Bifrost only)
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization,

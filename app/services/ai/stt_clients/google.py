@@ -91,6 +91,7 @@ def transcribe_google(
     *,
     organization_id: Optional["UUID"] = None,
     db: Optional[Any] = None,
+    credential: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Transcribe an audio file via Gemini through LiteLLM.
 
@@ -140,6 +141,7 @@ def transcribe_google(
                 call_kwargs,
                 organization_id=organization_id,
                 db=db,
+                credential=credential,
             )
         response = litellm.completion(**call_kwargs)
     except Exception as e:
