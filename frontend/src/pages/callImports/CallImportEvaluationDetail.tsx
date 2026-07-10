@@ -84,6 +84,7 @@ import Pagination from '../../components/Pagination'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
+import { getActiveWorkspaceId, useWorkspaceStore } from '../../store/workspaceStore'
 import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
@@ -352,6 +353,7 @@ export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { showToast, ToastContainer } = useToast()
   const [searchParams] = useSearchParams()
   const deepLinkConversationId =
@@ -704,7 +706,7 @@ export default function CallImportEvaluationDetail() {
     !!discoveredFilter
 
   const callImportQuery = useQuery({
-    queryKey: ['call-import', id],
+    queryKey: ['call-import', activeWorkspaceId, id],
     queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
     // Poll while diarisation is in flight so the per-run "Diarising
@@ -725,7 +727,7 @@ export default function CallImportEvaluationDetail() {
   })
 
   const evaluationQuery = useQuery({
-    queryKey: ['call-import-evaluation', id, evalId],
+    queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
     queryFn: () => apiClient.getCallImportEvaluation(id!, evalId!),
     enabled: !!id && !!evalId,
     refetchInterval: (q) => {
@@ -737,6 +739,7 @@ export default function CallImportEvaluationDetail() {
   const rowsQuery = useQuery({
     queryKey: [
       'call-import-evaluation-rows',
+      activeWorkspaceId,
       id,
       evalId,
       page,
@@ -801,7 +804,7 @@ export default function CallImportEvaluationDetail() {
   ])
 
   const pendingRowsQuery = useQuery({
-    queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
+    queryKey: ['call-import-evaluation-pending-rows-count', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.listCallImportEvaluationRows(id!, evalId!, {
         page: 1,
@@ -821,6 +824,7 @@ export default function CallImportEvaluationDetail() {
   const aggregateQuery = useQuery({
     queryKey: [
       'call-import-evaluation-aggregate',
+      activeWorkspaceId,
       id,
       evalId,
       vizBaselineEvaluationId,
@@ -842,7 +846,7 @@ export default function CallImportEvaluationDetail() {
   })
 
   const visualizationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
-    queryKey: ['call-import-evaluation-insights', id, evalId],
+    queryKey: ['call-import-evaluation-insights', activeWorkspaceId, id, evalId],
     queryFn: () => apiClient.getCallImportEvaluationInsights(id!, evalId!),
     enabled: !!id && !!evalId && resultsTab === 'visualizations',
     refetchOnWindowFocus: false,
@@ -850,7 +854,7 @@ export default function CallImportEvaluationDetail() {
   })
 
   const userInsightsQuery = useQuery<EvaluationUserInsightsState | null>({
-    queryKey: ['call-import-evaluation-user-insights', id, evalId],
+    queryKey: ['call-import-evaluation-user-insights', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.getCallImportEvaluationUserInsights(id!, evalId!),
     enabled:
@@ -865,7 +869,7 @@ export default function CallImportEvaluationDetail() {
   })
 
   const metricClustersQuery = useQuery<EvaluationMetricClustersState | null>({
-    queryKey: ['call-import-evaluation-metric-clusters', id, evalId],
+    queryKey: ['call-import-evaluation-metric-clusters', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.getCallImportEvaluationMetricClusters(id!, evalId!),
     enabled:
@@ -880,7 +884,7 @@ export default function CallImportEvaluationDetail() {
   })
 
   const promptImprovementsQuery = useQuery<EvaluationPromptImprovementsState | null>({
-    queryKey: ['call-import-evaluation-prompt-improvements', id, evalId],
+    queryKey: ['call-import-evaluation-prompt-improvements', activeWorkspaceId, id, evalId],
     queryFn: () =>
       apiClient.getCallImportEvaluationPromptImprovements(id!, evalId!),
     enabled:
@@ -899,11 +903,11 @@ export default function CallImportEvaluationDetail() {
       apiClient.updateCallImportEvaluation(id!, evalId!, { name: newName }),
     onSuccess: (updated) => {
       queryClient.setQueryData(
-        ['call-import-evaluation', id, evalId],
+        ['call-import-evaluation', activeWorkspaceId, id, evalId],
         updated,
       )
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
       setEditingName(false)
       setRenameError(null)
@@ -920,13 +924,13 @@ export default function CallImportEvaluationDetail() {
       apiClient.deleteCallImportEvaluationRow(id!, evalId!, rowId),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
       setPendingDeleteRow(null)
       setRowDeleteError(null)
@@ -942,7 +946,7 @@ export default function CallImportEvaluationDetail() {
     mutationFn: () => apiClient.deleteCallImportEvaluation(id!, evalId!),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
       navigate(`/call-imports/${id}`)
     },
@@ -1004,13 +1008,13 @@ export default function CallImportEvaluationDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
       setRetryError(null)
       setRetryConfirmOpen(false)
@@ -1108,13 +1112,13 @@ export default function CallImportEvaluationDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
       setRerunError(null)
       setRerunMetricsOpen(false)
@@ -1140,13 +1144,13 @@ export default function CallImportEvaluationDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
     },
     onError: (err: any) => {
@@ -1182,13 +1186,13 @@ export default function CallImportEvaluationDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
     },
     onError: (err: any) => {
@@ -1208,16 +1212,16 @@ export default function CallImportEvaluationDetail() {
     onSuccess: () => {
       setForceFailPendingOpen(false)
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
+        queryKey: ['call-import-evaluation-pending-rows-count', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
     },
     onError: (err: any) => {
@@ -1241,13 +1245,13 @@ export default function CallImportEvaluationDetail() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', id, evalId],
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', id, evalId],
+        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
       })
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', id],
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
       })
     },
     onError: (err: any) => {
@@ -3157,6 +3161,7 @@ export default function CallImportEvaluationDetail() {
                           queryClient.invalidateQueries({
                             queryKey: [
                               'call-import-evaluation-metric-clusters',
+                              activeWorkspaceId,
                               id,
                               evalId,
                             ],
@@ -3174,6 +3179,7 @@ export default function CallImportEvaluationDetail() {
                           queryClient.invalidateQueries({
                             queryKey: [
                               'call-import-evaluation-prompt-improvements',
+                              activeWorkspaceId,
                               id,
                               evalId,
                             ],
@@ -4887,6 +4893,7 @@ export default function CallImportEvaluationDetail() {
             queryClient.invalidateQueries({
               queryKey: [
                 'call-import-evaluation-metric-clusters',
+                activeWorkspaceId,
                 id,
                 evalId,
               ],
@@ -6983,7 +6990,7 @@ function EvaluationTLDRInsights({
   const [error, setError] = useState<string | null>(null)
 
   const insightsQuery = useQuery<EvaluationTldrSummary | null>({
-    queryKey: ['call-import-evaluation-insights', callImportId, evaluationId],
+    queryKey: ['call-import-evaluation-insights', getActiveWorkspaceId(), callImportId, evaluationId],
     queryFn: () =>
       apiClient.getCallImportEvaluationInsights(callImportId, evaluationId),
     // Single shot per page-load. We refetch only after a successful
@@ -6996,7 +7003,7 @@ function EvaluationTLDRInsights({
   const cached = insightsQuery.data ?? null
 
   const userInsightsStateQuery = useQuery<EvaluationUserInsightsState | null>({
-    queryKey: ['call-import-evaluation-user-insights', callImportId, evaluationId],
+    queryKey: ['call-import-evaluation-user-insights', getActiveWorkspaceId(), callImportId, evaluationId],
     queryFn: () =>
       apiClient.getCallImportEvaluationUserInsights(callImportId, evaluationId),
     refetchOnWindowFocus: false,
@@ -7039,11 +7046,11 @@ function EvaluationTLDRInsights({
       ),
     onSuccess: (summary) => {
       queryClient.setQueryData(
-        ['call-import-evaluation-insights', callImportId, evaluationId],
+        ['call-import-evaluation-insights', getActiveWorkspaceId(), callImportId, evaluationId],
         summary,
       )
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-user-insights', callImportId, evaluationId],
+        queryKey: ['call-import-evaluation-user-insights', getActiveWorkspaceId(), callImportId, evaluationId],
       })
       setShowPicker(false)
       setError(null)
@@ -7252,7 +7259,7 @@ function FlowDiagramForParent({
   onViewAnyDiscoveredCalls?: () => void
 }) {
   const flowQuery = useQuery({
-    queryKey: ['call-import-eval-flow', callImportId, evalId, parent.id],
+    queryKey: ['call-import-eval-flow', getActiveWorkspaceId(), callImportId, evalId, parent.id],
     queryFn: () =>
       apiClient.getCallImportEvaluationFlow(callImportId, evalId, parent.id),
   })
@@ -7367,6 +7374,7 @@ function DiscoveredLabelsPanel({
   const discoveredQuery = useQuery({
     queryKey: [
       'call-import-eval-discovered',
+      getActiveWorkspaceId(),
       callImportId,
       evalId,
       parent.id,
@@ -7381,14 +7389,14 @@ function DiscoveredLabelsPanel({
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({
-      queryKey: ['call-import-eval-discovered', callImportId, evalId, parent.id],
+      queryKey: ['call-import-eval-discovered', getActiveWorkspaceId(), callImportId, evalId, parent.id],
     })
     queryClient.invalidateQueries({
-      queryKey: ['call-import-eval-flow', callImportId, evalId, parent.id],
+      queryKey: ['call-import-eval-flow', getActiveWorkspaceId(), callImportId, evalId, parent.id],
     })
     queryClient.invalidateQueries({ queryKey: ['metrics'] })
     queryClient.invalidateQueries({
-      queryKey: ['call-import-evaluation', callImportId, evalId],
+      queryKey: ['call-import-evaluation', getActiveWorkspaceId(), callImportId, evalId],
     })
   }
 
@@ -7676,7 +7684,7 @@ function DiscoveredMetricsTopPanel({
   const queryClient = useQueryClient()
 
   const discoveredQuery = useQuery({
-    queryKey: ['call-import-eval-discovered-metrics', callImportId, evalId],
+    queryKey: ['call-import-eval-discovered-metrics', getActiveWorkspaceId(), callImportId, evalId],
     queryFn: () =>
       apiClient.getCallImportEvaluationDiscoveredMetrics(
         callImportId,
@@ -7688,13 +7696,14 @@ function DiscoveredMetricsTopPanel({
     queryClient.invalidateQueries({
       queryKey: [
         'call-import-eval-discovered-metrics',
+        getActiveWorkspaceId(),
         callImportId,
         evalId,
       ],
     })
     queryClient.invalidateQueries({ queryKey: ['metrics'] })
     queryClient.invalidateQueries({
-      queryKey: ['call-import-evaluation', callImportId, evalId],
+      queryKey: ['call-import-evaluation', getActiveWorkspaceId(), callImportId, evalId],
     })
   }
 
@@ -8482,6 +8491,7 @@ function MetricClusterGenerationModal({
   const failurePoliciesQuery = useQuery({
     queryKey: [
       'call-import-evaluation-metric-cluster-failure-policies',
+      getActiveWorkspaceId(),
       callImportId,
       evaluationId,
     ],
@@ -8497,6 +8507,7 @@ function MetricClusterGenerationModal({
   const eligibleRowsQuery = useQuery({
     queryKey: [
       'call-import-evaluation-metric-cluster-eligible-rows',
+      getActiveWorkspaceId(),
       callImportId,
       evaluationId,
       policiesSource,

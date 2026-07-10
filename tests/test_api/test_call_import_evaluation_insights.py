@@ -75,6 +75,14 @@ def stub_workers(db_session):
         s=lambda *_a, **_kw: types.SimpleNamespace(args=_a, kwargs=_kw),
     )
 
+    fake_dispatch_module = types.ModuleType("app.workers.concurrency.eval_dispatch")
+    fake_dispatch_module._needs_transcribe_for_eval = lambda *_a, **_kw: False
+
+    fake_fair_module = types.ModuleType("app.workers.concurrency.fair_dispatch")
+    fake_fair_module.schedule_fair_dispatch = lambda *_a, **_kw: None
+    fake_fair_module.store_row_restricted_metrics = lambda *_a, **_kw: None
+    fake_fair_module.store_evaluation_transcribe_overwrite = lambda *_a, **_kw: None
+
     fake_user_insights_module = types.ModuleType(
         "app.workers.tasks.generate_evaluation_user_insights"
     )
@@ -179,10 +187,18 @@ def stub_workers(db_session):
         "app.workers.tasks.generate_evaluation_tldr_insights": sys.modules.get(
             "app.workers.tasks.generate_evaluation_tldr_insights"
         ),
+        "app.workers.concurrency.eval_dispatch": sys.modules.get(
+            "app.workers.concurrency.eval_dispatch"
+        ),
+        "app.workers.concurrency.fair_dispatch": sys.modules.get(
+            "app.workers.concurrency.fair_dispatch"
+        ),
         "celery": sys.modules.get("celery"),
     }
     sys.modules["app.workers.tasks.process_call_import_row"] = fake_import_module
     sys.modules["app.workers.tasks.evaluate_call_import_row"] = fake_eval_module
+    sys.modules["app.workers.concurrency.eval_dispatch"] = fake_dispatch_module
+    sys.modules["app.workers.concurrency.fair_dispatch"] = fake_fair_module
     sys.modules["app.workers.tasks.generate_evaluation_user_insights"] = (
         fake_user_insights_module
     )

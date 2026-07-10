@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: Optional[str] = None
     CELERY_RESULT_BACKEND: Optional[str] = None
 
+    # Call-import worker concurrency limits (Redis fair-share for evaluations)
+    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 10
+    EVAL_ORG_INFLIGHT_LIMIT: int = 50
+    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 100
+    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 5
+
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
 
@@ -420,6 +426,25 @@ def load_config_from_file(config_path: str) -> None:
             settings.CELERY_BROKER_URL = celery_config["broker_url"]
         if "result_backend" in celery_config:
             settings.CELERY_RESULT_BACKEND = celery_config["result_backend"]
+
+    if "workers" in config_data:
+        workers_config = config_data["workers"]
+        if "eval_workspace_inflight_limit" in workers_config:
+            settings.EVAL_WORKSPACE_INFLIGHT_LIMIT = int(
+                workers_config["eval_workspace_inflight_limit"]
+            )
+        if "eval_org_inflight_limit" in workers_config:
+            settings.EVAL_ORG_INFLIGHT_LIMIT = int(
+                workers_config["eval_org_inflight_limit"]
+            )
+        if "eval_global_inflight_limit" in workers_config:
+            settings.EVAL_GLOBAL_INFLIGHT_LIMIT = int(
+                workers_config["eval_global_inflight_limit"]
+            )
+        if "eval_fair_dispatch_batch_size" in workers_config:
+            settings.EVAL_FAIR_DISPATCH_BATCH_SIZE = int(
+                workers_config["eval_fair_dispatch_batch_size"]
+            )
     
     if "storage" in config_data:
         storage_config = config_data["storage"]

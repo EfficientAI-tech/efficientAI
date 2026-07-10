@@ -454,9 +454,12 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
 )
 @click.option(
     "--imports-worker-concurrency",
-    default=4,
+    default=8,
     type=int,
-    help="Concurrency for the imports-queue worker (default: 4)",
+    help=(
+        "Concurrency for the imports+diarization+evaluations worker "
+        "(default: 8; consumes imports, then diarization, then evaluations)"
+    ),
 )
 def start_all(
     config: str,
@@ -625,11 +628,14 @@ def start_all(
                     "worker",
                     f"--loglevel={worker_loglevel}",
                     "-Q",
-                    "imports",
+                    "imports,diarization,evaluations",
                     "-c",
                     str(imports_worker_concurrency),
                 ],
-                label=f"Celery worker (imports queue, concurrency={imports_worker_concurrency})",
+                label=(
+                    "Celery worker (imports+diarization+evaluations queues, "
+                    f"concurrency={imports_worker_concurrency})"
+                ),
                 prefix="[WORKER-IMPORTS]",
             )
     except FileNotFoundError:
@@ -664,8 +670,8 @@ def start_all(
             click.echo(f"   Frontend watcher: Active (rebuilding on file changes)")
         if imports_worker:
             click.echo(
-                "   Workers: default queue + imports queue "
-                f"(concurrency={imports_worker_concurrency})"
+                "   Workers: default queue + imports,diarization,evaluations queues "
+                f"(concurrency={imports_worker_concurrency}; imports preferred)"
             )
         else:
             click.echo("   Workers: default queue only (--no-imports-worker)")

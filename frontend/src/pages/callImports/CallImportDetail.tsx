@@ -540,7 +540,7 @@ export default function CallImportDetail() {
     mutationFn: (payload: { dataset?: string | null; tag_ids?: string[] }) =>
       apiClient.updateCallImport(id!, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       queryClient.invalidateQueries({ queryKey: ['call-import-datasets'] })
       setEditingMeta(false)
@@ -565,7 +565,7 @@ export default function CallImportDetail() {
     }) =>
       apiClient.retryFailedCallImportRows(id!, selection),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setShowRetryFailedImportConfirm(false)
       const parts = [`Re-queued ${result.requeued} failed row${result.requeued === 1 ? '' : 's'}`]
@@ -590,7 +590,7 @@ export default function CallImportDetail() {
   const forceFailDiarisationMutation = useMutation({
     mutationFn: () => apiClient.cancelCallImportDiarisation(id!, null),
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       setShowForceFailDiarisationConfirm(false)
       const parts = [`Force-failed ${result.cancelled} diarisation row${result.cancelled === 1 ? '' : 's'}`]
       if (result.skipped > 0) {
@@ -612,7 +612,7 @@ export default function CallImportDetail() {
     mutationFn: ({ importId, rowId }: { importId: string; rowId: string }) =>
       apiClient.deleteCallImportRow(importId, rowId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setPendingDeleteRow(null)
       setDeleteError(null)
@@ -626,7 +626,7 @@ export default function CallImportDetail() {
     mutationFn: (rowIds: string[]) =>
       apiClient.bulkDeleteCallImportRows(id!, rowIds),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setSelectedRowIds(new Set())
       setShowBulkDeleteRows(false)
@@ -826,7 +826,7 @@ export default function CallImportDetail() {
   )
 
   const { data, isLoading, isFetching, refetch, error } = useQuery({
-    queryKey: ['call-import', id, queryParams],
+    queryKey: ['call-import', activeWorkspaceId, id, queryParams],
     queryFn: () => apiClient.getCallImport(id!, queryParams),
     enabled: !!id,
     refetchInterval: (query) => {
@@ -862,7 +862,7 @@ export default function CallImportDetail() {
   })
 
   const { data: evaluationsData } = useQuery({
-    queryKey: ['call-import-evaluations', id],
+    queryKey: ['call-import-evaluations', activeWorkspaceId, id],
     queryFn: () => apiClient.listCallImportEvaluations(id!),
     enabled: !!id,
     refetchInterval: (query) => {
@@ -878,7 +878,7 @@ export default function CallImportDetail() {
   // any evaluation is still running so the trend chart fills in as
   // data arrives.
   const { data: insightsData, isLoading: insightsLoading } = useQuery({
-    queryKey: ['call-import-insights', id],
+    queryKey: ['call-import-insights', activeWorkspaceId, id],
     queryFn: () => apiClient.getCallImportInsights(id!),
     enabled: !!id && activeTab === 'insights',
     refetchInterval: () => {
@@ -895,8 +895,8 @@ export default function CallImportDetail() {
     mutationFn: (payload: Parameters<typeof apiClient.createCallImportEvaluation>[1]) =>
       apiClient.createCallImportEvaluation(id!, payload),
     onSuccess: (created) => {
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       setShowRunEval(false)
       setSelectedMetricIds([])
       setRunDraftName('')
@@ -977,7 +977,7 @@ export default function CallImportDetail() {
       })
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       setShowTranscribeModal(false)
       setTranscribeTargetRows(null)
       setTranscribeError(null)
@@ -1010,7 +1010,7 @@ export default function CallImportDetail() {
       // "cancelled by user" sentinel; refetch so the diarisation pill
       // and error message in the row drawer pick up the new state
       // immediately instead of waiting for the next poll tick.
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
     },
     onError: (err: any) => {
       // Cancel is idempotent on the server — the most likely failure
@@ -1047,7 +1047,7 @@ export default function CallImportDetail() {
       setBulkActionResult(null)
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       // The endpoint returns a typed ``{cancelled, skipped}`` summary;
       // surface it inline in the modal so the operator sees the
       // breakdown without having to scan the rows table for green
@@ -1091,7 +1091,7 @@ export default function CallImportDetail() {
       // the parent ``call-import`` query to refetch so the row list /
       // pagination / search index stay in sync (the row object is
       // embedded inside a much larger response).
-      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
     },
     onError: (err: any) => {
       setSwapError(
@@ -1109,7 +1109,7 @@ export default function CallImportDetail() {
     mutationFn: (ids: string[]) =>
       apiClient.bulkDeleteCallImportEvaluations(id!, ids),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
       setSelectedEvalIds(new Set())
       setShowBulkDeleteEvals(false)
       setBulkDeleteEvalsError(null)
@@ -1139,7 +1139,7 @@ export default function CallImportDetail() {
       // ``failed`` with the cancelled-by-user sentinel; refetch so the
       // status pill and counters in this list reflect the cancel
       // immediately rather than waiting for the 3s poll tick.
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
     },
     onError: (err: any) => {
       // Cancel is idempotent on the server — the most likely failure
@@ -1170,7 +1170,7 @@ export default function CallImportDetail() {
       return { fulfilled, rejected }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
       setSelectedEvalIds(new Set())
     },
     onError: (err: any) => {

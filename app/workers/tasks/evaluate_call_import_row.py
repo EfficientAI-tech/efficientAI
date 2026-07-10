@@ -437,6 +437,7 @@ def evaluate_call_import_row_task(
     self,
     eval_row_id: str,
     restricted_metric_ids: Optional[List[str]] = None,
+    _eval_slot_task_id: Optional[str] = None,
 ):
     """Evaluate one row using the appropriate library per metric type.
 
@@ -448,6 +449,8 @@ def evaluate_call_import_row_task(
     None for a full row evaluation.
     """
     db = SessionLocal()
+    evaluation_id_for_dispatch: Optional[str] = None
+    slot_task_id = _eval_slot_task_id or self.request.id
     try:
         row_uuid = UUID(eval_row_id)
         eval_row = (
@@ -470,6 +473,8 @@ def evaluate_call_import_row_task(
             eval_row.error_message = "Evaluation parent not found"
             db.commit()
             return {"status": "failed", "reason": "evaluation_missing"}
+
+        evaluation_id_for_dispatch = str(evaluation.id)
 
         source_row = (
             db.query(CallImportRow)
@@ -1093,3 +1098,11 @@ def evaluate_call_import_row_task(
         }
     finally:
         db.close()
+        from app.workers.concurrency.fair_dispatch import (
+            finish_eval_work_and_redispatch,
+        )
+
+        finish_eval_work_and_redispatch(
+            slot_task_id,
+            restricted_metric_ids=restricted_metric_ids,
+        )
