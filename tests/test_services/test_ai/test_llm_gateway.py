@@ -263,6 +263,26 @@ def test_apply_bifrost_gateway_forces_openai_compatible_routing_for_gemini():
     assert result["model"] == "gemini/gemini-2.5-flash"
 
 
+def test_apply_bifrost_gateway_forces_openai_routing_for_bare_gemini_model_name():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://localhost:8080",
+        passthrough=False,
+    )
+    settings.LLM_GATEWAY_INTERFACE = "native_openai"
+    org_id, db = _org_db({"enabled": True})
+    result = apply_llm_gateway(
+        {"model": "gemini-2.5-flash", "messages": []},
+        organization_id=org_id,
+        db=db,
+    )
+
+    assert result["api_base"] == "http://localhost:8080/v1"
+    assert result["custom_llm_provider"] == "openai"
+    assert result["model"] == "gemini-2.5-flash"
+
+
 def test_apply_litellm_proxy_forces_openai_compatible_routing_for_gemini():
     _set_platform_gateway(
         enabled=True,
@@ -297,12 +317,12 @@ def test_apply_gateway_leaves_openai_models_unmodified():
         db=db,
     )
 
-    assert "custom_llm_provider" not in result
+    assert result["custom_llm_provider"] == "openai"
     assert result["model"] == "openai/gpt-4o-mini"
 
 
-def test_apply_gateway_without_model_skips_gemini_proxy_routing():
-    """Without model in kwargs or routing param, native-path routing is skipped."""
+def test_apply_gateway_without_model_still_forces_openai_routing():
+    """Gateway calls always use OpenAI-compatible routing, even without model."""
     _set_platform_gateway(
         enabled=True,
         gateway_type="bifrost",
@@ -316,7 +336,7 @@ def test_apply_gateway_without_model_skips_gemini_proxy_routing():
         db=db,
     )
 
-    assert "custom_llm_provider" not in result
+    assert result["custom_llm_provider"] == "openai"
 
 
 def test_apply_gateway_routing_model_enables_gemini_proxy_routing_for_gepa_batch():

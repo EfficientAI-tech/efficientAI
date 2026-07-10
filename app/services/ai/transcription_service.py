@@ -533,15 +533,20 @@ class TranscriptionService:
         api_key = self._get_api_key_for_provider(
             stt_provider, db, organization_id, credential_id=credential_id
         )
-        credential_ctx = self._get_credential_context_for_provider(
-            stt_provider, db, organization_id, credential_id=credential_id
-        )
         if not api_key and stt_provider != ModelProvider.GOOGLE:
             logger.warning(
                 f"[TranscriptionService] No API key found for {stt_provider} "
                 f"(checked AIProvider and Integration tables) for org {organization_id}"
             )
             return None
+
+        credential_ctx = (
+            self._get_credential_context_for_provider(
+                stt_provider, db, organization_id, credential_id=credential_id
+            )
+            if stt_provider == ModelProvider.GOOGLE
+            else None
+        )
 
         from app.services.ai.stt_clients import (
             transcribe_openai,

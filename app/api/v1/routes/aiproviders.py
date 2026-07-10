@@ -21,6 +21,7 @@ from app.models.enums import CredentialRoutingMode
 from app.models.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderResponse
 )
+from app.config import settings
 from app.core.encryption import encrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
 from app.services.ai.llm_gateway import (
@@ -103,6 +104,14 @@ def _validate_routing_and_api_key(
 
     if mode == CredentialRoutingMode.INHERIT.value:
         if not trimmed_key and not has_existing_key:
+            if settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "api_key is required when platform passthrough_provider_keys "
+                        "is enabled."
+                    ),
+                )
             return
 
 

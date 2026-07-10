@@ -251,25 +251,24 @@ def normalize_bifrost_native_url(base_url: str) -> str:
             "(e.g. http://localhost:8080)."
         )
     original = url
-    changed = False
+    stripped_paths = False
     while True:
         stripped = False
         for suffix in _NATIVE_OPENAI_PATH_SUFFIXES:
             if url.endswith(suffix):
                 url = url[: -len(suffix)]
                 stripped = True
-                changed = True
+                stripped_paths = True
                 break
         if not stripped:
             break
     if not url.endswith("/v1"):
         url = f"{url}/v1"
-        changed = True
-    if changed:
+    if stripped_paths:
         logger.warning(
             "Normalized native Bifrost base_url '{}' -> '{}'. "
             "Use the host root only (e.g. http://localhost:8080); "
-            "LiteLLM appends /chat/completions to a /v1 base automatically.",
+            "/v1 is appended automatically for LiteLLM.",
             original,
             url,
         )
@@ -573,20 +572,9 @@ def get_credential_effective_routing_label(
     return effective
 
 
-# Providers whose LiteLLM handlers build native API paths (e.g. Gemini
-# ``:generateContent``) when ``api_base`` is set. Gateways like Bifrost and
-# LiteLLM Proxy expect OpenAI-compatible ``/v1/chat/completions`` instead.
-_NATIVE_GATEWAY_MODEL_PREFIXES = (
-    "gemini/",
-    "google/",
-    "vertex/",
-    "vertex_ai/",
-)
-
-
-def _model_uses_native_provider_path(model: Any) -> bool:
-    model_str = str(model or "").lower()
-    return any(model_str.startswith(prefix) for prefix in _NATIVE_GATEWAY_MODEL_PREFIXES)
+# Gateways speak OpenAI-compatible ``/v1/chat/completions``. LiteLLM
+# otherwise auto-detects bare names like ``gemini-2.5-flash`` as Vertex
+# native and bypasses ``api_base``.
 
 
 def _apply_proxy_compatible_routing(
@@ -594,11 +582,9 @@ def _apply_proxy_compatible_routing(
     *,
     routing_model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Route native-path providers through the gateway's chat-completions API."""
+    """Force OpenAI chat-completions routing for every gateway call."""
     result = dict(call_kwargs)
-    model_for_routing = result.get("model") or routing_model
-    if _model_uses_native_provider_path(model_for_routing):
-        result["custom_llm_provider"] = "openai"
+    result["custom_llm_provider"] = "openai"
     return result
 
 
@@ -644,14 +630,6 @@ def _apply_bifrost_gateway(
 
     if not result.get("api_key"):
         result["api_key"] = config.virtual_key or LITELLM_GATEWAY_PLACEHOLDER_API_KEY
-
-    model = result.get("model") or routing_model or ""
-    if model and "/" not in str(model):
-        logger.warning(
-            "Routing model '{}' through Bifrost without a provider prefix; "
-            "ensure the model is supported by both LiteLLM and Bifrost.",
-            model,
-        )
 
     return _apply_proxy_compatible_routing(result, routing_model=routing_model)
 

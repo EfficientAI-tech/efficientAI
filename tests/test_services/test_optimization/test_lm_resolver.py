@@ -43,7 +43,7 @@ def test_resolve_api_key_returns_decrypted_key(monkeypatch):
     monkeypatch.setattr(
         resolver_module,
         "resolve_litellm_api_key",
-        lambda _org_id, _db, provider: f"dec::{provider.api_key}",
+        lambda _org_id, _db, provider, credential=None: f"dec::{provider.api_key}",
     )
 
     org_id = uuid4()
