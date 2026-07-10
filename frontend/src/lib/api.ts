@@ -171,19 +171,24 @@ export interface OrganizationSummary {
 
 export type LLMGatewayMode = 'inherit' | 'enabled' | 'disabled'
 export type LLMGatewayType = 'inherit' | 'bifrost' | 'litellm_proxy'
+export type LLMGatewayInterface = 'inherit' | 'litellm_shim' | 'native_openai'
 export type LLMGatewayRouting = 'direct' | 'bifrost' | 'litellm_proxy'
+export type GatewayInterfaceMode = 'inherit' | 'litellm_shim' | 'native_openai'
 
 export interface LLMGatewaySettings {
   mode: LLMGatewayMode
   gateway_type: LLMGatewayType
+  gateway_interface?: LLMGatewayInterface
   base_url?: string | null
   has_virtual_key: boolean
   has_master_key: boolean
   platform_enabled: boolean
   platform_gateway_type: 'bifrost' | 'litellm_proxy'
+  platform_gateway_interface?: 'litellm_shim' | 'native_openai'
   platform_base_url?: string | null
   effective_routing: LLMGatewayRouting
   effective_gateway_type?: 'bifrost' | 'litellm_proxy' | null
+  effective_gateway_interface?: 'litellm_shim' | 'native_openai' | null
   effective_base_url?: string | null
   effective_has_virtual_key: boolean
   effective_has_master_key: boolean
@@ -193,6 +198,7 @@ export interface LLMGatewaySettings {
 export interface LLMGatewaySettingsUpdate {
   mode: LLMGatewayMode
   gateway_type?: LLMGatewayType
+  gateway_interface?: LLMGatewayInterface
   base_url?: string | null
   virtual_key?: string | null
   master_key?: string | null
@@ -3748,13 +3754,19 @@ class ApiClient {
 
   async generateAgentFlowchart(
     partialId: string,
-    options?: { provider?: string; model?: string; regenerate?: boolean },
+    options?: {
+      provider?: string
+      model?: string
+      credential_id?: string
+      regenerate?: boolean
+    },
   ): Promise<import('../types/api').AgentFlowGraph> {
     const response = await this.client.post(
       `/api/v1/prompt-partials/${partialId}/flowchart`,
       {
         provider: options?.provider,
         model: options?.model,
+        credential_id: options?.credential_id,
         regenerate: options?.regenerate ?? false,
       },
     )
@@ -3774,13 +3786,14 @@ class ApiClient {
 
   async mapAgentFlowchartPromptSections(
     partialId: string,
-    options?: { provider?: string; model?: string },
+    options?: { provider?: string; model?: string; credential_id?: string },
   ): Promise<import('../types/api').AgentFlowGraph> {
     const response = await this.client.post(
       `/api/v1/prompt-partials/${partialId}/flowchart/prompt-map`,
       {
         provider: options?.provider,
         model: options?.model,
+        credential_id: options?.credential_id,
       },
     )
     return response.data
@@ -3858,6 +3871,7 @@ class ApiClient {
     format_style?: string
     provider?: string
     model?: string
+    credential_id?: string
     llm_config?: LLMGenerationConfig | null
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/prompt-partials/generate', data)
@@ -3869,6 +3883,7 @@ class ApiClient {
     instructions?: string
     provider?: string
     model?: string
+    credential_id?: string
     llm_config?: LLMGenerationConfig | null
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/prompt-partials/improve', data)

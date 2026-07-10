@@ -25,12 +25,29 @@ from app.core.encryption import encrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
 from app.services.ai.llm_gateway import (
     GATEWAY_MANAGED_KEY_SENTINEL,
-    gateway_managed_credentials_enabled,
+    get_credential_effective_gateway_interface,
     get_credential_effective_routing_label,
     is_gateway_managed_stored_key,
+    normalize_bifrost_native_url,
+    normalize_bifrost_url,
 )
 
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
+
+
+def _sanitize_gateway_base_url(
+    base_url: Optional[str],
+    gateway_interface: str,
+) -> Optional[str]:
+    trimmed = (base_url or "").strip()
+    if not trimmed:
+        return None
+    interface = (gateway_interface or "inherit").strip().lower()
+    if interface == "native_openai":
+        return normalize_bifrost_native_url(trimmed) or None
+    if interface == "litellm_shim":
+        return normalize_bifrost_url(trimmed) or None
+    return trimmed
 
 
 def _scrub_for_response(
@@ -45,13 +62,22 @@ def _scrub_for_response(
         db,
         instance.routing_mode,
     )
+    effective_gateway_interface = get_credential_effective_gateway_interface(
+        organization_id,
+        db,
+        getattr(instance, "gateway_interface", None),
+    )
+    has_gateway_auth_secret = bool(getattr(instance, "gateway_auth_secret", None))
     db.expunge(instance)
     instance.api_key = None
+    instance.gateway_auth_secret = None
     response = AIProviderResponse.model_validate(instance)
     return response.model_copy(
         update={
             "gateway_managed": gateway_managed,
             "effective_routing": effective_routing,
+            "effective_gateway_interface": effective_gateway_interface,
+            "has_gateway_auth_secret": has_gateway_auth_secret,
         }
     )
 
@@ -73,27 +99,11 @@ def _validate_routing_and_api_key(
         )
 
     if mode == CredentialRoutingMode.GATEWAY.value:
-        if gateway_managed_credentials_enabled():
-            return
-        if not trimmed_key and not has_existing_key:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "api_key is required when routing_mode is gateway and "
-                    "passthrough_provider_keys is enabled."
-                ),
-            )
+        return
 
     if mode == CredentialRoutingMode.INHERIT.value:
-        if not trimmed_key and not has_existing_key and not gateway_managed_credentials_enabled():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "api_key is required. When LLM gateway-managed credentials "
-                    "are enabled (passthrough_provider_keys: false), you can "
-                    "omit the key and provider secrets will be resolved by the gateway."
-                ),
-            )
+        if not trimmed_key and not has_existing_key:
+            return
 
 
 def _encrypt_provider_api_key(
@@ -109,16 +119,12 @@ def _encrypt_provider_api_key(
     if mode in (
         CredentialRoutingMode.GATEWAY.value,
         CredentialRoutingMode.INHERIT.value,
-    ) and gateway_managed_credentials_enabled():
+    ):
         return encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL)
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            "api_key is required. When LLM gateway-managed credentials "
-            "are enabled (passthrough_provider_keys: false), you can omit "
-            "the key and provider secrets will be resolved by the gateway."
-        ),
+        detail="api_key is required when routing_mode is direct.",
     )
 
 
@@ -150,6 +156,7 @@ async def create_aiprovider(
         aiprovider.api_key,
         routing_mode=aiprovider.routing_mode,
     )
+    gateway_interface_value = aiprovider.gateway_interface.value
     db_aiprovider = AIProvider(
         organization_id=organization_id,
         provider=provider_value,
@@ -158,6 +165,19 @@ async def create_aiprovider(
         is_default=will_be_default,
         routing_mode=aiprovider.routing_mode.value,
         gateway_model=aiprovider.gateway_model,
+        gateway_interface=gateway_interface_value,
+        gateway_base_url=_sanitize_gateway_base_url(
+            aiprovider.gateway_base_url,
+            gateway_interface_value,
+        ),
+        gateway_auth_header=aiprovider.gateway_auth_header,
+        gateway_auth_secret_env=aiprovider.gateway_auth_secret_env,
+        gateway_auth_secret=(
+            encrypt_api_key(aiprovider.gateway_auth_secret)
+            if aiprovider.gateway_auth_secret
+            else None
+        ),
+        gateway_extra_headers=aiprovider.gateway_extra_headers,
     )
     db.add(db_aiprovider)
     db.flush()
@@ -251,14 +271,36 @@ async def update_aiprovider(
             has_existing_key=bool(db_aiprovider.api_key),
         )
 
+    skip_fields = {
+        "api_key",
+        "routing_mode",
+        "gateway_interface",
+        "gateway_auth_secret",
+        "clear_gateway_auth_secret",
+    }
+
     for field, value in update_data.items():
-        if field == 'api_key' and value:
-            encrypted_api_key = encrypt_api_key(value)
-            db_aiprovider.api_key = encrypted_api_key
-        elif field == 'routing_mode' and value is not None:
-            db_aiprovider.routing_mode = value.value
-        else:
-            setattr(db_aiprovider, field, value)
+        if field in skip_fields:
+            continue
+        if field == "gateway_base_url":
+            interface = (
+                update_data["gateway_interface"].value
+                if update_data.get("gateway_interface") is not None
+                else db_aiprovider.gateway_interface
+            )
+            value = _sanitize_gateway_base_url(value, interface)
+        setattr(db_aiprovider, field, value)
+
+    if "api_key" in update_data and update_data["api_key"]:
+        db_aiprovider.api_key = encrypt_api_key(update_data["api_key"])
+    if "routing_mode" in update_data and update_data["routing_mode"] is not None:
+        db_aiprovider.routing_mode = update_data["routing_mode"].value
+    if "gateway_interface" in update_data and update_data["gateway_interface"] is not None:
+        db_aiprovider.gateway_interface = update_data["gateway_interface"].value
+    if update_data.get("clear_gateway_auth_secret"):
+        db_aiprovider.gateway_auth_secret = None
+    elif update_data.get("gateway_auth_secret"):
+        db_aiprovider.gateway_auth_secret = encrypt_api_key(update_data["gateway_auth_secret"])
 
     db.commit()
     db.refresh(db_aiprovider)

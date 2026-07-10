@@ -175,6 +175,7 @@ class Settings(BaseSettings):
     LLM_GATEWAY_VIRTUAL_KEY: Optional[str] = None
     LLM_GATEWAY_MASTER_KEY: Optional[str] = None
     LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS: bool = True
+    LLM_GATEWAY_INTERFACE: str = "litellm_shim"  # litellm_shim | native_openai
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -631,6 +632,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS = bool(
                 gateway_cfg["passthrough_provider_keys"]
             )
+        if gateway_cfg.get("gateway_interface"):
+            interface = str(gateway_cfg["gateway_interface"]).strip().lower()
+            if interface in ("litellm_shim", "native_openai"):
+                settings.LLM_GATEWAY_INTERFACE = interface
 
     if "llm_gateway" in config_data:
         llm_cfg = config_data["llm_gateway"]

@@ -1,13 +1,14 @@
 """Pydantic schemas for request/response validation."""
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
+import re
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
-    IntegrationPlatform, ModelProvider, CredentialRoutingMode, VoiceBundleType, TestAgentConversationStatus,
+    IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
@@ -685,6 +686,38 @@ class S3UploadResponse(BaseModel):
 
 
 # AIProvider Schemas
+_MAX_GATEWAY_EXTRA_HEADERS = 20
+
+
+def _validate_gateway_extra_headers(
+    value: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, str]]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("gateway_extra_headers must be a JSON object of string keys and values.")
+    if len(value) > _MAX_GATEWAY_EXTRA_HEADERS:
+        raise ValueError(
+            f"gateway_extra_headers supports at most {_MAX_GATEWAY_EXTRA_HEADERS} headers."
+        )
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_val in value.items():
+        key = str(raw_key).strip()
+        if not key:
+            raise ValueError("gateway_extra_headers keys must be non-empty strings.")
+        if len(key) > 64 or any(ch.isspace() for ch in key):
+            raise ValueError(f"Invalid gateway header name: {key!r}")
+        if raw_val is None:
+            raise ValueError(f"gateway_extra_headers[{key!r}] must be a string value.")
+        val = str(raw_val).strip()
+        if not val:
+            raise ValueError(f"gateway_extra_headers[{key!r}] must be a non-empty string.")
+        if len(val) > 1024 or "\n" in val or "\r" in val:
+            raise ValueError(f"gateway_extra_headers[{key!r}] value is invalid.")
+        normalized[key] = val
+    return normalized or None
+
+
 class AIProviderCreate(BaseModel):
     """Schema for creating an AI Provider."""
     provider: ModelProvider
@@ -705,6 +738,33 @@ class AIProviderCreate(BaseModel):
         min_length=1,
         max_length=255,
         description="Bifrost custom model ID sent when routing via gateway.",
+    )
+    gateway_interface: GatewayInterfaceMode = Field(
+        GatewayInterfaceMode.INHERIT,
+        description="Bifrost API surface: inherit org default, LiteLLM shim, or native OpenAI-compatible.",
+    )
+    gateway_base_url: Optional[str] = Field(
+        None,
+        max_length=512,
+        description="Optional per-credential Bifrost/gateway base URL override.",
+    )
+    gateway_auth_header: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="Auth header name for Bifrost (default x-bf-vk).",
+    )
+    gateway_auth_secret_env: Optional[str] = Field(
+        None,
+        max_length=128,
+        description="Environment variable name holding the gateway auth secret.",
+    )
+    gateway_auth_secret: Optional[str] = Field(
+        None,
+        description="Inline gateway auth secret (encrypted at rest). Alternative to env var.",
+    )
+    gateway_extra_headers: Optional[Dict[str, str]] = Field(
+        None,
+        description="Arbitrary HTTP headers sent with gateway-routed LiteLLM calls.",
     )
     is_default: Optional[bool] = Field(
         None,
@@ -730,6 +790,53 @@ class AIProviderCreate(BaseModel):
         trimmed = v.strip()
         return trimmed or None
 
+    @field_validator("gateway_base_url")
+    @classmethod
+    def validate_gateway_base_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_auth_header")
+    @classmethod
+    def validate_gateway_auth_header(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > 64 or any(ch.isspace() for ch in trimmed):
+            raise ValueError("gateway_auth_header must be a single non-empty header name.")
+        return trimmed
+
+    @field_validator("gateway_auth_secret_env")
+    @classmethod
+    def validate_gateway_auth_secret_env(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", trimmed):
+            raise ValueError(
+                "gateway_auth_secret_env must be a valid environment variable name."
+            )
+        return trimmed
+
+    @field_validator("gateway_auth_secret")
+    @classmethod
+    def validate_gateway_auth_secret(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_extra_headers")
+    @classmethod
+    def validate_gateway_extra_headers(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+        return _validate_gateway_extra_headers(v)
+
 
 class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
@@ -738,6 +845,13 @@ class AIProviderUpdate(BaseModel):
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
+    gateway_interface: Optional[GatewayInterfaceMode] = None
+    gateway_base_url: Optional[str] = Field(None, max_length=512)
+    gateway_auth_header: Optional[str] = Field(None, max_length=64)
+    gateway_auth_secret_env: Optional[str] = Field(None, max_length=128)
+    gateway_auth_secret: Optional[str] = None
+    clear_gateway_auth_secret: bool = False
+    gateway_extra_headers: Optional[Dict[str, str]] = None
 
     @field_validator("gateway_model")
     @classmethod
@@ -746,6 +860,55 @@ class AIProviderUpdate(BaseModel):
             return v
         trimmed = v.strip()
         return trimmed or None
+
+    @field_validator("gateway_base_url")
+    @classmethod
+    def validate_gateway_base_url_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_auth_header")
+    @classmethod
+    def validate_gateway_auth_header_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > 64 or any(ch.isspace() for ch in trimmed):
+            raise ValueError("gateway_auth_header must be a single non-empty header name.")
+        return trimmed
+
+    @field_validator("gateway_auth_secret_env")
+    @classmethod
+    def validate_gateway_auth_secret_env_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", trimmed):
+            raise ValueError(
+                "gateway_auth_secret_env must be a valid environment variable name."
+            )
+        return trimmed
+
+    @field_validator("gateway_auth_secret")
+    @classmethod
+    def validate_gateway_auth_secret_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_extra_headers")
+    @classmethod
+    def validate_gateway_extra_headers_update(
+        cls, v: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, str]]:
+        return _validate_gateway_extra_headers(v)
 
 
 class AIProviderResponse(BaseModel):
@@ -758,8 +921,15 @@ class AIProviderResponse(BaseModel):
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
     gateway_model: Optional[str] = None
+    gateway_interface: GatewayInterfaceMode = GatewayInterfaceMode.INHERIT
+    gateway_base_url: Optional[str] = None
+    gateway_auth_header: Optional[str] = None
+    gateway_auth_secret_env: Optional[str] = None
+    has_gateway_auth_secret: bool = False
+    gateway_extra_headers: Optional[Dict[str, str]] = None
     gateway_managed: bool = False
     effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
+    effective_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]

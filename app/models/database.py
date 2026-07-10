@@ -633,6 +633,18 @@ class AIProvider(Base):
     routing_mode = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     # Bifrost custom model ID used when routing via gateway
     gateway_model = Column(String(255), nullable=True)
+    # inherit | litellm_shim | native_openai — Bifrost API surface override
+    gateway_interface = Column(String(20), nullable=False, default="inherit", server_default="inherit")
+    # Optional per-credential Bifrost/gateway base URL override
+    gateway_base_url = Column(String(512), nullable=True)
+    # Optional auth header for Bifrost (e.g. x-bf-vk, Authorization, x-api-key)
+    gateway_auth_header = Column(String(64), nullable=True)
+    # Env var name whose value is sent as the gateway auth secret
+    gateway_auth_secret_env = Column(String(128), nullable=True)
+    # Encrypted inline gateway auth secret (alternative to env var)
+    gateway_auth_secret = Column(String, nullable=True)
+    # Arbitrary HTTP headers sent with gateway-routed LiteLLM calls
+    gateway_extra_headers = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated

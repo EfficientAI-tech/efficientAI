@@ -26,6 +26,30 @@ def _reset_gateway_settings():
     ) = original
 
 
+def test_create_aiprovider_without_key_when_gateway_routing(
+    authenticated_client, db_session, org_id
+):
+    _set_platform_gateway_passthrough(True)
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080"
+
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "Local Bifrost",
+            "routing_mode": "gateway",
+            "gateway_interface": "native_openai",
+            "gateway_base_url": "http://localhost:8080",
+            "gateway_model": "openai/gpt-4.1",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["gateway_managed"] is True
+    assert data["effective_routing"] == "bifrost"
+
+
 def test_create_aiprovider_without_key_when_gateway_managed(
     authenticated_client, db_session, org_id
 ):

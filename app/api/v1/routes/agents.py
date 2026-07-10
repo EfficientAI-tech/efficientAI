@@ -50,41 +50,7 @@ GENERATE_AGENT_DESCRIPTION_SYSTEM = (
 )
 
 
-def _get_llm_provider_and_model(
-    organization_id: UUID,
-    db: Session,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-):
-    """Resolve the LLM provider and model to use, falling back to org defaults."""
-    from app.models.database import AIProvider
-    from app.models.enums import ModelProvider
-
-    if provider and model:
-        try:
-            provider_enum = ModelProvider(provider.lower())
-        except ValueError:
-            raise HTTPException(400, f"Unsupported LLM provider: {provider}")
-        return provider_enum, model
-
-    for prov in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.GOOGLE]:
-        ai_prov = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,
-            AIProvider.provider == prov.value,
-        ).first()
-        if ai_prov:
-            default_models = {
-                ModelProvider.OPENAI: "gpt-5-mini",
-                ModelProvider.ANTHROPIC: "claude-sonnet-4-20250514",
-                ModelProvider.GOOGLE: "gemini-2.0-flash",
-            }
-            return prov, model or default_models.get(prov, "gpt-5-mini")
-
-    raise HTTPException(
-        400,
-        "No active AI provider configured. Add an OpenAI, Anthropic, or Google provider in AI Providers settings.",
-    )
+from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
 
 
 @router.post("/generate-description")
