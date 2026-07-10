@@ -163,3 +163,48 @@ def test_update_gateway_managed_to_direct_requires_api_key(
         json={"routing_mode": "direct"},
     )
     assert update_response.status_code == 400
+
+
+def test_create_aiprovider_rejects_invalid_gateway_base_url(authenticated_client):
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080"
+
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "Bad gateway URL",
+            "routing_mode": "gateway",
+            "gateway_interface": "native_openai",
+            "gateway_base_url": "not-a-valid-url",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_update_aiprovider_rejects_invalid_gateway_base_url(
+    authenticated_client, db_session, org_id
+):
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080"
+
+    create_response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "Gateway provider",
+            "routing_mode": "gateway",
+            "gateway_interface": "native_openai",
+            "gateway_base_url": "http://localhost:8080",
+        },
+    )
+    assert create_response.status_code == 201
+    provider_id = create_response.json()["id"]
+
+    update_response = authenticated_client.put(
+        f"/api/v1/aiproviders/{provider_id}",
+        json={"gateway_base_url": "localhost:8080"},
+    )
+    assert update_response.status_code == 400

@@ -44,11 +44,17 @@ def _sanitize_gateway_base_url(
     if not trimmed:
         return None
     interface = (gateway_interface or "inherit").strip().lower()
-    if interface == "native_openai":
-        return normalize_bifrost_native_url(trimmed) or None
-    if interface == "litellm_shim":
-        return normalize_bifrost_url(trimmed) or None
-    return trimmed
+    try:
+        if interface == "native_openai":
+            return normalize_bifrost_native_url(trimmed) or None
+        if interface == "litellm_shim":
+            return normalize_bifrost_url(trimmed) or None
+        return trimmed
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 def _scrub_for_response(
