@@ -37,3 +37,43 @@ def test_store_and_pop_row_restricted_metrics():
         result = fair_dispatch_module.pop_row_restricted_metrics(row_id)
     assert result == ["metric-a", "metric-b"]
     client.delete.assert_called_once()
+
+
+def test_dispatch_batch_continues_past_diarisation_pending_row():
+    """Ready eval-only rows must not stall behind a transcribing row."""
+    workspace_id = uuid4()
+    blocked_eval_row = MagicMock()
+    ready_eval_row = MagicMock()
+    blocked_source = MagicMock()
+    ready_source = MagicMock()
+    evaluation = MagicMock(status="running")
+
+    with patch.object(
+        fair_dispatch_module,
+        "_pending_rows_for_workspace",
+        return_value=[
+            (blocked_eval_row, blocked_source, evaluation),
+            (ready_eval_row, ready_source, evaluation),
+        ],
+    ), patch.object(
+        fair_dispatch_module,
+        "_try_dispatch_single_row",
+        side_effect=["skip", "dispatched"],
+    ) as mock_dispatch, patch.object(
+        fair_dispatch_module,
+        "pop_row_restricted_metrics",
+        return_value=None,
+    ), patch.object(
+        fair_dispatch_module,
+        "evaluation_transcribe_overwrite",
+        return_value=False,
+    ):
+        db = MagicMock()
+        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
+            db,
+            workspace_id,
+            batch_size=5,
+        )
+
+    assert dispatched == 1
+    assert mock_dispatch.call_count == 2

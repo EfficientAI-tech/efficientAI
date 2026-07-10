@@ -181,7 +181,7 @@ def _dispatch_batch_for_workspace(
     for eval_row, source_row, evaluation in pending:
         restricted_metric_ids = pop_row_restricted_metrics(eval_row.id)
         transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
-        if _try_dispatch_single_row(
+        result = _try_dispatch_single_row(
             db=db,
             evaluation=evaluation,
             eval_row=eval_row,
@@ -189,12 +189,13 @@ def _dispatch_batch_for_workspace(
             restricted_metric_ids=restricted_metric_ids,
             transcribe_overwrite=transcribe_overwrite,
             auto_transcribe=True,
-        ):
+        )
+        if result == "dispatched":
             dispatched += 1
             if evaluation.status == "pending":
                 evaluation.status = "running"
                 db.commit()
-        else:
+        elif result == "at_capacity":
             break
     return dispatched
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import Callable, List, Literal, Optional
 from uuid import UUID
 
 from celery.utils import uuid as celery_uuid
@@ -24,6 +24,8 @@ from app.workers.config import celery_app
 IMPORTS_QUEUE = "imports"
 DIARIZATION_QUEUE = "diarization"
 EVALUATIONS_QUEUE = "evaluations"
+
+DispatchSingleRowResult = Literal["dispatched", "skip", "at_capacity"]
 
 
 def schedule_evaluation_dispatch(
@@ -102,8 +104,14 @@ def _try_dispatch_single_row(
     restricted_metric_ids: Optional[List[str]] = None,
     transcribe_overwrite: bool = False,
     auto_transcribe: bool = True,
-) -> bool:
-    """Dispatch one eval row (transcribe or evaluate). Returns False when at cap."""
+) -> DispatchSingleRowResult:
+    """Dispatch one eval row (transcribe or evaluate).
+
+    Returns:
+      * ``dispatched`` — task enqueued
+      * ``skip`` — row not ready or evaluation terminal; try next row in batch
+      * ``at_capacity`` — inflight cap reached; stop the workspace batch
+    """
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
     )
@@ -112,7 +120,7 @@ def _try_dispatch_single_row(
     )
 
     if evaluation.status in {"cancelled", "completed", "failed"}:
-        return False
+        return "skip"
 
     transcribe_mode = (
         getattr(evaluation, "transcribe_mode", None) or "stt_llm"
@@ -126,7 +134,7 @@ def _try_dispatch_single_row(
     ):
         dia_status = (source_row.diarised_transcript_status or "").strip().lower()
         if dia_status == "pending":
-            return False
+            return "skip"
 
         def _enqueue_transcribe(reserved_task_id: str):
             source_row.diarised_transcript_status = "pending"
@@ -166,12 +174,14 @@ def _try_dispatch_single_row(
                 task_id=reserved_task_id,
             )
 
-        return _reserve_slot_and_enqueue(
+        if _reserve_slot_and_enqueue(
             evaluation=evaluation,
             eval_row=eval_row,
             db=db,
             enqueue_fn=_enqueue_transcribe,
-        )
+        ):
+            return "dispatched"
+        return "at_capacity"
 
     def _enqueue_eval(reserved_task_id: str):
         kwargs = {"_eval_slot_task_id": reserved_task_id}
@@ -184,12 +194,14 @@ def _try_dispatch_single_row(
             task_id=reserved_task_id,
         )
 
-    return _reserve_slot_and_enqueue(
+    if _reserve_slot_and_enqueue(
         evaluation=evaluation,
         eval_row=eval_row,
         db=db,
         enqueue_fn=_enqueue_eval,
-    )
+    ):
+        return "dispatched"
+    return "at_capacity"
 
 
 @celery_app.task(name="dispatch_evaluation_rows", queue=EVALUATIONS_QUEUE)

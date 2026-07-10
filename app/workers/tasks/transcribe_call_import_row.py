@@ -333,17 +333,17 @@ def transcribe_call_import_row_task(
     db = SessionLocal()
     evaluation_id_for_dispatch: Optional[str] = None
     slot_task_id = _eval_slot_task_id or self.request.id
-    if run_eval_row_id:
-        from app.models.database import CallImportEvaluationRow
-
-        eval_row_for_chain = (
-            db.query(CallImportEvaluationRow)
-            .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-            .first()
-        )
-        if eval_row_for_chain is not None:
-            evaluation_id_for_dispatch = str(eval_row_for_chain.evaluation_id)
     try:
+        if run_eval_row_id:
+            from app.models.database import CallImportEvaluationRow
+
+            eval_row_for_chain = (
+                db.query(CallImportEvaluationRow)
+                .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+                .first()
+            )
+            if eval_row_for_chain is not None:
+                evaluation_id_for_dispatch = str(eval_row_for_chain.evaluation_id)
         row_uuid = UUID(row_id)
         row = db.query(CallImportRow).filter(CallImportRow.id == row_uuid).first()
         if row is None:
