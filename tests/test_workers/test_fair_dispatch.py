@@ -77,3 +77,41 @@ def test_dispatch_batch_continues_past_diarisation_pending_row():
 
     assert dispatched == 1
     assert mock_dispatch.call_count == 2
+
+
+def test_reserve_slot_and_enqueue_releases_slot_on_commit_failure():
+    from app.workers.concurrency import eval_dispatch as eval_dispatch_module
+
+    reserved_id = "reserved-task-id"
+    db = MagicMock()
+    db.commit.side_effect = RuntimeError("db commit failed")
+    evaluation = MagicMock(workspace_id=uuid4(), organization_id=uuid4())
+    eval_row = MagicMock()
+
+    def _enqueue_fn(task_id: str):
+        assert task_id == reserved_id
+        return MagicMock(id=reserved_id)
+
+    with patch.object(
+        eval_dispatch_module,
+        "acquire_eval_slot",
+        return_value=True,
+    ), patch.object(
+        eval_dispatch_module,
+        "release_eval_slot_for_celery_task",
+    ) as mock_release, patch.object(
+        eval_dispatch_module,
+        "celery_uuid",
+        return_value=reserved_id,
+    ):
+        try:
+            eval_dispatch_module._reserve_slot_and_enqueue(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                db=db,
+                enqueue_fn=_enqueue_fn,
+            )
+        except RuntimeError:
+            pass
+
+    mock_release.assert_called_once_with(reserved_id)

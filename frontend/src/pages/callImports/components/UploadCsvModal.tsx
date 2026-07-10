@@ -20,7 +20,7 @@ interface UploadCsvModalProps {
   onClose: () => void
 }
 
-const MAX_BYTES = 10 * 1024 * 1024
+const MAX_BYTES = 15 * 1024 * 1024
 
 const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xlsm'] as const
 const ACCEPT_ATTR =
@@ -42,7 +42,7 @@ function preflight(file: File): string | null {
     return `File must be one of: ${ALLOWED_EXTENSIONS.join(', ')}`
   }
   if (file.size > MAX_BYTES) {
-    return 'File exceeds 10 MB; please split it.'
+    return 'File exceeds 15 MB; please split it.'
   }
   return null
 }
@@ -233,7 +233,7 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
                     <span className="text-primary-600 font-medium">browse</span>
                   </p>
                   <p className="text-xs text-gray-500 mt-1">
-                    {ALLOWED_EXTENSIONS.join(', ')} · up to 10 MB
+                    {ALLOWED_EXTENSIONS.join(', ')} · up to 15 MB
                   </p>
                 </div>
               )}

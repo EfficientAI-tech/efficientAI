@@ -1411,6 +1411,32 @@ def test_preview_rejects_unsupported_extension(
     assert "unsupported" in response.json()["detail"].lower()
 
 
+def test_preview_rejects_csv_over_upload_cap(
+    authenticated_client, db_session, org_id, seed_org
+):
+    from app.api.v1.routes.call_imports import MAX_UPLOAD_BYTES
+
+    too_large = b"x" * (MAX_UPLOAD_BYTES + 1)
+    response = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("rows.csv", too_large, "text/csv")},
+    )
+    assert response.status_code == 413
+
+    # A small valid CSV proves under-cap files pass the size gate. Building
+    # a ~15 MB multi-row fixture here would be slow to construct and parse.
+    within_limit = (
+        b"CallID,Recording URL,Transcript\n"
+        b"abc-1,https://x/r.mp3,hi\n"
+    )
+    assert len(within_limit) < MAX_UPLOAD_BYTES
+    response_ok = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("rows.csv", within_limit, "text/csv")},
+    )
+    assert response_ok.status_code == 200, response_ok.text
+
+
 # ---------------------------------------------------------------------------
 # /upload route — Excel variants
 # ---------------------------------------------------------------------------

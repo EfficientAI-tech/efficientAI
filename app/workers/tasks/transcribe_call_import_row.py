@@ -277,6 +277,37 @@ def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
     return _compact_diarisation_error(text, max_chars=max_chars)
 
 
+def _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id: str) -> None:
+    """Clear eval-row dispatch state after eval-chain transcribe completes."""
+    from app.models.database import CallImportEvaluationRow, CallImportRow
+
+    eval_row = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+        .first()
+    )
+    if eval_row is None:
+        return
+
+    eval_row.celery_task_id = None
+    source_row = (
+        db.query(CallImportRow)
+        .filter(CallImportRow.id == eval_row.call_import_row_id)
+        .first()
+    )
+    if (
+        source_row is not None
+        and (source_row.diarised_transcript_status or "").lower() == "failed"
+        and eval_row.status == "pending"
+    ):
+        eval_row.status = "failed"
+        eval_row.error_message = (
+            source_row.diarised_transcript_error or "Diarisation failed"
+        )
+        eval_row.finished_at = _now()
+    db.commit()
+
+
 @celery_app.task(
     name="transcribe_call_import_row",
     bind=True,
@@ -787,38 +818,20 @@ def transcribe_call_import_row_task(
     finally:
         if run_eval_row_id:
             try:
-                from app.models.database import CallImportEvaluationRow
-
-                eval_row = (
-                    db.query(CallImportEvaluationRow)
-                    .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-                    .first()
-                )
-                if eval_row is not None:
-                    eval_row.celery_task_id = None
-                    source_row = (
-                        db.query(CallImportRow)
-                        .filter(CallImportRow.id == eval_row.call_import_row_id)
-                        .first()
-                    )
-                    if (
-                        source_row is not None
-                        and (source_row.diarised_transcript_status or "").lower()
-                        == "failed"
-                        and eval_row.status == "pending"
-                    ):
-                        eval_row.status = "failed"
-                        eval_row.error_message = (
-                            source_row.diarised_transcript_error
-                            or "Diarisation failed"
-                        )
-                        eval_row.finished_at = _now()
-                    db.commit()
+                _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id)
             except Exception:
                 logger.exception(
                     "Failed to finalize eval-chain transcribe cleanup for row {}",
                     run_eval_row_id,
                 )
+                try:
+                    db.rollback()
+                    _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to clear stale celery_task_id for eval row {}",
+                        run_eval_row_id,
+                    )
         db.close()
         if run_eval_row_id:
             from app.workers.concurrency.fair_dispatch import (

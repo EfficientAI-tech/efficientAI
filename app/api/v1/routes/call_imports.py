@@ -116,7 +116,7 @@ def _resolve_tags(
     return rows
 
 
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB upload cap (CSV or Excel)
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB upload cap (CSV or Excel)
 
 # File extensions accepted by the upload + preview endpoints. Keep in
 # lockstep with the frontend ``accept`` attribute on the file picker.
