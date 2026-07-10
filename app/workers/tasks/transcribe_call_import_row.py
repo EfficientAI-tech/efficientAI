@@ -299,6 +299,7 @@ def transcribe_call_import_row_task(
     diarization_prompt: Optional[str] = None,
     mode: str = "stt_llm",
     eval_restricted_metric_ids: Optional[List[str]] = None,
+    _eval_slot_task_id: Optional[str] = None,
 ):
     """Diarise a single row's recording.
 
@@ -330,6 +331,18 @@ def transcribe_call_import_row_task(
     from app.models.enums import ModelProvider
 
     db = SessionLocal()
+    evaluation_id_for_dispatch: Optional[str] = None
+    slot_task_id = _eval_slot_task_id or self.request.id
+    if run_eval_row_id:
+        from app.models.database import CallImportEvaluationRow
+
+        eval_row_for_chain = (
+            db.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+            .first()
+        )
+        if eval_row_for_chain is not None:
+            evaluation_id_for_dispatch = str(eval_row_for_chain.evaluation_id)
     try:
         row_uuid = UUID(row_id)
         row = db.query(CallImportRow).filter(CallImportRow.id == row_uuid).first()
@@ -760,35 +773,6 @@ def transcribe_call_import_row_task(
         row.diarised_at = _now()
         db.commit()
 
-        # If this transcribe run was kicked off by the auto-transcribe
-        # branch of the Run Evaluation modal, immediately enqueue the
-        # corresponding eval-row task so the user doesn't have to poll
-        # twice (once for diarization, once for evaluation).
-        if run_eval_row_id:
-            try:
-                from app.workers.tasks.evaluate_call_import_row import (
-                    evaluate_call_import_row_task,
-                )
-
-                # ``eval_restricted_metric_ids`` is set by the
-                # metric-subset retry path so the chained evaluator
-                # only recomputes the metrics the user selected
-                # (merging into the row's existing ``metric_scores``).
-                if eval_restricted_metric_ids:
-                    evaluate_call_import_row_task.apply_async(
-                        args=(run_eval_row_id,),
-                        kwargs={
-                            "restricted_metric_ids": eval_restricted_metric_ids,
-                        },
-                    )
-                else:
-                    evaluate_call_import_row_task.delay(run_eval_row_id)
-            except Exception:
-                logger.exception(
-                    "Failed to enqueue post-transcribe eval row {}",
-                    run_eval_row_id,
-                )
-
         return {
             "status": "completed",
             "row_id": row_id,
@@ -801,4 +785,47 @@ def transcribe_call_import_row_task(
             "turn_count": len(turns) if has_real_diarisation else 0,
         }
     finally:
+        if run_eval_row_id:
+            try:
+                from app.models.database import CallImportEvaluationRow
+
+                eval_row = (
+                    db.query(CallImportEvaluationRow)
+                    .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+                    .first()
+                )
+                if eval_row is not None:
+                    eval_row.celery_task_id = None
+                    source_row = (
+                        db.query(CallImportRow)
+                        .filter(CallImportRow.id == eval_row.call_import_row_id)
+                        .first()
+                    )
+                    if (
+                        source_row is not None
+                        and (source_row.diarised_transcript_status or "").lower()
+                        == "failed"
+                        and eval_row.status == "pending"
+                    ):
+                        eval_row.status = "failed"
+                        eval_row.error_message = (
+                            source_row.diarised_transcript_error
+                            or "Diarisation failed"
+                        )
+                        eval_row.finished_at = _now()
+                    db.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to finalize eval-chain transcribe cleanup for row {}",
+                    run_eval_row_id,
+                )
         db.close()
+        if run_eval_row_id:
+            from app.workers.concurrency.fair_dispatch import (
+                finish_eval_work_and_redispatch,
+            )
+
+            finish_eval_work_and_redispatch(
+                slot_task_id,
+                restricted_metric_ids=eval_restricted_metric_ids,
+            )

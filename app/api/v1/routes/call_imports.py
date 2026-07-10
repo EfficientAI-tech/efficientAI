@@ -3147,6 +3147,7 @@ async def transcribe_call_import(
             skipped_reason_counts=skip_counts,
         )
 
+    from app.workers.concurrency import DIARIZATION_QUEUE
     from app.workers.tasks.transcribe_call_import_row import (
         transcribe_call_import_row_task,
     )
@@ -3154,7 +3155,8 @@ async def transcribe_call_import(
     enqueued = 0
     for row in rows:
         try:
-            transcribe_call_import_row_task.delay(
+            transcribe_call_import_row_task.apply_async(
+                args=(
                 str(row.id),
                 payload.stt_provider,
                 payload.stt_model,
@@ -3169,6 +3171,8 @@ async def transcribe_call_import(
                 else None,
                 payload.diarization_prompt,
                 payload.mode,
+                ),
+                queue=DIARIZATION_QUEUE,
             )
             enqueued += 1
         except Exception as exc:
@@ -3239,13 +3243,15 @@ async def transcribe_call_import_row(
             skipped_reason_counts=skip_counts,
         )
 
+    from app.workers.concurrency import DIARIZATION_QUEUE
     from app.workers.tasks.transcribe_call_import_row import (
         transcribe_call_import_row_task,
     )
 
     target = rows[0]
     try:
-        transcribe_call_import_row_task.delay(
+        transcribe_call_import_row_task.apply_async(
+            args=(
             str(target.id),
             payload.stt_provider,
             payload.stt_model,
@@ -3260,6 +3266,8 @@ async def transcribe_call_import_row(
             else None,
             payload.diarization_prompt,
             payload.mode,
+            ),
+            queue=DIARIZATION_QUEUE,
         )
         return CallImportTranscribeResponse(
             queued=1,

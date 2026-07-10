@@ -18,6 +18,8 @@ from . import generate_evaluation_tldr_insights
 from . import generate_evaluation_metric_clusters
 from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
+from app.workers.concurrency import eval_dispatch
+from app.workers.concurrency import fair_dispatch
 
 __all__ = [
     "celery_app",
@@ -38,6 +40,8 @@ __all__ = [
     "generate_evaluation_prompt_improvements_task",
     "generate_agent_flowchart_task",
     "map_agent_flowchart_prompt_sections_task",
+    "dispatch_evaluation_rows_task",
+    "dispatch_fair_eval_rows_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -69,3 +73,5 @@ generate_agent_flowchart_task = agent_flowchart_jobs.generate_agent_flowchart_ta
 map_agent_flowchart_prompt_sections_task = (
     agent_flowchart_jobs.map_agent_flowchart_prompt_sections_task
 )
+dispatch_evaluation_rows_task = eval_dispatch.dispatch_evaluation_rows_task
+dispatch_fair_eval_rows_task = fair_dispatch.dispatch_fair_eval_rows_task
