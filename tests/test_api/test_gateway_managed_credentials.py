@@ -1,6 +1,7 @@
 """API tests for gateway-managed AI provider credentials."""
 
 import pytest
+from uuid import UUID
 
 from app.config import settings
 from app.models.database import AIProvider
@@ -133,3 +134,32 @@ def test_llm_gateway_settings_expose_gateway_managed_flag(authenticated_client):
     response = authenticated_client.get("/api/v1/organizations/llm-gateway")
     assert response.status_code == 200
     assert response.json()["gateway_managed_credentials"] is True
+
+
+def test_update_gateway_managed_to_direct_requires_api_key(
+    authenticated_client, db_session, org_id
+):
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080"
+
+    create_response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={"provider": "openai", "name": "Gateway managed", "routing_mode": "gateway"},
+    )
+    assert create_response.status_code == 201
+    provider_id = create_response.json()["id"]
+
+    row = (
+        db_session.query(AIProvider)
+        .filter(AIProvider.id == UUID(provider_id))
+        .first()
+    )
+    assert row is not None
+    assert is_gateway_managed_stored_key(row.api_key) is True
+
+    update_response = authenticated_client.put(
+        f"/api/v1/aiproviders/{provider_id}",
+        json={"routing_mode": "direct"},
+    )
+    assert update_response.status_code == 400

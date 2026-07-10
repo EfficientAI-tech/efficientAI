@@ -107,9 +107,12 @@ def resolve_lm_call(
         ai_providers,
         voice_bundle=voice_bundle,
     )
-    credential_ctx = (
-        routing_context_from_ai_provider(ai_provider) if ai_provider else None
-    )
+    if not ai_provider:
+        raise RuntimeError(
+            f"No active AI provider matching '{lm_identifier.split('/')[0].lower()}' found. "
+            "Add one in Settings > AI Providers."
+        )
+    credential_ctx = routing_context_from_ai_provider(ai_provider)
     _, effective_routing = resolve_effective_routing(
         organization_id, db, credential_ctx
     )
@@ -118,16 +121,12 @@ def resolve_lm_call(
         gateway_active=effective_routing != "direct",
         credential=credential_ctx,
     )
-    api_key = (
-        resolve_api_key(
-            lm_identifier,
-            ai_providers,
-            organization_id,
-            db,
-            voice_bundle=voice_bundle,
-            credential=credential_ctx,
-        )
-        if ai_provider
-        else None
+    api_key = resolve_api_key(
+        lm_identifier,
+        ai_providers,
+        organization_id,
+        db,
+        voice_bundle=voice_bundle,
+        credential=credential_ctx,
     )
     return model_str, api_key, credential_ctx

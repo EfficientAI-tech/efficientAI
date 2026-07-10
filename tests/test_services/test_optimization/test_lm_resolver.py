@@ -111,3 +111,19 @@ def test_resolve_lm_call_uses_gateway_model(monkeypatch):
     assert model_str == "production-gpt4"
     assert api_key is None
     assert ctx.gateway_model == "production-gpt4"
+
+
+def test_resolve_lm_call_raises_for_missing_provider():
+    bundle = SimpleNamespace(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        llm_credential_id=uuid4(),
+    )
+    with pytest.raises(RuntimeError, match="No active AI provider"):
+        resolver_module.resolve_lm_call(
+            bundle,
+            None,
+            [],
+            uuid4(),
+            SimpleNamespace(),
+        )

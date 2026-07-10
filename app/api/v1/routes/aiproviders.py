@@ -277,7 +277,10 @@ async def update_aiprovider(
             routing_mode=next_routing_mode,
             api_key=next_api_key,
             gateway_model=next_gateway_model,
-            has_existing_key=bool(db_aiprovider.api_key),
+            has_existing_key=(
+                bool(db_aiprovider.api_key)
+                and not is_gateway_managed_stored_key(db_aiprovider.api_key)
+            ),
         )
 
     skip_fields = {
