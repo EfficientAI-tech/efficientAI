@@ -90,8 +90,12 @@ def _reserve_slot_and_enqueue(
         release_eval_slot_for_celery_task(reserved_task_id)
         raise
 
-    eval_row.celery_task_id = async_result.id
-    db.commit()
+    try:
+        eval_row.celery_task_id = async_result.id
+        db.commit()
+    except Exception:
+        release_eval_slot_for_celery_task(reserved_task_id)
+        raise
     return True
 
 
