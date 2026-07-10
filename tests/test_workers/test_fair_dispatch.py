@@ -25,18 +25,106 @@ def test_schedule_fair_dispatch_enqueues_task():
     assert mock_apply.call_args.kwargs["kwargs"]["max_workspace_turns"] == 1
 
 
-def test_store_and_pop_row_restricted_metrics():
+def test_store_get_and_pop_row_restricted_metrics():
     client = MagicMock()
     client.get.return_value = '["metric-a", "metric-b"]'
     row_id = uuid4()
+    key = f"{fair_dispatch_module._RESTRICTED_ROW_KEY_PREFIX}{row_id}"
     with patch.object(fair_dispatch_module, "_get_redis", return_value=client):
         fair_dispatch_module.store_row_restricted_metrics(
             row_id,
             ["metric-a", "metric-b"],
         )
-        result = fair_dispatch_module.pop_row_restricted_metrics(row_id)
-    assert result == ["metric-a", "metric-b"]
-    client.delete.assert_called_once()
+        peeked = fair_dispatch_module.get_row_restricted_metrics(row_id)
+        assert peeked == ["metric-a", "metric-b"]
+        client.delete.assert_not_called()
+        popped = fair_dispatch_module.pop_row_restricted_metrics(row_id)
+    assert popped == ["metric-a", "metric-b"]
+    client.delete.assert_called_once_with(key)
+
+
+def test_get_row_restricted_metrics_does_not_delete_key():
+    client = MagicMock()
+    client.get.return_value = '["metric-a"]'
+    row_id = uuid4()
+    with patch.object(fair_dispatch_module, "_get_redis", return_value=client):
+        assert fair_dispatch_module.get_row_restricted_metrics(row_id) == ["metric-a"]
+    client.delete.assert_not_called()
+
+
+def test_dispatch_batch_preserves_restricted_metrics_when_at_capacity():
+    workspace_id = uuid4()
+    eval_row = MagicMock()
+    eval_row.id = uuid4()
+    source_row = MagicMock()
+    evaluation = MagicMock(status="running")
+
+    with patch.object(
+        fair_dispatch_module,
+        "_pending_rows_for_workspace",
+        return_value=[(eval_row, source_row, evaluation)],
+    ), patch.object(
+        fair_dispatch_module,
+        "_try_dispatch_single_row",
+        return_value="at_capacity",
+    ), patch.object(
+        fair_dispatch_module,
+        "get_row_restricted_metrics",
+        return_value=["metric-a"],
+    ) as mock_get, patch.object(
+        fair_dispatch_module,
+        "clear_row_restricted_metrics",
+    ) as mock_clear, patch.object(
+        fair_dispatch_module,
+        "evaluation_transcribe_overwrite",
+        return_value=False,
+    ):
+        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
+            MagicMock(),
+            workspace_id,
+            batch_size=5,
+        )
+
+    assert dispatched == 0
+    mock_get.assert_called_once_with(eval_row.id)
+    mock_clear.assert_not_called()
+
+
+def test_dispatch_batch_clears_restricted_metrics_on_success():
+    workspace_id = uuid4()
+    eval_row = MagicMock()
+    eval_row.id = uuid4()
+    source_row = MagicMock()
+    evaluation = MagicMock(status="pending")
+
+    with patch.object(
+        fair_dispatch_module,
+        "_pending_rows_for_workspace",
+        return_value=[(eval_row, source_row, evaluation)],
+    ), patch.object(
+        fair_dispatch_module,
+        "_try_dispatch_single_row",
+        return_value="dispatched",
+    ), patch.object(
+        fair_dispatch_module,
+        "get_row_restricted_metrics",
+        return_value=["metric-a"],
+    ), patch.object(
+        fair_dispatch_module,
+        "clear_row_restricted_metrics",
+    ) as mock_clear, patch.object(
+        fair_dispatch_module,
+        "evaluation_transcribe_overwrite",
+        return_value=False,
+    ):
+        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
+            MagicMock(),
+            workspace_id,
+            batch_size=5,
+        )
+
+    assert dispatched == 1
+    mock_clear.assert_called_once_with(eval_row.id)
 
 
 def test_dispatch_batch_continues_past_diarisation_pending_row():
@@ -61,7 +149,7 @@ def test_dispatch_batch_continues_past_diarisation_pending_row():
         side_effect=["skip", "dispatched"],
     ) as mock_dispatch, patch.object(
         fair_dispatch_module,
-        "pop_row_restricted_metrics",
+        "get_row_restricted_metrics",
         return_value=None,
     ), patch.object(
         fair_dispatch_module,

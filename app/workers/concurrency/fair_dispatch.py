@@ -87,14 +87,13 @@ def evaluation_transcribe_overwrite(evaluation_id: UUID | str) -> bool:
         return False
 
 
-def pop_row_restricted_metrics(eval_row_id: UUID | str) -> Optional[List[str]]:
+def get_row_restricted_metrics(eval_row_id: UUID | str) -> Optional[List[str]]:
+    """Read metric-subset retry ids without removing them from Redis."""
     key = f"{_RESTRICTED_ROW_KEY_PREFIX}{eval_row_id}"
     try:
-        client = _get_redis()
-        raw = client.get(key)
+        raw = _get_redis().get(key)
         if not raw:
             return None
-        client.delete(key)
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return [str(item) for item in parsed]
@@ -105,6 +104,27 @@ def pop_row_restricted_metrics(eval_row_id: UUID | str) -> Optional[List[str]]:
             exc,
         )
     return None
+
+
+def clear_row_restricted_metrics(eval_row_id: UUID | str) -> None:
+    """Remove stored metric-subset retry ids after a successful dispatch."""
+    key = f"{_RESTRICTED_ROW_KEY_PREFIX}{eval_row_id}"
+    try:
+        _get_redis().delete(key)
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to clear restricted metrics for eval row {}: {}",
+            eval_row_id,
+            exc,
+        )
+
+
+def pop_row_restricted_metrics(eval_row_id: UUID | str) -> Optional[List[str]]:
+    """Atomically read and remove metric-subset retry ids."""
+    restricted_metric_ids = get_row_restricted_metrics(eval_row_id)
+    if restricted_metric_ids is not None:
+        clear_row_restricted_metrics(eval_row_id)
+    return restricted_metric_ids
 
 
 def _get_rr_cursor() -> int:
@@ -179,7 +199,7 @@ def _dispatch_batch_for_workspace(
     pending = _pending_rows_for_workspace(db, workspace_id, limit=batch_size)
     dispatched = 0
     for eval_row, source_row, evaluation in pending:
-        restricted_metric_ids = pop_row_restricted_metrics(eval_row.id)
+        restricted_metric_ids = get_row_restricted_metrics(eval_row.id)
         transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
         result = _try_dispatch_single_row(
             db=db,
@@ -191,6 +211,7 @@ def _dispatch_batch_for_workspace(
             auto_transcribe=True,
         )
         if result == "dispatched":
+            clear_row_restricted_metrics(eval_row.id)
             dispatched += 1
             if evaluation.status == "pending":
                 evaluation.status = "running"
