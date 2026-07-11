@@ -18,8 +18,23 @@ from app.models.schemas import (
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
 from app.services.voice_providers import get_voice_provider
+from app.services.ai.llm_gateway import get_credential_effective_routing_label
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
+
+
+def _integration_response(
+    integration: Integration,
+    organization_id: UUID,
+    db: Session,
+) -> IntegrationResponse:
+    effective_routing = get_credential_effective_routing_label(
+        organization_id,
+        db,
+        integration.routing_mode,
+    )
+    response = IntegrationResponse.model_validate(integration)
+    return response.model_copy(update={"effective_routing": effective_routing})
 
 
 def _validate_smallest_connection(raw_api_key: str):
@@ -87,6 +102,7 @@ async def create_integration(
         public_key=integration_data.public_key,
         is_active=True,
         is_default=will_be_default,
+        routing_mode=integration_data.routing_mode.value,
         last_tested_at=datetime.now(timezone.utc) if user_details is not None else None,
     )
 
@@ -106,7 +122,7 @@ async def create_integration(
     db.commit()
     db.refresh(integration)
 
-    return integration
+    return _integration_response(integration, organization_id, db)
 
 
 @router.post(
@@ -156,7 +172,7 @@ async def set_default_integration(
     integration.is_default = True
     db.commit()
     db.refresh(integration)
-    return integration
+    return _integration_response(integration, organization_id, db)
 
 
 @router.get("", response_model=List[IntegrationResponse], operation_id="listIntegrations")
@@ -190,7 +206,10 @@ async def list_integrations(
                 integration.platform,
             )
 
-    return filtered_integrations
+    return [
+        _integration_response(integration, organization_id, db)
+        for integration in filtered_integrations
+    ]
 
 
 @router.get("/{integration_id}", response_model=IntegrationResponse)
@@ -220,7 +239,7 @@ async def get_integration(
     if raw_platform not in {p.value for p in IntegrationPlatform}:
         raise HTTPException(status_code=404, detail="Integration not found")
     
-    return integration
+    return _integration_response(integration, organization_id, db)
 
 
 @router.put("/{integration_id}", response_model=IntegrationResponse, operation_id="updateIntegration")
@@ -258,11 +277,14 @@ async def update_integration(
     
     if integration_update.is_active is not None:
         integration.is_active = integration_update.is_active
+
+    if integration_update.routing_mode is not None:
+        integration.routing_mode = integration_update.routing_mode.value
     
     db.commit()
     db.refresh(integration)
     
-    return integration
+    return _integration_response(integration, organization_id, db)
 
 
 @router.delete("/{integration_id}", operation_id="deleteIntegration")

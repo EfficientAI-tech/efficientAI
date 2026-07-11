@@ -1239,8 +1239,9 @@ def test_diarisation_prompt_default_endpoint_returns_canonical_constant():
     from app.api.v1.routes.call_imports import (
         get_call_import_diarisation_prompt_default,
     )
-    from app.workers.tasks.helpers.llm_diarisation import (
-        DEFAULT_DIARIZATION_PROMPT,
+
+    llm_diarisation = _resolve_submodule(
+        "app.workers.tasks.helpers.llm_diarisation"
     )
 
     response = asyncio.run(
@@ -1248,7 +1249,22 @@ def test_diarisation_prompt_default_endpoint_returns_canonical_constant():
             api_key="ignored", organization_id=uuid4()
         )
     )
-    assert response.prompt == DEFAULT_DIARIZATION_PROMPT
+    assert response.prompt == llm_diarisation.DEFAULT_DIARIZATION_PROMPT
+
+
+def test_diarisation_prompt_default_http_route_not_shadowed_by_import_id(
+    authenticated_client,
+):
+    """Static path must be registered before ``GET /{call_import_id}``."""
+    expected_prompt = _resolve_submodule(
+        "app.workers.tasks.helpers.llm_diarisation"
+    ).DEFAULT_DIARIZATION_PROMPT
+
+    response = authenticated_client.get(
+        "/api/v1/call-imports/diarisation-prompt-default"
+    )
+    assert response.status_code == 200
+    assert response.json()["prompt"] == expected_prompt
 
 
 # ---------------------------------------------------------------------------

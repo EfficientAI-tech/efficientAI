@@ -109,6 +109,21 @@ class TelephonyProvider(str, enum.Enum):
     EXOTEL = "exotel"
     VOBIZ = "vobiz"
 
+
+class CredentialRoutingMode(str, enum.Enum):
+    """Per-credential LLM routing preference."""
+    INHERIT = "inherit"
+    GATEWAY = "gateway"
+    DIRECT = "direct"
+
+
+class GatewayInterfaceMode(str, enum.Enum):
+    """How Bifrost is reached when gateway routing is active."""
+    INHERIT = "inherit"
+    LITELLM_SHIM = "litellm_shim"
+    NATIVE_OPENAI = "native_openai"
+
+
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
     OPENAI = "openai"

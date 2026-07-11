@@ -69,6 +69,16 @@ def _resolve_credentials_path() -> Optional[str]:
     return str(resolved) if resolved.exists() else str(path)
 
 
+_GCS_SIGNING_UNAVAILABLE_MSG = (
+    "GCS signed URLs require signing credentials. Provide a service account JSON "
+    "(gcs.credentials_path or GOOGLE_APPLICATION_CREDENTIALS), or configure "
+    "GKE Workload Identity with the IAM Credentials API enabled and grant "
+    "roles/iam.serviceAccountTokenCreator to the workload service account on itself. "
+    "Optional: set gcs.signing_service_account_email when the service account email "
+    "is not detected from ADC."
+)
+
+
 class GcsService:
     """Service for managing GCS file storage."""
 
@@ -126,6 +136,35 @@ class GcsService:
             if creds is not None and getattr(creds, "signer", None) is not None:
                 self._signing_credentials = creds
                 return creds
+
+        return None
+
+    def _get_iam_signing_params(self) -> Optional[Tuple[str, str]]:
+        """Return (service_account_email, access_token) for IAM signBlob URL signing."""
+        if self.gcs_client is None:
+            return None
+
+        creds = getattr(self.gcs_client, "_credentials", None)
+        if creds is None:
+            return None
+
+        sa_email = settings.GCS_SIGNING_SERVICE_ACCOUNT_EMAIL or getattr(
+            creds, "service_account_email", None
+        ) or getattr(creds, "signer_email", None)
+        if not sa_email:
+            return None
+
+        try:
+            from google.auth.transport import requests as auth_requests
+
+            auth_request = auth_requests.Request()
+            if not creds.valid:
+                creds.refresh(auth_request)
+            token = creds.token
+            if token:
+                return sa_email, token
+        except Exception:
+            return None
 
         return None
 
@@ -524,20 +563,28 @@ class GcsService:
         _, NotFound, GoogleCloudError = _get_gcs_exception_types()
 
         credentials = self._get_signing_credentials()
-        if credentials is None:
-            raise StorageError(
-                "GCS signed URLs require a service account JSON with a private key. "
-                "Set gcs.credentials_path or GOOGLE_APPLICATION_CREDENTIALS."
-            )
+        iam_params = None if credentials is not None else self._get_iam_signing_params()
+        if credentials is None and iam_params is None:
+            raise StorageError(_GCS_SIGNING_UNAVAILABLE_MSG)
 
         try:
             blob = self.bucket.blob(key)
-            url = blob.generate_signed_url(
-                version="v4",
-                expiration=timedelta(seconds=expiration),
-                method="GET",
-                credentials=credentials,
-            )
+            if credentials is not None:
+                url = blob.generate_signed_url(
+                    version="v4",
+                    expiration=timedelta(seconds=expiration),
+                    method="GET",
+                    credentials=credentials,
+                )
+            else:
+                sa_email, access_token = iam_params
+                url = blob.generate_signed_url(
+                    version="v4",
+                    expiration=timedelta(seconds=expiration),
+                    method="GET",
+                    service_account_email=sa_email,
+                    access_token=access_token,
+                )
             return url
         except GoogleCloudError as e:
             raise StorageError(f"Failed to generate signed URL: {str(e)}")

@@ -117,9 +117,9 @@ services:
       - "8001:8001"
     command: eai start-worker-all --config /app/config.yml --loglevel info --media-port 8001
 
-  # Dedicated worker for the call-import fan-out so large CSV imports
-  # don't starve synthetic-calling, audio generation, and evaluation jobs
-  # running on the default queue handled by the `worker` service above.
+  # Dedicated worker for call-import + evaluation queues. Celery drains
+  # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
+  # then ``evaluations`` (eval rows, eval-chain transcribe, post-eval LLM).
   worker-imports:
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     build:
@@ -147,7 +147,7 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    command: eai worker --config /app/config.yml --loglevel info --queues imports --concurrency 4
+    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,evaluations --concurrency 8
 
 volumes:
   postgres_data:

@@ -21,13 +21,29 @@ def test_resolve_lm_prioritizes_voice_bundle_then_evaluator_then_default():
 
 def test_resolve_api_key_returns_decrypted_key(monkeypatch):
     providers = [
-        SimpleNamespace(provider="openai", api_key="enc-1", is_active=True),
-        SimpleNamespace(provider="anthropic", api_key="enc-2", is_active=True),
+        SimpleNamespace(
+            id=uuid4(),
+            provider="openai",
+            api_key="enc-1",
+            is_active=True,
+            is_default=True,
+            routing_mode="inherit",
+            gateway_model=None,
+        ),
+        SimpleNamespace(
+            id=uuid4(),
+            provider="anthropic",
+            api_key="enc-2",
+            is_active=True,
+            is_default=True,
+            routing_mode="inherit",
+            gateway_model=None,
+        ),
     ]
     monkeypatch.setattr(
         resolver_module,
         "resolve_litellm_api_key",
-        lambda _org_id, _db, provider: f"dec::{provider.api_key}",
+        lambda _org_id, _db, provider, credential=None: f"dec::{provider.api_key}",
     )
 
     org_id = uuid4()
@@ -39,8 +55,75 @@ def test_resolve_api_key_returns_decrypted_key(monkeypatch):
 
 
 def test_resolve_api_key_raises_for_missing_provider():
-    providers = [SimpleNamespace(provider="anthropic", api_key="enc-2", is_active=True)]
+    providers = [
+        SimpleNamespace(
+            id=uuid4(),
+            provider="anthropic",
+            api_key="enc-2",
+            is_active=True,
+            is_default=True,
+            routing_mode="inherit",
+            gateway_model=None,
+        )
+    ]
     org_id = uuid4()
     db = SimpleNamespace()
     with pytest.raises(RuntimeError, match="No active AI provider"):
         resolver_module.resolve_api_key("openai/gpt-4o", providers, org_id, db)
+
+
+def test_resolve_lm_call_uses_gateway_model(monkeypatch):
+    credential_id = uuid4()
+    providers = [
+        SimpleNamespace(
+            id=credential_id,
+            provider="openai",
+            api_key="enc-1",
+            is_active=True,
+            is_default=True,
+            routing_mode="gateway",
+            gateway_model="production-gpt4",
+        ),
+    ]
+    bundle = SimpleNamespace(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        llm_credential_id=credential_id,
+    )
+    monkeypatch.setattr(
+        resolver_module,
+        "resolve_litellm_api_key",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        resolver_module,
+        "resolve_effective_routing",
+        lambda *_args, **_kwargs: (object(), "bifrost"),
+    )
+
+    model_str, api_key, ctx = resolver_module.resolve_lm_call(
+        bundle,
+        None,
+        providers,
+        uuid4(),
+        SimpleNamespace(),
+    )
+    assert model_str == "production-gpt4"
+    assert api_key is None
+    assert ctx.gateway_model == "production-gpt4"
+
+
+def test_resolve_lm_call_raises_for_missing_provider():
+    bundle = SimpleNamespace(
+        llm_provider="openai",
+        llm_model="gpt-4o",
+        llm_credential_id=uuid4(),
+    )
+    with pytest.raises(RuntimeError, match="No active AI provider"):
+        resolver_module.resolve_lm_call(
+            bundle,
+            None,
+            [],
+            uuid4(),
+            SimpleNamespace(),
+        )

@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     GCS_BUCKET_NAME: Optional[str] = None
     GCS_PROJECT_ID: Optional[str] = None
     GCS_CREDENTIALS_PATH: Optional[str] = None
+    GCS_SIGNING_SERVICE_ACCOUNT_EMAIL: Optional[str] = None
     GCS_PREFIX: str = "audio/"
 
     # Azure Blob Storage Configuration
@@ -73,6 +74,12 @@ class Settings(BaseSettings):
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
     CELERY_RESULT_BACKEND: Optional[str] = None
+
+    # Call-import worker concurrency limits (Redis fair-share for evaluations)
+    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 10
+    EVAL_ORG_INFLIGHT_LIMIT: int = 50
+    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 100
+    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 5
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -190,6 +197,7 @@ class Settings(BaseSettings):
     LLM_GATEWAY_VIRTUAL_KEY: Optional[str] = None
     LLM_GATEWAY_MASTER_KEY: Optional[str] = None
     LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS: bool = True
+    LLM_GATEWAY_INTERFACE: str = "litellm_shim"  # litellm_shim | native_openai
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -435,6 +443,25 @@ def load_config_from_file(config_path: str) -> None:
             settings.CELERY_BROKER_URL = celery_config["broker_url"]
         if "result_backend" in celery_config:
             settings.CELERY_RESULT_BACKEND = celery_config["result_backend"]
+
+    if "workers" in config_data:
+        workers_config = config_data["workers"]
+        if "eval_workspace_inflight_limit" in workers_config:
+            settings.EVAL_WORKSPACE_INFLIGHT_LIMIT = int(
+                workers_config["eval_workspace_inflight_limit"]
+            )
+        if "eval_org_inflight_limit" in workers_config:
+            settings.EVAL_ORG_INFLIGHT_LIMIT = int(
+                workers_config["eval_org_inflight_limit"]
+            )
+        if "eval_global_inflight_limit" in workers_config:
+            settings.EVAL_GLOBAL_INFLIGHT_LIMIT = int(
+                workers_config["eval_global_inflight_limit"]
+            )
+        if "eval_fair_dispatch_batch_size" in workers_config:
+            settings.EVAL_FAIR_DISPATCH_BATCH_SIZE = int(
+                workers_config["eval_fair_dispatch_batch_size"]
+            )
     
     if "storage" in config_data:
         storage_config = config_data["storage"]
@@ -474,6 +501,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.GCS_PROJECT_ID = gcs_config["project_id"]
         if "credentials_path" in gcs_config:
             settings.GCS_CREDENTIALS_PATH = gcs_config["credentials_path"]
+        if "signing_service_account_email" in gcs_config:
+            settings.GCS_SIGNING_SERVICE_ACCOUNT_EMAIL = gcs_config[
+                "signing_service_account_email"
+            ]
         if "prefix" in gcs_config:
             settings.GCS_PREFIX = gcs_config["prefix"]
 
@@ -667,6 +698,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.LLM_GATEWAY_PASSTHROUGH_PROVIDER_KEYS = bool(
                 gateway_cfg["passthrough_provider_keys"]
             )
+        if gateway_cfg.get("gateway_interface"):
+            interface = str(gateway_cfg["gateway_interface"]).strip().lower()
+            if interface in ("litellm_shim", "native_openai"):
+                settings.LLM_GATEWAY_INTERFACE = interface
 
     if "llm_gateway" in config_data:
         llm_cfg = config_data["llm_gateway"]

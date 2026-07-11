@@ -40,6 +40,7 @@ class GeneratePromptRequest(BaseModel):
     format_style: Optional[str] = "structured"
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
     llm_config: Optional[Dict[str, Any]] = None
 
 
@@ -48,6 +49,7 @@ class ImprovePromptRequest(BaseModel):
     instructions: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
     llm_config: Optional[Dict[str, Any]] = None
 
 
@@ -196,7 +198,7 @@ async def generate_prompt_with_ai(
         raise HTTPException(400, "Description is required")
 
     provider_enum, model_str = _get_llm_provider_and_model(
-        organization_id, db, data.provider, data.model
+        organization_id, db, data.provider, data.model, data.credential_id
     )
 
     user_prompt = (
@@ -221,6 +223,7 @@ async def generate_prompt_with_ai(
             db=db,
             llm_config=data.llm_config,
             task_defaults={"temperature": 0.7, "max_tokens": 4000},
+            credential_id=data.credential_id,
         )
         return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
     except Exception as e:
@@ -242,7 +245,7 @@ async def improve_prompt_with_ai(
         raise HTTPException(400, "Content is required")
 
     provider_enum, model_str = _get_llm_provider_and_model(
-        organization_id, db, data.provider, data.model
+        organization_id, db, data.provider, data.model, data.credential_id
     )
 
     user_content = data.content
@@ -263,6 +266,7 @@ async def improve_prompt_with_ai(
             db=db,
             llm_config=data.llm_config,
             task_defaults={"temperature": 0.3, "max_tokens": 4000},
+            credential_id=data.credential_id,
         )
         return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
     except Exception as e:

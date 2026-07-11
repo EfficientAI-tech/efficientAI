@@ -1,13 +1,14 @@
 """Pydantic schemas for request/response validation."""
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
+import re
 from typing import Optional, List, Dict, Any, Literal
 from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
-    IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
+    IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
@@ -563,6 +564,10 @@ class IntegrationCreate(BaseModel):
     api_key: str = Field(..., description="Private API key for the platform")
     public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
+    routing_mode: CredentialRoutingMode = Field(
+        CredentialRoutingMode.INHERIT,
+        description="LLM routing preference: inherit org default, force gateway, or direct API key.",
+    )
     is_default: Optional[bool] = Field(
         None,
         description=(
@@ -578,6 +583,7 @@ class IntegrationUpdate(BaseModel):
     api_key: Optional[str] = None
     public_key: Optional[str] = None
     is_active: Optional[bool] = None
+    routing_mode: Optional[CredentialRoutingMode] = None
 
 
 class IntegrationResponse(BaseModel):
@@ -589,6 +595,8 @@ class IntegrationResponse(BaseModel):
     public_key: Optional[str] = None
     is_active: bool
     is_default: bool = False
+    routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
+    effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime] = None
@@ -611,6 +619,18 @@ class IntegrationResponse(BaseModel):
                     if enum_member.name == v or enum_member.value == v:
                         return enum_member
                 raise ValueError(f"Invalid IntegrationPlatform value: {v}")
+        return v
+
+    @field_validator('routing_mode', mode='before')
+    @classmethod
+    def convert_routing_mode(cls, v):
+        if v is None:
+            return CredentialRoutingMode.INHERIT
+        if isinstance(v, str):
+            try:
+                return CredentialRoutingMode(v.lower())
+            except ValueError:
+                return CredentialRoutingMode.INHERIT
         return v
 
     model_config = ConfigDict(from_attributes=True)
@@ -674,20 +694,85 @@ class S3UploadResponse(BaseModel):
 
 
 # AIProvider Schemas
+_MAX_GATEWAY_EXTRA_HEADERS = 20
+
+
+def _validate_gateway_extra_headers(
+    value: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, str]]:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("gateway_extra_headers must be a JSON object of string keys and values.")
+    if len(value) > _MAX_GATEWAY_EXTRA_HEADERS:
+        raise ValueError(
+            f"gateway_extra_headers supports at most {_MAX_GATEWAY_EXTRA_HEADERS} headers."
+        )
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_val in value.items():
+        key = str(raw_key).strip()
+        if not key:
+            raise ValueError("gateway_extra_headers keys must be non-empty strings.")
+        if len(key) > 64 or any(ch.isspace() for ch in key):
+            raise ValueError(f"Invalid gateway header name: {key!r}")
+        if raw_val is None:
+            raise ValueError(f"gateway_extra_headers[{key!r}] must be a string value.")
+        val = str(raw_val).strip()
+        if not val:
+            raise ValueError(f"gateway_extra_headers[{key!r}] must be a non-empty string.")
+        if len(val) > 1024 or "\n" in val or "\r" in val:
+            raise ValueError(f"gateway_extra_headers[{key!r}] value is invalid.")
+        normalized[key] = val
+    return normalized or None
+
+
 class AIProviderCreate(BaseModel):
     """Schema for creating an AI Provider."""
     provider: ModelProvider
     api_key: Optional[str] = Field(
         None,
         description=(
-            "Provider API key. Optional when the platform uses Bifrost "
+            "Provider API key. Optional when routing via gateway with "
             "gateway-managed credentials (passthrough_provider_keys: false)."
         ),
     )
     name: Optional[str] = None
-    endpoint_url: Optional[str] = Field(
+    routing_mode: CredentialRoutingMode = Field(
+        CredentialRoutingMode.INHERIT,
+        description="LLM routing preference: inherit org default, force gateway, or direct API key.",
+    )
+    gateway_model: Optional[str] = Field(
         None,
-        description="Azure OpenAI resource endpoint URL (Azure provider only).",
+        min_length=1,
+        max_length=255,
+        description="Bifrost custom model ID sent when routing via gateway.",
+    )
+    gateway_interface: GatewayInterfaceMode = Field(
+        GatewayInterfaceMode.INHERIT,
+        description="Bifrost API surface: inherit org default, LiteLLM shim, or native OpenAI-compatible.",
+    )
+    gateway_base_url: Optional[str] = Field(
+        None,
+        max_length=512,
+        description="Optional per-credential Bifrost/gateway base URL override.",
+    )
+    gateway_auth_header: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="Auth header name for Bifrost (default x-bf-vk).",
+    )
+    gateway_auth_secret_env: Optional[str] = Field(
+        None,
+        max_length=128,
+        description="Environment variable name holding the gateway auth secret.",
+    )
+    gateway_auth_secret: Optional[str] = Field(
+        None,
+        description="Inline gateway auth secret (encrypted at rest). Alternative to env var.",
+    )
+    gateway_extra_headers: Optional[Dict[str, str]] = Field(
+        None,
+        description="Arbitrary HTTP headers sent with gateway-routed LiteLLM calls.",
     )
     is_default: Optional[bool] = Field(
         None,
@@ -705,18 +790,60 @@ class AIProviderCreate(BaseModel):
         trimmed = v.strip()
         return trimmed or None
 
-    @field_validator("endpoint_url")
+    @field_validator("gateway_model")
     @classmethod
-    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
+    def validate_gateway_model(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_base_url")
+    @classmethod
+    def validate_gateway_base_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_auth_header")
+    @classmethod
+    def validate_gateway_auth_header(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         trimmed = v.strip()
         if not trimmed:
             return None
-        lowered = trimmed.lower()
-        if not (lowered.startswith("http://") or lowered.startswith("https://")):
-            raise ValueError("endpoint_url must be an http(s) URL")
+        if len(trimmed) > 64 or any(ch.isspace() for ch in trimmed):
+            raise ValueError("gateway_auth_header must be a single non-empty header name.")
         return trimmed
+
+    @field_validator("gateway_auth_secret_env")
+    @classmethod
+    def validate_gateway_auth_secret_env(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", trimmed):
+            raise ValueError(
+                "gateway_auth_secret_env must be a valid environment variable name."
+            )
+        return trimmed
+
+    @field_validator("gateway_auth_secret")
+    @classmethod
+    def validate_gateway_auth_secret(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_extra_headers")
+    @classmethod
+    def validate_gateway_extra_headers(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+        return _validate_gateway_extra_headers(v)
 
 
 class AIProviderUpdate(BaseModel):
@@ -728,6 +855,72 @@ class AIProviderUpdate(BaseModel):
         description="Azure OpenAI resource endpoint URL (Azure provider only).",
     )
     is_active: Optional[bool] = None
+    routing_mode: Optional[CredentialRoutingMode] = None
+    gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
+    gateway_interface: Optional[GatewayInterfaceMode] = None
+    gateway_base_url: Optional[str] = Field(None, max_length=512)
+    gateway_auth_header: Optional[str] = Field(None, max_length=64)
+    gateway_auth_secret_env: Optional[str] = Field(None, max_length=128)
+    gateway_auth_secret: Optional[str] = None
+    clear_gateway_auth_secret: bool = False
+    gateway_extra_headers: Optional[Dict[str, str]] = None
+
+    @field_validator("gateway_model")
+    @classmethod
+    def validate_gateway_model(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_base_url")
+    @classmethod
+    def validate_gateway_base_url_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_auth_header")
+    @classmethod
+    def validate_gateway_auth_header_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > 64 or any(ch.isspace() for ch in trimmed):
+            raise ValueError("gateway_auth_header must be a single non-empty header name.")
+        return trimmed
+
+    @field_validator("gateway_auth_secret_env")
+    @classmethod
+    def validate_gateway_auth_secret_env_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        if not trimmed:
+            return None
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", trimmed):
+            raise ValueError(
+                "gateway_auth_secret_env must be a valid environment variable name."
+            )
+        return trimmed
+
+    @field_validator("gateway_auth_secret")
+    @classmethod
+    def validate_gateway_auth_secret_update(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("gateway_extra_headers")
+    @classmethod
+    def validate_gateway_extra_headers_update(
+        cls, v: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, str]]:
+        return _validate_gateway_extra_headers(v)
 
     @field_validator("endpoint_url")
     @classmethod
@@ -752,7 +945,17 @@ class AIProviderResponse(BaseModel):
     endpoint_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
+    routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
+    gateway_model: Optional[str] = None
+    gateway_interface: GatewayInterfaceMode = GatewayInterfaceMode.INHERIT
+    gateway_base_url: Optional[str] = None
+    gateway_auth_header: Optional[str] = None
+    gateway_auth_secret_env: Optional[str] = None
+    has_gateway_auth_secret: bool = False
+    gateway_extra_headers: Optional[Dict[str, str]] = None
     gateway_managed: bool = False
+    effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
+    effective_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]
@@ -772,6 +975,18 @@ class AIProviderResponse(BaseModel):
                     if enum_member.name == v or enum_member.value == v:
                         return enum_member
                 raise ValueError(f"Invalid ModelProvider value: {v}")
+        return v
+
+    @field_validator('routing_mode', mode='before')
+    @classmethod
+    def convert_routing_mode(cls, v):
+        if v is None:
+            return CredentialRoutingMode.INHERIT
+        if isinstance(v, str):
+            try:
+                return CredentialRoutingMode(v.lower())
+            except ValueError:
+                return CredentialRoutingMode.INHERIT
         return v
     
     model_config = ConfigDict(from_attributes=True)
@@ -2278,9 +2493,10 @@ class CallImportSchemaParameterBase(BaseModel):
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
             "datetime / url. Exactly one parameter of type "
-            "'conversation_id' must be present; at most one each of "
-            "'recording_url', 'recording_date', and 'transcript'. Only "
-            "'conversation_id' is forced required."
+            "'conversation_id' and exactly one of type 'recording_url' "
+            "must be present; at most one each of 'recording_date' and "
+            "'transcript'. Both conversation_id and recording_url are "
+            "forced required."
         ),
     )
     description: Optional[str] = Field(
@@ -2292,8 +2508,9 @@ class CallImportSchemaParameterBase(BaseModel):
         default=False,
         description=(
             "When True, the parameter must be mapped to a CSV column on "
-            "every upload. The ``conversation_id`` parameter is always "
-            "required and is force-set to True by the server."
+            "every upload. The ``conversation_id`` and ``recording_url`` "
+            "parameters are always required and are force-set to True by "
+            "the server."
         ),
     )
 
@@ -2347,6 +2564,11 @@ def _validate_schema_parameters(
         raise ValueError(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
+        )
+    if rec_url_count != 1:
+        raise ValueError(
+            "Schema must contain exactly one parameter of type "
+            "'recording_url'."
         )
     if recording_date_count > 1:
         raise ValueError(

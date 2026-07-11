@@ -1,0 +1,225 @@
+"""Throttled fan-out for call-import evaluation rows."""
+
+from __future__ import annotations
+
+from typing import Callable, List, Literal, Optional
+from uuid import UUID
+
+from celery.utils import uuid as celery_uuid
+from loguru import logger
+from sqlalchemy.orm import Session
+
+from app.database import SessionLocal
+from app.models.database import (
+    CallImportEvaluation,
+    CallImportEvaluationRow,
+    CallImportRow,
+)
+from app.workers.concurrency.limits import (
+    acquire_eval_slot,
+    release_eval_slot_for_celery_task,
+)
+from app.workers.config import celery_app
+
+IMPORTS_QUEUE = "imports"
+DIARIZATION_QUEUE = "diarization"
+EVALUATIONS_QUEUE = "evaluations"
+
+DispatchSingleRowResult = Literal["dispatched", "skip", "at_capacity"]
+
+
+def schedule_evaluation_dispatch(
+    evaluation_id: UUID | str,
+    *,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+    auto_transcribe: bool = True,
+    countdown: int = 0,
+) -> None:
+    """Schedule fair round-robin dispatch (evaluation_id kept for API compat)."""
+    from app.workers.concurrency.fair_dispatch import schedule_fair_dispatch
+
+    schedule_fair_dispatch(max_workspace_turns=999, countdown=countdown)
+
+
+def _needs_transcribe_for_eval(
+    evaluation: CallImportEvaluation,
+    source_row: CallImportRow,
+    *,
+    transcribe_overwrite: bool,
+    auto_transcribe: bool = True,
+) -> bool:
+    if not auto_transcribe:
+        return False
+    transcribe_mode = (
+        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
+    ).strip().lower()
+    has_stt_config = bool(evaluation.stt_provider and evaluation.stt_model)
+    has_diariser_config = bool(
+        getattr(evaluation, "diarisation_llm_provider", None)
+        and getattr(evaluation, "diarisation_llm_model", None)
+    )
+    can_auto_transcribe = (
+        has_stt_config if transcribe_mode == "stt_llm" else has_diariser_config
+    )
+    has_audio = bool((source_row.recording_s3_key or "").strip())
+    existing_dia = (source_row.diarised_transcript or "").strip()
+    needs_diarisation = not existing_dia or transcribe_overwrite
+    return bool(can_auto_transcribe and has_audio and needs_diarisation)
+
+
+def _reserve_slot_and_enqueue(
+    *,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    db: Session,
+    enqueue_fn: Callable[[str], object],
+) -> bool:
+    """Reserve a fair-share slot and enqueue a Celery task."""
+    reserved_task_id = celery_uuid()
+    if not acquire_eval_slot(
+        workspace_id=evaluation.workspace_id,
+        organization_id=evaluation.organization_id,
+        celery_task_id=reserved_task_id,
+    ):
+        return False
+
+    try:
+        async_result = enqueue_fn(reserved_task_id)
+    except Exception:
+        release_eval_slot_for_celery_task(reserved_task_id)
+        raise
+
+    try:
+        eval_row.celery_task_id = async_result.id
+        db.commit()
+    except Exception:
+        release_eval_slot_for_celery_task(reserved_task_id)
+        raise
+    return True
+
+
+def _try_dispatch_single_row(
+    *,
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+    auto_transcribe: bool = True,
+) -> DispatchSingleRowResult:
+    """Dispatch one eval row (transcribe or evaluate).
+
+    Returns:
+      * ``dispatched`` — task enqueued
+      * ``skip`` — row not ready or evaluation terminal; try next row in batch
+      * ``at_capacity`` — inflight cap reached; stop the workspace batch
+    """
+    from app.workers.tasks.evaluate_call_import_row import (
+        evaluate_call_import_row_task,
+    )
+    from app.workers.tasks.transcribe_call_import_row import (
+        transcribe_call_import_row_task,
+    )
+
+    if evaluation.status in {"cancelled", "completed", "failed"}:
+        return "skip"
+
+    transcribe_mode = (
+        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
+    ).strip().lower()
+
+    if _needs_transcribe_for_eval(
+        evaluation,
+        source_row,
+        transcribe_overwrite=transcribe_overwrite,
+        auto_transcribe=auto_transcribe,
+    ):
+        dia_status = (source_row.diarised_transcript_status or "").strip().lower()
+        if dia_status == "pending":
+            return "skip"
+
+        def _enqueue_transcribe(reserved_task_id: str):
+            source_row.diarised_transcript_status = "pending"
+            source_row.diarised_transcript_error = None
+            db.flush()
+            kwargs = {"_eval_slot_task_id": reserved_task_id}
+            if restricted_metric_ids:
+                kwargs["eval_restricted_metric_ids"] = restricted_metric_ids
+            return transcribe_call_import_row_task.apply_async(
+                args=(
+                    str(source_row.id),
+                    evaluation.stt_provider
+                    if transcribe_mode == "stt_llm"
+                    else None,
+                    evaluation.stt_model
+                    if transcribe_mode == "stt_llm"
+                    else None,
+                    str(evaluation.stt_credential_id)
+                    if (
+                        transcribe_mode == "stt_llm"
+                        and evaluation.stt_credential_id
+                    )
+                    else None,
+                    None,
+                    transcribe_overwrite,
+                    str(eval_row.id),
+                    getattr(evaluation, "diarisation_llm_provider", None),
+                    getattr(evaluation, "diarisation_llm_model", None),
+                    str(evaluation.diarisation_llm_credential_id)
+                    if getattr(evaluation, "diarisation_llm_credential_id", None)
+                    else None,
+                    getattr(evaluation, "diarisation_prompt", None),
+                    transcribe_mode,
+                ),
+                kwargs=kwargs,
+                queue=EVALUATIONS_QUEUE,
+                task_id=reserved_task_id,
+            )
+
+        if _reserve_slot_and_enqueue(
+            evaluation=evaluation,
+            eval_row=eval_row,
+            db=db,
+            enqueue_fn=_enqueue_transcribe,
+        ):
+            return "dispatched"
+        return "at_capacity"
+
+    def _enqueue_eval(reserved_task_id: str):
+        kwargs = {"_eval_slot_task_id": reserved_task_id}
+        if restricted_metric_ids:
+            kwargs["restricted_metric_ids"] = restricted_metric_ids
+        return evaluate_call_import_row_task.apply_async(
+            args=(str(eval_row.id),),
+            kwargs=kwargs,
+            queue=EVALUATIONS_QUEUE,
+            task_id=reserved_task_id,
+        )
+
+    if _reserve_slot_and_enqueue(
+        evaluation=evaluation,
+        eval_row=eval_row,
+        db=db,
+        enqueue_fn=_enqueue_eval,
+    ):
+        return "dispatched"
+    return "at_capacity"
+
+
+@celery_app.task(name="dispatch_evaluation_rows", queue=EVALUATIONS_QUEUE)
+def dispatch_evaluation_rows_task(
+    evaluation_id: str,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+    auto_transcribe: bool = True,
+) -> dict:
+    """Legacy per-evaluation dispatcher — delegates to fair round-robin."""
+    schedule_evaluation_dispatch(
+        evaluation_id,
+        restricted_metric_ids=restricted_metric_ids,
+        transcribe_overwrite=transcribe_overwrite,
+        auto_transcribe=auto_transcribe,
+    )
+    return {"status": "delegated", "dispatcher": "fair", "evaluation_id": evaluation_id}

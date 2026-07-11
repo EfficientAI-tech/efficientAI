@@ -978,105 +978,17 @@ async def create_call_import_evaluation(
             db, primary_evaluation, sibling_evaluation_ids=sibling_ids
         )
 
-    # Auto-transcribe scheduling: enqueue diarisation once per row when
-    # the diarised transcript is missing. Production (CSV) text is kept
-    # on the row for comparison metrics only.
-
-    # Lazy imports keep test setup simple — tests stub the worker module so
-    # importing the route never reaches into Celery's broker config.
-    from app.workers.tasks.evaluate_call_import_row import (
-        evaluate_call_import_row_task,
-    )
-    from celery import group
-
+    # Throttled dispatch: one Celery message per evaluation parent instead
+    # of fanning out thousands of row tasks immediately.
     try:
-        # Figure out which eval rows can run immediately vs which need
-        # to wait for diarisation when ``auto_transcribe`` is enabled.
-        eval_only_row_ids: List[str] = []
-        # row_id -> list of (eval_row, source_row) waiting on its diarisation
-        deferred_by_row: Dict[
-            UUID, List[Tuple[CallImportEvaluationRow, CallImportRow]]
-        ] = {}
-
         for evaluation in created_evaluations:
             bucket = eval_row_buckets[evaluation.id]
-            # Every evaluation run scores the diarised transcript; auto-
-            # transcribe when it is missing and the row has audio.
-            is_diarised_run = True
-            for eval_row, source_row in bucket:
-                if (
-                    auto_transcribe
-                    and is_diarised_run
-                    and bool((source_row.recording_s3_key or "").strip())
-                ):
-                    existing_dia = (
-                        source_row.diarised_transcript or ""
-                    ).strip()
-                    needs_diarise = (
-                        not existing_dia or payload.transcribe_overwrite
-                    )
-                    if needs_diarise:
-                        deferred_by_row.setdefault(
-                            source_row.id, []
-                        ).append((eval_row, source_row))
-                        continue
-                eval_only_row_ids.append(str(eval_row.id))
-
-        # Kick off the diarisation worker once per unique row. Each call
-        # carries the *first* deferred eval row id so the worker can
-        # chain it on completion; remaining deferred eval rows on the
-        # same source row are enqueued immediately for evaluation
-        # because they'll re-read ``diarised_transcript`` once the
-        # worker writes it.
-        if deferred_by_row:
-            from app.workers.tasks.transcribe_call_import_row import (
-                transcribe_call_import_row_task,
+            _enqueue_eval_rows_with_optional_transcribe(
+                db,
+                evaluation,
+                bucket,
+                transcribe_overwrite=payload.transcribe_overwrite,
             )
-
-            # Mark the source rows as pending so the UI's diarisation
-            # badge flips immediately, before Celery picks them up.
-            for source_row_id, waiting in deferred_by_row.items():
-                source_row = waiting[0][1]
-                source_row.diarised_transcript_status = "pending"
-                source_row.diarised_transcript_error = None
-            db.commit()
-
-            for source_row_id, waiting in deferred_by_row.items():
-                primary_eval_row = waiting[0][0]
-                source_row = waiting[0][1]
-                transcribe_call_import_row_task.delay(
-                    str(source_row.id),
-                    stt_provider_norm,
-                    stt_model_norm,
-                    str(payload.stt_credential_id)
-                    if payload.stt_credential_id
-                    else None,
-                    payload.stt_language,
-                    payload.transcribe_overwrite,
-                    str(primary_eval_row.id),
-                    diarisation_llm_provider_norm,
-                    diarisation_llm_model_norm,
-                    str(payload.diarization_llm_credential_id)
-                    if payload.diarization_llm_credential_id
-                    else None,
-                    diarisation_prompt_norm,
-                    transcribe_mode_norm,
-                )
-                # Any sibling diarised evals on the same row enqueue
-                # immediately — they will read the same
-                # ``diarised_transcript`` once the worker finishes.
-                for eval_row, _ in waiting[1:]:
-                    eval_only_row_ids.append(str(eval_row.id))
-
-        if eval_only_row_ids:
-            group(
-                [
-                    evaluate_call_import_row_task.s(eval_row_id)
-                    for eval_row_id in eval_only_row_ids
-                ]
-            ).apply_async()
-
-        for evaluation in created_evaluations:
             evaluation.status = "running"
     except Exception as exc:  # noqa: BLE001 — surface but don't 500
         logger.exception(
@@ -1737,6 +1649,12 @@ async def export_call_import_evaluation_csv(
                     continue  # would clobber a real column
                 custom_export.append((name, csv_header))
 
+    if (
+        call_import.source_format == "audio"
+        and "conversation_id" not in standard_export_headers
+    ):
+        standard_export_headers.insert(0, "conversation_id")
+
     # Build the metric columns: each parent (if any) gets a value column
     # and (when capture_rationale=true) a "<Parent> - LLM Rationale"
     # column. The per-child boolean columns are intentionally suppressed
@@ -1824,6 +1742,8 @@ async def export_call_import_evaluation_csv(
             )
             for header in standard_export_headers:
                 value = raw.get(header)
+                if value is None and header == "conversation_id":
+                    value = source_row.conversation_id
                 row_out[header] = "" if value is None else str(value)
             for export_header, csv_header in custom_export:
                 value = raw.get(csv_header)
@@ -7819,147 +7739,43 @@ def _enqueue_eval_rows_with_optional_transcribe(
     transcribe_overwrite: bool = False,
     restricted_metric_ids: Optional[List[UUID]] = None,
 ) -> Tuple[int, int]:
-    """Fan out evaluate (and optionally transcribe) tasks for a set of
-    already-reset eval rows.
+    """Schedule throttled evaluation dispatch for pending eval rows.
 
-    Returns ``(evaluate_only_count, transcribe_then_evaluate_count)``.
-
-    The transcribe-chain branch fires when the parent evaluation is
-    configured for the diarised transcript source AND we have STT
-    config saved on the run AND either (a) the row's diarised
-    transcript is missing or (b) the caller passed
-    ``transcribe_overwrite=True`` (used when the caller swapped the
-    STT provider/model on retry and wants the new STT actually
-    exercised). This matches the auto-transcribe behavior baked into
-    the create endpoint so retry stays consistent with first-run.
+    Returns ``(evaluate_only_count, transcribe_then_evaluate_count)`` for
+    logging/UI compatibility. Actual Celery fan-out is handled by
+    :func:`dispatch_evaluation_rows_task` under Redis fair-share limits.
     """
-    from app.workers.tasks.evaluate_call_import_row import (
-        evaluate_call_import_row_task,
-    )
-    from celery import group
-
-    # Every evaluation run scores the diarised transcript.
-    is_diarised_run = True
-    # ``transcribe_mode`` was added in migration 041; legacy runs read as
-    # NULL → default to the historical ``stt_llm`` behavior so retries
-    # of pre-feature evaluations stay byte-identical.
-    transcribe_mode = (
-        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
-    ).strip().lower()
-    has_stt_config = bool(evaluation.stt_provider and evaluation.stt_model)
-    has_diariser_config = bool(
-        getattr(evaluation, "diarisation_llm_provider", None)
-        and getattr(evaluation, "diarisation_llm_model", None)
-    )
-    # In ``llm_only`` mode the run never had STT config (the create
-    # endpoint rejects it), so ``has_stt_config`` would be False — but
-    # we still want to chain through transcribe because the LLM is
-    # what produces the diarised text. Gate on the diariser config
-    # instead in that case.
-    can_auto_transcribe = (
-        has_stt_config if transcribe_mode == "stt_llm" else has_diariser_config
+    from app.workers.concurrency.eval_dispatch import _needs_transcribe_for_eval
+    from app.workers.concurrency.fair_dispatch import (
+        schedule_fair_dispatch,
+        store_evaluation_transcribe_overwrite,
+        store_row_restricted_metrics,
     )
 
-    eval_only_row_ids: List[str] = []
-    deferred: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+    eval_only_count = 0
+    transcribe_count = 0
     for eval_row, source_row in eval_rows_with_source:
-        has_audio = bool((source_row.recording_s3_key or "").strip())
-        existing_dia = (source_row.diarised_transcript or "").strip()
-        needs_diarisation = not existing_dia or transcribe_overwrite
-        if (
-            is_diarised_run
-            and can_auto_transcribe
-            and has_audio
-            and needs_diarisation
+        if _needs_transcribe_for_eval(
+            evaluation,
+            source_row,
+            transcribe_overwrite=transcribe_overwrite,
         ):
-            deferred.append((eval_row, source_row))
-            continue
-        eval_only_row_ids.append(str(eval_row.id))
-
-    if deferred:
-        from app.workers.tasks.transcribe_call_import_row import (
-            transcribe_call_import_row_task,
-        )
-
-        # Mark the source rows as pending so the UI's diarisation badge
-        # flips immediately, before Celery picks them up.
-        for _, source_row in deferred:
-            source_row.diarised_transcript_status = "pending"
-            source_row.diarised_transcript_error = None
-        db.commit()
-
-        # ``restricted_metric_ids`` propagates through the transcribe
-        # task as a kwarg so the evaluate task chained at the end of
-        # transcribe (see ``transcribe_call_import_row_task``'s
-        # ``run_eval_row_id`` branch) can apply the same metric
-        # filter. Stringify so Celery's JSON serializer is happy.
-        restricted_metric_ids_str: Optional[List[str]] = (
-            [str(mid) for mid in restricted_metric_ids]
-            if restricted_metric_ids
-            else None
-        )
-
-        for eval_row, source_row in deferred:
-            transcribe_call_import_row_task.apply_async(
-                args=(
-                    str(source_row.id),
-                    # STT fields are ignored by the worker in llm_only
-                    # mode; passing None keeps the wire format clean
-                    # and avoids accidentally re-introducing stale
-                    # config.
-                    evaluation.stt_provider
-                    if transcribe_mode == "stt_llm"
-                    else None,
-                    evaluation.stt_model
-                    if transcribe_mode == "stt_llm"
-                    else None,
-                    str(evaluation.stt_credential_id)
-                    if (
-                        transcribe_mode == "stt_llm"
-                        and evaluation.stt_credential_id
-                    )
-                    else None,
-                    None,  # language hint not persisted on the run
-                    transcribe_overwrite,
-                    str(eval_row.id),
-                    getattr(evaluation, "diarisation_llm_provider", None),
-                    getattr(evaluation, "diarisation_llm_model", None),
-                    str(evaluation.diarisation_llm_credential_id)
-                    if getattr(
-                        evaluation, "diarisation_llm_credential_id", None
-                    )
-                    else None,
-                    getattr(evaluation, "diarisation_prompt", None),
-                    transcribe_mode,
-                ),
-                kwargs={
-                    "eval_restricted_metric_ids": restricted_metric_ids_str,
-                }
-                if restricted_metric_ids_str
-                else None,
-            )
-
-    if eval_only_row_ids:
-        if restricted_metric_ids:
-            restricted_str = [str(mid) for mid in restricted_metric_ids]
-            group(
-                [
-                    evaluate_call_import_row_task.s(
-                        eval_row_id,
-                        restricted_metric_ids=restricted_str,
-                    )
-                    for eval_row_id in eval_only_row_ids
-                ]
-            ).apply_async()
+            transcribe_count += 1
         else:
-            group(
-                [
-                    evaluate_call_import_row_task.s(eval_row_id)
-                    for eval_row_id in eval_only_row_ids
-                ]
-            ).apply_async()
+            eval_only_count += 1
 
-    return len(eval_only_row_ids), len(deferred)
+    restricted_metric_ids_str: Optional[List[str]] = (
+        [str(mid) for mid in restricted_metric_ids] if restricted_metric_ids else None
+    )
+    if restricted_metric_ids_str:
+        for eval_row, _ in eval_rows_with_source:
+            store_row_restricted_metrics(eval_row.id, restricted_metric_ids_str)
+    store_evaluation_transcribe_overwrite(
+        evaluation.id,
+        overwrite=transcribe_overwrite,
+    )
+    schedule_fair_dispatch(max_workspace_turns=999)
+    return eval_only_count, transcribe_count
 
 
 def _apply_retry_overrides(

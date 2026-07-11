@@ -59,6 +59,22 @@ def stub_workers(monkeypatch):
         s=lambda *_a, **_kw: types.SimpleNamespace(args=_a, kwargs=_kw),
     )
 
+    fake_dispatch_module = types.ModuleType("app.workers.concurrency.eval_dispatch")
+
+    class _DispatchTask:
+        @staticmethod
+        def apply_async(*_a, **_kw):
+            return types.SimpleNamespace(id="dispatch-task-id")
+
+    fake_dispatch_module.dispatch_evaluation_rows_task = _DispatchTask()
+    fake_dispatch_module.schedule_evaluation_dispatch = lambda *_a, **_kw: None
+    fake_dispatch_module._needs_transcribe_for_eval = lambda *_a, **_kw: False
+
+    fake_fair_module = types.ModuleType("app.workers.concurrency.fair_dispatch")
+    fake_fair_module.schedule_fair_dispatch = lambda *_a, **_kw: None
+    fake_fair_module.store_row_restricted_metrics = lambda *_a, **_kw: None
+    fake_fair_module.store_evaluation_transcribe_overwrite = lambda *_a, **_kw: None
+
     fake_celery = types.ModuleType("celery")
     fake_celery.group = lambda sigs: types.SimpleNamespace(
         apply_async=lambda: types.SimpleNamespace(id="celery-group-id"),
@@ -71,10 +87,18 @@ def stub_workers(monkeypatch):
         "app.workers.tasks.evaluate_call_import_row": sys.modules.get(
             "app.workers.tasks.evaluate_call_import_row"
         ),
+        "app.workers.concurrency.eval_dispatch": sys.modules.get(
+            "app.workers.concurrency.eval_dispatch"
+        ),
+        "app.workers.concurrency.fair_dispatch": sys.modules.get(
+            "app.workers.concurrency.fair_dispatch"
+        ),
         "celery": sys.modules.get("celery"),
     }
     sys.modules["app.workers.tasks.process_call_import_row"] = fake_import_module
     sys.modules["app.workers.tasks.evaluate_call_import_row"] = fake_eval_module
+    sys.modules["app.workers.concurrency.eval_dispatch"] = fake_dispatch_module
+    sys.modules["app.workers.concurrency.fair_dispatch"] = fake_fair_module
     sys.modules["celery"] = fake_celery
     try:
         yield

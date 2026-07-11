@@ -6,6 +6,7 @@ import { apiClient } from '../../../lib/api'
 import { useWorkspaceStore } from '../../../store/workspaceStore'
 import type {
   CallImport,
+  CallImportDetail,
   CallImportPreviewSheet,
   CallImportSchema,
 } from '../../../types/api'
@@ -19,6 +20,19 @@ import ParameterMappingTable, {
 
 interface MappingPanelProps {
   callImport: CallImport
+}
+
+/** True when the UI's schema/sheet selection matches what the server persisted. */
+function persistedMappingContextMatches(
+  callImport: CallImport,
+  schemaId: string,
+  sheetName: string | null | undefined,
+): boolean {
+  if (callImport.schema_id !== schemaId) return false
+  // CSV batches store sheet_name=null on the server; the preview still
+  // uses the filename as the synthetic sheet key.
+  if (callImport.source_format === 'csv') return true
+  return (callImport.sheet_name || null) === (sheetName || null)
 }
 
 /**
@@ -79,6 +93,13 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
     )
   }, [sheets, usableSheets, selectedSheetName])
 
+  const persistedParameterMappingKey = JSON.stringify(
+    callImport.parameter_mapping ?? {},
+  )
+  const persistedSkippedColumnsKey = JSON.stringify(
+    callImport.skipped_columns ?? [],
+  )
+
   // Rebuild the mapping state whenever the schema or selected sheet
   // changes. When the inputs match what the server has persisted we
   // hydrate from the persisted mapping so the user sees their previous
@@ -86,9 +107,11 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
   // isn't stuck with a stale mapping pointing at the wrong schema.
   useEffect(() => {
     if (!selectedSchema || !selectedSheet) return
-    const persistedMatches =
-      callImport.schema_id === selectedSchema.id &&
-      (callImport.sheet_name || null) === (selectedSheet.name || null)
+    const persistedMatches = persistedMappingContextMatches(
+      callImport,
+      selectedSchema.id,
+      selectedSheet.name,
+    )
     if (persistedMatches) {
       setMappingState(
         hydrateMappingFromPersisted(
@@ -103,12 +126,14 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
         buildInitialMapping(selectedSchema.parameters, selectedSheet.headers),
       )
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     selectedSchema?.id,
     selectedSheet?.name,
     callImport.schema_id,
     callImport.sheet_name,
+    callImport.source_format,
+    persistedParameterMappingKey,
+    persistedSkippedColumnsKey,
   ])
 
   const validation = useMemo(() => {
@@ -143,8 +168,13 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
         skippedColumns,
       })
     },
-    onSuccess: () => {
+    onSuccess: (updated) => {
       setSubmitError(null)
+      queryClient.setQueriesData(
+        { queryKey: ['call-import', callImport.id] },
+        (old: CallImportDetail | undefined) =>
+          old ? { ...old, ...updated } : old,
+      )
       queryClient.invalidateQueries({ queryKey: ['call-import', callImport.id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
     },

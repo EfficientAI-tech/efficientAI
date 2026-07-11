@@ -20,7 +20,13 @@ from sqlalchemy.orm import Session
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.ai.llm_generation_config import build_litellm_kwargs
-from app.services.ai.llm_gateway import apply_llm_gateway, resolve_litellm_api_key
+from app.services.ai.llm_gateway import (
+    apply_llm_gateway,
+    resolve_effective_routing,
+    resolve_litellm_api_key,
+    resolve_litellm_model,
+    routing_context_from_ai_provider,
+)
 
 # LiteLLM will silently drop params the target provider doesn't support
 # rather than raising an error.
@@ -375,15 +381,31 @@ class LLMService:
         ai_provider = self._get_ai_provider(
             llm_provider, db, organization_id, credential_id=credential_id
         )
+        credential_ctx = (
+            routing_context_from_ai_provider(ai_provider) if ai_provider else None
+        )
         if ai_provider:
-            api_key = resolve_litellm_api_key(organization_id, db, ai_provider)
+            api_key = resolve_litellm_api_key(
+                organization_id,
+                db,
+                ai_provider,
+                credential=credential_ctx,
+            )
         else:
             api_key = self._resolve_api_key(
                 llm_provider, db, organization_id, credential_id=credential_id
             )
 
         # --- call LiteLLM --------------------------------------------------
-        model_str = self._litellm_model_name(llm_provider, llm_model)
+        workload_model_str = self._litellm_model_name(llm_provider, llm_model)
+        _, effective_routing = resolve_effective_routing(
+            organization_id, db, credential_ctx
+        )
+        model_str = resolve_litellm_model(
+            workload_model_str=workload_model_str,
+            gateway_active=effective_routing != "direct",
+            credential=credential_ctx,
+        )
 
         call_kwargs: Dict[str, Any] = {
             "model": model_str,
@@ -420,23 +442,15 @@ class LLMService:
             if gemini_family is not None and effective_max_tokens < 4096:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
-        provider_value = llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
-        remaining_config = config
-        if provider_value.lower() == "azure":
-            azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
-                ai_provider, config
-            )
-            call_kwargs.update(azure_kwargs)
-            if azure_v1_routing:
-                model_str = f"openai/{_azure_deployment_name(llm_model)}"
-                call_kwargs["model"] = model_str
-        if remaining_config:
-            call_kwargs.update(remaining_config)
+        if config:
+            call_kwargs.update(config)
 
-        use_direct_azure = (
-            provider_value.lower() == "azure"
-            and api_key is not None
-            and _azure_has_direct_endpoint(ai_provider, config)
+        call_kwargs = apply_llm_gateway(
+            call_kwargs,
+            organization_id=organization_id,
+            db=db,
+            model=model_str,
+            credential=credential_ctx,
         )
         if not use_direct_azure:
             call_kwargs = apply_llm_gateway(

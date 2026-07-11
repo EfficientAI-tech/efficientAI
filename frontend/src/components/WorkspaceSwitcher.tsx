@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Check, ChevronDown, FolderKanban, Plus } from 'lucide-react'
 import { apiClient } from '../lib/api'
+import { resolveWorkspaceSwitchPath } from '../lib/workspaceNavigation'
 import type { Workspace } from '../types/api'
 import { useCanWrite } from '../hooks/useRole'
 import { useWorkspaceStore } from '../store/workspaceStore'
@@ -9,12 +11,26 @@ import CreateWorkspaceModal from './CreateWorkspaceModal'
 
 export default function WorkspaceSwitcher() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const location = useLocation()
   const canWrite = useCanWrite()
   const activeId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const switchWorkspace = useWorkspaceStore((s) => s.switchWorkspace)
   const setActiveCapabilities = useWorkspaceStore((s) => s.setActiveCapabilities)
   const [open, setOpen] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
+
+  const onWorkspaceChanged = useCallback(
+    async (workspace: Workspace) => {
+      switchWorkspace(workspace.id, workspace.capabilities ?? [])
+      const target = resolveWorkspaceSwitchPath(location.pathname)
+      if (target) {
+        navigate(target, { replace: true })
+      }
+      await queryClient.invalidateQueries()
+    },
+    [switchWorkspace, location.pathname, navigate, queryClient],
+  )
 
   const {
     data: workspaces = [],
@@ -38,8 +54,7 @@ export default function WorkspaceSwitcher() {
     if (!fallback) return
 
     if (!isValid) {
-      switchWorkspace(fallback.id, fallback.capabilities ?? [])
-      queryClient.invalidateQueries()
+      void onWorkspaceChanged(fallback)
       return
     }
 
@@ -55,7 +70,7 @@ export default function WorkspaceSwitcher() {
     if (capsChanged) {
       setActiveCapabilities(nextCaps)
     }
-  }, [workspaces, activeId, queryClient, switchWorkspace, setActiveCapabilities])
+  }, [workspaces, activeId, onWorkspaceChanged, setActiveCapabilities])
 
   const activeWorkspace = useMemo(
     () => workspaces.find((w) => w.id === activeId) ?? null,
@@ -67,9 +82,8 @@ export default function WorkspaceSwitcher() {
       setOpen(false)
       return
     }
-    switchWorkspace(workspace.id, workspace.capabilities ?? [])
     setOpen(false)
-    await queryClient.invalidateQueries()
+    await onWorkspaceChanged(workspace)
   }
 
   const handleWorkspaceCreated = async (created: Workspace) => {

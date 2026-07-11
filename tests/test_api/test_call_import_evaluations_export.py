@@ -64,6 +64,47 @@ def _make_call_import(db_session, org_id, *, custom_columns=None):
     return call_import
 
 
+def _make_audio_call_import(db_session, org_id):
+    workspace = _ensure_default_workspace(db_session, org_id)
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        provider=None,
+        original_filename="sales call.wav",
+        source_format="audio",
+        column_mapping={},
+        extra_columns=[],
+        custom_column_mapping={},
+        total_rows=1,
+        completed_rows=1,
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    db_session.add(call_import)
+    db_session.commit()
+    return call_import
+
+
+def _make_audio_call_import_row(
+    db_session, call_import, *, conversation_id="sales_call", row_index=0
+):
+    row = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=call_import.organization_id,
+        row_index=row_index,
+        conversation_id=conversation_id,
+        recording_url=None,
+        transcript="hello world",
+        raw_columns={"conversation_id": conversation_id},
+        status=CallImportRowStatus.COMPLETED,
+    )
+    db_session.add(row)
+    db_session.commit()
+    return row
+
+
 def _make_call_import_row(db_session, call_import, row_index=0, raw_columns=None):
     row = CallImportRow(
         id=uuid4(),
@@ -661,3 +702,63 @@ def test_export_defaults_to_csv_when_format_omitted(
     assert response.headers["content-type"].startswith("text/csv")
     disposition = response.headers.get("content-disposition", "")
     assert ".csv" in disposition
+
+
+def test_export_includes_conversation_id_for_audio_upload(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Manual audio uploads have no schema/column_mapping, but each row's
+    filename-derived conversation_id must still appear in CSV/XLSX exports."""
+    import io as io_module
+
+    from openpyxl import load_workbook
+
+    call_import = _make_audio_call_import(db_session, org_id)
+    source_row = _make_audio_call_import_row(
+        db_session, call_import, conversation_id="sales_call"
+    )
+
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": 0.9,
+                "type": "rating",
+                "metric_name": "Quality",
+            }
+        },
+    )
+
+    csv_response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    )
+    assert csv_response.status_code == 200, csv_response.text
+    headers, rows = _parse_csv(csv_response.content)
+
+    assert headers[0] == "conversation_id"
+    assert len(rows) == 1
+    assert rows[0]["conversation_id"] == "sales_call"
+    assert rows[0]["Quality"] == "0.9"
+
+    xlsx_response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        params={"format": "xlsx"},
+    )
+    assert xlsx_response.status_code == 200, xlsx_response.text
+
+    workbook = load_workbook(io_module.BytesIO(xlsx_response.content), read_only=True)
+    worksheet = workbook.active
+    rows_iter = worksheet.iter_rows(values_only=True)
+    header_row = list(next(rows_iter))
+    data_rows = [list(r) for r in rows_iter]
+
+    assert header_row[0] == "conversation_id"
+    assert len(data_rows) == 1
+    assert data_rows[0][header_row.index("conversation_id")] == "sales_call"
+    assert data_rows[0][header_row.index("Quality")] == "0.9"

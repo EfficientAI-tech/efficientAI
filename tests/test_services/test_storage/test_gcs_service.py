@@ -20,6 +20,7 @@ class _FakeBlob:
         self.updated = datetime.now(UTC)
         self.time_created = self.updated
         self._content = b""
+        self.last_signed_url_kwargs = {}
 
     def upload_from_string(self, data, content_type=None):
         self._content = data
@@ -38,6 +39,7 @@ class _FakeBlob:
         self.bucket.objects.pop(self.name, None)
 
     def generate_signed_url(self, **_kwargs):
+        self.last_signed_url_kwargs = _kwargs
         return f"https://storage.googleapis.com/{self.bucket.name}/{self.name}?signed=1"
 
 
@@ -59,9 +61,12 @@ class _FakeBucket:
     def __init__(self, name):
         self.name = name
         self.objects = {}
+        self._blobs = {}
 
     def blob(self, key):
-        return _FakeBlob(key, self)
+        if key not in self._blobs:
+            self._blobs[key] = _FakeBlob(key, self)
+        return self._blobs[key]
 
     def exists(self):
         return True
@@ -71,6 +76,7 @@ class _FakeGcsClient:
     def __init__(self):
         self._bucket = _FakeBucket("bucket-a")
         self.list_calls = []
+        self._credentials = None
 
     def bucket(self, name):
         self._bucket.name = name
@@ -106,6 +112,9 @@ def configured_gcs(monkeypatch):
     monkeypatch.setattr(gcs_module.settings, "GCS_PROJECT_ID", "proj-1", raising=False)
     monkeypatch.setattr(gcs_module.settings, "GCS_PREFIX", "", raising=False)
     monkeypatch.setattr(gcs_module.settings, "GCS_CREDENTIALS_PATH", None, raising=False)
+    monkeypatch.setattr(
+        gcs_module.settings, "GCS_SIGNING_SERVICE_ACCOUNT_EMAIL", None, raising=False
+    )
     monkeypatch.setattr(gcs_module.settings, "ALLOWED_AUDIO_FORMATS", ["mp3", "wav"], raising=False)
 
     fake_client = _FakeGcsClient()
@@ -205,3 +214,64 @@ def test_generate_presigned_url_by_key(configured_gcs, monkeypatch):
     url = service.generate_presigned_url_by_key("audio/test.mp3")
 
     assert "signed=1" in url
+
+
+class _FakeAdcCredentials:
+    def __init__(self, service_account_email="workload-sa@project.iam.gserviceaccount.com"):
+        self.service_account_email = service_account_email
+        self.token = "adc-access-token"
+        self.valid = True
+
+    def refresh(self, _request):
+        self.valid = True
+
+
+def test_generate_presigned_url_by_key_uses_iam_signing_when_no_private_key(
+    configured_gcs, monkeypatch
+):
+    service, fake_client = configured_gcs
+    fake_client._bucket.objects["audio/test.mp3"] = b"x"
+    fake_client._credentials = _FakeAdcCredentials()
+    monkeypatch.setattr(service, "_get_signing_credentials", lambda: None)
+
+    url = service.generate_presigned_url_by_key("audio/test.mp3")
+
+    blob = fake_client._bucket.blob("audio/test.mp3")
+    assert "signed=1" in url
+    assert blob.last_signed_url_kwargs["service_account_email"] == (
+        "workload-sa@project.iam.gserviceaccount.com"
+    )
+    assert blob.last_signed_url_kwargs["access_token"] == "adc-access-token"
+    assert "credentials" not in blob.last_signed_url_kwargs
+
+
+def test_generate_presigned_url_by_key_uses_configured_signing_email(
+    configured_gcs, monkeypatch
+):
+    service, fake_client = configured_gcs
+    fake_client._bucket.objects["audio/test.mp3"] = b"x"
+    fake_client._credentials = _FakeAdcCredentials(service_account_email=None)
+    monkeypatch.setattr(
+        gcs_module.settings,
+        "GCS_SIGNING_SERVICE_ACCOUNT_EMAIL",
+        "override-sa@project.iam.gserviceaccount.com",
+        raising=False,
+    )
+    monkeypatch.setattr(service, "_get_signing_credentials", lambda: None)
+
+    service.generate_presigned_url_by_key("audio/test.mp3")
+
+    blob = fake_client._bucket.blob("audio/test.mp3")
+    assert blob.last_signed_url_kwargs["service_account_email"] == (
+        "override-sa@project.iam.gserviceaccount.com"
+    )
+
+
+def test_generate_presigned_url_by_key_raises_when_signing_unavailable(configured_gcs, monkeypatch):
+    service, fake_client = configured_gcs
+    fake_client._bucket.objects["audio/test.mp3"] = b"x"
+    monkeypatch.setattr(service, "_get_signing_credentials", lambda: None)
+    monkeypatch.setattr(service, "_get_iam_signing_params", lambda: None)
+
+    with pytest.raises(StorageError, match="roles/iam.serviceAccountTokenCreator"):
+        service.generate_presigned_url_by_key("audio/test.mp3")

@@ -86,6 +86,7 @@ def _standard_params() -> list[CallImportSchemaParameter]:
         _param(
             name="recording_url",
             type_=CallImportParameterType.RECORDING_URL,
+            is_required=True,
             ordering=2,
         ),
         _param(
@@ -194,27 +195,25 @@ def test_parse_csv_rejects_missing_mapped_required_header():
     assert "conversation_id" in exc.value.detail.lower()
 
 
-def test_parse_csv_allows_optional_param_without_mapping():
+def test_parse_csv_rejects_unmapped_required_recording_url():
     csv_text = (
         "CallID,Recording Date,Transcript\n"
         "abc-1,18/05/2026,Hello world\n"
     )
-    # Drop the recording_url mapping entry so it is treated as "not used".
     mapping = {
         "conversation_id": "CallID",
         "recording_date": "Recording Date",
         "transcript": "Transcript",
     }
-    rows = _parse_csv(
-        _csv_bytes(csv_text),
-        _standard_params(),
-        mapping,
-        _standard_skipped(),
-    )
-    assert len(rows) == 1
-    assert rows[0]["conversation_id"] == "abc-1"
-    assert rows[0]["recording_url"] is None
-    assert rows[0]["transcript"] == "Hello world"
+    with pytest.raises(HTTPException) as exc:
+        _parse_csv(
+            _csv_bytes(csv_text),
+            _standard_params(),
+            mapping,
+            _standard_skipped(),
+        )
+    assert exc.value.status_code == 400
+    assert "recording_url" in exc.value.detail.lower()
 
 
 def test_parse_csv_rejects_row_missing_conversation_id():
@@ -703,7 +702,7 @@ def _seed_schema(
             schema_id=schema.id,
             name="recording_url",
             type=CallImportParameterType.RECORDING_URL.value,
-            is_required=False,
+            is_required=True,
             ordering=2,
         ),
         CallImportSchemaParameter(
@@ -1410,6 +1409,32 @@ def test_preview_rejects_unsupported_extension(
     )
     assert response.status_code == 400
     assert "unsupported" in response.json()["detail"].lower()
+
+
+def test_preview_rejects_csv_over_upload_cap(
+    authenticated_client, db_session, org_id, seed_org
+):
+    from app.api.v1.routes.call_imports import MAX_UPLOAD_BYTES
+
+    too_large = b"x" * (MAX_UPLOAD_BYTES + 1)
+    response = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("rows.csv", too_large, "text/csv")},
+    )
+    assert response.status_code == 413
+
+    # A small valid CSV proves under-cap files pass the size gate. Building
+    # a ~15 MB multi-row fixture here would be slow to construct and parse.
+    within_limit = (
+        b"CallID,Recording URL,Transcript\n"
+        b"abc-1,https://x/r.mp3,hi\n"
+    )
+    assert len(within_limit) < MAX_UPLOAD_BYTES
+    response_ok = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("rows.csv", within_limit, "text/csv")},
+    )
+    assert response_ok.status_code == 200, response_ok.text
 
 
 # ---------------------------------------------------------------------------

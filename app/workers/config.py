@@ -103,20 +103,21 @@ celery_app.conf.update(
     worker_max_tasks_per_child=20,
 )
 
-# Route the CSV-driven call-import task to its own queue so a large import
-# fan-out can't starve the default queue (synthetic calling, audio gen, evals).
-# All other tasks remain on the default queue, so existing behavior is unchanged.
+# Route call-import recording fetch to the imports queue (preferred by workers
+# that consume ``imports,diarization,evaluations``). Manual diarisation goes
+# to the diarization queue; evaluation / diarisation-for-eval / post-eval LLM
+# jobs go to the evaluations queue so large fan-outs do not head-of-line block
+# recording fetch for other workspaces.
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
-    "evaluate_call_import_row": {"queue": "imports"},
-    "transcribe_call_import_row": {"queue": "imports"},
-    # Call-import evaluation Visualizations LLM work (TLDR + user insights)
-    # stays on the imports worker so it does not compete with the default
-    # queue (synthetic calling, playground evals, TTS, etc.).
-    "generate_evaluation_tldr_insights": {"queue": "imports"},
-    "generate_evaluation_user_insights": {"queue": "imports"},
-    "generate_evaluation_metric_clusters": {"queue": "imports"},
-    "generate_evaluation_prompt_improvements": {"queue": "imports"},
-    "generate_agent_flowchart": {"queue": "imports"},
-    "map_agent_flowchart_prompt_sections": {"queue": "imports"},
+    "evaluate_call_import_row": {"queue": "evaluations"},
+    "transcribe_call_import_row": {"queue": "diarization"},
+    "dispatch_evaluation_rows": {"queue": "evaluations"},
+    "dispatch_fair_eval_rows": {"queue": "evaluations"},
+    "generate_evaluation_tldr_insights": {"queue": "evaluations"},
+    "generate_evaluation_user_insights": {"queue": "evaluations"},
+    "generate_evaluation_metric_clusters": {"queue": "evaluations"},
+    "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
+    "generate_agent_flowchart": {"queue": "evaluations"},
+    "map_agent_flowchart_prompt_sections": {"queue": "evaluations"},
 }

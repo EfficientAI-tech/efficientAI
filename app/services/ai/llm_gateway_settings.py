@@ -16,9 +16,11 @@ from sqlalchemy.orm import Session
 from app.models.database import Organization
 from app.services.ai.llm_gateway import (
     EffectiveRouting,
+    GatewayInterface,
     GatewayType,
     _platform_config,
     gateway_managed_credentials_enabled,
+    normalize_bifrost_native_url,
     normalize_bifrost_url,
     normalize_litellm_proxy_url,
     resolve_llm_gateway,
@@ -26,6 +28,7 @@ from app.services.ai.llm_gateway import (
 
 GatewayMode = Literal["inherit", "enabled", "disabled"]
 GatewayTypeOverride = Literal["inherit", "bifrost", "litellm_proxy"]
+GatewayInterfaceOverride = Literal["inherit", "litellm_shim", "native_openai"]
 
 
 def _mode_from_enabled(enabled: Any) -> GatewayMode:
@@ -57,8 +60,33 @@ def _effective_routing(resolved: Any) -> EffectiveRouting:
     return resolved.gateway_type
 
 
-def _normalize_url_for_type(base_url: str, gateway_type: GatewayType) -> str:
+def _gateway_interface_from_stored(raw: Dict[str, Any]) -> GatewayInterfaceOverride:
+    stored = raw.get("gateway_interface")
+    if stored in ("litellm_shim", "native_openai"):
+        return stored
+    return "inherit"
+
+
+def _resolve_effective_gateway_interface(
+    org_raw: Dict[str, Any], platform: Dict[str, Any]
+) -> GatewayInterface:
+    org_interface = org_raw.get("gateway_interface")
+    if org_interface in ("litellm_shim", "native_openai"):
+        return org_interface
+    platform_interface = platform.get("gateway_interface", "litellm_shim")
+    if platform_interface in ("litellm_shim", "native_openai"):
+        return platform_interface
+    return "litellm_shim"
+
+
+def _normalize_url_for_type(
+    base_url: str,
+    gateway_type: GatewayType,
+    gateway_interface: GatewayInterface = "litellm_shim",
+) -> str:
     if gateway_type == "bifrost":
+        if gateway_interface == "native_openai":
+            return normalize_bifrost_native_url(base_url)
         return normalize_bifrost_url(base_url)
     return normalize_litellm_proxy_url(base_url)
 
@@ -85,22 +113,27 @@ def get_org_settings(organization_id: UUID, db: Session) -> Dict[str, Any]:
     has_virtual_key = bool(raw.get("virtual_key"))
     has_master_key = bool(raw.get("master_key"))
     gateway_type = _gateway_type_from_stored(raw)
+    gateway_interface = _gateway_interface_from_stored(raw)
 
     resolved = resolve_llm_gateway(organization_id, db)
     platform = _platform_config()
     effective_type = _resolve_effective_gateway_type(raw, platform)
+    effective_interface = _resolve_effective_gateway_interface(raw, platform)
 
     return {
         "mode": mode,
         "gateway_type": gateway_type,
+        "gateway_interface": gateway_interface,
         "base_url": stored_base_url,
         "has_virtual_key": has_virtual_key,
         "has_master_key": has_master_key,
         "platform_enabled": platform["enabled"],
         "platform_gateway_type": platform["gateway_type"],
+        "platform_gateway_interface": platform.get("gateway_interface", "litellm_shim"),
         "platform_base_url": platform["base_url"],
         "effective_routing": _effective_routing(resolved),
         "effective_gateway_type": effective_type if resolved else None,
+        "effective_gateway_interface": effective_interface if resolved else None,
         "effective_base_url": resolved.api_base if resolved else None,
         "effective_has_virtual_key": bool(resolved and resolved.virtual_key),
         "effective_has_master_key": bool(resolved and resolved.master_key),
@@ -114,6 +147,7 @@ def set_org_settings(
     *,
     mode: GatewayMode,
     gateway_type: GatewayTypeOverride = "inherit",
+    gateway_interface: GatewayInterfaceOverride = "inherit",
     base_url: Optional[str] = None,
     virtual_key: Optional[str] = None,
     master_key: Optional[str] = None,
@@ -136,17 +170,31 @@ def set_org_settings(
     else:
         payload["gateway_type"] = gateway_type
 
+    if gateway_interface == "inherit":
+        payload["gateway_interface"] = None
+    else:
+        payload["gateway_interface"] = gateway_interface
+
     effective_type_for_validation: GatewayType
     if gateway_type in ("bifrost", "litellm_proxy"):
         effective_type_for_validation = gateway_type
     else:
         effective_type_for_validation = _resolve_effective_gateway_type({}, platform)
 
+    effective_interface_for_validation = _resolve_effective_gateway_interface(
+        {"gateway_interface": payload.get("gateway_interface")},
+        platform,
+    )
+
     if base_url is not None:
         trimmed = base_url.strip()
         if trimmed:
             try:
-                _normalize_url_for_type(trimmed, effective_type_for_validation)
+                _normalize_url_for_type(
+                    trimmed,
+                    effective_type_for_validation,
+                    effective_interface_for_validation,
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             payload["base_url"] = trimmed

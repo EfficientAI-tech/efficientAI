@@ -94,6 +94,7 @@ class TelephonyService:
                 auth_id=auth_id,
                 auth_token=auth_token,
                 account_sid=integration.voice_app_id,
+                api_host=integration.sip_domain,
             )
         raise ValueError(f"Unsupported telephony provider: {provider}")
 
@@ -161,6 +162,13 @@ class TelephonyService:
         )
         if provider.lower() == "exotel" and not effective_voice_app_id:
             raise ValueError("voice_app_id (Exotel Account SID) is required for Exotel")
+
+        if provider.lower() == "exotel" and "sip_domain" in data:
+            from app.services.telephony.exotel_client import (
+                validate_exotel_api_host_for_save,
+            )
+
+            validate_exotel_api_host_for_save(data.get("sip_domain"))
 
         becoming_default = bool(data.get("is_default")) if "is_default" in data else False
 

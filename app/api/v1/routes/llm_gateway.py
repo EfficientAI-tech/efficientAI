@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_organization_id
 from app.services.ai.llm_gateway_settings import (
+    GatewayInterfaceOverride,
     GatewayMode,
     GatewayTypeOverride,
     get_org_settings,
@@ -21,14 +22,17 @@ router = APIRouter(prefix="/organizations/llm-gateway", tags=["LLM Gateway"])
 class LLMGatewaySettingsResponse(BaseModel):
     mode: GatewayMode
     gateway_type: GatewayTypeOverride
+    gateway_interface: GatewayInterfaceOverride = "inherit"
     base_url: Optional[str] = None
     has_virtual_key: bool = False
     has_master_key: bool = False
     platform_enabled: bool = False
     platform_gateway_type: Literal["bifrost", "litellm_proxy"] = "bifrost"
+    platform_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"
     platform_base_url: Optional[str] = None
     effective_routing: Literal["direct", "bifrost", "litellm_proxy"]
     effective_gateway_type: Optional[Literal["bifrost", "litellm_proxy"]] = None
+    effective_gateway_interface: Optional[Literal["litellm_shim", "native_openai"]] = None
     effective_base_url: Optional[str] = None
     effective_has_virtual_key: bool = False
     effective_has_master_key: bool = False
@@ -43,6 +47,10 @@ class LLMGatewaySettingsUpdate(BaseModel):
     gateway_type: GatewayTypeOverride = Field(
         default="inherit",
         description="inherit: use platform gateway type; bifrost or litellm_proxy to override",
+    )
+    gateway_interface: GatewayInterfaceOverride = Field(
+        default="inherit",
+        description="inherit: use platform default; litellm_shim or native_openai for Bifrost API surface",
     )
     base_url: Optional[str] = Field(
         default=None,
@@ -85,6 +93,7 @@ def update_llm_gateway_settings(
         db,
         mode=body.mode,
         gateway_type=body.gateway_type,
+        gateway_interface=body.gateway_interface,
         base_url=body.base_url,
         virtual_key=body.virtual_key,
         master_key=body.master_key,

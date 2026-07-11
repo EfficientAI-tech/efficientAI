@@ -4,7 +4,7 @@ import type { TelephonyIntegrationResponse } from '../../lib/api'
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star, Network } from 'lucide-react'
-import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
+import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, AIProviderUpdate, ModelProvider, TelephonyProvider, CredentialRoutingMode, GatewayInterfaceMode } from '../../types/api'
 import type {
   LLMGatewayMode,
   LLMGatewaySettings,
@@ -55,7 +55,15 @@ export default function Integrations() {
   const [apiKey, setApiKey] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [name, setName] = useState('')
-  const [azureEndpointUrl, setAzureEndpointUrl] = useState('')
+  const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('inherit')
+  const [gatewayModel, setGatewayModel] = useState('')
+  const [gatewayInterface, setGatewayInterface] = useState<GatewayInterfaceMode>('inherit')
+  const [gatewayBaseUrl, setGatewayBaseUrl] = useState('')
+  const [gatewayAuthHeader, setGatewayAuthHeader] = useState('')
+  const [gatewayAuthSecretEnv, setGatewayAuthSecretEnv] = useState('')
+  const [gatewayAuthSecret, setGatewayAuthSecret] = useState('')
+  const [clearGatewayAuthSecret, setClearGatewayAuthSecret] = useState(false)
+  const [gatewayExtraHeadersJson, setGatewayExtraHeadersJson] = useState('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDeleteAIProviderModal, setShowDeleteAIProviderModal] = useState(false)
   const [showDeleteTelephonyModal, setShowDeleteTelephonyModal] = useState(false)
@@ -77,6 +85,7 @@ export default function Integrations() {
 
   const [llmGatewayMode, setLlmGatewayMode] = useState<LLMGatewayMode>('inherit')
   const [llmGatewayType, setLlmGatewayType] = useState<LLMGatewayType>('inherit')
+  const [llmGatewayInterface, setLlmGatewayInterface] = useState<GatewayInterfaceMode>('inherit')
   const [llmGatewayBaseUrl, setLlmGatewayBaseUrl] = useState('')
   const [llmGatewayVirtualKey, setLlmGatewayVirtualKey] = useState('')
   const [llmGatewayMasterKey, setLlmGatewayMasterKey] = useState('')
@@ -88,6 +97,7 @@ export default function Integrations() {
     if (!llmGatewaySettings) return
     setLlmGatewayMode(llmGatewaySettings.mode)
     setLlmGatewayType(llmGatewaySettings.gateway_type)
+    setLlmGatewayInterface(llmGatewaySettings.gateway_interface || 'inherit')
     setLlmGatewayBaseUrl(llmGatewaySettings.base_url || '')
     setLlmGatewayVirtualKey('')
     setLlmGatewayMasterKey('')
@@ -105,10 +115,48 @@ export default function Integrations() {
     syncLlmGatewayFormFromSettings()
   }
 
+  const llmGatewayInterfaceLabel = (iface?: string) => {
+    if (iface === 'native_openai') return 'Native OpenAI'
+    if (iface === 'litellm_shim') return 'LiteLLM shim'
+    return 'Inherit'
+  }
+
   const llmGatewayRoutingLabel = (routing: LLMGatewaySettings['effective_routing']) => {
     if (routing === 'bifrost') return 'Bifrost'
     if (routing === 'litellm_proxy') return 'LiteLLM Proxy'
     return 'Direct'
+  }
+
+  const credentialRoutingLabel = (routing?: string) => {
+    if (routing === 'bifrost') return 'Bifrost'
+    if (routing === 'litellm_proxy') return 'LiteLLM Proxy'
+    if (routing === 'gateway') return 'Gateway'
+    if (routing === 'direct') return 'Direct'
+    return 'Inherit'
+  }
+
+  const formatGatewayExtraHeadersJson = (headers?: Record<string, string> | null) => {
+    if (!headers || Object.keys(headers).length === 0) return ''
+    return JSON.stringify(headers, null, 2)
+  }
+
+  const parseGatewayExtraHeadersJson = (
+    json: string,
+  ): Record<string, string> | null => {
+    const trimmed = json.trim()
+    if (!trimmed) return null
+    const parsed = JSON.parse(trimmed) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('Gateway extra headers must be a JSON object')
+    }
+    const result: Record<string, string> = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new Error(`Header "${key}" must have a non-empty string value`)
+      }
+      result[key] = value.trim()
+    }
+    return Object.keys(result).length > 0 ? result : null
   }
 
   const renderModal = (content: ReactNode) => {
@@ -154,6 +202,7 @@ export default function Integrations() {
       apiClient.updateLLMGatewaySettings({
         mode: llmGatewayMode,
         gateway_type: llmGatewayType,
+        gateway_interface: llmGatewayInterface,
         base_url: llmGatewayBaseUrl.trim() || null,
         virtual_key: llmGatewayVirtualKey.trim() || undefined,
         master_key: llmGatewayMasterKey.trim() || undefined,
@@ -224,7 +273,7 @@ export default function Integrations() {
   })
 
   const updateAIProviderMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<AIProviderCreate> }) => apiClient.updateAIProvider(id, data),
+    mutationFn: ({ id, data }: { id: string; data: Partial<AIProviderUpdate> }) => apiClient.updateAIProvider(id, data),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['aiproviders'] }); showToast('AI Provider updated successfully!', 'success'); resetForm() },
     onError: (error: any) => { showToast(`Failed to update provider: ${error.response?.data?.detail || error.message}`, 'error') },
   })
@@ -309,7 +358,10 @@ export default function Integrations() {
   const resetForm = () => {
     setShowModal(false); setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
-    setApiKey(''); setPublicKey(''); setName(''); setAzureEndpointUrl('')
+    setApiKey(''); setPublicKey(''); setName('')
+    setCredentialRoutingMode('inherit'); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
+    setGatewayAuthHeader(''); setGatewayAuthSecretEnv(''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
+    setGatewayExtraHeadersJson('')
     setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonyVoiceAppId(''); setTelephonySipDomain('')
     setEditingTelephonyConfigId(null); setTelephonyName('')
   }
@@ -321,18 +373,19 @@ export default function Integrations() {
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
+    setCredentialRoutingMode(integration.routing_mode || 'inherit')
     setIsEditMode(true)
     setShowModal(true)
   }
 
   const handleEditAIProvider = (provider: AIProvider) => {
     setIntegrationType('ai_provider'); setSelectedAIProvider(provider); setSelectedProvider(provider.provider)
-    const legacyEndpoint =
-      provider.endpoint_url ||
-      (provider.name && /^https?:\/\//i.test(provider.name) ? provider.name : '')
-    setName(provider.name || '')
-    setAzureEndpointUrl(legacyEndpoint)
-    setApiKey(''); setShowProviderDropdown(false); setIsEditMode(true); setShowModal(true)
+    setName(provider.name || ''); setApiKey(''); setCredentialRoutingMode(provider.routing_mode || 'inherit')
+    setGatewayModel(provider.gateway_model || ''); setGatewayInterface(provider.gateway_interface || 'inherit')
+    setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
+    setGatewayAuthSecretEnv(provider.gateway_auth_secret_env || ''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
+    setGatewayExtraHeadersJson(formatGatewayExtraHeadersJson(provider.gateway_extra_headers))
+    setShowProviderDropdown(false); setIsEditMode(true); setShowModal(true)
   }
 
   const handleEditTelephony = (config?: TelephonyIntegrationResponse) => {
@@ -355,23 +408,66 @@ export default function Integrations() {
         if (name !== (selectedIntegration.name || '')) updateData.name = name || undefined
         if (apiKey) updateData.api_key = apiKey
         if (publicKey !== (selectedIntegration.public_key || '')) updateData.public_key = publicKey || undefined
+        if (credentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')) {
+          updateData.routing_mode = credentialRoutingMode
+        }
         if (Object.keys(updateData).length > 0) updateIntegrationMutation.mutate({ id: selectedIntegration.id, data: updateData })
         else resetForm()
       } else {
         if (!selectedPlatform || !apiKey) return
-        createIntegrationMutation.mutate({ platform: selectedPlatform as IntegrationPlatform, api_key: apiKey, public_key: publicKey || undefined, name: name || undefined })
+        createIntegrationMutation.mutate({
+          platform: selectedPlatform as IntegrationPlatform,
+          api_key: apiKey,
+          public_key: publicKey || undefined,
+          name: name || undefined,
+          routing_mode: credentialRoutingMode,
+        })
       }
     } else if (integrationType === 'ai_provider') {
+      let parsedGatewayExtraHeaders: Record<string, string> | null = null
+      try {
+        parsedGatewayExtraHeaders = parseGatewayExtraHeadersJson(gatewayExtraHeadersJson)
+      } catch (error: any) {
+        showToast(error?.message || 'Invalid gateway extra headers JSON', 'error')
+        return
+      }
+
       if (isEditMode && selectedAIProvider) {
-        const updateData: Partial<AIProviderCreate> = {}
+        const updateData: Partial<AIProviderUpdate> = {}
         if (apiKey.trim()) updateData.api_key = apiKey
         if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
-        if (selectedProvider === ModelProvider.AZURE) {
-          const nextEndpoint = azureEndpointUrl.trim()
-          const currentEndpoint = selectedAIProvider.endpoint_url || ''
-          if (nextEndpoint !== currentEndpoint) {
-            updateData.endpoint_url = nextEndpoint || null
-          }
+        if (credentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')) {
+          updateData.routing_mode = credentialRoutingMode
+        }
+        const trimmedGatewayModel = gatewayModel.trim()
+        if (trimmedGatewayModel !== (selectedAIProvider.gateway_model || '')) {
+          updateData.gateway_model = trimmedGatewayModel || null
+        }
+        if (gatewayInterface !== (selectedAIProvider.gateway_interface || 'inherit')) {
+          updateData.gateway_interface = gatewayInterface
+        }
+        const trimmedGatewayBaseUrl = gatewayBaseUrl.trim()
+        if (trimmedGatewayBaseUrl !== (selectedAIProvider.gateway_base_url || '')) {
+          updateData.gateway_base_url = trimmedGatewayBaseUrl || null
+        }
+        const trimmedGatewayAuthHeader = gatewayAuthHeader.trim()
+        if (trimmedGatewayAuthHeader !== (selectedAIProvider.gateway_auth_header || '')) {
+          updateData.gateway_auth_header = trimmedGatewayAuthHeader || null
+        }
+        const trimmedGatewayAuthSecretEnv = gatewayAuthSecretEnv.trim()
+        if (trimmedGatewayAuthSecretEnv !== (selectedAIProvider.gateway_auth_secret_env || '')) {
+          updateData.gateway_auth_secret_env = trimmedGatewayAuthSecretEnv || null
+        }
+        if (clearGatewayAuthSecret) {
+          updateData.clear_gateway_auth_secret = true
+        } else if (gatewayAuthSecret.trim()) {
+          updateData.gateway_auth_secret = gatewayAuthSecret.trim()
+        }
+        const existingExtraHeadersJson = formatGatewayExtraHeadersJson(
+          selectedAIProvider.gateway_extra_headers,
+        )
+        if (gatewayExtraHeadersJson.trim() !== existingExtraHeadersJson.trim()) {
+          updateData.gateway_extra_headers = parsedGatewayExtraHeaders
         }
         if (Object.keys(updateData).length === 0) { resetForm(); return }
         updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
@@ -380,7 +476,7 @@ export default function Integrations() {
           showToast('Please select a provider', 'error')
           return
         }
-        if (!aiIntegrationGatewayManaged && !apiKey.trim()) {
+        if (aiProviderRequiresApiKey && !apiKey.trim()) {
           showToast('Please enter an API key', 'error')
           return
         }
@@ -392,10 +488,14 @@ export default function Integrations() {
           provider: selectedProvider,
           api_key: apiKey.trim() || undefined,
           name: name || null,
-          endpoint_url:
-            selectedProvider === ModelProvider.AZURE
-              ? azureEndpointUrl.trim() || null
-              : undefined,
+          routing_mode: credentialRoutingMode,
+          gateway_model: gatewayModel.trim() || undefined,
+          gateway_interface: gatewayInterface,
+          gateway_base_url: gatewayBaseUrl.trim() || undefined,
+          gateway_auth_header: gatewayAuthHeader.trim() || undefined,
+          gateway_auth_secret_env: gatewayAuthSecretEnv.trim() || undefined,
+          gateway_auth_secret: gatewayAuthSecret.trim() || undefined,
+          gateway_extra_headers: parsedGatewayExtraHeaders || undefined,
         })
       }
     } else if (integrationType === 'telephony_provider') {
@@ -483,9 +583,14 @@ export default function Integrations() {
     aiIntegrationProviders.length > 0 ||
     hasTelephony
 
-  const aiIntegrationGatewayManaged = Boolean(
-    llmGatewaySettings?.gateway_managed_credentials,
-  )
+  const showGatewayModelField =
+    integrationType === 'ai_provider' &&
+    (credentialRoutingMode === 'gateway' ||
+      (credentialRoutingMode === 'inherit' &&
+        llmGatewaySettings?.effective_routing &&
+        llmGatewaySettings.effective_routing !== 'direct'))
+
+  const aiProviderRequiresApiKey = credentialRoutingMode === 'direct'
 
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
     return platforms.find(p => p.id === platformId)
@@ -573,6 +678,16 @@ export default function Integrations() {
                                   <Star className="h-3 w-3 fill-current" /> Default
                                 </span>
                               )}
+                              {integration.routing_mode && integration.routing_mode !== 'inherit' && (
+                                <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 rounded">
+                                  {integration.routing_mode === 'gateway' ? 'Gateway' : 'Direct'}
+                                </span>
+                              )}
+                              {integration.effective_routing && integration.effective_routing !== 'direct' && (
+                                <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
+                                  {credentialRoutingLabel(integration.effective_routing)}
+                                </span>
+                              )}
                               {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                             </div>
                           </div>
@@ -657,6 +772,26 @@ export default function Integrations() {
                             {provider.gateway_managed && (
                               <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
                                 Gateway managed
+                              </span>
+                            )}
+                            {provider.routing_mode && provider.routing_mode !== 'inherit' && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 rounded">
+                                {provider.routing_mode === 'gateway' ? 'Gateway' : 'Direct'}
+                              </span>
+                            )}
+                            {provider.effective_routing && provider.effective_routing !== 'direct' && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700 rounded">
+                                {credentialRoutingLabel(provider.effective_routing)}
+                              </span>
+                            )}
+                            {provider.effective_gateway_interface === 'native_openai' && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-teal-100 text-teal-700 rounded">
+                                Native API
+                              </span>
+                            )}
+                            {provider.gateway_model && (
+                              <span className="px-2 py-0.5 text-xs font-medium bg-violet-100 text-violet-700 rounded truncate max-w-[180px]" title={provider.gateway_model}>
+                                {provider.gateway_model}
                               </span>
                             )}
                             {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
@@ -840,6 +975,26 @@ export default function Integrations() {
                     </select>
                   </div>
 
+                  {effectiveLlmGatewayType === 'bifrost' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Bifrost API surface</label>
+                      <select
+                        value={llmGatewayInterface}
+                        onChange={(e) => setLlmGatewayInterface(e.target.value as GatewayInterfaceMode)}
+                        className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                      >
+                        <option value="inherit">
+                          Inherit platform ({llmGatewayInterfaceLabel(llmGatewaySettings?.platform_gateway_interface)})
+                        </option>
+                        <option value="litellm_shim">LiteLLM shim (/litellm)</option>
+                        <option value="native_openai">Native OpenAI-compatible</option>
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Use native OpenAI-compatible for custom Bifrost models (e.g. Gemma) that do not work through the /litellm shim.
+                      </p>
+                    </div>
+                  )}
+
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">Base URL override</label>
                     <input
@@ -850,14 +1005,18 @@ export default function Integrations() {
                         llmGatewaySettings?.platform_base_url ||
                         (effectiveLlmGatewayType === 'litellm_proxy'
                           ? 'http://localhost:4000'
-                          : 'http://localhost:8080/litellm')
+                          : (llmGatewayInterface === 'native_openai' || llmGatewaySettings?.effective_gateway_interface === 'native_openai')
+                            ? 'http://localhost:8080'
+                            : 'http://localhost:8080/litellm')
                       }
                       className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
                     />
                     <p className="text-xs text-gray-500 mt-1">
                       {effectiveLlmGatewayType === 'litellm_proxy'
                         ? 'LiteLLM Proxy base URL (e.g. http://localhost:4000). Leave blank to inherit the platform URL.'
-                        : 'Bifrost URL must include the /litellm path. Leave blank to inherit the platform URL.'}
+                        : (llmGatewayInterface === 'native_openai' || llmGatewaySettings?.effective_gateway_interface === 'native_openai')
+                          ? 'Bifrost host root only (e.g. http://localhost:8080). /v1 is added automatically. Do not include /v1/chat/completions.'
+                          : 'Bifrost URL with /litellm path. Leave blank to inherit the platform URL.'}
                     </p>
                   </div>
 
@@ -1036,6 +1195,21 @@ export default function Integrations() {
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="Integration name" />
                   </div>
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
+                    <select
+                      value={credentialRoutingMode}
+                      onChange={(e) => setCredentialRoutingMode(e.target.value as CredentialRoutingMode)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                    >
+                      <option value="inherit">Inherit org default</option>
+                      <option value="gateway">Route via gateway</option>
+                      <option value="direct">Direct API key</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Applies to batch LLM workloads when this credential is used. Real-time voice agents always use direct API keys.
+                    </p>
+                  </div>
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">{selectedPlatform === IntegrationPlatform.VAPI ? 'Private API Key' : 'API Key'} {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}</label>
                     <input type="password" required={!isEditMode} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
                       placeholder={isEditMode ? "Enter new API key (optional)" : `Enter ${selectedPlatform === IntegrationPlatform.VAPI ? 'private ' : ''}API key`} />
@@ -1101,34 +1275,162 @@ export default function Integrations() {
                     </div>
                   )}
                   <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
+                    <select
+                      value={credentialRoutingMode}
+                      onChange={(e) => setCredentialRoutingMode(e.target.value as CredentialRoutingMode)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                    >
+                      <option value="inherit">Inherit org default</option>
+                      <option value="gateway">Route via gateway</option>
+                      <option value="direct">Direct API key</option>
+                    </select>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Controls whether batch/eval LLM calls use your org gateway or call the provider directly.
+                    </p>
+                  </div>
+                  {showGatewayModelField && (
+                    <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Model (Optional)</label>
+                      <input
+                        type="text"
+                        value={gatewayModel}
+                        onChange={(e) => setGatewayModel(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="e.g., production-gpt4 or openai/gpt-4o"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Bifrost custom model ID sent when routing via gateway. Leave blank to use the workload-selected model.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Bifrost API surface</label>
+                      <select
+                        value={gatewayInterface}
+                        onChange={(e) => setGatewayInterface(e.target.value as GatewayInterfaceMode)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                      >
+                        <option value="inherit">Inherit org default</option>
+                        <option value="litellm_shim">LiteLLM shim (/litellm)</option>
+                        <option value="native_openai">Native OpenAI-compatible</option>
+                      </select>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Override how this credential reaches Bifrost. Use native for custom models that fail through /litellm.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Base URL (Optional)</label>
+                      <input
+                        type="url"
+                        value={gatewayBaseUrl}
+                        onChange={(e) => setGatewayBaseUrl(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="e.g. http://localhost:8080"
+                      />
+                      {gatewayInterface === 'native_openai' && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Host root only. /v1 is added automatically — do not include /v1/chat/completions.
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Auth Header (Optional)</label>
+                      <input
+                        type="text"
+                        value={gatewayAuthHeader}
+                        onChange={(e) => setGatewayAuthHeader(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="x-bf-vk"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Header name for Bifrost auth. Defaults to <code>x-bf-vk</code> when blank.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Auth Secret Env Var (Optional)</label>
+                      <input
+                        type="text"
+                        value={gatewayAuthSecretEnv}
+                        onChange={(e) => setGatewayAuthSecretEnv(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="BIFROST_VIRTUAL_KEY"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Read the auth secret from this environment variable at runtime (e.g. K8s secret). Overrides org virtual key.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Gateway Auth Secret{' '}
+                        {isEditMode && selectedAIProvider?.has_gateway_auth_secret ? (
+                          <span className="text-gray-500 font-normal">(stored — enter new value to replace)</span>
+                        ) : (
+                          <span className="text-gray-500 font-normal">(optional inline secret)</span>
+                        )}
+                      </label>
+                      <input
+                        type="password"
+                        value={gatewayAuthSecret}
+                        onChange={(e) => setGatewayAuthSecret(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="Alternative to env var — encrypted at rest"
+                      />
+                      {isEditMode && selectedAIProvider?.has_gateway_auth_secret && (
+                        <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                          <input
+                            type="checkbox"
+                            checked={clearGatewayAuthSecret}
+                            onChange={(e) => setClearGatewayAuthSecret(e.target.checked)}
+                          />
+                          Remove stored gateway auth secret
+                        </label>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Extra Headers (Optional)</label>
+                      <textarea
+                        value={gatewayExtraHeadersJson}
+                        onChange={(e) => setGatewayExtraHeadersJson(e.target.value)}
+                        rows={4}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 font-mono text-sm"
+                        placeholder={'{\n  "X-Custom-Tenant": "prod"\n}'}
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        JSON object of additional HTTP headers sent with every gateway call. Auth header from above takes precedence if names collide.
+                      </p>
+                    </div>
+                    </>
+                  )}
+                  <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       API Key{' '}
                       {isEditMode ? (
                         <span className="text-gray-500 font-normal">(leave empty to keep current)</span>
-                      ) : aiIntegrationGatewayManaged ? (
-                        <span className="text-gray-500 font-normal">(optional — gateway managed)</span>
-                      ) : (
+                      ) : aiProviderRequiresApiKey ? (
                         '*'
+                      ) : (
+                        <span className="text-gray-500 font-normal">(optional — not needed for gateway routing)</span>
                       )}
                     </label>
                     <input
                       type="password"
-                      required={!isEditMode && !aiIntegrationGatewayManaged}
+                      required={!isEditMode && aiProviderRequiresApiKey}
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
                       placeholder={
                         isEditMode
                           ? 'Enter new API key (optional)'
-                          : aiIntegrationGatewayManaged
-                            ? 'Leave blank to use gateway-managed credentials'
-                            : 'Enter API key'
+                          : aiProviderRequiresApiKey
+                            ? 'Enter API key'
+                            : 'Leave blank when routing via Bifrost/gateway'
                       }
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      {aiIntegrationGatewayManaged
-                        ? 'When blank, provider secrets are resolved by your LLM gateway. You can still override with a local key if needed.'
-                        : 'Your API key will be encrypted and stored securely'}
+                      {credentialRoutingMode === 'direct'
+                        ? 'Direct routing always requires a provider API key.'
+                        : 'Gateway routing does not require a provider API key — Bifrost handles the model call. Add one only if you want to pass a provider secret through the gateway.'}
                     </p>
                   </div>
                 </>
@@ -1202,7 +1504,7 @@ export default function Integrations() {
                             {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Host' : 'SIP Domain'} <span className="text-gray-400 font-normal">(optional)</span>
                           </label>
                           <input type="text" value={telephonySipDomain} onChange={(e) => setTelephonySipDomain(e.target.value)}
-                            placeholder={selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Optional: api.exotel.com' : 'Optional: SIP domain'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
+                            placeholder={selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Optional: api.exotel.com or api.in.exotel.com' : 'Optional: SIP domain'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
                         </div>
                       </div>
                       <p className="text-xs text-gray-500">Credentials are encrypted and stored securely. Your browser never displays stored secrets.</p>
