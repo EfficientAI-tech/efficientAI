@@ -11,7 +11,8 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import { apiClient } from '../../lib/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../config/providers'
-import { IntegrationPlatform } from '../../types/api'
+import { IntegrationPlatform, ObservabilityCall } from '../../types/api'
+import { CallAgentLink } from './CallAgentLink'
 
 export default function ObservabilityCalls() {
   const navigate = useNavigate()
@@ -30,30 +31,30 @@ export default function ObservabilityCalls() {
   const {
     data: calls = [],
     isLoading,
-  } = useQuery({
+  } = useQuery<ObservabilityCall[]>({
     queryKey: ['observability-calls'],
     queryFn: () => apiClient.listObservabilityCalls(),
     refetchInterval: (query) => {
-      const data = query.state.data as any[]
+      const data = query.state.data
       if (!data || !Array.isArray(data)) return false
-      const hasLive = data.some((call: any) => call.is_live)
+      const hasLive = data.some((call) => call.is_live)
       return hasLive ? 3000 : false
     },
   })
 
   const summaryStats = useMemo(() => {
     const total = calls.length
-    const ended = calls.filter((c: any) => c.call_event === 'call_ended').length
-    const started = calls.filter((c: any) => c.call_event === 'call_started').length
+    const ended = calls.filter((c) => c.call_event === 'call_ended').length
+    const started = calls.filter((c) => c.call_event === 'call_started').length
     const other = total - ended - started
     return { total, ended, started, other }
   }, [calls])
 
   const filteredCalls = useMemo(() => {
     if (eventFilter === 'all') return calls
-    if (eventFilter === 'call_ended') return calls.filter((c: any) => c.call_event === 'call_ended')
-    if (eventFilter === 'call_started') return calls.filter((c: any) => c.call_event === 'call_started')
-    return calls.filter((c: any) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
+    if (eventFilter === 'call_ended') return calls.filter((c) => c.call_event === 'call_ended')
+    if (eventFilter === 'call_started') return calls.filter((c) => c.call_event === 'call_started')
+    return calls.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
   }, [calls, eventFilter])
 
   const formatTimestamp = (timestamp: string): string => {
@@ -228,6 +229,9 @@ export default function ObservabilityCalls() {
                     Platform
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Agent
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Provider Call ID
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -239,7 +243,7 @@ export default function ObservabilityCalls() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {filteredCalls.map((call: any) => (
+                {filteredCalls.map((call) => (
                   <tr
                     key={call.id}
                     className="hover:bg-gray-50 transition-colors cursor-pointer"
@@ -257,15 +261,18 @@ export default function ObservabilityCalls() {
                       </button>
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
-                      <EventBadge event={call.call_event} />
+                      <EventBadge event={call.call_event ?? undefined} />
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
-                      <PlatformBadge platform={call.provider_platform} />
+                      <PlatformBadge platform={call.provider_platform ?? undefined} />
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                      <CallAgentLink agent={call.agent} />
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <span
                         className="text-xs font-mono text-gray-500 truncate block max-w-[160px]"
-                        title={call.provider_call_id}
+                        title={call.provider_call_id ?? undefined}
                       >
                         {call.provider_call_id || 'N/A'}
                       </span>

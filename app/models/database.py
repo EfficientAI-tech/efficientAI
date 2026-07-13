@@ -761,6 +761,36 @@ class TestAgentConversation(Base):
     created_by = Column(String, nullable=True)
 
 
+class EvaluatorSuite(Base):
+    """Evaluator suite — one agent + one persona + N scenario combinations."""
+
+    __tablename__ = "evaluator_suites"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    name = Column(String, nullable=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
+    metric_ids = Column(JSON, nullable=True)
+    llm_provider = Column(String, nullable=True)
+    llm_model = Column(String, nullable=True)
+    llm_config = Column(JSON, nullable=True)
+    tags = Column(JSON, nullable=True)
+    default_runs_per_combination = Column(Integer, nullable=False, default=1)
+    round_robin_index = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
 class Evaluator(Base):
     """Evaluator - Configuration for testing agents with specific persona and scenario combinations, or custom prompt evaluators."""
     __tablename__ = "evaluators"
@@ -781,6 +811,14 @@ class Evaluator(Base):
     # Display name (required for custom evaluators, optional for standard)
     name = Column(String, nullable=True)
     
+    # Parent suite (nullable for legacy/custom evaluators)
+    suite_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_suites.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # Standard evaluator configuration (nullable for custom evaluators)
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
     persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=True)

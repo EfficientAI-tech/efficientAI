@@ -21,6 +21,7 @@ from app.api.v1.routes import (
     conversation_evaluations,
     voice_agent,
     evaluators,
+    evaluator_suites,
     metrics,
     evaluator_results,
     chat,
@@ -68,6 +69,7 @@ api_router.include_router(test_agents.router)
 api_router.include_router(conversation_evaluations.router)
 api_router.include_router(voice_agent.router)
 api_router.include_router(evaluators.router)
+api_router.include_router(evaluator_suites.router)
 api_router.include_router(metrics.router)
 api_router.include_router(evaluator_results.router)
 api_router.include_router(chat.router)

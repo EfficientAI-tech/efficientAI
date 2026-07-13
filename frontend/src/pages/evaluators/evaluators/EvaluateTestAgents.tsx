@@ -1,107 +1,49 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiClient } from '../../../lib/api'
-import { useAgentStore } from '../../../store/agentStore'
-import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
+import { motion, AnimatePresence } from 'framer-motion'
+import { apiClient, EvaluatorSuite } from '../../../lib/api'
 import Button from '../../../components/Button'
-import ProviderLogo from '../../../components/shared/ProviderLogo'
-import { Plus, Trash2, Play, X, CheckSquare, Square, Brain, ChevronDown, Info, AlertCircle } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import ConfirmModal from '../../../components/ConfirmModal'
+import {
+  Plus,
+  Trash2,
+  Play,
+  CheckSquare,
+  Square,
+  FlaskConical,
+  Loader2,
+  Layers,
+  PhoneIncoming,
+  PhoneOutgoing,
+} from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
-import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
+import EvaluatorSuiteWizard from '../components/EvaluatorSuiteWizard'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
-import {
-  buildAgentsById,
-  partitionEvaluatorsForRun,
-  PartitionedEvaluatorsForRun,
-} from '../utils/evaluatorRunStrategy'
-
-const DEFAULT_PERSONA_NAMES = [
-  "Grumpy Old Man",
-  "Confused Senior",
-  "Busy Professional",
-  "Friendly Customer",
-  "Angry Caller"
-]
-
-const DEFAULT_SCENARIO_NAMES = [
-  "Cancel Subscription",
-  "Check Balance",
-  "Technical Support",
-  "Make Complaint",
-  "Product Inquiry"
-]
-
-interface Evaluator {
-  id: string
-  evaluator_id: string
-  name?: string | null
-  agent_id?: string | null
-  persona_id?: string | null
-  scenario_id?: string | null
-  custom_prompt?: string | null
-  metric_ids?: string[] | null
-  llm_provider?: string | null
-  llm_model?: string | null
-  tags?: string[]
-  created_at: string
-  updated_at: string
-}
+import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
+import { countDisplayMetrics, type MetricRow } from '../components/metricSelectionUtils'
 
 export default function EvaluateTestAgents() {
-  const { selectedAgent } = useAgentStore()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [createMode, setCreateMode] = useState<'standard' | 'custom'>('standard')
-  const [selectedScenario, setSelectedScenario] = useState<string>('')
-  const [selectedPersonas, setSelectedPersonas] = useState<string[]>([])
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
-  const [tagInput, setTagInput] = useState('')
-  const [standardName, setStandardName] = useState('')
-  const [customName, setCustomName] = useState('')
-  const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
-  const [runningEvaluatorIds, setRunningEvaluatorIds] = useState<Set<string>>(new Set())
-  const [selectedEvaluatorIds, setSelectedEvaluatorIds] = useState<Set<string>>(new Set())
+  const [selectedSuiteIds, setSelectedSuiteIds] = useState<Set<string>>(new Set())
   const [showRunModal, setShowRunModal] = useState(false)
-  const [runCount, setRunCount] = useState(1)
-  const [runPartition, setRunPartition] = useState<PartitionedEvaluatorsForRun | null>(null)
-  const [showDeleteSelectedModal, setShowDeleteSelectedModal] = useState(false)
-  const [isDeletingSelected, setIsDeletingSelected] = useState(false)
-  const [modalAgentId, setModalAgentId] = useState<string>('')
-  const [selectedLlmProvider, setSelectedLlmProvider] = useState<ModelProvider | null>(null)
-  const [selectedLlmModel, setSelectedLlmModel] = useState<string>('')
-  const [showLlmDropdown, setShowLlmDropdown] = useState(false)
-  const llmDropdownRef = useRef<HTMLDivElement>(null)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   useWalkthroughSectionState(
     'evaluators',
-    { createMode, showCreateModal, showRunModal },
-    [createMode, showCreateModal, showRunModal]
+    { showCreateModal, showRunModal },
+    [showCreateModal, showRunModal],
   )
 
-  const { data: agents = [] } = useQuery({
-    queryKey: ['agents'],
-    queryFn: () => apiClient.listAgents(),
-  })
-
-  const { data: personas = [] } = useQuery({
-    queryKey: ['personas'],
-    queryFn: () => apiClient.listPersonas(),
-  })
-
-  const { data: scenarios = [] } = useQuery({
-    queryKey: ['scenarios'],
-    queryFn: () => apiClient.listScenarios(),
-  })
-
-  const { data: evaluators = [], isLoading: loadingEvaluators } = useQuery({
-    queryKey: ['evaluators'],
-    queryFn: () => apiClient.listEvaluators(),
+  const { data: suites = [], isLoading } = useQuery({
+    queryKey: ['evaluator-suites'],
+    queryFn: () => apiClient.listEvaluatorSuites(),
   })
 
   const { data: metrics = [] } = useQuery({
@@ -109,1202 +51,300 @@ export default function EvaluateTestAgents() {
     queryFn: () => apiClient.listMetrics('agent', true),
   })
 
-  const { data: aiproviders = [] } = useQuery({
-    queryKey: ['aiproviders'],
-    queryFn: () => apiClient.listAIProviders(),
-  })
+  const metricRows = metrics as MetricRow[]
 
-  const { data: integrations = [] } = useQuery({
-    queryKey: ['integrations'],
-    queryFn: () => apiClient.listIntegrations(),
-  })
-
-  const { data: modelConfigs = {} } = useQuery({
-    queryKey: ['model-configs'],
-    queryFn: async () => {
-      const providers = Object.values(ModelProvider)
-      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> = {}
-      for (const provider of providers) {
-        try {
-          const options = await apiClient.getModelOptions(provider)
-          configs[provider] = { stt: options.stt || [], llm: options.llm || [], tts: options.tts || [], s2s: options.s2s || [] }
-        } catch {
-          configs[provider] = { stt: [], llm: [], tts: [], s2s: [] }
-        }
-      }
-      return configs
-    },
-    staleTime: 5 * 60 * 1000,
-  })
-
-  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
-    const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
-    switch (platformLower) {
-      case 'deepgram': return ModelProvider.DEEPGRAM
-      case 'cartesia': return ModelProvider.CARTESIA
-      case 'elevenlabs': return ModelProvider.ELEVENLABS
-      case 'murf': return ModelProvider.MURF
-      case 'sarvam': return ModelProvider.SARVAM
-      case 'voicemaker': return ModelProvider.VOICEMAKER
-      default: return null
-    }
-  }
-
-  const configuredProviders = Array.from(
-    new Set([
-      ...(aiproviders.filter((p: AIProvider) => p.is_active).map((p: AIProvider) => p.provider as ModelProvider)),
-      ...(integrations.filter((i: Integration) => i.is_active).map((i: Integration) => mapIntegrationToProvider(i.platform)).filter((p): p is ModelProvider => Boolean(p))),
-    ])
-  )
-
-  const llmProviders = configuredProviders.filter(p => {
-    const opts = modelConfigs[p]
-    return opts && opts.llm && opts.llm.length > 0
-  })
-
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
-  }
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (llmDropdownRef.current && !llmDropdownRef.current.contains(event.target as Node)) {
-        setShowLlmDropdown(false)
-      }
-    }
-    if (showLlmDropdown) document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showLlmDropdown])
-
-  const selectedAgentObj = agents.find((a: any) => a.id === modalAgentId) as any
-  const selectedAgentVoiceBundleId = selectedAgentObj?.voice_bundle_id
-
-  const { data: agentVoiceBundle } = useQuery({
-    queryKey: ['voicebundle', selectedAgentVoiceBundleId],
-    queryFn: () => apiClient.getVoiceBundle(selectedAgentVoiceBundleId),
-    enabled: !!selectedAgentVoiceBundleId,
-  })
-
-  const voiceBundleTtsProvider = agentVoiceBundle?.tts_provider
-    ? (typeof agentVoiceBundle.tts_provider === 'string' ? agentVoiceBundle.tts_provider : String(agentVoiceBundle.tts_provider)).toLowerCase()
-    : null
-
-  const allPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
-  const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
-
-  const filteredPersonas = voiceBundleTtsProvider
-    ? allPersonas.filter((p: any) => p.tts_provider && p.tts_provider.toLowerCase() === voiceBundleTtsProvider)
-    : allPersonas
-
-  const incompatibleCount = voiceBundleTtsProvider
-    ? allPersonas.length - filteredPersonas.length
-    : 0
-
-  const createBulkMutation = useMutation({
-    mutationFn: (data: { name?: string; agent_id: string; scenario_id: string; persona_ids: string[]; tags?: string[] }) =>
-      apiClient.createEvaluatorsBulk(data),
+  const createMutation = useMutation({
+    mutationFn: (data: Parameters<typeof apiClient.createEvaluatorSuite>[0]) =>
+      apiClient.createEvaluatorSuite(data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['evaluators'] })
+      queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       setShowCreateModal(false)
-      setStandardName('')
-      setModalAgentId('')
-      setSelectedScenario('')
-      setSelectedPersonas([])
-      setSelectedTags([])
+      showToast('Evaluator suite created', 'success')
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      showToast(typeof detail === 'string' ? detail : 'Failed to create suite', 'error')
     },
   })
 
-  const createCustomMutation = useMutation({
-    mutationFn: (data: { name: string; metric_ids: string[]; llm_provider?: string; llm_model?: string; tags?: string[] }) =>
-      apiClient.createEvaluator(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['evaluators'] })
-      setShowCreateModal(false)
-      setCustomName('')
-      setSelectedMetricIds([])
-      setSelectedLlmProvider(null)
-      setSelectedLlmModel('')
-      setSelectedTags([])
-      setCreateMode('standard')
-    },
-  })
+  const stats = useMemo(() => {
+    const inbound = suites.filter((s) => s.agent_call_type === 'inbound').length
+    const outbound = suites.filter(
+      (s) => s.agent_call_medium === 'phone_call' && s.agent_call_type !== 'inbound',
+    ).length
+    const web = suites.filter((s) => s.agent_call_medium === 'web_call').length
+    const combinations = suites.reduce((sum, s) => sum + s.combination_count, 0)
+    return { total: suites.length, inbound, outbound, web, combinations }
+  }, [suites])
 
-  const toggleMetric = (metricId: string) => {
-    setSelectedMetricIds((prev) =>
-      prev.includes(metricId)
-        ? prev.filter((id) => id !== metricId)
-        : [...prev, metricId],
-    )
-  }
-
-  const toggleParentMetric = (parent: any) => {
-    const childIds: string[] = Array.isArray(parent.children)
-      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
-      : []
-    setSelectedMetricIds((prev) => {
-      const set = new Set(prev)
-      const parentSelected = set.has(parent.id)
-      const someChildren = childIds.some((cid) => set.has(cid))
-      if (parentSelected || someChildren) {
-        set.delete(parent.id)
-        for (const cid of childIds) set.delete(cid)
-      } else {
-        set.add(parent.id)
-        for (const cid of childIds) set.add(cid)
-      }
-      return Array.from(set)
+  const toggleSuite = (id: string) => {
+    setSelectedSuiteIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
     })
   }
 
-  const toggleChildMetric = (parent: any, childId: string) => {
-    const childIds: string[] = Array.isArray(parent.children)
-      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
-      : []
-    setSelectedMetricIds((prev) => {
-      const set = new Set(prev)
-      if (set.has(childId)) {
-        set.delete(childId)
-      } else {
-        set.add(childId)
-      }
-      const allSelected =
-        childIds.length > 0 && childIds.every((cid) => set.has(cid))
-      if (allSelected) {
-        set.add(parent.id)
-      } else {
-        set.delete(parent.id)
-      }
-      return Array.from(set)
-    })
+  const toggleSelectAll = () => {
+    const ids = suites.map((s) => s.id)
+    const allSelected = ids.length > 0 && ids.every((id) => selectedSuiteIds.has(id))
+    setSelectedSuiteIds(allSelected ? new Set() : new Set(ids))
   }
 
-  const handleCreate = () => {
-    if (createMode === 'custom') {
-      if (!customName.trim()) {
-        alert('Please enter a name for the custom evaluator')
-        return
-      }
-      if (selectedMetricIds.length === 0) {
-        alert('Please select at least one metric for the evaluator')
-        return
-      }
-      createCustomMutation.mutate({
-        name: customName.trim(),
-        metric_ids: selectedMetricIds,
-        llm_provider: selectedLlmProvider || undefined,
-        llm_model: selectedLlmModel || undefined,
-        tags: selectedTags.length > 0 ? selectedTags : undefined,
-      })
-      return
-    }
+  const selectedSuites = suites.filter((s) => selectedSuiteIds.has(s.id))
+  const selectedSuite = selectedSuites.length === 1 ? selectedSuites[0] : null
+  const selectedIsInbound = selectedSuite?.agent_call_type === 'inbound'
 
-    if (!modalAgentId) {
-      alert('Please select an agent')
-      return
-    }
-    if (!selectedScenario) {
-      alert('Please select a scenario')
-      return
-    }
-    if (selectedPersonas.length === 0) {
-      alert('Please select at least one persona')
-      return
-    }
-
-    createBulkMutation.mutate({
-      name: standardName.trim() || undefined,
-      agent_id: modalAgentId,
-      scenario_id: selectedScenario,
-      persona_ids: selectedPersonas,
-      tags: selectedTags.length > 0 ? selectedTags : undefined,
-    })
-  }
-
-  const togglePersona = (personaId: string) => {
-    if (selectedPersonas.includes(personaId)) {
-      setSelectedPersonas(selectedPersonas.filter(id => id !== personaId))
-    } else {
-      setSelectedPersonas([...selectedPersonas, personaId])
-    }
-  }
-
-  const addTag = (tags: string[], setTags: (tags: string[]) => void, input: string, setInput: (input: string) => void) => {
-    if (input.trim() && !tags.includes(input.trim())) {
-      setTags([...tags, input.trim()])
-      setInput('')
-    }
-  }
-
-  const removeTag = (tag: string) => {
-    setSelectedTags(selectedTags.filter(t => t !== tag))
-  }
-
-  const toggleEvaluatorSelection = (evaluatorId: string) => {
-    setSelectedEvaluatorIds(prev => {
-      const newSet = new Set(prev)
-      if (newSet.has(evaluatorId)) {
-        newSet.delete(evaluatorId)
-      } else {
-        newSet.add(evaluatorId)
-      }
-      return newSet
-    })
-  }
-
-  const toggleSelectAllEvaluators = () => {
-    const selectableIds = evaluators
-      .filter((evaluator: Evaluator) => !runningEvaluatorIds.has(evaluator.id))
-      .map((evaluator: Evaluator) => evaluator.id)
-
-    const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedEvaluatorIds.has(id))
-    if (allSelected) {
-      setSelectedEvaluatorIds(new Set())
-      return
-    }
-    setSelectedEvaluatorIds(new Set(selectableIds))
-  }
-
-  const handleDeleteSelected = () => {
-    if (selectedEvaluatorIds.size === 0) {
-      showToast('Please select at least one evaluator to delete', 'error')
-      return
-    }
-    setShowDeleteSelectedModal(true)
-  }
-
-  const executeDeleteSelected = async () => {
-    if (selectedEvaluatorIds.size === 0) return
-    setIsDeletingSelected(true)
-    const idsToDelete = Array.from(selectedEvaluatorIds)
+  const handleDeleteSelected = async () => {
+    setIsDeleting(true)
+    const ids = Array.from(selectedSuiteIds)
     try {
-      const results = await Promise.allSettled(idsToDelete.map((id) => apiClient.deleteEvaluator(id)))
-      const successCount = results.filter((result) => result.status === 'fulfilled').length
-      const failedResults = results.filter((result) => result.status === 'rejected') as PromiseRejectedResult[]
-
-      if (successCount > 0) {
-        queryClient.invalidateQueries({ queryKey: ['evaluators'] })
-        showToast(`Deleted ${successCount} evaluator${successCount > 1 ? 's' : ''} successfully`, 'success')
-      }
-
-      if (failedResults.length > 0) {
-        const firstError: any = failedResults[0].reason
-        const detail = firstError?.response?.data?.detail
-        const errorMessage = typeof detail === 'string'
-          ? detail
-          : detail?.message || firstError?.message || 'Some evaluators could not be deleted.'
-        showToast(`${errorMessage} (${failedResults.length} failed)`, 'error')
-      }
-
-      const deletedIds = idsToDelete.filter((_, idx) => results[idx].status === 'fulfilled')
-      setSelectedEvaluatorIds((prev) => {
-        const next = new Set(prev)
-        deletedIds.forEach((id) => next.delete(id))
-        return next
-      })
-      setShowDeleteSelectedModal(false)
+      await Promise.all(ids.map((id) => apiClient.deleteEvaluatorSuite(id)))
+      queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
+      setSelectedSuiteIds(new Set())
+      showToast(`Deleted ${ids.length} suite${ids.length !== 1 ? 's' : ''}`, 'success')
+    } catch (err: any) {
+      showToast(err?.response?.data?.detail || 'Delete failed', 'error')
     } finally {
-      setIsDeletingSelected(false)
-    }
-  }
-
-  const handleRunSelected = () => {
-    if (selectedEvaluatorIds.size === 0) {
-      showToast('Please select at least one evaluator to run', 'error')
-      return
-    }
-    const selected = evaluators.filter((e) => selectedEvaluatorIds.has(e.id))
-    const partition = partitionEvaluatorsForRun(selected, buildAgentsById(agents))
-    setRunPartition(partition)
-    setRunCount(1)
-    setShowRunModal(true)
-  }
-
-  const executeWebRuns = async () => {
-    if (!runPartition || runPartition.webBridge.length === 0) {
-      return
-    }
-    try {
-      const evaluatorIdsArray = runPartition.webBridge.map((e) => e.id)
-      setRunningEvaluatorIds(new Set(evaluatorIdsArray))
-      setShowRunModal(false)
-      setRunPartition(null)
-
-      const expandedIds: string[] = []
-      for (const id of evaluatorIdsArray) {
-        for (let i = 0; i < runCount; i++) {
-          expandedIds.push(id)
-        }
-      }
-
-      await apiClient.runEvaluators(expandedIds)
-
-      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-      setSelectedEvaluatorIds(new Set())
-
-      const totalRuns = evaluatorIdsArray.length * runCount
-      showToast(`🚀 Queued ${totalRuns} evaluation${totalRuns > 1 ? 's' : ''}! Check Results for progress.`, 'success')
-    } catch (error: any) {
-      console.error('Failed to run evaluators:', error)
-      showToast(`Failed to run evaluators: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`, 'error')
-      setRunningEvaluatorIds(new Set())
+      setIsDeleting(false)
+      setShowDeleteModal(false)
     }
   }
 
   return (
-    <>
+    <div className="space-y-6">
       <ToastContainer />
-      <div className="space-y-6">
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-3xl font-bold text-gray-900">Evaluator</h1>
-            <p className="mt-2 text-sm text-gray-600">
-              Manage evaluator configurations for testing agents with personas and scenarios
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
-            <Button
-              variant="success"
-              onClick={handleRunSelected}
-              disabled={selectedEvaluatorIds.size === 0 || runningEvaluatorIds.size > 0}
-              leftIcon={<Play className="w-5 h-5" />}
-              className="!px-6 !py-3 !text-base font-semibold shadow-lg hover:shadow-xl transition-shadow"
-            >
-              Run {selectedEvaluatorIds.size > 0 && `(${selectedEvaluatorIds.size})`}
-            </Button>
-            {selectedEvaluatorIds.size > 0 && (
-              <Button
-                variant="danger"
-                onClick={handleDeleteSelected}
-                leftIcon={<Trash2 className="w-4 h-4" />}
+
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-3xl font-bold text-gray-900">Evaluators</h1>
+          <p className="mt-2 text-sm text-gray-600">
+            Configure agent + persona + scenario combinations for automated post-call evaluation
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <AnimatePresence>
+            {selectedSuiteIds.size > 0 && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="flex flex-wrap items-center gap-2"
               >
-                Delete Selected ({selectedEvaluatorIds.size})
-              </Button>
+                {!selectedIsInbound && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => setShowRunModal(true)}
+                    disabled={selectedSuiteIds.size !== 1}
+                    title={selectedSuiteIds.size !== 1 ? 'Select exactly one suite to run' : undefined}
+                    leftIcon={<Play className="h-4 w-4" />}
+                  >
+                    Run
+                  </Button>
+                )}
+                {selectedIsInbound && (
+                  <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1.5">
+                    Inbound — runs via incoming calls
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => setShowDeleteModal(true)}
+                  leftIcon={<Trash2 className="h-4 w-4" />}
+                >
+                  Delete ({selectedSuiteIds.size})
+                </Button>
+              </motion.div>
             )}
+          </AnimatePresence>
+          <WalkthroughToggleButton />
+          <Button
+            variant="primary"
+            onClick={() => setShowCreateModal(true)}
+            leftIcon={<Plus className="h-5 w-5" />}
+          >
+            Create Suite
+          </Button>
+        </div>
+      </div>
+
+      {/* Summary stats */}
+      {!isLoading && suites.length > 0 && (
+        <motion.div
+          className="grid grid-cols-2 md:grid-cols-4 gap-4"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <StatCard
+            label="Total Suites"
+            value={stats.total}
+            accentClass="text-gray-900"
+            iconBgClass="bg-slate-100"
+            iconClass="text-slate-600"
+            icon={<FlaskConical className="w-5 h-5" />}
+          />
+          <StatCard
+            label="Combinations"
+            value={stats.combinations}
+            accentClass="text-indigo-600"
+            iconBgClass="bg-indigo-50"
+            iconClass="text-indigo-500"
+            icon={<Layers className="w-5 h-5" />}
+          />
+          <StatCard
+            label="Outbound"
+            value={stats.outbound + stats.web}
+            accentClass="text-emerald-600"
+            iconBgClass="bg-emerald-50"
+            iconClass="text-emerald-500"
+            icon={<PhoneOutgoing className="w-5 h-5" />}
+          />
+          <StatCard
+            label="Inbound"
+            value={stats.inbound}
+            accentClass="text-amber-600"
+            iconBgClass="bg-amber-50"
+            iconClass="text-amber-500"
+            icon={<PhoneIncoming className="w-5 h-5" />}
+          />
+        </motion.div>
+      )}
+
+      {/* Table */}
+      <div className="bg-white shadow rounded-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <FlaskConical className="h-5 w-5 text-primary-600" />
+            <h2 className="text-lg font-semibold text-gray-900">Evaluator Suites</h2>
+            {suites.length > 0 && (
+              <span className="px-2 py-0.5 text-xs font-medium text-primary-700 bg-primary-50 rounded-full border border-primary-100">
+                {suites.length}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center h-64 text-gray-500">
+            <Loader2 className="w-6 h-6 animate-spin mr-2" />
+            Loading suites…
+          </div>
+        ) : suites.length === 0 ? (
+          <div className="p-12 text-center">
+            <FlaskConical className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No evaluator suites yet</h3>
+            <p className="text-gray-500 mb-6 max-w-md mx-auto">
+              Create a suite to pair an agent, persona, and scenarios for automated evaluation runs.
+            </p>
             <Button
               variant="primary"
-              onClick={() => {
-                setModalAgentId(selectedAgent?.id || '')
-                setShowCreateModal(true)
-              }}
-              leftIcon={<Plus className="w-4 h-4" />}
+              onClick={() => setShowCreateModal(true)}
+              leftIcon={<Plus className="h-5 w-5" />}
             >
-              Create Evaluator
+              Create your first suite
             </Button>
-            <WalkthroughToggleButton />
           </div>
-        </div>
-
-        {/* Evaluators List - Table Format */}
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">Evaluators</h2>
-            {evaluators.length > 0 && selectedEvaluatorIds.size > 0 && (
-              <div className="text-sm text-gray-600">
-                {selectedEvaluatorIds.size} selected
-              </div>
-            )}
-          </div>
-          {loadingEvaluators ? (
-            <div className="p-6 text-center text-gray-500">Loading...</div>
-          ) : evaluators.length === 0 ? (
-            <div className="p-12 text-center">
-              <p className="text-gray-500 mb-4">No evaluators yet. Create your first evaluator to get started.</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
-                      <button
-                        type="button"
-                        onClick={toggleSelectAllEvaluators}
-                        className="flex-shrink-0"
-                        aria-label="Select all evaluators"
-                      >
-                        {evaluators.length > 0 && evaluators
-                          .filter((evaluator: Evaluator) => !runningEvaluatorIds.has(evaluator.id))
-                          .every((evaluator: Evaluator) => selectedEvaluatorIds.has(evaluator.id)) ? (
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 w-10">
+                    <button type="button" onClick={toggleSelectAll} className="text-gray-400 hover:text-primary-600">
+                      {suites.every((s) => selectedSuiteIds.has(s.id)) ? (
+                        <CheckSquare className="w-5 h-5 text-primary-600" />
+                      ) : (
+                        <Square className="w-5 h-5" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Agent</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Persona</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenarios</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Metrics</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {suites.map((suite: EvaluatorSuite) => (
+                  <tr
+                    key={suite.id}
+                    className={`hover:bg-gray-50 transition-colors ${selectedSuiteIds.has(suite.id) ? 'bg-primary-50/40' : ''}`}
+                  >
+                    <td className="px-6 py-4">
+                      <button type="button" onClick={() => toggleSuite(suite.id)} className="text-gray-400 hover:text-primary-600">
+                        {selectedSuiteIds.has(suite.id) ? (
                           <CheckSquare className="w-5 h-5 text-primary-600" />
                         ) : (
-                          <Square className="w-5 h-5 text-gray-400" />
+                          <Square className="w-5 h-5" />
                         )}
                       </button>
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      ID
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Name
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Agent
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Persona
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[300px]">
-                      Scenario
-                    </th>
-                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Tags
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {evaluators.map((evaluator: Evaluator) => {
-                    const isCustom = !!evaluator.custom_prompt || (evaluator.metric_ids?.length ?? 0) > 0 || !evaluator.agent_id
-                    const persona = !isCustom ? personas.find((p: any) => p.id === evaluator.persona_id) : null
-                    const scenario = !isCustom ? scenarios.find((s: any) => s.id === evaluator.scenario_id) : null
-                    const selectedMetricCount = evaluator.metric_ids?.length ?? 0
-                    const selectedMetricNames = (() => {
-                      if (!isCustom || selectedMetricCount === 0) return [] as string[]
-                      const ids = new Set(evaluator.metric_ids || [])
-                      const names: string[] = []
-                      for (const m of metrics as any[]) {
-                        const children: any[] = Array.isArray(m.children) ? m.children : []
-                        const isParent = !!m.selection_mode && children.length > 0
-                        if (isParent) {
-                          const selectedChildren = children.filter((c: any) => ids.has(c.id))
-                          if (selectedChildren.length > 0) {
-                            names.push(`${m.name} (${selectedChildren.length})`)
-                          }
-                        } else if (ids.has(m.id)) {
-                          names.push(m.name)
-                        }
-                      }
-                      return names
-                    })()
-                    const isRunning = runningEvaluatorIds.has(evaluator.id)
-                    const isSelected = selectedEvaluatorIds.has(evaluator.id)
-
-                    return (
-                      <tr
-                        key={evaluator.id}
-                        className={`hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
+                    </td>
+                    <td className="px-6 py-4">
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/evaluate-test-agents/${suite.id}`)}
+                        className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left"
                       >
-                        {/* Checkbox */}
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={() => toggleEvaluatorSelection(evaluator.id)}
-                            className="flex-shrink-0"
-                            disabled={isRunning}
-                          >
-                            {isSelected ? (
-                              <CheckSquare className="w-5 h-5 text-primary-600" />
-                            ) : (
-                              <Square className="w-5 h-5 text-gray-400" />
-                            )}
-                          </button>
-                        </td>
-
-                        {/* Evaluator ID */}
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => navigate(`/evaluate-test-agents/${evaluator.id}`)}
-                              className="font-mono font-semibold text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
-                            >
-                              {evaluator.evaluator_id}
-                            </button>
-                            {isCustom && (
-                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
-                                Custom
-                              </span>
-                            )}
-                            {isRunning && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                                Running...
-                              </span>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Evaluator Name */}
-                        <td className="px-4 py-4">
-                          {evaluator.name ? (
-                            <span className="text-sm text-gray-900">{evaluator.name}</span>
-                          ) : (
-                            <span className="text-xs text-gray-400">—</span>
-                          )}
-                        </td>
-
-                        {/* Agent */}
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          {evaluator.agent_id ? (
-                            <span className="text-sm text-gray-900">
-                              {agents.find((a: any) => a.id === evaluator.agent_id)?.name || 'Unknown'}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-400">—</span>
-                          )}
-                        </td>
-
-                        {/* Persona */}
-                        <td className="px-4 py-4 whitespace-nowrap">
-                          {isCustom ? (
-                            <span className="text-xs text-gray-400 italic">Custom evaluator</span>
-                          ) : (
-                            <div className="flex flex-col">
-                              <span className="text-sm font-medium text-gray-900">
-                                {persona?.name || 'Unknown'}
-                              </span>
-                              {persona && (
-                                <span className="text-xs text-gray-500">
-                                  {persona.tts_provider || '--'} • {persona.tts_voice_name || '--'} • {persona.gender}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </td>
-
-                        {/* Scenario - Plain Text */}
-                        <td className="px-4 py-4">
-                          {isCustom ? (
-                            <div className="max-w-md">
-                              {selectedMetricCount > 0 ? (
-                                <>
-                                  <span className="text-sm font-medium text-gray-900">
-                                    {selectedMetricCount} metric{selectedMetricCount === 1 ? '' : 's'} selected
-                                  </span>
-                                  {selectedMetricNames.length > 0 && (
-                                    <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                                      {selectedMetricNames.slice(0, 3).join(', ')}
-                                      {selectedMetricNames.length > 3 ? `, +${selectedMetricNames.length - 3} more` : ''}
-                                    </p>
-                                  )}
-                                </>
-                              ) : (
-                                <p className="text-xs text-gray-500 line-clamp-2">
-                                  {evaluator.custom_prompt || 'Custom evaluator'}
-                                </p>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="max-w-md">
-                              <span className="text-sm font-medium text-gray-900">
-                                {scenario?.name || 'Unknown Scenario'}
-                              </span>
-                              {scenario?.description && (
-                                <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                                  {scenario.description}
-                                </p>
-                              )}
-                            </div>
-                          )}
-                        </td>
-
-                        {/* Tags */}
-                        <td className="px-4 py-4">
-                          <div className="flex flex-wrap gap-1">
-                            {evaluator.tags && evaluator.tags.length > 0 ? (
-                              <>
-                                {evaluator.tags.slice(0, 2).map((tag, idx) => (
-                                  <span
-                                    key={idx}
-                                    className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))}
-                                {evaluator.tags.length > 2 && (
-                                  <span className="px-2 py-0.5 text-xs text-gray-500">
-                                    +{evaluator.tags.length - 2}
-                                  </span>
-                                )}
-                              </>
-                            ) : (
-                              <span className="text-xs text-gray-400">—</span>
-                            )}
-                          </div>
-                        </td>
-
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {/* Create Evaluator Modal */}
-        {showCreateModal && (
-          <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="flex min-h-screen items-center justify-center p-4">
-              <div
-                className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-                onClick={() => setShowCreateModal(false)}
-              />
-              <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-2xl font-bold text-gray-900">Create Evaluator</h2>
-                  <button
-                    onClick={() => setShowCreateModal(false)}
-                    className="text-gray-400 hover:text-gray-500"
-                  >
-                    <X className="h-6 w-6" />
-                  </button>
-                </div>
-
-                {/* Mode Tabs */}
-                <div className="flex border-b border-gray-200 mb-4">
-                  <button
-                    onClick={() => setCreateMode('standard')}
-                    className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${createMode === 'standard'
-                      ? 'border-primary-600 text-primary-700'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                      }`}
-                  >
-                    Standard
-                  </button>
-                  <button
-                    onClick={() => setCreateMode('custom')}
-                    className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${createMode === 'custom'
-                      ? 'border-primary-600 text-primary-700'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                      }`}
-                  >
-                    Custom Prompt
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  {createMode === 'custom' ? (
-                    <>
-                      <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-                        <p className="text-xs text-amber-800">
-                          Use this mode to evaluate recordings from third-party voice agents. Pick the metrics this evaluator should score every transcript against.
-                        </p>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Evaluator Name *
-                        </label>
-                        <input
-                          type="text"
-                          value={customName}
-                          onChange={(e) => setCustomName(e.target.value)}
-                          placeholder="e.g. Customer Support Bot v2"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                        />
-                      </div>
-                      {(() => {
-                        const enabledMetrics = (metrics as any[]).filter((m: any) => m.enabled)
-                        const disabledMetrics = (metrics as any[]).filter((m: any) => !m.enabled)
-                        return (
-                          <div>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="block text-sm font-medium text-gray-700">
-                                Metrics *
-                              </label>
-                              {selectedMetricIds.length === 0 ? (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
-                                  <AlertCircle className="h-3 w-3" />
-                                  Pick at least one
-                                </span>
-                              ) : (
-                                <span className="text-[10px] font-medium text-gray-500">
-                                  {selectedMetricIds.length} selected
-                                </span>
-                              )}
-                            </div>
-                            {enabledMetrics.length === 0 ? (
-                              <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-2">
-                                <p className="font-medium">No enabled agent metrics yet.</p>
-                                <p>
-                                  Evaluators only run against metrics that are <strong>enabled</strong> and support the <strong>agent</strong> surface.
-                                </p>
-                                <Link
-                                  to="/metrics-management"
-                                  className="inline-block font-medium text-amber-900 underline hover:text-amber-700"
-                                >
-                                  Open Metrics →
-                                </Link>
-                              </div>
-                            ) : (
-                              <div className="space-y-2 max-h-72 overflow-y-auto border border-gray-200 rounded-md p-3 bg-white">
-                                {enabledMetrics.map((metric: any) => {
-                                  const children: any[] = Array.isArray(metric.children)
-                                    ? metric.children.filter((c: any) => c.enabled)
-                                    : []
-                                  const isParent = !!metric.selection_mode && children.length > 0
-                                  if (!isParent) {
-                                    return (
-                                      <label
-                                        key={metric.id}
-                                        className="flex items-start gap-2 text-sm cursor-pointer"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={selectedMetricIds.includes(metric.id)}
-                                          onChange={() => toggleMetric(metric.id)}
-                                          className="mt-1"
-                                        />
-                                        <span>
-                                          <span className="font-medium text-gray-900">{metric.name}</span>
-                                          {metric.description ? (
-                                            <span className="block text-xs text-gray-500">
-                                              {metric.description}
-                                            </span>
-                                          ) : null}
-                                        </span>
-                                      </label>
-                                    )
-                                  }
-                                  const childIds = children.map((c) => c.id)
-                                  const selectedChildCount = childIds.filter((cid) =>
-                                    selectedMetricIds.includes(cid),
-                                  ).length
-                                  const allSelected =
-                                    selectedChildCount === childIds.length && childIds.length > 0
-                                  const someSelected = selectedChildCount > 0 && !allSelected
-                                  return (
-                                    <div
-                                      key={metric.id}
-                                      className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1"
-                                    >
-                                      <label className="flex items-start gap-2 text-sm cursor-pointer">
-                                        <input
-                                          type="checkbox"
-                                          ref={(el) => {
-                                            if (el) el.indeterminate = someSelected
-                                          }}
-                                          checked={allSelected}
-                                          onChange={() => toggleParentMetric(metric)}
-                                          className="mt-1"
-                                        />
-                                        <span className="flex-1">
-                                          <span className="font-medium text-gray-900">
-                                            {metric.name}
-                                          </span>
-                                          <span className="ml-2 inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
-                                            {metric.selection_mode === 'single_choice'
-                                              ? 'pick one'
-                                              : 'multi-label'}
-                                          </span>
-                                          <span className="ml-2 text-[11px] text-gray-500">
-                                            {selectedChildCount}/{childIds.length} selected
-                                          </span>
-                                          {metric.description ? (
-                                            <span className="block text-xs text-gray-500">
-                                              {metric.description}
-                                            </span>
-                                          ) : null}
-                                        </span>
-                                      </label>
-                                      <div className="ml-6 space-y-1 border-l border-gray-200 pl-3">
-                                        {children.map((child: any) => (
-                                          <label
-                                            key={child.id}
-                                            className="flex items-start gap-2 text-xs cursor-pointer"
-                                          >
-                                            <input
-                                              type="checkbox"
-                                              checked={selectedMetricIds.includes(child.id)}
-                                              onChange={() => toggleChildMetric(metric, child.id)}
-                                              className="mt-0.5"
-                                            />
-                                            <span>
-                                              <span className="font-medium text-gray-800">
-                                                {child.name}
-                                              </span>
-                                              {child.description ? (
-                                                <span className="block text-[11px] text-gray-500">
-                                                  {child.description}
-                                                </span>
-                                              ) : null}
-                                            </span>
-                                          </label>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )}
-                            {disabledMetrics.length > 0 && (
-                              <p className="mt-2 text-[11px] text-gray-500">
-                                {disabledMetrics.length} disabled metric{disabledMetrics.length === 1 ? '' : 's'} hidden — enable them in{' '}
-                                <Link to="/metrics-management" className="underline hover:text-gray-700">
-                                  Metrics
-                                </Link>
-                                .
-                              </p>
-                            )}
-                          </div>
-                        )
-                      })()}
-
-                      {/* Evaluation LLM Model */}
-                      <div className="space-y-3 p-4 bg-purple-50 rounded-lg border border-purple-200">
-                        <div className="flex items-center gap-2">
-                          <Brain className="h-4 w-4 text-purple-600" />
-                          <h4 className="text-sm font-semibold text-gray-900">Evaluation Model</h4>
-                        </div>
-                        <p className="text-xs text-gray-500">
-                          Select which LLM to use for evaluating transcripts against your metrics.
-                        </p>
-                        {llmProviders.length === 0 ? (
-                          <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                            No AI providers with LLM models configured. Add one in Integrations to select a model. Default (gpt-4o) will be used.
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div>
-                              <label className="block text-xs font-medium text-gray-700 mb-1">Provider</label>
-                              <div className="relative" ref={llmDropdownRef}>
-                                <button
-                                  type="button"
-                                  onClick={() => setShowLlmDropdown(!showLlmDropdown)}
-                                  className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
-                                >
-                                  <div className="flex items-center gap-2">
-                                    {selectedLlmProvider && getProviderLogo(selectedLlmProvider) ? (
-                                      <img src={getProviderLogo(selectedLlmProvider)!} alt="" className="w-5 h-5 object-contain rounded" />
-                                    ) : (
-                                      <Brain className="h-4 w-4 text-gray-400" />
-                                    )}
-                                    <span className={selectedLlmProvider ? 'text-gray-900' : 'text-gray-400'}>
-                                      {selectedLlmProvider ? getProviderLabel(selectedLlmProvider) : 'Select provider'}
-                                    </span>
-                                  </div>
-                                  <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
-                                </button>
-                                {showLlmDropdown && (
-                                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-auto">
-                                    {llmProviders.map((provider) => (
-                                      <button
-                                        key={provider}
-                                        type="button"
-                                        onClick={() => {
-                                          setSelectedLlmProvider(provider)
-                                          const models = getModelOptions(provider).llm
-                                          setSelectedLlmModel(models.length > 0 ? models[0] : '')
-                                          setShowLlmDropdown(false)
-                                        }}
-                                        className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
-                                      >
-                                        {getProviderLogo(provider) ? (
-                                          <img src={getProviderLogo(provider)!} alt="" className="w-5 h-5 object-contain rounded" />
-                                        ) : (
-                                          <Brain className="h-4 w-4 text-purple-600" />
-                                        )}
-                                        <span>{getProviderLabel(provider)}</span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            <div>
-                              <label className="block text-xs font-medium text-gray-700 mb-1">Model</label>
-                              <select
-                                value={selectedLlmModel}
-                                onChange={(e) => setSelectedLlmModel(e.target.value)}
-                                disabled={!selectedLlmProvider}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
-                              >
-                                {selectedLlmProvider ? (
-                                  getModelOptions(selectedLlmProvider).llm.map((model) => (
-                                    <option key={model} value={model}>{model}</option>
-                                  ))
-                                ) : (
-                                  <option value="">Select provider first</option>
-                                )}
-                              </select>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Agent *
-                        </label>
-                        <select
-                          value={modalAgentId}
-                          onChange={(e) => {
-                            setModalAgentId(e.target.value)
-                            setSelectedPersonas([])
-                          }}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                        >
-                          <option value="">Select an agent</option>
-                          {agents.map((agent: any) => (
-                            <option key={agent.id} value={agent.id}>
-                              {agent.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Evaluator Name
-                        </label>
-                        <input
-                          type="text"
-                          value={standardName}
-                          onChange={(e) => setStandardName(e.target.value)}
-                          placeholder="Optional: e.g. Billing Resolution - English Personas"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Scenario *
-                        </label>
-                        <select
-                          value={selectedScenario}
-                          onChange={(e) => setSelectedScenario(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                        >
-                          <option value="">Select a scenario</option>
-                          {filteredScenarios.map((scenario: any) => (
-                            <option key={scenario.id} value={scenario.id}>
-                              {scenario.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Personas * ({selectedPersonas.length} selected)
-                        </label>
-
-                        {voiceBundleTtsProvider && (
-                          <div className="mb-2 flex items-start gap-2 p-2.5 bg-blue-50 border border-blue-200 rounded-lg">
-                            <Info className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
-                            <div className="text-xs text-blue-700">
-                              <span className="font-medium">Only showing personas that match the agent's voice bundle TTS provider</span>
-                              <span className="inline-flex items-center gap-1 ml-1">
-                                (<ProviderLogo provider={voiceBundleTtsProvider} size="sm" />
-                                <span className="font-medium">{voiceBundleTtsProvider}</span>)
-                              </span>
-                              {incompatibleCount > 0 && (
-                                <span className="text-blue-600 ml-1">
-                                  — {incompatibleCount} persona{incompatibleCount !== 1 ? 's' : ''} hidden due to provider mismatch
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        )}
-
-                        {!modalAgentId && (
-                          <div className="mb-2 flex items-center gap-2 p-2.5 bg-gray-50 border border-gray-200 rounded-lg">
-                            <Info className="h-4 w-4 text-gray-400 flex-shrink-0" />
-                            <span className="text-xs text-gray-500">Select an agent first to filter compatible personas</span>
-                          </div>
-                        )}
-
-                        <div className="border border-gray-300 rounded-md max-h-48 overflow-y-auto">
-                          {filteredPersonas.length === 0 ? (
-                            <div className="p-4 text-center text-gray-500">
-                              {voiceBundleTtsProvider
-                                ? `No personas available for provider "${voiceBundleTtsProvider}". Create a persona with this provider first.`
-                                : 'No personas available'
-                              }
-                            </div>
-                          ) : (
-                            <div className="divide-y divide-gray-200">
-                              {filteredPersonas.map((persona: any) => (
-                                <label
-                                  key={persona.id}
-                                  className="flex items-center p-3 hover:bg-gray-50 cursor-pointer"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedPersonas.includes(persona.id)}
-                                    onChange={() => togglePersona(persona.id)}
-                                    className="mr-3 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                                  />
-                                  <div className="flex items-center gap-2">
-                                    {persona.tts_provider && <ProviderLogo provider={persona.tts_provider} size="sm" />}
-                                    <div>
-                                      <div className="text-sm font-medium text-gray-900">{persona.name}</div>
-                                      <div className="text-xs text-gray-500">
-                                        {persona.tts_voice_name || '--'} • {persona.gender}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </label>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {/* Tags (shared between both modes) */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Tags
-                    </label>
-                    <div className="flex flex-wrap gap-2 mb-2">
-                      {selectedTags.map((tag, idx) => (
-                        <span
-                          key={idx}
-                          className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded"
-                        >
-                          {tag}
-                          <button
-                            onClick={() => removeTag(tag)}
-                            className="ml-1 text-blue-600 hover:text-blue-800"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex space-x-2">
-                      <input
-                        type="text"
-                        value={tagInput}
-                        onChange={(e) => setTagInput(e.target.value)}
-                        onKeyPress={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault()
-                            addTag(selectedTags, setSelectedTags, tagInput, setTagInput)
-                          }
-                        }}
-                        placeholder="Add tag and press Enter"
-                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                      />
-                      <Button onClick={() => addTag(selectedTags, setSelectedTags, tagInput, setTagInput)}>Add</Button>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end space-x-3 pt-4">
-                    <Button variant="ghost" onClick={() => setShowCreateModal(false)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      onClick={handleCreate}
-                      isLoading={createMode === 'custom' ? createCustomMutation.isPending : createBulkMutation.isPending}
-                    >
-                      {createMode === 'custom' ? 'Create Custom Evaluator' : 'Create Evaluators'}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Running Status Indicator */}
-        {runningEvaluatorIds.size > 0 && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
-                <span className="text-sm font-medium text-blue-800">
-                  Running {runningEvaluatorIds.size} evaluator(s) in the background. Results will appear in the Results section.
-                </span>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  // Optionally clear running IDs after a delay or keep them until results appear
-                  queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-                }}
-              >
-                Refresh Results
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Smart Run Modal */}
-        {showRunModal && runPartition && (
-          <EvaluatorSmartRunModal
-            partition={runPartition}
-            evaluators={evaluators}
-            agentsById={buildAgentsById(agents)}
-            personasById={Object.fromEntries(personas.map((p: any) => [p.id, p]))}
-            scenariosById={Object.fromEntries(scenarios.map((s: any) => [s.id, s]))}
-            runCount={runCount}
-            onRunCountChange={setRunCount}
-            onClose={() => {
-              setShowRunModal(false)
-              setRunPartition(null)
-            }}
-            onExecuteWebRuns={executeWebRuns}
-            isExecutingWebRuns={runningEvaluatorIds.size > 0}
-            showToast={showToast}
-          />
-        )}
-
-        {/* Delete Selected Evaluators Confirmation Modal */}
-        {showDeleteSelectedModal && (
-          <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="flex min-h-screen items-center justify-center p-4">
-              <div
-                className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-                onClick={() => {
-                  setShowDeleteSelectedModal(false)
-                }}
-              />
-              <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Delete Selected Evaluators</h3>
-                  <button
-                    onClick={() => {
-                      setShowDeleteSelectedModal(false)
-                    }}
-                    className="text-gray-400 hover:text-gray-600"
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="flex-shrink-0">
-                    <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-                      <Trash2 className="h-6 w-6 text-red-600" />
-                    </div>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm text-gray-700 mb-2">
-                      Are you sure you want to delete <span className="font-semibold text-gray-900">{selectedEvaluatorIds.size}</span> selected evaluator{selectedEvaluatorIds.size > 1 ? 's' : ''}?
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      This action cannot be undone. Evaluators with dependent results may fail to delete.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex gap-3">
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setShowDeleteSelectedModal(false)
-                    }}
-                    className="flex-1"
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="danger"
-                    onClick={executeDeleteSelected}
-                    isLoading={isDeletingSelected}
-                    leftIcon={!isDeletingSelected ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Delete Selected
-                  </Button>
-                </div>
-              </div>
-            </div>
+                        {suite.name || `${suite.agent_name || 'Suite'} · ${suite.persona_name || 'Persona'}`}
+                      </button>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-900">{suite.agent_name || '—'}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900">{suite.persona_name || '—'}</td>
+                    <td className="px-6 py-4">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                        {suite.combination_count}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-50 text-gray-700 border border-gray-100">
+                        {(() => {
+                          const count = countDisplayMetrics(suite.metric_ids, metricRows)
+                          return count != null ? `${count} selected` : 'All'
+                        })()}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <CallTypeBadge medium={suite.agent_call_medium} callType={suite.agent_call_type} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
-    </>
+
+      <EvaluatorSuiteWizard
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        isSubmitting={createMutation.isPending}
+        onSubmit={(payload) => createMutation.mutate(payload)}
+      />
+
+      <EvaluatorSmartRunModal
+        open={showRunModal}
+        onClose={() => setShowRunModal(false)}
+        suites={selectedSuites}
+        showToast={showToast}
+      />
+
+      <ConfirmModal
+        isOpen={showDeleteModal}
+        title={`Delete ${selectedSuiteIds.size} suite${selectedSuiteIds.size !== 1 ? 's' : ''}?`}
+        description="Historical evaluation results are preserved. This action cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={handleDeleteSelected}
+        onCancel={() => setShowDeleteModal(false)}
+        isLoading={isDeleting}
+        variant="danger"
+      />
+    </div>
   )
 }

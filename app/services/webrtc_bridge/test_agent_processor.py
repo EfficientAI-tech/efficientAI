@@ -27,18 +27,30 @@ TTS_ENV_KEYS = {
     "cartesia": "CARTESIA_API_KEY",
     "elevenlabs": "ELEVENLABS_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "sarvam": "SARVAM_API_KEY",
+    "murf": "MURF_API_KEY",
+    "smallest": "SMALLEST_API_KEY",
+    "voicemaker": "VOICEMAKER_API_KEY",
 }
 
 TTS_DEFAULT_VOICES = {
     "cartesia": "a0e99841-438c-4a64-b679-ae501e7d6091",
     "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
     "openai": "alloy",
+    "sarvam": "ritu",
+    "murf": "en-US-natalie",
+    "smallest": "daniel",
+    "voicemaker": "ai3-Jony",
 }
 
 TTS_DEFAULT_MODELS = {
     "cartesia": "sonic-english",
     "elevenlabs": "eleven_multilingual_v2",
     "openai": "gpt-4o-mini-tts",
+    "sarvam": "bulbul:v3",
+    "murf": "GEN2",
+    "smallest": "lightning-v3.1",
+    "voicemaker": "neural",
 }
 
 
@@ -356,11 +368,34 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         provider = self.config.tts_provider.lower()
         try:
             if provider == "elevenlabs":
-                return await self._tts_elevenlabs(text)
+                audio = await self._tts_elevenlabs(text)
             elif provider == "openai":
-                return await self._tts_openai(text)
+                audio = await self._tts_openai(text)
+            elif provider == "sarvam":
+                audio = await self._tts_sarvam(text)
+            elif provider == "voicemaker":
+                audio = await self._tts_voicemaker(text)
             else:
-                return await self._tts_cartesia(text)
+                audio = await self._tts_cartesia(text)
+
+            # #region agent log
+            import json as _json, time as _time
+            with open("debug-9ccd37.log", "a") as _f:
+                _f.write(_json.dumps({
+                    "sessionId": "9ccd37",
+                    "location": "test_agent_processor.py:_text_to_speech",
+                    "message": "TTS synthesis result",
+                    "data": {
+                        "provider": provider,
+                        "text_len": len(text),
+                        "audio_bytes": len(audio) if audio else 0,
+                    },
+                    "timestamp": int(_time.time() * 1000),
+                    "hypothesisId": "C",
+                }) + "\n")
+            # #endregion
+
+            return audio
         except Exception as e:
             logger.error(f"[TestAgent] TTS ({provider}) error: {e}")
             return None
@@ -478,6 +513,63 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                     logger.warning("[TestAgent] pydub not installed — sending 24kHz audio without resampling")
 
             return response.content
+
+    async def _tts_sarvam(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via Sarvam HTTP API and return raw PCM s16le bytes."""
+        from efficientai.services.sarvam.http_tts import synthesize_sarvam_bytes
+
+        voice = self.config.tts_voice_id or TTS_DEFAULT_VOICES["sarvam"]
+        model = self.config.tts_model or TTS_DEFAULT_MODELS["sarvam"]
+
+        audio_wav, _ = await asyncio.to_thread(
+            synthesize_sarvam_bytes,
+            text=text,
+            model=model,
+            api_key=self.config.tts_api_key,
+            voice=voice,
+            config={"sample_rate": self.config.sample_rate},
+        )
+
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(io.BytesIO(audio_wav), format="wav")
+            seg = seg.set_frame_rate(self.config.sample_rate).set_channels(1).set_sample_width(2)
+            return seg.raw_data
+        except ImportError:
+            import wave
+            with wave.open(io.BytesIO(audio_wav), "rb") as wf:
+                frames = wf.readframes(wf.getnframes())
+                if wf.getframerate() != self.config.sample_rate:
+                    logger.warning(
+                        f"[TestAgent] Sarvam WAV at {wf.getframerate()}Hz but target is "
+                        f"{self.config.sample_rate}Hz — install pydub for resampling"
+                    )
+                return frames
+
+    async def _tts_voicemaker(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via VoiceMaker HTTP API and return raw PCM s16le bytes."""
+        from efficientai.services.voicemaker.http_tts import synthesize_voicemaker_bytes
+
+        voice = self.config.tts_voice_id or TTS_DEFAULT_VOICES["voicemaker"]
+        model = self.config.tts_model or TTS_DEFAULT_MODELS["voicemaker"]
+
+        audio_mp3, _ = await asyncio.to_thread(
+            synthesize_voicemaker_bytes,
+            text=text,
+            model=model,
+            api_key=self.config.tts_api_key,
+            voice=voice,
+            config={"sample_rate_hz": self.config.sample_rate},
+        )
+
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(io.BytesIO(audio_mp3), format="mp3")
+            seg = seg.set_frame_rate(self.config.sample_rate).set_channels(1).set_sample_width(2)
+            return seg.raw_data
+        except ImportError:
+            logger.error("[TestAgent] pydub required to decode VoiceMaker MP3 audio")
+            return None
 
     async def stream_audio_chunks(
         self, 

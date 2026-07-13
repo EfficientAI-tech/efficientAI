@@ -17,7 +17,7 @@ export interface AgentForRun {
 }
 
 export function isCustomEvaluator(evaluator: EvaluatorForRun): boolean {
-  return !!evaluator.custom_prompt || (evaluator.metric_ids?.length ?? 0) > 0 || !evaluator.agent_id
+  return !!evaluator.custom_prompt || !evaluator.agent_id
 }
 
 export function getEvaluatorRunStrategy(
@@ -25,10 +25,7 @@ export function getEvaluatorRunStrategy(
   agent: AgentForRun | null | undefined
 ): RunStrategy {
   if (isCustomEvaluator(evaluator)) {
-    if (evaluator.custom_prompt || (evaluator.metric_ids?.length ?? 0) > 0) {
-      return 'web_bridge'
-    }
-    return 'unsupported'
+    return evaluator.custom_prompt ? 'web_bridge' : 'unsupported'
   }
 
   if (!agent) {
@@ -106,4 +103,18 @@ export function partitionEvaluatorsForRun(
 
 export function buildAgentsById(agents: AgentForRun[]): Record<string, AgentForRun> {
   return Object.fromEntries(agents.map((agent) => [agent.id, agent]))
+}
+
+export function getSuiteRunStrategy(suite: {
+  agent_call_medium?: string | null
+  agent_call_type?: string | null
+}): RunStrategy {
+  const callMedium = suite.agent_call_medium || 'phone_call'
+  const callType = suite.agent_call_type || 'outbound'
+  if (callMedium === 'web_call') return 'web_bridge'
+  if (callMedium === 'phone_call') {
+    if (callType === 'inbound') return 'phone_inbound_manual'
+    return 'phone_outbound'
+  }
+  return 'unsupported'
 }

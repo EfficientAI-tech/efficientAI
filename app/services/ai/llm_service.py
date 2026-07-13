@@ -442,8 +442,21 @@ class LLMService:
             if gemini_family is not None and effective_max_tokens < 4096:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
-        if config:
-            call_kwargs.update(config)
+
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        ).lower()
+        remaining_config = config
+        if provider_value == "azure":
+            azure_kwargs, remaining_config, azure_v1_routing = _build_azure_litellm_kwargs(
+                ai_provider, config
+            )
+            call_kwargs.update(azure_kwargs)
+            if azure_v1_routing:
+                model_str = f"openai/{_azure_deployment_name(llm_model)}"
+                call_kwargs["model"] = model_str
+        if remaining_config:
+            call_kwargs.update(remaining_config)
 
         call_kwargs = apply_llm_gateway(
             call_kwargs,
@@ -452,12 +465,6 @@ class LLMService:
             model=model_str,
             credential=credential_ctx,
         )
-        if not use_direct_azure:
-            call_kwargs = apply_llm_gateway(
-                call_kwargs,
-                organization_id=organization_id,
-                db=db,
-            )
 
         try:
             response = litellm.completion(**call_kwargs)

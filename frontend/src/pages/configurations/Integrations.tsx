@@ -55,6 +55,7 @@ export default function Integrations() {
   const [apiKey, setApiKey] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [name, setName] = useState('')
+  const [azureEndpointUrl, setAzureEndpointUrl] = useState('')
   const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('inherit')
   const [gatewayModel, setGatewayModel] = useState('')
   const [gatewayInterface, setGatewayInterface] = useState<GatewayInterfaceMode>('inherit')
@@ -358,7 +359,7 @@ export default function Integrations() {
   const resetForm = () => {
     setShowModal(false); setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
-    setApiKey(''); setPublicKey(''); setName('')
+    setApiKey(''); setPublicKey(''); setName(''); setAzureEndpointUrl('')
     setCredentialRoutingMode('inherit'); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
     setGatewayAuthHeader(''); setGatewayAuthSecretEnv(''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson('')
@@ -381,6 +382,7 @@ export default function Integrations() {
   const handleEditAIProvider = (provider: AIProvider) => {
     setIntegrationType('ai_provider'); setSelectedAIProvider(provider); setSelectedProvider(provider.provider)
     setName(provider.name || ''); setApiKey(''); setCredentialRoutingMode(provider.routing_mode || 'inherit')
+    setAzureEndpointUrl(provider.endpoint_url || '')
     setGatewayModel(provider.gateway_model || ''); setGatewayInterface(provider.gateway_interface || 'inherit')
     setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
     setGatewayAuthSecretEnv(provider.gateway_auth_secret_env || ''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
@@ -436,6 +438,10 @@ export default function Integrations() {
         const updateData: Partial<AIProviderUpdate> = {}
         if (apiKey.trim()) updateData.api_key = apiKey
         if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
+        const trimmedAzureEndpointUrl = azureEndpointUrl.trim()
+        if (trimmedAzureEndpointUrl !== (selectedAIProvider.endpoint_url || '')) {
+          updateData.endpoint_url = trimmedAzureEndpointUrl || null
+        }
         if (credentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')) {
           updateData.routing_mode = credentialRoutingMode
         }
@@ -489,6 +495,7 @@ export default function Integrations() {
           api_key: apiKey.trim() || undefined,
           name: name || null,
           routing_mode: credentialRoutingMode,
+          endpoint_url: selectedProvider === ModelProvider.AZURE ? azureEndpointUrl.trim() : undefined,
           gateway_model: gatewayModel.trim() || undefined,
           gateway_interface: gatewayInterface,
           gateway_base_url: gatewayBaseUrl.trim() || undefined,

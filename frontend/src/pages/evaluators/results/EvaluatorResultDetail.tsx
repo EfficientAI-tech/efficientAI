@@ -10,6 +10,7 @@ import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
 import VobizCallDetails from '../../../components/call-recordings/VobizCallDetails'
 import { useToast } from '../../../hooks/useToast'
+import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -386,14 +387,7 @@ export default function EvaluatorResultDetailPage() {
   const audioS3Key = getResultAudioS3Key(result)
   const observabilityCallShortId = result?.call_data?.call_short_id as string | undefined
 
-  const { data: presignedUrl } = useQuery({
-    queryKey: ['audio-presigned-url', audioS3Key],
-    queryFn: () => {
-      if (!audioS3Key) return null
-      return apiClient.getAudioPresignedUrl(audioS3Key)
-    },
-    enabled: !!audioS3Key,
-  })
+  const { data: presignedUrl } = useRecordingPresignedUrl(audioS3Key)
 
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),

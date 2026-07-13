@@ -325,6 +325,8 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key?: string | null
   name?: string | null
+  /** Azure OpenAI resource endpoint URL (Azure provider only). */
+  endpoint_url?: string | null
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
   gateway_interface?: GatewayInterfaceMode
@@ -1933,4 +1935,48 @@ export interface DiscoveredMetric {
 export interface DiscoveredMetricsResponse {
   evaluation_id: string
   items: DiscoveredMetric[]
+}
+
+export interface ObservabilityCallAgent {
+  id: string
+  agent_id?: string | null
+  name: string
+}
+
+export interface ObservabilityCallData {
+  startedAt?: string
+  started_at?: string
+  endedAt?: string
+  ended_at?: string
+  from_phone_number?: string
+  to_phone_number?: string
+  endedReason?: string
+  recording_s3_key?: string
+  recording_url?: string
+  duration_seconds?: number
+  agent_name?: string
+  _agent_ref?: string | number
+  direction?: string
+  messages?: Array<{ role: string; content: string; start_time?: number; end_time?: number }>
+  live_transcript?: Array<{ role: string; content: string; timestamp?: string; start_time?: number }>
+  metadata?: Record<string, unknown>
+  call_short_id?: string
+}
+
+export interface ObservabilityCall {
+  id: string
+  call_short_id: string
+  status?: string | null
+  call_event?: string | null
+  is_live?: boolean
+  direction?: string | null
+  source?: string | null
+  provider_platform?: string | null
+  provider_call_id?: string | null
+  agent_id?: string | null
+  agent?: ObservabilityCallAgent | null
+  created_at?: string | null
+  updated_at?: string | null
+  call_data?: ObservabilityCallData | null
+  live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
 }

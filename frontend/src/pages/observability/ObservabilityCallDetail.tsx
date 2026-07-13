@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   ArrowLeft, Phone, Clock, PhoneIncoming, PhoneOutgoing,
   MessageSquare, Trash2, Download, Tag,
@@ -15,7 +15,9 @@ import RetellCallDetails from '../../components/call-recordings/RetellCallDetail
 import VapiCallDetails from '../../components/call-recordings/VapiCallDetails'
 import VobizCallDetails from '../../components/call-recordings/VobizCallDetails'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../config/providers'
-import { IntegrationPlatform } from '../../types/api'
+import { IntegrationPlatform, ObservabilityCall } from '../../types/api'
+import { useRecordingPresignedUrl } from '../../hooks/useRecordingPresignedUrl'
+import { CallAgentLink } from './CallAgentLink'
 
 export default function ObservabilityCallDetail() {
   const navigate = useNavigate()
@@ -25,9 +27,6 @@ export default function ObservabilityCallDetail() {
   const [showEvalModal, setShowEvalModal] = useState(false)
   const [selectedEvaluator, setSelectedEvaluator] = useState('')
   const [liveTranscript, setLiveTranscript] = useState<Array<{ role: string; content: string; timestamp?: string }>>([])
-  const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null)
-  const [audioLoading, setAudioLoading] = useState(false)
-  const audioBlobRef = useRef<string | null>(null)
 
   const liveEvents = new Set([
     'outbound_initiated',
@@ -41,7 +40,7 @@ export default function ObservabilityCallDetail() {
   const {
     data: callRecording,
     isLoading,
-  } = useQuery({
+  } = useQuery<ObservabilityCall>({
     queryKey: ['observability-call', callShortId],
     queryFn: () => apiClient.getObservabilityCall(callShortId!),
     enabled: !!callShortId,
@@ -92,49 +91,14 @@ export default function ObservabilityCallDetail() {
     }
   }, [callShortId, callRecording?.call_event, callRecording?.is_live])
 
-  const hasS3Recording = !!callRecording?.call_data?.recording_s3_key
-  const providerRecordingUrl = callRecording?.call_data?.recording_url || null
+  const storageKey = callRecording?.call_data?.recording_s3_key ?? undefined
+  const providerRecordingUrl = callRecording?.call_data?.recording_url ?? null
+  const hasStorageRecording = !!storageKey
 
-  useEffect(() => {
-    if (!callShortId || !hasS3Recording) {
-      setAudioBlobUrl(null)
-      return
-    }
-
-    let cancelled = false
-    setAudioLoading(true)
-    apiClient.getObservabilityCallAudioUrl(callShortId)
-      .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url)
-          return
-        }
-        if (audioBlobRef.current) {
-          URL.revokeObjectURL(audioBlobRef.current)
-        }
-        audioBlobRef.current = url
-        setAudioBlobUrl(url)
-      })
-      .catch(() => {
-        if (!cancelled) setAudioBlobUrl(null)
-      })
-      .finally(() => {
-        if (!cancelled) setAudioLoading(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [callShortId, hasS3Recording])
-
-  useEffect(() => {
-    return () => {
-      if (audioBlobRef.current) {
-        URL.revokeObjectURL(audioBlobRef.current)
-        audioBlobRef.current = null
-      }
-    }
-  }, [])
+  const {
+    data: presignedRecording,
+    isLoading: presignedLoading,
+  } = useRecordingPresignedUrl(storageKey)
 
   const { data: evaluators = [] } = useQuery({
     queryKey: ['evaluators'],
@@ -207,7 +171,8 @@ export default function ObservabilityCallDetail() {
     : messagesFromLive.length > 0
       ? messagesFromLive
       : undefined
-  const playbackUrl = hasS3Recording ? audioBlobUrl : providerRecordingUrl
+  const playbackUrl = presignedRecording?.url || providerRecordingUrl
+  const audioLoading = hasStorageRecording && presignedLoading && !playbackUrl
 
   const isLiveCall = callRecording.is_live || liveEvents.has((callRecording.call_event || '').toLowerCase())
 
@@ -302,12 +267,12 @@ export default function ObservabilityCallDetail() {
               >
                 Delete
               </Button>
-              <EventBadge event={callRecording.call_event} />
+              <EventBadge event={callRecording.call_event ?? undefined} />
             </div>
           </div>
 
           {/* Metadata grid */}
-          <div className="mt-6 grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="mt-6 grid grid-cols-2 md:grid-cols-6 gap-4">
             <div>
               <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
               <span
@@ -327,13 +292,20 @@ export default function ObservabilityCallDetail() {
             </div>
             <div>
               <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
-              <PlatformBadge platform={callRecording.provider_platform} />
+              <PlatformBadge platform={callRecording.provider_platform ?? undefined} />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-1">Agent</p>
+              <CallAgentLink
+                agent={callRecording.agent}
+                callData={callData}
+              />
             </div>
             <div>
               <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
               <p
                 className="text-sm font-mono text-gray-900 text-xs truncate max-w-[180px]"
-                title={callRecording.provider_call_id}
+                title={callRecording.provider_call_id ?? undefined}
               >
                 {callRecording.provider_call_id || 'N/A'}
               </p>
@@ -392,20 +364,20 @@ export default function ObservabilityCallDetail() {
         </div>
       )}
 
-      {(hasS3Recording || providerRecordingUrl) && !isLiveCall && (
+      {(hasStorageRecording || providerRecordingUrl) && !isLiveCall && (
         <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
             Call Recording
           </h2>
-          {audioLoading && hasS3Recording && !playbackUrl ? (
+          {audioLoading ? (
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Loader className="w-4 h-4 animate-spin" />
               Loading recording...
             </div>
           ) : playbackUrl ? (
             <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-              <audio controls src={playbackUrl} className="w-full max-w-xl" />
+              <audio controls src={playbackUrl} preload="metadata" className="w-full max-w-xl" />
               <a
                 href={playbackUrl}
                 download={`call_${callRecording.call_short_id}.wav`}
@@ -439,9 +411,9 @@ export default function ObservabilityCallDetail() {
                     {transcriptTurns.length} turns
                   </span>
                 </div>
-                {(hasS3Recording || providerRecordingUrl) && isLiveCall && playbackUrl && (
+                {(hasStorageRecording || providerRecordingUrl) && isLiveCall && playbackUrl && (
                   <div className="flex items-center gap-2">
-                    <audio controls src={playbackUrl} className="h-8 w-56" />
+                    <audio controls src={playbackUrl} preload="metadata" className="h-8 w-56" />
                   </div>
                 )}
               </div>

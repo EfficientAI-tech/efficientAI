@@ -269,49 +269,30 @@ function getEvaluatorsWalkthrough(state?: EvaluatorsWalkthroughState): Walkthrou
     }
   }
 
-  if (state?.showCreateModal && state?.createMode === 'custom') {
-    return {
-      id: 'evaluators',
-      title: 'Evaluators Walkthrough',
-      subtitle: 'Create custom prompt evaluators for external recordings.',
-      steps: [
-        {
-          title: 'Step 1: Name evaluator + add prompt',
-          description: 'Provide evaluator name and paste full agent prompt/instructions.',
-          bullets: ['Format with AI can structure long prompts', 'Detailed prompts improve evaluation relevance'],
-        },
-        {
-          title: 'Step 2: Select evaluation model',
-          description: 'Choose LLM provider/model for transcript evaluation.',
-          bullets: ['Defaults are used if no provider is configured', 'Model choice affects scoring quality and cost'],
-        },
-        {
-          title: 'Step 3: Create evaluator',
-          description: 'Save custom evaluator and run it against recordings from the table.',
-        },
-      ],
-    }
-  }
-
   if (state?.showCreateModal) {
     return {
       id: 'evaluators',
       title: 'Evaluators Walkthrough',
-      subtitle: 'Create standard evaluators from agent + persona + scenario.',
+      subtitle: 'Create an evaluator suite: agent + persona + multiple scenarios.',
       steps: [
         {
-          title: 'Step 1: Select agent and scenario',
-          description: 'Pick the target agent and scenario to evaluate.',
-          bullets: ['Scenario should match expected call behavior', 'Evaluator name is optional but recommended'],
+          title: 'Step 1: Agent & persona',
+          description: 'Pick one agent and one compatible persona.',
+          bullets: ['Personas are filtered by TTS provider match', 'One persona per suite'],
         },
         {
-          title: 'Step 2: Select personas',
-          description: 'Choose one or more personas compatible with the agent voice bundle.',
-          bullets: ['Incompatible personas may be hidden', 'Each persona creates its own evaluator variant'],
+          title: 'Step 2: Scenarios',
+          description: 'Select multiple scenarios — each becomes one combination.',
+          bullets: ['N scenarios = N combinations', 'All share the same agent and persona'],
         },
         {
-          title: 'Step 3: Save and run',
-          description: 'Create evaluator rows, select them via checkbox, then click Run.',
+          title: 'Step 3: Metrics',
+          description: 'Optionally pick metrics; otherwise all agent metrics apply.',
+        },
+        {
+          title: 'Step 4: Review & save',
+          description: 'Set default runs per combination and create the suite.',
+          bullets: ['Outbound total runs = combinations × runs per combination', 'Inbound uses round-robin Run next'],
         },
       ],
     }
@@ -320,20 +301,19 @@ function getEvaluatorsWalkthrough(state?: EvaluatorsWalkthroughState): Walkthrou
   return {
     id: 'evaluators',
     title: 'Evaluators Walkthrough',
-    subtitle: 'Create evaluator configs and run them in batches.',
+    subtitle: 'Create evaluator suites and run them in batches.',
     steps: [
       {
-        title: 'Step 1: Create evaluator',
-        description: 'Use Create Evaluator to add standard or custom prompt evaluators.',
+        title: 'Step 1: Create suite',
+        description: 'Use Create Suite for the 4-step wizard.',
       },
       {
-        title: 'Step 2: Select rows',
-        description: 'Use checkboxes to choose evaluators for run or bulk delete.',
+        title: 'Step 2: Select suite',
+        description: 'Use checkboxes to choose a suite for run or delete.',
       },
       {
-        title: 'Step 3: Run in background',
-        description: 'Open Run modal, set run count, and queue jobs.',
-        bullets: ['Progress appears in results views', 'First-time metric model downloads can be slower'],
+        title: 'Step 3: Run',
+        description: 'Outbound/web: batch queue. Inbound: round-robin next combination.',
       },
     ],
   }

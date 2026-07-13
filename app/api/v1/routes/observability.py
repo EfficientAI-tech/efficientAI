@@ -65,7 +65,30 @@ class CallIngestionPayload(BaseModel):
     )
 
 
-def _serialize_call_recording(call_recording: CallRecording, include_data: bool = False) -> Dict[str, Any]:
+def _serialize_agent_summary(agent: Optional[Agent]) -> Optional[Dict[str, Any]]:
+    """Serialize a minimal agent summary for call list/detail responses."""
+    if not agent:
+        return None
+    return {
+        "id": str(agent.id),
+        "agent_id": agent.agent_id,
+        "name": agent.name,
+    }
+
+
+def _load_agents_by_id(db: Session, agent_ids: List[UUID]) -> Dict[UUID, Agent]:
+    """Batch-load agents by primary key to avoid N+1 queries."""
+    if not agent_ids:
+        return {}
+    agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+    return {agent.id: agent for agent in agents}
+
+
+def _serialize_call_recording(
+    call_recording: CallRecording,
+    include_data: bool = False,
+    agent: Optional[Agent] = None,
+) -> Dict[str, Any]:
     """Serialize call recording for API responses."""
     call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
     live_events = {
@@ -88,6 +111,7 @@ def _serialize_call_recording(call_recording: CallRecording, include_data: bool 
         "provider_platform": call_recording.provider_platform,
         "provider_call_id": call_recording.provider_call_id,
         "agent_id": str(call_recording.agent_id) if call_recording.agent_id else None,
+        "agent": _serialize_agent_summary(agent),
         "created_at": call_recording.created_at.isoformat() if call_recording.created_at else None,
         "updated_at": call_recording.updated_at.isoformat() if call_recording.updated_at else None,
     }
@@ -204,7 +228,11 @@ def _upsert_call_recording(
         db.refresh(call_recording)
         action = "created"
 
-    response = _serialize_call_recording(call_recording, include_data=True)
+    agent_obj = None
+    if call_recording.agent_id:
+        agent_obj = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+
+    response = _serialize_call_recording(call_recording, include_data=True, agent=agent_obj)
     response["action"] = action
     if action == "created":
         record_observability_call_ingested(
@@ -382,7 +410,13 @@ async def list_calls(
         .all()
     )
 
-    return [_serialize_call_recording(cr) for cr in call_recordings]
+    agent_ids = [cr.agent_id for cr in call_recordings if cr.agent_id]
+    agents_by_id = _load_agents_by_id(db, agent_ids)
+
+    return [
+        _serialize_call_recording(cr, agent=agents_by_id.get(cr.agent_id) if cr.agent_id else None)
+        for cr in call_recordings
+    ]
 
 
 @router.get("/calls/{call_short_id}", response_model=Dict[str, Any])
@@ -432,7 +466,11 @@ async def get_call(
     )
     # endregion
 
-    return _serialize_call_recording(call_recording, include_data=True)
+    agent = None
+    if call_recording.agent_id:
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+
+    return _serialize_call_recording(call_recording, include_data=True, agent=agent)
 
 
 @router.get("/calls/{call_short_id}/live-events")
@@ -759,7 +797,7 @@ async def evaluate_call(
     if not evaluator:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evaluator not found")
 
-    is_custom = bool(evaluator.custom_prompt)
+    is_custom = bool(evaluator.custom_prompt) or evaluator.agent_id is None
     if is_custom:
         result_name = evaluator.name or "Custom Evaluation"
     else:

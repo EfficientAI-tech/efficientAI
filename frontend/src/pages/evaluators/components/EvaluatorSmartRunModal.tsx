@@ -1,253 +1,176 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { X, PhoneOutgoing, PhoneIncoming, Globe, AlertTriangle } from 'lucide-react'
+import { useState } from 'react'
+import { createPortal } from 'react-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { apiClient, EvaluatorSuite } from '../../../lib/api'
 import Button from '../../../components/Button'
-import EvaluatorPhoneOutboundForm from './EvaluatorPhoneOutboundForm'
-import {
-  PartitionedEvaluatorsForRun,
-  EvaluatorForRun,
-  AgentForRun,
-} from '../utils/evaluatorRunStrategy'
+import { X, Play } from 'lucide-react'
+import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS } from './evaluatorUi'
 
-interface EvaluatorListItem extends EvaluatorForRun {
-  evaluator_id: string
-  name?: string | null
-  persona_id?: string | null
-  scenario_id?: string | null
-}
-
-interface EvaluatorSmartRunModalProps {
-  partition: PartitionedEvaluatorsForRun
-  evaluators: EvaluatorListItem[]
-  agentsById: Record<string, AgentForRun>
-  personasById: Record<string, { id: string; name: string }>
-  scenariosById: Record<string, { id: string; name: string }>
-  runCount: number
-  onRunCountChange: (count: number) => void
+interface Props {
+  open: boolean
   onClose: () => void
-  onExecuteWebRuns: () => void
-  isExecutingWebRuns: boolean
+  suites: EvaluatorSuite[]
   showToast: (message: string, type: 'success' | 'error') => void
 }
 
-function evaluatorLabel(evaluator: EvaluatorListItem): string {
-  return evaluator.name || evaluator.evaluator_id
-}
+export default function EvaluatorSmartRunModal({ open, onClose, suites, showToast }: Props) {
+  const queryClient = useQueryClient()
+  const [runsPerCombination, setRunsPerCombination] = useState(1)
+  const [toNumber, setToNumber] = useState('')
+  const [fromNumber, setFromNumber] = useState('')
 
-export default function EvaluatorSmartRunModal({
-  partition,
-  evaluators,
-  agentsById,
-  personasById,
-  scenariosById,
-  runCount,
-  onRunCountChange,
-  onClose,
-  onExecuteWebRuns,
-  isExecutingWebRuns,
-  showToast,
-}: EvaluatorSmartRunModalProps) {
-  const evaluatorsById = useMemo(
-    () => Object.fromEntries(evaluators.map((e) => [e.id, e])),
-    [evaluators]
-  )
+  const singleSuite = suites.length === 1 ? suites[0] : null
+  const isInbound = singleSuite?.agent_call_type === 'inbound'
+  const isPhoneOutbound =
+    singleSuite?.agent_call_medium === 'phone_call' && singleSuite?.agent_call_type !== 'inbound'
+  const isWeb = singleSuite?.agent_call_medium === 'web_call'
 
-  const [selectedPhoneOutboundId, setSelectedPhoneOutboundId] = useState<string>(
-    partition.phoneOutbound[0]?.id ?? ''
-  )
+  const { data: dialTargets = [] } = useQuery({
+    queryKey: ['telephony-dial-targets'],
+    queryFn: () => apiClient.listTelephonyDialTargets(),
+    enabled: open && isPhoneOutbound,
+  })
 
-  useEffect(() => {
-    if (partition.phoneOutbound.length > 0 && !partition.phoneOutbound.some((e) => e.id === selectedPhoneOutboundId)) {
-      setSelectedPhoneOutboundId(partition.phoneOutbound[0].id)
-    }
-  }, [partition.phoneOutbound, selectedPhoneOutboundId])
+  const runMutation = useMutation({
+    mutationFn: ({ suiteId, runs }: { suiteId: string; runs: number }) =>
+      apiClient.runEvaluatorSuite(suiteId, {
+        runs_per_combination: runs,
+        to_number: toNumber || undefined,
+        from_number: fromNumber || undefined,
+      }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+      showToast(`Queued ${data.total_runs} run${data.total_runs !== 1 ? 's' : ''}`, 'success')
+      onClose()
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      showToast(typeof detail === 'string' ? detail : 'Failed to run suite', 'error')
+    },
+  })
 
-  const selectedPhoneOutbound = evaluatorsById[selectedPhoneOutboundId]
-  const selectedPhoneAgent = selectedPhoneOutbound?.agent_id
-    ? agentsById[selectedPhoneOutbound.agent_id]
-    : undefined
+  if (!open || suites.length === 0) return null
 
-  const hasWeb = partition.webBridge.length > 0
-  const hasPhoneOutbound = partition.phoneOutbound.length > 0
-  const hasPhoneInbound = partition.phoneInbound.length > 0
-  const hasUnsupported = partition.unsupported.length > 0
-  const isMixed =
-    [hasWeb, hasPhoneOutbound, hasPhoneInbound].filter(Boolean).length > 1 || hasUnsupported
+  const totalRuns = singleSuite ? singleSuite.combination_count * runsPerCombination : 0
+  const nextIdx = singleSuite
+    ? singleSuite.round_robin_index % Math.max(singleSuite.combination_count, 1)
+    : 0
+  const nextScenario = singleSuite?.combinations[nextIdx]?.scenario_name
 
-  const title = isMixed
-    ? 'Run selected evaluators'
-    : hasPhoneOutbound && !hasWeb && !hasPhoneInbound
-      ? 'Place outbound call'
-      : hasPhoneInbound && !hasWeb && !hasPhoneOutbound
-        ? 'Inbound evaluators selected'
-        : 'Run Evaluators'
-
-  const canExecuteWeb = hasWeb && !isExecutingWebRuns
-
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
+  const modal = (
+    <div className="fixed inset-0 z-[9999] overflow-y-auto">
       <div className="flex min-h-screen items-center justify-center p-4">
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" onClick={onClose} />
-        <div className="relative bg-white rounded-lg shadow-xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-500" type="button">
+        <div className="relative bg-white rounded-lg shadow-xl w-full max-w-lg flex flex-col">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                Run Evaluator Suite{suites.length > 1 ? 's' : ''}
+              </h2>
+              {singleSuite && !isInbound && (
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Queue batch evaluation runs across all combinations
+                </p>
+              )}
+            </div>
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100">
               <X className="h-5 w-5" />
             </button>
           </div>
 
-          {hasPhoneInbound && (
-            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-              <div className="flex items-start gap-2">
-                <PhoneIncoming className="h-5 w-5 text-amber-700 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-amber-900">Manual inbound test required</p>
-                  <p className="text-sm text-amber-800 mt-1">
-                    Inbound phone evaluators must be tested by calling the agent number manually. Open evaluator
-                    detail for step-by-step instructions.
-                  </p>
-                  <ul className="mt-2 space-y-1">
-                    {partition.phoneInbound.map((e) => (
-                      <li key={e.id}>
-                        <Link
-                          to={`/evaluate-test-agents/${e.id}`}
-                          className="text-sm font-medium text-primary-700 hover:text-primary-900 underline"
-                          onClick={onClose}
-                        >
-                          {evaluatorLabel(evaluatorsById[e.id] ?? (e as EvaluatorListItem))}
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {hasUnsupported && (
-            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-5 w-5 text-red-700 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-sm font-medium text-red-900">Cannot run automatically</p>
-                  <ul className="mt-2 space-y-1 text-sm text-red-800">
-                    {partition.unsupported.map((e) => (
-                      <li key={e.id}>{evaluatorLabel(evaluatorsById[e.id] ?? (e as EvaluatorListItem))}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {hasWeb && (
-            <div className="mb-4 rounded-lg border border-gray-200 p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Globe className="h-4 w-4 text-gray-600" />
-                <p className="text-sm font-medium text-gray-900">
-                  Web bridge ({partition.webBridge.length} evaluator{partition.webBridge.length > 1 ? 's' : ''})
-                </p>
-              </div>
-              <ul className="mb-3 text-sm text-gray-600 list-disc list-inside">
-                {partition.webBridge.map((e) => (
-                  <li key={e.id}>{evaluatorLabel(evaluatorsById[e.id] ?? (e as EvaluatorListItem))}</li>
-                ))}
-              </ul>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                How many times to run each?
-              </label>
-              <div className="flex items-center space-x-3">
-                <button
-                  type="button"
-                  onClick={() => onRunCountChange(Math.max(1, runCount - 1))}
-                  className="w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50"
-                >
-                  -
-                </button>
-                <input
-                  type="number"
-                  min="1"
-                  max="50"
-                  value={runCount}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10)
-                    if (!Number.isNaN(val) && val >= 1 && val <= 50) onRunCountChange(val)
-                  }}
-                  className="w-20 text-center px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => onRunCountChange(Math.min(50, runCount + 1))}
-                  className="w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50"
-                >
-                  +
-                </button>
-              </div>
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mt-3">
-                First-time web runs may take longer while audio evaluation models are downloaded and cached.
+          <div className="px-6 py-5 space-y-4">
+            {suites.length > 1 && (
+              <p className="text-sm text-gray-600 rounded-lg bg-gray-50 border border-gray-100 p-3">
+                {suites.length} suites selected — run each individually from the list.
               </p>
-            </div>
-          )}
+            )}
 
-          {hasPhoneOutbound && selectedPhoneOutbound && selectedPhoneAgent && (
-            <div className="mb-4 rounded-lg border border-gray-200 p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <PhoneOutgoing className="h-4 w-4 text-primary-600" />
-                <p className="text-sm font-medium text-gray-900">
-                  Phone outbound ({partition.phoneOutbound.length} evaluator
-                  {partition.phoneOutbound.length > 1 ? 's' : ''})
+            {singleSuite && isInbound && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm space-y-2">
+                <p className="font-medium text-amber-900">Inbound agent — manual runs disabled</p>
+                <p className="text-amber-800">
+                  Scenarios rotate automatically when callers reach the agent.
+                </p>
+                <p className="text-amber-800">
+                  Next in rotation: <strong>{nextScenario || '—'}</strong> ({nextIdx + 1} of {singleSuite.combination_count})
                 </p>
               </div>
-              {partition.phoneOutbound.length > 1 && (
-                <div className="mb-3">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Select evaluator</label>
-                  <select
-                    value={selectedPhoneOutboundId}
-                    onChange={(e) => setSelectedPhoneOutboundId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-sm"
-                  >
-                    {partition.phoneOutbound.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {evaluatorLabel(evaluatorsById[e.id] ?? (e as EvaluatorListItem))}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Place one call at a time. Switch evaluator to call the next one.
-                  </p>
-                </div>
-              )}
-              <EvaluatorPhoneOutboundForm
-                key={selectedPhoneOutboundId}
-                evaluatorId={selectedPhoneOutbound.id}
-                agentId={selectedPhoneOutbound.agent_id!}
-                personaId={selectedPhoneOutbound.persona_id!}
-                scenarioId={selectedPhoneOutbound.scenario_id!}
-                personaName={
-                  selectedPhoneOutbound.persona_id
-                    ? personasById[selectedPhoneOutbound.persona_id]?.name
-                    : undefined
-                }
-                scenarioName={
-                  selectedPhoneOutbound.scenario_id
-                    ? scenariosById[selectedPhoneOutbound.scenario_id]?.name
-                    : undefined
-                }
-                agentPhoneNumber={selectedPhoneAgent.phone_number as string | null | undefined}
-                showToast={showToast}
-                compact
-              />
-            </div>
-          )}
+            )}
 
-          <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
-            <Button variant="ghost" onClick={onClose}>
-              {hasWeb ? 'Cancel' : 'Close'}
-            </Button>
-            {hasWeb && (
-              <Button onClick={onExecuteWebRuns} isLoading={isExecutingWebRuns} disabled={!canExecuteWeb}>
-                Run {partition.webBridge.length * runCount} evaluation
-                {partition.webBridge.length * runCount > 1 ? 's' : ''}
+            {singleSuite && !isInbound && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Runs per combination</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={runsPerCombination}
+                    onChange={(e) => setRunsPerCombination(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    className={`${MODERN_INPUT_CLASS} w-28`}
+                  />
+                  <div className="mt-3 rounded-lg bg-indigo-50 border border-indigo-100 px-4 py-3 text-sm text-indigo-800">
+                    <strong>{singleSuite.combination_count}</strong> combinations × <strong>{runsPerCombination}</strong> ={' '}
+                    <strong>{totalRuns} total runs</strong>
+                  </div>
+                </div>
+
+                {isPhoneOutbound && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">To number *</label>
+                      <input
+                        type="tel"
+                        value={toNumber}
+                        onChange={(e) => setToNumber(e.target.value)}
+                        placeholder="+1234567890"
+                        className={MODERN_INPUT_CLASS}
+                      />
+                      {dialTargets.length > 0 && (
+                        <select
+                          className={`${MODERN_SELECT_CLASS} mt-2`}
+                          value=""
+                          onChange={(e) => e.target.value && setToNumber(e.target.value)}
+                        >
+                          <option value="">Saved dial targets…</option>
+                          {dialTargets.map((t: any) => (
+                            <option key={t.id} value={t.phone_number}>{t.label || t.phone_number}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">From number (optional)</label>
+                      <input
+                        type="tel"
+                        value={fromNumber}
+                        onChange={(e) => setFromNumber(e.target.value)}
+                        className={MODERN_INPUT_CLASS}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {isWeb && (
+                  <p className="text-sm text-gray-600 rounded-lg bg-gray-50 border border-gray-100 p-3">
+                    Web bridge runs will be queued via Celery workers.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+            <Button variant="outline" onClick={onClose}>Close</Button>
+            {singleSuite && !isInbound && (
+              <Button
+                variant="primary"
+                onClick={() => runMutation.mutate({ suiteId: singleSuite.id, runs: runsPerCombination })}
+                isLoading={runMutation.isPending}
+                disabled={isPhoneOutbound && !toNumber.trim()}
+                leftIcon={<Play className="h-4 w-4" />}
+              >
+                Queue {totalRuns} runs
               </Button>
             )}
           </div>
@@ -255,4 +178,7 @@ export default function EvaluatorSmartRunModal({
       </div>
     </div>
   )
+
+  if (typeof document === 'undefined') return null
+  return createPortal(modal, document.body)
 }

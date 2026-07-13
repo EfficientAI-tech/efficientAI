@@ -4,13 +4,12 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Vobiz WebSocket frame serializer for audio streaming."""
+"""Vobiz WebSocket frame serializer for audio streaming (Plivo-compatible protocol)."""
 
 import base64
 import json
 from typing import Optional
 
-import aiohttp
 from loguru import logger
 from pydantic import BaseModel
 
@@ -32,9 +31,16 @@ from efficientai.serializers.base_serializer import FrameSerializer, FrameSerial
 
 
 class VobizFrameSerializer(FrameSerializer):
-    """Serializer for Vobiz bidirectional audio WebSocket protocol."""
+    """Serializer for Vobiz Audio Streaming WebSocket protocol.
+
+    Vobiz uses a Plivo-compatible media stream format. This serializer converts
+    between EfficientAI frames and Vobiz WebSocket messages, including optional
+    automatic call termination via the Vobiz REST API.
+    """
 
     class InputParams(BaseModel):
+        """Configuration parameters for VobizFrameSerializer."""
+
         vobiz_sample_rate: int = 8000
         sample_rate: Optional[int] = None
         auto_hang_up: bool = True
@@ -104,7 +110,10 @@ class VobizFrameSerializer(FrameSerializer):
         return None
 
     async def _hang_up_call(self):
+        """Hang up the Vobiz call using the Vobiz REST API."""
         try:
+            import aiohttp
+
             auth_id = self._auth_id
             auth_token = self._auth_token
             call_id = self._call_id
@@ -117,9 +126,9 @@ class VobizFrameSerializer(FrameSerializer):
                     missing.append("auth_id")
                 if not auth_token:
                     missing.append("auth_token")
+
                 logger.warning(
-                    "Cannot hang up Vobiz call: missing required parameters: %s",
-                    ", ".join(missing),
+                    f"Cannot hang up Vobiz call: missing required parameters: {', '.join(missing)}"
                 )
                 return
 
@@ -128,28 +137,29 @@ class VobizFrameSerializer(FrameSerializer):
             headers = {
                 "X-Auth-ID": auth_id,
                 "X-Auth-Token": auth_token,
+                "Content-Type": "application/json",
             }
 
             async with aiohttp.ClientSession() as session:
                 async with session.delete(endpoint, headers=headers) as response:
-                    if response.status in (200, 204, 404):
-                        logger.debug("Successfully terminated Vobiz call %s", call_id)
+                    if response.status in (200, 204):
+                        logger.debug(f"Successfully terminated Vobiz call {call_id}")
+                    elif response.status == 404:
+                        logger.debug(f"Vobiz call {call_id} already terminated")
                     else:
                         error_text = await response.text()
                         logger.error(
-                            "Failed to terminate Vobiz call %s: Status %s, Response: %s",
-                            call_id,
-                            response.status,
-                            error_text,
+                            f"Failed to terminate Vobiz call {call_id}: "
+                            f"Status {response.status}, Response: {error_text}"
                         )
         except Exception as e:
-            logger.exception("Failed to hang up Vobiz call: %s", e)
+            logger.exception(f"Failed to hang up Vobiz call: {e}")
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
         try:
             message = json.loads(data)
         except json.JSONDecodeError:
-            logger.warning("Failed to parse JSON message: %s", data)
+            logger.warning(f"Failed to parse JSON message: {data}")
             return None
 
         if message.get("event") == "media":
@@ -166,9 +176,7 @@ class VobizFrameSerializer(FrameSerializer):
                 return None
 
             return InputAudioRawFrame(
-                audio=deserialized_data,
-                num_channels=1,
-                sample_rate=self._sample_rate,
+                audio=deserialized_data, num_channels=1, sample_rate=self._sample_rate
             )
         if message.get("event") == "dtmf":
             dtmf_data = message.get("dtmf", {})
@@ -177,6 +185,6 @@ class VobizFrameSerializer(FrameSerializer):
                 try:
                     return InputDTMFFrame(KeypadEntry(digit))
                 except ValueError:
-                    logger.warning("Invalid DTMF digit received: %s", digit)
+                    logger.warning(f"Invalid DTMF digit received: {digit}")
                     return None
         return None

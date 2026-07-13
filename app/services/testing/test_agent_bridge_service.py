@@ -448,6 +448,9 @@ class TestAgentBridgeService:
                     ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
                     ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
                     ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
+                    ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
+                    ModelProvider.MURF: IntegrationPlatform.MURF,
+                    ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
                 }
                 plat = platform_map.get(provider)
                 if plat:
@@ -470,6 +473,10 @@ class TestAgentBridgeService:
                     ModelProvider.ELEVENLABS: "ELEVENLABS_API_KEY",
                     ModelProvider.DEEPGRAM: "DEEPGRAM_API_KEY",
                     ModelProvider.GOOGLE: "GOOGLE_API_KEY",
+                    ModelProvider.SARVAM: "SARVAM_API_KEY",
+                    ModelProvider.MURF: "MURF_API_KEY",
+                    ModelProvider.SMALLEST: "SMALLEST_API_KEY",
+                    ModelProvider.VOICEMAKER: "VOICEMAKER_API_KEY",
                 }
                 env_var = env_map.get(provider)
                 if env_var:
@@ -504,10 +511,31 @@ class TestAgentBridgeService:
                     f"Please configure the TTS provider in the voice bundle settings."
                 )
 
+            # #region agent log
+            import json as _json, time as _time
+            with open("debug-9ccd37.log", "a") as _f:
+                _f.write(_json.dumps({
+                    "sessionId": "9ccd37",
+                    "location": "test_agent_bridge_service.py:tts_resolve",
+                    "message": "Resolved voice bundle TTS provider",
+                    "data": {
+                        "tts_provider_str": tts_provider_str,
+                        "voice_bundle_id": str(voice_bundle_id),
+                        "provider_platform": provider_platform,
+                    },
+                    "timestamp": int(_time.time() * 1000),
+                    "hypothesisId": "A",
+                }) + "\n")
+            # #endregion
+
             tts_provider_enum_map = {
                 "cartesia": ModelProvider.CARTESIA,
                 "elevenlabs": ModelProvider.ELEVENLABS,
                 "openai": ModelProvider.OPENAI,
+                "sarvam": ModelProvider.SARVAM,
+                "murf": ModelProvider.MURF,
+                "smallest": ModelProvider.SMALLEST,
+                "voicemaker": ModelProvider.VOICEMAKER,
             }
             tts_model_provider = tts_provider_enum_map.get(tts_provider_str)
             if not tts_model_provider:
@@ -533,7 +561,15 @@ class TestAgentBridgeService:
             if not llm_api_key:
                 missing_keys.append("OpenAI (LLM) - check AIProvider table or OPENAI_API_KEY env var")
             if not tts_api_key:
-                env_hints = {"cartesia": "CARTESIA_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY", "openai": "OPENAI_API_KEY"}
+                env_hints = {
+                    "cartesia": "CARTESIA_API_KEY",
+                    "elevenlabs": "ELEVENLABS_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                    "sarvam": "SARVAM_API_KEY",
+                    "murf": "MURF_API_KEY",
+                    "smallest": "SMALLEST_API_KEY",
+                    "voicemaker": "VOICEMAKER_API_KEY",
+                }
                 env_hint = env_hints.get(tts_provider_str, f"{tts_provider_str.upper()}_API_KEY")
                 missing_keys.append(f"{tts_provider_str} (TTS) - check AIProvider/Integration table or {env_hint} env var")
 
@@ -588,6 +624,23 @@ class TestAgentBridgeService:
 
                 test_agent = TestAgentProcessor(test_agent_config)
                 await test_agent.initialize()
+
+                # #region agent log
+                with open("debug-9ccd37.log", "a") as _f:
+                    _f.write(_json.dumps({
+                        "sessionId": "9ccd37",
+                        "location": "test_agent_bridge_service.py:test_agent_init",
+                        "message": "Test agent initialized",
+                        "data": {
+                            "persona_name": persona.name,
+                            "tts_provider": tts_provider_str,
+                            "has_tts_key": bool(tts_api_key),
+                            "has_llm_key": bool(llm_api_key),
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                        "hypothesisId": "B",
+                    }) + "\n")
+                # #endregion
 
                 logger.info(f"[Bridge WebRTC] ✅ Test agent initialized: {persona.name}")
 
