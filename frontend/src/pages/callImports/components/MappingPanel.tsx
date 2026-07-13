@@ -170,12 +170,13 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
     },
     onSuccess: (updated) => {
       setSubmitError(null)
+      const cacheKey = ['call-import', activeWorkspaceId, callImport.id]
       queryClient.setQueriesData(
-        { queryKey: ['call-import', callImport.id] },
+        { queryKey: cacheKey },
         (old: CallImportDetail | undefined) =>
           old ? { ...old, ...updated } : old,
       )
-      queryClient.invalidateQueries({ queryKey: ['call-import', callImport.id] })
+      queryClient.invalidateQueries({ queryKey: cacheKey })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
     },
     onError: (err: any) => {
