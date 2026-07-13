@@ -185,6 +185,18 @@ def _render_turns_as_text(
     return "\n".join(out)
 
 
+def _plain_text_from_turns(turns: Optional[List[Dict[str, Any]]]) -> str:
+    """Join turn text without speaker prefixes (single-speaker fallback)."""
+    if not turns:
+        return ""
+    parts: List[str] = []
+    for turn in turns:
+        text = (turn.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
 # Sentinel error message stamped on rows that the operator cancelled
 # via ``POST /v1/call-imports/{id}/rows/{row_id}/cancel-diarisation``.
 # Kept in sync with :data:`app.api.v1.routes.call_imports.CANCELLED_BY_USER_ERROR`
@@ -364,6 +376,7 @@ def transcribe_call_import_row_task(
     db = SessionLocal()
     evaluation_id_for_dispatch: Optional[str] = None
     slot_task_id = _eval_slot_task_id or self.request.id
+    row = None
     try:
         if run_eval_row_id:
             from app.models.database import CallImportEvaluationRow
@@ -757,7 +770,39 @@ def transcribe_call_import_row_task(
             else ""
         )
 
-        transcript_to_store = rendered_turns or plain_text
+        transcript_to_store = (
+            rendered_turns or plain_text or _plain_text_from_turns(turns) or ""
+        ).strip()
+
+        if not transcript_to_store:
+            logger.info(
+                "transcribe_call_import_row: row {} diariser produced no "
+                "storable transcript; marking completed with empty transcript.",
+                row_id,
+            )
+            if _was_cancelled_externally(db, row):
+                return {
+                    "status": "cancelled",
+                    "reason": "cancelled_by_user",
+                }
+            row.diarised_transcript = ""
+            row.diarised_segments = turns if has_real_diarisation else None
+            row.diarised_speaker_swap = False
+            row.transcribe_mode = normalised_mode
+            row.diarised_transcript_status = "completed"
+            row.diarised_transcript_error = (
+                "Diariser returned no storable transcript text."
+            )
+            row.diarised_at = _now()
+            db.commit()
+            return {
+                "status": "completed",
+                "row_id": row_id,
+                "mode": normalised_mode,
+                "reason": "empty_transcript",
+                "turn_count": len(turns) if has_real_diarisation else 0,
+                "characters": 0,
+            }
 
         # Persist into ``diarised_transcript`` so the CSV-supplied
         # production ``transcript`` is preserved as-is. The structured
@@ -815,6 +860,28 @@ def transcribe_call_import_row_task(
             "characters": len(transcript_to_store),
             "turn_count": len(turns) if has_real_diarisation else 0,
         }
+    except Exception as exc:  # noqa: BLE001 — terminal row state + no retry loop
+        logger.exception(
+            "transcribe_call_import_row crashed for row {}", row_id
+        )
+        if row is not None:
+            try:
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
+                if (row.diarised_transcript_status or "").lower() == "running":
+                    row.diarised_transcript_status = "failed"
+                    row.diarised_transcript_error = _summarize_exc(exc)
+                    db.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to persist unexpected-error state for row {}",
+                    row_id,
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        return {"status": "failed", "reason": "unexpected_error"}
     finally:
         if run_eval_row_id:
             try:

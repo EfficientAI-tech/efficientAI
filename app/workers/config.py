@@ -105,9 +105,10 @@ celery_app.conf.update(
 )
 
 # Route call-import recording fetch to the imports queue (preferred by workers
-# that consume ``imports,diarization,evaluations``). Manual diarisation goes
-# to the diarization queue; evaluation / diarisation-for-eval / post-eval LLM
-# jobs go to the evaluations queue so large fan-outs do not head-of-line block
+# that consume ``imports,diarization,evaluations``). Diarisation work (manual
+# bulk transcribe and eval-chain transcribe) goes to the diarization queue.
+# Eval fair dispatch, LLM scoring, and post-eval LLM jobs go to the
+# evaluations queue so large scoring fan-outs do not head-of-line block
 # recording fetch for other workspaces.
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},

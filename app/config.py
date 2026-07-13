@@ -72,12 +72,12 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: Optional[str] = None
 
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
-    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 10
-    EVAL_ORG_INFLIGHT_LIMIT: int = 50
-    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 100
-    EVAL_JOB_INFLIGHT_LIMIT: int = 10
-    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 5
-    DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 5
+    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
+    EVAL_ORG_INFLIGHT_LIMIT: int = 128
+    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 128
+    EVAL_JOB_INFLIGHT_LIMIT: int = 75
+    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]

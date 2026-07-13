@@ -147,6 +147,8 @@ def _try_dispatch_single_row(
         dia_status = (source_row.diarised_transcript_status or "").strip().lower()
         if dia_status == "pending":
             return "skip"
+        if dia_status == "failed" and not transcribe_overwrite:
+            return "skip"
 
         def _enqueue_transcribe(reserved_task_id: str):
             source_row.diarised_transcript_status = "pending"
@@ -183,7 +185,7 @@ def _try_dispatch_single_row(
                     transcribe_mode,
                 ),
                 kwargs=kwargs,
-                queue=EVALUATIONS_QUEUE,
+                queue=DIARIZATION_QUEUE,
                 task_id=reserved_task_id,
             )
 
