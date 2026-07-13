@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
@@ -30,10 +30,6 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
-import {
-  usesGatewayDirectModel,
-} from '../../lib/gatewayRouting'
-import type { AIProvider } from '../../types/api'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import AgentFlowChart from './components/AgentFlowChart'
 import MetricPartialEditor from './components/MetricPartialEditor'
@@ -122,141 +118,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   google: 'Google',
   deepseek: 'DeepSeek',
   groq: 'Groq',
-}
-
-function LLMProviderSelector({
-  selectedCredentialId,
-  selectedModel,
-  onCredentialIdChange,
-  onProviderChange,
-  onModelChange,
-}: {
-  selectedCredentialId: string
-  selectedModel: string
-  onCredentialIdChange: (credentialId: string) => void
-  onProviderChange: (provider: string) => void
-  onModelChange: (model: string) => void
-}) {
-  const { data: aiProviders = [] } = useQuery<AIProvider[]>({
-    queryKey: ['ai-providers'],
-    queryFn: () => apiClient.listAIProviders(),
-  })
-
-  const activeProviders = aiProviders.filter((p) => p.is_active)
-
-  const activeCredential = useMemo(
-    () =>
-      selectedCredentialId
-        ? activeProviders.find((p) => p.id === selectedCredentialId)
-        : undefined,
-    [activeProviders, selectedCredentialId],
-  )
-
-  const gatewayDirectModel = usesGatewayDirectModel(activeCredential)
-    ? activeCredential?.gateway_model?.trim()
-    : null
-
-  const resolvedProvider = activeCredential?.provider || ''
-
-  const { data: modelOptions } = useQuery({
-    queryKey: ['model-options', resolvedProvider],
-    queryFn: () => apiClient.getModelOptions(resolvedProvider),
-    enabled: !!resolvedProvider && !gatewayDirectModel,
-  })
-
-  const llmModels = modelOptions?.llm || []
-
-  useEffect(() => {
-    if (gatewayDirectModel) {
-      if (selectedModel) onModelChange('')
-      return
-    }
-    if (resolvedProvider && llmModels.length > 0 && !llmModels.includes(selectedModel)) {
-      onModelChange(llmModels[0])
-    }
-  }, [resolvedProvider, llmModels, selectedModel, onModelChange, gatewayDirectModel])
-
-  const handleCredentialChange = (nextId: string) => {
-    if (!nextId) {
-      onCredentialIdChange('')
-      onProviderChange('')
-      onModelChange('')
-      return
-    }
-    const row = activeProviders.find((p) => p.id === nextId)
-    if (!row) return
-    onCredentialIdChange(row.id)
-    onProviderChange(row.provider)
-    onModelChange('')
-  }
-
-  return (
-    <div className="flex gap-3">
-      <div className="flex-1">
-        <label className="block text-xs font-medium text-gray-600 mb-1">
-          <Bot className="w-3 h-3 inline mr-1" />
-          LLM Provider
-        </label>
-        <select
-          value={selectedCredentialId}
-          onChange={(e) => handleCredentialChange(e.target.value)}
-          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-        >
-          <option value="">Auto-detect (use first available)</option>
-          {activeProviders.map((p) => (
-            <option key={p.id} value={p.id}>
-              {PROVIDER_LABELS[p.provider] || p.provider}
-              {p.name ? ` — ${p.name}` : ''}
-              {p.is_default ? ' (default)' : ''}
-            </option>
-          ))}
-        </select>
-        {activeProviders.length === 0 && (
-          <p className="mt-1 text-xs text-amber-600">
-            No AI providers configured. Add one in AI Providers settings.
-          </p>
-        )}
-      </div>
-      <div className="flex-1">
-        {gatewayDirectModel ? (
-          <>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Gateway model</label>
-            <div
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
-              title={gatewayDirectModel}
-            >
-              {gatewayDirectModel}
-            </div>
-            <p className="mt-1 text-xs text-gray-500">
-              Model is fixed on the integration — Bifrost gateway routing applies.
-            </p>
-          </>
-        ) : (
-          <>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-            <select
-              value={selectedModel}
-              onChange={(e) => onModelChange(e.target.value)}
-              disabled={!resolvedProvider}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-            >
-              {!resolvedProvider ? (
-                <option value="">Select a provider first</option>
-              ) : llmModels.length === 0 ? (
-                <option value="">Loading models...</option>
-              ) : (
-                llmModels.map((m: string) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))
-              )}
-            </select>
-          </>
-        )}
-      </div>
-    </div>
-  )
+  sarvam: 'Sarvam',
+  custom: 'Custom',
 }
 
 export default function PromptPartials() {
@@ -1607,12 +1470,14 @@ function PromptPartialModal({
                   AI will restructure your content into well-formatted markdown, improving clarity and organization.
                 </p>
                 <div className="mb-3">
-                  <LLMProviderSelector
-                    selectedCredentialId={improveCredentialId}
-                    selectedModel={improveModel}
-                    onCredentialIdChange={setImproveCredentialId}
+                  <AIProviderModelPicker
+                    provider={improveProvider}
+                    model={improveModel}
+                    credentialId={improveCredentialId}
                     onProviderChange={setImproveProvider}
+                    onCredentialIdChange={setImproveCredentialId}
                     onModelChange={setImproveModel}
+                    showAdvancedOptions={false}
                   />
                 </div>
                 <input
@@ -1866,12 +1731,14 @@ function AIGenerateModal({
               </div>
 
               {/* LLM Provider / Model selector */}
-              <LLMProviderSelector
-                selectedCredentialId={aiCredentialId}
-                selectedModel={aiModel}
-                onCredentialIdChange={setAiCredentialId}
+              <AIProviderModelPicker
+                provider={aiProvider}
+                model={aiModel}
+                credentialId={aiCredentialId}
                 onProviderChange={setAiProvider}
+                onCredentialIdChange={setAiCredentialId}
                 onModelChange={setAiModel}
+                showAdvancedOptions={false}
               />
 
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
@@ -1880,7 +1747,7 @@ function AIGenerateModal({
                   <p className="text-xs text-amber-800">
                     {aiProvider
                       ? `Using ${PROVIDER_LABELS[aiProvider] || aiProvider}${aiModel ? ` / ${aiModel}` : ''} to generate your prompt.`
-                      : 'Auto-detect will use the first available AI provider from your configuration.'}
+                      : 'Auto-detect will use the first available LLM credential (AI Providers or Integrations).'}
                     {' '}You can review and edit before saving.
                   </p>
                 </div>

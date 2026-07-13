@@ -248,6 +248,46 @@ def _evaluated_transcript_source_label(
     return "Diarised"
 
 
+def _pick_evaluation_row_transcript(source_row: Optional[CallImportRow]) -> Optional[str]:
+    """Transcript shown in evaluation row detail — diarised when present."""
+    if source_row is None:
+        return None
+    diarised = (source_row.diarised_transcript or "").strip()
+    return diarised or None
+
+
+def _to_evaluation_row_response(
+    eval_row_obj: CallImportEvaluationRow,
+    source_row: Optional[CallImportRow],
+) -> CallImportEvaluationRowResponse:
+    """Serialize one evaluation row plus joined source-row metadata."""
+    return CallImportEvaluationRowResponse(
+        id=eval_row_obj.id,
+        evaluation_id=eval_row_obj.evaluation_id,
+        call_import_row_id=eval_row_obj.call_import_row_id,
+        row_index=source_row.row_index if source_row else None,
+        conversation_id=source_row.conversation_id if source_row else None,
+        transcript=_pick_evaluation_row_transcript(source_row),
+        raw_columns=source_row.raw_columns if source_row else None,
+        recording_url=source_row.recording_url if source_row else None,
+        recording_date=source_row.recording_date if source_row else None,
+        recording_s3_key=source_row.recording_s3_key if source_row else None,
+        diarised_transcript_status=(
+            source_row.diarised_transcript_status if source_row else None
+        ),
+        diarised_transcript_error=(
+            source_row.diarised_transcript_error if source_row else None
+        ),
+        status=eval_row_obj.status,
+        metric_scores=eval_row_obj.metric_scores or {},
+        error_message=eval_row_obj.error_message,
+        started_at=eval_row_obj.started_at,
+        finished_at=eval_row_obj.finished_at,
+        created_at=eval_row_obj.created_at,
+        updated_at=eval_row_obj.updated_at,
+    )
+
+
 def _serialize_selected_metric_ids(value) -> List[UUID]:
     result: List[UUID] = []
     if not isinstance(value, list):
@@ -1493,33 +1533,10 @@ async def list_call_import_evaluation_rows(
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
     # Row detail shows the diarised transcript that normal metrics score.
-    def _pick_transcript(source_row: CallImportRow) -> Optional[str]:
-        diarised = (source_row.diarised_transcript or "").strip()
-        return diarised or None
-
-    items: List[CallImportEvaluationRowResponse] = []
-    for eval_row_obj, source_row in rows:
-        items.append(
-            CallImportEvaluationRowResponse(
-                id=eval_row_obj.id,
-                evaluation_id=eval_row_obj.evaluation_id,
-                call_import_row_id=eval_row_obj.call_import_row_id,
-                row_index=source_row.row_index,
-                conversation_id=source_row.conversation_id,
-                transcript=_pick_transcript(source_row),
-                raw_columns=source_row.raw_columns,
-                recording_url=source_row.recording_url,
-                recording_date=source_row.recording_date,
-                recording_s3_key=source_row.recording_s3_key,
-                status=eval_row_obj.status,
-                metric_scores=eval_row_obj.metric_scores or {},
-                error_message=eval_row_obj.error_message,
-                started_at=eval_row_obj.started_at,
-                finished_at=eval_row_obj.finished_at,
-                created_at=eval_row_obj.created_at,
-                updated_at=eval_row_obj.updated_at,
-            )
-        )
+    items: List[CallImportEvaluationRowResponse] = [
+        _to_evaluation_row_response(eval_row_obj, source_row)
+        for eval_row_obj, source_row in rows
+    ]
 
     return CallImportEvaluationRowListResponse(
         items=items,
@@ -3747,29 +3764,7 @@ async def cancel_call_import_evaluation_row(
         .first()
     )
 
-    return CallImportEvaluationRowResponse(
-        id=eval_row.id,
-        evaluation_id=eval_row.evaluation_id,
-        call_import_row_id=eval_row.call_import_row_id,
-        row_index=source_row.row_index if source_row else None,
-        conversation_id=source_row.conversation_id if source_row else None,
-        transcript=(
-            (source_row.diarised_transcript or source_row.transcript)
-            if source_row
-            else None
-        ),
-        raw_columns=source_row.raw_columns if source_row else None,
-        recording_url=source_row.recording_url if source_row else None,
-        recording_date=source_row.recording_date if source_row else None,
-        recording_s3_key=source_row.recording_s3_key if source_row else None,
-        status=eval_row.status,
-        metric_scores=eval_row.metric_scores or {},
-        error_message=eval_row.error_message,
-        started_at=eval_row.started_at,
-        finished_at=eval_row.finished_at,
-        created_at=eval_row.created_at,
-        updated_at=eval_row.updated_at,
-    )
+    return _to_evaluation_row_response(eval_row, source_row)
 
 
 @router.delete(
@@ -4828,7 +4823,7 @@ async def generate_call_import_evaluation_insights(
     from app.services.ai.llm_resolver import get_llm_provider_and_model
 
     provider_enum, model_str = get_llm_provider_and_model(
-        organization_id, db, body.provider, body.model
+        organization_id, db, body.provider, body.model, body.credential_id
     )
 
     _enqueue_user_insights_job(
@@ -5031,7 +5026,7 @@ async def generate_call_import_evaluation_user_insights(
     from app.services.ai.llm_resolver import get_llm_provider_and_model
 
     provider_enum, model_str = get_llm_provider_and_model(
-        organization_id, db, body.provider, body.model
+        organization_id, db, body.provider, body.model, body.credential_id
     )
 
     _enqueue_user_insights_job(
@@ -5121,6 +5116,7 @@ def _enqueue_prompt_improvements_job(
     imported_agent_name: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
     force: bool = False,
     db: Optional[Session] = None,
 ) -> None:
@@ -5153,6 +5149,7 @@ def _enqueue_prompt_improvements_job(
             "imported_agent_id": str(imported_agent_id),
             "provider": provider,
             "model": model,
+            "credential_id": str(credential_id) if credential_id else None,
         },
         queue="imports",
     )
@@ -5255,6 +5252,7 @@ def _enqueue_metric_clusters_job(
     *,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
     force: bool = False,
     max_llm_calls: Optional[int] = None,
     evaluation_row_ids: Optional[List[UUID]] = None,
@@ -5355,6 +5353,7 @@ def _enqueue_metric_clusters_job(
             "evaluation_id": str(evaluation.id),
             "provider": provider,
             "model": model,
+            "credential_id": str(credential_id) if credential_id else None,
             "max_llm_calls": llm_budget,
             "evaluation_row_ids": row_ids_for_task,
         },
@@ -5704,7 +5703,7 @@ async def generate_call_import_evaluation_metric_clusters(
     from app.services.ai.llm_resolver import get_llm_provider_and_model
 
     provider_enum, model_str = get_llm_provider_and_model(
-        organization_id, db, body.provider, body.model
+        organization_id, db, body.provider, body.model, body.credential_id
     )
 
     metrics, aggregates, _inferred, _source, child_names_by_parent = _clustering_context(
@@ -5759,6 +5758,7 @@ async def generate_call_import_evaluation_metric_clusters(
         evaluation,
         provider=provider_enum.value,
         model=model_str,
+        credential_id=body.credential_id,
         force=body.force or body.regenerate,
         max_llm_calls=body.max_llm_calls,
         evaluation_row_ids=body.evaluation_row_ids,
@@ -5917,7 +5917,7 @@ async def generate_call_import_evaluation_prompt_improvements(
             return cached
 
     provider_enum, model_str = get_llm_provider_and_model(
-        organization_id, db, body.provider, body.model
+        organization_id, db, body.provider, body.model, body.credential_id
     )
 
     _enqueue_prompt_improvements_job(
@@ -5926,6 +5926,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         imported_agent_name=imported_agent.name,
         provider=provider_enum.value,
         model=model_str,
+        credential_id=body.credential_id,
         force=body.force or body.regenerate,
         db=db,
     )
@@ -8426,25 +8427,7 @@ async def retry_call_import_evaluation_row(
 
     db.refresh(eval_row)
     source_row = targets[0][1]
-    return CallImportEvaluationRowResponse(
-        id=eval_row.id,
-        evaluation_id=eval_row.evaluation_id,
-        call_import_row_id=eval_row.call_import_row_id,
-        row_index=source_row.row_index,
-        conversation_id=source_row.conversation_id,
-        transcript=source_row.transcript,
-        raw_columns=source_row.raw_columns,
-        recording_url=source_row.recording_url,
-        recording_date=source_row.recording_date,
-        recording_s3_key=source_row.recording_s3_key,
-        status=eval_row.status,
-        metric_scores=eval_row.metric_scores or {},
-        error_message=eval_row.error_message,
-        started_at=eval_row.started_at,
-        finished_at=eval_row.finished_at,
-        created_at=eval_row.created_at,
-        updated_at=eval_row.updated_at,
-    )
+    return _to_evaluation_row_response(eval_row, source_row)
 
 
 from app.core.auth.capabilities import EVALS_RUN, EVALS_VIEW, REPORTS_GENERATE

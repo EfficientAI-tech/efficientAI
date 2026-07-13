@@ -1074,3 +1074,97 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
     assert evaluation.completed_rows == 8
     assert evaluation.billed_completed_rows == 8
     assert recorded == []
+
+
+def test_evaluate_call_import_row_skip_audio_uses_existing_scores(
+    db_session, monkeypatch
+):
+    """LLM phase after audio chain merges scores already on the row."""
+    _, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=2
+    )
+    llm_metric, audio_metric = metrics[0], metrics[1]
+    audio_metric.name = "MOS Score"
+    source_rows[0].recording_s3_key = "recordings/test.mp3"
+    eval_row = eval_rows[0]
+    audio_id = str(audio_metric.id)
+    eval_row.metric_scores = {
+        audio_id: {
+            "value": 4.2,
+            "type": "rating",
+            "metric_name": audio_metric.name,
+        }
+    }
+    db_session.commit()
+
+    task_module = _patch_dependencies(monkeypatch, db_session)
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda *args, **kwargs: None,
+    )
+    result = task_module.evaluate_call_import_row_task.run(
+        str(eval_row.id),
+        _skip_audio=True,
+    )
+
+    assert result["status"] == "completed"
+    db_session.refresh(eval_row)
+    assert eval_row.metric_scores[audio_id]["value"] == 4.2
+    assert eval_row.metric_scores[str(llm_metric.id)]["value"] == 4
+
+
+def test_evaluate_call_import_row_audio_only_completes(db_session, monkeypatch):
+    """Audio-only evaluation finalizes without chaining LLM."""
+    org, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=1
+    )
+    metrics[0].name = "MOS Score"
+    db_session.commit()
+
+    from app.workers.tasks import evaluate_call_import_row_audio as audio_module
+
+    monkeypatch.setattr(
+        audio_module, "SessionLocal", lambda: _NonClosingSession(db_session)
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda *args, **kwargs: None,
+    )
+
+    source_rows[0].recording_s3_key = "audio/key.mp3"
+    db_session.commit()
+
+    def _fake_audio(*_args, **_kwargs):
+        mid = str(metrics[0].id)
+        return {
+            mid: {
+                "value": 3.5,
+                "type": "rating",
+                "metric_name": "MOS Score",
+            }
+        }
+
+    monkeypatch.setattr(
+        "app.workers.tasks.helpers.audio_evaluation.evaluate_audio_metrics",
+        _fake_audio,
+    )
+
+    chained = {"called": False}
+
+    def _no_chain(*_args, **_kwargs):
+        chained["called"] = True
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        _no_chain,
+    )
+
+    result = audio_module.evaluate_call_import_row_audio_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "completed"
+    assert result.get("phase") == "audio_only"
+    assert chained["called"] is False
+    db_session.refresh(eval_rows[0])
+    assert eval_rows[0].status == "completed"

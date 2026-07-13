@@ -1726,6 +1726,7 @@ class ApiClient {
       regenerate?: boolean
       provider?: string | null
       model?: string | null
+      credential_id?: string | null
       max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationTldrSummary> {
@@ -1734,6 +1735,7 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
@@ -1781,6 +1783,7 @@ class ApiClient {
       force?: boolean
       provider?: string
       model?: string
+      credential_id?: string
     },
   ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
     const response = await this.client.post(
@@ -1830,6 +1833,7 @@ class ApiClient {
       force?: boolean
       provider?: string | null
       model?: string | null
+      credential_id?: string | null
       max_llm_calls?: number | null
       evaluation_row_ids?: string[] | null
       failure_policies?: Record<
@@ -1844,6 +1848,7 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     if (options?.evaluation_row_ids?.length) {
       body.evaluation_row_ids = options.evaluation_row_ids
@@ -1876,6 +1881,7 @@ class ApiClient {
       force?: boolean
       provider?: string | null
       model?: string | null
+      credential_id?: string | null
       max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationUserInsightsState> {
@@ -1885,6 +1891,7 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
@@ -3175,6 +3182,7 @@ class ApiClient {
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
     model?: string
+    credential_id?: string
     llm_config?: Record<string, any>
   }): Promise<{
     name: string

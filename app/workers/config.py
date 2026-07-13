@@ -4,15 +4,16 @@ Important: this module is imported via ``celery -A app.workers.celery_app``
 *before* any task module touches torch / numpy / librosa, so it is the
 right place to enforce single-threaded BLAS/OMP/MKL.
 
-Why this matters: the imports-queue worker now runs the audio metric path
-(``evaluate_audio_metrics`` → Praat / UTMOS / qualitative voice service),
-which transitively loads torch, torchaudio, librosa, transformers, and
-speechbrain into each prefork child. With Celery's default prefork pool
-and ``--concurrency=N`` on an N-vCPU box, each child opens up an OpenMP
-threadpool of size N, so the worker ends up with N×N native threads
+Why this matters: the default ``worker`` service runs the audio metric path
+(``evaluate_call_import_row_audio`` → Praat / UTMOS / qualitative voice service)
+on the ``audio-metrics`` queue. That path transitively loads torch, torchaudio,
+librosa, transformers, and speechbrain into each prefork child. With Celery's
+default prefork pool and ``--concurrency=N`` on an N-vCPU box, each child opens
+up an OpenMP threadpool of size N, so the worker ends up with N×N native threads
 fighting over shared OMP/MKL locks. After a handful of tasks one child
 inevitably deadlocks inside ``pthread_cond_wait`` in libgomp, Celery
-keeps thinking it's healthy, and the queue wedges.
+keeps thinking it's healthy, and the queue wedges. ``worker-imports`` (threads,
+I/O + LLM only) should not load torch after the audio split.
 
 The mitigations applied here are the canonical Celery + PyTorch
 hardening:
@@ -111,9 +112,11 @@ celery_app.conf.update(
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
     "evaluate_call_import_row": {"queue": "evaluations"},
+    "evaluate_call_import_row_audio": {"queue": "audio-metrics"},
     "transcribe_call_import_row": {"queue": "diarization"},
     "dispatch_evaluation_rows": {"queue": "evaluations"},
     "dispatch_fair_eval_rows": {"queue": "evaluations"},
+    "dispatch_fair_diarization_rows": {"queue": "diarization"},
     "generate_evaluation_tldr_insights": {"queue": "evaluations"},
     "generate_evaluation_user_insights": {"queue": "evaluations"},
     "generate_evaluation_metric_clusters": {"queue": "evaluations"},

@@ -10,7 +10,7 @@ Completions) automatically.
 
 import re
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from uuid import UUID
 
 import litellm
@@ -26,6 +26,8 @@ from app.services.ai.llm_gateway import (
     resolve_litellm_api_key,
     resolve_litellm_model,
     routing_context_from_ai_provider,
+    routing_context_from_integration,
+    CredentialRoutingContext,
 )
 
 # LiteLLM will silently drop params the target provider doesn't support
@@ -168,6 +170,31 @@ class LLMService:
             provider, db, organization_id, credential_id=credential_id
         )
 
+    def _resolve_credential_context(
+        self,
+        llm_provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ) -> Tuple[Optional[AIProvider], Optional[CredentialRoutingContext]]:
+        """Resolve AIProvider or Integration row and its routing context."""
+        ai_provider = self._get_ai_provider(
+            llm_provider, db, organization_id, credential_id=credential_id
+        )
+        if ai_provider:
+            return ai_provider, routing_context_from_ai_provider(ai_provider)
+
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        )
+        integration = resolve_integration(
+            provider_value, db, organization_id, credential_id=credential_id
+        )
+        if integration:
+            return None, routing_context_from_integration(integration)
+
+        return None, None
+
     def _resolve_api_key(
         self,
         provider: ModelProvider,
@@ -253,11 +280,8 @@ class LLMService:
         start_time = time.time()
 
         # --- resolve API key from database --------------------------------
-        ai_provider = self._get_ai_provider(
+        ai_provider, credential_ctx = self._resolve_credential_context(
             llm_provider, db, organization_id, credential_id=credential_id
-        )
-        credential_ctx = (
-            routing_context_from_ai_provider(ai_provider) if ai_provider else None
         )
         if ai_provider:
             api_key = resolve_litellm_api_key(

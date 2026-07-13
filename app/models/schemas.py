@@ -3388,6 +3388,8 @@ class CallImportEvaluationRowResponse(BaseModel):
     recording_url: Optional[str] = None
     recording_date: Optional[date] = None
     recording_s3_key: Optional[str] = None
+    diarised_transcript_status: Optional[str] = None
+    diarised_transcript_error: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
@@ -3879,6 +3881,7 @@ class EvaluationInsightsRequest(BaseModel):
     regenerate: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(
         default=None,
         ge=20,
@@ -3939,6 +3942,7 @@ class EvaluationUserInsightsRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
 
 
@@ -4172,6 +4176,7 @@ class EvaluationPromptImprovementsRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
 
 
 class EvaluationMetricClustersRequest(BaseModel):
@@ -4181,6 +4186,7 @@ class EvaluationMetricClustersRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
     evaluation_row_ids: Optional[List[UUID]] = Field(
         default=None,

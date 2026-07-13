@@ -59,6 +59,7 @@ export default function MetricPromptImprovementsPanel({
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
+  const [pickerCredentialId, setPickerCredentialId] = useState('')
   const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [agentPickerTouched, setAgentPickerTouched] = useState(false)
@@ -125,6 +126,7 @@ export default function MetricPromptImprovementsPanel({
           force: improvementsState?.status === 'completed',
           provider: pickerProvider || undefined,
           model: pickerModel || undefined,
+          credential_id: pickerCredentialId || undefined,
         },
       ),
     onSuccess: () => {
@@ -141,6 +143,7 @@ export default function MetricPromptImprovementsPanel({
       apiClient.generateAgentFlowchart(selectedAgentId, {
         provider: pickerProvider || undefined,
         model: pickerModel || undefined,
+        credential_id: pickerCredentialId || undefined,
         regenerate: false,
       }),
     onSuccess: () => {
@@ -287,9 +290,14 @@ export default function MetricPromptImprovementsPanel({
             <AIProviderModelPicker
               provider={pickerProvider}
               model={pickerModel}
+              credentialId={pickerCredentialId}
               onProviderChange={(next) => {
                 setLlmPickerTouched(true)
                 setPickerProvider(next)
+              }}
+              onCredentialIdChange={(next) => {
+                setLlmPickerTouched(true)
+                setPickerCredentialId(next)
               }}
               onModelChange={(next) => {
                 setLlmPickerTouched(true)

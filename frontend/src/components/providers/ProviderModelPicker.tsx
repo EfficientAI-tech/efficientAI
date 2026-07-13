@@ -130,7 +130,7 @@ const AUDIO_CAPABLE_PROVIDERS = Object.keys(AUDIO_CAPABLE_MODEL_MATCHERS)
 // Voice-platform integrations that also expose LLM models. Credentials
 // for these providers live in the Integration table (Configurations →
 // Integrations → Voice Platform), not AIProvider.
-const INTEGRATION_LLM_PLATFORMS = new Set(['sarvam'])
+import { INTEGRATION_LLM_PLATFORMS } from '../../lib/integrationLlmPlatforms'
 
 function isAudioCapableModel(provider: string, model: string): boolean {
   const matchers = AUDIO_CAPABLE_MODEL_MATCHERS[provider]

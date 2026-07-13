@@ -322,6 +322,7 @@ def generate_prompt_improvements(
     db: Session,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
     period_deltas: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> EvaluationPromptImprovementsState:
     if clusters_state.status != "completed" or not clusters_state.groups:
@@ -336,6 +337,7 @@ def generate_prompt_improvements(
         db,
         provider,
         model,
+        credential_id,
     )
 
     rca_prompt_areas = []

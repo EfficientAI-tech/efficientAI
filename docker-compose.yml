@@ -110,7 +110,7 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    command: eai worker --config /app/config.yml --loglevel info
+    command: eai worker --config /app/config.yml --loglevel info --queues celery,audio-metrics --concurrency 8
 
   # Dedicated worker for call-import + evaluation queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
@@ -121,7 +121,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.worker
       args:
-        INSTALL_EXTRAS: "qualitative-voice"
+        INSTALL_EXTRAS: ""
     container_name: efficientai_worker_imports
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
@@ -142,7 +142,7 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,evaluations --concurrency 8
+    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,evaluations --pool threads --concurrency 32
 
 volumes:
   postgres_data:

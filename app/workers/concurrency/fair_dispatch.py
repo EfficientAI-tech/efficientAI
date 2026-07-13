@@ -25,6 +25,7 @@ from app.workers.concurrency.eval_dispatch import (
 from app.workers.config import celery_app
 
 _RR_CURSOR_KEY = "eval:fair:rr_cursor"
+_WS_EVAL_RR_CURSOR_KEY_PREFIX = "eval:fair:rr_cursor:ws:"
 _RESTRICTED_ROW_KEY_PREFIX = "eval:restricted:row:"
 _TRANSCRIBE_OVERWRITE_KEY_PREFIX = "eval:transcribe_overwrite:"
 _RESTRICTED_ROW_TTL_SECONDS = 20 * 60
@@ -142,6 +143,32 @@ def _set_rr_cursor(cursor: int) -> None:
         logger.warning("Failed to persist fair-dispatch RR cursor: {}", exc)
 
 
+def _workspace_eval_rr_cursor_key(workspace_id: UUID | str) -> str:
+    return f"{_WS_EVAL_RR_CURSOR_KEY_PREFIX}{workspace_id}"
+
+
+def _get_workspace_eval_rr_cursor(workspace_id: UUID) -> int:
+    try:
+        raw = _get_redis().get(_workspace_eval_rr_cursor_key(workspace_id))
+        return int(raw or 0)
+    except (redis.RedisError, ValueError, TypeError):
+        return 0
+
+
+def _set_workspace_eval_rr_cursor(workspace_id: UUID, cursor: int) -> None:
+    try:
+        _get_redis().set(
+            _workspace_eval_rr_cursor_key(workspace_id),
+            str(max(0, cursor)),
+        )
+    except redis.RedisError as exc:
+        logger.warning(
+            "Failed to persist workspace eval RR cursor for {}: {}",
+            workspace_id,
+            exc,
+        )
+
+
 def _workspaces_with_pending_rows(db: Session) -> List[UUID]:
     rows = (
         db.query(CallImportEvaluation.workspace_id)
@@ -161,9 +188,31 @@ def _workspaces_with_pending_rows(db: Session) -> List[UUID]:
     return workspace_ids
 
 
-def _pending_rows_for_workspace(
+def _evaluations_with_pending_rows(
     db: Session,
     workspace_id: UUID,
+) -> List[UUID]:
+    rows = (
+        db.query(CallImportEvaluation.id)
+        .join(
+            CallImportEvaluationRow,
+            CallImportEvaluationRow.evaluation_id == CallImportEvaluation.id,
+        )
+        .filter(
+            CallImportEvaluation.workspace_id == workspace_id,
+            CallImportEvaluation.status.in_(("pending", "running")),
+            CallImportEvaluationRow.status == "pending",
+            CallImportEvaluationRow.celery_task_id.is_(None),
+        )
+        .distinct()
+        .all()
+    )
+    return sorted({row[0] for row in rows if row[0] is not None})
+
+
+def _pending_rows_for_evaluation(
+    db: Session,
+    evaluation_id: UUID,
     *,
     limit: int,
 ) -> List[tuple[CallImportEvaluationRow, CallImportRow, CallImportEvaluation]]:
@@ -178,7 +227,7 @@ def _pending_rows_for_workspace(
             CallImportEvaluation.id == CallImportEvaluationRow.evaluation_id,
         )
         .filter(
-            CallImportEvaluation.workspace_id == workspace_id,
+            CallImportEvaluation.id == evaluation_id,
             CallImportEvaluation.status.in_(("pending", "running")),
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
@@ -195,10 +244,29 @@ def _dispatch_batch_for_workspace(
     *,
     batch_size: int,
 ) -> int:
-    """Dispatch up to ``batch_size`` pending rows for one workspace turn."""
-    pending = _pending_rows_for_workspace(db, workspace_id, limit=batch_size)
+    """Dispatch up to ``batch_size`` pending rows for one workspace turn.
+
+    Rows are interleaved across evaluations in round-robin order so a
+    second evaluation job in the same workspace is not starved behind
+    the first job's backlog.
+    """
+    evaluations = _evaluations_with_pending_rows(db, workspace_id)
+    if not evaluations:
+        return 0
+
+    cursor = _get_workspace_eval_rr_cursor(workspace_id) % len(evaluations)
     dispatched = 0
-    for eval_row, source_row, evaluation in pending:
+    skips = 0
+
+    while dispatched < batch_size and skips < len(evaluations):
+        evaluation_id = evaluations[cursor]
+        pending = _pending_rows_for_evaluation(db, evaluation_id, limit=1)
+        if not pending:
+            skips += 1
+            cursor = (cursor + 1) % len(evaluations)
+            continue
+
+        eval_row, source_row, evaluation = pending[0]
         restricted_metric_ids = get_row_restricted_metrics(eval_row.id)
         transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
         result = _try_dispatch_single_row(
@@ -213,11 +281,19 @@ def _dispatch_batch_for_workspace(
         if result == "dispatched":
             clear_row_restricted_metrics(eval_row.id)
             dispatched += 1
+            skips = 0
             if evaluation.status == "pending":
                 evaluation.status = "running"
                 db.commit()
         elif result == "at_capacity":
-            break
+            _set_workspace_eval_rr_cursor(workspace_id, cursor)
+            return dispatched
+        else:
+            skips += 1
+
+        cursor = (cursor + 1) % len(evaluations)
+
+    _set_workspace_eval_rr_cursor(workspace_id, cursor)
     return dispatched
 
 

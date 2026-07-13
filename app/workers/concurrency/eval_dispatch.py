@@ -24,6 +24,7 @@ from app.workers.config import celery_app
 IMPORTS_QUEUE = "imports"
 DIARIZATION_QUEUE = "diarization"
 EVALUATIONS_QUEUE = "evaluations"
+AUDIO_METRICS_QUEUE = "audio-metrics"
 
 DispatchSingleRowResult = Literal["dispatched", "skip", "at_capacity"]
 
@@ -81,6 +82,7 @@ def _reserve_slot_and_enqueue(
         workspace_id=evaluation.workspace_id,
         organization_id=evaluation.organization_id,
         celery_task_id=reserved_task_id,
+        evaluation_id=evaluation.id,
     ):
         return False
 
@@ -119,6 +121,12 @@ def _try_dispatch_single_row(
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
     )
+    from app.workers.tasks.evaluate_call_import_row_audio import (
+        evaluate_call_import_row_audio_task,
+    )
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        row_needs_audio_phase,
+    )
     from app.workers.tasks.transcribe_call_import_row import (
         transcribe_call_import_row_task,
     )
@@ -143,6 +151,7 @@ def _try_dispatch_single_row(
         def _enqueue_transcribe(reserved_task_id: str):
             source_row.diarised_transcript_status = "pending"
             source_row.diarised_transcript_error = None
+            source_row.celery_task_id = reserved_task_id
             db.flush()
             kwargs = {"_eval_slot_task_id": reserved_task_id}
             if restricted_metric_ids:
@@ -183,6 +192,33 @@ def _try_dispatch_single_row(
             eval_row=eval_row,
             db=db,
             enqueue_fn=_enqueue_transcribe,
+        ):
+            return "dispatched"
+        return "at_capacity"
+
+    if row_needs_audio_phase(
+        db,
+        evaluation,
+        source_row,
+        restricted_metric_ids=restricted_metric_ids,
+    ):
+
+        def _enqueue_audio(reserved_task_id: str):
+            kwargs = {"_eval_slot_task_id": reserved_task_id}
+            if restricted_metric_ids:
+                kwargs["restricted_metric_ids"] = restricted_metric_ids
+            return evaluate_call_import_row_audio_task.apply_async(
+                args=(str(eval_row.id),),
+                kwargs=kwargs,
+                queue=AUDIO_METRICS_QUEUE,
+                task_id=reserved_task_id,
+            )
+
+        if _reserve_slot_and_enqueue(
+            evaluation=evaluation,
+            eval_row=eval_row,
+            db=db,
+            enqueue_fn=_enqueue_audio,
         ):
             return "dispatched"
         return "at_capacity"

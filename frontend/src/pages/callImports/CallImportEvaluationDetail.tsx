@@ -86,6 +86,7 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import { getActiveWorkspaceId, useWorkspaceStore } from '../../store/workspaceStore'
 import StatusBadge from '../../components/shared/StatusBadge'
+import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
 import MetricFlowChart, {
@@ -3461,7 +3462,12 @@ export default function CallImportEvaluationDetail() {
                           )}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusBadge status={row.status} size="sm" />
+                          <div className="inline-flex items-center gap-1.5 flex-wrap">
+                            <StatusBadge status={row.status} size="sm" />
+                            <DiariseStatusPill
+                              status={row.diarised_transcript_status}
+                            />
+                          </div>
                         </td>
                         {displayMetrics.flatMap((metric) => {
                           const score = row.metric_scores?.[metric.id]
@@ -5100,6 +5106,7 @@ function RowDetailPanel({
             </p>
             <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-gray-500">
               <StatusBadge status={row.status} size="sm" />
+              <DiariseStatusPill status={row.diarised_transcript_status} />
               {row.row_index !== null && (
                 <span>Row #{(row.row_index ?? 0) + 1}</span>
               )}

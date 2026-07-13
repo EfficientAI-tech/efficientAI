@@ -46,6 +46,7 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
+import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
@@ -830,13 +831,18 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImport(id!, queryParams),
     enabled: !!id,
     refetchInterval: (query) => {
-      const status = query.state.data?.status
-      // Keep polling while the CSV import itself is in flight, or
-      // while any row has an active (pending/running) transcription —
-      // otherwise the user has to manually refresh to see whether
-      // the transcribe worker finished or failed.
-      if (status === 'pending' || status === 'processing') return 5000
-      const rows = query.state.data?.rows ?? []
+      const d = query.state.data
+      if (!d) return false
+      // Keep polling while the CSV import itself is in flight.
+      if (d.status === 'pending' || d.status === 'processing') return 5000
+      // Batch-wide diarisation counters are pagination-independent —
+      // use them so off-page rows still drive polling (mirrors
+      // CallImportEvaluationDetail).
+      const diariseInFlight =
+        (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
+      if (diariseInFlight > 0) return 4000
+      // Fallback: legacy transcript_status on the current page slice.
+      const rows = d.rows ?? []
       const hasActiveTranscript = rows.some(
         (r: {
           transcript_status?: string | null
@@ -1628,7 +1634,7 @@ export default function CallImportDetail() {
                     )}
                   </div>
                   <CallImportProgressBar
-                    total={data.total_rows}
+                    total={diariseInFlight + diariseDone}
                     completed={data.diarised_completed_rows ?? 0}
                     failed={data.diarised_failed_rows ?? 0}
                   />
@@ -2292,32 +2298,7 @@ export default function CallImportDetail() {
                         )}
                       </span>
                       <StatusBadge status={row.status} size="sm" />
-                      {/* Diarisation status pill: only surfaced once
-                          the diarise/transcribe worker has touched
-                          this row. Lets the user spot failed rows
-                          inline without expanding the row, and makes
-                          the new diarisation status filter chip set
-                          self-evident. */}
-                      {(() => {
-                        const ds = row.diarised_transcript_status
-                        if (!ds || ds === 'idle') return null
-                        const tone =
-                          ds === 'failed'
-                            ? 'bg-red-100 text-red-700 border-red-200'
-                            : ds === 'completed'
-                            ? 'bg-green-100 text-green-700 border-green-200'
-                            : ds === 'running'
-                            ? 'bg-blue-100 text-blue-700 border-blue-200'
-                            : 'bg-gray-100 text-gray-700 border-gray-200'
-                        return (
-                          <span
-                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${tone}`}
-                            title={`Diarisation: ${ds}`}
-                          >
-                            Diarise: {ds}
-                          </span>
-                        )
-                      })()}
+                      <DiariseStatusPill status={row.diarised_transcript_status} />
                     </button>
 
                     <div className="flex items-center gap-1 flex-shrink-0">

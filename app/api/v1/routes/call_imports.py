@@ -3138,6 +3138,7 @@ async def transcribe_call_import(
     for row in rows:
         row.diarised_transcript_status = "pending"
         row.diarised_transcript_error = None
+        row.celery_task_id = None
     db.commit()
 
     if not rows:
@@ -3147,44 +3148,31 @@ async def transcribe_call_import(
             skipped_reason_counts=skip_counts,
         )
 
-    from app.workers.concurrency import DIARIZATION_QUEUE
-    from app.workers.tasks.transcribe_call_import_row import (
-        transcribe_call_import_row_task,
+    from app.workers.concurrency import (
+        build_diarization_params_from_request,
+        schedule_fair_diarization_dispatch,
+        store_row_diarization_params,
     )
 
-    enqueued = 0
+    diarization_params = build_diarization_params_from_request(
+        stt_provider=payload.stt_provider,
+        stt_model=payload.stt_model,
+        credential_id=payload.credential_id,
+        language=payload.language,
+        overwrite_existing=payload.overwrite_existing,
+        diarization_llm_provider=payload.diarization_llm_provider,
+        diarization_llm_model=payload.diarization_llm_model,
+        diarization_llm_credential_id=payload.diarization_llm_credential_id,
+        diarization_prompt=payload.diarization_prompt,
+        mode=payload.mode,
+    )
     for row in rows:
-        try:
-            transcribe_call_import_row_task.apply_async(
-                args=(
-                str(row.id),
-                payload.stt_provider,
-                payload.stt_model,
-                str(payload.credential_id) if payload.credential_id else None,
-                payload.language,
-                payload.overwrite_existing,
-                None,  # run_eval_row_id — not chained from this route
-                payload.diarization_llm_provider,
-                payload.diarization_llm_model,
-                str(payload.diarization_llm_credential_id)
-                if payload.diarization_llm_credential_id
-                else None,
-                payload.diarization_prompt,
-                payload.mode,
-                ),
-                queue=DIARIZATION_QUEUE,
-            )
-            enqueued += 1
-        except Exception as exc:
-            logger.exception(
-                "Failed to enqueue transcribe for row {}: {}", row.id, exc
-            )
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = f"Failed to enqueue: {exc}"
-    db.commit()
+        store_row_diarization_params(row.id, diarization_params)
+
+    schedule_fair_diarization_dispatch(max_workspace_turns=999)
 
     return CallImportTranscribeResponse(
-        queued=enqueued,
+        queued=len(rows),
         skipped_rows=sum(skip_counts.values()),
         skipped_reason_counts=skip_counts,
     )
@@ -3234,6 +3222,7 @@ async def transcribe_call_import_row(
     for row in rows:
         row.diarised_transcript_status = "pending"
         row.diarised_transcript_error = None
+        row.celery_task_id = None
     db.commit()
 
     if not rows:
@@ -3243,48 +3232,33 @@ async def transcribe_call_import_row(
             skipped_reason_counts=skip_counts,
         )
 
-    from app.workers.concurrency import DIARIZATION_QUEUE
-    from app.workers.tasks.transcribe_call_import_row import (
-        transcribe_call_import_row_task,
+    from app.workers.concurrency import (
+        build_diarization_params_from_request,
+        schedule_fair_diarization_dispatch,
+        store_row_diarization_params,
     )
 
     target = rows[0]
-    try:
-        transcribe_call_import_row_task.apply_async(
-            args=(
-            str(target.id),
-            payload.stt_provider,
-            payload.stt_model,
-            str(payload.credential_id) if payload.credential_id else None,
-            payload.language,
-            payload.overwrite_existing,
-            None,  # run_eval_row_id — not chained from this route
-            payload.diarization_llm_provider,
-            payload.diarization_llm_model,
-            str(payload.diarization_llm_credential_id)
-            if payload.diarization_llm_credential_id
-            else None,
-            payload.diarization_prompt,
-            payload.mode,
-            ),
-            queue=DIARIZATION_QUEUE,
-        )
-        return CallImportTranscribeResponse(
-            queued=1,
-            skipped_rows=sum(skip_counts.values()),
-            skipped_reason_counts=skip_counts,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Failed to enqueue transcribe for row {}: {}", target.id, exc
-        )
-        target.diarised_transcript_status = "failed"
-        target.diarised_transcript_error = f"Failed to enqueue: {exc}"
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to enqueue transcription: {exc}",
-        )
+    diarization_params = build_diarization_params_from_request(
+        stt_provider=payload.stt_provider,
+        stt_model=payload.stt_model,
+        credential_id=payload.credential_id,
+        language=payload.language,
+        overwrite_existing=payload.overwrite_existing,
+        diarization_llm_provider=payload.diarization_llm_provider,
+        diarization_llm_model=payload.diarization_llm_model,
+        diarization_llm_credential_id=payload.diarization_llm_credential_id,
+        diarization_prompt=payload.diarization_prompt,
+        mode=payload.mode,
+    )
+    store_row_diarization_params(target.id, diarization_params)
+    schedule_fair_diarization_dispatch(max_workspace_turns=999)
+
+    return CallImportTranscribeResponse(
+        queued=1,
+        skipped_rows=sum(skip_counts.values()),
+        skipped_reason_counts=skip_counts,
+    )
 
 
 # ---------------------------------------------------------------------------

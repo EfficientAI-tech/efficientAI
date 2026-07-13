@@ -1584,6 +1584,8 @@ export interface CallImportEvaluationRow {
    * provider URL.
    */
   recording_s3_key: string | null
+  diarised_transcript_status?: string | null
+  diarised_transcript_error?: string | null
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   metric_scores: Record<string, any>
   error_message: string | null

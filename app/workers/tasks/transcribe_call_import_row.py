@@ -842,3 +842,12 @@ def transcribe_call_import_row_task(
                 slot_task_id,
                 restricted_metric_ids=eval_restricted_metric_ids,
             )
+        else:
+            from app.workers.concurrency.limits import slot_registered_for_task
+
+            if slot_registered_for_task(slot_task_id):
+                from app.workers.concurrency.fair_diarization_dispatch import (
+                    finish_diarization_work_and_redispatch,
+                )
+
+                finish_diarization_work_and_redispatch(slot_task_id)

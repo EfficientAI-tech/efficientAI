@@ -2,24 +2,16 @@
 
 Metric routing mirrors ``process_evaluator_result``:
 
-* Audio-only metrics (MOS Score, Pitch Variance, Jitter, Shimmer, HNR,
-  Emotion Category/Confidence, Valence, Arousal, Speaker Consistency,
-  Prosody Score) are dispatched through
-  :func:`app.workers.tasks.helpers.audio_evaluation.evaluate_audio_metrics`,
-  which downloads the recording from S3 and hands it to the actual signal
-  processing libraries (Praat / UTMOS / qualitative voice service).
-* The remaining metrics are evaluated against the transcript by the LLM
-  helper, which is the appropriate medium for content-quality metrics.
-
-Previously every metric was handed to the LLM, which meant scores like
-"MOS" were hallucinated from transcript text instead of being measured
-from the audio.
+* Audio-only metrics run on the ``audio-metrics`` queue via
+  :func:`app.workers.tasks.evaluate_call_import_row_audio.evaluate_call_import_row_audio_task`
+  (``worker`` service). This task handles LLM / comparison metrics only.
+* When chained after the audio phase, ``_skip_audio=True`` merges scores
+  already persisted on the row.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List, Optional
 from uuid import UUID
@@ -35,397 +27,36 @@ from app.models.database import (
     Metric,
 )
 from app.workers.config import celery_app
-from app.workers.tasks.helpers.audio_evaluation import (
-    evaluate_audio_metrics,
-    handle_audio_evaluation_error,
+from app.workers.tasks.evaluate_call_import_row_core import (
+    as_json_dict,
+    build_all_columns_block,
+    build_parent_groups,
+    categorize_metrics,
+    load_enabled_metrics,
+    metric_text_references_production,
+    now_utc,
+    parse_restricted_metric_uuids,
+    rollup_parent,
+    was_cancelled_externally,
 )
-from app.workers.tasks.helpers.constants import AUDIO_ONLY_METRIC_NAMES
 from app.workers.tasks.helpers.llm_evaluation import (
     evaluate_with_llm,
     handle_llm_evaluation_error,
 )
-from app.workers.tasks.helpers.score_utils import get_metric_type_value
+
+# Re-export core helpers for tests and API route mirrors.
+_now = now_utc
+_as_json_dict = as_json_dict
+_was_cancelled_externally = was_cancelled_externally
+_build_all_columns_block = build_all_columns_block
+_categorize_metrics = categorize_metrics
+_build_parent_groups = build_parent_groups
+_rollup_parent = rollup_parent
+_metric_text_references_production = metric_text_references_production
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _as_json_dict(value: Any) -> dict:
-    return value if isinstance(value, dict) else {}
-
-
-# Sentinel error message stamped on rows that the operator cancelled via
-# ``POST /v1/call-imports/{id}/evaluations/{eval_id}/cancel`` (or the per-row
-# variant). Kept in sync with
-# :data:`app.api.v1.routes.call_import_evaluations.EVAL_CANCELLED_BY_USER_ERROR`
-# — duplicated here so the worker doesn't have to import the route module
-# (which would pull FastAPI / Pydantic into the worker boot path). Touching
-# either copy means touching both.
-_EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
-
-
-def _was_cancelled_externally(db, eval_row: CallImportEvaluationRow) -> bool:
-    """Re-read ``eval_row`` from the DB and return True if it was cancelled.
-
-    Used by the terminal-status write in the eval task so an external
-    cancel (which flips the row to ``failed`` + sets
-    :data:`_EVAL_CANCELLED_BY_USER_ERROR`) WINS THE RACE against a worker
-    that's already past its slowest operation (LLM call / S3 download)
-    and is about to overwrite the row with its own terminal state.
-
-    Why ``db.expire`` + ``refresh``: the worker's SQLAlchemy session
-    cached the row when it pulled it for the run, so a parallel
-    update from the FastAPI process is invisible until we explicitly
-    re-read. We expire just the two columns we care about so other
-    in-flight modifications on the same row aren't clobbered.
-    """
-    try:
-        db.expire(eval_row, ["status", "error_message"])
-        db.refresh(eval_row, attribute_names=["status", "error_message"])
-    except Exception:  # noqa: BLE001 — refresh is best-effort
-        return False
-    return (
-        (eval_row.status or "").lower() == "failed"
-        and (eval_row.error_message or "") == _EVAL_CANCELLED_BY_USER_ERROR
-    )
-
-
-_ALL_COLUMNS_BLOCK_MAX_CHARS = 16_000
-_ALL_COLUMNS_CELL_MAX_CHARS = 4_000
-
-
-# Phrases that, when present in a metric's (or its parent's)
-# description, mean "the LLM is expected to read BOTH the production
-# and diarised transcripts when scoring this metric". Detection is
-# case-insensitive and substring-based — we err on the side of
-# triggering comparison mode (false positives just give the LLM extra
-# context, which the prompt explicitly tells it is supporting context).
-_PROD_KEYWORDS: tuple[str, ...] = (
-    "production transcript",
-    "prod transcript",
-    "diarised transcript",
-    "diarized transcript",
-    "compare transcripts",
-    "compare the transcripts",
-    "compare both transcripts",
-    "both transcripts",
-    "two transcripts",
-)
-
-
-def _metric_text_references_production(
-    metric: Metric, parent: Metric | None = None
-) -> bool:
-    """Return True when the metric (or its parent) wants both transcripts.
-
-    Scans the metric's ``description`` for one of the well-known phrases
-    above. When ``parent`` is provided (the metric is part of a
-    categorisation group) the parent's description is checked too — if
-    the parent says "compare the two transcripts and pick a label", we
-    want EVERY child in the group to receive the production / diarised
-    pair, not just the children that happen to repeat the phrase.
-
-    This is the auto-detection counterpart to
-    ``Metric.compare_transcripts`` (the explicit boolean flag). Both
-    paths route through the same prompt-builder ``comparison_pair``
-    arg downstream so the LLM sees the same shape either way.
-    """
-    blobs: list[str] = []
-    desc = getattr(metric, "description", None)
-    if isinstance(desc, str) and desc:
-        blobs.append(desc)
-    if parent is not None:
-        parent_desc = getattr(parent, "description", None)
-        if isinstance(parent_desc, str) and parent_desc:
-            blobs.append(parent_desc)
-    if not blobs:
-        return False
-    blob = " ".join(blobs).lower()
-    return any(kw in blob for kw in _PROD_KEYWORDS)
-
-
-def _build_all_columns_block(
-    raw_columns: dict[str, Any] | None,
-    custom_column_mapping: dict[str, Any] | None = None,
-) -> str | None:
-    """Render EVERY non-empty cell from ``raw_columns`` as a labelled block.
-
-    Returns ``None`` when there is nothing to render (no raw columns, or
-    every cell is empty) so the prompt builder can skip the "Imported
-    Columns" section entirely.
-
-    Cells are emitted in the order they appear in ``raw_columns`` (which
-    is preserved by Postgres JSONB iteration). When a friendly-name
-    mapping is provided via ``CallImport.custom_column_mapping`` we also
-    surface the friendly name alongside the original CSV header so the
-    LLM can reason about either identifier the metric description might
-    reference.
-
-    Per-cell text is capped at 4 KB and the whole block at 16 KB — wide
-    CSVs with multi-MB cells would otherwise blow the model's context
-    window in a single line.
-    """
-    if not isinstance(raw_columns, dict) or not raw_columns:
-        return None
-
-    mapping = (
-        custom_column_mapping
-        if isinstance(custom_column_mapping, dict)
-        else {}
-    )
-    # Reverse map: CSV header -> friendly name (for showing the friendly
-    # name alongside the CSV header when the user configured one).
-    friendly_for_header: dict[str, str] = {}
-    for friendly, csv_header in mapping.items():
-        if isinstance(friendly, str) and isinstance(csv_header, str):
-            friendly_for_header.setdefault(csv_header, friendly)
-
-    lines: list[str] = []
-    total = 0
-    for header, value in raw_columns.items():
-        if value is None:
-            continue
-        text = str(value).strip()
-        if not text:
-            continue
-        if len(text) > _ALL_COLUMNS_CELL_MAX_CHARS:
-            text = text[: _ALL_COLUMNS_CELL_MAX_CHARS] + "…"
-        friendly = friendly_for_header.get(str(header))
-        label = (
-            f"{header} (a.k.a. {friendly})"
-            if friendly and friendly != header
-            else str(header)
-        )
-        line = f"- {label}: {text}"
-        if total + len(line) + 1 > _ALL_COLUMNS_BLOCK_MAX_CHARS:
-            lines.append("- … (additional columns truncated to keep prompt size bounded)")
-            break
-        lines.append(line)
-        total += len(line) + 1
-
-    if not lines:
-        return None
-    return "\n".join(lines)
-
-
-def _categorize_metrics(
-    metrics: list[Metric],
-    has_audio: bool,
-    has_production_transcript: bool = False,
-    has_diarised_transcript: bool = False,
-) -> tuple[
-    list[Metric],
-    list[Metric],
-    list[Metric],
-    dict[str, dict[str, Any]],
-]:
-    """Split selected metrics into transcript-LLM, audio, and
-    transcript-compare buckets.
-
-    Returns ``(transcript_metrics, audio_metrics, comparison_metrics,
-    skipped_scores)``.
-
-    * ``transcript_metrics`` — LLM-judged metrics that score the transcript
-      (today's default behavior). Every transcript metric also receives
-      a "## Imported Columns" block built from the row's full
-      ``raw_columns`` (see ``_build_all_columns_block``) so the LLM has
-      universal access to the CSV row regardless of the metric's
-      definition.
-    * ``audio_metrics`` — name-based audio-only metrics with a recording
-      available.
-    * ``comparison_metrics`` — LLM-judged metrics whose ``compare_transcripts``
-      flag is set, OR whose description references the production /
-      diarised transcripts in well-known phrases (see
-      ``_metric_text_references_production``). Both paths require the
-      row to have BOTH a production transcript and a diarised
-      transcript; otherwise the metric is reported as skipped.
-    * ``skipped_scores`` — pre-built ``metric_scores`` entries for the
-      cases that can't be evaluated on this row (audio missing or
-      either transcript missing for a comparison metric). They still
-      surface in the UI with an explanation instead of being silently
-      dropped.
-    """
-
-    transcript_metrics: list[Metric] = []
-    audio_metrics: list[Metric] = []
-    comparison_metrics: list[Metric] = []
-    skipped_scores: dict[str, dict[str, Any]] = {}
-
-    for m in metrics:
-        normalized = (m.name or "").strip().lower()
-        if normalized in AUDIO_ONLY_METRIC_NAMES:
-            if has_audio:
-                audio_metrics.append(m)
-            else:
-                skipped_scores[str(m.id)] = {
-                    "value": None,
-                    "type": get_metric_type_value(m),
-                    "metric_name": m.name,
-                    "skipped": "audio_required",
-                }
-            continue
-
-        # Transcript-compare judge metrics read BOTH transcripts on the
-        # row instead of "the" transcript. We treat the metric as a
-        # transcript-compare metric when EITHER the explicit
-        # ``compare_transcripts`` boolean is set, OR the metric's
-        # description references the production / diarised transcripts
-        # in well-known phrases (see
-        # ``_metric_text_references_production``). Keyword detection
-        # only fires for standalone metrics here; parent-grouped
-        # metrics get the same treatment later in the worker (we don't
-        # have the parent row in scope at categorize time, and the
-        # transcript loop already groups by parent_id).
-        is_explicit_compare = bool(getattr(m, "compare_transcripts", False))
-        is_standalone = not getattr(m, "parent_metric_id", None)
-        is_auto_compare = (
-            is_standalone
-            and has_production_transcript
-            and has_diarised_transcript
-            and _metric_text_references_production(m)
-        )
-        if is_explicit_compare or is_auto_compare:
-            missing: list[str] = []
-            if not has_production_transcript:
-                missing.append("production")
-            if not has_diarised_transcript:
-                missing.append("diarised")
-            if missing:
-                skipped_scores[str(m.id)] = {
-                    "value": None,
-                    "type": get_metric_type_value(m),
-                    "metric_name": m.name,
-                    "skipped": "comparison_missing_transcript",
-                    "missing_transcripts": missing,
-                }
-                continue
-            comparison_metrics.append(m)
-            continue
-
-        transcript_metrics.append(m)
-
-    return (
-        transcript_metrics,
-        audio_metrics,
-        comparison_metrics,
-        skipped_scores,
-    )
-
-
-def _build_parent_groups(
-    db, llm_metrics: list[Metric]
-) -> tuple[dict[UUID, Metric], dict[UUID, list[Metric]], list[Metric]]:
-    """Group LLM metrics by their parent_metric_id.
-
-    Children of the same parent are evaluated together in one LLM call
-    so the model can enforce mutex semantics (single_choice) or keep
-    contradictory labels consistent (multi_label).
-
-    Returns:
-        (parents_by_id, children_by_parent_id, standalone_metrics)
-
-        ``parents_by_id`` maps parent UUID -> parent Metric row (fetched
-        from the DB so the prompt builder has access to the parent's
-        description and selection_mode).
-
-        ``standalone_metrics`` is the leftover list of LLM metrics that
-        have no parent — they are evaluated one-by-one (preserves the
-        legacy code path so non-hierarchical metrics are unaffected).
-    """
-
-    children_by_parent: dict[UUID, list[Metric]] = {}
-    standalone: list[Metric] = []
-    for m in llm_metrics:
-        if m.parent_metric_id:
-            children_by_parent.setdefault(m.parent_metric_id, []).append(m)
-        else:
-            standalone.append(m)
-
-    parents_by_id: dict[UUID, Metric] = {}
-    if children_by_parent:
-        rows = (
-            db.query(Metric)
-            .filter(Metric.id.in_(list(children_by_parent.keys())))
-            .all()
-        )
-        parents_by_id = {row.id: row for row in rows}
-        # Drop groups whose parent disappeared (deleted mid-run) — the
-        # children fall back to standalone evaluation so we don't lose
-        # their scores entirely.
-        orphaned: list[UUID] = []
-        for pid in list(children_by_parent.keys()):
-            if pid not in parents_by_id:
-                orphaned.append(pid)
-        for pid in orphaned:
-            standalone.extend(children_by_parent.pop(pid))
-
-    return parents_by_id, children_by_parent, standalone
-
-
-def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
-    evaluation = (
-        db.query(CallImportEvaluation)
-        .filter(CallImportEvaluation.id == evaluation.id)
-        .with_for_update()
-        .one()
-    )
-    rows = (
-        db.query(CallImportEvaluationRow.status)
-        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-        .all()
-    )
-    total = len(rows)
-    completed = sum(1 for (status,) in rows if status == "completed")
-    failed = sum(1 for (status,) in rows if status == "failed")
-    in_progress = sum(1 for (status,) in rows if status in {"pending", "running"})
-
-    evaluation.total_rows = total
-    evaluation.completed_rows = completed
-    evaluation.failed_rows = failed
-
-    if in_progress > 0:
-        evaluation.status = "running"
-        if not evaluation.started_at:
-            evaluation.started_at = _now()
-        return
-
-    evaluation.finished_at = _now()
-    if total == 0:
-        evaluation.status = "completed"
-    elif failed == 0:
-        evaluation.status = "completed"
-    elif completed == 0:
-        evaluation.status = "failed"
-    else:
-        evaluation.status = "partial"
-
-    already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
-    delta = completed - already_billed
-    if delta > 0:
-        from app.services.billing.flexprice_service import (
-            record_call_import_evaluation_completed,
-        )
-
-        metric_count = len(evaluation.selected_metric_ids or [])
-        billing_accepted = record_call_import_evaluation_completed(
-            evaluation.organization_id,
-            evaluation.id,
-            workspace_id=evaluation.workspace_id,
-            call_import_id=evaluation.call_import_id,
-            rows_billed=delta,
-            completed_total=completed,
-            metric_count=metric_count,
-        )
-        if billing_accepted:
-            evaluation.billed_completed_rows = completed
-
-
-# Per-task time limits keep a wedged audio evaluation (e.g. torch.hub UTMOS
-# download stuck on a network hiccup, or libgomp deadlock in a prefork child)
-# from holding a worker child hostage for the global 30 min fallback. With
-# task_acks_late + worker_max_tasks_per_child enabled in app/workers/config.py,
-# a hard-killed task gets redelivered to a healthy child.
+# Per-task time limits keep a wedged LLM evaluation from holding a worker
+# child hostage for the global 30 min fallback.
 @celery_app.task(
     name="evaluate_call_import_row",
     bind=True,
@@ -438,6 +69,7 @@ def evaluate_call_import_row_task(
     eval_row_id: str,
     restricted_metric_ids: Optional[List[str]] = None,
     _eval_slot_task_id: Optional[str] = None,
+    _skip_audio: bool = False,
 ):
     """Evaluate one row using the appropriate library per metric type.
 
@@ -499,9 +131,6 @@ def evaluate_call_import_row_task(
             evaluation.started_at = evaluation.started_at or _now()
         db.commit()
 
-        # Normal transcript metrics always score the diarised transcript.
-        # Production (CSV) text is only fed to comparison metrics that
-        # explicitly compare both columns — see ``comparison_metrics`` below.
         production_transcript = (source_row.transcript or "").strip()
         diarised_transcript = (source_row.diarised_transcript or "").strip()
         transcript = diarised_transcript
@@ -509,34 +138,14 @@ def evaluate_call_import_row_task(
         recording_s3_key = (source_row.recording_s3_key or "").strip() or None
         has_audio = recording_s3_key is not None
 
-        metric_ids_raw = evaluation.selected_metric_ids or []
-        metric_ids = []
-        for item in metric_ids_raw:
-            try:
-                metric_ids.append(UUID(str(item)))
-            except (TypeError, ValueError):
-                continue
-
-        # Metric-subset retry: narrow ``metric_ids`` to the requested
-        # subset BEFORE the DB query so we don't even hit the
-        # categoriser for metrics we're not recomputing. The intersection
-        # with ``selected_metric_ids`` defends against a stale payload
-        # asking for a metric that's since been removed from the run.
-        restricted_metric_uuids: Optional[List[UUID]] = None
-        if restricted_metric_ids:
-            restricted_metric_uuids = []
-            for raw in restricted_metric_ids:
-                try:
-                    restricted_metric_uuids.append(UUID(str(raw)))
-                except (TypeError, ValueError):
-                    continue
-            metric_ids = [
-                mid for mid in metric_ids if mid in restricted_metric_uuids
-            ]
-            if not metric_ids:
-                # Nothing left to do — leave the row alone (preserve
-                # its prior status and scores) and surface a typed
-                # short-circuit so the rollup can treat it as a no-op.
+        restricted_metric_uuids = parse_restricted_metric_uuids(
+            restricted_metric_ids
+        )
+        if restricted_metric_ids is not None and restricted_metric_uuids is not None:
+            selected_raw = {str(x) for x in (evaluation.selected_metric_ids or [])}
+            if restricted_metric_uuids and not any(
+                str(mid) in selected_raw for mid in restricted_metric_uuids
+            ):
                 eval_row.status = "completed"
                 eval_row.error_message = None
                 eval_row.finished_at = _now()
@@ -548,16 +157,8 @@ def evaluate_call_import_row_task(
                     "reason": "restricted_metric_ids_no_match",
                 }
 
-        metrics = (
-            db.query(Metric)
-            .filter(
-                Metric.organization_id == evaluation.organization_id,
-                Metric.id.in_(metric_ids),
-                Metric.enabled.is_(True),
-            )
-            .all()
-            if metric_ids
-            else []
+        metrics = load_enabled_metrics(
+            db, evaluation, restricted_metric_ids=restricted_metric_ids
         )
         if not metrics:
             eval_row.status = "failed"
@@ -599,12 +200,22 @@ def evaluate_call_import_row_task(
             has_diarised_transcript=bool(diarised_transcript),
         )
 
-        # Build the "Imported Columns" block ONCE per row and pass it
-        # to every LLM call below. This injects all raw CSV columns
-        # into the prompt by default so the LLM has full row context
-        # for every metric (replaces the legacy per-metric
-        # ``input_columns`` flow). ``None`` when the row has no raw
-        # columns; the prompt builder skips the section in that case.
+        if _skip_audio:
+            existing_scores = (
+                eval_row.metric_scores
+                if isinstance(eval_row.metric_scores, dict)
+                else {}
+            )
+            metric_scores = {**existing_scores, **metric_scores}
+            audio_metrics = []
+        elif audio_metrics:
+            logger.warning(
+                "[CallImportEval {}] Audio metrics present but task was "
+                "dispatched without audio phase — skipping audio bucket",
+                eval_row.id,
+            )
+            audio_metrics = []
+
         all_columns_block = _build_all_columns_block(
             raw_columns, custom_column_mapping
         )
@@ -688,24 +299,6 @@ def evaluate_call_import_row_task(
             else None
         )
 
-        if audio_metrics and recording_s3_key:
-            try:
-                audio_scores = evaluate_audio_metrics(
-                    audio_s3_key=recording_s3_key,
-                    audio_metrics=audio_metrics,
-                    result_id=result_id,
-                )
-                metric_scores.update(audio_scores)
-            except Exception as audio_err:  # noqa: BLE001
-                logger.exception(
-                    "[CallImportEval {}] Audio analysis failed", eval_row.id
-                )
-                metric_scores.update(
-                    handle_audio_evaluation_error(audio_metrics, audio_err)
-                )
-
-        # ai_providers is loaded lazily on first LLM call below so we
-        # don't re-query for rows that only have audio metrics.
         ai_providers_cache: list | None = None
 
         def _load_ai_providers() -> list:
@@ -721,14 +314,6 @@ def evaluate_call_import_row_task(
                 )
             return ai_providers_cache
 
-        # Transcript-compare judge metrics: one LLM call per metric.
-        # v1 keeps these standalone (the schema validator rejects
-        # parent_metric_id / selection_mode + compare_transcripts) so
-        # we don't need the hierarchical grouping logic the transcript
-        # loop uses below.
-        # The (production, diarised) pair is passed via the prompt
-        # builder's ``comparison_pair`` kwarg which swaps the single
-        # "Conversation Transcript" section for a labeled pair.
         if comparison_metrics:
             run_provider = (evaluation.llm_provider or "").strip() or None
             run_model = (evaluation.llm_model or "").strip() or None

@@ -193,3 +193,13 @@ judge_alignment:
 # Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
 # Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 
+# Call-import worker concurrency (Redis fair-share for evaluations).
+# Scale eval_global_inflight_limit with worker-imports replica count × threads.
+# workers:
+#   eval_workspace_inflight_limit: 20
+#   eval_org_inflight_limit: 80
+#   eval_global_inflight_limit: 80
+#   eval_fair_dispatch_batch_size: 10
+#   eval_job_inflight_limit: 10
+#   diarization_fair_dispatch_batch_size: 10
+

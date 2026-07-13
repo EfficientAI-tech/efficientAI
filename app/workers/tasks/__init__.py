@@ -11,6 +11,7 @@ from . import tts_report
 from . import run_prompt_optimization
 from . import process_call_import_row
 from . import evaluate_call_import_row
+from . import evaluate_call_import_row_audio
 from . import transcribe_call_import_row
 from . import run_judge_alignment
 from . import generate_evaluation_user_insights
@@ -20,6 +21,7 @@ from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
+from app.workers.concurrency import fair_diarization_dispatch
 
 __all__ = [
     "celery_app",
@@ -32,6 +34,7 @@ __all__ = [
     "run_prompt_optimization_task",
     "process_call_import_row_task",
     "evaluate_call_import_row_task",
+    "evaluate_call_import_row_audio_task",
     "transcribe_call_import_row_task",
     "run_judge_alignment_task",
     "generate_evaluation_user_insights_task",
@@ -42,6 +45,7 @@ __all__ = [
     "map_agent_flowchart_prompt_sections_task",
     "dispatch_evaluation_rows_task",
     "dispatch_fair_eval_rows_task",
+    "dispatch_fair_diarization_rows_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -53,6 +57,9 @@ generate_tts_report_pdf_task = tts_report.generate_tts_report_pdf_task
 run_prompt_optimization_task = run_prompt_optimization.run_prompt_optimization_task
 process_call_import_row_task = process_call_import_row.process_call_import_row_task
 evaluate_call_import_row_task = evaluate_call_import_row.evaluate_call_import_row_task
+evaluate_call_import_row_audio_task = (
+    evaluate_call_import_row_audio.evaluate_call_import_row_audio_task
+)
 transcribe_call_import_row_task = (
     transcribe_call_import_row.transcribe_call_import_row_task
 )
@@ -75,3 +82,6 @@ map_agent_flowchart_prompt_sections_task = (
 )
 dispatch_evaluation_rows_task = eval_dispatch.dispatch_evaluation_rows_task
 dispatch_fair_eval_rows_task = fair_dispatch.dispatch_fair_eval_rows_task
+dispatch_fair_diarization_rows_task = (
+    fair_diarization_dispatch.dispatch_fair_diarization_rows_task
+)
