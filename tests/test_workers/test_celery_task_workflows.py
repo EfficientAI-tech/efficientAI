@@ -1,8 +1,10 @@
 """Tests for Celery worker task workflows."""
 
 import importlib
+import importlib.util
 import sys
 import types
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -22,6 +24,40 @@ from app.models.database import (
 
 class RetryCalled(Exception):
     """Raised by task.retry in tests to assert retry paths."""
+
+
+def _load_run_prompt_optimization_module():
+    """Load the real task module even when conftest/API tests stub workers.tasks."""
+    module_name = "app.workers.tasks.run_prompt_optimization"
+    existing = sys.modules.get(module_name)
+    if existing is not None and hasattr(existing, "SessionLocal"):
+        return existing
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "workers"
+        / "tasks"
+        / "run_prompt_optimization.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load task module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _invoke_bound_task(task, *args):
+    """Call a bind=True Celery task under real or conftest-fake decorators."""
+    run = getattr(task, "run", task)
+    try:
+        return run(*args)
+    except TypeError as exc:
+        if "missing 1 required positional argument" in str(exc):
+            return run(None, *args)
+        raise
 
 
 def _seed_org(db_session):
@@ -494,10 +530,7 @@ def test_run_evaluator_returns_error_when_evaluator_missing(db_session, monkeypa
 
 
 def test_run_prompt_optimization_marks_failed_without_training_data(db_session, test_engine, monkeypatch):
-    from app.workers.tasks import run_prompt_optimization as task_module
-
-    # API test stubs can overwrite this symbol in-memory; reload to restore real task.
-    task_module = importlib.reload(task_module)
+    task_module = _load_run_prompt_optimization_module()
 
     org = _seed_org(db_session)
     workspace_id = _default_workspace_id(db_session, org.id)
@@ -527,7 +560,7 @@ def test_run_prompt_optimization_marks_failed_without_training_data(db_session, 
 
     monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
     monkeypatch.setattr(task_module.logger, "error", lambda *_args, **_kwargs: None)
-    task_module.run_prompt_optimization_task.run(run.id)
+    _invoke_bound_task(task_module.run_prompt_optimization_task, run.id)
     verify_session = sessionmaker(bind=test_engine)()
     persisted_run = verify_session.query(PromptOptimizationRun).filter(PromptOptimizationRun.id == run.id).first()
 
@@ -537,10 +570,7 @@ def test_run_prompt_optimization_marks_failed_without_training_data(db_session, 
 
 
 def test_run_prompt_optimization_persists_best_prompt_and_candidates_on_success(db_session, test_engine, monkeypatch):
-    from app.workers.tasks import run_prompt_optimization as task_module
-
-    # API test stubs can overwrite this symbol in-memory; reload to restore real task.
-    task_module = importlib.reload(task_module)
+    task_module = _load_run_prompt_optimization_module()
 
     org = _seed_org(db_session)
     workspace_id = _default_workspace_id(db_session, org.id)
@@ -603,7 +633,7 @@ def test_run_prompt_optimization_persists_best_prompt_and_candidates_on_success(
     monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
 
     monkeypatch.setattr(task_module.logger, "error", lambda *_args, **_kwargs: None)
-    task_module.run_prompt_optimization_task.run(run.id)
+    _invoke_bound_task(task_module.run_prompt_optimization_task, run.id)
     verify_session = sessionmaker(bind=test_engine)()
     persisted_run = verify_session.query(PromptOptimizationRun).filter(PromptOptimizationRun.id == run.id).first()
 

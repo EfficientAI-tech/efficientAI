@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from app.models.database import CallImportEvaluation
 from tests.test_api.test_call_import_evaluation_insights import _seed_eval_with_data
+from tests.test_api.test_call_import_evaluations import _stub_celery_revoke
 
 
 def test_list_eligible_metric_cluster_rows_empty_scores(
@@ -51,15 +52,7 @@ def test_cancel_preserves_selected_row_ids_in_state(
     }
     db_session.commit()
 
-    class _Control:
-        @staticmethod
-        def revoke(*_a, **_k):
-            return None
-
-    monkeypatch.setattr(
-        "app.workers.celery_app.celery_app",
-        type("C", (), {"control": _Control})(),
-    )
+    _stub_celery_revoke(monkeypatch)
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/metric-clusters/cancel",

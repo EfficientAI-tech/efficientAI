@@ -110,8 +110,10 @@ def execute_bulk_diarization(
     from app.workers.concurrency.diarization_dispatch import (
         _REDIS_PARAMS_STORE_ERROR,
         build_diarization_params_from_request,
-        schedule_fair_diarization_dispatch,
         store_row_diarization_params_batch,
+    )
+    from app.workers.concurrency.fair_diarization_dispatch import (
+        schedule_fair_diarization_dispatch,
     )
 
     rows, skip_counts = select_rows_for_transcription(

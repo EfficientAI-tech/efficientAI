@@ -352,6 +352,22 @@ class LLMService:
             credential=credential_ctx,
         )
 
+        # #region agent log
+        try:
+            import json as _json, time as _time
+            _msg_types = []
+            for _m in messages:
+                _c = _m.get("content")
+                if isinstance(_c, list):
+                    _msg_types.extend(
+                        p.get("type") for p in _c if isinstance(p, dict)
+                    )
+            with open("debug-bfc313.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps({"sessionId": "bfc313", "runId": "post-fix", "hypothesisId": "C", "location": "llm_service.py:generate_response", "message": "pre-completion routing", "data": {"effective_routing": effective_routing, "credential_mode": getattr(credential_ctx, "routing_mode", None), "credential_id": str(credential_id) if credential_id else None, "model": model_str, "has_api_base": "api_base" in call_kwargs, "custom_llm_provider": call_kwargs.get("custom_llm_provider"), "content_part_types": _msg_types}, "timestamp": int(_time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
         try:
             response = litellm.completion(**call_kwargs)
         except Exception as e:
