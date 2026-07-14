@@ -3153,6 +3153,7 @@ async def transcribe_call_import(
         schedule_fair_diarization_dispatch,
         store_row_diarization_params,
     )
+    from app.workers.concurrency.diarization_dispatch import _REDIS_PARAMS_STORE_ERROR
 
     diarization_params = build_diarization_params_from_request(
         stt_provider=payload.stt_provider,
@@ -3166,13 +3167,21 @@ async def transcribe_call_import(
         diarization_prompt=payload.diarization_prompt,
         mode=payload.mode,
     )
+    queued = 0
     for row in rows:
-        store_row_diarization_params(row.id, diarization_params)
+        if store_row_diarization_params(row.id, diarization_params):
+            queued += 1
+        else:
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
+    if queued < len(rows):
+        db.commit()
 
-    schedule_fair_diarization_dispatch(max_workspace_turns=999)
+    if queued > 0:
+        schedule_fair_diarization_dispatch(max_workspace_turns=999)
 
     return CallImportTranscribeResponse(
-        queued=len(rows),
+        queued=queued,
         skipped_rows=sum(skip_counts.values()),
         skipped_reason_counts=skip_counts,
     )
@@ -3237,6 +3246,7 @@ async def transcribe_call_import_row(
         schedule_fair_diarization_dispatch,
         store_row_diarization_params,
     )
+    from app.workers.concurrency.diarization_dispatch import _REDIS_PARAMS_STORE_ERROR
 
     target = rows[0]
     diarization_params = build_diarization_params_from_request(
@@ -3251,11 +3261,19 @@ async def transcribe_call_import_row(
         diarization_prompt=payload.diarization_prompt,
         mode=payload.mode,
     )
-    store_row_diarization_params(target.id, diarization_params)
-    schedule_fair_diarization_dispatch(max_workspace_turns=999)
+    queued = 0
+    if store_row_diarization_params(target.id, diarization_params):
+        queued = 1
+    else:
+        target.diarised_transcript_status = "failed"
+        target.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
+        db.commit()
+
+    if queued > 0:
+        schedule_fair_diarization_dispatch(max_workspace_turns=999)
 
     return CallImportTranscribeResponse(
-        queued=1,
+        queued=queued,
         skipped_rows=sum(skip_counts.values()),
         skipped_reason_counts=skip_counts,
     )

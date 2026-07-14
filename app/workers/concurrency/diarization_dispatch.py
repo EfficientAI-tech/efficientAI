@@ -21,6 +21,12 @@ from app.workers.concurrency.limits import (
 
 _PENDING_PARAMS_KEY_PREFIX = "diarisation:pending:params:"
 _PENDING_PARAMS_TTL_SECONDS = 20 * 60
+_REDIS_PARAMS_STORE_ERROR = (
+    "Failed to enqueue: could not store job parameters (Redis unavailable)"
+)
+_MISSING_PARAMS_ERROR = (
+    "Diarization job parameters missing or expired; please retry."
+)
 
 _redis_client: redis.Redis | None = None
 
@@ -54,8 +60,11 @@ def _pending_params_key(row_id: UUID | str) -> str:
 def store_row_diarization_params(
     row_id: UUID | str,
     params: DiarizationRowParams,
-) -> None:
-    """Persist transcribe kwargs until the fair dispatcher enqueues the row."""
+) -> bool:
+    """Persist transcribe kwargs until the fair dispatcher enqueues the row.
+
+    Returns ``True`` when params were stored, ``False`` on Redis failure.
+    """
     key = _pending_params_key(row_id)
     try:
         _get_redis().setex(
@@ -63,12 +72,14 @@ def store_row_diarization_params(
             _PENDING_PARAMS_TTL_SECONDS,
             json.dumps(params),
         )
+        return True
     except redis.RedisError as exc:
         logger.warning(
             "Failed to store diarization params for row {}: {}",
             row_id,
             exc,
         )
+        return False
 
 
 def get_row_diarization_params(row_id: UUID | str) -> Optional[DiarizationRowParams]:

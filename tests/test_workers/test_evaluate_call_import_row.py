@@ -1168,3 +1168,73 @@ def test_evaluate_call_import_row_audio_only_completes(db_session, monkeypatch):
     assert chained["called"] is False
     db_session.refresh(eval_rows[0])
     assert eval_rows[0].status == "completed"
+
+
+def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
+    db_session, monkeypatch
+):
+    """Broker failure chaining to LLM phase must not leave the row stuck running."""
+    _, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=2
+    )
+    llm_metric, audio_metric = metrics[0], metrics[1]
+    audio_metric.name = "MOS Score"
+    source_rows[0].recording_s3_key = "audio/key.mp3"
+    evaluation.status = "running"
+    db_session.commit()
+
+    from app.workers.tasks import evaluate_call_import_row_audio as audio_module
+
+    monkeypatch.setattr(
+        audio_module, "SessionLocal", lambda: _NonClosingSession(db_session)
+    )
+    redispatched = {"called": False}
+
+    def _track_redispatch(*_args, **_kwargs):
+        redispatched["called"] = True
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        _track_redispatch,
+    )
+
+    def _fake_audio(*_args, **_kwargs):
+        return {
+            str(audio_metric.id): {
+                "value": 3.5,
+                "type": "rating",
+                "metric_name": "MOS Score",
+            }
+        }
+
+    monkeypatch.setattr(
+        "app.workers.tasks.helpers.audio_evaluation.evaluate_audio_metrics",
+        _fake_audio,
+    )
+
+    def _raise_enqueue(*_args, **_kwargs):
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        _raise_enqueue,
+    )
+
+    result = audio_module.evaluate_call_import_row_audio_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "chain_enqueue_failed"
+    assert redispatched["called"] is True
+
+    db_session.refresh(eval_rows[0])
+    db_session.refresh(evaluation)
+    assert eval_rows[0].status == "failed"
+    assert eval_rows[0].error_message == "Failed to enqueue LLM evaluation phase"
+    assert eval_rows[0].finished_at is not None
+    assert str(audio_metric.id) in (eval_rows[0].metric_scores or {})
+    assert str(llm_metric.id) not in (eval_rows[0].metric_scores or {})
+
+    assert evaluation.failed_rows == 1
+    assert evaluation.status == "failed"

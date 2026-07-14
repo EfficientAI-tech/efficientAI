@@ -253,7 +253,10 @@ def _pick_evaluation_row_transcript(source_row: Optional[CallImportRow]) -> Opti
     if source_row is None:
         return None
     diarised = (source_row.diarised_transcript or "").strip()
-    return diarised or None
+    if diarised:
+        return diarised
+    raw = (source_row.transcript or "").strip()
+    return raw or None
 
 
 def _to_evaluation_row_response(

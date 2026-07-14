@@ -14,6 +14,7 @@ from app.database import SessionLocal
 from app.models.database import CallImport, CallImportRow
 from app.workers.concurrency.diarization_dispatch import (
     _try_dispatch_single_diarization_row,
+    _MISSING_PARAMS_ERROR,
     get_row_diarization_params,
     pop_row_diarization_params,
 )
@@ -151,6 +152,9 @@ def _dispatch_batch_for_workspace(
         row, call_import = pending
         params = get_row_diarization_params(row.id)
         if not params:
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = _MISSING_PARAMS_ERROR
+            db.commit()
             skips += 1
             cursor = (cursor + 1) % len(call_imports)
             continue

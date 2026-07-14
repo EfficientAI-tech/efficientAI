@@ -397,3 +397,32 @@ def test_evaluation_rows_include_source_diarised_transcript_status(
     assert by_conv["call-done"]["diarised_transcript_status"] == "completed"
     assert by_conv["call-running"]["diarised_transcript_status"] == "running"
     assert by_conv["call-running"]["diarised_transcript_error"] == "stt timeout"
+
+
+def test_evaluation_rows_transcript_falls_back_to_csv_when_not_diarised(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Cancel/retry/list responses keep the CSV transcript until diarised exists."""
+    call_import, evaluation, _ = _seed_eval_with_rows(
+        db_session,
+        org_id,
+        rows=[
+            {"conversation_id": "call-csv", "status": "pending", "score_value": None},
+        ],
+    )
+
+    source_row = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .one()
+    )
+    source_row.transcript = "csv production transcript"
+    source_row.diarised_transcript = None
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/rows"
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["transcript"] == "csv production transcript"

@@ -190,11 +190,28 @@ def evaluate_call_import_row_audio_task(
             }
             if restricted_metric_ids:
                 chain_kwargs["restricted_metric_ids"] = restricted_metric_ids
-            evaluate_call_import_row_task.apply_async(
-                args=(str(eval_row.id),),
-                kwargs=chain_kwargs,
-                queue=EVALUATIONS_QUEUE,
-            )
+            try:
+                evaluate_call_import_row_task.apply_async(
+                    args=(str(eval_row.id),),
+                    kwargs=chain_kwargs,
+                    queue=EVALUATIONS_QUEUE,
+                )
+            except Exception:
+                logger.exception(
+                    "[CallImportEval {}] Failed to enqueue LLM phase",
+                    eval_row.id,
+                )
+                eval_row.status = "failed"
+                eval_row.error_message = "Failed to enqueue LLM evaluation phase"
+                eval_row.finished_at = now_utc()
+                db.commit()
+                rollup_parent(db, evaluation)
+                db.commit()
+                return {
+                    "status": "failed",
+                    "eval_row_id": eval_row_id,
+                    "reason": "chain_enqueue_failed",
+                }
             chain_llm = True
             return {
                 "status": "chained",
