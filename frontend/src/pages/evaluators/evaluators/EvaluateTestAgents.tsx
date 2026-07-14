@@ -12,6 +12,7 @@ import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
+import { providerHasLLMModels } from '../../../lib/llmModelOptions'
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -150,10 +151,13 @@ export default function EvaluateTestAgents() {
     ])
   )
 
-  const llmProviders = configuredProviders.filter(p => {
-    const opts = modelConfigs[p]
-    return opts && opts.llm && opts.llm.length > 0
-  })
+  const llmProviders = configuredProviders.filter((p) =>
+    providerHasLLMModels(
+      p,
+      modelConfigs[p]?.llm ?? [],
+      aiproviders,
+    ),
+  )
 
   const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
     return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }

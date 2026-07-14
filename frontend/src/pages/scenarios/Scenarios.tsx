@@ -11,6 +11,8 @@ import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptio
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
+import { resolveLLMModelsForCredential } from '../../lib/llmModelOptions'
 
 interface Scenario {
   id: string
@@ -118,6 +120,24 @@ export default function Scenarios() {
     return modelOptions?.llm || []
   }, [modelOptions])
 
+  const selectedAiCredential = useMemo(() => {
+    if (!selectedAIProvider) return undefined
+    return resolveActiveAIProvider(aiProviders, selectedAIProvider)
+  }, [aiProviders, selectedAIProvider])
+
+  const llmModelResolution = useMemo(() => {
+    if (!selectedAiCredential) {
+      return { mode: 'catalog' as const, models: llmModels }
+    }
+    return resolveLLMModelsForCredential(selectedAiCredential, llmModels)
+  }, [selectedAiCredential, llmModels])
+
+  const selectableLlmModels =
+    llmModelResolution.mode === 'catalog' ? llmModelResolution.models : []
+
+  const gatewayDirectModel =
+    llmModelResolution.mode === 'gateway_direct' ? llmModelResolution.model : null
+
   const userScenarios = useMemo(() => scenarios as Scenario[], [scenarios])
   const availableAgents = useMemo(() => agents as AgentOption[], [agents])
   const agentNameById = useMemo(() => {
@@ -128,12 +148,16 @@ export default function Scenarios() {
 
   // Reset model when provider changes
   useEffect(() => {
-    if (selectedAIProvider && llmModels.length > 0) {
-      setSelectedModel(llmModels[0])
+    if (gatewayDirectModel) {
+      setSelectedModel('')
+      return
+    }
+    if (selectedAIProvider && selectableLlmModels.length > 0) {
+      setSelectedModel(selectableLlmModels[0])
     } else {
       setSelectedModel('')
     }
-  }, [selectedAIProvider, llmModels])
+  }, [selectedAIProvider, selectableLlmModels, gatewayDirectModel])
 
   // Handle click outside provider dropdown
   useEffect(() => {
@@ -853,23 +877,32 @@ export default function Scenarios() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Model *</label>
-                      <select
-                        value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
-                        disabled={!selectedAIProvider || llmModels.length === 0}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
-                      >
-                        <option value="">
-                          {!selectedAIProvider ? 'Select provider first' : llmModels.length === 0 ? 'No models found' : 'Select model'}
-                        </option>
-                        {llmModels.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
+                      {gatewayDirectModel ? (
+                        <div
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                          title={gatewayDirectModel}
+                        >
+                          {gatewayDirectModel}
+                        </div>
+                      ) : (
+                        <select
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value)}
+                          disabled={!selectedAIProvider || selectableLlmModels.length === 0}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-100 disabled:text-gray-500"
+                        >
+                          <option value="">
+                            {!selectedAIProvider ? 'Select provider first' : selectableLlmModels.length === 0 ? 'No models found' : 'Select model'}
                           </option>
-                        ))}
-                      </select>
+                          {selectableLlmModels.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
-                    {selectedAIProvider && (
+                    {selectedAIProvider && !gatewayDirectModel && (
                       <div className="md:col-span-2">
                         <LLMAdvancedOptionsPanel
                           provider={selectedAIProvider}
@@ -1281,23 +1314,32 @@ export default function Scenarios() {
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-700 mb-1">Model *</label>
-                      <select
-                        value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
-                        disabled={!selectedAIProvider || llmModels.length === 0}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white disabled:bg-gray-100 disabled:text-gray-500"
-                      >
-                        <option value="">
-                          {!selectedAIProvider ? 'Select provider first' : llmModels.length === 0 ? 'No models found' : 'Select model'}
-                        </option>
-                        {llmModels.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
+                      {gatewayDirectModel ? (
+                        <div
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                          title={gatewayDirectModel}
+                        >
+                          {gatewayDirectModel}
+                        </div>
+                      ) : (
+                        <select
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value)}
+                          disabled={!selectedAIProvider || selectableLlmModels.length === 0}
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white disabled:bg-gray-100 disabled:text-gray-500"
+                        >
+                          <option value="">
+                            {!selectedAIProvider ? 'Select provider first' : selectableLlmModels.length === 0 ? 'No models found' : 'Select model'}
                           </option>
-                        ))}
-                      </select>
+                          {selectableLlmModels.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </div>
-                    {selectedAIProvider && (
+                    {selectedAIProvider && !gatewayDirectModel && (
                       <div className="md:col-span-2">
                         <LLMAdvancedOptionsPanel
                           provider={selectedAIProvider}

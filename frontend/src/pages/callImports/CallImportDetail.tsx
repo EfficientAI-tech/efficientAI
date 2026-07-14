@@ -50,6 +50,10 @@ import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
+import {
+  isLLMSelectionComplete,
+  resolveLLMModelForSubmit,
+} from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import ImportPanel from './components/ImportPanel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
@@ -522,6 +526,11 @@ export default function CallImportDetail() {
     staleTime: Infinity,
   })
 
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
   const [editingMeta, setEditingMeta] = useState(false)
   const [draftDataset, setDraftDataset] = useState('')
   const [draftTagIds, setDraftTagIds] = useState<string[]>([])
@@ -975,7 +984,9 @@ export default function CallImportDetail() {
         only_missing: !overwrite,
         overwrite_existing: overwrite,
         diarization_llm_provider: diariserLLM.provider as string,
-        diarization_llm_model: diariserLLM.model as string,
+        diarization_llm_model:
+          resolveLLMModelForSubmit(diariserLLM, aiProviders) ??
+          (diariserLLM.model as string),
         diarization_llm_credential_id: diariserLLM.credential_id ?? null,
         diarization_prompt: trimmedPrompt,
       }
@@ -3501,8 +3512,7 @@ export default function CallImportDetail() {
               (transcribeMode === 'llm_only'
                 ? true
                 : !!transcribeSTT.provider && !!transcribeSTT.model) &&
-              !!transcribeDiariserLLM.provider &&
-              !!transcribeDiariserLLM.model &&
+              isLLMSelectionComplete(transcribeDiariserLLM, aiProviders) &&
               targets.length > 0 &&
               !transcribeRowsMutation.isPending
             return (
@@ -4179,8 +4189,10 @@ export default function CallImportDetail() {
                           const sttMissing =
                             evalTranscribeMode === 'stt_llm' &&
                             (!evalSTT.provider || !evalSTT.model)
-                          const diariserMissing =
-                            !evalDiariserLLM.provider || !evalDiariserLLM.model
+                          const diariserMissing = !isLLMSelectionComplete(
+                            evalDiariserLLM,
+                            aiProviders,
+                          )
                           const sectionIncomplete = sttMissing || (
                             evalTranscribeMode === 'llm_only' && diariserMissing
                           )
@@ -4452,15 +4464,11 @@ export default function CallImportDetail() {
                           )
                         }
                       }
-                      if (!evalDiariserLLM.provider) {
+                      if (!isLLMSelectionComplete(evalDiariserLLM, aiProviders)) {
                         disabledReasons.push(
                           evalTranscribeMode === 'llm_only'
                             ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
-                            : 'Pick a diariser LLM provider — the STT output is split into agent / user turns by an LLM.',
-                        )
-                      } else if (!evalDiariserLLM.model) {
-                        disabledReasons.push(
-                          'Pick a diariser LLM model for the selected provider.',
+                            : 'Pick a diariser LLM provider and model (or a Custom gateway credential).',
                         )
                       }
                       if (
@@ -4580,7 +4588,11 @@ export default function CallImportDetail() {
                                 : null,
                             diarization_llm_provider:
                               evalDiariserLLM.provider,
-                            diarization_llm_model: evalDiariserLLM.model,
+                            diarization_llm_model:
+                              resolveLLMModelForSubmit(
+                                evalDiariserLLM,
+                                aiProviders,
+                              ) ?? evalDiariserLLM.model,
                             diarization_llm_credential_id:
                               evalDiariserLLM.credential_id || null,
                             diarization_prompt:

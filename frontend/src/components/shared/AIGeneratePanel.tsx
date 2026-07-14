@@ -3,16 +3,11 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { Sparkles, Loader2, Bot, ChevronDown } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
-import { ModelProvider } from '../../types/api'
+import { ModelProvider, type AIProvider } from '../../types/api'
 import LLMAdvancedOptionsPanel from '../providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
-
-interface AIProvider {
-  id: string
-  provider: string
-  name: string | null
-  is_active: boolean
-}
+import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
+import { resolveLLMModelsForCredential } from '../../lib/llmModelOptions'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -50,6 +45,7 @@ export default function AIGeneratePanel({
   const [tone, setTone] = useState('professional')
   const [format, setFormat] = useState('structured')
   const [provider, setProvider] = useState('')
+  const [credentialId, setCredentialId] = useState('')
   const [model, setModel] = useState('')
   const [llmConfig, setLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
@@ -68,11 +64,31 @@ export default function AIGeneratePanel({
 
   const llmModels = modelOptions?.llm || []
 
+  const selectedAiProvider = provider
+    ? credentialId
+      ? aiProviders.find((p) => p.id === credentialId)
+      : resolveActiveAIProvider(aiProviders, provider)
+    : undefined
+
+  const modelResolution = selectedAiProvider
+    ? resolveLLMModelsForCredential(selectedAiProvider, llmModels)
+    : { mode: 'catalog' as const, models: llmModels }
+
+  const gatewayDirectModel =
+    modelResolution.mode === 'gateway_direct' ? modelResolution.model : null
+
+  const selectableModels =
+    modelResolution.mode === 'catalog' ? modelResolution.models : []
+
   useEffect(() => {
-    if (provider && llmModels.length > 0 && !llmModels.includes(model)) {
-      setModel(llmModels[0])
+    if (gatewayDirectModel) {
+      if (model) setModel('')
+      return
     }
-  }, [provider, llmModels, model])
+    if (provider && selectableModels.length > 0 && !selectableModels.includes(model)) {
+      setModel(selectableModels[0])
+    }
+  }, [provider, selectableModels, model, gatewayDirectModel])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -192,6 +208,7 @@ export default function AIGeneratePanel({
                   type="button"
                   onClick={() => {
                     setProvider('')
+                    setCredentialId('')
                     setModel('')
                     setShowProviderDropdown(false)
                   }}
@@ -205,6 +222,7 @@ export default function AIGeneratePanel({
                     type="button"
                     onClick={() => {
                       setProvider(p.provider)
+                      setCredentialId(p.id)
                       setModel('')
                       setShowProviderDropdown(false)
                     }}
@@ -229,26 +247,35 @@ export default function AIGeneratePanel({
         </div>
         <div className="flex-1">
           <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={!provider}
-            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-          >
-            {!provider ? (
-              <option value="">Select a provider first</option>
-            ) : llmModels.length === 0 ? (
-              <option value="">Loading models...</option>
-            ) : (
-              llmModels.map((m: string) => (
-                <option key={m} value={m}>{m}</option>
-              ))
-            )}
-          </select>
+          {gatewayDirectModel ? (
+            <div
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+              title={gatewayDirectModel}
+            >
+              {gatewayDirectModel}
+            </div>
+          ) : (
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={!provider}
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+            >
+              {!provider ? (
+                <option value="">Select a provider first</option>
+              ) : selectableModels.length === 0 ? (
+                <option value="">Loading models...</option>
+              ) : (
+                selectableModels.map((m: string) => (
+                  <option key={m} value={m}>{m}</option>
+                ))
+              )}
+            </select>
+          )}
         </div>
       </div>
 
-      {provider && (
+      {provider && !gatewayDirectModel && (
         <LLMAdvancedOptionsPanel
           provider={provider}
           value={llmConfig}

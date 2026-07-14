@@ -6,10 +6,11 @@ import LLMAdvancedOptionsPanel from './providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../config/llmGenerationParams'
 import type { AIProvider, Integration } from '../types/api'
 import { INTEGRATION_LLM_PLATFORMS } from '../lib/integrationLlmPlatforms'
+import { resolveActiveAIProvider } from '../lib/gatewayRouting'
 import {
-  resolveActiveAIProvider,
-  usesGatewayDirectModel,
-} from '../lib/gatewayRouting'
+  formatGatewayCredentialLabel,
+  resolveLLMModelsForCredential,
+} from '../lib/llmModelOptions'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -124,20 +125,25 @@ export default function AIProviderModelPicker({
       ? aiProviders.find((p) => p.id === selectedCredential.id)
       : undefined
 
-  const gatewayDirectModel =
-    selectedAiProvider && usesGatewayDirectModel(selectedAiProvider)
-      ? selectedAiProvider.gateway_model?.trim()
-      : null
-
   const resolvedProvider = selectedCredential?.provider || provider
 
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', resolvedProvider],
     queryFn: () => apiClient.getModelOptions(resolvedProvider),
-    enabled: !!resolvedProvider && !gatewayDirectModel,
+    enabled: !!resolvedProvider,
   })
 
-  const llmModels: string[] = modelOptions?.llm ?? []
+  const rawCatalogModels: string[] = modelOptions?.llm ?? []
+
+  const modelResolution = selectedAiProvider
+    ? resolveLLMModelsForCredential(selectedAiProvider, rawCatalogModels)
+    : { mode: 'catalog' as const, models: rawCatalogModels }
+
+  const gatewayDirectModel =
+    modelResolution.mode === 'gateway_direct' ? modelResolution.model : null
+
+  const llmModels =
+    modelResolution.mode === 'catalog' ? modelResolution.models : []
 
   useEffect(() => {
     if (gatewayDirectModel) {
@@ -174,6 +180,12 @@ export default function AIProviderModelPicker({
   }
 
   const credentialLabel = (row: CredentialRow) => {
+    if (row.source === 'aiprovider') {
+      const aiRow = aiProviders.find((p) => p.id === row.id)
+      if (aiRow) {
+        return formatGatewayCredentialLabel(aiRow, PROVIDER_LABELS)
+      }
+    }
     const base = PROVIDER_LABELS[row.provider] || row.provider
     const named = row.name ? ` — ${row.name}` : ''
     const defaultTag = row.is_default ? ' (default)' : ''

@@ -704,7 +704,40 @@ _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MiB raw → ~33 MB base64
 # Providers we currently know how to build a multimodal audio prompt
 # for. Adding a new provider means teaching ``_build_audio_messages``
 # how to shape its content parts; until then we surface a clean error.
+# ``custom`` is allowed separately when the org credential routes via
+# the LLM gateway with a pinned ``gateway_model`` (OpenAI-compatible).
 _AUDIO_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai", "google"})
+
+
+def _custom_gateway_audio_allowed(
+    *,
+    provider_value: str,
+    organization_id: UUID,
+    db: Session,
+    credential_id: Optional[UUID] = None,
+) -> bool:
+    """Return True when ``custom`` may be used for LLM-only diarisation."""
+    if provider_value != "custom":
+        return False
+
+    from app.services.credentials import resolve_ai_provider
+
+    try:
+        provider_enum = ModelProvider(provider_value)
+    except ValueError:
+        return False
+
+    ai_provider_row = resolve_ai_provider(
+        provider_enum.value,
+        db,
+        organization_id,
+        credential_id=credential_id,
+    )
+    if not ai_provider_row:
+        return False
+
+    gateway_model = (getattr(ai_provider_row, "gateway_model", None) or "").strip()
+    return bool(gateway_model)
 
 # Skip the Gemini Files API round-trip for tiny clips: the upload +
 # polling latency (~300-600 ms) outweighs the prompt-size savings until
@@ -958,7 +991,7 @@ def _build_audio_messages(
         "expected answer for empty / non-speech audio."
     )
 
-    if provider_value == "openai":
+    if provider_value == "openai" or provider_value == "custom":
         audio_part: Dict[str, Any] = {
             "type": "input_audio",
             "input_audio": {"data": audio_b64, "format": openai_format},
@@ -1045,11 +1078,18 @@ def diarize_audio_with_llm(
 
     provider_value = (llm_provider or "").strip().lower()
     if provider_value not in _AUDIO_SUPPORTED_PROVIDERS:
-        raise LLMDiarisationError(
-            f"Provider '{llm_provider}' is not supported in LLM-only "
-            "mode yet. Pick an OpenAI gpt-4o-audio model or a Google "
-            "Gemini model that accepts audio input."
-        )
+        if not _custom_gateway_audio_allowed(
+            provider_value=provider_value,
+            organization_id=organization_id,
+            db=db,
+            credential_id=credential_id,
+        ):
+            raise LLMDiarisationError(
+                f"Provider '{llm_provider}' is not supported in LLM-only "
+                "mode yet. Pick an OpenAI gpt-4o-audio model, a Google "
+                "Gemini model that accepts audio input, or a Custom "
+                "gateway credential with a gateway model configured."
+            )
 
     try:
         provider_enum = ModelProvider(provider_value)
@@ -1148,7 +1188,7 @@ def diarize_audio_with_llm(
     # it for the wire — for the OpenAI path always, and for the Gemini
     # path only when the Files API upload didn't yield a file_id.
     audio_b64: Optional[str] = None
-    if provider_value == "openai" or gemini_file_id is None:
+    if provider_value in {"openai", "custom"} or gemini_file_id is None:
         audio_b64 = _b64.b64encode(audio_bytes).decode("ascii")
 
     messages = _build_audio_messages(

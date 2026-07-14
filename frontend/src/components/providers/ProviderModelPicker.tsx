@@ -31,10 +31,15 @@ import { apiClient } from '../../lib/api'
 import type { AIProvider, Integration } from '../../types/api'
 import LLMAdvancedOptionsPanel from './LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
 import {
-  resolveActiveAIProvider,
-  usesGatewayDirectModel,
-} from '../../lib/gatewayRouting'
+  buildLLMProviderKeys,
+  formatGatewayCredentialLabel,
+  isAudioCapableModel,
+  isGatewayAudioCapableCredential,
+  resolveLLMModelsForCredential,
+  shouldAlwaysShowCredentialPicker,
+} from '../../lib/llmModelOptions'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -50,6 +55,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   perplexity: 'Perplexity',
   azure: 'Azure',
   aws: 'AWS',
+  custom: 'Custom',
   deepgram: 'Deepgram',
   elevenlabs: 'ElevenLabs',
   sarvam: 'Sarvam',
@@ -74,6 +80,7 @@ interface CredentialRow {
   is_default?: boolean
   name?: string | null
   source: CredentialSource
+  gateway_model?: string | null
 }
 
 export interface ProviderModelPickerProps {
@@ -110,33 +117,10 @@ export interface ProviderModelPickerProps {
   showAdvancedOptions?: boolean
 }
 
-// Per-provider substring fingerprints for "this chat model accepts audio
-// input". We bias toward substrings rather than exact names so new dated
-// snapshots get picked up automatically as providers ship them.
-const AUDIO_CAPABLE_MODEL_MATCHERS: Record<string, RegExp[]> = {
-  // OpenAI: only the ``gpt-4o-audio-preview`` family (and the new
-  // ``gpt-realtime`` family) accept ``input_audio`` on Chat Completions.
-  // ``gpt-4o`` w/o the ``-audio`` suffix is text+vision only. We match
-  // on the literal ``audio`` token so any future ``-audio-`` model
-  // qualifies, plus ``realtime`` for the realtime family.
-  openai: [/audio/i, /realtime/i],
-  // Google: every Gemini 1.5+ model accepts inline audio data parts.
-  // We exclude the legacy ``gemini-pro`` / ``gemini-1.0-pro`` shapes
-  // by requiring a 1.5+ major-minor.
-  google: [/^gemini-(1\.5|[2-9])/i],
-}
-const AUDIO_CAPABLE_PROVIDERS = Object.keys(AUDIO_CAPABLE_MODEL_MATCHERS)
-
 // Voice-platform integrations that also expose LLM models. Credentials
 // for these providers live in the Integration table (Configurations →
 // Integrations → Voice Platform), not AIProvider.
 import { INTEGRATION_LLM_PLATFORMS } from '../../lib/integrationLlmPlatforms'
-
-function isAudioCapableModel(provider: string, model: string): boolean {
-  const matchers = AUDIO_CAPABLE_MODEL_MATCHERS[provider]
-  if (!matchers) return false
-  return matchers.some((re) => re.test(model))
-}
 
 export default function ProviderModelPicker({
   kind,
@@ -196,6 +180,7 @@ export default function ProviderModelPicker({
       is_default: p.is_default,
       name: p.name ?? null,
       source: 'aiprovider',
+      gateway_model: p.gateway_model ?? null,
     })),
     ...integrationCredentialRows,
   ]
@@ -203,17 +188,23 @@ export default function ProviderModelPicker({
   const allowSet = providerAllowList
     ? new Set(providerAllowList.map((p) => p.toLowerCase()))
     : null
-  // When `audioCapableOnly` is on we intersect the caller's allow-list
-  // with the providers we know how to send audio to. Doing this as an
-  // intersection rather than an override keeps the LLM-only mode honest
-  // even if a caller forgets to pre-restrict.
-  const audioProviderSet = audioCapableOnly
-    ? new Set(AUDIO_CAPABLE_PROVIDERS)
-    : null
+
+  const integrationLlmKeys = integrationCredentialRows.map((r) => r.provider)
+
+  const llmProviderKeys =
+    kind === 'llm'
+      ? buildLLMProviderKeys(aiProviders, integrationLlmKeys, {
+          providerAllowList,
+          audioCapableOnly,
+        })
+      : []
+
   const eligibleProviders = allCredentials.filter((p) => {
     if (!p.is_active) return false
+    if (kind === 'llm') {
+      return llmProviderKeys.includes(p.provider)
+    }
     if (allowSet && !allowSet.has(p.provider)) return false
-    if (audioProviderSet && !audioProviderSet.has(p.provider)) return false
     return true
   })
   // Group rows by provider key so the dropdown shows one entry per
@@ -231,32 +222,38 @@ export default function ProviderModelPicker({
     )
   }, [aiProviders, kind, value.provider, value.credential_id])
 
-  const gatewayDirectModel =
-    kind === 'llm' && usesGatewayDirectModel(activeCredential)
-      ? activeCredential?.gateway_model?.trim()
-      : null
-
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', value.provider],
     queryFn: () => apiClient.getModelOptions(value.provider as string),
-    enabled: !!value.provider && !gatewayDirectModel,
+    enabled: !!value.provider,
   })
 
   const rawModels =
     (kind === 'stt' ? modelOptions?.stt : modelOptions?.llm) || []
-  // Audio-capable filtering is intentionally LLM-only (Chat Completions
-  // audio is an LLM feature; STT lists are already model-specific).
+
+  const catalogModels =
+    kind === 'llm' && activeCredential
+      ? resolveLLMModelsForCredential(activeCredential, rawModels)
+      : { mode: 'catalog' as const, models: rawModels }
+
+  const resolvedGatewayDirectModel =
+    catalogModels.mode === 'gateway_direct' ? catalogModels.model : null
+
   const models =
-    audioCapableOnly && kind === 'llm' && value.provider
-      ? rawModels.filter((m) => isAudioCapableModel(value.provider as string, m))
-      : rawModels
+    catalogModels.mode === 'gateway_direct'
+      ? []
+      : audioCapableOnly && kind === 'llm' && value.provider
+        ? catalogModels.models.filter((m) =>
+            isAudioCapableModel(value.provider as string, m),
+          )
+        : catalogModels.models
 
   // Auto-pick the first model when the provider changes and the
   // currently-selected model isn't valid for it. Avoids a confusing
   // empty-model state after the user picks a provider.
   useEffect(() => {
     if (!value.provider) return
-    if (gatewayDirectModel) {
+    if (resolvedGatewayDirectModel) {
       if (value.model) onChange({ ...value, model: null })
       return
     }
@@ -264,30 +261,53 @@ export default function ProviderModelPicker({
     if (value.model && models.includes(value.model)) return
     onChange({ ...value, model: models[0] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value.provider, models, gatewayDirectModel])
+  }, [value.provider, models, resolvedGatewayDirectModel])
 
   // When the audio-capable toggle flips ON after the user has already
   // picked a non-audio provider/model (e.g. Anthropic + Claude), clear
   // the stale selection so the parent form doesn't submit something we
-  // just hid from the dropdown. The provider auto-clears via the
-  // ``onChange`` above as soon as it's no longer in ``eligibleProviders``;
-  // the model side is handled by the same auto-pick effect above.
+  // just hid from the dropdown.
   useEffect(() => {
     if (!audioCapableOnly) return
     if (!value.provider) return
-    if (!AUDIO_CAPABLE_PROVIDERS.includes(value.provider)) {
+    const providerAllowed = llmProviderKeys.includes(value.provider)
+    const credentialAllowed =
+      activeCredential && isGatewayAudioCapableCredential(activeCredential)
+    if (!providerAllowed && !credentialAllowed) {
       onChange({ provider: null, model: null, credential_id: null })
+      return
+    }
+    if (
+      value.model &&
+      !isAudioCapableModel(value.provider, value.model) &&
+      !credentialAllowed
+    ) {
+      onChange({ ...value, model: null })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioCapableOnly, value.provider])
+  }, [audioCapableOnly, value.provider, value.model, llmProviderKeys])
 
-  const credentialRows = value.provider
+  const selectedProviderKey = value.provider?.toLowerCase() ?? ''
+
+  const credentialRows = selectedProviderKey
     ? allCredentials.filter(
-        (p) => p.is_active && p.provider === value.provider,
+        (p) => p.is_active && p.provider === selectedProviderKey,
       )
     : []
+
+  const aiCredentialRows = selectedProviderKey
+    ? aiProviders.filter(
+        (p) =>
+          p.is_active &&
+          p.provider.toLowerCase() === selectedProviderKey,
+      )
+    : []
+
   const showCredentialPicker =
-    allowCredentialPick && credentialRows.length > 1
+    allowCredentialPick &&
+    (credentialRows.length > 1 ||
+      (value.provider &&
+        shouldAlwaysShowCredentialPicker(value.provider, aiProviders)))
 
   const Icon = kind === 'stt' ? AudioLines : Bot
 
@@ -304,7 +324,26 @@ export default function ProviderModelPicker({
             disabled={disabled}
             onChange={(e) => {
               const provider = e.target.value || null
-              onChange({ provider, model: null, credential_id: null })
+              let credential_id: string | null = null
+              if (
+                provider === 'custom' &&
+                allowCredentialPick &&
+                kind === 'llm'
+              ) {
+                const customCred =
+                  aiProviders.find(
+                    (p) =>
+                      p.is_active &&
+                      p.provider.toLowerCase() === 'custom' &&
+                      p.is_default,
+                  ) ??
+                  aiProviders.find(
+                    (p) =>
+                      p.is_active && p.provider.toLowerCase() === 'custom',
+                  )
+                credential_id = customCred?.id ?? null
+              }
+              onChange({ provider, model: null, credential_id })
             }}
             className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-50"
           >
@@ -324,20 +363,27 @@ export default function ProviderModelPicker({
           )}
         </div>
         <div className="flex-1">
-          {gatewayDirectModel ? (
+          {resolvedGatewayDirectModel ? (
             <>
               <label className="block text-xs font-medium text-gray-600 mb-1">
                 Gateway model
               </label>
               <div
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
-                title={gatewayDirectModel}
+                title={resolvedGatewayDirectModel}
               >
-                {gatewayDirectModel}
+                {resolvedGatewayDirectModel}
               </div>
               <p className="mt-1 text-xs text-gray-500">
                 Model is fixed on the integration — Bifrost gateway routing applies.
               </p>
+              {audioCapableOnly &&
+                activeCredential &&
+                activeCredential.provider?.toLowerCase() === 'custom' && (
+                  <p className="mt-1 text-xs text-amber-600">
+                    Audio support depends on the underlying Bifrost model.
+                  </p>
+                )}
             </>
           ) : (
             <>
@@ -376,7 +422,8 @@ export default function ProviderModelPicker({
                   <p className="mt-1 text-xs text-amber-600">
                     This provider has no audio-capable Chat Completions
                     models. Use OpenAI's gpt-4o-audio-preview /
-                    gpt-4o-mini-audio-preview, or a Google Gemini 1.5+ model.
+                    gpt-4o-mini-audio-preview, a Google Gemini 1.5+ model,
+                    or a Custom gateway credential that accepts audio.
                   </p>
                 )}
             </>
@@ -400,24 +447,42 @@ export default function ProviderModelPicker({
             className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 bg-white"
           >
             <option value="">Org default</option>
-            {credentialRows.map((c) => (
-              <option key={`${c.source}:${c.id}`} value={c.id}>
-                {c.name || c.id.slice(0, 8)}
-                {c.is_default ? ' (default)' : ''}
-                {c.source === 'integration' ? ' · Integration' : ''}
-              </option>
-            ))}
+            {credentialRows.map((c) => {
+              const aiRow =
+                c.source === 'aiprovider'
+                  ? aiCredentialRows.find((p) => p.id === c.id)
+                  : undefined
+              const label =
+                aiRow && value.provider === 'custom'
+                  ? formatGatewayCredentialLabel(aiRow, PROVIDER_LABELS)
+                  : [
+                      c.name || c.id.slice(0, 8),
+                      c.is_default ? ' (default)' : '',
+                      c.source === 'integration' ? ' · Integration' : '',
+                      aiRow?.gateway_model?.trim()
+                        ? ` · ${aiRow.gateway_model.trim()}`
+                        : '',
+                    ].join('')
+              return (
+                <option key={`${c.source}:${c.id}`} value={c.id}>
+                  {label}
+                </option>
+              )
+            })}
           </select>
         </div>
       )}
-      {kind === 'llm' && showAdvancedOptions && value.provider && !gatewayDirectModel && (
-        <LLMAdvancedOptionsPanel
-          provider={value.provider}
-          value={value.llm_config ?? null}
-          disabled={disabled}
-          onChange={(llm_config) => onChange({ ...value, llm_config })}
-        />
-      )}
+      {kind === 'llm' &&
+        showAdvancedOptions &&
+        value.provider &&
+        !resolvedGatewayDirectModel && (
+          <LLMAdvancedOptionsPanel
+            provider={value.provider}
+            value={value.llm_config ?? null}
+            disabled={disabled}
+            onChange={(llm_config) => onChange({ ...value, llm_config })}
+          />
+        )}
     </div>
   )
 }

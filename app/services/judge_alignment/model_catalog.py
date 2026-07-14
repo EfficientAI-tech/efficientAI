@@ -23,6 +23,10 @@ from sqlalchemy.orm import Session
 from app.models.database import AIProvider, Integration, ModelProvider
 from app.models.enums import IntegrationPlatform
 from app.services.ai.model_config_service import model_config_service
+from app.services.ai.llm_gateway import (
+    resolve_effective_routing,
+    routing_context_from_ai_provider,
+)
 
 
 # Providers that ship LLM models we can use as a judge. We deliberately
@@ -166,6 +170,36 @@ def list_judge_capable_models(
                     "label": f"{provider_label} / {model_name}",
                 }
             )
+
+    for ai_provider in providers:
+        gateway_model = (getattr(ai_provider, "gateway_model", None) or "").strip()
+        if not gateway_model:
+            continue
+        provider_value = (ai_provider.provider or "").lower()
+        if provider_value not in _LLM_CAPABLE_PROVIDERS:
+            continue
+        cred_ctx = routing_context_from_ai_provider(ai_provider)
+        _, effective_routing = resolve_effective_routing(
+            organization_id, db, cred_ctx
+        )
+        if effective_routing == "direct":
+            continue
+        key = (provider_value, gateway_model, str(ai_provider.id))
+        if key in seen:
+            continue
+        seen.add(key)
+        provider_label = _provider_label(provider_value)
+        named = (ai_provider.name or "").strip()
+        suffix = f" ({named})" if named else ""
+        catalog.append(
+            {
+                "provider": provider_value,
+                "provider_label": provider_label,
+                "model": gateway_model,
+                "credential_id": str(ai_provider.id),
+                "label": f"{provider_label}{suffix} / {gateway_model}",
+            }
+        )
 
     catalog.sort(key=lambda m: (m["provider_label"].lower(), m["model"].lower()))
     return catalog
