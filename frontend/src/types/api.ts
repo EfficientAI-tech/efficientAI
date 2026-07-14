@@ -1701,6 +1701,12 @@ export interface CallImportTranscribeResponse {
   queued: number
   skipped_rows: number
   skipped_reason_counts: Record<string, number>
+  accepted?: boolean
+}
+
+export interface CallImportRowBulkDeleteResponse {
+  deleted: number
+  status?: 'completed' | 'accepted'
 }
 
 export interface CallImportRetryFailedRowsResponse {

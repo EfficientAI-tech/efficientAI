@@ -1611,7 +1611,7 @@ class ApiClient {
   async bulkDeleteCallImportRows(
     id: string,
     rowIds: string[],
-  ): Promise<{ deleted: number }> {
+  ): Promise<{ deleted: number; status?: 'completed' | 'accepted' }> {
     const response = await this.client.post(
       `/api/v1/call-imports/${id}/rows/bulk-delete`,
       { row_ids: rowIds },

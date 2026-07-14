@@ -2943,6 +2943,7 @@ async def retry_failed_call_import_rows(
 @router.post(
     "/{call_import_id}/rows/bulk-delete",
     response_model=CallImportRowBulkDeleteResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="bulkDeleteCallImportRows",
 )
 async def bulk_delete_call_import_rows(
@@ -2961,8 +2962,6 @@ async def bulk_delete_call_import_rows(
     """
     del api_key
 
-    from app.services.storage.s3_service import s3_service
-
     call_import = (
         db.query(CallImport)
         .filter(
@@ -2977,50 +2976,18 @@ async def bulk_delete_call_import_rows(
             detail="Call import not found",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.id.in_(payload.row_ids),
-            CallImportRow.call_import_id == call_import.id,
-        )
-        .all()
-    )
-    if not rows:
-        return CallImportRowBulkDeleteResponse(deleted=0)
+    if not payload.row_ids:
+        return CallImportRowBulkDeleteResponse(deleted=0, status="completed")
 
-    _revoke_pending_tasks(rows)
+    from app.workers.tasks.call_import_bulk_ops import bulk_delete_call_import_rows_task
 
-    if s3_service.is_enabled():
-        for row in rows:
-            if not row.recording_s3_key:
-                continue
-            try:
-                s3_service.delete_file_by_key(row.recording_s3_key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Failed to delete S3 object {} for row {}: {}",
-                    row.recording_s3_key,
-                    row.id,
-                    exc,
-                )
-
-    deleted = 0
-    for row in rows:
-        db.delete(row)
-        deleted += 1
-    db.flush()
-
-    _recompute_call_import_counters(db, call_import)
-    db.commit()
-
-    logger.info(
-        "Bulk-deleted {} call_import_rows (call_import={}, org={})",
-        deleted,
-        call_import.id,
-        organization_id,
+    bulk_delete_call_import_rows_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        [str(rid) for rid in payload.row_ids],
     )
 
-    return CallImportRowBulkDeleteResponse(deleted=deleted)
+    return CallImportRowBulkDeleteResponse(deleted=0, status="accepted")
 
 
 # ---------------------------------------------------------------------------
@@ -3034,60 +3001,18 @@ def _select_rows_for_transcription(
     payload: CallImportTranscribeRequest,
     requested_row_ids: Optional[List[UUID]] = None,
 ) -> tuple[List[CallImportRow], Dict[str, int]]:
-    """Pick which rows to enqueue for diarisation.
+    """Pick which rows to enqueue for diarisation (delegates to bulk_ops)."""
+    from app.services.call_imports.bulk_ops import select_rows_for_transcription
 
-    Centralises the "should this row be touched?" decision so both the
-    batch endpoint and the per-row endpoint apply the same rules:
-
-    * row must exist on the import,
-    * row must have an S3 recording (otherwise nothing to transcribe),
-    * if ``only_missing`` is set and ``overwrite_existing`` is not, rows
-      with a non-empty ``diarised_transcript`` are skipped (the
-      production ``transcript`` is intentionally ignored here — it
-      lives in a separate column and is never overwritten by this
-      worker).
-
-    Returns the list of rows to enqueue plus a per-reason skip count
-    that the response can surface so the user knows why a "no-op"
-    happened.
-    """
-
-    query = db.query(CallImportRow).filter(
-        CallImportRow.call_import_id == call_import.id
-    )
-    if requested_row_ids:
-        query = query.filter(CallImportRow.id.in_(requested_row_ids))
-    rows = query.order_by(CallImportRow.row_index.asc()).all()
-
-    if requested_row_ids:
-        found_ids = {r.id for r in rows}
-        missing = [rid for rid in requested_row_ids if rid not in found_ids]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Some row ids were not found on this import: "
-                    f"{[str(m) for m in missing]}"
-                ),
-            )
-
-    selected: List[CallImportRow] = []
-    skip_counts: Dict[str, int] = {}
-
-    for row in rows:
-        recording = (row.recording_s3_key or "").strip()
-        if not recording:
-            skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
-            continue
-        existing = (row.diarised_transcript or "").strip()
-        if existing and payload.only_missing and not payload.overwrite_existing:
-            skip_counts["transcript_present"] = (
-                skip_counts.get("transcript_present", 0) + 1
-            )
-            continue
-        selected.append(row)
-
-    return selected, skip_counts
+    try:
+        return select_rows_for_transcription(
+            db, call_import, payload, requested_row_ids=requested_row_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post(
@@ -3127,63 +3052,20 @@ async def transcribe_call_import(
             detail="Call import not found",
         )
 
-    rows, skip_counts = _select_rows_for_transcription(
-        db, call_import, payload, requested_row_ids=payload.row_ids
+    from app.workers.tasks.call_import_bulk_ops import bulk_diarize_call_import_task
+
+    bulk_diarize_call_import_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        payload.model_dump(mode="json"),
+        [str(rid) for rid in payload.row_ids] if payload.row_ids else None,
     )
-
-    # Mark the about-to-be-enqueued rows as ``pending`` so the UI can
-    # show a "Queued for diarisation" badge immediately, even before
-    # the worker picks the row up. The worker flips it to ``running``
-    # on entry.
-    for row in rows:
-        row.diarised_transcript_status = "pending"
-        row.diarised_transcript_error = None
-        row.celery_task_id = None
-    db.commit()
-
-    if not rows:
-        return CallImportTranscribeResponse(
-            queued=0,
-            skipped_rows=sum(skip_counts.values()),
-            skipped_reason_counts=skip_counts,
-        )
-
-    from app.workers.concurrency import (
-        build_diarization_params_from_request,
-        schedule_fair_diarization_dispatch,
-        store_row_diarization_params,
-    )
-    from app.workers.concurrency.diarization_dispatch import _REDIS_PARAMS_STORE_ERROR
-
-    diarization_params = build_diarization_params_from_request(
-        stt_provider=payload.stt_provider,
-        stt_model=payload.stt_model,
-        credential_id=payload.credential_id,
-        language=payload.language,
-        overwrite_existing=payload.overwrite_existing,
-        diarization_llm_provider=payload.diarization_llm_provider,
-        diarization_llm_model=payload.diarization_llm_model,
-        diarization_llm_credential_id=payload.diarization_llm_credential_id,
-        diarization_prompt=payload.diarization_prompt,
-        mode=payload.mode,
-    )
-    queued = 0
-    for row in rows:
-        if store_row_diarization_params(row.id, diarization_params):
-            queued += 1
-        else:
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
-    if queued < len(rows):
-        db.commit()
-
-    if queued > 0:
-        schedule_fair_diarization_dispatch(max_workspace_turns=999)
 
     return CallImportTranscribeResponse(
-        queued=queued,
-        skipped_rows=sum(skip_counts.values()),
-        skipped_reason_counts=skip_counts,
+        queued=0,
+        skipped_rows=0,
+        skipped_reason_counts={},
+        accepted=True,
     )
 
 
@@ -3224,58 +3106,25 @@ async def transcribe_call_import_row(
             detail="Call import not found",
         )
 
-    rows, skip_counts = _select_rows_for_transcription(
-        db, call_import, payload, requested_row_ids=[row_id]
-    )
+    from app.services.call_imports.bulk_ops import execute_bulk_diarization
 
-    for row in rows:
-        row.diarised_transcript_status = "pending"
-        row.diarised_transcript_error = None
-        row.celery_task_id = None
-    db.commit()
-
-    if not rows:
-        return CallImportTranscribeResponse(
-            queued=0,
-            skipped_rows=sum(skip_counts.values()),
-            skipped_reason_counts=skip_counts,
+    try:
+        result = execute_bulk_diarization(
+            db,
+            call_import,
+            payload,
+            requested_row_ids=[row_id],
         )
-
-    from app.workers.concurrency import (
-        build_diarization_params_from_request,
-        schedule_fair_diarization_dispatch,
-        store_row_diarization_params,
-    )
-    from app.workers.concurrency.diarization_dispatch import _REDIS_PARAMS_STORE_ERROR
-
-    target = rows[0]
-    diarization_params = build_diarization_params_from_request(
-        stt_provider=payload.stt_provider,
-        stt_model=payload.stt_model,
-        credential_id=payload.credential_id,
-        language=payload.language,
-        overwrite_existing=payload.overwrite_existing,
-        diarization_llm_provider=payload.diarization_llm_provider,
-        diarization_llm_model=payload.diarization_llm_model,
-        diarization_llm_credential_id=payload.diarization_llm_credential_id,
-        diarization_prompt=payload.diarization_prompt,
-        mode=payload.mode,
-    )
-    queued = 0
-    if store_row_diarization_params(target.id, diarization_params):
-        queued = 1
-    else:
-        target.diarised_transcript_status = "failed"
-        target.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
-        db.commit()
-
-    if queued > 0:
-        schedule_fair_diarization_dispatch(max_workspace_turns=999)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
     return CallImportTranscribeResponse(
-        queued=queued,
-        skipped_rows=sum(skip_counts.values()),
-        skipped_reason_counts=skip_counts,
+        queued=result.queued,
+        skipped_rows=result.skipped_rows,
+        skipped_reason_counts=result.skipped_reason_counts,
     )
 
 

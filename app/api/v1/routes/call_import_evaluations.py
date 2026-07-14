@@ -600,7 +600,6 @@ def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> 
 async def create_call_import_evaluation(
     call_import_id: UUID,
     payload: CallImportEvaluationCreate,
-    background_tasks: BackgroundTasks,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -921,15 +920,9 @@ async def create_call_import_evaluation(
         else None
     ) or None
 
-    completed_rows = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.call_import_id == call_import.id,
-            CallImportRow.status == CallImportRowStatus.COMPLETED,
-        )
-        .order_by(CallImportRow.row_index.asc())
-        .all()
-    )
+    from app.services.call_imports.bulk_ops import count_completed_source_rows
+
+    completed_row_count = count_completed_source_rows(db, call_import.id)
 
     # Every evaluation run scores the diarised transcript. The
     # ``transcript_sources`` field on the schema has already been
@@ -946,9 +939,6 @@ async def create_call_import_evaluation(
         return base_name
 
     created_evaluations: List[CallImportEvaluation] = []
-    eval_row_buckets: Dict[
-        UUID, List[Tuple[CallImportEvaluationRow, CallImportRow]]
-    ] = {}
 
     for source in requested_sources:
         evaluation = CallImportEvaluation(
@@ -963,7 +953,7 @@ async def create_call_import_evaluation(
             ],
             selected_metric_groups=selected_metric_groups or None,
             status="pending",
-            total_rows=len(completed_rows),
+            total_rows=completed_row_count,
             completed_rows=0,
             failed_rows=0,
             llm_provider=llm_provider_norm,
@@ -992,18 +982,6 @@ async def create_call_import_evaluation(
         db.flush()
         created_evaluations.append(evaluation)
 
-        bucket: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-        for source_row in completed_rows:
-            eval_row = CallImportEvaluationRow(
-                evaluation_id=evaluation.id,
-                call_import_row_id=source_row.id,
-                status="pending",
-                metric_scores={},
-            )
-            db.add(eval_row)
-            bucket.append((eval_row, source_row))
-        eval_row_buckets[evaluation.id] = bucket
-
     db.commit()
     for evaluation in created_evaluations:
         db.refresh(evaluation)
@@ -1011,7 +989,7 @@ async def create_call_import_evaluation(
     primary_evaluation = created_evaluations[0]
     sibling_ids = [e.id for e in created_evaluations[1:]]
 
-    if not completed_rows:
+    if not completed_row_count:
         for evaluation in created_evaluations:
             evaluation.status = "completed"
         db.commit()
@@ -1021,31 +999,19 @@ async def create_call_import_evaluation(
             db, primary_evaluation, sibling_evaluation_ids=sibling_ids
         )
 
-    # Throttled dispatch: one Celery message per evaluation parent instead
-    # of fanning out thousands of row tasks immediately.
-    try:
-        for evaluation in created_evaluations:
-            bucket = eval_row_buckets[evaluation.id]
-            _enqueue_eval_rows_with_optional_transcribe(
-                db,
-                evaluation,
-                bucket,
-                transcribe_overwrite=payload.transcribe_overwrite,
-            )
-            evaluation.status = "running"
-    except Exception as exc:  # noqa: BLE001 — surface but don't 500
-        logger.exception(
-            "Failed to enqueue evaluation(s) for call import {}",
-            call_import.id,
+    from app.workers.tasks.call_import_bulk_ops import (
+        materialize_call_import_evaluation_task,
+    )
+
+    for evaluation in created_evaluations:
+        materialize_call_import_evaluation_task.delay(
+            str(evaluation.id),
+            transcribe_overwrite=payload.transcribe_overwrite,
         )
-        for evaluation in created_evaluations:
-            evaluation.status = "failed"
-            evaluation.error_message = (
-                f"Failed to enqueue evaluation: {exc}"
-            )
-    db.commit()
+
     for evaluation in created_evaluations:
         db.refresh(evaluation)
+
     return _serialize_eval(
         db, primary_evaluation, sibling_evaluation_ids=sibling_ids
     )

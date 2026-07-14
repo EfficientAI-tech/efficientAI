@@ -112,6 +112,9 @@ celery_app.conf.update(
 # recording fetch for other workspaces.
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
+    "bulk_diarize_call_import": {"queue": "imports"},
+    "bulk_delete_call_import_rows": {"queue": "imports"},
+    "materialize_call_import_evaluation": {"queue": "imports"},
     "evaluate_call_import_row": {"queue": "evaluations"},
     "evaluate_call_import_row_audio": {"queue": "audio-metrics"},
     "transcribe_call_import_row": {"queue": "diarization"},

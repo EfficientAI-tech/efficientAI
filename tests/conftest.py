@@ -346,6 +346,69 @@ def client(db_session, api_key, org_id):
     fake_workers_tasks_pkg.transcribe_call_import_row_task = _FakePromptOptTask()
     fake_workers_tasks_pkg.run_judge_alignment_task = _FakePromptOptTask()
 
+    class _FakeCeleryApp:
+        """Minimal Celery stand-in for route / worker imports in API tests."""
+
+        control = types.SimpleNamespace(revoke=lambda *_args, **_kwargs: None)
+
+        def task(self, *_args, **_kwargs):
+            def _decorator(fn):
+                fn.delay = lambda *_a, **_kw: types.SimpleNamespace(id="fake-task")
+                fn.apply_async = lambda *_a, **_kw: types.SimpleNamespace(
+                    id="fake-task"
+                )
+                fn.run = fn
+                return fn
+
+            return _decorator
+
+    fake_config_module = types.ModuleType("app.workers.config")
+    fake_config_module.celery_app = _FakeCeleryApp()
+    sys.modules["app.workers.config"] = fake_config_module
+
+    fake_celery_app_module = types.ModuleType("app.workers.celery_app")
+    fake_celery_app_module.celery_app = fake_config_module.celery_app
+    fake_celery_app_module.process_evaluation_task = _FakePromptOptTask()
+    fake_celery_app_module.process_evaluator_result_task = _FakePromptOptTask()
+    fake_celery_app_module.run_evaluator_task = _FakePromptOptTask()
+    fake_celery_app_module.generate_tts_comparison_task = _FakePromptOptTask()
+    fake_celery_app_module.evaluate_tts_comparison_task = _FakePromptOptTask()
+    fake_celery_app_module.generate_tts_report_pdf_task = _FakePromptOptTask()
+    fake_celery_app_module.run_prompt_optimization_task = _FakePromptOptTask()
+    fake_celery_app_module.process_call_import_row_task = _FakePromptOptTask()
+    fake_celery_app_module.run_judge_alignment_task = _FakePromptOptTask()
+    sys.modules["app.workers.celery_app"] = fake_celery_app_module
+
+    # Bulk call-import tasks: materialize runs synchronously in API tests;
+    # diarize/delete are no-ops (return immediately).
+    fake_bulk_ops_module = sys.modules.get("app.workers.tasks.call_import_bulk_ops")
+    if fake_bulk_ops_module is None:
+        fake_bulk_ops_module = types.ModuleType("app.workers.tasks.call_import_bulk_ops")
+        sys.modules["app.workers.tasks.call_import_bulk_ops"] = fake_bulk_ops_module
+
+    def _sync_materialize_delay(evaluation_id, *, transcribe_overwrite=False):
+        from uuid import UUID
+
+        from app.services.call_imports.bulk_ops import materialize_and_enqueue_evaluation
+
+        materialize_and_enqueue_evaluation(
+            db_session,
+            UUID(evaluation_id),
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        return types.SimpleNamespace(id="fake-sync-bulk-task")
+
+    class _NoopBulkTask:
+        @staticmethod
+        def delay(*_args, **_kwargs):
+            return types.SimpleNamespace(id="fake-sync-bulk-task")
+
+    fake_bulk_ops_module.materialize_call_import_evaluation_task = types.SimpleNamespace(
+        delay=_sync_materialize_delay
+    )
+    fake_bulk_ops_module.bulk_diarize_call_import_task = _NoopBulkTask()
+    fake_bulk_ops_module.bulk_delete_call_import_rows_task = _NoopBulkTask()
+
     from app.database import get_db
     from app.dependencies import (
         get_api_key,

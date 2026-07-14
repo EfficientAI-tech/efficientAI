@@ -3427,6 +3427,13 @@ class CallImportRowBulkDeleteResponse(BaseModel):
         ...,
         description="How many rows were actually removed (unknown ids are skipped).",
     )
+    status: Literal["completed", "accepted"] = Field(
+        default="completed",
+        description=(
+            "``accepted`` when deletion was queued to run asynchronously; "
+            "``completed`` when rows were removed before the response."
+        ),
+    )
 
 
 class CallImportRetryFailedRowsRequest(BaseModel):
@@ -3693,6 +3700,13 @@ class CallImportTranscribeResponse(BaseModel):
     skipped_reason_counts: Dict[str, int] = Field(
         default_factory=dict,
         description="Per-reason breakdown of skipped rows for the UI to surface.",
+    )
+    accepted: bool = Field(
+        default=False,
+        description=(
+            "When true, diarization setup was queued to a background worker "
+            "and ``queued`` reflects zero until the worker finishes enqueue."
+        ),
     )
 
 

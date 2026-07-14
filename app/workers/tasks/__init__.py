@@ -19,6 +19,7 @@ from . import generate_evaluation_tldr_insights
 from . import generate_evaluation_metric_clusters
 from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
+from . import call_import_bulk_ops
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch
@@ -46,6 +47,9 @@ __all__ = [
     "dispatch_evaluation_rows_task",
     "dispatch_fair_eval_rows_task",
     "dispatch_fair_diarization_rows_task",
+    "bulk_diarize_call_import_task",
+    "bulk_delete_call_import_rows_task",
+    "materialize_call_import_evaluation_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -84,4 +88,11 @@ dispatch_evaluation_rows_task = eval_dispatch.dispatch_evaluation_rows_task
 dispatch_fair_eval_rows_task = fair_dispatch.dispatch_fair_eval_rows_task
 dispatch_fair_diarization_rows_task = (
     fair_diarization_dispatch.dispatch_fair_diarization_rows_task
+)
+bulk_diarize_call_import_task = call_import_bulk_ops.bulk_diarize_call_import_task
+bulk_delete_call_import_rows_task = (
+    call_import_bulk_ops.bulk_delete_call_import_rows_task
+)
+materialize_call_import_evaluation_task = (
+    call_import_bulk_ops.materialize_call_import_evaluation_task
 )

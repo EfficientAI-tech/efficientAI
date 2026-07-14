@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Literal, Optional, TypedDict
+from typing import List, Literal, Optional, TypedDict
 from uuid import UUID
 
 import redis
@@ -65,21 +65,55 @@ def store_row_diarization_params(
 
     Returns ``True`` when params were stored, ``False`` on Redis failure.
     """
-    key = _pending_params_key(row_id)
+    stored, failed = store_row_diarization_params_batch([row_id], params)
+    row_uuid = row_id if isinstance(row_id, UUID) else UUID(str(row_id))
+    return row_uuid in stored and row_uuid not in failed
+
+
+def store_row_diarization_params_batch(
+    row_ids: List[UUID | str],
+    params: DiarizationRowParams,
+) -> tuple[List[UUID], List[UUID]]:
+    """Persist diarization params for many rows via a Redis pipeline.
+
+    Returns ``(stored_row_ids, failed_row_ids)``.
+    """
+    if not row_ids:
+        return [], []
+
+    payload = json.dumps(params)
+    client = _get_redis()
+    stored: List[UUID] = []
+    failed: List[UUID] = []
+
     try:
-        _get_redis().setex(
-            key,
-            _PENDING_PARAMS_TTL_SECONDS,
-            json.dumps(params),
-        )
-        return True
+        pipe = client.pipeline(transaction=False)
+        keys: List[str] = []
+        ids: List[UUID] = []
+        for raw_id in row_ids:
+            row_uuid = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+            keys.append(_pending_params_key(row_uuid))
+            ids.append(row_uuid)
+        for key in keys:
+            pipe.setex(key, _PENDING_PARAMS_TTL_SECONDS, payload)
+        results = pipe.execute()
+        for row_uuid, ok in zip(ids, results):
+            if ok:
+                stored.append(row_uuid)
+            else:
+                failed.append(row_uuid)
     except redis.RedisError as exc:
         logger.warning(
-            "Failed to store diarization params for row {}: {}",
-            row_id,
+            "Failed to store diarization params batch ({} rows): {}",
+            len(row_ids),
             exc,
         )
-        return False
+        failed = [
+            raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+            for raw_id in row_ids
+        ]
+
+    return stored, failed
 
 
 def get_row_diarization_params(row_id: UUID | str) -> Optional[DiarizationRowParams]:
