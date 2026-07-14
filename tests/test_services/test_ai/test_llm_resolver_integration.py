@@ -5,12 +5,22 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.models.database import Integration
+from app.models.database import Integration, Organization
 from app.models.enums import IntegrationPlatform, ModelProvider
 from app.services.ai import llm_resolver
 
 
+def _ensure_org(db_session, org_id):
+    org = db_session.query(Organization).filter(Organization.id == org_id).first()
+    if org is None:
+        org = Organization(id=org_id, name="Test Org")
+        db_session.add(org)
+        db_session.flush()
+    return org
+
+
 def _seed_sarvam_integration(db_session, org_id, *, is_default: bool = True):
+    _ensure_org(db_session, org_id)
     row = Integration(
         id=uuid4(),
         organization_id=org_id,
