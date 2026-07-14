@@ -204,4 +204,5 @@ judge_alignment:
 #   eval_job_inflight_limit: 75
 #   eval_fair_dispatch_batch_size: 75
 #   diarization_fair_dispatch_batch_size: 75
+#   import_fair_dispatch_batch_size: 75
 

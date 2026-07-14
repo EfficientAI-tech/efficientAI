@@ -23,6 +23,7 @@ from . import call_import_bulk_ops
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch
+from app.workers.concurrency import fair_import_dispatch
 
 __all__ = [
     "celery_app",
@@ -47,8 +48,11 @@ __all__ = [
     "dispatch_evaluation_rows_task",
     "dispatch_fair_eval_rows_task",
     "dispatch_fair_diarization_rows_task",
+    "dispatch_fair_import_rows_task",
     "bulk_diarize_call_import_task",
     "bulk_delete_call_import_rows_task",
+    "materialize_call_import_rows_task",
+    "delete_call_import_task",
     "materialize_call_import_evaluation_task",
 ]
 
@@ -89,10 +93,17 @@ dispatch_fair_eval_rows_task = fair_dispatch.dispatch_fair_eval_rows_task
 dispatch_fair_diarization_rows_task = (
     fair_diarization_dispatch.dispatch_fair_diarization_rows_task
 )
+dispatch_fair_import_rows_task = (
+    fair_import_dispatch.dispatch_fair_import_rows_task
+)
 bulk_diarize_call_import_task = call_import_bulk_ops.bulk_diarize_call_import_task
 bulk_delete_call_import_rows_task = (
     call_import_bulk_ops.bulk_delete_call_import_rows_task
 )
+materialize_call_import_rows_task = (
+    call_import_bulk_ops.materialize_call_import_rows_task
+)
+delete_call_import_task = call_import_bulk_ops.delete_call_import_task
 materialize_call_import_evaluation_task = (
     call_import_bulk_ops.materialize_call_import_evaluation_task
 )

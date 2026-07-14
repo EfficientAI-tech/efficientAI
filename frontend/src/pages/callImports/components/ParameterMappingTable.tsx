@@ -230,6 +230,13 @@ export default function ParameterMappingTable({
     () => new Set(Object.values(state.parameterMapping).filter((v) => v)),
     [state.parameterMapping],
   )
+  const unmappedHeaders = useMemo(
+    () => headers.filter((h) => !mappedHeaders.has(h)),
+    [headers, mappedHeaders],
+  )
+  const allUnmappedSkipped =
+    unmappedHeaders.length > 0 &&
+    unmappedHeaders.every((h) => !!state.skipped[h])
 
   const setParameterHeader = (paramName: string, header: string) => {
     onChange({
@@ -249,6 +256,16 @@ export default function ParameterMappingTable({
     onChange({
       ...state,
       skipped: { ...state.skipped, [header]: skipped },
+    })
+  }
+
+  const setAllUnmappedSkipped = (skipped: boolean) => {
+    onChange({
+      ...state,
+      skipped: {
+        ...state.skipped,
+        ...Object.fromEntries(unmappedHeaders.map((h) => [h, skipped])),
+      },
     })
   }
 
@@ -326,18 +343,26 @@ export default function ParameterMappingTable({
       </div>
 
       <div className="border border-gray-200 rounded-lg overflow-hidden">
-        <div className="bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 border-b border-gray-200">
-          Unmapped source columns
+        <div className="flex items-center justify-between bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 border-b border-gray-200">
+          <span>Unmapped source columns</span>
+          {unmappedHeaders.length > 0 && (
+            <button
+              type="button"
+              className="text-[11px] text-primary-600 hover:text-primary-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => setAllUnmappedSkipped(!allUnmappedSkipped)}
+              disabled={disabled}
+            >
+              {allUnmappedSkipped ? 'Clear all' : 'Select all'}
+            </button>
+          )}
         </div>
         <div className="max-h-[240px] overflow-y-auto divide-y divide-gray-100">
-          {headers.filter((h) => !mappedHeaders.has(h)).length === 0 ? (
+          {unmappedHeaders.length === 0 ? (
             <p className="px-3 py-3 text-xs text-gray-500">
               Every source column has been mapped to a parameter.
             </p>
           ) : (
-            headers
-              .filter((h) => !mappedHeaders.has(h))
-              .map((header) => {
+            unmappedHeaders.map((header) => {
                 const isSkipped = !!state.skipped[header]
                 return (
                   <label

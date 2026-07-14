@@ -406,8 +406,26 @@ def client(db_session, api_key, org_id):
     fake_bulk_ops_module.materialize_call_import_evaluation_task = types.SimpleNamespace(
         delay=_sync_materialize_delay
     )
+
+    def _sync_import_materialize_delay(call_import_id, organization_id, workspace_id):
+        from uuid import UUID
+
+        from app.services.call_imports.bulk_ops import execute_call_import_materialization
+
+        execute_call_import_materialization(
+            db_session,
+            UUID(call_import_id),
+            UUID(organization_id),
+            UUID(workspace_id),
+        )
+        return types.SimpleNamespace(id="fake-sync-bulk-task")
+
+    fake_bulk_ops_module.materialize_call_import_rows_task = types.SimpleNamespace(
+        delay=_sync_import_materialize_delay
+    )
     fake_bulk_ops_module.bulk_diarize_call_import_task = _NoopBulkTask()
     fake_bulk_ops_module.bulk_delete_call_import_rows_task = _NoopBulkTask()
+    fake_bulk_ops_module.delete_call_import_task = _NoopBulkTask()
 
     from app.database import get_db
     from app.dependencies import (

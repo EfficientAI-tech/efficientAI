@@ -13,6 +13,8 @@ from app.models.schemas import CallImportTranscribeRequest
 from app.services.call_imports.bulk_ops import (
     execute_bulk_diarization,
     execute_bulk_row_delete,
+    execute_call_import_delete,
+    execute_call_import_materialization,
     materialize_and_enqueue_evaluation,
 )
 from app.workers.config import celery_app
@@ -86,6 +88,46 @@ def materialize_call_import_evaluation_task(
             transcribe_overwrite=transcribe_overwrite,
         )
         return {"evaluation_id": evaluation_id, "status": "materialized"}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="materialize_call_import_rows", bind=True, max_retries=1)
+def materialize_call_import_rows_task(
+    self,
+    call_import_id: str,
+    organization_id: str,
+    workspace_id: str,
+) -> dict:
+    """Parse staged source file and bulk-insert rows off the API thread."""
+    del self
+    db = SessionLocal()
+    try:
+        return execute_call_import_materialization(
+            db,
+            UUID(call_import_id),
+            UUID(organization_id),
+            UUID(workspace_id),
+        )
+    finally:
+        db.close()
+
+
+@celery_app.task(name="delete_call_import", bind=True, max_retries=1)
+def delete_call_import_task(
+    self,
+    call_import_id: str,
+    organization_id: str,
+) -> dict:
+    """Delete a call-import batch and all associated storage off the API thread."""
+    del self
+    db = SessionLocal()
+    try:
+        return execute_call_import_delete(
+            db,
+            UUID(call_import_id),
+            UUID(organization_id),
+        )
     finally:
         db.close()
 

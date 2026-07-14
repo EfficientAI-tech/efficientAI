@@ -1600,8 +1600,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteCallImport(id: string): Promise<void> {
-    await this.client.delete(`/api/v1/call-imports/${id}`)
+  async deleteCallImport(
+    id: string,
+  ): Promise<{ id: string; status: 'accepted' | 'completed' }> {
+    const response = await this.client.delete(`/api/v1/call-imports/${id}`)
+    return response.data
   }
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {

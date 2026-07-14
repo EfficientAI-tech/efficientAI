@@ -31,12 +31,53 @@ from typing import Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy.orm.exc import StaleDataError
 
 from app.database import SessionLocal
 from app.workers.config import celery_app
 
 
 _RETRYABLE_COUNTDOWN_SECONDS = 60
+
+
+def _safe_commit(
+    db,
+    *,
+    row_id: Optional[str] = None,
+    context: str = "update",
+) -> bool:
+    """Commit pending ORM changes; return False when the row/import was deleted."""
+    try:
+        db.commit()
+        return True
+    except StaleDataError:
+        db.rollback()
+        logger.info(
+            "CallImportRow {} already deleted during {} — skipping in-flight update",
+            row_id or "?",
+            context,
+        )
+        return False
+
+
+def _row_or_import_gone(db, row_id: UUID) -> Optional[str]:
+    """Return a skip reason when the row or its parent import no longer exists."""
+    from app.models.database import CallImport, CallImportRow
+    from app.models.enums import CallImportStatus
+
+    db.expire_all()
+    hit = (
+        db.query(CallImportRow.id, CallImport.status)
+        .join(CallImport, CallImportRow.call_import_id == CallImport.id)
+        .filter(CallImportRow.id == row_id)
+        .first()
+    )
+    if hit is None:
+        return "row_deleted"
+    _row_pk, import_status = hit
+    if import_status == CallImportStatus.DELETING:
+        return "import_deleting"
+    return None
 
 
 def _use_credentialed_recording_download(call_import, client) -> bool:
@@ -102,6 +143,9 @@ def _rollup_parent_status(db, call_import) -> None:
     call_import.completed_rows = completed
     call_import.failed_rows = failed
 
+    if call_import.status == CallImportStatus.DELETING:
+        return
+
     if pending_or_processing > 0:
         call_import.status = CallImportStatus.PROCESSING
     elif failed == 0:
@@ -113,7 +157,11 @@ def _rollup_parent_status(db, call_import) -> None:
 
 
 @celery_app.task(name="process_call_import_row", bind=True, max_retries=3)
-def process_call_import_row_task(self, row_id: str):
+def process_call_import_row_task(
+    self,
+    row_id: str,
+    _eval_slot_task_id: Optional[str] = None,
+):
     """Fetch one call recording from the provider and store it in S3.
 
     Retries on transient errors (network blips, 5xx); marks the row failed
@@ -140,6 +188,7 @@ def process_call_import_row_task(self, row_id: str):
         ExotelRecordingTooLargeError,
     )
 
+    slot_task_id = _eval_slot_task_id or self.request.id
     db = SessionLocal()
     try:
         row_uuid = UUID(row_id)
@@ -150,6 +199,16 @@ def process_call_import_row_task(self, row_id: str):
 
         call_import = row.call_import
 
+        from app.models.enums import CallImportStatus
+
+        if call_import.status == CallImportStatus.DELETING:
+            logger.info(
+                "Skipping row {} — parent import {} is being deleted",
+                row_id,
+                call_import.id,
+            )
+            return {"status": "skipped", "reason": "import_deleting"}
+
         if row.status == CallImportRowStatus.COMPLETED:
             return {"status": "already_completed", "row_id": row_id}
 
@@ -157,7 +216,8 @@ def process_call_import_row_task(self, row_id: str):
         row.attempts = (row.attempts or 0) + 1
         row.celery_task_id = self.request.id
         row.error_message = None
-        db.commit()
+        if not _safe_commit(db, row_id=row_id, context="mark_processing"):
+            return {"status": "skipped", "reason": "row_deleted"}
 
         from app.services.telephony.recording_download import download_public_recording
 
@@ -179,9 +239,11 @@ def process_call_import_row_task(self, row_id: str):
                 logger.exception("Failed to build provider client for row {}", row_id)
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = f"Provider client error: {exc}"
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="provider_client_error"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_status(db, call_import)
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="rollup_provider_client_error"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "provider_client_error"}
 
         original_csv_url = (row.recording_url or "").strip() or None
@@ -210,9 +272,11 @@ def process_call_import_row_task(self, row_id: str):
                 logger.warning("{} (row {})", msg, row_id)
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = msg
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="direct_url_no_source"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_status(db, call_import)
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="rollup_direct_url_no_source"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "no_recording_source"}
 
             try:
@@ -246,7 +310,8 @@ def process_call_import_row_task(self, row_id: str):
                 if direct_was_transient:
                     row.status = CallImportRowStatus.PENDING
                     row.error_message = f"Transient: {direct_failure}"
-                    db.commit()
+                    if not _safe_commit(db, row_id=row_id, context="direct_url_transient"):
+                        return {"status": "skipped", "reason": "row_deleted"}
                     raise self.retry(
                         exc=direct_failure, countdown=_RETRYABLE_COUNTDOWN_SECONDS
                     )
@@ -256,9 +321,11 @@ def process_call_import_row_task(self, row_id: str):
                     if direct_failure is not None
                     else "Recording fetch failed"
                 )
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="direct_url_failed"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_status(db, call_import)
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="rollup_direct_url_failed"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "non_retryable_provider_error"}
 
             # Fall through to the shared S3 upload success path below.
@@ -363,9 +430,11 @@ def process_call_import_row_task(self, row_id: str):
                     logger.warning("{} (row {})", msg, row_id)
                     row.status = CallImportRowStatus.FAILED
                     row.error_message = msg
-                    db.commit()
+                    if not _safe_commit(db, row_id=row_id, context="no_recording_source"):
+                        return {"status": "skipped", "reason": "row_deleted"}
                     _rollup_parent_status(db, call_import)
-                    db.commit()
+                    if not _safe_commit(db, row_id=row_id, context="rollup_no_recording_source"):
+                        return {"status": "skipped", "reason": "row_deleted"}
                     return {"status": "failed", "reason": "no_recording_source"}
 
                 if primary_was_transient or fallback_was_transient:
@@ -374,7 +443,8 @@ def process_call_import_row_task(self, row_id: str):
                     )
                     row.status = CallImportRowStatus.PENDING
                     row.error_message = f"Transient: {exc_to_raise}"
-                    db.commit()
+                    if not _safe_commit(db, row_id=row_id, context="transient_retry"):
+                        return {"status": "skipped", "reason": "row_deleted"}
                     raise self.retry(
                         exc=exc_to_raise, countdown=_RETRYABLE_COUNTDOWN_SECONDS
                     )
@@ -387,9 +457,11 @@ def process_call_import_row_task(self, row_id: str):
                 err_msg = "; ".join(parts) if parts else "Recording fetch failed"
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = err_msg
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="non_retryable_provider_error"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 _rollup_parent_status(db, call_import)
-                db.commit()
+                if not _safe_commit(db, row_id=row_id, context="rollup_non_retryable_provider_error"):
+                    return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "non_retryable_provider_error"}
 
         # ------------------------------------------------------------------
@@ -402,7 +474,8 @@ def process_call_import_row_task(self, row_id: str):
         # ------------------------------------------------------------------
         if not original_csv_url and used_url:
             row.recording_url = used_url
-            db.commit()
+            if not _safe_commit(db, row_id=row_id, context="persist_resolved_url"):
+                return {"status": "skipped", "reason": "row_deleted"}
 
         if not s3_service.is_enabled():
             err = (
@@ -412,9 +485,11 @@ def process_call_import_row_task(self, row_id: str):
             logger.error("Cloud blob storage unavailable for row {}: {}", row_id, err)
             row.status = CallImportRowStatus.FAILED
             row.error_message = f"Cloud blob storage unavailable: {err}"
-            db.commit()
+            if not _safe_commit(db, row_id=row_id, context="s3_unavailable"):
+                return {"status": "skipped", "reason": "row_deleted"}
             _rollup_parent_status(db, call_import)
-            db.commit()
+            if not _safe_commit(db, row_id=row_id, context="rollup_s3_unavailable"):
+                return {"status": "skipped", "reason": "row_deleted"}
             return {"status": "failed", "reason": "s3_unavailable"}
 
         ext = _extension_for_content_type(content_type or "")
@@ -430,18 +505,31 @@ def process_call_import_row_task(self, row_id: str):
             logger.exception("Failed to upload recording to S3 for row {}", row_id)
             row.error_message = f"S3 upload failed: {exc}"
             row.status = CallImportRowStatus.PENDING
-            db.commit()
+            if not _safe_commit(db, row_id=row_id, context="s3_upload_retry"):
+                return {"status": "skipped", "reason": "row_deleted"}
             raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
+
+        skip_reason = _row_or_import_gone(db, row_uuid)
+        if skip_reason:
+            db.rollback()
+            logger.info(
+                "Skipping row {} finalize — {}",
+                row_id,
+                skip_reason,
+            )
+            return {"status": "skipped", "reason": skip_reason}
 
         row.recording_s3_key = key
         row.recording_content_type = content_type
         row.recording_size_bytes = len(audio_bytes)
         row.status = CallImportRowStatus.COMPLETED
         row.error_message = None
-        db.commit()
+        if not _safe_commit(db, row_id=row_id, context="mark_completed"):
+            return {"status": "skipped", "reason": "row_deleted"}
 
         _rollup_parent_status(db, call_import)
-        db.commit()
+        if not _safe_commit(db, row_id=row_id, context="rollup_completed"):
+            return {"status": "skipped", "reason": "row_deleted"}
 
         return {
             "status": "completed",
@@ -449,5 +537,20 @@ def process_call_import_row_task(self, row_id: str):
             "s3_key": key,
             "size_bytes": len(audio_bytes),
         }
+    except StaleDataError:
+        db.rollback()
+        logger.info(
+            "CallImportRow {} already deleted during processing — skipping",
+            row_id,
+        )
+        return {"status": "skipped", "reason": "row_deleted"}
     finally:
         db.close()
+        from app.workers.concurrency.limits import slot_registered_for_task
+
+        if slot_registered_for_task(slot_task_id):
+            from app.workers.concurrency.fair_import_dispatch import (
+                finish_import_work_and_redispatch,
+            )
+
+            finish_import_work_and_redispatch(slot_task_id)

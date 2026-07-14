@@ -7,7 +7,7 @@ blob/Redis/DB operations suitable for multi-thousand row imports.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from loguru import logger
@@ -23,6 +23,7 @@ from app.models.database import (
 from app.models.schemas import CallImportTranscribeRequest
 
 _BULK_INSERT_CHUNK = 1000
+_REVOKE_TASK_BATCH = 500
 
 _ROW_TRANSCRIBE_COLUMNS = (
     CallImportRow.id,
@@ -342,3 +343,319 @@ def execute_bulk_row_delete(
         organization_id,
     )
     return int(deleted or 0)
+
+
+def _revoke_call_import_task_ids(db: Session, call_import_id: UUID) -> int:
+    """Revoke in-flight Celery tasks for an import without loading full rows."""
+    task_id_rows = [
+        task_id
+        for (task_id,) in (
+            db.query(CallImportRow.celery_task_id)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.celery_task_id.isnot(None),
+                CallImportRow.status.in_(
+                    (CallImportRowStatus.PENDING, CallImportRowStatus.PROCESSING)
+                ),
+            )
+            .all()
+        )
+        if task_id
+    ]
+    if not task_id_rows:
+        return 0
+
+    try:
+        from app.workers.celery_app import celery_app
+
+        revoked = 0
+        for start in range(0, len(task_id_rows), _REVOKE_TASK_BATCH):
+            chunk = task_id_rows[start : start + _REVOKE_TASK_BATCH]
+            celery_app.control.revoke(chunk, terminate=False)
+            revoked += len(chunk)
+        logger.info(
+            "Revoked {} pending call-import tasks for import {}",
+            revoked,
+            call_import_id,
+        )
+        return revoked
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to revoke pending call-import tasks for {}: {}",
+            call_import_id,
+            exc,
+        )
+        return 0
+
+
+def execute_call_import_delete(
+    db: Session,
+    call_import_id: UUID,
+    organization_id: UUID,
+) -> dict:
+    """Tear down a call-import batch, its rows, and S3 artefacts off the API thread."""
+    from app.models.enums import CallImportStatus
+    from app.services.storage.s3_service import s3_service
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if call_import is None:
+        logger.info(
+            "execute_call_import_delete: import {} already removed",
+            call_import_id,
+        )
+        return {"status": "completed", "deleted_rows": 0}
+
+    total_rows = int(call_import.total_rows or 0)
+    _revoke_call_import_task_ids(db, call_import_id)
+
+    deleted_objects = 0
+    s3_errors = 0
+    if s3_service.is_enabled():
+        sweep_prefix = (
+            f"{s3_service.prefix}organizations/{organization_id}/"
+            f"call_imports/{call_import_id}/"
+        )
+        try:
+            deleted_objects, errs = s3_service.delete_keys_by_prefix(sweep_prefix)
+            s3_errors = len(errs)
+            if errs:
+                logger.warning(
+                    "S3 prefix sweep reported {} errors for call_import {}",
+                    s3_errors,
+                    call_import_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "S3 prefix sweep failed for call_import {}: {}",
+                call_import_id,
+                exc,
+            )
+
+    try:
+        db.delete(call_import)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to delete call_import {} from database",
+            call_import_id,
+        )
+        db.rollback()
+        call_import = (
+            db.query(CallImport)
+            .filter(
+                CallImport.id == call_import_id,
+                CallImport.organization_id == organization_id,
+            )
+            .first()
+        )
+        if call_import is not None:
+            call_import.status = CallImportStatus.FAILED
+            call_import.error_message = f"Failed to delete import: {exc}"
+            db.commit()
+        return {"status": "failed", "deleted_rows": 0, "error": str(exc)}
+
+    logger.info(
+        "Deleted call_import {} (org={}, rows={}, s3_objects_deleted={}, s3_errors={})",
+        call_import_id,
+        organization_id,
+        total_rows,
+        deleted_objects,
+        s3_errors,
+    )
+    return {
+        "status": "completed",
+        "deleted_rows": total_rows,
+        "s3_objects_deleted": deleted_objects,
+        "s3_errors": s3_errors,
+    }
+
+
+def bulk_materialize_call_import_rows(
+    db: Session,
+    call_import: CallImport,
+    parsed_rows: List[Dict[str, Any]],
+    organization_id: UUID,
+) -> int:
+    """Insert import rows in chunks without per-row ORM overhead."""
+    from app.api.v1.routes.call_imports import _parse_recording_date_cell
+
+    if not parsed_rows:
+        return 0
+
+    for start in range(0, len(parsed_rows), _BULK_INSERT_CHUNK):
+        chunk = parsed_rows[start : start + _BULK_INSERT_CHUNK]
+        mappings = []
+        for offset, row in enumerate(chunk):
+            idx = start + offset
+            csv_transcript = row["transcript"]
+            mappings.append(
+                {
+                    "id": uuid4(),
+                    "call_import_id": call_import.id,
+                    "organization_id": organization_id,
+                    "row_index": idx,
+                    "conversation_id": row["conversation_id"],
+                    "recording_date": (
+                        _parse_recording_date_cell(row["recording_date"])
+                        if row.get("recording_date")
+                        else None
+                    ),
+                    "recording_url": row["recording_url"],
+                    "transcript": csv_transcript,
+                    "transcript_source": (
+                        "csv" if csv_transcript and csv_transcript.strip() else None
+                    ),
+                    "raw_columns": row["parameter_values"] or None,
+                    "status": CallImportRowStatus.PENDING,
+                }
+            )
+        db.bulk_insert_mappings(CallImportRow, mappings)
+    db.flush()
+    return len(parsed_rows)
+
+
+def execute_call_import_materialization(
+    db: Session,
+    call_import_id: UUID,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> dict:
+    """Download staged source, parse, bulk-insert rows, and start import dispatch."""
+    from app.api.v1.routes.call_imports import (
+        _clean_skipped_columns,
+        _enqueue_row_tasks,
+        _parse_source_file,
+        _resolve_schema,
+    )
+    from app.models.enums import CallImportStatus
+    from app.services.billing.flexprice_service import record_call_import_batch_created
+    from app.services.storage.s3_service import StorageError, s3_service
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if call_import is None:
+        logger.warning(
+            "execute_call_import_materialization: import {} not found",
+            call_import_id,
+        )
+        return {"total_rows": 0, "status": "not_found"}
+
+    if call_import.status != CallImportStatus.PROCESSING:
+        logger.warning(
+            "execute_call_import_materialization: import {} in unexpected status {}",
+            call_import_id,
+            call_import.status,
+        )
+        return {"total_rows": 0, "status": call_import.status.value}
+
+    existing_rows = (
+        db.query(CallImportRow.id)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .limit(1)
+        .first()
+    )
+    if existing_rows is not None:
+        logger.info(
+            "execute_call_import_materialization: import {} already has rows; scheduling dispatch",
+            call_import_id,
+        )
+        _enqueue_row_tasks(db, call_import, [])
+        return {"total_rows": call_import.total_rows, "status": "already_materialized"}
+
+    if not call_import.source_s3_key or not call_import.source_format:
+        call_import.status = CallImportStatus.FAILED
+        call_import.error_message = "Missing staged source file."
+        db.commit()
+        return {"total_rows": 0, "status": "failed"}
+
+    if not call_import.schema_id:
+        call_import.status = CallImportStatus.FAILED
+        call_import.error_message = "Missing mapped schema."
+        db.commit()
+        return {"total_rows": 0, "status": "failed"}
+
+    if not s3_service.is_enabled():
+        call_import.status = CallImportStatus.FAILED
+        call_import.error_message = (
+            s3_service.get_status_message()
+            or "Cloud blob storage is not enabled or not configured"
+        )
+        db.commit()
+        return {"total_rows": 0, "status": "failed"}
+
+    try:
+        file_bytes = s3_service.download_file_by_key(call_import.source_s3_key)
+    except StorageError as exc:
+        call_import.status = CallImportStatus.FAILED
+        call_import.error_message = f"Could not read staged source file from S3: {exc}"
+        db.commit()
+        return {"total_rows": 0, "status": "failed"}
+
+    schema = _resolve_schema(
+        db, organization_id, workspace_id, call_import.schema_id
+    )
+    parameters = list(schema.parameters)
+    cleaned_skipped = _clean_skipped_columns(list(call_import.skipped_columns or []))
+    parsed_rows = _parse_source_file(
+        file_bytes,
+        call_import.source_format,
+        call_import.sheet_name,
+        parameters,
+        dict(call_import.parameter_mapping or {}),
+        cleaned_skipped,
+    )
+
+    call_import.total_rows = len(parsed_rows)
+    call_import.completed_rows = 0
+    call_import.failed_rows = 0
+
+    try:
+        row_count = bulk_materialize_call_import_rows(
+            db,
+            call_import,
+            parsed_rows,
+            organization_id,
+        )
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to materialize rows for call import {}",
+            call_import_id,
+        )
+        db.rollback()
+        call_import.status = CallImportStatus.FAILED
+        call_import.error_message = f"Failed to materialize import rows: {exc}"
+        db.commit()
+        return {"total_rows": 0, "status": "failed"}
+
+    record_call_import_batch_created(
+        organization_id,
+        call_import.id,
+        workspace_id=workspace_id,
+        total_rows=call_import.total_rows,
+        source="csv",
+        provider=call_import.provider,
+    )
+    _enqueue_row_tasks(db, call_import, [])
+
+    logger.info(
+        "Materialized {} call_import_rows for import {} (org={})",
+        row_count,
+        call_import.id,
+        organization_id,
+    )
+    return {"total_rows": row_count, "status": "processing"}

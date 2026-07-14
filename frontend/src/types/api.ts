@@ -723,6 +723,7 @@ export type CallImportStatus =
   | 'completed'
   | 'partial'
   | 'failed'
+  | 'deleting'
 
 export type CallImportRowStatus =
   | 'pending'

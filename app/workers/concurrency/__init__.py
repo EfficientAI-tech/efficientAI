@@ -19,6 +19,10 @@ from app.workers.concurrency.fair_diarization_dispatch import (
     finish_diarization_work_and_redispatch,
     schedule_fair_diarization_dispatch,
 )
+from app.workers.concurrency.fair_import_dispatch import (
+    finish_import_work_and_redispatch,
+    schedule_fair_import_dispatch,
+)
 from app.workers.concurrency.diarization_dispatch import (
     build_diarization_params_from_request,
     store_row_diarization_params,
@@ -31,10 +35,12 @@ __all__ = [
     "acquire_eval_slot",
     "build_diarization_params_from_request",
     "finish_diarization_work_and_redispatch",
+    "finish_import_work_and_redispatch",
     "finish_eval_work_and_redispatch",
     "release_eval_slot_for_celery_task",
     "schedule_evaluation_dispatch",
     "schedule_fair_diarization_dispatch",
+    "schedule_fair_import_dispatch",
     "schedule_fair_dispatch",
     "slot_registered_for_task",
     "store_row_diarization_params",

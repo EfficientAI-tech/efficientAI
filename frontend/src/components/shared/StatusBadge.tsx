@@ -29,6 +29,7 @@ const STATUS_STYLES: Record<string, string> = {
   transcribing: 'bg-blue-100 text-blue-800',
   uploaded: 'bg-sky-100 text-sky-800',
   mapped: 'bg-violet-100 text-violet-800',
+  deleting: 'bg-gray-100 text-gray-600',
 }
 
 export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
@@ -40,7 +41,7 @@ export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
   const textClass = size === 'sm' ? 'text-[10px]' : 'text-xs'
   
   const renderIcon = () => {
-    if (['generating', 'evaluating', 'processing', 'call_initiating', 'call_connecting', 'call_in_progress', 'transcribing'].includes(normalizedStatus)) {
+    if (['generating', 'evaluating', 'processing', 'call_initiating', 'call_connecting', 'call_in_progress', 'transcribing', 'deleting'].includes(normalizedStatus)) {
       return <Loader2 className={`${iconClass} animate-spin`} />
     }
     if (normalizedStatus === 'completed' || normalizedStatus === 'call_ended') {

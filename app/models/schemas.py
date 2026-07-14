@@ -2728,6 +2728,19 @@ class CallImportUploadResponse(BaseModel):
     message: str
 
 
+class CallImportDeleteResponse(BaseModel):
+    """Response after a whole-batch call-import delete is accepted."""
+
+    id: UUID
+    status: Literal["accepted", "completed"] = Field(
+        ...,
+        description=(
+            "``accepted`` when teardown was queued to run asynchronously; "
+            "``completed`` when the batch was already removed."
+        ),
+    )
+
+
 class CallImportPreviewResponse(BaseModel):
     """Sheets/headers extracted from an uploaded CSV or Excel workbook.
 

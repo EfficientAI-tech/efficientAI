@@ -50,6 +50,7 @@ from app.models.schemas import (
     CallImportCancelDiarisationRequest,
     CallImportCancelDiarisationResponse,
     CallImportDetailResponse,
+    CallImportDeleteResponse,
     CallImportDiarisationPromptDefaultResponse,
     CallImportInsightsMetric,
     CallImportInsightsResponse,
@@ -1130,28 +1131,13 @@ def _enqueue_row_tasks(
     call_import: CallImport,
     row_models: List[CallImportRow],
 ) -> None:
-    """Fan rows out to the ``imports`` Celery queue.
-
-    Mirrors the legacy upload handler: on enqueue failure we mark the
-    individual row FAILED and keep going so the rest of the batch
-    still makes progress.
-    """
-    from app.workers.tasks.process_call_import_row import (
-        process_call_import_row_task,
+    """Schedule fair round-robin dispatch for pending import rows."""
+    del db, call_import, row_models
+    from app.workers.concurrency.fair_import_dispatch import (
+        schedule_fair_import_dispatch,
     )
 
-    for row_model in row_models:
-        try:
-            process_call_import_row_task.delay(str(row_model.id))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Failed to enqueue call import row {} for import {}",
-                row_model.id,
-                call_import.id,
-            )
-            row_model.status = CallImportRowStatus.FAILED
-            row_model.error_message = f"Failed to enqueue: {exc}"
-    db.commit()
+    schedule_fair_import_dispatch(max_workspace_turns=999)
 
 
 def _ensure_blob_storage_enabled() -> None:
@@ -1579,11 +1565,12 @@ async def start_call_import(
 ) -> CallImportUploadResponse:
     """IMPORT stage of the staged call-import flow.
 
-    Re-fetches the staged source file from S3, materialises one row per
-    parsed data line, and fans them out to the ``imports`` Celery queue
-    so the existing per-row pipeline takes over.
+    Validates mapping + credential selection, flips the batch to
+    ``processing``, and enqueues background row materialization so the
+    API can return immediately. Recording fetch still runs via the
+    fair-import dispatch worker.
     """
-    del api_key
+    del api_key, background_tasks
 
     from sqlalchemy.orm import selectinload as _selectinload
 
@@ -1645,40 +1632,7 @@ async def start_call_import(
         )
         integration = None
 
-    # Re-fetch the staged source file from S3 each time IMPORT runs so
-    # the parse is always against the artefact we promised the user
-    # (vs. drifting state from a half-cached buffer).
-    from app.services.storage.s3_service import s3_service, StorageError
-
-    if not s3_service.is_enabled():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "S3 is required to read the staged source file: "
-                f"{s3_service.get_status_message() or 'not configured'}"
-            ),
-        )
-
-    try:
-        file_bytes = s3_service.download_file_by_key(call_import.source_s3_key)
-    except StorageError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not read staged source file from S3: {exc}",
-        )
-
-    cleaned_skipped = _clean_skipped_columns(
-        list(call_import.skipped_columns or [])
-    )
-
-    parsed_rows = _parse_source_file(
-        file_bytes,
-        call_import.source_format,
-        call_import.sheet_name,
-        parameters,
-        dict(call_import.parameter_mapping or {}),
-        cleaned_skipped,
-    )
+    _ensure_blob_storage_enabled()
 
     if integration is not None:
         call_import.provider = integration.provider
@@ -1686,39 +1640,34 @@ async def start_call_import(
     else:
         call_import.provider = None
         call_import.telephony_integration_id = None
-    call_import.total_rows = len(parsed_rows)
+
+    call_import.total_rows = 0
     call_import.completed_rows = 0
     call_import.failed_rows = 0
-
-    row_models = _materialize_rows(
-        db, call_import, parsed_rows, organization_id
-    )
-
+    call_import.error_message = None
     call_import.status = CallImportStatus.PROCESSING
     db.commit()
     db.refresh(call_import)
 
-    background_tasks.add_task(
-        record_call_import_batch_created,
-        organization_id,
-        call_import.id,
-        workspace_id=workspace_id,
-        total_rows=call_import.total_rows,
-        source="csv",
-        provider=call_import.provider,
+    from app.workers.tasks.call_import_bulk_ops import (
+        materialize_call_import_rows_task,
     )
 
-    _enqueue_row_tasks(db, call_import, row_models)
+    materialize_call_import_rows_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        str(workspace_id),
+    )
 
     return CallImportUploadResponse(
         id=call_import.id,
-        total_rows=call_import.total_rows,
+        total_rows=0,
         status=call_import.status,
         dataset=call_import.dataset,
         tags=_tag_response_payload(call_import.tags),
         message=(
-            f"Accepted {call_import.total_rows} rows for import. "
-            "Recordings will be fetched asynchronously."
+            "Import accepted. Rows are being materialized in the background; "
+            "recordings will be fetched asynchronously."
         ),
     )
 
@@ -2639,7 +2588,8 @@ def _delete_s3_objects(
 
 @router.delete(
     "/{call_import_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=CallImportDeleteResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="deleteCallImport",
 )
 async def delete_call_import(
@@ -2647,13 +2597,13 @@ async def delete_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> Response:
-    """Delete a call-import batch, its rows, and every associated S3 recording.
+) -> CallImportDeleteResponse:
+    """Delete a call-import batch asynchronously.
 
-    Idempotent and safe to retry. If the batch is still in flight we revoke
-    pending Celery tasks before tearing down the rows so workers can't
-    write back to deleted records.
+    Flips the batch to ``deleting`` and enqueues background teardown so
+    large imports (thousands of rows + S3 objects) do not block the API.
     """
+    del api_key
 
     call_import = (
         db.query(CallImport)
@@ -2664,38 +2614,32 @@ async def delete_call_import(
         .first()
     )
     if not call_import:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Call import not found",
+        return CallImportDeleteResponse(
+            id=call_import_id,
+            status="completed",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .all()
-    )
+    if call_import.status == CallImportStatus.DELETING:
+        return CallImportDeleteResponse(
+            id=call_import.id,
+            status="accepted",
+        )
 
-    _revoke_pending_tasks(rows)
-
-    deleted_objects, s3_errors = _delete_s3_objects(
-        organization_id=organization_id,
-        call_import_id=call_import.id,
-        rows=rows,
-    )
-
-    db.delete(call_import)  # cascades to call_import_rows
+    call_import.status = CallImportStatus.DELETING
+    call_import.error_message = None
     db.commit()
 
-    logger.info(
-        "Deleted call_import {} (org={}, rows={}, s3_objects_deleted={}, s3_errors={})",
-        call_import.id,
-        organization_id,
-        len(rows),
-        deleted_objects,
-        s3_errors,
+    from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
+
+    delete_call_import_task.delay(
+        str(call_import_id),
+        str(organization_id),
     )
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return CallImportDeleteResponse(
+        id=call_import.id,
+        status="accepted",
+    )
 
 
 @router.delete(
@@ -2786,6 +2730,8 @@ def _recompute_call_import_counters(
     diverge between the per-row and bulk paths.
     """
 
+    from app.models.enums import CallImportRowStatus
+
     remaining = (
         db.query(CallImportRow)
         .filter(CallImportRow.call_import_id == call_import.id)
@@ -2806,6 +2752,10 @@ def _recompute_call_import_counters(
     call_import.total_rows = len(remaining)
     call_import.completed_rows = completed
     call_import.failed_rows = failed
+
+    if call_import.status == CallImportStatus.DELETING:
+        return
+
     if pending_or_processing > 0:
         call_import.status = CallImportStatus.PROCESSING
     elif len(remaining) == 0:
@@ -2891,8 +2841,8 @@ async def retry_failed_call_import_rows(
             skipped=0,
         )
 
-    from app.workers.tasks.process_call_import_row import (
-        process_call_import_row_task,
+    from app.workers.concurrency.fair_import_dispatch import (
+        schedule_fair_import_dispatch,
     )
 
     # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
@@ -2906,29 +2856,27 @@ async def retry_failed_call_import_rows(
     _recompute_call_import_counters(db, call_import)
     db.commit()
 
-    requeued = 0
-    enqueue_failed = 0
-    skipped = 0
-
-    for row in failed_rows:
-        try:
-            process_call_import_row_task.delay(str(row.id))
-            requeued += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Failed to re-enqueue call import row {} for import {}",
-                row.id,
-                call_import.id,
-            )
+    try:
+        schedule_fair_import_dispatch(max_workspace_turns=999)
+        requeued = len(failed_rows)
+        enqueue_failed = 0
+        skipped = 0
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to schedule fair import dispatch for import {}",
+            call_import.id,
+        )
+        requeued = 0
+        enqueue_failed = len(failed_rows)
+        skipped = 0
+        for row in failed_rows:
             db.refresh(row)
             if row.status != CallImportRowStatus.PENDING:
                 skipped += 1
+                enqueue_failed -= 1
                 continue
             row.status = CallImportRowStatus.FAILED
             row.error_message = f"Failed to enqueue retry: {exc}"
-            enqueue_failed += 1
-
-    if enqueue_failed > 0:
         db.flush()
         _recompute_call_import_counters(db, call_import)
         db.commit()
@@ -2981,10 +2929,12 @@ async def bulk_delete_call_import_rows(
 
     from app.workers.tasks.call_import_bulk_ops import bulk_delete_call_import_rows_task
 
+    row_id_strs = [str(rid) for rid in payload.row_ids]
+
     bulk_delete_call_import_rows_task.delay(
         str(call_import_id),
         str(organization_id),
-        [str(rid) for rid in payload.row_ids],
+        row_id_strs,
     )
 
     return CallImportRowBulkDeleteResponse(deleted=0, status="accepted")

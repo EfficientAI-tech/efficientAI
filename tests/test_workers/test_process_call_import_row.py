@@ -873,3 +873,101 @@ def test_process_call_import_row_marks_failed_when_s3_disabled(db_session, monke
     db_session.refresh(call_import)
     assert row.status == CallImportRowStatus.FAILED
     assert call_import.status == CallImportStatus.FAILED
+
+
+def test_process_call_import_row_releases_slot_and_redispatches(db_session, monkeypatch):
+    from unittest.mock import MagicMock
+
+    _, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+
+    fake_client = _FakeExotelClient(audio=b"hello-audio", content_type="audio/mpeg")
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+
+    finish_mock = MagicMock()
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits.slot_registered_for_task",
+        lambda _task_id: True,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_import_dispatch.finish_import_work_and_redispatch",
+        finish_mock,
+    )
+
+    result = task_module.process_call_import_row_task.run(
+        str(row.id),
+        _eval_slot_task_id="slot-task-abc",
+    )
+
+    assert result["status"] == "completed"
+    finish_mock.assert_called_once_with("slot-task-abc")
+
+
+def test_rollup_parent_status_preserves_deleting(db_session):
+    from app.workers.tasks.process_call_import_row import _rollup_parent_status
+
+    _, call_import, rows = _seed(db_session, row_count=2)
+    call_import.status = CallImportStatus.DELETING
+    rows[0].status = CallImportRowStatus.COMPLETED
+    rows[1].status = CallImportRowStatus.PENDING
+    db_session.commit()
+
+    _rollup_parent_status(db_session, call_import)
+
+    assert call_import.status == CallImportStatus.DELETING
+    assert call_import.completed_rows == 1
+    assert call_import.failed_rows == 0
+
+
+def test_process_row_skips_when_parent_deleting(db_session, monkeypatch):
+    _, call_import, rows = _seed(db_session, row_count=1)
+    call_import.status = CallImportStatus.DELETING
+    db_session.commit()
+    row = rows[0]
+
+    fake_client = _FakeExotelClient()
+    fake_s3 = _FakeS3()
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result == {"status": "skipped", "reason": "import_deleting"}
+    db_session.refresh(row)
+    assert row.status == CallImportRowStatus.PENDING
+    assert fake_client.calls == []
+    assert fake_s3.uploads == []
+
+
+def test_row_or_import_gone_after_row_deleted(db_session):
+    from app.workers.tasks.process_call_import_row import _row_or_import_gone
+
+    _, _call_import, rows = _seed(db_session, row_count=1)
+    row_id = rows[0].id
+    db_session.delete(rows[0])
+    db_session.commit()
+
+    assert _row_or_import_gone(db_session, row_id) == "row_deleted"
+
+
+def test_process_row_skips_when_row_deleted_during_upload(db_session, monkeypatch):
+    _, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+
+    fake_client = _FakeExotelClient(audio=b"hello-audio", content_type="audio/mpeg")
+    fake_s3 = _FakeS3(enabled=True)
+
+    def _upload_then_delete(file_content, key, content_type="audio/mpeg"):
+        fake_s3.uploads.append(
+            {"key": key, "size": len(file_content), "content_type": content_type}
+        )
+        db_session.delete(row)
+        db_session.commit()
+        return key
+
+    fake_s3.upload_file_by_key = _upload_then_delete
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result == {"status": "skipped", "reason": "row_deleted"}

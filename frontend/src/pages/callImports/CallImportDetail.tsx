@@ -550,8 +550,15 @@ export default function CallImportDetail() {
 
   const deleteImportMutation = useMutation({
     mutationFn: (importId: string) => apiClient.deleteCallImport(importId),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
+      if (result.status === 'accepted') {
+        showToast(
+          'Deletion started — large imports may take a minute.',
+          'success',
+        )
+      }
       navigate('/call-imports')
     },
     onError: (err: unknown) => {
@@ -833,6 +840,7 @@ export default function CallImportDetail() {
     refetchInterval: (query) => {
       const d = query.state.data
       if (!d) return false
+      if (d.status === 'deleting') return 3000
       // Keep polling while the CSV import itself is in flight.
       if (d.status === 'pending' || d.status === 'processing') return 5000
       // Batch-wide diarisation counters are pagination-independent —
@@ -1405,6 +1413,7 @@ export default function CallImportDetail() {
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
   const preImport = data.status === 'uploaded' || data.status === 'mapped'
+  const isDeleting = data.status === 'deleting'
 
   // Selection state — ``selectedRowIds`` can now span pages (we no
   // longer wipe it on pagination), so distinguish "how many of the
@@ -1452,6 +1461,12 @@ export default function CallImportDetail() {
   return (
     <div className="space-y-6">
       <ToastContainer />
+      {isDeleting && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+          This import is being deleted in the background. Actions are disabled
+          until removal completes.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <Link
           to="/call-imports"
@@ -1461,7 +1476,7 @@ export default function CallImportDetail() {
           Back to Call Imports
         </Link>
         <div className="flex items-center gap-2">
-          {!preImport && (
+          {!preImport && !isDeleting && (
             <Button
               variant="primary"
               size="sm"
@@ -1543,6 +1558,7 @@ export default function CallImportDetail() {
               setDeleteError(null)
               setShowDeleteImport(true)
             }}
+            disabled={isDeleting}
             leftIcon={<Trash2 className="h-4 w-4" />}
             className="text-red-600 hover:text-red-700 hover:bg-red-50"
           >
@@ -1586,6 +1602,7 @@ export default function CallImportDetail() {
               total={data.total_rows}
               completed={data.completed_rows}
               failed={data.failed_rows}
+              deleting={isDeleting}
             />
             <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
               <div className="bg-gray-50 rounded p-2">
@@ -4638,7 +4655,10 @@ export default function CallImportDetail() {
         title="Delete call import?"
         description={(() => {
           const name = data.original_filename || '(unnamed)'
-          const inFlight = data.status === 'pending' || data.status === 'processing'
+          const inFlight =
+            data.status === 'pending' ||
+            data.status === 'processing' ||
+            data.status === 'deleting'
           const lines = [
             `“${name}” will be permanently deleted, along with all ${data.total_rows} row record${data.total_rows === 1 ? '' : 's'} and ${data.completed_rows} stored recording${data.completed_rows === 1 ? '' : 's'} in S3.`,
             inFlight
