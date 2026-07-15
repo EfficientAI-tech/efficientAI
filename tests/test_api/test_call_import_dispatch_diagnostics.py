@@ -155,9 +155,25 @@ def test_dispatch_diagnostics_groups_pending_rows_by_workspace(
 
 def test_dispatch_diagnostics_api_requires_admin(
     authenticated_client,
+    db_session,
+    org_id,
     monkeypatch,
 ):
     from app.core.auth.rbac import require_admin
+    from app.models.database import APIKey, OrganizationMember, RoleEnum
+
+    member = (
+        db_session.query(OrganizationMember)
+        .join(APIKey, APIKey.user_id == OrganizationMember.user_id)
+        .filter(
+            OrganizationMember.organization_id == org_id,
+            APIKey.organization_id == org_id,
+        )
+        .first()
+    )
+    assert member is not None
+    member.role = RoleEnum.WRITER.value
+    db_session.commit()
 
     monkeypatch.setattr(
         "app.api.v1.routes.call_imports.build_call_import_dispatch_diagnostics",

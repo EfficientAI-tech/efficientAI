@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.models.enums import CallImportRowStatus
 from app.workers.concurrency.diarization_dispatch import (
     _try_dispatch_single_diarization_row,
 )
@@ -39,12 +40,16 @@ def stub_worker_task_modules():
     fake_core = types.ModuleType("app.workers.tasks.evaluate_call_import_row_core")
     fake_core.row_needs_audio_phase = lambda *_a, **_kw: False
 
+    fake_process_import = types.ModuleType("app.workers.tasks.process_call_import_row")
+    fake_process_import.process_call_import_row_task = MagicMock()
+
     modules = {
         "app.workers.tasks": fake_tasks_pkg,
         "app.workers.tasks.transcribe_call_import_row": fake_transcribe,
         "app.workers.tasks.evaluate_call_import_row": fake_eval,
         "app.workers.tasks.evaluate_call_import_row_audio": fake_audio,
         "app.workers.tasks.evaluate_call_import_row_core": fake_core,
+        "app.workers.tasks.process_call_import_row": fake_process_import,
     }
     previous = {key: sys.modules.get(key) for key in modules}
     sys.modules.update(modules)
@@ -95,6 +100,7 @@ def test_eval_chain_transcribe_uses_diarization_queue(
     eval_row = SimpleNamespace(id=eval_row_id, celery_task_id=None)
     source_row = SimpleNamespace(
         id=source_row_id,
+        status=CallImportRowStatus.COMPLETED,
         recording_s3_key="audio/test.wav",
         diarised_transcript="",
         diarised_transcript_status=None,
@@ -141,6 +147,7 @@ def test_eval_dispatch_skips_failed_diarization_without_overwrite(
     eval_row = SimpleNamespace(id=uuid4(), celery_task_id=None)
     source_row = SimpleNamespace(
         id=uuid4(),
+        status=CallImportRowStatus.COMPLETED,
         recording_s3_key="audio/test.wav",
         diarised_transcript="",
         diarised_transcript_status="failed",

@@ -550,51 +550,48 @@ def process_call_import_row_task(
         db.close()
         from app.workers.concurrency.limits import slot_registered_for_task
 
-        if not slot_registered_for_task(slot_task_id):
-            return
-
-        if run_eval_row_id:
-            if not eval_chain_chained_transcribe:
-                cleanup_db = SessionLocal()
-                try:
-                    from app.models.database import CallImportEvaluationRow, CallImportRow
-                    from app.models.enums import CallImportRowStatus
-                    from app.workers.concurrency.eval_dispatch import (
-                        _fail_eval_row_for_import,
-                    )
-
-                    eval_row = (
-                        cleanup_db.query(CallImportEvaluationRow)
-                        .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-                        .first()
-                    )
-                    source_row = (
-                        cleanup_db.query(CallImportRow)
-                        .filter(CallImportRow.id == UUID(row_id))
-                        .first()
-                    )
-                    if (
-                        eval_row is not None
-                        and source_row is not None
-                        and source_row.status != CallImportRowStatus.COMPLETED
-                        and eval_row.status == "pending"
-                    ):
-                        _fail_eval_row_for_import(
-                            cleanup_db, eval_row, source_row
+        if slot_registered_for_task(slot_task_id):
+            if run_eval_row_id:
+                if not eval_chain_chained_transcribe:
+                    cleanup_db = SessionLocal()
+                    try:
+                        from app.models.database import CallImportEvaluationRow, CallImportRow
+                        from app.models.enums import CallImportRowStatus
+                        from app.workers.concurrency.eval_dispatch import (
+                            _fail_eval_row_for_import,
                         )
-                finally:
-                    cleanup_db.close()
 
-            from app.workers.concurrency.fair_dispatch import (
-                finish_eval_work_and_redispatch,
-            )
+                        eval_row = (
+                            cleanup_db.query(CallImportEvaluationRow)
+                            .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+                            .first()
+                        )
+                        source_row = (
+                            cleanup_db.query(CallImportRow)
+                            .filter(CallImportRow.id == UUID(row_id))
+                            .first()
+                        )
+                        if (
+                            eval_row is not None
+                            and source_row is not None
+                            and source_row.status != CallImportRowStatus.COMPLETED
+                            and eval_row.status == "pending"
+                        ):
+                            _fail_eval_row_for_import(
+                                cleanup_db, eval_row, source_row
+                            )
+                    finally:
+                        cleanup_db.close()
 
-            if not eval_chain_chained_transcribe:
-                finish_eval_work_and_redispatch(slot_task_id)
-            return
+                from app.workers.concurrency.fair_dispatch import (
+                    finish_eval_work_and_redispatch,
+                )
 
-        from app.workers.concurrency.fair_import_dispatch import (
-            finish_import_work_and_redispatch,
-        )
+                if not eval_chain_chained_transcribe:
+                    finish_eval_work_and_redispatch(slot_task_id)
+            else:
+                from app.workers.concurrency.fair_import_dispatch import (
+                    finish_import_work_and_redispatch,
+                )
 
-        finish_import_work_and_redispatch(slot_task_id)
+                finish_import_work_and_redispatch(slot_task_id)

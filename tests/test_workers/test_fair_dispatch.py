@@ -103,13 +103,14 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
         fair_dispatch_module,
         "clear_row_restricted_metrics",
     ):
-        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
+        dispatched, hit_capacity = fair_dispatch_module._dispatch_batch_for_workspace(
             db,
             workspace_id,
             batch_size=4,
         )
 
     assert dispatched == 4
+    assert hit_capacity is False
     assert dispatch_order == [eval_a, eval_b, eval_a, eval_b]
 
 
@@ -166,13 +167,14 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
         fair_dispatch_module,
         "clear_row_restricted_metrics",
     ):
-        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
+        dispatched, hit_capacity = fair_dispatch_module._dispatch_batch_for_workspace(
             db,
             workspace_id,
             batch_size=2,
         )
 
     assert dispatched == 2
+    assert hit_capacity is False
     assert eval_job2 in dispatched_evaluations
     assert dispatched_evaluations[0] == eval_job1
     assert dispatched_evaluations[1] == eval_job2

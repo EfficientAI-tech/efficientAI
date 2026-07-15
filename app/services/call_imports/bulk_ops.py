@@ -273,7 +273,7 @@ def materialize_and_enqueue_evaluation(
         )
         return
 
-    source_row_ids = _all_source_row_ids(db, evaluation.call_import_id)
+    source_row_ids = _completed_source_row_ids(db, evaluation.call_import_id)
     evaluation.total_rows = len(source_row_ids)
 
     if not source_row_ids:

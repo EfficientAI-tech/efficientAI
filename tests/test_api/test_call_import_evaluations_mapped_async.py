@@ -65,13 +65,15 @@ def test_create_evaluation_from_mapped_enqueues_async_materialization(
     seed_org,
     monkeypatch,
 ):
-    from app.api.v1.routes import call_imports as call_imports_routes
     from tests.test_api.test_call_import_evaluations import (
         _eval_body,
         _make_metric,
     )
 
-    monkeypatch.setattr(call_imports_routes.s3_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        "app.services.storage.s3_service.s3_service.is_enabled",
+        lambda: True,
+    )
 
     metric = _make_metric(db_session, org_id)
     workspace = metric.workspace_id

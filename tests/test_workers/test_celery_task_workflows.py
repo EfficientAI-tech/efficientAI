@@ -31,7 +31,10 @@ def _load_run_prompt_optimization_module():
     module_name = "app.workers.tasks.run_prompt_optimization"
     existing = sys.modules.get(module_name)
     if existing is not None and hasattr(existing, "SessionLocal"):
-        return existing
+        task = getattr(existing, "run_prompt_optimization_task", None)
+        run = getattr(task, "run", task)
+        if callable(run):
+            return existing
 
     module_path = (
         Path(__file__).resolve().parents[2]

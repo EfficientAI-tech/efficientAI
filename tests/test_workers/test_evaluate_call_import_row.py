@@ -1238,3 +1238,52 @@ def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
 
     assert evaluation.failed_rows == 1
     assert evaluation.status == "failed"
+
+
+def test_counter_deltas_for_status_transition():
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        counter_deltas_for_status_transition,
+    )
+
+    assert counter_deltas_for_status_transition("running", "completed") == (1, 0)
+    assert counter_deltas_for_status_transition("running", "failed") == (0, 1)
+    assert counter_deltas_for_status_transition("completed", "pending") == (-1, 0)
+    assert counter_deltas_for_status_transition("failed", "completed") == (1, -1)
+    assert counter_deltas_for_status_transition("running", "running") == (0, 0)
+
+
+def test_rollup_parent_incremental_without_row_scan(db_session, monkeypatch):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    query_calls = {"count": 0}
+    original_query = db_session.query
+
+    def _counting_query(*args, **kwargs):
+        query_calls["count"] += 1
+        return original_query(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "query", _counting_query)
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=3)
+    eval_rows[0].status = "completed"
+    # Worker commits the finishing row as completed before rollup runs.
+    eval_rows[1].status = "completed"
+    evaluation.total_rows = 3
+    evaluation.completed_rows = 1
+    evaluation.failed_rows = 0
+    evaluation.status = "running"
+    db_session.commit()
+
+    queries_before = query_calls["count"]
+    _rollup_parent(
+        db_session,
+        evaluation,
+        previous_row_status="running",
+        new_row_status="completed",
+    )
+
+    assert evaluation.completed_rows == 2
+    assert evaluation.status == "running"
+    # Incremental path should not query CallImportEvaluationRow statuses.
+    row_status_queries = query_calls["count"] - queries_before
+    assert row_status_queries <= 2

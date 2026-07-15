@@ -295,6 +295,14 @@ def _try_dispatch_single_row(
         if _diarisation_in_flight(source_row):
             return "skip"
 
+        dia_status = (source_row.diarised_transcript_status or "").strip().lower()
+        if (
+            dia_status == "failed"
+            and not transcribe_overwrite
+            and not (source_row.diarised_transcript or "").strip()
+        ):
+            return "skip"
+
         def _enqueue_transcribe(reserved_task_id: str):
             source_row.diarised_transcript_status = "pending"
             source_row.diarised_transcript_error = None

@@ -554,52 +554,28 @@ def _normalize_name(value: Optional[str]) -> Optional[str]:
 def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> None:
     """Recompute counters + terminal status after rows are added/removed.
 
-    Mirrors the rollup logic in
-    ``app.workers.tasks.evaluate_call_import_row._rollup_parent`` so the
-    parent stays consistent even when the user manually deletes a row.
+    Uses a single aggregate query instead of loading every row status.
     """
-
-    rows = (
-        db.query(CallImportEvaluationRow.status)
-        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-        .all()
-    )
-    total = len(rows)
-    completed = sum(1 for (status,) in rows if status == "completed")
-    failed = sum(1 for (status,) in rows if status == "failed")
-    in_progress = sum(
-        1 for (status,) in rows if status in {"pending", "running"}
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        _apply_parent_status_from_counters,
+        reconcile_evaluation_counters,
     )
 
-    evaluation.total_rows = total
-    evaluation.completed_rows = completed
-    evaluation.failed_rows = failed
+    reconcile_evaluation_counters(db, evaluation)
+    _apply_parent_status_from_counters(evaluation)
+    db.flush()
 
-    if total == 0:
-        # No rows left → treat as completed (empty result set) so the UI
-        # doesn't keep polling a zombie "running" evaluation.
-        evaluation.status = "completed"
-        return
-    if in_progress > 0:
-        evaluation.status = "running"
-        return
-    if failed == 0:
-        evaluation.status = "completed"
-    elif completed == 0:
-        evaluation.status = "failed"
-    else:
-        evaluation.status = "partial"
+    if evaluation.status in {"completed", "failed", "partial"}:
+        from app.models.database import CallImport
+        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
 
-    from app.models.database import CallImport
-    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
-
-    call_import = (
-        db.query(CallImport)
-        .filter(CallImport.id == evaluation.call_import_id)
-        .first()
-    )
-    if call_import is not None:
-        rollup_call_import_batch_status(db, call_import)
+        call_import = (
+            db.query(CallImport)
+            .filter(CallImport.id == evaluation.call_import_id)
+            .first()
+        )
+        if call_import is not None:
+            rollup_call_import_batch_status(db, call_import)
 
 
 @router.post(
@@ -932,7 +908,7 @@ async def create_call_import_evaluation(
     ) or None
 
     from app.models.enums import CallImportStatus
-    from app.services.call_imports.bulk_ops import count_all_source_rows
+    from app.services.call_imports.bulk_ops import count_completed_source_rows
 
     starting_from_mapped = False
     if call_import.status == CallImportStatus.MAPPED:
@@ -992,7 +968,7 @@ async def create_call_import_evaluation(
         db.refresh(call_import)
         starting_from_mapped = True
 
-    total_row_count = count_all_source_rows(db, call_import.id)
+    total_row_count = count_completed_source_rows(db, call_import.id)
 
     # Every evaluation run scores the diarised transcript. The
     # ``transcript_sources`` field on the schema has already been

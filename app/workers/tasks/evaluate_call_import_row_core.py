@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
+from sqlalchemy import case, func, update
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -213,26 +214,86 @@ def build_parent_groups(
     return parents_by_id, children_by_parent, standalone
 
 
-def rollup_parent(db, evaluation: CallImportEvaluation) -> None:
-    evaluation = (
-        db.query(CallImportEvaluation)
-        .filter(CallImportEvaluation.id == evaluation.id)
-        .with_for_update()
+_TERMINAL_ROW_STATUSES = frozenset({"completed", "failed"})
+
+
+def counter_deltas_for_status_transition(
+    previous_status: str | None,
+    new_status: str,
+) -> tuple[int, int]:
+    """Return ``(completed_delta, failed_delta)`` for a row status change."""
+    previous = (previous_status or "").strip().lower()
+    new = new_status.strip().lower()
+    completed_delta = 0
+    failed_delta = 0
+    if previous in _TERMINAL_ROW_STATUSES:
+        if previous == "completed":
+            completed_delta -= 1
+        else:
+            failed_delta -= 1
+    if new in _TERMINAL_ROW_STATUSES:
+        if new == "completed":
+            completed_delta += 1
+        else:
+            failed_delta += 1
+    return completed_delta, failed_delta
+
+
+def reconcile_evaluation_counters(
+    db: Session,
+    evaluation: CallImportEvaluation,
+) -> None:
+    """Sync parent counters from child rows using one aggregate query."""
+    counts = (
+        db.query(
+            func.count().label("total"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (CallImportEvaluationRow.status == "completed", 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("completed"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (CallImportEvaluationRow.status == "failed", 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed"),
+        )
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
         .one()
     )
-    rows = (
-        db.query(CallImportEvaluationRow.status)
-        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-        .all()
-    )
-    total = len(rows)
-    completed = sum(1 for (status,) in rows if status == "completed")
-    failed = sum(1 for (status,) in rows if status == "failed")
-    in_progress = sum(1 for (status,) in rows if status in {"pending", "running"})
+    evaluation.total_rows = int(counts.total or 0)
+    evaluation.completed_rows = int(counts.completed or 0)
+    evaluation.failed_rows = int(counts.failed or 0)
 
-    evaluation.total_rows = total
-    evaluation.completed_rows = completed
-    evaluation.failed_rows = failed
+
+def _count_in_progress_rows(db: Session, evaluation_id: UUID) -> int:
+    """Count rows still pending or running (cheap indexed query)."""
+    return int(
+        db.query(func.count())
+        .filter(
+            CallImportEvaluationRow.evaluation_id == evaluation_id,
+            CallImportEvaluationRow.status.in_(["pending", "running"]),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _apply_parent_status_from_counters(
+    evaluation: CallImportEvaluation,
+) -> None:
+    total = int(evaluation.total_rows or 0)
+    completed = int(evaluation.completed_rows or 0)
+    failed = int(evaluation.failed_rows or 0)
+    in_progress = total - completed - failed
 
     if in_progress > 0:
         evaluation.status = "running"
@@ -250,6 +311,82 @@ def rollup_parent(db, evaluation: CallImportEvaluation) -> None:
     else:
         evaluation.status = "partial"
 
+
+def commit_terminal_row_and_rollup(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    *,
+    previous_row_status: str,
+) -> None:
+    db.commit()
+    rollup_parent(
+        db,
+        evaluation,
+        previous_row_status=previous_row_status,
+        new_row_status=eval_row.status,
+    )
+    db.commit()
+
+
+def rollup_parent(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    *,
+    previous_row_status: str | None = None,
+    new_row_status: str | None = None,
+) -> None:
+    """Update parent counters and terminal status after a row finishes.
+
+    When ``previous_row_status`` and ``new_row_status`` are supplied (worker
+    hot path), counters are incremented atomically without scanning all rows.
+    Otherwise counters are reconciled with a single aggregate query (API
+    retries, row deletes, tests).
+    """
+    evaluation_id = evaluation.id
+    if previous_row_status is not None and new_row_status is not None:
+        completed_delta, failed_delta = counter_deltas_for_status_transition(
+            previous_row_status,
+            new_row_status,
+        )
+        if completed_delta or failed_delta:
+            db.execute(
+                update(CallImportEvaluation)
+                .where(CallImportEvaluation.id == evaluation_id)
+                .values(
+                    completed_rows=CallImportEvaluation.completed_rows
+                    + completed_delta,
+                    failed_rows=CallImportEvaluation.failed_rows + failed_delta,
+                )
+            )
+            db.flush()
+    else:
+        reconcile_evaluation_counters(db, evaluation)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .with_for_update()
+        .one()
+    )
+    if previous_row_status is not None and new_row_status is not None:
+        expected_in_progress = (
+            int(evaluation.total_rows or 0)
+            - int(evaluation.completed_rows or 0)
+            - int(evaluation.failed_rows or 0)
+        )
+        if expected_in_progress != _count_in_progress_rows(db, evaluation_id):
+            reconcile_evaluation_counters(db, evaluation)
+            db.flush()
+            evaluation = (
+                db.query(CallImportEvaluation)
+                .filter(CallImportEvaluation.id == evaluation_id)
+                .with_for_update()
+                .one()
+            )
+    _apply_parent_status_from_counters(evaluation)
+
+    completed = int(evaluation.completed_rows or 0)
     already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
     delta = completed - already_billed
     if delta > 0:
