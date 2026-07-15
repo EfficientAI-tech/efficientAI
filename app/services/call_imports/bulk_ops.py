@@ -20,6 +20,7 @@ from app.models.database import (
     CallImportRow,
     CallImportRowStatus,
 )
+from app.models.enums import CallImportStatus
 from app.models.schemas import CallImportTranscribeRequest
 
 _BULK_INSERT_CHUNK = 1000
@@ -45,7 +46,10 @@ _ROW_DELETE_COLUMNS = (
 _EVAL_SOURCE_COLUMNS = (
     CallImportRow.id,
     CallImportRow.recording_s3_key,
+    CallImportRow.recording_url,
+    CallImportRow.status,
     CallImportRow.diarised_transcript,
+    CallImportRow.diarised_transcript_status,
 )
 
 
@@ -198,6 +202,29 @@ def _completed_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
     ]
 
 
+def count_all_source_rows(db: Session, call_import_id: UUID) -> int:
+    from sqlalchemy import func
+
+    return int(
+        db.query(func.count(CallImportRow.id))
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .scalar()
+        or 0
+    )
+
+
+def _all_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
+    return [
+        row_id
+        for (row_id,) in (
+            db.query(CallImportRow.id)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+    ]
+
+
 def bulk_insert_evaluation_rows(
     db: Session,
     evaluation_id: UUID,
@@ -229,7 +256,7 @@ def materialize_and_enqueue_evaluation(
     *,
     transcribe_overwrite: bool = False,
 ) -> None:
-    """Create eval-row records for every completed import row and start dispatch."""
+    """Create eval-row records for every import row and start dispatch."""
     from app.api.v1.routes.call_import_evaluations import (
         _enqueue_eval_rows_with_optional_transcribe,
     )
@@ -246,7 +273,7 @@ def materialize_and_enqueue_evaluation(
         )
         return
 
-    source_row_ids = _completed_source_row_ids(db, evaluation.call_import_id)
+    source_row_ids = _all_source_row_ids(db, evaluation.call_import_id)
     evaluation.total_rows = len(source_row_ids)
 
     if not source_row_ids:
@@ -528,8 +555,15 @@ def execute_call_import_materialization(
     call_import_id: UUID,
     organization_id: UUID,
     workspace_id: UUID,
+    *,
+    schedule_import_dispatch: bool = False,
 ) -> dict:
-    """Download staged source, parse, bulk-insert rows, and start import dispatch."""
+    """Download staged source, parse, bulk-insert rows.
+
+    When ``schedule_import_dispatch`` is true, legacy standalone import
+    fair-dispatch is scheduled. New batches use the unified eval pipeline
+    only (``schedule_import_dispatch=False``).
+    """
     from app.api.v1.routes.call_imports import (
         _clean_skipped_columns,
         _enqueue_row_tasks,
@@ -572,10 +606,11 @@ def execute_call_import_materialization(
     )
     if existing_rows is not None:
         logger.info(
-            "execute_call_import_materialization: import {} already has rows; scheduling dispatch",
+            "execute_call_import_materialization: import {} already has rows",
             call_import_id,
         )
-        _enqueue_row_tasks(db, call_import, [])
+        if schedule_import_dispatch:
+            _enqueue_row_tasks(db, call_import, [])
         return {"total_rows": call_import.total_rows, "status": "already_materialized"}
 
     if not call_import.source_s3_key or not call_import.source_format:
@@ -652,7 +687,8 @@ def execute_call_import_materialization(
         source="csv",
         provider=call_import.provider,
     )
-    _enqueue_row_tasks(db, call_import, [])
+    if schedule_import_dispatch:
+        _enqueue_row_tasks(db, call_import, [])
 
     logger.info(
         "Materialized {} call_import_rows for import {} (org={})",
@@ -661,3 +697,75 @@ def execute_call_import_materialization(
         organization_id,
     )
     return {"total_rows": row_count, "status": "processing"}
+
+
+def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> None:
+    """Recompute batch counters and terminal status on the parent import.
+
+    Eval-primary batches (materialized via Run Evaluation) can leave thousands
+    of ``pending`` import rows when an evaluation is cancelled early. Those
+    rows were never enqueued on the legacy import worker and must not keep the
+    parent stuck in ``processing`` once every evaluation run is terminal.
+    """
+
+    counts = (
+        db.query(CallImportRow.status)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .all()
+    )
+    total = len(counts)
+    completed = sum(1 for (status,) in counts if status == CallImportRowStatus.COMPLETED)
+    failed = sum(1 for (status,) in counts if status == CallImportRowStatus.FAILED)
+    pending = sum(1 for (status,) in counts if status == CallImportRowStatus.PENDING)
+    processing = sum(
+        1 for (status,) in counts if status == CallImportRowStatus.PROCESSING
+    )
+    pending_or_processing = pending + processing
+
+    call_import.total_rows = total
+    call_import.completed_rows = completed
+    call_import.failed_rows = failed
+
+    if call_import.status == CallImportStatus.DELETING:
+        return
+
+    active_eval = (
+        db.query(CallImportEvaluation.id)
+        .filter(
+            CallImportEvaluation.call_import_id == call_import.id,
+            CallImportEvaluation.status.in_(("pending", "running")),
+        )
+        .first()
+    )
+
+    import_pipeline_active = processing > 0 or (
+        pending > 0 and active_eval is not None
+    )
+    if import_pipeline_active:
+        call_import.status = CallImportStatus.PROCESSING
+        return
+
+    if pending_or_processing > 0:
+        has_evaluations = (
+            db.query(CallImportEvaluation.id)
+            .filter(CallImportEvaluation.call_import_id == call_import.id)
+            .first()
+            is not None
+        )
+        if has_evaluations:
+            if failed == 0 and completed == 0:
+                call_import.status = CallImportStatus.FAILED
+            else:
+                call_import.status = CallImportStatus.PARTIAL
+        else:
+            call_import.status = CallImportStatus.PROCESSING
+        return
+
+    if total == 0:
+        return
+    if failed == 0:
+        call_import.status = CallImportStatus.COMPLETED
+    elif completed == 0:
+        call_import.status = CallImportStatus.FAILED
+    else:
+        call_import.status = CallImportStatus.PARTIAL

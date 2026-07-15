@@ -124,36 +124,9 @@ def _extension_for_content_type(content_type: str) -> str:
 def _rollup_parent_status(db, call_import) -> None:
     """Recompute completed_rows / failed_rows and finalize the batch status."""
 
-    from app.models.database import CallImportRow
-    from app.models.enums import CallImportRowStatus, CallImportStatus
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
 
-    counts = (
-        db.query(CallImportRow.status)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .all()
-    )
-    completed = sum(1 for (s,) in counts if s == CallImportRowStatus.COMPLETED)
-    failed = sum(1 for (s,) in counts if s == CallImportRowStatus.FAILED)
-    pending_or_processing = sum(
-        1
-        for (s,) in counts
-        if s in (CallImportRowStatus.PENDING, CallImportRowStatus.PROCESSING)
-    )
-
-    call_import.completed_rows = completed
-    call_import.failed_rows = failed
-
-    if call_import.status == CallImportStatus.DELETING:
-        return
-
-    if pending_or_processing > 0:
-        call_import.status = CallImportStatus.PROCESSING
-    elif failed == 0:
-        call_import.status = CallImportStatus.COMPLETED
-    elif completed == 0:
-        call_import.status = CallImportStatus.FAILED
-    else:
-        call_import.status = CallImportStatus.PARTIAL
+    rollup_call_import_batch_status(db, call_import)
 
 
 @celery_app.task(name="process_call_import_row", bind=True, max_retries=3)
@@ -161,6 +134,7 @@ def process_call_import_row_task(
     self,
     row_id: str,
     _eval_slot_task_id: Optional[str] = None,
+    run_eval_row_id: Optional[str] = None,
 ):
     """Fetch one call recording from the provider and store it in S3.
 
@@ -189,6 +163,7 @@ def process_call_import_row_task(
     )
 
     slot_task_id = _eval_slot_task_id or self.request.id
+    eval_chain_chained_transcribe = False
     db = SessionLocal()
     try:
         row_uuid = UUID(row_id)
@@ -531,6 +506,33 @@ def process_call_import_row_task(
         if not _safe_commit(db, row_id=row_id, context="rollup_completed"):
             return {"status": "skipped", "reason": "row_deleted"}
 
+        if run_eval_row_id:
+            from app.models.database import CallImportEvaluation, CallImportEvaluationRow
+            from app.workers.concurrency.eval_dispatch import (
+                enqueue_eval_chain_transcribe_after_import,
+            )
+
+            eval_row = (
+                db.query(CallImportEvaluationRow)
+                .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+                .first()
+            )
+            if eval_row is not None:
+                evaluation = (
+                    db.query(CallImportEvaluation)
+                    .filter(CallImportEvaluation.id == eval_row.evaluation_id)
+                    .first()
+                )
+                if evaluation is not None:
+                    enqueue_eval_chain_transcribe_after_import(
+                        db,
+                        evaluation=evaluation,
+                        eval_row=eval_row,
+                        source_row=row,
+                        slot_task_id=slot_task_id,
+                    )
+                    eval_chain_chained_transcribe = True
+
         return {
             "status": "completed",
             "row_id": row_id,
@@ -548,9 +550,51 @@ def process_call_import_row_task(
         db.close()
         from app.workers.concurrency.limits import slot_registered_for_task
 
-        if slot_registered_for_task(slot_task_id):
-            from app.workers.concurrency.fair_import_dispatch import (
-                finish_import_work_and_redispatch,
+        if not slot_registered_for_task(slot_task_id):
+            return
+
+        if run_eval_row_id:
+            if not eval_chain_chained_transcribe:
+                cleanup_db = SessionLocal()
+                try:
+                    from app.models.database import CallImportEvaluationRow, CallImportRow
+                    from app.models.enums import CallImportRowStatus
+                    from app.workers.concurrency.eval_dispatch import (
+                        _fail_eval_row_for_import,
+                    )
+
+                    eval_row = (
+                        cleanup_db.query(CallImportEvaluationRow)
+                        .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+                        .first()
+                    )
+                    source_row = (
+                        cleanup_db.query(CallImportRow)
+                        .filter(CallImportRow.id == UUID(row_id))
+                        .first()
+                    )
+                    if (
+                        eval_row is not None
+                        and source_row is not None
+                        and source_row.status != CallImportRowStatus.COMPLETED
+                        and eval_row.status == "pending"
+                    ):
+                        _fail_eval_row_for_import(
+                            cleanup_db, eval_row, source_row
+                        )
+                finally:
+                    cleanup_db.close()
+
+            from app.workers.concurrency.fair_dispatch import (
+                finish_eval_work_and_redispatch,
             )
 
-            finish_import_work_and_redispatch(slot_task_id)
+            if not eval_chain_chained_transcribe:
+                finish_eval_work_and_redispatch(slot_task_id)
+            return
+
+        from app.workers.concurrency.fair_import_dispatch import (
+            finish_import_work_and_redispatch,
+        )
+
+        finish_import_work_and_redispatch(slot_task_id)

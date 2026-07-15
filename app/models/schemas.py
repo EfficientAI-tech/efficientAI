@@ -2717,6 +2717,68 @@ class CallImportListResponse(BaseModel):
     page_size: int
 
 
+class CallImportDispatchLimitSnapshot(BaseModel):
+    """Configured and live Redis in-flight caps for eval work."""
+
+    global_limit: int
+    global_inflight: int
+    global_at_capacity: bool
+    org_limit: int
+    org_inflight: int
+    org_at_capacity: bool
+    workspace_limit: int
+    job_limit: int
+    fair_dispatch_batch_size: int
+
+
+class CallImportDispatchFairDispatchSnapshot(BaseModel):
+    """Fair-dispatch scheduler metadata from Redis."""
+
+    global_rr_cursor: int
+    dispatch_dedupe_active: bool
+    dispatch_queue: str
+    at_capacity_backoff_seconds: int
+
+
+class CallImportDispatchEvaluationSnapshot(BaseModel):
+    """One in-flight evaluation run with row counters."""
+
+    evaluation_id: UUID
+    call_import_id: UUID
+    status: str
+    total_rows: int
+    pending_rows: int
+    running_rows: int
+    job_inflight: int
+    job_at_capacity: bool
+
+
+class CallImportDispatchWorkspaceSnapshot(BaseModel):
+    """Per-workspace pending dispatch + slot usage."""
+
+    workspace_id: UUID
+    workspace_name: Optional[str] = None
+    workspace_slug: Optional[str] = None
+    inflight: int
+    inflight_at_capacity: bool
+    pending_dispatch_rows: int
+    pending_import_rows: int
+    eval_rr_cursor: int
+    active_evaluations: int
+    evaluations: List[CallImportDispatchEvaluationSnapshot] = Field(
+        default_factory=list
+    )
+
+
+class CallImportDispatchDiagnosticsResponse(BaseModel):
+    """Live operator snapshot for call-import eval fair dispatch."""
+
+    limits: CallImportDispatchLimitSnapshot
+    fair_dispatch: CallImportDispatchFairDispatchSnapshot
+    workspaces: List[CallImportDispatchWorkspaceSnapshot]
+    generated_at: datetime
+
+
 class CallImportUploadResponse(BaseModel):
     """Response returned right after a CSV is accepted."""
 
@@ -3068,6 +3130,33 @@ class CallImportEvaluationCreate(BaseModel):
             "callers retain previous behaviour."
         ),
     )
+    # Telephony credentials for unified pipeline (required when batch is mapped).
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Telephony provider key. Required together with "
+            "``telephony_integration_id`` when starting evaluation "
+            "from a mapped batch. Omit both for direct-URL import."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "TelephonyIntegration credential for recording fetch. "
+            "Required together with ``provider`` for credentialed import."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_telephony_credential_mode(self) -> "CallImportEvaluationCreate":
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL evaluation."
+            )
+        return self
 
 
 class CallImportEvaluationUpdate(BaseModel):
@@ -3242,6 +3331,14 @@ class CallImportEvaluationRetryRequest(BaseModel):
             "row's source CallImportRow so the (possibly new) STT runs "
             "from scratch. When False, rows that already have a "
             "diarised transcript skip diarisation and only re-evaluate."
+        ),
+    )
+    transcribe_mode: Optional[Literal["stt_llm", "llm_only"]] = Field(
+        default=None,
+        description=(
+            "Override the run's diarisation pipeline mode for this retry. "
+            "``stt_llm`` runs STT then an LLM diariser; ``llm_only`` feeds "
+            "audio directly to a multimodal diariser LLM."
         ),
     )
 

@@ -407,6 +407,40 @@ def client(db_session, api_key, org_id):
         delay=_sync_materialize_delay
     )
 
+    def _sync_mapped_materialize_delay(
+        call_import_id,
+        organization_id,
+        workspace_id,
+        evaluation_id,
+        *,
+        transcribe_overwrite=False,
+    ):
+        from uuid import UUID
+
+        from app.services.call_imports.bulk_ops import (
+            execute_call_import_materialization,
+            materialize_and_enqueue_evaluation,
+        )
+
+        mat_result = execute_call_import_materialization(
+            db_session,
+            UUID(call_import_id),
+            UUID(organization_id),
+            UUID(workspace_id),
+            schedule_import_dispatch=False,
+        )
+        if mat_result.get("status") != "failed":
+            materialize_and_enqueue_evaluation(
+                db_session,
+                UUID(evaluation_id),
+                transcribe_overwrite=transcribe_overwrite,
+            )
+        return types.SimpleNamespace(id="fake-sync-mapped-bulk-task")
+
+    fake_bulk_ops_module.materialize_mapped_call_import_evaluation_task = (
+        types.SimpleNamespace(delay=_sync_mapped_materialize_delay)
+    )
+
     def _sync_import_materialize_delay(call_import_id, organization_id, workspace_id):
         from uuid import UUID
 

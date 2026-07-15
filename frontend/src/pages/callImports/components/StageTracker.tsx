@@ -4,26 +4,13 @@ import type { CallImportStatus } from '../../../types/api'
 /**
  * Three-step tracker at the top of the call-import detail page.
  *
- * Drives the user through the staged flow:
  *   1. Uploaded -> file landed in S3.
  *   2. Mapped   -> schema + sheet + parameter mapping persisted.
- *   3. Imported -> rows materialised, workers enqueued.
- *
- * The "imported" step covers every terminal status (processing /
- * completed / partial / failed) since "import has begun" is the
- * meaningful transition for the user, not the worker's verdict.
- *
- * Returns ``completedThrough`` — the index of the most recently
- * *finished* stage. The stage at ``completedThrough + 1`` is what
- * the user is currently working on (rendered as "active"); anything
- * at-or-before ``completedThrough`` gets a green check.
+ *   3. Evaluate -> Run Evaluation drives fetch + diarize + score.
  */
 function statusStage(status: CallImportStatus): 0 | 1 | 2 | 3 {
-  if (status === 'uploaded') return 1 // UPLOAD done, MAP is next
-  if (status === 'mapped') return 2 // UPLOAD + MAP done, IMPORT is next
-  // Anything else (pending / processing / completed / partial / failed)
-  // means the IMPORT step has already been kicked off — every stage
-  // is in the past at that point.
+  if (status === 'uploaded') return 1
+  if (status === 'mapped') return 2
   return 3
 }
 
@@ -51,8 +38,8 @@ const STAGES: Array<{
   },
   {
     index: 3,
-    label: 'Imported',
-    description: 'Rows materialised; recordings fetched in the background.',
+    label: 'Run Evaluation',
+    description: 'Fetches recordings, diarizes, and scores each row.',
     Icon: PlayCircle,
   },
 ]
@@ -97,10 +84,6 @@ export default function StageTracker({ status }: StageTrackerProps) {
                   </p>
                 </div>
               </div>
-              {/* Render an underline under every stage (not just the
-                  first two) so a fully-imported batch looks symmetric.
-                  The colour still tracks ``done`` so stages the user
-                  hasn't reached yet stay gray. */}
               <div
                 className={`mt-3 ml-9 h-0.5 ${
                   done ? 'bg-green-300' : 'bg-gray-200'

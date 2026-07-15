@@ -590,6 +590,17 @@ def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> 
     else:
         evaluation.status = "partial"
 
+    from app.models.database import CallImport
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+
+    call_import = (
+        db.query(CallImport)
+        .filter(CallImport.id == evaluation.call_import_id)
+        .first()
+    )
+    if call_import is not None:
+        rollup_call_import_batch_status(db, call_import)
+
 
 @router.post(
     "",
@@ -920,9 +931,68 @@ async def create_call_import_evaluation(
         else None
     ) or None
 
-    from app.services.call_imports.bulk_ops import count_completed_source_rows
+    from app.models.enums import CallImportStatus
+    from app.services.call_imports.bulk_ops import count_all_source_rows
 
-    completed_row_count = count_completed_source_rows(db, call_import.id)
+    starting_from_mapped = False
+    if call_import.status == CallImportStatus.MAPPED:
+        if not call_import.source_s3_key or not call_import.source_format:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This batch has no staged source file. Upload and map "
+                    "a CSV/Excel file before running evaluation."
+                ),
+            )
+        if not call_import.schema_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot run evaluation without a mapped schema.",
+            )
+        from app.api.v1.routes.call_imports import (
+            _ensure_blob_storage_enabled,
+            _resolve_schema,
+            _resolve_telephony_integration,
+            _validate_direct_url_import_ready,
+        )
+
+        workspace_id = call_import.workspace_id
+        schema = _resolve_schema(
+            db, organization_id, workspace_id, call_import.schema_id
+        )
+        parameters = list(schema.parameters)
+        if payload.telephony_integration_id is not None:
+            integration = _resolve_telephony_integration(
+                db,
+                organization_id,
+                payload.telephony_integration_id,
+                payload.provider or "",
+            )
+        else:
+            _validate_direct_url_import_ready(
+                parameters, dict(call_import.parameter_mapping or {})
+            )
+            integration = None
+
+        _ensure_blob_storage_enabled()
+
+        if integration is not None:
+            call_import.provider = integration.provider
+            call_import.telephony_integration_id = integration.id
+        else:
+            call_import.provider = None
+            call_import.telephony_integration_id = None
+
+        call_import.total_rows = 0
+        call_import.completed_rows = 0
+        call_import.failed_rows = 0
+        call_import.error_message = None
+        call_import.status = CallImportStatus.PROCESSING
+        db.commit()
+        db.refresh(call_import)
+        starting_from_mapped = True
+
+    total_row_count = count_all_source_rows(db, call_import.id)
 
     # Every evaluation run scores the diarised transcript. The
     # ``transcript_sources`` field on the schema has already been
@@ -953,7 +1023,7 @@ async def create_call_import_evaluation(
             ],
             selected_metric_groups=selected_metric_groups or None,
             status="pending",
-            total_rows=completed_row_count,
+            total_rows=total_row_count,
             completed_rows=0,
             failed_rows=0,
             llm_provider=llm_provider_norm,
@@ -989,7 +1059,7 @@ async def create_call_import_evaluation(
     primary_evaluation = created_evaluations[0]
     sibling_ids = [e.id for e in created_evaluations[1:]]
 
-    if not completed_row_count:
+    if not total_row_count and not starting_from_mapped:
         for evaluation in created_evaluations:
             evaluation.status = "completed"
         db.commit()
@@ -999,15 +1069,29 @@ async def create_call_import_evaluation(
             db, primary_evaluation, sibling_evaluation_ids=sibling_ids
         )
 
-    from app.workers.tasks.call_import_bulk_ops import (
-        materialize_call_import_evaluation_task,
-    )
-
-    for evaluation in created_evaluations:
-        materialize_call_import_evaluation_task.delay(
-            str(evaluation.id),
-            transcribe_overwrite=payload.transcribe_overwrite,
+    if starting_from_mapped:
+        from app.workers.tasks.call_import_bulk_ops import (
+            materialize_mapped_call_import_evaluation_task,
         )
+
+        for evaluation in created_evaluations:
+            materialize_mapped_call_import_evaluation_task.delay(
+                str(call_import.id),
+                str(organization_id),
+                str(call_import.workspace_id),
+                str(evaluation.id),
+                transcribe_overwrite=payload.transcribe_overwrite,
+            )
+    else:
+        from app.workers.tasks.call_import_bulk_ops import (
+            materialize_call_import_evaluation_task,
+        )
+
+        for evaluation in created_evaluations:
+            materialize_call_import_evaluation_task.delay(
+                str(evaluation.id),
+                transcribe_overwrite=payload.transcribe_overwrite,
+            )
 
     for evaluation in created_evaluations:
         db.refresh(evaluation)
@@ -7651,6 +7735,30 @@ async def delete_call_import_evaluation_row(
 # like "just fix it" instead of "fail again immediately".
 
 
+def _prepare_source_row_for_retry(
+    source_row: CallImportRow,
+    *,
+    transcribe_overwrite: bool,
+) -> None:
+    """Clear stale diarisation markers so retry dispatch can re-run the pipeline."""
+    source_row.celery_task_id = None
+
+    if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
+        source_row.diarised_transcript = None
+
+    has_dia = bool((source_row.diarised_transcript or "").strip())
+    dia_status = (source_row.diarised_transcript_status or "").strip().lower()
+
+    if has_dia and not transcribe_overwrite:
+        source_row.diarised_transcript_status = "completed"
+        source_row.diarised_transcript_error = None
+        return
+
+    if dia_status in {"failed", "pending", "running", "idle"}:
+        source_row.diarised_transcript_status = "idle"
+        source_row.diarised_transcript_error = None
+
+
 def _reset_eval_row_for_retry(
     eval_row: CallImportEvaluationRow,
     *,
@@ -7953,6 +8061,18 @@ def _apply_retry_overrides(
         cleaned = payload.diarization_prompt.strip()
         evaluation.diarisation_prompt = cleaned or None
 
+    if payload.transcribe_mode is not None:
+        mode = payload.transcribe_mode.strip().lower()
+        if mode not in {"stt_llm", "llm_only"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown transcribe_mode '{payload.transcribe_mode}'. "
+                    "Valid values are 'stt_llm' and 'llm_only'."
+                ),
+            )
+        evaluation.transcribe_mode = mode
+
 
 def _gather_retry_targets(
     db: Session,
@@ -8248,7 +8368,11 @@ async def retry_call_import_evaluation(
         payload.transcribe_overwrite if payload else False
     )
 
-    for eval_row, _ in targets:
+    for eval_row, source_row in targets:
+        _prepare_source_row_for_retry(
+            source_row,
+            transcribe_overwrite=transcribe_overwrite,
+        )
         _reset_eval_row_for_retry(eval_row, metric_ids=metric_ids)
 
     # Flip the parent back to ``running`` and clear any old enqueue
@@ -8258,6 +8382,11 @@ async def retry_call_import_evaluation(
     # consistent with the new pending rows.
     evaluation.error_message = None
     evaluation.finished_at = None
+    evaluation.status = "running"
+    if not evaluation.started_at:
+        from datetime import datetime, timezone
+
+        evaluation.started_at = datetime.now(timezone.utc)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
     db.commit()
@@ -8370,11 +8499,17 @@ async def retry_call_import_evaluation_row(
             ),
         )
 
-    for er, _ in targets:
+    for er, source_row in targets:
+        _prepare_source_row_for_retry(source_row, transcribe_overwrite=False)
         _reset_eval_row_for_retry(er)
 
     evaluation.error_message = None
     evaluation.finished_at = None
+    evaluation.status = "running"
+    if not evaluation.started_at:
+        from datetime import datetime, timezone
+
+        evaluation.started_at = datetime.now(timezone.utc)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
     db.commit()

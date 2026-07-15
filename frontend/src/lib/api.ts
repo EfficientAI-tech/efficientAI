@@ -1672,6 +1672,9 @@ class ApiClient {
        * panel on the evaluation detail Flow tab.
        */
       discover_new_metrics?: boolean
+      /** Telephony credentials when starting from a mapped batch. */
+      provider?: string | null
+      telephony_integration_id?: string | null
     },
   ): Promise<CallImportEvaluation> {
     const response = await this.client.post(
@@ -2276,6 +2279,11 @@ class ApiClient {
       sttModel?: string | null
       sttCredentialId?: string | null
       transcribeOverwrite?: boolean
+      transcribeMode?: 'stt_llm' | 'llm_only'
+      diarizationLlmProvider?: string | null
+      diarizationLlmModel?: string | null
+      diarizationLlmCredentialId?: string | null
+      diarizationPrompt?: string | null
       /**
        * Metric-subset retry: when set, only these metrics are
        * recomputed and merged into the row's existing metric_scores
@@ -2311,6 +2319,21 @@ class ApiClient {
     }
     if (options?.transcribeOverwrite) {
       body.transcribe_overwrite = true
+    }
+    if (options?.transcribeMode) {
+      body.transcribe_mode = options.transcribeMode
+    }
+    if (options?.diarizationLlmProvider) {
+      body.diarization_llm_provider = options.diarizationLlmProvider
+    }
+    if (options?.diarizationLlmModel) {
+      body.diarization_llm_model = options.diarizationLlmModel
+    }
+    if (options?.diarizationLlmCredentialId !== undefined) {
+      body.diarization_llm_credential_id = options.diarizationLlmCredentialId
+    }
+    if (options?.diarizationPrompt !== undefined) {
+      body.diarization_prompt = options.diarizationPrompt
     }
     if (options?.metricIds && options.metricIds.length > 0) {
       body.metric_ids = options.metricIds

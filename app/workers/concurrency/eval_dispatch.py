@@ -15,6 +15,7 @@ from app.models.database import (
     CallImportEvaluationRow,
     CallImportRow,
 )
+from app.models.enums import CallImportRowStatus
 from app.workers.concurrency.limits import (
     acquire_eval_slot,
     release_eval_slot_for_celery_task,
@@ -25,6 +26,9 @@ IMPORTS_QUEUE = "imports"
 DIARIZATION_QUEUE = "diarization"
 EVALUATIONS_QUEUE = "evaluations"
 AUDIO_METRICS_QUEUE = "audio-metrics"
+# Lightweight scheduler tasks — must not sit behind ``imports`` / ``evaluations``
+# fan-out on the call-import worker (see docker-compose queue order).
+DISPATCH_QUEUE = "celery"
 
 DispatchSingleRowResult = Literal["dispatched", "skip", "at_capacity"]
 
@@ -67,6 +71,118 @@ def _needs_transcribe_for_eval(
     existing_dia = (source_row.diarised_transcript or "").strip()
     needs_diarisation = not existing_dia or transcribe_overwrite
     return bool(can_auto_transcribe and has_audio and needs_diarisation)
+
+
+def _diarisation_in_flight(source_row: CallImportRow) -> bool:
+    """True when another worker is actively diarising this source row."""
+    dia_status = (source_row.diarised_transcript_status or "").strip().lower()
+    if dia_status not in {"pending", "running"}:
+        return False
+    return bool((source_row.celery_task_id or "").strip())
+
+
+def _needs_import_for_eval(source_row: CallImportRow) -> bool:
+    """True when the eval pipeline must fetch a recording before later stages."""
+    if source_row.status in (
+        CallImportRowStatus.COMPLETED,
+        CallImportRowStatus.FAILED,
+        CallImportRowStatus.PROCESSING,
+    ):
+        return False
+    if (source_row.recording_s3_key or "").strip():
+        return False
+    return bool((source_row.recording_url or "").strip())
+
+
+def _fail_eval_row_for_import(
+    db: Session,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+) -> None:
+    from datetime import datetime, timezone
+
+    eval_row.status = "failed"
+    eval_row.error_message = (
+        source_row.error_message or "Recording fetch failed"
+    )
+    eval_row.finished_at = datetime.now(timezone.utc)
+    eval_row.celery_task_id = None
+    db.commit()
+
+
+def build_eval_chain_transcribe_apply_async(
+    *,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    reserved_task_id: str,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+):
+    """Build a Celery ``apply_async`` for eval-chain diarisation."""
+    from app.workers.tasks.transcribe_call_import_row import (
+        transcribe_call_import_row_task,
+    )
+
+    transcribe_mode = (
+        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
+    ).strip().lower()
+    kwargs = {"_eval_slot_task_id": reserved_task_id}
+    if restricted_metric_ids:
+        kwargs["eval_restricted_metric_ids"] = restricted_metric_ids
+    return transcribe_call_import_row_task.apply_async(
+        args=(
+            str(source_row.id),
+            evaluation.stt_provider if transcribe_mode == "stt_llm" else None,
+            evaluation.stt_model if transcribe_mode == "stt_llm" else None,
+            str(evaluation.stt_credential_id)
+            if transcribe_mode == "stt_llm" and evaluation.stt_credential_id
+            else None,
+            None,
+            transcribe_overwrite,
+            str(eval_row.id),
+            getattr(evaluation, "diarisation_llm_provider", None),
+            getattr(evaluation, "diarisation_llm_model", None),
+            str(evaluation.diarisation_llm_credential_id)
+            if getattr(evaluation, "diarisation_llm_credential_id", None)
+            else None,
+            getattr(evaluation, "diarisation_prompt", None),
+            transcribe_mode,
+        ),
+        kwargs=kwargs,
+        queue=DIARIZATION_QUEUE,
+        task_id=reserved_task_id,
+    )
+
+
+def enqueue_eval_chain_transcribe_after_import(
+    db: Session,
+    *,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    slot_task_id: str,
+    restricted_metric_ids: Optional[List[str]] = None,
+    transcribe_overwrite: bool = False,
+) -> bool:
+    """Directly chain diarisation after a successful eval-chain recording fetch."""
+    source_row.diarised_transcript_status = "pending"
+    source_row.diarised_transcript_error = None
+    source_row.celery_task_id = slot_task_id
+    eval_row.celery_task_id = None
+    db.flush()
+
+    async_result = build_eval_chain_transcribe_apply_async(
+        evaluation=evaluation,
+        eval_row=eval_row,
+        source_row=source_row,
+        reserved_task_id=slot_task_id,
+        restricted_metric_ids=restricted_metric_ids,
+        transcribe_overwrite=transcribe_overwrite,
+    )
+    eval_row.celery_task_id = async_result.id
+    db.commit()
+    return True
 
 
 def _reserve_slot_and_enqueue(
@@ -127,12 +243,44 @@ def _try_dispatch_single_row(
     from app.workers.tasks.evaluate_call_import_row_core import (
         row_needs_audio_phase,
     )
-    from app.workers.tasks.transcribe_call_import_row import (
-        transcribe_call_import_row_task,
+    from app.workers.tasks.process_call_import_row import (
+        process_call_import_row_task,
     )
 
-    if evaluation.status in {"cancelled", "completed", "failed"}:
+    if (evaluation.status or "").strip().lower() == "cancelled":
         return "skip"
+
+    if source_row.status == CallImportRowStatus.FAILED:
+        _fail_eval_row_for_import(db, eval_row, source_row)
+        return "skip"
+
+    if source_row.status == CallImportRowStatus.PROCESSING:
+        if not (source_row.recording_s3_key or "").strip():
+            return "skip"
+
+    if _needs_import_for_eval(source_row):
+
+        def _enqueue_import(reserved_task_id: str):
+            source_row.celery_task_id = reserved_task_id
+            db.flush()
+            return process_call_import_row_task.apply_async(
+                args=(str(source_row.id),),
+                kwargs={
+                    "_eval_slot_task_id": reserved_task_id,
+                    "run_eval_row_id": str(eval_row.id),
+                },
+                queue=IMPORTS_QUEUE,
+                task_id=reserved_task_id,
+            )
+
+        if _reserve_slot_and_enqueue(
+            evaluation=evaluation,
+            eval_row=eval_row,
+            db=db,
+            enqueue_fn=_enqueue_import,
+        ):
+            return "dispatched"
+        return "at_capacity"
 
     transcribe_mode = (
         getattr(evaluation, "transcribe_mode", None) or "stt_llm"
@@ -144,49 +292,23 @@ def _try_dispatch_single_row(
         transcribe_overwrite=transcribe_overwrite,
         auto_transcribe=auto_transcribe,
     ):
-        dia_status = (source_row.diarised_transcript_status or "").strip().lower()
-        if dia_status == "pending":
-            return "skip"
-        if dia_status == "failed" and not transcribe_overwrite:
+        if _diarisation_in_flight(source_row):
             return "skip"
 
         def _enqueue_transcribe(reserved_task_id: str):
             source_row.diarised_transcript_status = "pending"
             source_row.diarised_transcript_error = None
+            if transcribe_overwrite:
+                source_row.diarised_transcript = None
             source_row.celery_task_id = reserved_task_id
             db.flush()
-            kwargs = {"_eval_slot_task_id": reserved_task_id}
-            if restricted_metric_ids:
-                kwargs["eval_restricted_metric_ids"] = restricted_metric_ids
-            return transcribe_call_import_row_task.apply_async(
-                args=(
-                    str(source_row.id),
-                    evaluation.stt_provider
-                    if transcribe_mode == "stt_llm"
-                    else None,
-                    evaluation.stt_model
-                    if transcribe_mode == "stt_llm"
-                    else None,
-                    str(evaluation.stt_credential_id)
-                    if (
-                        transcribe_mode == "stt_llm"
-                        and evaluation.stt_credential_id
-                    )
-                    else None,
-                    None,
-                    transcribe_overwrite,
-                    str(eval_row.id),
-                    getattr(evaluation, "diarisation_llm_provider", None),
-                    getattr(evaluation, "diarisation_llm_model", None),
-                    str(evaluation.diarisation_llm_credential_id)
-                    if getattr(evaluation, "diarisation_llm_credential_id", None)
-                    else None,
-                    getattr(evaluation, "diarisation_prompt", None),
-                    transcribe_mode,
-                ),
-                kwargs=kwargs,
-                queue=DIARIZATION_QUEUE,
-                task_id=reserved_task_id,
+            return build_eval_chain_transcribe_apply_async(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                source_row=source_row,
+                reserved_task_id=reserved_task_id,
+                restricted_metric_ids=restricted_metric_ids,
+                transcribe_overwrite=transcribe_overwrite,
             )
 
         if _reserve_slot_and_enqueue(

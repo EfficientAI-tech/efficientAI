@@ -8,7 +8,7 @@ from uuid import UUID
 from loguru import logger
 
 from app.database import SessionLocal
-from app.models.database import CallImport
+from app.models.database import CallImport, CallImportEvaluation
 from app.models.schemas import CallImportTranscribeRequest
 from app.services.call_imports.bulk_ops import (
     execute_bulk_diarization,
@@ -92,12 +92,108 @@ def materialize_call_import_evaluation_task(
         db.close()
 
 
+@celery_app.task(
+    name="materialize_mapped_call_import_evaluation",
+    bind=True,
+    max_retries=1,
+)
+def materialize_mapped_call_import_evaluation_task(
+    self,
+    call_import_id: str,
+    organization_id: str,
+    workspace_id: str,
+    evaluation_id: str,
+    *,
+    transcribe_overwrite: bool = False,
+) -> dict:
+    """Materialize import rows from staged source, then start eval dispatch.
+
+    Runs off the API thread so large CSV/Excel batches (10k+ rows) do not
+    block the Run Evaluation request.
+    """
+    del self
+    db = SessionLocal()
+    eval_uuid = UUID(evaluation_id)
+    try:
+        mat_result = execute_call_import_materialization(
+            db,
+            UUID(call_import_id),
+            UUID(organization_id),
+            UUID(workspace_id),
+            schedule_import_dispatch=False,
+        )
+        status = mat_result.get("status")
+        if status == "failed":
+            call_import = (
+                db.query(CallImport)
+                .filter(CallImport.id == UUID(call_import_id))
+                .first()
+            )
+            _fail_evaluation_materialization(
+                db,
+                eval_uuid,
+                error_message=(
+                    (call_import.error_message if call_import else None)
+                    or "Failed to materialize import rows for evaluation."
+                ),
+            )
+            return {
+                "evaluation_id": evaluation_id,
+                "status": "failed",
+                "materialization": mat_result,
+            }
+
+        materialize_and_enqueue_evaluation(
+            db,
+            eval_uuid,
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        return {
+            "evaluation_id": evaluation_id,
+            "status": "materialized",
+            "materialization": mat_result,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "materialize_mapped_call_import_evaluation failed for eval {}",
+            evaluation_id,
+        )
+        _fail_evaluation_materialization(
+            db,
+            eval_uuid,
+            error_message=f"Failed to start evaluation: {exc}",
+        )
+        return {"evaluation_id": evaluation_id, "status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+def _fail_evaluation_materialization(
+    db,
+    evaluation_id: UUID,
+    *,
+    error_message: str,
+) -> None:
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if evaluation is None:
+        return
+    evaluation.status = "failed"
+    evaluation.error_message = error_message
+    db.commit()
+
+
 @celery_app.task(name="materialize_call_import_rows", bind=True, max_retries=1)
 def materialize_call_import_rows_task(
     self,
     call_import_id: str,
     organization_id: str,
     workspace_id: str,
+    *,
+    schedule_import_dispatch: bool = False,
 ) -> dict:
     """Parse staged source file and bulk-insert rows off the API thread."""
     del self
@@ -108,6 +204,7 @@ def materialize_call_import_rows_task(
             UUID(call_import_id),
             UUID(organization_id),
             UUID(workspace_id),
+            schedule_import_dispatch=schedule_import_dispatch,
         )
     finally:
         db.close()

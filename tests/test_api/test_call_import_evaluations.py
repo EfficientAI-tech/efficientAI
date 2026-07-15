@@ -619,6 +619,52 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
         assert call.kwargs.get("signal") == "SIGTERM"
 
 
+def test_cancel_evaluation_rollup_call_import_from_processing_partial(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Aborting an eval must not leave the import batch stuck in ``processing``.
+
+    Eval-primary batches materialize thousands of ``pending`` import rows and
+    only fetch a subset before the operator cancels. Once the evaluation run
+    is terminal, leftover pending rows must not block the parent rollup.
+    """
+    metric = _make_metric(db_session, org_id)
+    call_import, row_models = _make_call_import(
+        db_session,
+        org_id,
+        rows=5,
+        row_status=CallImportRowStatus.PENDING,
+    )
+    row_models[0].status = CallImportRowStatus.COMPLETED
+    call_import.status = CallImportStatus.PROCESSING
+    call_import.total_rows = 5
+    call_import.completed_rows = 1
+    call_import.failed_rows = 0
+    db_session.commit()
+
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    _force_running(db_session, created["id"])
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 200, response.text
+
+    db_session.expire_all()
+    refreshed_import = (
+        db_session.query(CallImport)
+        .filter(CallImport.id == call_import.id)
+        .first()
+    )
+    assert refreshed_import.status == CallImportStatus.PARTIAL
+    assert refreshed_import.completed_rows == 1
+
+
 def test_cancel_evaluation_is_idempotent_for_terminal_runs(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
@@ -773,3 +819,123 @@ def test_cancel_evaluation_row_unknown_row_returns_404(
         f"{created['id']}/rows/{uuid4()}/cancel"
     )
     assert response.status_code == 404
+
+
+def test_retry_failed_rows_flips_partial_run_back_to_running(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Retry on a partially-completed run should reset failed rows and resume."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_uuid = UUID(created["id"])
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .order_by(CallImportEvaluationRow.created_at.asc())
+        .all()
+    )
+    eval_rows[0].status = "completed"
+    eval_rows[1].status = "failed"
+    eval_rows[1].error_message = "LLM timeout"
+    parent = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == eval_uuid)
+        .first()
+    )
+    parent.status = "partial"
+    parent.completed_rows = 1
+    parent.failed_rows = 1
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["requeued"] == 1
+
+    db_session.refresh(parent)
+    db_session.refresh(eval_rows[1])
+    assert parent.status == "running"
+    assert eval_rows[1].status == "pending"
+    assert eval_rows[1].error_message is None
+
+
+def test_retry_clears_failed_diarisation_to_idle_not_null(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Retry must not NULL out diarised_transcript_status (NOT NULL column)."""
+    metric = _make_metric(db_session, org_id)
+    call_import, rows = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    source_row = rows[0]
+    source_row.recording_s3_key = "audio/org/test.mp3"
+    source_row.diarised_transcript = None
+    source_row.diarised_transcript_status = "failed"
+    source_row.diarised_transcript_error = "STT timeout"
+
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .one()
+    )
+    eval_row.status = "failed"
+    eval_row.error_message = "Diarisation failed"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.refresh(source_row)
+    assert source_row.diarised_transcript_status == "idle"
+    assert source_row.diarised_transcript_error is None
+
+
+def test_retry_marks_existing_diarised_transcript_completed(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Eval-only retries should not force re-diarisation when a transcript exists."""
+    metric = _make_metric(db_session, org_id)
+    call_import, rows = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    source_row = rows[0]
+    source_row.recording_s3_key = "audio/org/test.mp3"
+    source_row.diarised_transcript = "agent: hello\nuser: hi"
+    source_row.diarised_transcript_status = "failed"
+
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .one()
+    )
+    eval_row.status = "failed"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.refresh(source_row)
+    assert source_row.diarised_transcript_status == "completed"
+    assert "hello" in (source_row.diarised_transcript or "")

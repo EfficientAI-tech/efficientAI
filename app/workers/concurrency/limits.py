@@ -137,6 +137,30 @@ def acquire_eval_slot(
         return True
 
 
+def read_inflight_count(key: str) -> int:
+    """Read a single Redis in-flight counter (returns 0 on error)."""
+    try:
+        return max(0, int(_get_redis().get(key) or 0))
+    except (redis.RedisError, ValueError, TypeError):
+        return 0
+
+
+def read_global_inflight() -> int:
+    return read_inflight_count(_global_key())
+
+
+def read_org_inflight(organization_id: UUID | str) -> int:
+    return read_inflight_count(_org_key(organization_id))
+
+
+def read_workspace_inflight(workspace_id: UUID | str) -> int:
+    return read_inflight_count(_workspace_key(workspace_id))
+
+
+def read_job_inflight(evaluation_id: UUID | str) -> int:
+    return read_inflight_count(_job_key(evaluation_id))
+
+
 def slot_registered_for_task(celery_task_id: str) -> bool:
     try:
         return bool(_get_redis().exists(_task_key(celery_task_id)))

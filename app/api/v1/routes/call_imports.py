@@ -25,6 +25,7 @@ from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.auth.rbac import require_admin
 from app.database import get_db
 from app.dependencies import (
     get_api_key,
@@ -33,6 +34,9 @@ from app.dependencies import (
     require_enterprise_feature,
 )
 from app.services.billing.flexprice_service import record_call_import_batch_created
+from app.services.call_imports.dispatch_diagnostics import (
+    build_call_import_dispatch_diagnostics,
+)
 from app.models.database import (
     CallImport,
     CallImportRow,
@@ -52,6 +56,7 @@ from app.models.schemas import (
     CallImportDetailResponse,
     CallImportDeleteResponse,
     CallImportDiarisationPromptDefaultResponse,
+    CallImportDispatchDiagnosticsResponse,
     CallImportInsightsMetric,
     CallImportInsightsResponse,
     CallImportInsightsRunPoint,
@@ -1558,19 +1563,35 @@ async def start_call_import(
     call_import_id: UUID,
     payload: CallImportStartRequest,
     background_tasks: BackgroundTasks,
+    legacy: bool = Query(
+        False,
+        description=(
+            "Deprecated escape hatch for import-only processing. "
+            "New batches should use Run Evaluation instead."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
-    """IMPORT stage of the staged call-import flow.
+    """Deprecated IMPORT stage — use Run Evaluation for new batches.
 
-    Validates mapping + credential selection, flips the batch to
-    ``processing``, and enqueues background row materialization so the
-    API can return immediately. Recording fetch still runs via the
-    fair-import dispatch worker.
+    Recording fetch is part of the unified evaluation pipeline. This
+    endpoint remains available only with ``?legacy=true`` for backward
+    compatibility.
     """
     del api_key, background_tasks
+
+    if not legacy:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Standalone import is deprecated. Use Run Evaluation — "
+                "recording fetch is part of the evaluation pipeline. "
+                "Append ?legacy=true to use the import-only path."
+            ),
+        )
 
     from sqlalchemy.orm import selectinload as _selectinload
 
@@ -1657,6 +1678,7 @@ async def start_call_import(
         str(call_import_id),
         str(organization_id),
         str(workspace_id),
+        schedule_import_dispatch=True,
     )
 
     return CallImportUploadResponse(
@@ -2180,6 +2202,47 @@ async def list_call_imports(
 
 
 @router.get(
+    "/dispatch-diagnostics",
+    response_model=CallImportDispatchDiagnosticsResponse,
+    operation_id="getCallImportDispatchDiagnostics",
+    dependencies=[Depends(require_admin)],
+)
+async def get_call_import_dispatch_diagnostics(
+    workspace_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Optional workspace filter. When omitted, returns every workspace "
+            "in the organization with active eval dispatch state."
+        ),
+    ),
+    include_idle_workspaces: bool = Query(
+        False,
+        description=(
+            "When true, include org workspaces with zero pending rows and "
+            "zero in-flight slots."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportDispatchDiagnosticsResponse:
+    """Live eval slot usage and fair-dispatch state for operators.
+
+    Org admins use this to diagnose cross-workspace starvation (e.g. one
+    workspace's 10k run blocking another's pending eval rows) by inspecting
+    Redis in-flight counters, pending dispatch rows, and scheduler cursors.
+    """
+    del api_key
+    payload = build_call_import_dispatch_diagnostics(
+        db,
+        organization_id,
+        workspace_id=workspace_id,
+        include_idle_workspaces=include_idle_workspaces,
+    )
+    return CallImportDispatchDiagnosticsResponse.model_validate(payload)
+
+
+@router.get(
     "/datasets",
     response_model=List[str],
     operation_id="listCallImportDatasets",
@@ -2373,6 +2436,15 @@ async def get_call_import_detail(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Call import not found",
         )
+
+    if call_import.status == CallImportStatus.PROCESSING:
+        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+
+        prior_status = call_import.status
+        rollup_call_import_batch_status(db, call_import)
+        if call_import.status != prior_status:
+            db.commit()
+            db.refresh(call_import)
 
     rows_query = db.query(CallImportRow).filter(
         CallImportRow.call_import_id == call_import.id
@@ -2730,45 +2802,9 @@ def _recompute_call_import_counters(
     diverge between the per-row and bulk paths.
     """
 
-    from app.models.enums import CallImportRowStatus
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
 
-    remaining = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .all()
-    )
-    completed = sum(
-        1 for r in remaining if r.status == CallImportRowStatus.COMPLETED
-    )
-    failed = sum(
-        1 for r in remaining if r.status == CallImportRowStatus.FAILED
-    )
-    pending_or_processing = sum(
-        1
-        for r in remaining
-        if r.status in (CallImportRowStatus.PENDING, CallImportRowStatus.PROCESSING)
-    )
-
-    call_import.total_rows = len(remaining)
-    call_import.completed_rows = completed
-    call_import.failed_rows = failed
-
-    if call_import.status == CallImportStatus.DELETING:
-        return
-
-    if pending_or_processing > 0:
-        call_import.status = CallImportStatus.PROCESSING
-    elif len(remaining) == 0:
-        # No rows left — leave the batch in its current terminal status
-        # rather than synthesizing a misleading "completed". The user can
-        # delete the empty batch from the UI if they want it gone.
-        pass
-    elif failed == 0:
-        call_import.status = CallImportStatus.COMPLETED
-    elif completed == 0:
-        call_import.status = CallImportStatus.FAILED
-    else:
-        call_import.status = CallImportStatus.PARTIAL
+    rollup_call_import_batch_status(db, call_import)
 
 
 @router.post(

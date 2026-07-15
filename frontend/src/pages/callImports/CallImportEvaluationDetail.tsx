@@ -59,6 +59,10 @@ import {
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import {
+  isLLMSelectionComplete,
+  resolveLLMModelForSubmit,
+} from '../../lib/llmModelOptions'
 import { useToast } from '../../hooks/useToast'
 import type {
   CallImportEvaluation,
@@ -460,6 +464,15 @@ export default function CallImportEvaluationDetail() {
     model: null,
     credential_id: null,
   })
+  const [retryTranscribeMode, setRetryTranscribeMode] = useState<
+    'stt_llm' | 'llm_only'
+  >('llm_only')
+  const [retryDiariserLLM, setRetryDiariserLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [retryDiarisationPrompt, setRetryDiarisationPrompt] = useState('')
   const [retryTranscribeOverwrite, setRetryTranscribeOverwrite] =
     useState(false)
 
@@ -737,6 +750,11 @@ export default function CallImportEvaluationDetail() {
     },
   })
 
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
   const rowsQuery = useQuery({
     queryKey: [
       'call-import-evaluation-rows',
@@ -978,6 +996,18 @@ export default function CallImportEvaluationDetail() {
         retrySTT.model !== (evaluation?.stt_model ?? null) ||
         (retrySTT.credential_id ?? null) !==
           (evaluation?.stt_credential_id ?? null)
+      const diariserChanged =
+        retryDiariserLLM.provider !==
+          (evaluation?.diarisation_llm_provider ?? null) ||
+        retryDiariserLLM.model !==
+          (evaluation?.diarisation_llm_model ?? null) ||
+        (retryDiariserLLM.credential_id ?? null) !==
+          (evaluation?.diarisation_llm_credential_id ?? null)
+      const transcribeModeChanged =
+        retryTranscribeMode !== (evaluation?.transcribe_mode ?? 'stt_llm')
+      const diarisationPromptChanged =
+        retryDiarisationPrompt.trim() !==
+        (evaluation?.diarisation_prompt ?? '').trim()
 
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         llmProvider:
@@ -1004,6 +1034,25 @@ export default function CallImportEvaluationDetail() {
           sttChanged && retrySTT.provider && retrySTT.model
             ? retrySTT.credential_id ?? null
             : undefined,
+        transcribeMode: transcribeModeChanged
+          ? retryTranscribeMode
+          : undefined,
+        diarizationLlmProvider:
+          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+            ? retryDiariserLLM.provider
+            : undefined,
+        diarizationLlmModel:
+          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+            ? resolveLLMModelForSubmit(retryDiariserLLM, aiProviders) ??
+              retryDiariserLLM.model
+            : undefined,
+        diarizationLlmCredentialId:
+          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+            ? retryDiariserLLM.credential_id ?? null
+            : undefined,
+        diarizationPrompt: diarisationPromptChanged
+          ? retryDiarisationPrompt.trim() || null
+          : undefined,
         transcribeOverwrite: retryTranscribeOverwrite,
       })
     },
@@ -1047,6 +1096,13 @@ export default function CallImportEvaluationDetail() {
       model: evaluation.stt_model ?? null,
       credential_id: evaluation.stt_credential_id ?? null,
     })
+    setRetryTranscribeMode(evaluation.transcribe_mode ?? 'stt_llm')
+    setRetryDiariserLLM({
+      provider: evaluation.diarisation_llm_provider ?? null,
+      model: evaluation.diarisation_llm_model ?? null,
+      credential_id: evaluation.diarisation_llm_credential_id ?? null,
+    })
+    setRetryDiarisationPrompt(evaluation.diarisation_prompt ?? '')
     setRetryTranscribeOverwrite(false)
     setRetryError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3775,24 +3831,68 @@ export default function CallImportEvaluationDetail() {
                 </div>
 
                 {evaluation.transcript_source === 'diarised' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      STT for re-diarisation
-                    </label>
-                    <p className="text-xs text-gray-500 mb-2">
-                      Only used when a retried row is missing its
-                      diarised transcript, or when you opt to overwrite
-                      below.
-                    </p>
-                    <ProviderModelPicker
-                      kind="stt"
-                      value={retrySTT}
-                      onChange={setRetrySTT}
-                      providerAllowList={STT_PROVIDER_ALLOWLIST}
-                      allowCredentialPick
-                      defaultLabel="Pick an STT provider"
-                    />
-                    <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Auto-diarise missing or overwritten transcripts
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        Rows that already have a diarised transcript are
+                        re-scored only unless you opt to overwrite below.
+                        Pick the same pipeline you would use for a new run.
+                      </p>
+                    </div>
+                    <div
+                      role="tablist"
+                      aria-label="Auto-diarise pipeline"
+                      className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={retryTranscribeMode === 'llm_only'}
+                        onClick={() => setRetryTranscribeMode('llm_only')}
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
+                          retryTranscribeMode === 'llm_only'
+                            ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        LLM only (audio in)
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={retryTranscribeMode === 'stt_llm'}
+                        onClick={() => setRetryTranscribeMode('stt_llm')}
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${
+                          retryTranscribeMode === 'stt_llm'
+                            ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        STT + LLM diariser
+                        <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+                          Advanced
+                        </span>
+                      </button>
+                    </div>
+                    {retryTranscribeMode === 'stt_llm' && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          STT for re-diarisation
+                        </label>
+                        <ProviderModelPicker
+                          kind="stt"
+                          value={retrySTT}
+                          onChange={setRetrySTT}
+                          providerAllowList={STT_PROVIDER_ALLOWLIST}
+                          allowCredentialPick
+                          defaultLabel="Pick an STT provider"
+                        />
+                      </div>
+                    )}
+                    <label className="flex items-start gap-2 text-sm text-gray-700">
                       <input
                         type="checkbox"
                         checked={retryTranscribeOverwrite}
@@ -3806,13 +3906,42 @@ export default function CallImportEvaluationDetail() {
                           Re-diarise existing transcripts
                         </span>{' '}
                         <span className="text-gray-500">
-                          — wipe the diarised transcript on every
-                          retried row so the new STT runs from scratch.
-                          Leave unchecked to keep existing transcripts
-                          and only re-score with the new LLM.
+                          — wipe the diarised transcript on every retried
+                          row so the pipeline runs from scratch. Leave
+                          unchecked to keep existing transcripts and only
+                          re-score with the new LLM.
                         </span>
                       </span>
                     </label>
+                    <div className="pt-3 border-t border-gray-200 space-y-2">
+                      <p className="text-xs font-medium text-gray-700">
+                        {retryTranscribeMode === 'stt_llm'
+                          ? 'Diariser LLM'
+                          : 'Multimodal diariser LLM'}
+                      </p>
+                      <p className="text-[11px] text-gray-500">
+                        {retryTranscribeMode === 'stt_llm'
+                          ? 'Used after STT when a row needs diarisation or overwrite.'
+                          : 'Receives audio directly when a row needs diarisation or overwrite.'}
+                      </p>
+                      <ProviderModelPicker
+                        kind="llm"
+                        value={retryDiariserLLM}
+                        onChange={setRetryDiariserLLM}
+                        allowCredentialPick
+                        audioCapableOnly={retryTranscribeMode === 'llm_only'}
+                        defaultLabel="Pick a diariser LLM"
+                      />
+                      <textarea
+                        value={retryDiarisationPrompt}
+                        onChange={(e) =>
+                          setRetryDiarisationPrompt(e.target.value)
+                        }
+                        rows={3}
+                        placeholder="Diarisation prompt (optional override)"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -3857,7 +3986,12 @@ export default function CallImportEvaluationDetail() {
                   disabled={
                     retryAllFailedMutation.isPending ||
                     !retryLLM.provider ||
-                    !retryLLM.model
+                    !retryLLM.model ||
+                    (retryTranscribeOverwrite &&
+                      retryTranscribeMode === 'stt_llm' &&
+                      (!retrySTT.provider || !retrySTT.model)) ||
+                    (retryTranscribeOverwrite &&
+                      !isLLMSelectionComplete(retryDiariserLLM, aiProviders))
                   }
                 >
                   Retry {evaluation.failed_rows} row

@@ -114,7 +114,10 @@ services:
 
   # Dedicated worker for call-import + evaluation queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
-  # then ``evaluations`` (eval rows, eval-chain transcribe, post-eval LLM).
+  # then ``evaluations`` (LLM scoring). Fair eval dispatch + eval
+  # materialize run on the ``celery`` queue (``worker`` service) so a large
+  # import/eval fan-out in one workspace cannot head-of-line block dispatch
+  # for other workspaces.
   worker-imports:
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     build:

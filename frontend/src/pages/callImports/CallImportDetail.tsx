@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -55,13 +62,17 @@ import {
   resolveLLMModelForSubmit,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
-import ImportPanel from './components/ImportPanel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import InsightsMetricCard, {
   INSIGHTS_PALETTE,
 } from './components/InsightsMetricCard'
 import MappingPanel from './components/MappingPanel'
+import RunEvaluationStep from './components/RunEvaluationStep'
 import StageTracker from './components/StageTracker'
+import TelephonyCredentialPicker, {
+  credentialSelectionFromState,
+  isCredentialSelectionValid,
+} from './components/TelephonyCredentialPicker'
 import TranscriptView from './components/TranscriptView'
 
 // Providers we know `TranscriptionService.transcribe()` already supports
@@ -434,6 +445,8 @@ export default function CallImportDetail() {
     credential_id: null,
   })
   const [evalDiarisationPrompt, setEvalDiarisationPrompt] = useState('')
+  const [evalTelephonyProvider, setEvalTelephonyProvider] = useState('')
+  const [evalTelephonyIntegrationId, setEvalTelephonyIntegrationId] = useState('')
   const [activeTab, setActiveTab] = useState<
     'rows' | 'evaluations' | 'insights'
   >('rows')
@@ -525,6 +538,25 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImportDiarisationPromptDefault(),
     staleTime: Infinity,
   })
+
+  const openRunEvaluationModal = useCallback(() => {
+    setSelectedMetricIds([])
+    if (!evalDiariserLLM.provider) {
+      setEvalDiariserLLM({
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        credential_id: null,
+      })
+    }
+    if (!evalDiarisationPrompt && defaultDiarisationPrompt) {
+      setEvalDiarisationPrompt(defaultDiarisationPrompt)
+    }
+    setShowRunEval(true)
+  }, [
+    defaultDiarisationPrompt,
+    evalDiariserLLM.provider,
+    evalDiarisationPrompt,
+  ])
 
   const { data: aiProviders = [] } = useQuery({
     queryKey: ['ai-providers'],
@@ -1423,8 +1455,10 @@ export default function CallImportDetail() {
   // until the user finishes the MAP + IMPORT steps. We swap out the
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
-  const preImport = data.status === 'uploaded' || data.status === 'mapped'
+  const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
+  const showWorkflowTabs = !needsMapping
   const isDeleting = data.status === 'deleting'
+  const canRunEvaluation = data.status === 'mapped' || showWorkflowTabs
 
   // Selection state — ``selectedRowIds`` can now span pages (we no
   // longer wipe it on pagination), so distinguish "how many of the
@@ -1487,33 +1521,16 @@ export default function CallImportDetail() {
           Back to Call Imports
         </Link>
         <div className="flex items-center gap-2">
-          {!preImport && !isDeleting && (
+          {canRunEvaluation && !isDeleting && showWorkflowTabs && (
             <Button
               variant="primary"
               size="sm"
-              onClick={() => {
-                setSelectedMetricIds([])
-                // Seed sensible diariser defaults; the user can
-                // override before submitting. Same defaults as the
-                // standalone Transcribe modal so the two paths feel
-                // consistent.
-                if (!evalDiariserLLM.provider) {
-                  setEvalDiariserLLM({
-                    provider: 'openai',
-                    model: 'gpt-4o-mini',
-                    credential_id: null,
-                  })
-                }
-                if (!evalDiarisationPrompt && defaultDiarisationPrompt) {
-                  setEvalDiarisationPrompt(defaultDiarisationPrompt)
-                }
-                setShowRunEval(true)
-              }}
+              onClick={openRunEvaluationModal}
               disabled={!rows.length}
               title={
                 !rows.length
                   ? 'No rows to evaluate yet'
-                  : 'Open the run dialog — you must pick metrics and an STT provider/model before starting'
+                  : 'Open the run dialog — pick metrics, credentials, and models before starting'
               }
             >
               Run Evaluation
@@ -1846,16 +1863,18 @@ export default function CallImportDetail() {
           confusing — skip it entirely for those. */}
       {data.source_s3_key && <StageTracker status={data.status} />}
 
-      {preImport && data.source_s3_key && (
+      {needsMapping && data.source_s3_key && (
         <>
           {(data.status === 'uploaded' || data.status === 'mapped') && (
             <MappingPanel callImport={data} />
           )}
-          {data.status === 'mapped' && <ImportPanel callImport={data} />}
+          {data.status === 'mapped' && !isDeleting && (
+            <RunEvaluationStep onRunEvaluation={openRunEvaluationModal} />
+          )}
         </>
       )}
 
-      {preImport ? null : (
+      {showWorkflowTabs ? (
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex gap-6" aria-label="Call import sections">
           <button
@@ -1903,9 +1922,9 @@ export default function CallImportDetail() {
           </button>
         </nav>
       </div>
-      )}
+      ) : null}
 
-      {!preImport && activeTab === 'rows' && (
+      {showWorkflowTabs && activeTab === 'rows' && (
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Rows</h2>
@@ -2847,7 +2866,7 @@ export default function CallImportDetail() {
       </div>
       )}
 
-      {!preImport && activeTab === 'evaluations' && (
+      {showWorkflowTabs && activeTab === 'evaluations' && (
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
@@ -3030,7 +3049,7 @@ export default function CallImportDetail() {
       </div>
       )}
 
-      {!preImport && activeTab === 'insights' && (
+      {showWorkflowTabs && activeTab === 'insights' && (
         <div className="bg-white shadow rounded-lg p-6 space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
@@ -3850,7 +3869,11 @@ export default function CallImportDetail() {
                   <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
                     <div className="flex items-start justify-between gap-3">
                       <p className="text-sm text-gray-600">
-                        Pick the metrics to run against every completed row in this batch.
+                        Fetches recordings, diarizes, and scores each row in this
+                        batch. Pick metrics and models below
+                        {data.status === 'mapped'
+                          ? ', plus telephony credentials for recording fetch.'
+                          : '.'}
                       </p>
                       <Link
                         to="/metrics-management"
@@ -3882,6 +3905,28 @@ export default function CallImportDetail() {
                         Leave blank to fall back to the run's UUID prefix.
                       </p>
                     </div>
+
+                    {data.status === 'mapped' && (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-gray-900">
+                            Recording fetch
+                          </h4>
+                          <p className="text-xs text-gray-600 mt-0.5">
+                            Credentials used to download each row&apos;s recording as
+                            part of this evaluation run.
+                          </p>
+                        </div>
+                        <TelephonyCredentialPicker
+                          selectedProvider={evalTelephonyProvider}
+                          selectedIntegrationId={evalTelephonyIntegrationId}
+                          onProviderChange={setEvalTelephonyProvider}
+                          onIntegrationChange={setEvalTelephonyIntegrationId}
+                          disabled={runEvaluationMutation.isPending}
+                          compact
+                        />
+                      </div>
+                    )}
 
                     {enabledMetrics.length === 0 ? (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-2">
@@ -4442,6 +4487,18 @@ export default function CallImportDetail() {
 
                     {(() => {
                       const disabledReasons: string[] = []
+                      if (data.status === 'mapped') {
+                        if (
+                          !isCredentialSelectionValid(
+                            evalTelephonyProvider,
+                            evalTelephonyIntegrationId,
+                          )
+                        ) {
+                          disabledReasons.push(
+                            'Pick telephony credentials (or direct URL) for recording fetch.',
+                          )
+                        }
+                      }
                       if (enabledMetrics.length === 0) {
                         disabledReasons.push(
                           'Enable at least one agent metric in Metrics.',
@@ -4598,6 +4655,19 @@ export default function CallImportDetail() {
                             diarization_prompt:
                               evalDiarisationPrompt.trim() || null,
                             discover_new_metrics: false,
+                            ...(data.status === 'mapped'
+                              ? (() => {
+                                  const cred = credentialSelectionFromState(
+                                    evalTelephonyProvider,
+                                    evalTelephonyIntegrationId,
+                                  )
+                                  return {
+                                    provider: cred.provider,
+                                    telephony_integration_id:
+                                      cred.telephonyIntegrationId,
+                                  }
+                                })()
+                              : {}),
                           })
                         }}
                               className="flex-1"

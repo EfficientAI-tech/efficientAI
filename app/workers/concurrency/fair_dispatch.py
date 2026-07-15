@@ -18,7 +18,7 @@ from app.models.database import (
     CallImportRow,
 )
 from app.workers.concurrency.eval_dispatch import (
-    EVALUATIONS_QUEUE,
+    DISPATCH_QUEUE,
     _needs_transcribe_for_eval,
     _try_dispatch_single_row,
 )
@@ -29,6 +29,8 @@ _WS_EVAL_RR_CURSOR_KEY_PREFIX = "eval:fair:rr_cursor:ws:"
 _RESTRICTED_ROW_KEY_PREFIX = "eval:restricted:row:"
 _TRANSCRIBE_OVERWRITE_KEY_PREFIX = "eval:transcribe_overwrite:"
 _RESTRICTED_ROW_TTL_SECONDS = 20 * 60
+_DISPATCH_DEDUPE_KEY = "eval:fair:dispatch_dedupe"
+_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS = 15
 
 _redis_client: redis.Redis | None = None
 
@@ -177,7 +179,10 @@ def _workspaces_with_pending_rows(db: Session) -> List[UUID]:
             CallImportEvaluationRow.evaluation_id == CallImportEvaluation.id,
         )
         .filter(
-            CallImportEvaluation.status.in_(("pending", "running")),
+            # Pending rows are authoritative — a run can stay ``partial``
+            # (or even ``completed``) while retry resets rows back to
+            # ``pending`` before rollup catches up.
+            CallImportEvaluation.status != "cancelled",
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
         )
@@ -200,7 +205,7 @@ def _evaluations_with_pending_rows(
         )
         .filter(
             CallImportEvaluation.workspace_id == workspace_id,
-            CallImportEvaluation.status.in_(("pending", "running")),
+            CallImportEvaluation.status != "cancelled",
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
         )
@@ -228,7 +233,7 @@ def _pending_rows_for_evaluation(
         )
         .filter(
             CallImportEvaluation.id == evaluation_id,
-            CallImportEvaluation.status.in_(("pending", "running")),
+            CallImportEvaluation.status != "cancelled",
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
         )
@@ -243,64 +248,98 @@ def _dispatch_batch_for_workspace(
     workspace_id: UUID,
     *,
     batch_size: int,
-) -> int:
+) -> tuple[int, bool]:
     """Dispatch up to ``batch_size`` pending rows for one workspace turn.
 
-    Rows are interleaved across evaluations in round-robin order so a
-    second evaluation job in the same workspace is not starved behind
-    the first job's backlog.
+    Returns ``(dispatched_count, hit_capacity)``.
     """
     evaluations = _evaluations_with_pending_rows(db, workspace_id)
     if not evaluations:
-        return 0
+        return 0, False
 
     cursor = _get_workspace_eval_rr_cursor(workspace_id) % len(evaluations)
     dispatched = 0
     skips = 0
+    hit_capacity = False
 
     while dispatched < batch_size and skips < len(evaluations):
         evaluation_id = evaluations[cursor]
-        pending = _pending_rows_for_evaluation(db, evaluation_id, limit=1)
+        pending = _pending_rows_for_evaluation(
+            db,
+            evaluation_id,
+            limit=max(1, batch_size - dispatched),
+        )
         if not pending:
             skips += 1
             cursor = (cursor + 1) % len(evaluations)
             continue
 
-        eval_row, source_row, evaluation = pending[0]
-        restricted_metric_ids = get_row_restricted_metrics(eval_row.id)
-        transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
-        result = _try_dispatch_single_row(
-            db=db,
-            evaluation=evaluation,
-            eval_row=eval_row,
-            source_row=source_row,
-            restricted_metric_ids=restricted_metric_ids,
-            transcribe_overwrite=transcribe_overwrite,
-            auto_transcribe=True,
-        )
-        if result == "dispatched":
-            clear_row_restricted_metrics(eval_row.id)
-            dispatched += 1
-            skips = 0
-            if evaluation.status == "pending":
-                evaluation.status = "running"
-                db.commit()
-        elif result == "at_capacity":
-            _set_workspace_eval_rr_cursor(workspace_id, cursor)
-            return dispatched
-        else:
+        evaluation_dispatched = False
+        for eval_row, source_row, evaluation in pending:
+            restricted_metric_ids = get_row_restricted_metrics(eval_row.id)
+            transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
+            result = _try_dispatch_single_row(
+                db=db,
+                evaluation=evaluation,
+                eval_row=eval_row,
+                source_row=source_row,
+                restricted_metric_ids=restricted_metric_ids,
+                transcribe_overwrite=transcribe_overwrite,
+                auto_transcribe=True,
+            )
+            if result == "dispatched":
+                clear_row_restricted_metrics(eval_row.id)
+                dispatched += 1
+                evaluation_dispatched = True
+                skips = 0
+                if evaluation.status == "pending":
+                    evaluation.status = "running"
+                    db.commit()
+                break
+            if result == "at_capacity":
+                hit_capacity = True
+                _set_workspace_eval_rr_cursor(workspace_id, cursor)
+                return dispatched, hit_capacity
+
+        if not evaluation_dispatched:
             skips += 1
 
         cursor = (cursor + 1) % len(evaluations)
 
     _set_workspace_eval_rr_cursor(workspace_id, cursor)
-    return dispatched
+    return dispatched, hit_capacity
+
+
+def _schedule_dispatch_deduped(
+    *,
+    max_workspace_turns: int = 1,
+    countdown: int = 0,
+) -> bool:
+    """Schedule dispatch unless an identical backoff turn is already queued."""
+    ttl = max(3, countdown + 2)
+    try:
+        if not _get_redis().set(
+            _DISPATCH_DEDUPE_KEY,
+            "1",
+            nx=True,
+            ex=ttl,
+        ):
+            return False
+    except redis.RedisError as exc:
+        logger.warning("Fair dispatch dedupe check failed: {}", exc)
+    schedule_fair_dispatch(
+        max_workspace_turns=max_workspace_turns,
+        countdown=countdown,
+        _skip_dedupe=True,
+    )
+    return True
 
 
 def schedule_fair_dispatch(
     *,
     max_workspace_turns: int = 1,
     countdown: int = 0,
+    _skip_dedupe: bool = False,
 ) -> None:
     """Schedule global workspace round-robin eval dispatch.
 
@@ -308,20 +347,28 @@ def schedule_fair_dispatch(
       * ``1`` — one workspace turn (up to batch K rows) after a task completes.
       * higher — fill capacity across workspaces (eval create / catch-up).
     """
+    if not _skip_dedupe and countdown > 0:
+        _schedule_dispatch_deduped(
+            max_workspace_turns=max_workspace_turns,
+            countdown=countdown,
+        )
+        return
     try:
         dispatch_fair_eval_rows_task.apply_async(
             kwargs={"max_workspace_turns": max_workspace_turns},
-            queue=EVALUATIONS_QUEUE,
+            queue=DISPATCH_QUEUE,
             countdown=countdown,
         )
     except Exception as exc:
         logger.warning("Failed to schedule fair eval dispatch: {}", exc)
 
 
-@celery_app.task(name="dispatch_fair_eval_rows", queue=EVALUATIONS_QUEUE)
+@celery_app.task(name="dispatch_fair_eval_rows", queue=DISPATCH_QUEUE)
 def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
     """Round-robin pending eval rows across workspaces (batch K per turn)."""
     db = SessionLocal()
+    total_dispatched = 0
+    hit_capacity = False
     try:
         workspaces = _workspaces_with_pending_rows(db)
         if not workspaces:
@@ -331,17 +378,17 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
         max_turns = max(1, int(max_workspace_turns))
 
         cursor = _get_rr_cursor() % len(workspaces)
-        total_dispatched = 0
         turns_served = 0
         skips = 0
 
         while turns_served < max_turns and skips < len(workspaces):
             workspace_id = workspaces[cursor]
-            dispatched = _dispatch_batch_for_workspace(
+            dispatched, workspace_at_capacity = _dispatch_batch_for_workspace(
                 db,
                 workspace_id,
                 batch_size=batch_size,
             )
+            hit_capacity = hit_capacity or workspace_at_capacity
             if dispatched > 0:
                 total_dispatched += dispatched
                 turns_served += 1
@@ -352,12 +399,19 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
                 skips += 1
                 cursor = (cursor + 1) % len(workspaces)
 
+        if hit_capacity and _workspaces_with_pending_rows(db):
+            _schedule_dispatch_deduped(
+                max_workspace_turns=1,
+                countdown=_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+            )
+
         return {
             "status": "ok",
             "dispatched": total_dispatched,
             "workspaces": len(workspaces),
             "turns_served": turns_served,
             "batch_size": batch_size,
+            "at_capacity": hit_capacity,
         }
     except Exception:
         logger.exception("dispatch_fair_eval_rows failed")
@@ -380,3 +434,22 @@ def finish_eval_work_and_redispatch(
         # Row-level storage is handled at enqueue; this kwarg is unused here.
         pass
     schedule_fair_dispatch(max_workspace_turns=1)
+
+
+def read_fair_dispatch_state() -> dict:
+    """Snapshot Redis fair-dispatch scheduler metadata for operator diagnostics."""
+    try:
+        client = _get_redis()
+        dispatch_dedupe_active = bool(client.exists(_DISPATCH_DEDUPE_KEY))
+    except redis.RedisError:
+        dispatch_dedupe_active = False
+    return {
+        "global_rr_cursor": _get_rr_cursor(),
+        "dispatch_dedupe_active": dispatch_dedupe_active,
+        "dispatch_queue": DISPATCH_QUEUE,
+        "at_capacity_backoff_seconds": _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+    }
+
+
+def read_workspace_eval_rr_cursor(workspace_id: UUID) -> int:
+    return _get_workspace_eval_rr_cursor(workspace_id)
