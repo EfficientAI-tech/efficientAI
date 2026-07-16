@@ -854,52 +854,59 @@ def execute_evaluation_cancel(
         )
         return {"evaluation_id": str(evaluation_id), "cancelled": 0, "mode": mode}
 
-    cancelled_total = 0
-    while True:
-        query = (
-            db.query(CallImportEvaluationRow)
-            .options(load_only(*_EVAL_CANCEL_COLUMNS))
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
-        )
-        if mode == "abort":
-            query = query.filter(
-                CallImportEvaluationRow.status.in_(("pending", "running"))
+    try:
+        cancelled_total = 0
+        while True:
+            query = (
+                db.query(CallImportEvaluationRow)
+                .options(load_only(*_EVAL_CANCEL_COLUMNS))
+                .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
             )
-        else:
-            query = query.filter(CallImportEvaluationRow.status == "pending")
+            if mode == "abort":
+                query = query.filter(
+                    CallImportEvaluationRow.status.in_(("pending", "running"))
+                )
+            else:
+                query = query.filter(CallImportEvaluationRow.status == "pending")
 
-        rows = (
-            query.order_by(CallImportEvaluationRow.id.asc())
-            .limit(_BULK_INSERT_CHUNK)
-            .all()
-        )
-        if not rows:
-            break
+            rows = (
+                query.order_by(CallImportEvaluationRow.id.asc())
+                .limit(_BULK_INSERT_CHUNK)
+                .all()
+            )
+            if not rows:
+                break
 
-        task_ids: List[str] = []
-        now = datetime.now(timezone.utc)
-        for row in rows:
-            task_id = (row.celery_task_id or "").strip()
-            if task_id:
-                task_ids.append(task_id)
-            row.status = "failed"
-            row.error_message = EVAL_CANCELLED_BY_USER_ERROR
-            row.finished_at = now
-            row.celery_task_id = None
-            cancelled_total += 1
+            task_ids: List[str] = []
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                task_id = (row.celery_task_id or "").strip()
+                if task_id:
+                    task_ids.append(task_id)
+                row.status = "failed"
+                row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+                row.finished_at = now
+                row.celery_task_id = None
+                cancelled_total += 1
 
-        _batch_revoke_celery_task_ids(task_ids, terminate=True)
+            _batch_revoke_celery_task_ids(task_ids, terminate=True)
+            db.commit()
+
+        db.refresh(evaluation)
+        _rollup_evaluation_status(evaluation, db)
         db.commit()
 
-    db.refresh(evaluation)
-    _rollup_evaluation_status(evaluation, db)
-    db.commit()
+        return {
+            "evaluation_id": str(evaluation_id),
+            "cancelled": cancelled_total,
+            "mode": mode,
+        }
+    finally:
+        from app.services.call_imports.evaluation_bulk_op import (
+            clear_evaluation_bulk_operation,
+        )
 
-    return {
-        "evaluation_id": str(evaluation_id),
-        "cancelled": cancelled_total,
-        "mode": mode,
-    }
+        clear_evaluation_bulk_operation(evaluation_id)
 
 
 def execute_evaluation_retry(
@@ -932,68 +939,80 @@ def execute_evaluation_retry(
         )
         return {"evaluation_id": str(evaluation_id), "requeued": 0}
 
-    targets, skipped = _gather_retry_targets(
-        db,
-        evaluation,
-        eval_row_ids,
-        include_completed=include_completed,
-    )
-    if not targets:
-        return {
-            "evaluation_id": str(evaluation_id),
-            "requeued": 0,
-            "skipped": len(skipped),
-        }
-
-    for start in range(0, len(targets), _BULK_INSERT_CHUNK):
-        chunk = targets[start : start + _BULK_INSERT_CHUNK]
-        task_ids: List[str] = []
-        for eval_row, source_row in chunk:
-            if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
-                task_id = (eval_row.celery_task_id or "").strip()
-                if task_id:
-                    task_ids.append(task_id)
-            _prepare_source_row_for_retry(
-                source_row,
-                transcribe_overwrite=transcribe_overwrite,
-            )
-            _reset_eval_row_for_retry(
-                eval_row,
-                metric_ids=metric_ids,
-                skip_revoke=True,
-            )
-        _batch_revoke_celery_task_ids(task_ids, terminate=False)
-        db.commit()
-
     try:
-        evaluate_only, transcribe_chain = _enqueue_eval_rows_with_optional_transcribe(
+        targets, skipped = _gather_retry_targets(
             db,
             evaluation,
-            targets,
-            transcribe_overwrite=transcribe_overwrite,
-            restricted_metric_ids=metric_ids,
+            eval_row_ids,
+            include_completed=include_completed,
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "Failed to re-enqueue evaluation {} after retry reset",
-            evaluation_id,
-        )
-        for eval_row, _ in targets:
-            eval_row.status = "failed"
-            eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+        if not targets:
+            return {
+                "evaluation_id": str(evaluation_id),
+                "requeued": 0,
+                "skipped": len(skipped),
+            }
+
+        for start in range(0, len(targets), _BULK_INSERT_CHUNK):
+            chunk = targets[start : start + _BULK_INSERT_CHUNK]
+            task_ids: List[str] = []
+            for eval_row, source_row in chunk:
+                if eval_row.celery_task_id and eval_row.status in {
+                    "pending",
+                    "running",
+                }:
+                    task_id = (eval_row.celery_task_id or "").strip()
+                    if task_id:
+                        task_ids.append(task_id)
+                _prepare_source_row_for_retry(
+                    source_row,
+                    transcribe_overwrite=transcribe_overwrite,
+                )
+                _reset_eval_row_for_retry(
+                    eval_row,
+                    metric_ids=metric_ids,
+                    skip_revoke=True,
+                )
+            _batch_revoke_celery_task_ids(task_ids, terminate=False)
+            db.commit()
+
+        try:
+            evaluate_only, transcribe_chain = (
+                _enqueue_eval_rows_with_optional_transcribe(
+                    db,
+                    evaluation,
+                    targets,
+                    transcribe_overwrite=transcribe_overwrite,
+                    restricted_metric_ids=metric_ids,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Failed to re-enqueue evaluation {} after retry reset",
+                evaluation_id,
+            )
+            for eval_row, _ in targets:
+                eval_row.status = "failed"
+                eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+            _rollup_evaluation_status(evaluation, db)
+            db.commit()
+            return {
+                "evaluation_id": str(evaluation_id),
+                "requeued": 0,
+                "error": str(exc),
+            }
+
         _rollup_evaluation_status(evaluation, db)
         db.commit()
         return {
             "evaluation_id": str(evaluation_id),
-            "requeued": 0,
-            "error": str(exc),
+            "requeued": evaluate_only + transcribe_chain,
+            "transcribe_requeued": transcribe_chain,
+            "skipped": len(skipped),
         }
+    finally:
+        from app.services.call_imports.evaluation_bulk_op import (
+            clear_evaluation_bulk_operation,
+        )
 
-    _rollup_evaluation_status(evaluation, db)
-    db.commit()
-    return {
-        "evaluation_id": str(evaluation_id),
-        "requeued": evaluate_only + transcribe_chain,
-        "transcribe_requeued": transcribe_chain,
-        "skipped": len(skipped),
-    }
+        clear_evaluation_bulk_operation(evaluation_id)

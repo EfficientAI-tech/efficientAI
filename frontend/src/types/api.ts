@@ -1201,6 +1201,11 @@ export interface CallImportEvaluation {
    * evaluation detail Flow tab.
    */
   discover_new_metrics?: boolean
+  /**
+   * Set while a bulk background operation (abort, force-fail, retry) is
+   * still running. The UI disables other mutating actions until cleared.
+   */
+  bulk_operation?: 'abort' | 'force_fail_pending' | 'retry' | null
 }
 
 /**

@@ -34,6 +34,47 @@ from app.workers.config import celery_app
 _RETRYABLE_COUNTDOWN_SECONDS = 60
 
 
+def _retry_countdown_for_error(exc: Exception) -> int:
+    retry_after = getattr(exc, "retry_after_seconds", None)
+    if retry_after is not None:
+        try:
+            seconds = int(retry_after)
+        except (TypeError, ValueError):
+            seconds = 0
+        if seconds > 0:
+            return max(1, seconds)
+    return _RETRYABLE_COUNTDOWN_SECONDS
+
+
+def _schedule_transient_retry(self, *, row, db, row_id: str, exc: Exception, context: str):
+    from app.models.enums import CallImportRowStatus
+
+    row.status = CallImportRowStatus.PENDING
+    row.error_message = f"Transient: {exc}"
+    if not _safe_commit(db, row_id=row_id, context=context):
+        return {"status": "skipped", "reason": "row_deleted"}
+    raise self.retry(exc=exc, countdown=_retry_countdown_for_error(exc))
+
+
+def _consume_authenticated_import_credit(client) -> Optional[Exception]:
+    fingerprint = getattr(client, "_credential_fingerprint", None)
+    if not fingerprint:
+        return None
+
+    from app.services.telephony.exotel_client import CredentialedRecordingThrottledError
+    from app.workers.concurrency.telephony_credential_rate_limit import (
+        consume_telephony_import_credit,
+    )
+
+    credit = consume_telephony_import_credit(fingerprint)
+    if credit.allowed:
+        return None
+    return CredentialedRecordingThrottledError(
+        f"Telephony credential throttled for {credit.wait_seconds}s",
+        retry_after_seconds=max(1, credit.wait_seconds),
+    )
+
+
 def _safe_commit(
     db,
     *,
@@ -135,6 +176,7 @@ def process_call_import_row_task(
     from app.models.enums import CallImportRowStatus
     from app.services.storage.s3_service import s3_service
     from app.services.telephony.exotel_client import (
+        CredentialedRecordingThrottledError,
         ExotelAuthError,
         ExotelInvalidContentError,
         ExotelNotFoundError,
@@ -316,6 +358,18 @@ def process_call_import_row_task(
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "no_recording_source"}
 
+            if _use_credentialed_recording_download(call_import, client):
+                throttle_exc = _consume_authenticated_import_credit(client)
+                if throttle_exc is not None:
+                    return _schedule_transient_retry(
+                        self,
+                        row=row,
+                        db=db,
+                        row_id=row_id,
+                        exc=throttle_exc,
+                        context="credential_throttled",
+                    )
+
             try:
                 if _use_credentialed_recording_download(call_import, client):
                     fetched: Tuple[bytes, str] = client.download_recording(
@@ -331,7 +385,7 @@ def process_call_import_row_task(
                     row_id,
                     exc,
                 )
-            except ExotelTransientError as exc:
+            except (ExotelTransientError, CredentialedRecordingThrottledError) as exc:
                 download_failure = exc
                 download_was_transient = True
                 logger.warning(
@@ -349,13 +403,13 @@ def process_call_import_row_task(
 
             if audio_bytes is None:
                 if download_was_transient:
-                    row.status = CallImportRowStatus.PENDING
-                    row.error_message = f"Transient: {download_failure}"
-                    if not _safe_commit(db, row_id=row_id, context="transient_retry"):
-                        return {"status": "skipped", "reason": "row_deleted"}
-                    raise self.retry(
+                    return _schedule_transient_retry(
+                        self,
+                        row=row,
+                        db=db,
+                        row_id=row_id,
                         exc=download_failure,
-                        countdown=_RETRYABLE_COUNTDOWN_SECONDS,
+                        context="transient_retry",
                     )
                 row.status = CallImportRowStatus.FAILED
                 row.error_message = (

@@ -349,6 +349,84 @@ def test_process_call_import_row_completes_and_rolls_up_to_completed(db_session,
     assert fake_s3.uploads[0]["size"] == len(b"hello-audio")
 
 
+def test_process_call_import_row_retries_on_credentialed_throttle(db_session, monkeypatch):
+    _, _call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+
+    from app.services.telephony.exotel_client import CredentialedRecordingThrottledError
+
+    class _ThrottledClient:
+        _credential_fingerprint = "fp-test"
+
+        def download_recording(self, _url):
+            raise CredentialedRecordingThrottledError(
+                "rate limited",
+                retry_after_seconds=25,
+            )
+
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, _ThrottledClient(), fake_s3)
+    from app.workers.concurrency.telephony_credential_rate_limit import CreditStatus
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.telephony_credential_rate_limit.consume_telephony_import_credit",
+        lambda _fp: CreditStatus(allowed=True, remaining=4),
+    )
+    from app.workers.concurrency.telephony_credential_rate_limit import CreditStatus
+
+    captured = {}
+
+    def _capture_retry(exc, countdown):
+        captured["countdown"] = countdown
+        raise RetryCalled((exc, countdown))
+
+    monkeypatch.setattr(task_module.process_call_import_row_task, "retry", _capture_retry)
+
+    with pytest.raises(RetryCalled):
+        task_module.process_call_import_row_task.run(str(row.id))
+
+    db_session.refresh(row)
+    assert row.status == CallImportRowStatus.PENDING
+    assert captured["countdown"] == 25
+
+
+def test_process_call_import_row_retries_when_credit_denied(db_session, monkeypatch):
+    _, _call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+
+    class _FingerprintedClient:
+        _credential_fingerprint = "fp-denied"
+
+        def download_recording(self, _url):
+            raise AssertionError("download should not run when credit is denied")
+
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, _FingerprintedClient(), fake_s3
+    )
+    from app.workers.concurrency.telephony_credential_rate_limit import CreditStatus
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.telephony_credential_rate_limit.consume_telephony_import_credit",
+        lambda _fp: CreditStatus(allowed=False, wait_seconds=18, remaining=0),
+    )
+
+    captured = {}
+
+    def _capture_retry(exc, countdown):
+        captured["countdown"] = countdown
+        raise RetryCalled((exc, countdown))
+
+    monkeypatch.setattr(task_module.process_call_import_row_task, "retry", _capture_retry)
+
+    with pytest.raises(RetryCalled):
+        task_module.process_call_import_row_task.run(str(row.id))
+
+    db_session.refresh(row)
+    assert row.status == CallImportRowStatus.PENDING
+    assert captured["countdown"] == 18
+
+
 def test_process_call_import_row_marks_failed_on_auth_error_without_retry(db_session, monkeypatch):
     _, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]

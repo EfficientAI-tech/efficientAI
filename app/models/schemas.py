@@ -3511,6 +3511,16 @@ class CallImportEvaluationResponse(BaseModel):
     # Run Evaluation modal. The frontend uses this to gate the
     # "Discovered metrics" panel on the Flow tab.
     discover_new_metrics: bool = False
+    bulk_operation: Optional[
+        Literal["abort", "force_fail_pending", "retry"]
+    ] = Field(
+        default=None,
+        description=(
+            "When set, a bulk background operation (abort, force-fail pending, "
+            "or retry) is still running for this evaluation. Other mutating "
+            "actions are rejected until it completes."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

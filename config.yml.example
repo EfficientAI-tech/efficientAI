@@ -208,4 +208,8 @@ judge_alignment:
 #   import_global_inflight_limit: 16     # cap parallel recording fetches
 #   import_org_inflight_limit: 16
 #   import_workspace_inflight_limit: 8
+#   telephony_import_credit_limit: 1000   # authenticated recording fetches per credential/window
+#   telephony_import_credit_window_seconds: 60
+#   telephony_import_backoff_base_seconds: 15
+#   telephony_import_backoff_max_seconds: 60
 

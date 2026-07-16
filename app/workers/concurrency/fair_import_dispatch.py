@@ -19,6 +19,8 @@ from app.workers.config import celery_app
 
 _RR_CURSOR_KEY = "import:fair:rr_cursor"
 _WS_CALL_IMPORT_RR_CURSOR_KEY_PREFIX = "import:fair:rr_cursor:ws:"
+_DISPATCH_DEDUPE_KEY = "import:fair:dispatch_dedupe"
+_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS = 15
 
 _redis_client: redis.Redis | None = None
 
@@ -131,14 +133,16 @@ def _dispatch_batch_for_workspace(
     workspace_id: UUID,
     *,
     batch_size: int,
-) -> int:
+) -> tuple[int, bool, int]:
     call_imports = _call_imports_with_pending_rows(db, workspace_id)
     if not call_imports:
-        return 0
+        return 0, False, 0
 
     cursor = _get_workspace_call_import_rr_cursor(workspace_id) % len(call_imports)
     dispatched = 0
     skips = 0
+    hit_capacity = False
+    backoff_seconds = 0
 
     while dispatched < batch_size and skips < len(call_imports):
         call_import_id = call_imports[cursor]
@@ -149,24 +153,54 @@ def _dispatch_batch_for_workspace(
             continue
 
         row, call_import = pending
-        result = _try_dispatch_single_import_row(
+        outcome = _try_dispatch_single_import_row(
             db=db,
             row=row,
             call_import=call_import,
         )
-        if result == "dispatched":
+        if outcome.result == "dispatched":
             dispatched += 1
             skips = 0
-        elif result == "at_capacity":
+        elif outcome.result in ("at_capacity", "credential_throttled"):
+            hit_capacity = True
+            if outcome.result == "credential_throttled":
+                backoff_seconds = max(backoff_seconds, outcome.wait_seconds)
+            else:
+                backoff_seconds = max(
+                    backoff_seconds, _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS
+                )
             _set_workspace_call_import_rr_cursor(workspace_id, cursor)
-            return dispatched
+            return dispatched, hit_capacity, backoff_seconds
         else:
             skips += 1
 
         cursor = (cursor + 1) % len(call_imports)
 
     _set_workspace_call_import_rr_cursor(workspace_id, cursor)
-    return dispatched
+    return dispatched, hit_capacity, backoff_seconds
+
+
+def _schedule_import_dispatch_deduped(
+    *,
+    max_workspace_turns: int = 1,
+    countdown: int = 0,
+) -> bool:
+    ttl = max(3, countdown + 2)
+    try:
+        if not _get_redis().set(
+            _DISPATCH_DEDUPE_KEY,
+            "1",
+            nx=True,
+            ex=ttl,
+        ):
+            return False
+    except redis.RedisError as exc:
+        logger.warning("Import fair dispatch dedupe check failed: {}", exc)
+    schedule_fair_import_dispatch(
+        max_workspace_turns=max_workspace_turns,
+        countdown=countdown,
+    )
+    return True
 
 
 def schedule_fair_import_dispatch(
@@ -200,14 +234,21 @@ def dispatch_fair_import_rows_task(max_workspace_turns: int = 1) -> dict:
         total_dispatched = 0
         turns_served = 0
         skips = 0
+        hit_capacity = False
+        backoff_seconds = 0
 
         while turns_served < max_turns and skips < len(workspaces):
             workspace_id = workspaces[cursor]
-            dispatched = _dispatch_batch_for_workspace(
-                db,
-                workspace_id,
-                batch_size=batch_size,
+            dispatched, workspace_at_capacity, workspace_backoff = (
+                _dispatch_batch_for_workspace(
+                    db,
+                    workspace_id,
+                    batch_size=batch_size,
+                )
             )
+            hit_capacity = hit_capacity or workspace_at_capacity
+            if workspace_backoff > 0:
+                backoff_seconds = max(backoff_seconds, workspace_backoff)
             if dispatched > 0:
                 total_dispatched += dispatched
                 turns_served += 1
@@ -218,12 +259,19 @@ def dispatch_fair_import_rows_task(max_workspace_turns: int = 1) -> dict:
                 skips += 1
                 cursor = (cursor + 1) % len(workspaces)
 
+        if hit_capacity and _workspaces_with_pending_imports(db):
+            _schedule_import_dispatch_deduped(
+                max_workspace_turns=1,
+                countdown=backoff_seconds or _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+            )
+
         return {
             "status": "ok",
             "dispatched": total_dispatched,
             "workspaces": len(workspaces),
             "turns_served": turns_served,
             "batch_size": batch_size,
+            "at_capacity": hit_capacity,
         }
     except Exception:
         logger.exception("dispatch_fair_import_rows failed")

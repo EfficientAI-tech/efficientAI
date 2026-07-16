@@ -13,11 +13,13 @@ from app.config import settings
 from app.services.telephony.exotel_client import (
     DEFAULT_MAX_RECORDING_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
+    CredentialedRecordingThrottledError,
     ExotelAuthError,
     ExotelInvalidContentError,
     ExotelNotFoundError,
     ExotelRecordingTooLargeError,
     ExotelTransientError,
+    _parse_retry_after_header,
 )
 
 _DEFAULT_ALLOWED_HOST_SUFFIXES = (
@@ -150,6 +152,7 @@ def download_recording_url(
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_bytes: int = DEFAULT_MAX_RECORDING_BYTES,
     user_supplied: bool = False,
+    credential_fingerprint: Optional[str] = None,
 ) -> Tuple[bytes, str]:
     """Download a recording from a URL.
 
@@ -190,52 +193,51 @@ def download_recording_url(
         raise ExotelTransientError(f"HTTP error fetching recording: {exc}") from exc
 
     if resp.status_code in (401, 403):
-        # #region agent log
-        try:
-            import json
-            import time
-            from pathlib import Path
-            from urllib.parse import urlparse
-
-            from app.workers.concurrency.limits import (
-                read_global_inflight,
-                read_import_global_inflight,
+        if auth is not None:
+            retry_after = _raise_credentialed_throttle(
+                fingerprint=credential_fingerprint,
+                message=f"Recording URL rejected credentials (HTTP {resp.status_code})",
             )
-
-            host = urlparse(recording_url).hostname or ""
-            with (
-                Path(__file__).resolve().parents[3] / "debug-6d5466.log"
-            ).open("a", encoding="utf-8") as _h:
-                _h.write(
-                    json.dumps(
-                        {
-                            "sessionId": "6d5466",
-                            "timestamp": int(time.time() * 1000),
-                            "location": "recording_download.py:download_recording_url",
-                            "message": "Recording URL auth rejected",
-                            "data": {
-                                "http_status": resp.status_code,
-                                "host": host,
-                                "import_global_inflight": read_import_global_inflight(),
-                                "eval_global_inflight": read_global_inflight(),
-                            },
-                            "hypothesisId": "H3",
-                            "runId": "pre-fix",
-                        }
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
+            raise CredentialedRecordingThrottledError(
+                f"Recording URL rejected credentials (HTTP {resp.status_code})",
+                retry_after_seconds=retry_after,
+            )
         raise ExotelAuthError(
             f"Recording URL rejected credentials (HTTP {resp.status_code})"
         )
     if resp.status_code == 404:
         raise ExotelNotFoundError(f"Recording not found at {recording_url}")
+    if resp.status_code == 429:
+        retry_after_header = _parse_retry_after_header(resp.headers.get("Retry-After"))
+        if auth is not None:
+            retry_after = _raise_credentialed_throttle(
+                fingerprint=credential_fingerprint,
+                message=f"Rate limited fetching recording (HTTP 429)",
+                retry_after_seconds=retry_after_header,
+            )
+            raise CredentialedRecordingThrottledError(
+                f"Rate limited fetching recording (HTTP 429)",
+                retry_after_seconds=retry_after,
+            )
+        raise ExotelInvalidContentError(
+            f"Unexpected HTTP 429 fetching recording: {resp.text[:200]}"
+        )
     if 500 <= resp.status_code < 600:
         raise ExotelTransientError(
             f"Server error fetching recording (HTTP {resp.status_code})"
+        )
+    if resp.status_code == 400:
+        if auth is not None:
+            retry_after = _raise_credentialed_throttle(
+                fingerprint=credential_fingerprint,
+                message=f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}",
+            )
+            raise CredentialedRecordingThrottledError(
+                f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}",
+                retry_after_seconds=retry_after,
+            )
+        raise ExotelInvalidContentError(
+            f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}"
         )
     if resp.status_code >= 400:
         raise ExotelInvalidContentError(
@@ -257,6 +259,24 @@ def download_recording_url(
         )
 
     return body, content_type
+
+
+def _raise_credentialed_throttle(
+    *,
+    fingerprint: Optional[str],
+    message: str,
+    retry_after_seconds: Optional[int] = None,
+) -> int:
+    if not fingerprint:
+        return retry_after_seconds or 0
+    from app.workers.concurrency.telephony_credential_rate_limit import (
+        penalize_telephony_credential,
+    )
+
+    return penalize_telephony_credential(
+        fingerprint,
+        retry_after_seconds=retry_after_seconds,
+    )
 
 
 def download_public_recording(

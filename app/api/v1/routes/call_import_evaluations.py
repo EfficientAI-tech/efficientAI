@@ -433,6 +433,16 @@ def _expand_metric_selection(
     return effective, parent_to_children
 
 
+def _evaluation_bulk_operation_for_response(
+    evaluation_id: UUID,
+) -> Optional[str]:
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
+    return get_evaluation_bulk_operation(evaluation_id)
+
+
 def _serialize_eval(
     db: Session,
     row: CallImportEvaluation,
@@ -541,6 +551,7 @@ def _serialize_eval(
         discover_new_metrics=bool(
             getattr(row, "discover_new_metrics", False)
         ),
+        bulk_operation=_evaluation_bulk_operation_for_response(row.id),
     )
 
 
@@ -3626,6 +3637,46 @@ def _apply_evaluation_cancel(
     return cancelled, skipped
 
 
+def _claim_evaluation_bulk_operation(
+    evaluation_id: UUID,
+    operation: str,
+) -> None:
+    """Reserve the run for a single bulk worker pass; 409 if one is active."""
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+        try_set_evaluation_bulk_operation,
+    )
+
+    if try_set_evaluation_bulk_operation(evaluation_id, operation):  # type: ignore[arg-type]
+        return
+    existing = get_evaluation_bulk_operation(evaluation_id) or operation
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"A bulk {existing.replace('_', ' ')} operation is already in "
+            "progress for this evaluation. Wait for it to finish before "
+            "starting another action."
+        ),
+    )
+
+
+def _require_no_evaluation_bulk_operation(evaluation_id: UUID) -> None:
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
+    existing = get_evaluation_bulk_operation(evaluation_id)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A bulk {existing.replace('_', ' ')} operation is already in "
+                "progress for this evaluation. Wait for it to finish before "
+                "starting another action."
+            ),
+        )
+
+
 @router.post(
     "/{eval_id}/cancel",
     response_model=CallImportEvaluationBulkActionResponse,
@@ -3674,6 +3725,8 @@ async def cancel_call_import_evaluation(
             target_count=0,
             evaluation_id=eval_id,
         )
+
+    _claim_evaluation_bulk_operation(eval_id, "abort")
 
     from app.workers.tasks.call_import_bulk_ops import (
         cancel_call_import_evaluation_task,
@@ -3738,6 +3791,8 @@ async def force_fail_pending_call_import_evaluation_rows(
             evaluation_id=eval_id,
         )
 
+    _claim_evaluation_bulk_operation(eval_id, "force_fail_pending")
+
     from app.workers.tasks.call_import_bulk_ops import (
         cancel_call_import_evaluation_task,
     )
@@ -3790,6 +3845,8 @@ async def cancel_call_import_evaluation_row(
         raise HTTPException(
             status_code=404, detail="Call import evaluation not found"
         )
+
+    _require_no_evaluation_bulk_operation(eval_id)
 
     eval_row = (
         db.query(CallImportEvaluationRow)
@@ -8446,6 +8503,8 @@ async def retry_call_import_evaluation(
         from datetime import datetime, timezone
 
         evaluation.started_at = datetime.now(timezone.utc)
+
+    _claim_evaluation_bulk_operation(eval_id, "retry")
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
@@ -8508,6 +8567,8 @@ async def retry_call_import_evaluation_row(
         raise HTTPException(
             status_code=404, detail="Call import evaluation not found"
         )
+
+    _require_no_evaluation_bulk_operation(eval_id)
 
     eval_row = (
         db.query(CallImportEvaluationRow)

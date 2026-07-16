@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, List, Literal, Optional
+from typing import Callable, List, Literal, NamedTuple, Optional
 from uuid import UUID
 
 from celery.utils import uuid as celery_uuid
@@ -30,7 +30,14 @@ AUDIO_METRICS_QUEUE = "audio-metrics"
 # fan-out on the call-import worker (see docker-compose queue order).
 DISPATCH_QUEUE = "celery"
 
-DispatchSingleRowResult = Literal["dispatched", "skip", "at_capacity"]
+DispatchSingleRowResult = Literal[
+    "dispatched", "skip", "at_capacity", "credential_throttled"
+]
+
+
+class EvalDispatchOutcome(NamedTuple):
+    result: DispatchSingleRowResult
+    wait_seconds: int = 0
 
 
 def schedule_evaluation_dispatch(
@@ -226,13 +233,14 @@ def _try_dispatch_single_row(
     restricted_metric_ids: Optional[List[str]] = None,
     transcribe_overwrite: bool = False,
     auto_transcribe: bool = True,
-) -> DispatchSingleRowResult:
+) -> EvalDispatchOutcome:
     """Dispatch one eval row (transcribe or evaluate).
 
     Returns:
       * ``dispatched`` — task enqueued
       * ``skip`` — row not ready or evaluation terminal; try next row in batch
       * ``at_capacity`` — inflight cap reached; stop the workspace batch
+      * ``credential_throttled`` — shared telephony credential is backing off
     """
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
@@ -248,17 +256,31 @@ def _try_dispatch_single_row(
     )
 
     if (evaluation.status or "").strip().lower() == "cancelled":
-        return "skip"
+        return EvalDispatchOutcome("skip")
 
     if source_row.status == CallImportRowStatus.FAILED:
         _fail_eval_row_for_import(db, eval_row, source_row)
-        return "skip"
+        return EvalDispatchOutcome("skip")
 
     if source_row.status == CallImportRowStatus.PROCESSING:
         if not (source_row.recording_s3_key or "").strip():
-            return "skip"
+            return EvalDispatchOutcome("skip")
 
     if _needs_import_for_eval(source_row):
+        from app.workers.concurrency.import_dispatch import (
+            _peek_authenticated_import_credit,
+        )
+
+        call_import = source_row.call_import
+        throttled = _peek_authenticated_import_credit(
+            db=db,
+            call_import=call_import,
+        )
+        if throttled is not None:
+            return EvalDispatchOutcome(
+                "credential_throttled",
+                wait_seconds=throttled.wait_seconds,
+            )
 
         def _enqueue_import(reserved_task_id: str):
             source_row.celery_task_id = reserved_task_id
@@ -279,8 +301,8 @@ def _try_dispatch_single_row(
             db=db,
             enqueue_fn=_enqueue_import,
         ):
-            return "dispatched"
-        return "at_capacity"
+            return EvalDispatchOutcome("dispatched")
+        return EvalDispatchOutcome("at_capacity")
 
     transcribe_mode = (
         getattr(evaluation, "transcribe_mode", None) or "stt_llm"
@@ -293,7 +315,7 @@ def _try_dispatch_single_row(
         auto_transcribe=auto_transcribe,
     ):
         if _diarisation_in_flight(source_row):
-            return "skip"
+            return EvalDispatchOutcome("skip")
 
         dia_status = (source_row.diarised_transcript_status or "").strip().lower()
         if (
@@ -301,7 +323,7 @@ def _try_dispatch_single_row(
             and not transcribe_overwrite
             and not (source_row.diarised_transcript or "").strip()
         ):
-            return "skip"
+            return EvalDispatchOutcome("skip")
 
         def _enqueue_transcribe(reserved_task_id: str):
             source_row.diarised_transcript_status = "pending"
@@ -325,8 +347,8 @@ def _try_dispatch_single_row(
             db=db,
             enqueue_fn=_enqueue_transcribe,
         ):
-            return "dispatched"
-        return "at_capacity"
+            return EvalDispatchOutcome("dispatched")
+        return EvalDispatchOutcome("at_capacity")
 
     if row_needs_audio_phase(
         db,
@@ -352,8 +374,8 @@ def _try_dispatch_single_row(
             db=db,
             enqueue_fn=_enqueue_audio,
         ):
-            return "dispatched"
-        return "at_capacity"
+            return EvalDispatchOutcome("dispatched")
+        return EvalDispatchOutcome("at_capacity")
 
     def _enqueue_eval(reserved_task_id: str):
         kwargs = {"_eval_slot_task_id": reserved_task_id}
@@ -372,8 +394,8 @@ def _try_dispatch_single_row(
         db=db,
         enqueue_fn=_enqueue_eval,
     ):
-        return "dispatched"
-    return "at_capacity"
+        return EvalDispatchOutcome("dispatched")
+    return EvalDispatchOutcome("at_capacity")
 
 
 @celery_app.task(name="dispatch_evaluation_rows", queue=EVALUATIONS_QUEUE)

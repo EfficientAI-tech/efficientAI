@@ -248,19 +248,20 @@ def _dispatch_batch_for_workspace(
     workspace_id: UUID,
     *,
     batch_size: int,
-) -> tuple[int, bool]:
+) -> tuple[int, bool, int]:
     """Dispatch up to ``batch_size`` pending rows for one workspace turn.
 
-    Returns ``(dispatched_count, hit_capacity)``.
+    Returns ``(dispatched_count, hit_capacity, backoff_seconds)``.
     """
     evaluations = _evaluations_with_pending_rows(db, workspace_id)
     if not evaluations:
-        return 0, False
+        return 0, False, 0
 
     cursor = _get_workspace_eval_rr_cursor(workspace_id) % len(evaluations)
     dispatched = 0
     skips = 0
     hit_capacity = False
+    backoff_seconds = 0
 
     while dispatched < batch_size and skips < len(evaluations):
         evaluation_id = evaluations[cursor]
@@ -278,7 +279,7 @@ def _dispatch_batch_for_workspace(
         for eval_row, source_row, evaluation in pending:
             restricted_metric_ids = get_row_restricted_metrics(eval_row.id)
             transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
-            result = _try_dispatch_single_row(
+            outcome = _try_dispatch_single_row(
                 db=db,
                 evaluation=evaluation,
                 eval_row=eval_row,
@@ -287,7 +288,7 @@ def _dispatch_batch_for_workspace(
                 transcribe_overwrite=transcribe_overwrite,
                 auto_transcribe=True,
             )
-            if result == "dispatched":
+            if outcome.result == "dispatched":
                 clear_row_restricted_metrics(eval_row.id)
                 dispatched += 1
                 evaluation_dispatched = True
@@ -296,10 +297,16 @@ def _dispatch_batch_for_workspace(
                     evaluation.status = "running"
                     db.commit()
                 break
-            if result == "at_capacity":
+            if outcome.result in ("at_capacity", "credential_throttled"):
                 hit_capacity = True
+                if outcome.result == "credential_throttled":
+                    backoff_seconds = max(backoff_seconds, outcome.wait_seconds)
+                else:
+                    backoff_seconds = max(
+                        backoff_seconds, _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS
+                    )
                 _set_workspace_eval_rr_cursor(workspace_id, cursor)
-                return dispatched, hit_capacity
+                return dispatched, hit_capacity, backoff_seconds
 
         if not evaluation_dispatched:
             skips += 1
@@ -307,7 +314,7 @@ def _dispatch_batch_for_workspace(
         cursor = (cursor + 1) % len(evaluations)
 
     _set_workspace_eval_rr_cursor(workspace_id, cursor)
-    return dispatched, hit_capacity
+    return dispatched, hit_capacity, backoff_seconds
 
 
 def _schedule_dispatch_deduped(
@@ -380,15 +387,20 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
         cursor = _get_rr_cursor() % len(workspaces)
         turns_served = 0
         skips = 0
+        backoff_seconds = 0
 
         while turns_served < max_turns and skips < len(workspaces):
             workspace_id = workspaces[cursor]
-            dispatched, workspace_at_capacity = _dispatch_batch_for_workspace(
-                db,
-                workspace_id,
-                batch_size=batch_size,
+            dispatched, workspace_at_capacity, workspace_backoff = (
+                _dispatch_batch_for_workspace(
+                    db,
+                    workspace_id,
+                    batch_size=batch_size,
+                )
             )
             hit_capacity = hit_capacity or workspace_at_capacity
+            if workspace_backoff > 0:
+                backoff_seconds = max(backoff_seconds, workspace_backoff)
             if dispatched > 0:
                 total_dispatched += dispatched
                 turns_served += 1
@@ -402,7 +414,7 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
         if hit_capacity and _workspaces_with_pending_rows(db):
             _schedule_dispatch_deduped(
                 max_workspace_turns=1,
-                countdown=_DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
+                countdown=backoff_seconds or _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
             )
 
         return {

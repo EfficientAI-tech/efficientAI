@@ -30,6 +30,16 @@ _KNOWN_EXOTEL_API_HOSTS = frozenset(
 )
 
 
+def _parse_retry_after_header(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        seconds = int(str(value).strip())
+    except ValueError:
+        return None
+    return max(1, seconds)
+
+
 class ExotelAuthError(Exception):
     """Exotel rejected the credentials (HTTP 401/403). Not retryable."""
 
@@ -50,6 +60,14 @@ class ExotelTransientError(Exception):
     """Transient network / 5xx error, the worker may retry."""
 
 
+class CredentialedRecordingThrottledError(ExotelTransientError):
+    """Credentialed recording fetch was throttled or overload-rejected."""
+
+    def __init__(self, message: str, *, retry_after_seconds: Optional[int] = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ExotelClient:
     """HTTP wrapper around Exotel's REST endpoints used by call import."""
 
@@ -61,6 +79,7 @@ class ExotelClient:
         api_base: str = DEFAULT_API_BASE,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_recording_bytes: int = DEFAULT_MAX_RECORDING_BYTES,
+        credential_fingerprint: Optional[str] = None,
     ):
         if not auth_id or not auth_token:
             raise ValueError("Exotel auth_id and auth_token are required")
@@ -69,6 +88,19 @@ class ExotelClient:
         self._api_base = api_base.rstrip("/")
         self._timeout = timeout_seconds
         self._max_bytes = max_recording_bytes
+        self._credential_fingerprint = credential_fingerprint
+
+    def _penalize_if_fingerprinted(self, *, retry_after_seconds: Optional[int] = None) -> None:
+        if not self._credential_fingerprint:
+            return
+        from app.workers.concurrency.telephony_credential_rate_limit import (
+            penalize_telephony_credential,
+        )
+
+        penalize_telephony_credential(
+            self._credential_fingerprint,
+            retry_after_seconds=retry_after_seconds,
+        )
 
     def test_connection(self) -> bool:
         """Make a trivial authenticated call to confirm credentials work."""
@@ -111,52 +143,29 @@ class ExotelClient:
             ) from e
 
         if resp.status_code in (401, 403):
-            # #region agent log
-            try:
-                import json
-                import time
-                from pathlib import Path
-
-                from app.workers.concurrency.limits import (
-                    read_global_inflight,
-                    read_import_global_inflight,
-                )
-
-                with (
-                    Path(__file__).resolve().parents[3] / "debug-6d5466.log"
-                ).open("a", encoding="utf-8") as _h:
-                    _h.write(
-                        json.dumps(
-                            {
-                                "sessionId": "6d5466",
-                                "timestamp": int(time.time() * 1000),
-                                "location": "exotel_client.py:get_call_recording_url",
-                                "message": "Exotel auth rejected on call detail",
-                                "data": {
-                                    "http_status": resp.status_code,
-                                    "call_sid": call_sid[:12],
-                                    "import_global_inflight": read_import_global_inflight(),
-                                    "eval_global_inflight": read_global_inflight(),
-                                },
-                                "hypothesisId": "H1",
-                                "runId": "pre-fix",
-                            }
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
-            raise ExotelAuthError(
+            self._penalize_if_fingerprinted()
+            raise CredentialedRecordingThrottledError(
                 f"Exotel rejected credentials when fetching call detail (HTTP {resp.status_code})"
             )
         if resp.status_code == 404:
             raise ExotelNotFoundError(
                 f"Exotel call {call_sid} not found"
             )
+        if resp.status_code == 429:
+            retry_after = _parse_retry_after_header(resp.headers.get("Retry-After"))
+            self._penalize_if_fingerprinted(retry_after_seconds=retry_after)
+            raise CredentialedRecordingThrottledError(
+                f"Exotel rate limited call detail fetch (HTTP 429)",
+                retry_after_seconds=retry_after,
+            )
         if 500 <= resp.status_code < 600:
             raise ExotelTransientError(
                 f"Exotel server error fetching call detail (HTTP {resp.status_code})"
+            )
+        if resp.status_code == 400:
+            self._penalize_if_fingerprinted()
+            raise CredentialedRecordingThrottledError(
+                f"Unexpected HTTP 400 fetching call detail: {resp.text[:200]}"
             )
         if resp.status_code >= 400:
             raise ExotelInvalidContentError(
@@ -202,6 +211,7 @@ class ExotelClient:
             auth=self._auth,
             timeout_seconds=self._timeout,
             max_bytes=self._max_bytes,
+            credential_fingerprint=self._credential_fingerprint,
         )
 
 
@@ -282,6 +292,7 @@ def build_exotel_client_from_integration(
     auth_token: str,
     account_sid: Optional[str] = None,
     api_host: Optional[str] = None,
+    credential_fingerprint: Optional[str] = None,
 ) -> ExotelClient:
     """Helper that reads optional API-host and timeout overrides from settings."""
 
@@ -297,4 +308,5 @@ def build_exotel_client_from_integration(
         api_base=api_base,
         timeout_seconds=timeout,
         max_recording_bytes=max_bytes,
+        credential_fingerprint=credential_fingerprint,
     )

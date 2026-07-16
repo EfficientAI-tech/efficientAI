@@ -66,7 +66,9 @@ import {
 import { useToast } from '../../hooks/useToast'
 import type {
   CallImportEvaluation,
+  CallImportEvaluationBulkActionResponse,
   CallImportEvaluationBaselineCandidate,
+  CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
   CallImportMetricAggregate,
   EvaluationTldrSummary,
@@ -101,6 +103,12 @@ import TelephonyCredentialPicker, {
 import MetricFlowChart, {
   flowFromSequence,
 } from './components/MetricFlowChart'
+import {
+  EVALUATION_BULK_OPERATION_POLL_MS,
+  evaluationBulkOperationDescription,
+  evaluationBulkOperationLabel,
+  type BulkEvaluationOperation,
+} from './evaluationBulkOperation'
 
 const PIE_COLORS = [
   '#6366f1',
@@ -365,6 +373,45 @@ export default function CallImportEvaluationDetail() {
   const queryClient = useQueryClient()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { showToast, ToastContainer } = useToast()
+
+  const evaluationQueryKey = [
+    'call-import-evaluation',
+    activeWorkspaceId,
+    id,
+    evalId,
+  ] as const
+
+  const setEvaluationBulkOperationOptimistic = (
+    operation: BulkEvaluationOperation | null,
+  ) => {
+    if (!id || !evalId) return
+    queryClient.setQueryData<CallImportEvaluation>(
+      evaluationQueryKey,
+      (prev) => (prev ? { ...prev, bulk_operation: operation } : prev),
+    )
+  }
+
+  const invalidateEvaluationQueries = () => {
+    queryClient.invalidateQueries({ queryKey: evaluationQueryKey })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
+    })
+    queryClient.invalidateQueries({
+      queryKey: [
+        'call-import-evaluation-pending-rows-count',
+        activeWorkspaceId,
+        id,
+        evalId,
+      ],
+    })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+    })
+  }
+
+  const bulkOperationConflictMessage =
+    'Another bulk operation is already running for this evaluation. Wait for it to finish.'
+
   const [searchParams] = useSearchParams()
   const deepLinkConversationId =
     searchParams.get('conversation_id')?.trim() || ''
@@ -749,11 +796,13 @@ export default function CallImportEvaluationDetail() {
   })
 
   const evaluationQuery = useQuery({
-    queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
+    queryKey: evaluationQueryKey,
     queryFn: () => apiClient.getCallImportEvaluation(id!, evalId!),
     enabled: !!id && !!evalId,
     refetchInterval: (q) => {
-      const status = q.state.data?.status
+      const data = q.state.data
+      if (data?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
+      const status = data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
     },
   })
@@ -802,6 +851,9 @@ export default function CallImportEvaluationDetail() {
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
+      if (evaluationQuery.data?.bulk_operation) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
     },
@@ -840,6 +892,9 @@ export default function CallImportEvaluationDetail() {
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
+      if (evaluationQuery.data?.bulk_operation) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
     },
@@ -1078,16 +1133,11 @@ export default function CallImportEvaluationDetail() {
           : undefined,
       })
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+    onSuccess: (data: CallImportEvaluationRetryResponse) => {
+      if (data.requeued > 0) {
+        setEvaluationBulkOperationOptimistic('retry')
+      }
+      invalidateEvaluationQueries()
       queryClient.invalidateQueries({
         queryKey: ['call-import', activeWorkspaceId, id],
       })
@@ -1096,9 +1146,11 @@ export default function CallImportEvaluationDetail() {
     },
     onError: (err: any) => {
       setRetryError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to retry the evaluation.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to retry the evaluation.',
       )
     },
   })
@@ -1195,24 +1247,21 @@ export default function CallImportEvaluationDetail() {
         llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
       })
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+    onSuccess: (data: CallImportEvaluationRetryResponse) => {
+      if (data.requeued > 0) {
+        setEvaluationBulkOperationOptimistic('retry')
+      }
+      invalidateEvaluationQueries()
       setRerunError(null)
       setRerunMetricsOpen(false)
     },
     onError: (err: any) => {
       setRerunError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to re-run the selected metrics.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to re-run the selected metrics.',
       )
     },
   })
@@ -1240,9 +1289,11 @@ export default function CallImportEvaluationDetail() {
     },
     onError: (err: any) => {
       setRetryError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to retry this row.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to retry this row.',
       )
     },
     onSettled: () => {
@@ -1269,22 +1320,19 @@ export default function CallImportEvaluationDetail() {
     onMutate: () => {
       setCancelError(null)
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+    onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
+      if (data.target_count > 0) {
+        setEvaluationBulkOperationOptimistic('abort')
+      }
+      invalidateEvaluationQueries()
     },
     onError: (err: any) => {
       setCancelError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to abort this evaluation run.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to abort this evaluation run.',
       )
     },
   })
@@ -1294,26 +1342,20 @@ export default function CallImportEvaluationDetail() {
     onMutate: () => {
       setCancelError(null)
     },
-    onSuccess: () => {
+    onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
+      if (data.target_count > 0) {
+        setEvaluationBulkOperationOptimistic('force_fail_pending')
+      }
       setForceFailPendingOpen(false)
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-pending-rows-count', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+      invalidateEvaluationQueries()
     },
     onError: (err: any) => {
       setCancelError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to force-fail pending rows.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to force-fail pending rows.',
       )
     },
   })
@@ -1341,9 +1383,11 @@ export default function CallImportEvaluationDetail() {
     },
     onError: (err: any) => {
       setCancelError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to abort this row.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to abort this row.',
       )
     },
     onSettled: () => {
@@ -2153,6 +2197,8 @@ export default function CallImportEvaluationDetail() {
   const headerLabel = evaluation.name?.trim()
     ? evaluation.name
     : `Evaluation ${evaluation.id.slice(0, 8)}`
+  const bulkOperation = evaluation.bulk_operation ?? null
+  const bulkOperationActive = bulkOperation !== null
   const pendingRowCount = pendingRowsQuery.data?.total ?? 0
   const getMetricLlmLabel = (metricId: string): string => {
     const override = evaluation.metric_llm_overrides?.[metricId]
@@ -2189,11 +2235,20 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<XCircle className="h-4 w-4" />}
               onClick={() => {
-                if (cancelEvaluationMutation.isPending) return
+                if (
+                  cancelEvaluationMutation.isPending ||
+                  bulkOperationActive
+                ) {
+                  return
+                }
                 cancelEvaluationMutation.mutate()
               }}
-              isLoading={cancelEvaluationMutation.isPending}
-              disabled={cancelEvaluationMutation.isPending}
+              isLoading={
+                cancelEvaluationMutation.isPending || bulkOperation === 'abort'
+              }
+              disabled={
+                bulkOperationActive || cancelEvaluationMutation.isPending
+              }
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
               title="Abort every in-flight or queued row in this run"
             >
@@ -2206,12 +2261,22 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<AlertTriangle className="h-4 w-4" />}
               onClick={() => {
-                if (forceFailPendingMutation.isPending) return
+                if (
+                  forceFailPendingMutation.isPending ||
+                  bulkOperationActive
+                ) {
+                  return
+                }
                 setCancelError(null)
                 setForceFailPendingOpen(true)
               }}
-              isLoading={forceFailPendingMutation.isPending}
-              disabled={forceFailPendingMutation.isPending}
+              isLoading={
+                forceFailPendingMutation.isPending ||
+                bulkOperation === 'force_fail_pending'
+              }
+              disabled={
+                bulkOperationActive || forceFailPendingMutation.isPending
+              }
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
               title={`Mark ${pendingRowCount} pending row${
                 pendingRowCount === 1 ? '' : 's'
@@ -2226,11 +2291,18 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<RotateCw className="h-4 w-4" />}
               onClick={() => {
+                if (bulkOperationActive || retryAllFailedMutation.isPending) {
+                  return
+                }
                 setRetryError(null)
                 setRetryConfirmOpen(true)
               }}
-              isLoading={retryAllFailedMutation.isPending}
-              disabled={retryAllFailedMutation.isPending}
+              isLoading={
+                retryAllFailedMutation.isPending || bulkOperation === 'retry'
+              }
+              disabled={
+                bulkOperationActive || retryAllFailedMutation.isPending
+              }
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
               title={`Re-run evaluation on ${evaluation.failed_rows} failed row${
                 evaluation.failed_rows === 1 ? '' : 's'
@@ -2245,11 +2317,16 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<RefreshCw className="h-4 w-4" />}
               onClick={() => {
+                if (bulkOperationActive || rerunMetricsMutation.isPending) {
+                  return
+                }
                 setRerunError(null)
                 setRerunMetricsOpen(true)
               }}
-              isLoading={rerunMetricsMutation.isPending}
-              disabled={rerunMetricsMutation.isPending}
+              isLoading={
+                rerunMetricsMutation.isPending || bulkOperation === 'retry'
+              }
+              disabled={bulkOperationActive || rerunMetricsMutation.isPending}
               title="Re-score selected metrics across every row in this run, merging into existing scores."
             >
               Re-run metrics
@@ -2531,6 +2608,22 @@ export default function CallImportEvaluationDetail() {
             </div>
           </div>
         </div>
+
+        {bulkOperation && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <Loader2 className="h-4 w-4 text-amber-600 mt-0.5 animate-spin shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-amber-900">
+                  {evaluationBulkOperationLabel(bulkOperation)}
+                </p>
+                <p className="text-xs text-amber-800 mt-0.5">
+                  {evaluationBulkOperationDescription(bulkOperation)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {evaluation.error_message && (
           <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
@@ -3676,15 +3769,22 @@ export default function CallImportEvaluationDetail() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  if (cancellingRowId) return
+                                  if (bulkOperationActive || cancellingRowId) {
+                                    return
+                                  }
                                   cancelRowMutation.mutate(row.id)
                                 }}
                                 disabled={
-                                  cancellingRowId !== null &&
-                                  cancellingRowId !== row.id
+                                  bulkOperationActive ||
+                                  (cancellingRowId !== null &&
+                                    cancellingRowId !== row.id)
                                 }
                                 className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
-                                title="Abort this row"
+                                title={
+                                  bulkOperationActive
+                                    ? 'Wait for the current bulk operation to finish'
+                                    : 'Abort this row'
+                                }
                                 aria-label="Abort evaluation row"
                               >
                                 {cancellingRowId === row.id ? (
@@ -3699,15 +3799,22 @@ export default function CallImportEvaluationDetail() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  if (pendingRetryRowId) return
+                                  if (bulkOperationActive || pendingRetryRowId) {
+                                    return
+                                  }
                                   retryRowMutation.mutate(row.id)
                                 }}
                                 disabled={
-                                  pendingRetryRowId !== null &&
-                                  pendingRetryRowId !== row.id
+                                  bulkOperationActive ||
+                                  (pendingRetryRowId !== null &&
+                                    pendingRetryRowId !== row.id)
                                 }
                                 className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
-                                title="Retry evaluation on this row"
+                                title={
+                                  bulkOperationActive
+                                    ? 'Wait for the current bulk operation to finish'
+                                    : 'Retry evaluation on this row'
+                                }
                                 aria-label="Retry evaluation row"
                               >
                                 {pendingRetryRowId === row.id ? (

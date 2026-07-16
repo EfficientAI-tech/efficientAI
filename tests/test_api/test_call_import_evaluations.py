@@ -895,6 +895,85 @@ def test_cancel_evaluation_row_unknown_row_returns_404(
     assert response.status_code == 404
 
 
+def test_get_evaluation_includes_bulk_operation(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: "abort",
+    )
+
+    detail = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}"
+    )
+    assert detail.status_code == 200
+    assert detail.json()["bulk_operation"] == "abort"
+
+
+def test_cancel_returns_409_when_bulk_operation_active(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _force_running(db_session, created["id"])
+
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: "retry",
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.try_set_evaluation_bulk_operation",
+        lambda _evaluation_id, _operation: False,
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 409
+    assert "bulk retry operation" in response.json()["detail"]
+
+
+def test_cancel_row_returns_409_when_bulk_operation_active(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .first()
+    )
+
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: "abort",
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{eval_row.id}/cancel"
+    )
+    assert response.status_code == 409
+    assert "bulk abort operation" in response.json()["detail"]
+
+
 def test_retry_failed_rows_flips_partial_run_back_to_running(
     authenticated_client, db_session, org_id, seed_org
 ):

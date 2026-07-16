@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, NamedTuple
 from uuid import UUID
 
 from celery.utils import uuid as celery_uuid
@@ -17,8 +17,57 @@ from app.workers.concurrency.limits import (
     read_import_global_inflight,
     release_import_slot_for_celery_task,
 )
+from app.workers.concurrency.telephony_credential_rate_limit import (
+    peek_telephony_import_credit,
+    requires_authenticated_recording_fetch,
+)
 
-DispatchImportRowResult = Literal["dispatched", "skip", "at_capacity"]
+DispatchImportRowResult = Literal[
+    "dispatched", "skip", "at_capacity", "credential_throttled"
+]
+
+
+class ImportDispatchOutcome(NamedTuple):
+    result: DispatchImportRowResult
+    wait_seconds: int = 0
+
+
+def _peek_authenticated_import_credit(
+    *,
+    db: Session,
+    call_import: CallImport,
+) -> ImportDispatchOutcome | None:
+    if not requires_authenticated_recording_fetch(call_import):
+        return None
+
+    from app.services.telephony.telephony_service import telephony_service
+
+    try:
+        integration = telephony_service.get_org_integration(
+            call_import.organization_id,
+            db,
+            provider=call_import.provider,
+            credential_id=call_import.telephony_integration_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Skipping telephony credit peek for import {}: {}",
+            call_import.id,
+            exc,
+        )
+        return None
+
+    from app.workers.concurrency.telephony_credential_rate_limit import (
+        fingerprint_for_integration,
+    )
+
+    credit = peek_telephony_import_credit(fingerprint_for_integration(integration))
+    if credit.allowed:
+        return None
+    return ImportDispatchOutcome(
+        "credential_throttled",
+        wait_seconds=max(1, credit.wait_seconds),
+    )
 
 
 def _try_dispatch_single_import_row(
@@ -26,17 +75,21 @@ def _try_dispatch_single_import_row(
     db: Session,
     row: CallImportRow,
     call_import: CallImport,
-) -> DispatchImportRowResult:
+) -> ImportDispatchOutcome:
     from app.workers.tasks.process_call_import_row import (
         process_call_import_row_task,
     )
 
     if row.status != CallImportRowStatus.PENDING:
-        return "skip"
+        return ImportDispatchOutcome("skip")
     if row.celery_task_id:
-        return "skip"
+        return ImportDispatchOutcome("skip")
     if call_import.status == CallImportStatus.DELETING:
-        return "skip"
+        return ImportDispatchOutcome("skip")
+
+    throttled = _peek_authenticated_import_credit(db=db, call_import=call_import)
+    if throttled is not None:
+        return throttled
 
     reserved_task_id = celery_uuid()
     if not acquire_import_slot(
@@ -44,36 +97,7 @@ def _try_dispatch_single_import_row(
         organization_id=call_import.organization_id,
         celery_task_id=reserved_task_id,
     ):
-        # #region agent log
-        try:
-            import json
-            import time
-            from pathlib import Path
-
-            with (
-                Path(__file__).resolve().parents[3] / "debug-6d5466.log"
-            ).open("a", encoding="utf-8") as _h:
-                _h.write(
-                    json.dumps(
-                        {
-                            "sessionId": "6d5466",
-                            "timestamp": int(time.time() * 1000),
-                            "location": "import_dispatch.py:at_capacity",
-                            "message": "import dispatch at capacity",
-                            "data": {
-                                "row_id": str(row.id),
-                                "import_global_inflight": read_import_global_inflight(),
-                            },
-                            "hypothesisId": "H2",
-                            "runId": "pre-fix",
-                        }
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
-        return "at_capacity"
+        return ImportDispatchOutcome("at_capacity")
 
     try:
         async_result = process_call_import_row_task.apply_async(
@@ -93,35 +117,11 @@ def _try_dispatch_single_import_row(
         release_import_slot_for_celery_task(reserved_task_id)
         raise
 
-    # #region agent log
-    try:
-        import json
-        import time
-        from pathlib import Path
+    logger.debug(
+        "Import row {} dispatched (provider={}, global_inflight={})",
+        row.id,
+        (call_import.provider or "").lower(),
+        read_import_global_inflight(),
+    )
 
-        with (Path(__file__).resolve().parents[3] / "debug-6d5466.log").open(
-            "a", encoding="utf-8"
-        ) as _h:
-            _h.write(
-                json.dumps(
-                    {
-                        "sessionId": "6d5466",
-                        "timestamp": int(time.time() * 1000),
-                        "location": "import_dispatch.py:dispatched",
-                        "message": "import row dispatched",
-                        "data": {
-                            "row_id": str(row.id),
-                            "provider": (call_import.provider or "").lower(),
-                            "import_global_inflight": read_import_global_inflight(),
-                        },
-                        "hypothesisId": "H2",
-                        "runId": "pre-fix",
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
-
-    return "dispatched"
+    return ImportDispatchOutcome("dispatched")

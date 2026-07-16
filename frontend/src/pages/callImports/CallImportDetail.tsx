@@ -37,6 +37,7 @@ import {
   Volume2,
   X,
   XCircle,
+  Loader2,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
@@ -45,7 +46,9 @@ import { formatDiarisationError } from '../../lib/diarisationErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
   CallImportEvaluation,
+  CallImportEvaluationBulkActionResponse,
   CallImportEvaluationLLMOverride,
+  CallImportEvaluationListResponse,
   CallImportRow,
   CallImportTag,
 } from '../../types/api'
@@ -74,6 +77,12 @@ import TelephonyCredentialPicker, {
   isCredentialSelectionValid,
 } from './components/TelephonyCredentialPicker'
 import TranscriptView from './components/TranscriptView'
+import {
+  EVALUATION_BULK_OPERATION_POLL_MS,
+  evaluationBulkOperationLabel,
+  evaluationHasActiveBulkOperation,
+  type BulkEvaluationOperation,
+} from './evaluationBulkOperation'
 
 // Providers we know `TranscriptionService.transcribe()` already supports
 // for the full diarization-enabled path. Local Whisper is omitted since
@@ -266,6 +275,34 @@ export default function CallImportDetail() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+
+  const evaluationsQueryKey = [
+    'call-import-evaluations',
+    activeWorkspaceId,
+    id,
+  ] as const
+
+  const setEvaluationBulkOperationInList = (
+    evaluationId: string,
+    operation: BulkEvaluationOperation | null,
+  ) => {
+    if (!id) return
+    queryClient.setQueryData<CallImportEvaluationListResponse>(
+      evaluationsQueryKey,
+      (prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          items: prev.items.map((item) =>
+            item.id === evaluationId
+              ? { ...item, bulk_operation: operation }
+              : item,
+          ),
+        }
+      },
+    )
+  }
+
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
   // Transient "✓ Copied" feedback on the per-row Copy button next to
@@ -917,16 +954,27 @@ export default function CallImportDetail() {
   })
 
   const { data: evaluationsData } = useQuery({
-    queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+    queryKey: evaluationsQueryKey,
     queryFn: () => apiClient.listCallImportEvaluations(id!),
     enabled: !!id,
     refetchInterval: (query) => {
       const rows = query.state.data?.items || []
+      if (rows.some((row) => row.bulk_operation)) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       return rows.some((row) => row.status === 'pending' || row.status === 'running')
         ? 3000
         : false
     },
   })
+
+  const evaluationsWithBulkOperation = useMemo(
+    () =>
+      (evaluationsData?.items ?? []).filter((evaluation) =>
+        evaluationHasActiveBulkOperation(evaluation),
+      ),
+    [evaluationsData?.items],
+  )
 
   // Insights tab: fetched lazily so we don't pay for the cross-run
   // aggregation on first page load. Refetches on a 30s cadence while
@@ -938,6 +986,9 @@ export default function CallImportDetail() {
     enabled: !!id && activeTab === 'insights',
     refetchInterval: () => {
       const rows = evaluationsData?.items || []
+      if (rows.some((row) => row.bulk_operation)) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       return rows.some(
         (row) => row.status === 'pending' || row.status === 'running',
       )
@@ -1191,12 +1242,11 @@ export default function CallImportDetail() {
     onMutate: (evaluationId) => {
       setCancellingEvalId(evaluationId)
     },
-    onSuccess: () => {
-      // Backend has already flipped any running/pending rows to
-      // ``failed`` with the cancelled-by-user sentinel; refetch so the
-      // status pill and counters in this list reflect the cancel
-      // immediately rather than waiting for the 3s poll tick.
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
+    onSuccess: (data: CallImportEvaluationBulkActionResponse, evaluationId) => {
+      if (data.target_count > 0) {
+        setEvaluationBulkOperationInList(evaluationId, 'abort')
+      }
+      queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
     },
     onError: (err: any) => {
       // Cancel is idempotent on the server — the most likely failure
@@ -1220,14 +1270,25 @@ export default function CallImportDetail() {
   const bulkCancelEvalsMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const results = await Promise.allSettled(
-        ids.map((evalId) => apiClient.cancelCallImportEvaluation(id!, evalId)),
+        ids.map(async (evalId) => ({
+          evalId,
+          response: await apiClient.cancelCallImportEvaluation(id!, evalId),
+        })),
       )
       const fulfilled = results.filter((r) => r.status === 'fulfilled').length
       const rejected = results.filter((r) => r.status === 'rejected').length
-      return { fulfilled, rejected }
+      return { results, fulfilled, rejected }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
+    onSuccess: ({ results }) => {
+      for (const result of results) {
+        if (
+          result.status === 'fulfilled' &&
+          result.value.response.target_count > 0
+        ) {
+          setEvaluationBulkOperationInList(result.value.evalId, 'abort')
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
       setSelectedEvalIds(new Set())
     },
     onError: (err: any) => {
@@ -2939,6 +3000,45 @@ export default function CallImportDetail() {
           })()}
         </div>
 
+        {evaluationsWithBulkOperation.length > 0 && (
+          <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <Loader2 className="h-4 w-4 text-amber-600 mt-0.5 animate-spin shrink-0" />
+              <div className="flex-1 space-y-2">
+                <p className="text-sm font-medium text-amber-900">
+                  Background operations in progress
+                </p>
+                <ul className="space-y-1">
+                  {evaluationsWithBulkOperation.map((evaluation) => {
+                    const headerLabel = evaluation.name?.trim()
+                      ? evaluation.name
+                      : `Evaluation ${evaluation.id.slice(0, 8)}`
+                    return (
+                      <li
+                        key={evaluation.id}
+                        className="text-xs text-amber-800 flex flex-wrap items-center gap-x-1.5 gap-y-0.5"
+                      >
+                        <Link
+                          to={`/call-imports/${id}/evaluations/${evaluation.id}`}
+                          className="font-medium text-amber-900 hover:text-amber-950 underline-offset-2 hover:underline"
+                        >
+                          {headerLabel}
+                        </Link>
+                        <span aria-hidden="true">·</span>
+                        <span>
+                          {evaluationBulkOperationLabel(
+                            evaluation.bulk_operation!,
+                          )}
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
         {(evaluationsData?.items?.length || 0) === 0 ? (
           <p className="text-sm text-gray-500">
             No evaluations have been run for this dataset yet.
@@ -2972,6 +3072,9 @@ export default function CallImportDetail() {
             })()}
             {evaluationsData?.items.map((evaluation: CallImportEvaluation) => {
               const isSelected = selectedEvalIds.has(evaluation.id)
+              const bulkOperationActive = evaluationHasActiveBulkOperation(
+                evaluation,
+              )
               const headerLabel = evaluation.name?.trim()
                 ? evaluation.name
                 : `Evaluation ${evaluation.id.slice(0, 8)}`
@@ -3011,6 +3114,12 @@ export default function CallImportDetail() {
                     </div>
                     <div className="text-right flex-shrink-0">
                       <StatusBadge status={evaluation.status} size="sm" />
+                      {evaluation.bulk_operation && (
+                        <p className="text-[11px] text-amber-700 mt-1 flex items-center justify-end gap-1">
+                          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                          {evaluationBulkOperationLabel(evaluation.bulk_operation)}
+                        </p>
+                      )}
                       <p className="text-xs text-gray-500 mt-1">
                         {evaluation.completed_rows}/{evaluation.total_rows} rows
                       </p>
@@ -3023,12 +3132,14 @@ export default function CallImportDetail() {
                       size="sm"
                       leftIcon={<XCircle className="h-4 w-4" />}
                       isLoading={
-                        cancellingEvalId === evaluation.id &&
-                        cancelEvaluationMutation.isPending
+                        bulkOperationActive ||
+                        (cancellingEvalId === evaluation.id &&
+                          cancelEvaluationMutation.isPending)
                       }
                       disabled={
-                        cancellingEvalId === evaluation.id &&
-                        cancelEvaluationMutation.isPending
+                        bulkOperationActive ||
+                        (cancellingEvalId === evaluation.id &&
+                          cancelEvaluationMutation.isPending)
                       }
                       onClick={(e) => {
                         // Stop the click from bubbling into the parent
@@ -3036,10 +3147,15 @@ export default function CallImportDetail() {
                         // detail page mid-cancel).
                         e.preventDefault()
                         e.stopPropagation()
+                        if (bulkOperationActive) return
                         cancelEvaluationMutation.mutate(evaluation.id)
                       }}
                       className="flex-shrink-0 text-amber-700 hover:text-amber-800 hover:bg-amber-50"
-                      title="Abort this evaluation run"
+                      title={
+                        bulkOperationActive
+                          ? 'Wait for the current bulk operation to finish'
+                          : 'Abort this evaluation run'
+                      }
                     >
                       Abort
                     </Button>

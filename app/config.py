@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
     IMPORT_ORG_INFLIGHT_LIMIT: int = 16
     IMPORT_GLOBAL_INFLIGHT_LIMIT: int = 16
+    TELEPHONY_IMPORT_CREDIT_LIMIT: int = 1000
+    TELEPHONY_IMPORT_CREDIT_WINDOW_SECONDS: int = 60
+    TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS: int = 15
+    TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS: int = 60
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -475,6 +479,22 @@ def load_config_from_file(config_path: str) -> None:
         if "import_global_inflight_limit" in workers_config:
             settings.IMPORT_GLOBAL_INFLIGHT_LIMIT = int(
                 workers_config["import_global_inflight_limit"]
+            )
+        if "telephony_import_credit_limit" in workers_config:
+            settings.TELEPHONY_IMPORT_CREDIT_LIMIT = int(
+                workers_config["telephony_import_credit_limit"]
+            )
+        if "telephony_import_credit_window_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_CREDIT_WINDOW_SECONDS = int(
+                workers_config["telephony_import_credit_window_seconds"]
+            )
+        if "telephony_import_backoff_base_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS = int(
+                workers_config["telephony_import_backoff_base_seconds"]
+            )
+        if "telephony_import_backoff_max_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS = int(
+                workers_config["telephony_import_backoff_max_seconds"]
             )
     
     if "storage" in config_data:
