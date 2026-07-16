@@ -24,6 +24,7 @@ def _seed_partial_run_with_pending_retry(db_session):
         is_default=True,
     )
     db_session.add_all([org, ws])
+    db_session.flush()
 
     call_import = CallImport(
         id=uuid4(),
@@ -37,6 +38,7 @@ def _seed_partial_run_with_pending_retry(db_session):
         failed_rows=0,
     )
     db_session.add(call_import)
+    db_session.flush()
 
     source_rows = []
     for idx in range(3):

@@ -21,6 +21,7 @@ def _seed_import_with_rows(db_session, *, completed: int, pending: int):
         is_default=True,
     )
     db_session.add_all([org, ws])
+    db_session.flush()
     call_import = CallImport(
         id=uuid4(),
         organization_id=org.id,
@@ -29,6 +30,7 @@ def _seed_import_with_rows(db_session, *, completed: int, pending: int):
         total_rows=completed + pending,
     )
     db_session.add(call_import)
+    db_session.flush()
     rows = []
     for i in range(completed):
         rows.append(
@@ -84,6 +86,7 @@ def test_materialization_skips_import_dispatch_by_default(monkeypatch, db_sessio
         total_rows=1,
     )
     db_session.add_all([org, ws, call_import])
+    db_session.flush()
     db_session.add(
         CallImportRow(
             id=uuid4(),

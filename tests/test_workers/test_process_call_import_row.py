@@ -169,6 +169,70 @@ def _patch_public_download(monkeypatch, *, return_value=None, side_effect=None):
     return calls
 
 
+def _ensure_fake_celery_app():
+    """Match API-test Celery stubs so bind=True tasks stay plain functions."""
+    existing = sys.modules.get("app.workers.config")
+    celery_app = getattr(existing, "celery_app", None) if existing else None
+    task_decorator = getattr(celery_app, "task", None)
+    if callable(task_decorator):
+        probe = task_decorator()(lambda: None)
+        if isinstance(probe, types.FunctionType) and getattr(probe, "run", None) is probe:
+            return
+
+    class _FakeCeleryApp:
+        def task(self, *_args, **_kwargs):
+            def _decorator(fn):
+                fn.delay = lambda *_a, **_kw: types.SimpleNamespace(id="fake-task")
+                fn.apply_async = lambda *_a, **_kw: types.SimpleNamespace(
+                    id="fake-task"
+                )
+                fn.run = fn
+                return fn
+
+            return _decorator
+
+    fake_config = types.ModuleType("app.workers.config")
+    fake_config.celery_app = _FakeCeleryApp()
+    sys.modules["app.workers.config"] = fake_config
+
+
+def _wrap_bind_task_for_tests(task):
+    """Adapt bind=True tasks for direct ``.run(row_id)`` calls in unit tests."""
+    if getattr(task, "_bind_task_wrapped", False):
+        return task
+
+    if isinstance(task, types.FunctionType):
+        fn = getattr(task, "run", task)
+
+        class _FakeBindTask:
+            _bind_task_wrapped = True
+
+            def __init__(self):
+                self.request = types.SimpleNamespace(id="test-task-id")
+
+            def run(self, row_id, *args, **kwargs):
+                return fn(self, row_id, *args, **kwargs)
+
+            def retry(self, exc=None, countdown=None):
+                raise RetryCalled((exc, countdown))
+
+        return _FakeBindTask()
+
+    class _CeleryDelegate:
+        _bind_task_wrapped = True
+
+        def __init__(self, celery_task):
+            self._celery_task = celery_task
+
+        def run(self, row_id, *args, **kwargs):
+            return self._celery_task.run(row_id, *args, **kwargs)
+
+        def retry(self, *args, **kwargs):
+            return self._celery_task.retry(*args, **kwargs)
+
+    return _CeleryDelegate(task)
+
+
 def _load_task_module():
     """Load the real task module even when conftest/API tests stub workers.tasks.
 
@@ -179,7 +243,12 @@ def _load_task_module():
     module_name = "app.workers.tasks.process_call_import_row"
     existing = sys.modules.get(module_name)
     if existing is not None and hasattr(existing, "SessionLocal"):
-        return existing
+        task = getattr(existing, "process_call_import_row_task", None)
+        if isinstance(task, types.FunctionType) or getattr(task, "_bind_task_wrapped", False):
+            return existing
+        del sys.modules[module_name]
+
+    _ensure_fake_celery_app()
 
     module_path = (
         Path(__file__).resolve().parents[2]
@@ -194,6 +263,9 @@ def _load_task_module():
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    module.process_call_import_row_task = _wrap_bind_task_for_tests(
+        module.process_call_import_row_task
+    )
     return module
 
 

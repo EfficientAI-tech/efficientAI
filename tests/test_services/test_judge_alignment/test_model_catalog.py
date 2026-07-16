@@ -1,7 +1,7 @@
 """Tests for org-scoped judge model catalog including gateway models."""
 
 from app.config import settings
-from app.models.database import AIProvider
+from app.models.database import AIProvider, Organization
 from app.services.ai.llm_gateway import GATEWAY_MANAGED_KEY_SENTINEL
 from app.services.judge_alignment.model_catalog import list_judge_capable_models
 
@@ -10,6 +10,8 @@ def test_list_judge_capable_models_includes_gateway_model(db_session, org_id):
     settings.LLM_GATEWAY_ENABLED = True
     settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
 
+    db_session.add(Organization(id=org_id, name="Test Org"))
+    db_session.flush()
     db_session.add(
         AIProvider(
             organization_id=org_id,

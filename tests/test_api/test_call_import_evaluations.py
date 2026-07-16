@@ -7,8 +7,10 @@ without Celery / Redis.
 """
 
 import io
+import importlib.util
 import sys
 import types
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,6 +41,29 @@ def _ensure_default_workspace(db_session, org_id):
         db_session.add(ws)
         db_session.commit()
     return ws
+
+
+def _load_eval_row_core_module():
+    """Load rollup helpers from disk; API tests stub ``app.workers.tasks``."""
+    module_name = "app.workers.tasks.evaluate_call_import_row_core"
+    existing = sys.modules.get(module_name)
+    if existing is not None and hasattr(existing, "reconcile_evaluation_counters"):
+        return existing
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "workers"
+        / "tasks"
+        / "evaluate_call_import_row_core.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load task module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture(autouse=True)
@@ -80,12 +105,17 @@ def stub_workers(monkeypatch):
         apply_async=lambda: types.SimpleNamespace(id="celery-group-id"),
     )
 
+    fake_eval_core_module = _load_eval_row_core_module()
+
     previous = {
         "app.workers.tasks.process_call_import_row": sys.modules.get(
             "app.workers.tasks.process_call_import_row"
         ),
         "app.workers.tasks.evaluate_call_import_row": sys.modules.get(
             "app.workers.tasks.evaluate_call_import_row"
+        ),
+        "app.workers.tasks.evaluate_call_import_row_core": sys.modules.get(
+            "app.workers.tasks.evaluate_call_import_row_core"
         ),
         "app.workers.concurrency.eval_dispatch": sys.modules.get(
             "app.workers.concurrency.eval_dispatch"
@@ -97,6 +127,7 @@ def stub_workers(monkeypatch):
     }
     sys.modules["app.workers.tasks.process_call_import_row"] = fake_import_module
     sys.modules["app.workers.tasks.evaluate_call_import_row"] = fake_eval_module
+    sys.modules["app.workers.tasks.evaluate_call_import_row_core"] = fake_eval_core_module
     sys.modules["app.workers.concurrency.eval_dispatch"] = fake_dispatch_module
     sys.modules["app.workers.concurrency.fair_dispatch"] = fake_fair_module
     sys.modules["celery"] = fake_celery

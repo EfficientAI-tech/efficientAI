@@ -1,5 +1,7 @@
 """Tests for async Run Evaluation startup from mapped call-import batches."""
 
+import sys
+import types
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -44,7 +46,8 @@ def _make_mapped_call_import(db_session, org_id, workspace_id):
         source_s3_key="org/test/source.csv",
         source_format="csv",
         original_filename="source.csv",
-        column_mapping={
+        column_mapping={},
+        parameter_mapping={
             "conversation_id": "CallID",
             "recording_url": "Recording URL",
         },
@@ -71,8 +74,8 @@ def test_create_evaluation_from_mapped_enqueues_async_materialization(
     )
 
     monkeypatch.setattr(
-        "app.services.storage.s3_service.s3_service.is_enabled",
-        lambda: True,
+        "app.api.v1.routes.call_imports._ensure_blob_storage_enabled",
+        lambda: None,
     )
 
     metric = _make_metric(db_session, org_id)
@@ -80,9 +83,14 @@ def test_create_evaluation_from_mapped_enqueues_async_materialization(
     call_import = _make_mapped_call_import(db_session, org_id, workspace)
 
     delay_mock = MagicMock(return_value=MagicMock(id="async-task"))
-    monkeypatch.setattr(
-        "app.workers.tasks.call_import_bulk_ops.materialize_mapped_call_import_evaluation_task.delay",
-        delay_mock,
+    fake_bulk_ops = types.ModuleType("app.workers.tasks.call_import_bulk_ops")
+    fake_bulk_ops.materialize_mapped_call_import_evaluation_task = MagicMock(
+        delay=delay_mock,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.workers.tasks.call_import_bulk_ops",
+        fake_bulk_ops,
     )
 
     response = authenticated_client.post(
