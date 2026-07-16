@@ -78,6 +78,8 @@ def test_materialization_skips_import_dispatch_by_default(monkeypatch, db_sessio
         slug="default",
         is_default=True,
     )
+    db_session.add_all([org, ws])
+    db_session.flush()
     call_import = CallImport(
         id=uuid4(),
         organization_id=org.id,
@@ -85,7 +87,7 @@ def test_materialization_skips_import_dispatch_by_default(monkeypatch, db_sessio
         status=CallImportStatus.PROCESSING,
         total_rows=1,
     )
-    db_session.add_all([org, ws, call_import])
+    db_session.add(call_import)
     db_session.flush()
     db_session.add(
         CallImportRow(
