@@ -190,6 +190,44 @@ def download_recording_url(
         raise ExotelTransientError(f"HTTP error fetching recording: {exc}") from exc
 
     if resp.status_code in (401, 403):
+        # #region agent log
+        try:
+            import json
+            import time
+            from pathlib import Path
+            from urllib.parse import urlparse
+
+            from app.workers.concurrency.limits import (
+                read_global_inflight,
+                read_import_global_inflight,
+            )
+
+            host = urlparse(recording_url).hostname or ""
+            with (
+                Path(__file__).resolve().parents[3] / "debug-6d5466.log"
+            ).open("a", encoding="utf-8") as _h:
+                _h.write(
+                    json.dumps(
+                        {
+                            "sessionId": "6d5466",
+                            "timestamp": int(time.time() * 1000),
+                            "location": "recording_download.py:download_recording_url",
+                            "message": "Recording URL auth rejected",
+                            "data": {
+                                "http_status": resp.status_code,
+                                "host": host,
+                                "import_global_inflight": read_import_global_inflight(),
+                                "eval_global_inflight": read_global_inflight(),
+                            },
+                            "hypothesisId": "H3",
+                            "runId": "pre-fix",
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
         raise ExotelAuthError(
             f"Recording URL rejected credentials (HTTP {resp.status_code})"
         )

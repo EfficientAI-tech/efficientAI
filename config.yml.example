@@ -205,5 +205,7 @@ judge_alignment:
 #   eval_fair_dispatch_batch_size: 75
 #   diarization_fair_dispatch_batch_size: 75
 #   import_fair_dispatch_batch_size: 75
-
+#   import_global_inflight_limit: 16     # cap parallel recording fetches
+#   import_org_inflight_limit: 16
+#   import_workspace_inflight_limit: 8
 

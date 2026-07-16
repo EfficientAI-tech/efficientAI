@@ -3342,6 +3342,42 @@ class CallImportEvaluationRetryRequest(BaseModel):
         ),
     )
 
+    # Telephony credentials for rows that must re-fetch recordings.
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override the batch's telephony provider for this retry pass. "
+            "Must be paired with ``telephony_integration_id``. Omit both "
+            "fields to keep the batch's existing pinned credentials."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Override the telephony credential used when re-fetching "
+            "recordings during this retry. Must be paired with "
+            "``provider``. Omit both to keep existing credentials; send "
+            "both as null for direct-URL retry."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_telephony_credential_mode(self) -> "CallImportEvaluationRetryRequest":
+        fields_set = self.model_fields_set
+        if (
+            "provider" not in fields_set
+            and "telephony_integration_id" not in fields_set
+        ):
+            return self
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL retry."
+            )
+        return self
+
 
 class CallImportEvaluationRetrySkippedItem(BaseModel):
     """One entry in the retry response's ``skipped`` list."""

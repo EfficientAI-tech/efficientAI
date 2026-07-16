@@ -110,7 +110,7 @@ def execute_bulk_diarization(
     payload: CallImportTranscribeRequest,
     requested_row_ids: Optional[List[UUID]] = None,
 ) -> BulkDiarizationResult:
-    """Mark rows pending, store Redis params in a pipeline, schedule dispatch."""
+    """Store Redis params, then mark rows pending so dispatch never races ahead."""
     from app.workers.concurrency.diarization_dispatch import (
         _REDIS_PARAMS_STORE_ERROR,
         build_diarization_params_from_request,
@@ -123,12 +123,6 @@ def execute_bulk_diarization(
     rows, skip_counts = select_rows_for_transcription(
         db, call_import, payload, requested_row_ids=requested_row_ids
     )
-
-    for row in rows:
-        row.diarised_transcript_status = "pending"
-        row.diarised_transcript_error = None
-        row.celery_task_id = None
-    db.commit()
 
     if not rows:
         return BulkDiarizationResult(
@@ -154,15 +148,23 @@ def execute_bulk_diarization(
         [row.id for row in rows],
         diarization_params,
     )
-    if failed_ids:
-        failed_set = set(failed_ids)
-        for row in rows:
-            if row.id in failed_set:
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
+    stored_set = set(stored_ids)
+    failed_set = set(failed_ids)
+
+    queued = 0
+    for row in rows:
+        if row.id in stored_set:
+            row.diarised_transcript_status = "pending"
+            row.diarised_transcript_error = None
+            row.celery_task_id = None
+            queued += 1
+        elif row.id in failed_set:
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
+
+    if stored_set or failed_set:
         db.commit()
 
-    queued = len(stored_ids)
     if queued > 0:
         schedule_fair_diarization_dispatch(max_workspace_turns=999)
 
@@ -273,7 +275,7 @@ def materialize_and_enqueue_evaluation(
         )
         return
 
-    source_row_ids = _completed_source_row_ids(db, evaluation.call_import_id)
+    source_row_ids = _all_source_row_ids(db, evaluation.call_import_id)
     evaluation.total_rows = len(source_row_ids)
 
     if not source_row_ids:

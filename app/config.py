@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 75
     DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
     IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
+    IMPORT_ORG_INFLIGHT_LIMIT: int = 16
+    IMPORT_GLOBAL_INFLIGHT_LIMIT: int = 16
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -460,6 +463,18 @@ def load_config_from_file(config_path: str) -> None:
         if "import_fair_dispatch_batch_size" in workers_config:
             settings.IMPORT_FAIR_DISPATCH_BATCH_SIZE = int(
                 workers_config["import_fair_dispatch_batch_size"]
+            )
+        if "import_workspace_inflight_limit" in workers_config:
+            settings.IMPORT_WORKSPACE_INFLIGHT_LIMIT = int(
+                workers_config["import_workspace_inflight_limit"]
+            )
+        if "import_org_inflight_limit" in workers_config:
+            settings.IMPORT_ORG_INFLIGHT_LIMIT = int(
+                workers_config["import_org_inflight_limit"]
+            )
+        if "import_global_inflight_limit" in workers_config:
+            settings.IMPORT_GLOBAL_INFLIGHT_LIMIT = int(
+                workers_config["import_global_inflight_limit"]
             )
     
     if "storage" in config_data:

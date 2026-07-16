@@ -1248,6 +1248,8 @@ export default function CallImportDetail() {
   const failedImportRowsCount = data?.failed_rows ?? 0
   const diarisationInFlightCount =
     (data?.diarised_pending_rows ?? 0) + (data?.diarised_running_rows ?? 0)
+  const diarisedCompletedRows = data?.diarised_completed_rows ?? 0
+  const diarisedFailedRows = data?.diarised_failed_rows ?? 0
   // ``filtered_total_rows`` is set whenever any filter (search OR
   // diarisation-status) is active; pagination should always page
   // against whatever slice the user is actually looking at.
@@ -1596,8 +1598,8 @@ export default function CallImportDetail() {
       </div>
 
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0 flex-1">
+        <div className="space-y-4">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900 truncate">
               {data.original_filename || '(unnamed import)'}
             </h1>
@@ -1622,70 +1624,71 @@ export default function CallImportDetail() {
               </span>
             </div>
           </div>
-          <div className="w-72 flex-shrink-0">
-            <div className="text-xs font-medium text-gray-600 mb-1">
-              Recording import
-            </div>
-            <CallImportProgressBar
-              total={data.total_rows}
-              completed={data.completed_rows}
-              failed={data.failed_rows}
-              deleting={isDeleting}
-            />
-            <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
-              <div className="bg-gray-50 rounded p-2">
-                <div className="text-gray-500">Total</div>
-                <div className="font-semibold text-gray-900">{data.total_rows}</div>
-              </div>
-              <div className="bg-green-50 rounded p-2">
-                <div className="text-green-700">Completed</div>
-                <div className="font-semibold text-green-800">{data.completed_rows}</div>
-              </div>
-              <div className="bg-red-50 rounded p-2">
-                <div className="text-red-700">Failed</div>
-                <div className="font-semibold text-red-800">{data.failed_rows}</div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 shadow-sm min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900 mb-2.5 pb-2 border-b border-slate-200">
+                Recording import
+              </h3>
+              <CallImportProgressBar
+                total={data.total_rows}
+                completed={data.completed_rows}
+                failed={data.failed_rows}
+                deleting={isDeleting}
+              />
+              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-white rounded-md border border-slate-100 p-2">
+                  <div className="text-gray-500">Total</div>
+                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
+                </div>
+                <div className="bg-white rounded-md border border-green-100 p-2">
+                  <div className="text-green-700">Completed</div>
+                  <div className="font-semibold text-green-800">{data.completed_rows}</div>
+                </div>
+                <div className="bg-white rounded-md border border-red-100 p-2">
+                  <div className="text-red-700">Failed</div>
+                  <div className="font-semibold text-red-800">{data.failed_rows}</div>
+                </div>
               </div>
             </div>
 
-            {/*
-              Transcription + diarisation progress, surfaced only once
-              the worker has actually been kicked off on at least one
-              row (otherwise every fresh batch would show a permanent
-              0% bar that means nothing). The ``pending`` + ``running``
-              counter is shown next to the bar so the user can see
-              "still working on N" while the bar fills with completed
-              + failed.
-            */}
-            {(() => {
-              const diariseInFlight =
-                (data.diarised_pending_rows ?? 0) +
-                (data.diarised_running_rows ?? 0)
-              const diariseDone =
-                (data.diarised_completed_rows ?? 0) +
-                (data.diarised_failed_rows ?? 0)
-              const hasActivity = diariseInFlight + diariseDone > 0
-              if (!hasActivity) return null
-              return (
-                <div className="mt-4 pt-4 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-xs font-medium text-gray-600">
-                      Transcription &amp; diarisation
-                    </div>
-                    {diariseInFlight > 0 && (
-                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        {diariseInFlight} in progress
-                      </div>
-                    )}
-                  </div>
-                  <CallImportProgressBar
-                    total={diariseInFlight + diariseDone}
-                    completed={data.diarised_completed_rows ?? 0}
-                    failed={data.diarised_failed_rows ?? 0}
-                  />
+            <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 shadow-sm min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-violet-200">
+                <h3 className="text-sm font-semibold text-violet-950">
+                  Transcription &amp; diarisation
+                </h3>
+                {diarisationInFlightCount > 0 && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-700 whitespace-nowrap">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    {diarisationInFlightCount} in progress
+                  </span>
+                )}
+              </div>
+              <CallImportProgressBar
+                total={data.total_rows}
+                completed={diarisedCompletedRows}
+                failed={diarisedFailedRows}
+                deleting={isDeleting}
+              />
+              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-white rounded-md border border-violet-100 p-2">
+                  <div className="text-gray-500">Total</div>
+                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
                 </div>
-              )
-            })()}
+                <div className="bg-white rounded-md border border-green-100 p-2">
+                  <div className="text-green-700">Completed</div>
+                  <div className="font-semibold text-green-800">
+                    {diarisedCompletedRows}
+                  </div>
+                </div>
+                <div className="bg-white rounded-md border border-red-100 p-2">
+                  <div className="text-red-700">Failed</div>
+                  <div className="font-semibold text-red-800">
+                    {diarisedFailedRows}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 

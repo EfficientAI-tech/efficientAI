@@ -7719,6 +7719,16 @@ def _prepare_source_row_for_retry(
     """Clear stale diarisation markers so retry dispatch can re-run the pipeline."""
     source_row.celery_task_id = None
 
+    # Re-fetch recordings when a prior import failed or stalled without S3 audio.
+    # Mirrors retry_failed_call_import_rows so eval retry can re-enqueue imports.
+    if (
+        source_row.status
+        in (CallImportRowStatus.FAILED, CallImportRowStatus.PROCESSING)
+        and not (source_row.recording_s3_key or "").strip()
+    ):
+        source_row.status = CallImportRowStatus.PENDING
+        source_row.error_message = None
+
     if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
         source_row.diarised_transcript = None
 
@@ -7830,6 +7840,38 @@ def _enqueue_eval_rows_with_optional_transcribe(
     )
     schedule_fair_dispatch(max_workspace_turns=999)
     return eval_only_count, transcribe_count
+
+
+def _apply_telephony_retry_overrides(
+    db: Session,
+    *,
+    call_import: CallImport,
+    organization_id: UUID,
+    payload: CallImportEvaluationRetryRequest,
+) -> None:
+    """Pin or clear telephony credentials on the batch for this retry pass."""
+    fields_set = payload.model_fields_set
+    if (
+        "provider" not in fields_set
+        and "telephony_integration_id" not in fields_set
+    ):
+        return
+
+    from app.api.v1.routes.call_imports import _resolve_telephony_integration
+
+    if payload.telephony_integration_id is not None:
+        integration = _resolve_telephony_integration(
+            db,
+            organization_id,
+            payload.telephony_integration_id,
+            payload.provider or "",
+        )
+        call_import.provider = integration.provider
+        call_import.telephony_integration_id = integration.id
+    else:
+        call_import.provider = None
+        call_import.telephony_integration_id = None
+    db.flush()
 
 
 def _apply_retry_overrides(
@@ -8183,7 +8225,7 @@ async def retry_call_import_evaluation(
     auto-transcribe behavior of POST ``/evaluations``.
     """
     del api_key
-    _require_import(db, call_import_id, organization_id)
+    call_import = _require_import(db, call_import_id, organization_id)
 
     evaluation = (
         db.query(CallImportEvaluation)
@@ -8340,6 +8382,12 @@ async def retry_call_import_evaluation(
     # state.
     if payload is not None:
         _apply_retry_overrides(db, evaluation, organization_id, payload)
+        _apply_telephony_retry_overrides(
+            db,
+            call_import=call_import,
+            organization_id=organization_id,
+            payload=payload,
+        )
     transcribe_overwrite = bool(
         payload.transcribe_overwrite if payload else False
     )

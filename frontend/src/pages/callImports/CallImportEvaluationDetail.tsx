@@ -93,6 +93,11 @@ import StatusBadge from '../../components/shared/StatusBadge'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
+import TelephonyCredentialPicker, {
+  credentialSelectionFromState,
+  initialTelephonySelection,
+  isCredentialSelectionValid,
+} from './components/TelephonyCredentialPicker'
 import MetricFlowChart, {
   flowFromSequence,
 } from './components/MetricFlowChart'
@@ -475,6 +480,9 @@ export default function CallImportEvaluationDetail() {
   const [retryDiarisationPrompt, setRetryDiarisationPrompt] = useState('')
   const [retryTranscribeOverwrite, setRetryTranscribeOverwrite] =
     useState(false)
+  const [retryTelephonyProvider, setRetryTelephonyProvider] = useState('')
+  const [retryTelephonyIntegrationId, setRetryTelephonyIntegrationId] =
+    useState('')
 
   // "Re-run metrics" UX (separate from the failed-row retry above).
   // The user picks one or more of the run's already-scored metrics
@@ -1008,6 +1016,16 @@ export default function CallImportEvaluationDetail() {
       const diarisationPromptChanged =
         retryDiarisationPrompt.trim() !==
         (evaluation?.diarisation_prompt ?? '').trim()
+      const telephonySelection = credentialSelectionFromState(
+        retryTelephonyProvider,
+        retryTelephonyIntegrationId,
+      )
+      const callImport = callImportQuery.data
+      const telephonyChanged =
+        (telephonySelection.provider ?? null) !==
+          (callImport?.provider ?? null) ||
+        (telephonySelection.telephonyIntegrationId ?? null) !==
+          (callImport?.telephony_integration_id ?? null)
 
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         llmProvider:
@@ -1054,6 +1072,10 @@ export default function CallImportEvaluationDetail() {
           ? retryDiarisationPrompt.trim() || null
           : undefined,
         transcribeOverwrite: retryTranscribeOverwrite,
+        provider: telephonyChanged ? telephonySelection.provider : undefined,
+        telephonyIntegrationId: telephonyChanged
+          ? telephonySelection.telephonyIntegrationId
+          : undefined,
       })
     },
     onSuccess: () => {
@@ -1065,6 +1087,9 @@ export default function CallImportEvaluationDetail() {
       })
       queryClient.invalidateQueries({
         queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import', activeWorkspaceId, id],
       })
       setRetryError(null)
       setRetryConfirmOpen(false)
@@ -1104,6 +1129,9 @@ export default function CallImportEvaluationDetail() {
     })
     setRetryDiarisationPrompt(evaluation.diarisation_prompt ?? '')
     setRetryTranscribeOverwrite(false)
+    const telephonyInitial = initialTelephonySelection(callImportQuery.data)
+    setRetryTelephonyProvider(telephonyInitial.provider)
+    setRetryTelephonyIntegrationId(telephonyInitial.integrationId)
     setRetryError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryConfirmOpen])
@@ -1325,6 +1353,12 @@ export default function CallImportEvaluationDetail() {
 
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
+  const diarisationInFlightCount = callImport
+    ? (callImport.diarised_pending_rows ?? 0) +
+      (callImport.diarised_running_rows ?? 0)
+    : 0
+  const diarisedCompletedRows = callImport?.diarised_completed_rows ?? 0
+  const diarisedFailedRows = callImport?.diarised_failed_rows ?? 0
 
   // Derive the metric column list the same way CallImportDetail does so the
   // table stays consistent with what was actually scored, even if the
@@ -2289,8 +2323,8 @@ export default function CallImportEvaluationDetail() {
       </div>
 
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0 flex-1">
+        <div className="space-y-4">
+          <div className="min-w-0">
             {!editingName ? (
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl font-bold text-gray-900 truncate">
@@ -2389,86 +2423,112 @@ export default function CallImportEvaluationDetail() {
               )}
             </div>
           </div>
-          <div className="w-72 flex-shrink-0">
-            <div className="text-xs font-medium text-gray-600 mb-1">
-              Evaluation progress
-            </div>
-            <CallImportProgressBar
-              total={evaluation.total_rows}
-              completed={evaluation.completed_rows}
-              failed={evaluation.failed_rows}
-            />
-            <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
-              <div className="bg-gray-50 rounded p-2 min-w-[72px]">
-                <div className="text-gray-500">Total</div>
-                <div className="font-semibold text-gray-900">
-                  {evaluation.total_rows}
-                </div>
-              </div>
-              <div className="bg-green-50 rounded p-2 min-w-[72px]">
-                <div className="text-green-700">Completed</div>
-                <div className="font-semibold text-green-800">
-                  {evaluation.completed_rows}
-                </div>
-              </div>
-              <div className="bg-red-50 rounded p-2 min-w-[72px]">
-                <div className="text-red-700">Failed</div>
-                <div className="font-semibold text-red-800">
-                  {evaluation.failed_rows}
-                </div>
-              </div>
-            </div>
 
-            {/*
-              Upstream diarisation progress. When the user kicked off
-              this run with auto-transcribe enabled on rows missing a
-              diarised transcript, the eval row stays ``pending`` while
-              the transcribe / diarise worker is in flight. Surfacing
-              the parent batch's diarisation counters here tells the
-              user the run isn't stalled — it's waiting on audio
-              processing — and the bar fills as the worker churns.
-              Polling on ``callImportQuery`` keeps these numbers fresh
-              without a manual refresh.
-            */}
-            {(() => {
-              const ci = callImport
-              if (!ci) return null
-              const diarisePending = ci.diarised_pending_rows ?? 0
-              const diariseRunning = ci.diarised_running_rows ?? 0
-              const diariseInFlight = diarisePending + diariseRunning
-              const diariseDone =
-                (ci.diarised_completed_rows ?? 0) +
-                (ci.diarised_failed_rows ?? 0)
-              const evalRunning =
-                evaluation.status === 'pending' ||
-                evaluation.status === 'running'
-              // Only render while the upstream pipeline is actively
-              // moving — once everything's settled we don't want a
-              // stale 100% bar lingering for terminal runs.
-              if (!evalRunning || diariseInFlight + diariseDone === 0) {
-                return null
-              }
-              return (
-                <div className="mt-4 pt-4 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-xs font-medium text-gray-600">
-                      Diarising audio
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            {callImport && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 shadow-sm min-w-0">
+                <h3 className="text-sm font-semibold text-slate-900 mb-2.5 pb-2 border-b border-slate-200">
+                  Recording import
+                </h3>
+                <CallImportProgressBar
+                  total={callImport.total_rows}
+                  completed={callImport.completed_rows}
+                  failed={callImport.failed_rows}
+                />
+                <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="bg-white rounded-md border border-slate-100 p-2">
+                    <div className="text-gray-500">Total</div>
+                    <div className="font-semibold text-gray-900">
+                      {callImport.total_rows}
                     </div>
-                    {diariseInFlight > 0 && (
-                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        {diariseInFlight} in progress
-                      </div>
-                    )}
                   </div>
-                  <CallImportProgressBar
-                    total={ci.total_rows}
-                    completed={ci.diarised_completed_rows ?? 0}
-                    failed={ci.diarised_failed_rows ?? 0}
-                  />
+                  <div className="bg-white rounded-md border border-green-100 p-2">
+                    <div className="text-green-700">Completed</div>
+                    <div className="font-semibold text-green-800">
+                      {callImport.completed_rows}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md border border-red-100 p-2">
+                    <div className="text-red-700">Failed</div>
+                    <div className="font-semibold text-red-800">
+                      {callImport.failed_rows}
+                    </div>
+                  </div>
                 </div>
-              )
-            })()}
+              </div>
+            )}
+
+            {callImport && (
+              <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 shadow-sm min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-violet-200">
+                  <h3 className="text-sm font-semibold text-violet-950">
+                    Transcription &amp; diarisation
+                  </h3>
+                  {diarisationInFlightCount > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-700 whitespace-nowrap">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      {diarisationInFlightCount} in progress
+                    </span>
+                  )}
+                </div>
+                <CallImportProgressBar
+                  total={callImport.total_rows}
+                  completed={diarisedCompletedRows}
+                  failed={diarisedFailedRows}
+                />
+                <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="bg-white rounded-md border border-violet-100 p-2">
+                    <div className="text-gray-500">Total</div>
+                    <div className="font-semibold text-gray-900">
+                      {callImport.total_rows}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md border border-green-100 p-2">
+                    <div className="text-green-700">Completed</div>
+                    <div className="font-semibold text-green-800">
+                      {diarisedCompletedRows}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md border border-red-100 p-2">
+                    <div className="text-red-700">Failed</div>
+                    <div className="font-semibold text-red-800">
+                      {diarisedFailedRows}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 shadow-sm min-w-0">
+              <h3 className="text-sm font-semibold text-emerald-950 mb-2.5 pb-2 border-b border-emerald-200">
+                Evaluation progress
+              </h3>
+              <CallImportProgressBar
+                total={evaluation.total_rows}
+                completed={evaluation.completed_rows}
+                failed={evaluation.failed_rows}
+              />
+              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-white rounded-md border border-emerald-100 p-2">
+                  <div className="text-gray-500">Total</div>
+                  <div className="font-semibold text-gray-900">
+                    {evaluation.total_rows}
+                  </div>
+                </div>
+                <div className="bg-white rounded-md border border-green-100 p-2">
+                  <div className="text-green-700">Completed</div>
+                  <div className="font-semibold text-green-800">
+                    {evaluation.completed_rows}
+                  </div>
+                </div>
+                <div className="bg-white rounded-md border border-red-100 p-2">
+                  <div className="text-red-700">Failed</div>
+                  <div className="font-semibold text-red-800">
+                    {evaluation.failed_rows}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -3813,6 +3873,27 @@ export default function CallImportEvaluationDetail() {
                   </div>
                 </div>
 
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-900">
+                      Recording fetch
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Used when failed rows still need to download audio from
+                      Exotel or another provider. Switch credentials here if
+                      the original batch used the wrong integration.
+                    </p>
+                  </div>
+                  <TelephonyCredentialPicker
+                    selectedProvider={retryTelephonyProvider}
+                    selectedIntegrationId={retryTelephonyIntegrationId}
+                    onProviderChange={setRetryTelephonyProvider}
+                    onIntegrationChange={setRetryTelephonyIntegrationId}
+                    disabled={retryAllFailedMutation.isPending}
+                    compact
+                  />
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     LLM for re-evaluation
@@ -3987,6 +4068,10 @@ export default function CallImportEvaluationDetail() {
                     retryAllFailedMutation.isPending ||
                     !retryLLM.provider ||
                     !retryLLM.model ||
+                    !isCredentialSelectionValid(
+                      retryTelephonyProvider,
+                      retryTelephonyIntegrationId,
+                    ) ||
                     (retryTranscribeOverwrite &&
                       retryTranscribeMode === 'stt_llm' &&
                       (!retrySTT.provider || !retrySTT.model)) ||

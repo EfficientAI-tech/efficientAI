@@ -234,7 +234,7 @@ def dispatch_fair_import_rows_task(max_workspace_turns: int = 1) -> dict:
 
 def finish_import_work_and_redispatch(celery_task_id: str) -> None:
     """Release a slot and schedule one fair import workspace turn."""
-    from app.workers.concurrency.limits import release_eval_slot_for_celery_task
+    from app.workers.concurrency.limits import release_import_slot_for_celery_task
 
-    release_eval_slot_for_celery_task(celery_task_id)
+    release_import_slot_for_celery_task(celery_task_id)
     schedule_fair_import_dispatch(max_workspace_turns=1)

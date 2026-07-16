@@ -970,3 +970,65 @@ def test_retry_marks_existing_diarised_transcript_completed(
     db_session.refresh(source_row)
     assert source_row.diarised_transcript_status == "completed"
     assert "hello" in (source_row.diarised_transcript or "")
+
+
+def test_evaluation_retry_can_override_telephony_credentials(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Retry should pin a new telephony integration on the batch when asked."""
+    metric = _make_metric(db_session, org_id)
+    wrong_integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        name="wrong",
+        auth_id="enc-wrong",
+        auth_token="enc-wrong",
+        is_active=True,
+    )
+    right_integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        name="right",
+        auth_id="enc-right",
+        auth_token="enc-right",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add_all([wrong_integration, right_integration])
+    db_session.commit()
+
+    call_import, _rows = _make_call_import(
+        db_session,
+        org_id,
+        rows=1,
+        integration=wrong_integration,
+    )
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .first()
+    )
+    eval_row.status = "failed"
+    eval_row.error_message = "import failed"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={
+            "provider": "exotel",
+            "telephony_integration_id": str(right_integration.id),
+        },
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.refresh(call_import)
+    assert call_import.telephony_integration_id == right_integration.id
+    assert call_import.provider == "exotel"

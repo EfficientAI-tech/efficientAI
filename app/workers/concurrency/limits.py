@@ -10,6 +10,7 @@ from loguru import logger
 from app.config import settings
 
 _EVAL_SLOT_TTL_SECONDS = 20 * 60  # 2× the eval/transcribe hard time limit
+_IMPORT_SLOT_TTL_SECONDS = 20 * 60  # 2× the import hard time limit
 
 _redis_client: redis.Redis | None = None
 
@@ -101,6 +102,22 @@ def _task_key(celery_task_id: str) -> str:
     return f"eval:slot:task:{celery_task_id}"
 
 
+def _import_workspace_key(workspace_id: UUID | str) -> str:
+    return f"import:inflight:workspace:{workspace_id}"
+
+
+def _import_org_key(organization_id: UUID | str) -> str:
+    return f"import:inflight:org:{organization_id}"
+
+
+def _import_global_key() -> str:
+    return "import:inflight:global"
+
+
+def _import_task_key(celery_task_id: str) -> str:
+    return f"import:slot:task:{celery_task_id}"
+
+
 def acquire_eval_slot(
     *,
     workspace_id: UUID | str,
@@ -137,6 +154,39 @@ def acquire_eval_slot(
         return True
 
 
+def acquire_import_slot(
+    *,
+    workspace_id: UUID | str,
+    organization_id: UUID | str,
+    celery_task_id: str,
+) -> bool:
+    """Try to acquire one recording-fetch in-flight slot. Returns False when at cap."""
+    try:
+        client = _get_redis()
+        task_key = _import_task_key(celery_task_id)
+        acquired = client.eval(
+            _ACQUIRE_LUA,
+            5,
+            _import_workspace_key(workspace_id),
+            _import_org_key(organization_id),
+            _import_global_key(),
+            task_key,
+            task_key,
+            str(settings.IMPORT_WORKSPACE_INFLIGHT_LIMIT),
+            str(settings.IMPORT_ORG_INFLIGHT_LIMIT),
+            str(settings.IMPORT_GLOBAL_INFLIGHT_LIMIT),
+            str(_IMPORT_SLOT_TTL_SECONDS),
+            "0",
+            "",
+            str(workspace_id),
+            str(organization_id),
+        )
+        return bool(int(acquired or 0))
+    except redis.RedisError as exc:
+        logger.warning("Import slot acquire failed (Redis error): {}", exc)
+        return True
+
+
 def read_inflight_count(key: str) -> int:
     """Read a single Redis in-flight counter (returns 0 on error)."""
     try:
@@ -147,6 +197,10 @@ def read_inflight_count(key: str) -> int:
 
 def read_global_inflight() -> int:
     return read_inflight_count(_global_key())
+
+
+def read_import_global_inflight() -> int:
+    return read_inflight_count(_import_global_key())
 
 
 def read_org_inflight(organization_id: UUID | str) -> int:
@@ -163,7 +217,10 @@ def read_job_inflight(evaluation_id: UUID | str) -> int:
 
 def slot_registered_for_task(celery_task_id: str) -> bool:
     try:
-        return bool(_get_redis().exists(_task_key(celery_task_id)))
+        client = _get_redis()
+        return bool(client.exists(_task_key(celery_task_id))) or bool(
+            client.exists(_import_task_key(celery_task_id))
+        )
     except redis.RedisError:
         return False
 
@@ -197,6 +254,38 @@ def release_eval_slot_for_celery_task(celery_task_id: str) -> None:
     except redis.RedisError as exc:
         logger.warning(
             "Eval slot release failed for task {} (Redis error): {}",
+            celery_task_id,
+            exc,
+        )
+
+
+def release_import_slot_for_celery_task(celery_task_id: str) -> None:
+    """Release the slot held by a dispatched recording-fetch Celery task."""
+    if not celery_task_id:
+        return
+    task_key = _import_task_key(celery_task_id)
+    try:
+        client = _get_redis()
+        mapping = client.hgetall(task_key)
+        if not mapping:
+            return
+        workspace_id = mapping.get("workspace_id")
+        organization_id = mapping.get("organization_id")
+        if not workspace_id or not organization_id:
+            client.delete(task_key)
+            return
+        client.eval(
+            _RELEASE_LUA,
+            5,
+            _import_workspace_key(workspace_id),
+            _import_org_key(organization_id),
+            _import_global_key(),
+            task_key,
+            task_key,
+        )
+    except redis.RedisError as exc:
+        logger.warning(
+            "Import slot release failed for task {} (Redis error): {}",
             celery_task_id,
             exc,
         )

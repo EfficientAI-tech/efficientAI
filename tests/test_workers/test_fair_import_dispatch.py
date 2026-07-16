@@ -164,7 +164,7 @@ def test_dispatch_batch_persists_cursor_on_at_capacity(
     "app.workers.concurrency.fair_import_dispatch.schedule_fair_import_dispatch",
 )
 @patch(
-    "app.workers.concurrency.limits.release_eval_slot_for_celery_task",
+    "app.workers.concurrency.limits.release_import_slot_for_celery_task",
 )
 def test_finish_import_work_and_redispatch(
     mock_release,
@@ -181,10 +181,10 @@ def test_finish_import_work_and_redispatch(
 
 
 @patch(
-    "app.workers.concurrency.import_dispatch.release_eval_slot_for_celery_task",
+    "app.workers.concurrency.import_dispatch.release_import_slot_for_celery_task",
 )
 @patch(
-    "app.workers.concurrency.import_dispatch.acquire_eval_slot",
+    "app.workers.concurrency.import_dispatch.acquire_import_slot",
     return_value=True,
 )
 def test_try_dispatch_single_import_row_enqueues_task(

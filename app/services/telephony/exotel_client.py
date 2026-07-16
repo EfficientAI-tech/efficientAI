@@ -111,6 +111,42 @@ class ExotelClient:
             ) from e
 
         if resp.status_code in (401, 403):
+            # #region agent log
+            try:
+                import json
+                import time
+                from pathlib import Path
+
+                from app.workers.concurrency.limits import (
+                    read_global_inflight,
+                    read_import_global_inflight,
+                )
+
+                with (
+                    Path(__file__).resolve().parents[3] / "debug-6d5466.log"
+                ).open("a", encoding="utf-8") as _h:
+                    _h.write(
+                        json.dumps(
+                            {
+                                "sessionId": "6d5466",
+                                "timestamp": int(time.time() * 1000),
+                                "location": "exotel_client.py:get_call_recording_url",
+                                "message": "Exotel auth rejected on call detail",
+                                "data": {
+                                    "http_status": resp.status_code,
+                                    "call_sid": call_sid[:12],
+                                    "import_global_inflight": read_import_global_inflight(),
+                                    "eval_global_inflight": read_global_inflight(),
+                                },
+                                "hypothesisId": "H1",
+                                "runId": "pre-fix",
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # #endregion
             raise ExotelAuthError(
                 f"Exotel rejected credentials when fetching call detail (HTTP {resp.status_code})"
             )

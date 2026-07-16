@@ -2285,6 +2285,13 @@ class ApiClient {
       diarizationLlmCredentialId?: string | null
       diarizationPrompt?: string | null
       /**
+       * Override telephony credentials on the batch when failed rows must
+       * re-fetch recordings. Send both fields together; omit to keep the
+       * batch's existing pinned credentials.
+       */
+      provider?: string | null
+      telephonyIntegrationId?: string | null
+      /**
        * Metric-subset retry: when set, only these metrics are
        * recomputed and merged into the row's existing metric_scores
        * (other metrics' previous values are preserved). The backend
@@ -2334,6 +2341,13 @@ class ApiClient {
     }
     if (options?.diarizationPrompt !== undefined) {
       body.diarization_prompt = options.diarizationPrompt
+    }
+    if (
+      options?.provider !== undefined ||
+      options?.telephonyIntegrationId !== undefined
+    ) {
+      body.provider = options.provider ?? null
+      body.telephony_integration_id = options.telephonyIntegrationId ?? null
     }
     if (options?.metricIds && options.metricIds.length > 0) {
       body.metric_ids = options.metricIds
