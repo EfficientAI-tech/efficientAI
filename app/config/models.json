@@ -81,6 +81,29 @@
     "model_type": "llm",
     "description": "Higher-accuracy GPT-5.5 variant with parallel test-time compute"
   },
+  "gpt-5.6-sol": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.6 flagship — frontier reasoning, agentic coding, and computer use (1M context)",
+    "featured": true,
+    "featured_rank": 1,
+    "highlights": ["Flagship", "1M context", "Agentic coding"]
+  },
+  "gpt-5.6-terra": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.6 balanced tier — strong everyday performance at lower cost than Sol"
+  },
+  "gpt-5.6-luna": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.6 fast tier — lowest-cost model for high-volume classification and extraction"
+  },
+  "gpt-5.6": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "OpenAI API alias for gpt-5.6-sol"
+  },
   "gpt-4o-mini-tts": {
     "provider": "openai",
     "model_type": "tts",
@@ -131,6 +154,14 @@
     "provider": "anthropic",
     "model_type": "llm",
     "description": "Claude Mythos 5 \u2014 Fable 5 capabilities; limited availability via Project Glasswing"
+  },
+  "claude-sonnet-5": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Sonnet 5 \u2014 latest Sonnet tier; near-Opus quality with lower latency and cost",
+    "featured": true,
+    "featured_rank": 4,
+    "highlights": ["Latest Sonnet", "Agentic workflows", "Cost-efficient"]
   },
   "grok-4.3": {
     "provider": "xai",
@@ -265,6 +296,19 @@
     "provider": "google",
     "model_type": "llm",
     "description": "Gemini 3.1 Pro \u2014 latest reasoning model with 1M context"
+  },
+  "gemini-3.5-flash": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini 3.5 Flash \u2014 GA flagship Flash model for agentic coding and long-horizon tasks",
+    "featured": true,
+    "featured_rank": 7,
+    "highlights": ["GA stable", "1M context", "Agentic coding"]
+  },
+  "gemini-3.1-flash-lite": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini 3.1 Flash Lite \u2014 cost-efficient stable model for high-volume lightweight tasks"
   },
   "azure-speech-v1": {
     "provider": "azure",
