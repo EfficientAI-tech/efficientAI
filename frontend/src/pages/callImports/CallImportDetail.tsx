@@ -3658,7 +3658,7 @@ export default function CallImportDetail() {
                         ) : (
                           <>
                             Pick a chat model that accepts audio input
-                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-1.5-pro</code>,{' '}
+                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-2.5-flash</code>,{' '}
                             <code className="px-1 bg-gray-100 rounded text-[11px]">gpt-4o-audio-preview</code>).
                             The model receives the recording bytes and
                             the prompt and must return a JSON array of{' '}

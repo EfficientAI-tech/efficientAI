@@ -165,7 +165,7 @@ def transcribe_sarvam(
         audio_bytes = f.read()
 
     files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
-    data: Dict[str, str] = {"model": model or "saarika:v2.5"}
+    data: Dict[str, str] = {"model": model or "saaras:v3"}
     if language:
         data["language_code"] = language
 

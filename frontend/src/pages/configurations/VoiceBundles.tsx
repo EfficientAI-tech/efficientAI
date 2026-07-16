@@ -38,7 +38,7 @@ export default function VoiceBundles() {
     llm_config: { temperature: 0.7 },
     llm_credential_id: null,
     tts_provider: ModelProvider.OPENAI,
-    tts_model: 'tts-1',
+    tts_model: 'gpt-4o-mini-tts',
     tts_voice: '',
     tts_credential_id: null,
     s2s_provider: null,

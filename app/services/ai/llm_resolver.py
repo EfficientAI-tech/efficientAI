@@ -25,8 +25,8 @@ from app.services.credentials import resolve_ai_provider, resolve_integration
 
 _DEFAULT_MODELS: dict[ModelProvider, str] = {
     ModelProvider.OPENAI: "gpt-5-mini",
-    ModelProvider.ANTHROPIC: "claude-sonnet-4-20250514",
-    ModelProvider.GOOGLE: "gemini-2.0-flash",
+    ModelProvider.ANTHROPIC: "claude-sonnet-4.6",
+    ModelProvider.GOOGLE: "gemini-2.5-flash",
     ModelProvider.SARVAM: "sarvam-30b",
 }
 

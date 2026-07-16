@@ -1286,7 +1286,7 @@ def _humanise_audio_call_error(
             "audio input via Chat Completions, which is what LLM-only "
             "diarisation uses. Pick an audio-capable model: OpenAI's "
             "gpt-4o-audio-preview / gpt-4o-mini-audio-preview, or any "
-            "Google Gemini 1.5+ model (gemini-1.5-pro, gemini-2.0-flash, "
+            "Google Gemini 2.5+ model (gemini-2.5-flash, "
             "gemini-2.5-pro, …)."
         )
     compact = msg.split("\nDetails:", 1)[0].strip()

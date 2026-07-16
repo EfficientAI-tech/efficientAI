@@ -422,7 +422,7 @@ export default function ProviderModelPicker({
                   <p className="mt-1 text-xs text-amber-600">
                     This provider has no audio-capable Chat Completions
                     models. Use OpenAI's gpt-4o-audio-preview /
-                    gpt-4o-mini-audio-preview, a Google Gemini 1.5+ model,
+                    gpt-4o-mini-audio-preview, a Google Gemini 2.5+ model,
                     or a Custom gateway credential that accepts audio.
                   </p>
                 )}
