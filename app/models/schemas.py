@@ -3416,6 +3416,17 @@ class CallImportEvaluationRetryResponse(BaseModel):
     )
 
 
+class CallImportEvaluationBulkActionResponse(BaseModel):
+    """Acknowledgement for bulk cancel / force-fail requests accepted off-thread."""
+
+    accepted: bool = True
+    target_count: int = Field(
+        ...,
+        description="How many rows the background worker will process.",
+    )
+    evaluation_id: UUID
+
+
 class CallImportMetricSummary(BaseModel):
     """Lightweight metric descriptor returned alongside an evaluation."""
 

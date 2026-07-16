@@ -42,6 +42,7 @@ import type {
   CallImportEvaluationRow,
   CallImportEvaluationRowListResponse,
   CallImportEvaluationRetryResponse,
+  CallImportEvaluationBulkActionResponse,
   CallImportEvaluationAggregateResponse,
   CallImportInsightsResponse,
   CallImportTranscribeRequest,
@@ -2394,7 +2395,7 @@ class ApiClient {
   async cancelCallImportEvaluation(
     callImportId: string,
     evaluationId: string,
-  ): Promise<CallImportEvaluation> {
+  ): Promise<CallImportEvaluationBulkActionResponse> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/cancel`,
     )
@@ -2411,7 +2412,7 @@ class ApiClient {
   async forceFailCallImportEvaluationPending(
     callImportId: string,
     evaluationId: string,
-  ): Promise<CallImportEvaluation> {
+  ): Promise<CallImportEvaluationBulkActionResponse> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/force-fail-pending`,
     )

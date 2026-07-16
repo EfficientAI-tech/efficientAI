@@ -43,8 +43,22 @@ def _ensure_default_workspace(db_session, org_id):
     return ws
 
 
+def _ensure_eval_worker_import_stubs() -> None:
+    """Avoid circular imports while loading ``evaluate_call_import_row_core``."""
+    tasks_root = Path(__file__).resolve().parents[2] / "app" / "workers" / "tasks"
+    if "app.workers.tasks" not in sys.modules:
+        tasks_pkg = types.ModuleType("app.workers.tasks")
+        tasks_pkg.__path__ = [str(tasks_root)]
+        sys.modules["app.workers.tasks"] = tasks_pkg
+    if "app.workers.tasks.evaluate_call_import_row" not in sys.modules:
+        sys.modules["app.workers.tasks.evaluate_call_import_row"] = types.ModuleType(
+            "app.workers.tasks.evaluate_call_import_row"
+        )
+
+
 def _load_eval_row_core_module():
     """Load rollup helpers from disk; API tests stub ``app.workers.tasks``."""
+    _ensure_eval_worker_import_stubs()
     module_name = "app.workers.tasks.evaluate_call_import_row_core"
     existing = sys.modules.get(module_name)
     if existing is not None and hasattr(existing, "reconcile_evaluation_counters"):
@@ -94,11 +108,22 @@ def stub_workers(monkeypatch):
     fake_dispatch_module.dispatch_evaluation_rows_task = _DispatchTask()
     fake_dispatch_module.schedule_evaluation_dispatch = lambda *_a, **_kw: None
     fake_dispatch_module._needs_transcribe_for_eval = lambda *_a, **_kw: False
+    fake_dispatch_module.DIARIZATION_QUEUE = "diarization"
+    fake_dispatch_module.EVALUATIONS_QUEUE = "evaluations"
+    fake_dispatch_module.IMPORTS_QUEUE = "imports"
 
     fake_fair_module = types.ModuleType("app.workers.concurrency.fair_dispatch")
     fake_fair_module.schedule_fair_dispatch = lambda *_a, **_kw: None
     fake_fair_module.store_row_restricted_metrics = lambda *_a, **_kw: None
     fake_fair_module.store_evaluation_transcribe_overwrite = lambda *_a, **_kw: None
+    fake_fair_module.read_fair_dispatch_state = lambda: {
+        "global_rr_cursor": 0,
+        "dispatch_dedupe_active": False,
+        "dispatch_queue": "celery",
+        "at_capacity_backoff_seconds": 15,
+    }
+    fake_fair_module.read_workspace_eval_rr_cursor = lambda _workspace_id: 0
+    fake_fair_module.finish_eval_work_and_redispatch = lambda *_a, **_kw: None
 
     fake_celery = types.ModuleType("celery")
     fake_celery.group = lambda sigs: types.SimpleNamespace(
@@ -599,6 +624,18 @@ def _force_running(db_session, evaluation_id, *, task_id_prefix="celery-task"):
     return rows
 
 
+def _revoked_task_ids_from_calls(revoke) -> set[str]:
+    """Collect task ids from single or batch Celery revoke mock calls."""
+    ids: set[str] = set()
+    for call in revoke.call_args_list:
+        arg0 = call.args[0]
+        if isinstance(arg0, (list, tuple)):
+            ids.update(arg0)
+        else:
+            ids.add(arg0)
+    return ids
+
+
 def test_cancel_evaluation_flips_rows_and_revokes_tasks(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
@@ -618,14 +655,13 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     body = response.json()
-    # Two running rows -> all failed -> rollup is ``failed``.
-    assert body["status"] == "failed"
-    assert body["failed_rows"] == 2
-    assert body["completed_rows"] == 0
+    assert body["accepted"] is True
+    assert body["target_count"] == 2
+    assert body["evaluation_id"] == created["id"]
 
-    # DB state matches the response.
+    # DB state after background worker (sync-executed in tests).
     db_session.expire_all()
     refreshed = (
         db_session.query(CallImportEvaluationRow)
@@ -637,13 +673,18 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
         (r.error_message or "") == "Evaluation cancelled by user"
         for r in refreshed
     )
-    # ``celery_task_id`` is cleared so a stale poll can't accidentally
-    # re-revoke an already-cancelled task.
     assert all(r.celery_task_id is None for r in refreshed)
 
-    # Every fake task id was forwarded to Celery with terminate=True +
-    # SIGTERM — that's the contract that interrupts the worker mid-call.
-    revoked_task_ids = {call.args[0] for call in revoke.call_args_list}
+    parent = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == UUID(created["id"]))
+        .first()
+    )
+    assert parent.status == "failed"
+    assert parent.failed_rows == 2
+    assert parent.completed_rows == 0
+
+    revoked_task_ids = _revoked_task_ids_from_calls(revoke)
     assert revoked_task_ids == expected_task_ids
     for call in revoke.call_args_list:
         assert call.kwargs.get("terminate") is True
@@ -684,7 +725,8 @@ def test_cancel_evaluation_rollup_call_import_from_processing_partial(
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
+    assert response.json()["target_count"] == 5
 
     db_session.expire_all()
     refreshed_import = (
@@ -699,7 +741,7 @@ def test_cancel_evaluation_rollup_call_import_from_processing_partial(
 def test_cancel_evaluation_is_idempotent_for_terminal_runs(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
-    """Calling cancel on a run whose rows are already terminal is a 200
+    """Calling cancel on a run whose rows are already terminal is a 202
     no-op (no revokes, no DB churn) so the UI can fire it from a button
     without pre-checking state."""
     metric = _make_metric(db_session, org_id)
@@ -730,9 +772,10 @@ def test_cancel_evaluation_is_idempotent_for_terminal_runs(
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["target_count"] == 0
+    assert body["accepted"] is True
     revoke.assert_not_called()
 
 

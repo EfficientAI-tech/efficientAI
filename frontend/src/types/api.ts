@@ -1661,6 +1661,12 @@ export interface CallImportEvaluationRetryResponse {
   skipped: CallImportEvaluationRetrySkippedItem[]
 }
 
+export interface CallImportEvaluationBulkActionResponse {
+  accepted: boolean
+  target_count: number
+  evaluation_id: string
+}
+
 // --- Diarization / transcription ---
 
 export interface CallImportTranscribeRequest {

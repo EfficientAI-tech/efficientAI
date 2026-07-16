@@ -48,6 +48,7 @@ from app.models.enums import CallImportRowStatus, ModelProvider
 from app.models.schemas import (
     CallImportEvaluationAggregateResponse,
     CallImportEvaluationBulkDelete,
+    CallImportEvaluationBulkActionResponse,
     CallImportEvaluationCreate,
     CallImportEvaluationListResponse,
     CallImportEvaluationResponse,
@@ -3627,8 +3628,8 @@ def _apply_evaluation_cancel(
 
 @router.post(
     "/{eval_id}/cancel",
-    response_model=CallImportEvaluationResponse,
-    status_code=status.HTTP_200_OK,
+    response_model=CallImportEvaluationBulkActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="cancelCallImportEvaluation",
 )
 async def cancel_call_import_evaluation(
@@ -3637,23 +3638,15 @@ async def cancel_call_import_evaluation(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> CallImportEvaluationResponse:
+) -> CallImportEvaluationBulkActionResponse:
     """Abort all in-flight (or queued) rows in a single evaluation run.
 
     Idempotent: calling on a run whose rows are already terminal returns
-    the run unchanged with a 200, so the UI can fire this from an
+    ``target_count=0`` with 202 so the UI can fire this from an
     "Abort" button without having to pre-check the state.
 
-    Race notes:
-
-    * Each cancellable row's ``status`` is flipped to ``failed`` with
-      :data:`EVAL_CANCELLED_BY_USER_ERROR` BEFORE the Celery revoke,
-      so the polling UI sees the cancel immediately.
-    * If the worker happens to finish between our DB flip and the
-      SIGTERM landing, its ``_was_cancelled_externally`` guard will
-      detect the cancelled sentinel on the row and skip its own
-      status / score writes (see
-      :mod:`app.workers.tasks.evaluate_call_import_row`).
+    Heavy row resets and Celery revokes run in a background worker so
+    large batches do not block the API thread.
     """
     del api_key
     _require_import(db, call_import_id, organization_id)
@@ -3672,18 +3665,32 @@ async def cancel_call_import_evaluation(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    _apply_evaluation_cancel(list(evaluation.row_results))
-    db.flush()
-    _rollup_evaluation_status(evaluation, db)
-    db.commit()
-    db.refresh(evaluation)
-    return _serialize_eval(db, evaluation)
+    from app.services.call_imports.bulk_ops import count_evaluation_cancel_targets
+
+    target_count = count_evaluation_cancel_targets(db, eval_id, mode="abort")
+    if target_count == 0:
+        return CallImportEvaluationBulkActionResponse(
+            accepted=True,
+            target_count=0,
+            evaluation_id=eval_id,
+        )
+
+    from app.workers.tasks.call_import_bulk_ops import (
+        cancel_call_import_evaluation_task,
+    )
+
+    cancel_call_import_evaluation_task.delay(str(eval_id), mode="abort")
+    return CallImportEvaluationBulkActionResponse(
+        accepted=True,
+        target_count=target_count,
+        evaluation_id=eval_id,
+    )
 
 
 @router.post(
     "/{eval_id}/force-fail-pending",
-    response_model=CallImportEvaluationResponse,
-    status_code=status.HTTP_200_OK,
+    response_model=CallImportEvaluationBulkActionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="forceFailCallImportEvaluationPending",
 )
 async def force_fail_pending_call_import_evaluation_rows(
@@ -3692,12 +3699,15 @@ async def force_fail_pending_call_import_evaluation_rows(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> CallImportEvaluationResponse:
+) -> CallImportEvaluationBulkActionResponse:
     """Force-fail only rows currently in ``pending`` for a single run.
 
     This is narrower than :func:`cancel_call_import_evaluation`: it leaves
     ``running`` rows untouched so operators can clear permanently queued rows
     without interrupting in-flight evaluations.
+
+    Row updates run in a background worker so large batches do not block
+    the API thread.
     """
     del api_key
     _require_import(db, call_import_id, organization_id)
@@ -3716,17 +3726,30 @@ async def force_fail_pending_call_import_evaluation_rows(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    pending_rows = [
-        row
-        for row in evaluation.row_results
-        if (row.status or "").lower() == "pending"
-    ]
-    _apply_evaluation_cancel(pending_rows)
-    db.flush()
-    _rollup_evaluation_status(evaluation, db)
-    db.commit()
-    db.refresh(evaluation)
-    return _serialize_eval(db, evaluation)
+    from app.services.call_imports.bulk_ops import count_evaluation_cancel_targets
+
+    target_count = count_evaluation_cancel_targets(
+        db, eval_id, mode="force_fail_pending"
+    )
+    if target_count == 0:
+        return CallImportEvaluationBulkActionResponse(
+            accepted=True,
+            target_count=0,
+            evaluation_id=eval_id,
+        )
+
+    from app.workers.tasks.call_import_bulk_ops import (
+        cancel_call_import_evaluation_task,
+    )
+
+    cancel_call_import_evaluation_task.delay(
+        str(eval_id), mode="force_fail_pending"
+    )
+    return CallImportEvaluationBulkActionResponse(
+        accepted=True,
+        target_count=target_count,
+        evaluation_id=eval_id,
+    )
 
 
 @router.post(
@@ -7749,6 +7772,7 @@ def _reset_eval_row_for_retry(
     eval_row: CallImportEvaluationRow,
     *,
     metric_ids: Optional[List[UUID]] = None,
+    skip_revoke: bool = False,
 ) -> None:
     """Wipe per-row state so the worker can re-run it cleanly.
 
@@ -7763,7 +7787,11 @@ def _reset_eval_row_for_retry(
     Otherwise the entire ``metric_scores`` dict is reset, matching the
     legacy behaviour.
     """
-    if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
+    if (
+        not skip_revoke
+        and eval_row.celery_task_id
+        and eval_row.status in {"pending", "running"}
+    ):
         try:
             from app.workers.celery_app import celery_app
 
@@ -8359,27 +8387,49 @@ async def retry_call_import_evaluation(
         or (metric_ids is not None)
     )
 
-    targets, skipped = _gather_retry_targets(
-        db,
-        evaluation,
-        requested_ids,
-        include_completed=include_completed,
+    transcribe_overwrite = bool(
+        payload.transcribe_overwrite if payload else False
     )
 
-    if not targets:
-        # Nothing actually changed — return early without touching the
-        # parent so we don't flip a completed run into "running" by
-        # mistake.
-        return CallImportEvaluationRetryResponse(
-            requeued=0,
-            transcribe_requeued=0,
-            skipped=skipped,
-        )
+    skipped: List[CallImportEvaluationRetrySkippedItem] = []
+    if requested_ids is None:
+        from sqlalchemy import func
 
-    # Apply LLM / STT overrides BEFORE resetting rows so the persisted
-    # run config is correct by the time the worker reads it. Validation
-    # happens here too — bad overrides 400 without touching any row
-    # state.
+        count_query = db.query(func.count(CallImportEvaluationRow.id)).filter(
+            CallImportEvaluationRow.evaluation_id == eval_id
+        )
+        if include_completed:
+            count_query = count_query.filter(
+                CallImportEvaluationRow.status.in_(["failed", "completed"])
+            )
+        else:
+            count_query = count_query.filter(
+                CallImportEvaluationRow.status == "failed"
+            )
+        target_count = int(count_query.scalar() or 0)
+        if target_count == 0:
+            return CallImportEvaluationRetryResponse(
+                requeued=0,
+                transcribe_requeued=0,
+                skipped=skipped,
+            )
+    else:
+        targets, skipped = _gather_retry_targets(
+            db,
+            evaluation,
+            requested_ids,
+            include_completed=include_completed,
+        )
+        if not targets:
+            return CallImportEvaluationRetryResponse(
+                requeued=0,
+                transcribe_requeued=0,
+                skipped=skipped,
+            )
+        target_count = len(targets)
+
+    # Apply LLM / STT overrides BEFORE enqueueing so the persisted run
+    # config is correct by the time the worker reads it.
     if payload is not None:
         _apply_retry_overrides(db, evaluation, organization_id, payload)
         _apply_telephony_retry_overrides(
@@ -8388,22 +8438,7 @@ async def retry_call_import_evaluation(
             organization_id=organization_id,
             payload=payload,
         )
-    transcribe_overwrite = bool(
-        payload.transcribe_overwrite if payload else False
-    )
 
-    for eval_row, source_row in targets:
-        _prepare_source_row_for_retry(
-            source_row,
-            transcribe_overwrite=transcribe_overwrite,
-        )
-        _reset_eval_row_for_retry(eval_row, metric_ids=metric_ids)
-
-    # Flip the parent back to ``running`` and clear any old enqueue
-    # error so the UI's polling resumes. Counters get recomputed by
-    # the worker's ``_rollup_parent`` as rows finish, but we also call
-    # the route-side rollup helper here so the counts are immediately
-    # consistent with the new pending rows.
     evaluation.error_message = None
     evaluation.finished_at = None
     evaluation.status = "running"
@@ -8411,42 +8446,27 @@ async def retry_call_import_evaluation(
         from datetime import datetime, timezone
 
         evaluation.started_at = datetime.now(timezone.utc)
-    db.flush()
-    _rollup_evaluation_status(evaluation, db)
     db.commit()
 
-    try:
-        evaluate_only, transcribe_chain = (
-            _enqueue_eval_rows_with_optional_transcribe(
-                db,
-                evaluation,
-                targets,
-                transcribe_overwrite=transcribe_overwrite,
-                restricted_metric_ids=metric_ids,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 — surface but don't 500
-        logger.exception(
-            "Failed to re-enqueue evaluation {} for call import {}",
-            eval_id,
-            call_import_id,
-        )
-        # Roll the targeted rows back to ``failed`` with a clear
-        # message — leaving them ``pending`` would make the UI think
-        # work is still happening.
-        for eval_row, _ in targets:
-            eval_row.status = "failed"
-            eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
-        _rollup_evaluation_status(evaluation, db)
-        db.commit()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to re-enqueue retry: {exc}",
-        )
+    from app.workers.tasks.call_import_bulk_ops import (
+        retry_call_import_evaluation_task,
+    )
+
+    retry_call_import_evaluation_task.delay(
+        str(eval_id),
+        {
+            "eval_row_ids": [str(rid) for rid in requested_ids]
+            if requested_ids
+            else None,
+            "metric_ids": [str(mid) for mid in metric_ids] if metric_ids else None,
+            "include_completed": include_completed,
+            "transcribe_overwrite": transcribe_overwrite,
+        },
+    )
 
     return CallImportEvaluationRetryResponse(
-        requeued=evaluate_only + transcribe_chain,
-        transcribe_requeued=transcribe_chain,
+        requeued=target_count,
+        transcribe_requeued=0,
         skipped=skipped,
     )
 

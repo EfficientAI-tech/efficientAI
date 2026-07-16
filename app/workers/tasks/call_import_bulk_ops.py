@@ -15,6 +15,8 @@ from app.services.call_imports.bulk_ops import (
     execute_bulk_row_delete,
     execute_call_import_delete,
     execute_call_import_materialization,
+    execute_evaluation_cancel,
+    execute_evaluation_retry,
     materialize_and_enqueue_evaluation,
 )
 from app.workers.config import celery_app
@@ -184,6 +186,58 @@ def _fail_evaluation_materialization(
     evaluation.status = "failed"
     evaluation.error_message = error_message
     db.commit()
+
+
+@celery_app.task(name="retry_call_import_evaluation", bind=True, max_retries=1)
+def retry_call_import_evaluation_task(
+    self,
+    evaluation_id: str,
+    payload_dict: dict,
+) -> dict:
+    """Reset failed eval rows and start throttled dispatch off the API thread."""
+    del self
+    db = SessionLocal()
+    try:
+        eval_row_ids_raw = payload_dict.get("eval_row_ids")
+        metric_ids_raw = payload_dict.get("metric_ids")
+        return execute_evaluation_retry(
+            db,
+            UUID(evaluation_id),
+            eval_row_ids=(
+                [UUID(rid) for rid in eval_row_ids_raw]
+                if eval_row_ids_raw
+                else None
+            ),
+            metric_ids=(
+                [UUID(mid) for mid in metric_ids_raw] if metric_ids_raw else None
+            ),
+            include_completed=bool(payload_dict.get("include_completed", False)),
+            transcribe_overwrite=bool(payload_dict.get("transcribe_overwrite", False)),
+        )
+    finally:
+        db.close()
+
+
+@celery_app.task(name="cancel_call_import_evaluation", bind=True, max_retries=1)
+def cancel_call_import_evaluation_task(
+    self,
+    evaluation_id: str,
+    *,
+    mode: str,
+) -> dict:
+    """Cancel eval rows in chunks off the API thread."""
+    del self
+    db = SessionLocal()
+    try:
+        if mode not in {"abort", "force_fail_pending"}:
+            raise ValueError(f"Unknown cancel mode: {mode}")
+        return execute_evaluation_cancel(
+            db,
+            UUID(evaluation_id),
+            mode=mode,  # type: ignore[arg-type]
+        )
+    finally:
+        db.close()
 
 
 @celery_app.task(name="materialize_call_import_rows", bind=True, max_retries=1)

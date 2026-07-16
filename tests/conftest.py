@@ -461,6 +461,133 @@ def client(db_session, api_key, org_id):
     fake_bulk_ops_module.bulk_delete_call_import_rows_task = _NoopBulkTask()
     fake_bulk_ops_module.delete_call_import_task = _NoopBulkTask()
 
+    def _sync_retry_delay(evaluation_id, payload_dict):
+        from uuid import UUID
+
+        eval_row_ids_raw = payload_dict.get("eval_row_ids")
+        metric_ids_raw = payload_dict.get("metric_ids")
+        from app.services.call_imports.bulk_ops import execute_evaluation_retry
+
+        execute_evaluation_retry(
+            db_session,
+            UUID(evaluation_id),
+            eval_row_ids=(
+                [UUID(rid) for rid in eval_row_ids_raw]
+                if eval_row_ids_raw
+                else None
+            ),
+            metric_ids=(
+                [UUID(mid) for mid in metric_ids_raw] if metric_ids_raw else None
+            ),
+            include_completed=bool(payload_dict.get("include_completed", False)),
+            transcribe_overwrite=bool(payload_dict.get("transcribe_overwrite", False)),
+        )
+        return types.SimpleNamespace(id="fake-sync-retry-task")
+
+    fake_bulk_ops_module.retry_call_import_evaluation_task = types.SimpleNamespace(
+        delay=_sync_retry_delay
+    )
+
+    def _sync_cancel_delay(evaluation_id, *, mode):
+        from uuid import UUID
+
+        from app.services.call_imports.bulk_ops import execute_evaluation_cancel
+
+        execute_evaluation_cancel(db_session, UUID(evaluation_id), mode=mode)
+        return types.SimpleNamespace(id="fake-sync-cancel-task")
+
+    fake_bulk_ops_module.cancel_call_import_evaluation_task = types.SimpleNamespace(
+        delay=_sync_cancel_delay
+    )
+
+    fake_fair_dispatch_module = sys.modules.get("app.workers.concurrency.fair_dispatch")
+    if fake_fair_dispatch_module is None:
+        fake_fair_dispatch_module = types.ModuleType(
+            "app.workers.concurrency.fair_dispatch"
+        )
+        sys.modules["app.workers.concurrency.fair_dispatch"] = (
+            fake_fair_dispatch_module
+        )
+    if not hasattr(fake_fair_dispatch_module, "schedule_fair_dispatch"):
+        fake_fair_dispatch_module.schedule_fair_dispatch = lambda *_a, **_kw: None
+    if not hasattr(fake_fair_dispatch_module, "store_row_restricted_metrics"):
+        fake_fair_dispatch_module.store_row_restricted_metrics = lambda *_a, **_kw: None
+    if not hasattr(fake_fair_dispatch_module, "store_evaluation_transcribe_overwrite"):
+        fake_fair_dispatch_module.store_evaluation_transcribe_overwrite = (
+            lambda *_a, **_kw: None
+        )
+    if not hasattr(fake_fair_dispatch_module, "read_fair_dispatch_state"):
+        fake_fair_dispatch_module.read_fair_dispatch_state = lambda: {
+            "global_rr_cursor": 0,
+            "dispatch_dedupe_active": False,
+            "dispatch_queue": "celery",
+            "at_capacity_backoff_seconds": 15,
+        }
+    if not hasattr(fake_fair_dispatch_module, "read_workspace_eval_rr_cursor"):
+        fake_fair_dispatch_module.read_workspace_eval_rr_cursor = lambda _ws_id: 0
+    if not hasattr(fake_fair_dispatch_module, "finish_eval_work_and_redispatch"):
+        fake_fair_dispatch_module.finish_eval_work_and_redispatch = (
+            lambda *_a, **_kw: None
+        )
+
+    def _ensure_concurrency_submodule(name: str) -> types.ModuleType:
+        full_name = f"app.workers.concurrency.{name}"
+        module = sys.modules.get(full_name)
+        if module is None:
+            module = types.ModuleType(full_name)
+            sys.modules[full_name] = module
+        return module
+
+    for submodule, attrs in {
+        "fair_diarization_dispatch": (
+            "finish_diarization_work_and_redispatch",
+            "schedule_fair_diarization_dispatch",
+        ),
+        "fair_import_dispatch": (
+            "finish_import_work_and_redispatch",
+            "schedule_fair_import_dispatch",
+        ),
+        "diarization_dispatch": (
+            "build_diarization_params_from_request",
+            "store_row_diarization_params",
+        ),
+        "limits": (
+            "acquire_eval_slot",
+            "release_eval_slot_for_celery_task",
+            "slot_registered_for_task",
+        ),
+    }.items():
+        mod = _ensure_concurrency_submodule(submodule)
+        for attr in attrs:
+            if not hasattr(mod, attr):
+                setattr(mod, attr, lambda *_a, **_kw: None)
+
+    limits_mod = _ensure_concurrency_submodule("limits")
+    for attr in (
+        "read_global_inflight",
+        "read_org_inflight",
+        "read_workspace_inflight",
+        "read_job_inflight",
+    ):
+        if not hasattr(limits_mod, attr):
+            setattr(limits_mod, attr, lambda *_a, **_kw: 0)
+
+    fake_eval_dispatch_module = sys.modules.get("app.workers.concurrency.eval_dispatch")
+    if fake_eval_dispatch_module is None:
+        fake_eval_dispatch_module = types.ModuleType(
+            "app.workers.concurrency.eval_dispatch"
+        )
+        sys.modules["app.workers.concurrency.eval_dispatch"] = fake_eval_dispatch_module
+    for queue_name in ("DIARIZATION_QUEUE", "EVALUATIONS_QUEUE", "IMPORTS_QUEUE"):
+        if not hasattr(fake_eval_dispatch_module, queue_name):
+            setattr(
+                fake_eval_dispatch_module,
+                queue_name,
+                queue_name.replace("_QUEUE", "").lower(),
+            )
+    if not hasattr(fake_eval_dispatch_module, "schedule_evaluation_dispatch"):
+        fake_eval_dispatch_module.schedule_evaluation_dispatch = lambda *_a, **_kw: None
+
     from app.database import get_db
     from app.dependencies import (
         get_api_key,

@@ -7,7 +7,8 @@ blob/Redis/DB operations suitable for multi-thousand row imports.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional, Tuple
 from uuid import UUID, uuid4
 
 from loguru import logger
@@ -771,3 +772,228 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
         call_import.status = CallImportStatus.FAILED
     else:
         call_import.status = CallImportStatus.PARTIAL
+
+
+_EVAL_CANCEL_COLUMNS = (
+    CallImportEvaluationRow.id,
+    CallImportEvaluationRow.status,
+    CallImportEvaluationRow.celery_task_id,
+)
+
+
+def count_evaluation_cancel_targets(
+    db: Session,
+    evaluation_id: UUID,
+    *,
+    mode: Literal["abort", "force_fail_pending"],
+) -> int:
+    """Count rows eligible for bulk cancel without loading full ORM objects."""
+    from sqlalchemy import func
+
+    query = db.query(func.count(CallImportEvaluationRow.id)).filter(
+        CallImportEvaluationRow.evaluation_id == evaluation_id
+    )
+    if mode == "abort":
+        query = query.filter(
+            CallImportEvaluationRow.status.in_(("pending", "running"))
+        )
+    else:
+        query = query.filter(CallImportEvaluationRow.status == "pending")
+    return int(query.scalar() or 0)
+
+
+def _batch_revoke_celery_task_ids(
+    task_ids: List[str],
+    *,
+    terminate: bool,
+) -> int:
+    """Revoke Celery tasks in batches; best-effort on control-plane errors."""
+    cleaned = [tid for tid in task_ids if (tid or "").strip()]
+    if not cleaned:
+        return 0
+    try:
+        from app.workers.celery_app import celery_app
+
+        revoked = 0
+        for start in range(0, len(cleaned), _REVOKE_TASK_BATCH):
+            chunk = cleaned[start : start + _REVOKE_TASK_BATCH]
+            if terminate:
+                celery_app.control.revoke(
+                    chunk, terminate=True, signal="SIGTERM"
+                )
+            else:
+                celery_app.control.revoke(chunk, terminate=False)
+            revoked += len(chunk)
+        return revoked
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to batch-revoke {} Celery tasks: {}", len(cleaned), exc)
+        return 0
+
+
+def execute_evaluation_cancel(
+    db: Session,
+    evaluation_id: UUID,
+    *,
+    mode: Literal["abort", "force_fail_pending"],
+) -> dict:
+    """Cancel eval rows in chunks off the API thread."""
+    from app.api.v1.routes.call_import_evaluations import (
+        EVAL_CANCELLED_BY_USER_ERROR,
+        _rollup_evaluation_status,
+    )
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if evaluation is None:
+        logger.warning(
+            "execute_evaluation_cancel: evaluation {} not found",
+            evaluation_id,
+        )
+        return {"evaluation_id": str(evaluation_id), "cancelled": 0, "mode": mode}
+
+    cancelled_total = 0
+    while True:
+        query = (
+            db.query(CallImportEvaluationRow)
+            .options(load_only(*_EVAL_CANCEL_COLUMNS))
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+        )
+        if mode == "abort":
+            query = query.filter(
+                CallImportEvaluationRow.status.in_(("pending", "running"))
+            )
+        else:
+            query = query.filter(CallImportEvaluationRow.status == "pending")
+
+        rows = (
+            query.order_by(CallImportEvaluationRow.id.asc())
+            .limit(_BULK_INSERT_CHUNK)
+            .all()
+        )
+        if not rows:
+            break
+
+        task_ids: List[str] = []
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            task_id = (row.celery_task_id or "").strip()
+            if task_id:
+                task_ids.append(task_id)
+            row.status = "failed"
+            row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+            row.finished_at = now
+            row.celery_task_id = None
+            cancelled_total += 1
+
+        _batch_revoke_celery_task_ids(task_ids, terminate=True)
+        db.commit()
+
+    db.refresh(evaluation)
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+
+    return {
+        "evaluation_id": str(evaluation_id),
+        "cancelled": cancelled_total,
+        "mode": mode,
+    }
+
+
+def execute_evaluation_retry(
+    db: Session,
+    evaluation_id: UUID,
+    *,
+    eval_row_ids: Optional[List[UUID]] = None,
+    metric_ids: Optional[List[UUID]] = None,
+    include_completed: bool = False,
+    transcribe_overwrite: bool = False,
+) -> dict:
+    """Reset failed eval rows in chunks and start throttled dispatch."""
+    from app.api.v1.routes.call_import_evaluations import (
+        _enqueue_eval_rows_with_optional_transcribe,
+        _gather_retry_targets,
+        _prepare_source_row_for_retry,
+        _reset_eval_row_for_retry,
+        _rollup_evaluation_status,
+    )
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == evaluation_id)
+        .first()
+    )
+    if evaluation is None:
+        logger.warning(
+            "execute_evaluation_retry: evaluation {} not found",
+            evaluation_id,
+        )
+        return {"evaluation_id": str(evaluation_id), "requeued": 0}
+
+    targets, skipped = _gather_retry_targets(
+        db,
+        evaluation,
+        eval_row_ids,
+        include_completed=include_completed,
+    )
+    if not targets:
+        return {
+            "evaluation_id": str(evaluation_id),
+            "requeued": 0,
+            "skipped": len(skipped),
+        }
+
+    for start in range(0, len(targets), _BULK_INSERT_CHUNK):
+        chunk = targets[start : start + _BULK_INSERT_CHUNK]
+        task_ids: List[str] = []
+        for eval_row, source_row in chunk:
+            if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
+                task_id = (eval_row.celery_task_id or "").strip()
+                if task_id:
+                    task_ids.append(task_id)
+            _prepare_source_row_for_retry(
+                source_row,
+                transcribe_overwrite=transcribe_overwrite,
+            )
+            _reset_eval_row_for_retry(
+                eval_row,
+                metric_ids=metric_ids,
+                skip_revoke=True,
+            )
+        _batch_revoke_celery_task_ids(task_ids, terminate=False)
+        db.commit()
+
+    try:
+        evaluate_only, transcribe_chain = _enqueue_eval_rows_with_optional_transcribe(
+            db,
+            evaluation,
+            targets,
+            transcribe_overwrite=transcribe_overwrite,
+            restricted_metric_ids=metric_ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to re-enqueue evaluation {} after retry reset",
+            evaluation_id,
+        )
+        for eval_row, _ in targets:
+            eval_row.status = "failed"
+            eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+        _rollup_evaluation_status(evaluation, db)
+        db.commit()
+        return {
+            "evaluation_id": str(evaluation_id),
+            "requeued": 0,
+            "error": str(exc),
+        }
+
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    return {
+        "evaluation_id": str(evaluation_id),
+        "requeued": evaluate_only + transcribe_chain,
+        "transcribe_requeued": transcribe_chain,
+        "skipped": len(skipped),
+    }
