@@ -4,9 +4,8 @@ Users upload a CSV plus a per-batch column mapping (CSV header -> system
 field). The backend persists a CallImport batch + one CallImportRow per
 line, then fans the rows out to the Celery ``imports`` queue where each
 row is downloaded using the telephony credential pinned on the batch.
-When a row has no recording URL, the worker resolves it via the chosen
-provider's call detail endpoint (Exotel today; Plivo CSVs must include
-the URL).
+Exotel credentialed imports require a ``recording_url`` on every row;
+direct-URL imports (no credential) also require a mapped recording URL.
 """
 
 from __future__ import annotations
@@ -983,6 +982,38 @@ def _validate_direct_url_import_ready(
         )
 
 
+def _validate_exotel_import_ready(
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, Any],
+) -> None:
+    """Ensure Exotel credentialed import has a mapped recording_url column."""
+    rec_url_param = next(
+        (
+            p
+            for p in parameters
+            if p.type == CallImportParameterType.RECORDING_URL.value
+        ),
+        None,
+    )
+    if rec_url_param is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Exotel import requires a schema parameter of type "
+                "'recording_url'."
+            ),
+        )
+    mapped_header = (parameter_mapping or {}).get(rec_url_param.name)
+    if not (mapped_header or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Exotel import requires the 'recording_url' parameter to "
+                "be mapped to a source column."
+            ),
+        )
+
+
 def _resolve_telephony_integration(
     db: Session,
     organization_id: UUID,
@@ -1647,6 +1678,10 @@ async def start_call_import(
             payload.telephony_integration_id,
             payload.provider or "",
         )
+        if (integration.provider or "").lower() == "exotel":
+            _validate_exotel_import_ready(
+                parameters, dict(call_import.parameter_mapping or {})
+            )
     else:
         _validate_direct_url_import_ready(
             parameters, dict(call_import.parameter_mapping or {})
@@ -1836,6 +1871,8 @@ async def upload_call_import_csv(
         integration = _resolve_telephony_integration(
             db, organization_id, telephony_integration_id, provider or ""
         )
+        if (integration.provider or "").lower() == "exotel":
+            _validate_exotel_import_ready(parameters, cleaned_mapping)
     else:
         _validate_direct_url_import_ready(parameters, cleaned_mapping)
         integration = None
@@ -2856,6 +2893,17 @@ async def retry_failed_call_import_rows(
             )
             call_import.provider = integration.provider
             call_import.telephony_integration_id = integration.id
+            if (integration.provider or "").lower() == "exotel":
+                schema = _resolve_schema(
+                    db,
+                    organization_id,
+                    call_import.workspace_id,
+                    call_import.schema_id,
+                )
+                _validate_exotel_import_ready(
+                    list(schema.parameters),
+                    dict(call_import.parameter_mapping or {}),
+                )
         else:
             call_import.provider = None
             call_import.telephony_integration_id = None

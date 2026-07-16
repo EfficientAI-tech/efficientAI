@@ -3880,7 +3880,8 @@ export default function CallImportEvaluationDetail() {
                     </h3>
                     <p className="text-xs text-gray-500 mt-0.5">
                       Used when failed rows still need to download audio from
-                      Exotel or another provider. Switch credentials here if
+                      Exotel or another provider. Exotel batches require a
+                      Recording URL column in the CSV. Switch credentials here if
                       the original batch used the wrong integration.
                     </p>
                   </div>

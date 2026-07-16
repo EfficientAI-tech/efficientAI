@@ -224,7 +224,7 @@ def is_exotel_rest_api_host(api_host: Optional[str]) -> bool:
     """Return True when ``api_host`` is a known Exotel REST API base.
 
     SIP routing domains (``sip.*``, customer SIP hosts, etc.) must not be
-    used for Calls API lookups — those integrations fall back to the
+    used as Exotel REST API bases — those integrations fall back to the
     configured default instead.
     """
     if not api_host or not api_host.strip():
@@ -254,7 +254,7 @@ def resolve_exotel_api_base(api_host: Optional[str] = None) -> str:
     Priority: per-integration API Host (``sip_domain``) when it matches a
     recognized Exotel REST host → ``EXOTEL_API_BASE`` in config → Singapore
     default. Unrecognized ``sip_domain`` values (e.g. legacy SIP routing
-    hosts) are ignored with a warning so call-id lookup does not hit the
+    hosts) are ignored with a warning so REST calls do not hit the
     wrong service.
     """
     if api_host and api_host.strip():

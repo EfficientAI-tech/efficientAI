@@ -1578,6 +1578,30 @@ def test_upload_direct_url_rejects_when_recording_url_unmapped(
     assert "recording_url" in response.json()["detail"].lower()
 
 
+def test_upload_exotel_rejects_when_recording_url_unmapped(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id, provider="exotel")
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data={
+            "provider": integration.provider,
+            "telephony_integration_id": str(integration.id),
+            "schema_id": str(schema.id),
+            "parameter_mapping": (
+                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
+                '"transcript": "Transcript"}'
+            ),
+            "skipped_columns": '["Recording URL"]',
+        },
+    )
+    assert response.status_code == 400
+    assert "exotel" in response.json()["detail"].lower()
+    assert "recording_url" in response.json()["detail"].lower()
+
+
 def test_upload_rejects_mixed_provider_and_credential_payload(
     authenticated_client, db_session, org_id, seed_org
 ):
