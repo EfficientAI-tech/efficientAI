@@ -19,8 +19,8 @@ from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 _DEFAULT_SCORING_MODELS = {
     "openai": "gpt-4o-mini",
-    "anthropic": "claude-3-5-haiku-latest",
-    "google": "gemini-2.0-flash",
+    "anthropic": "claude-haiku-4.5",
+    "google": "gemini-2.5-flash",
 }
 
 

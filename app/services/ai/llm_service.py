@@ -10,7 +10,7 @@ Completions) automatically.
 
 import re
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from uuid import UUID
 
 import litellm
@@ -26,6 +26,8 @@ from app.services.ai.llm_gateway import (
     resolve_litellm_api_key,
     resolve_litellm_model,
     routing_context_from_ai_provider,
+    routing_context_from_integration,
+    CredentialRoutingContext,
 )
 
 # LiteLLM will silently drop params the target provider doesn't support
@@ -168,6 +170,31 @@ class LLMService:
             provider, db, organization_id, credential_id=credential_id
         )
 
+    def _resolve_credential_context(
+        self,
+        llm_provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ) -> Tuple[Optional[AIProvider], Optional[CredentialRoutingContext]]:
+        """Resolve AIProvider or Integration row and its routing context."""
+        ai_provider = self._get_ai_provider(
+            llm_provider, db, organization_id, credential_id=credential_id
+        )
+        if ai_provider:
+            return ai_provider, routing_context_from_ai_provider(ai_provider)
+
+        provider_value = (
+            llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+        )
+        integration = resolve_integration(
+            provider_value, db, organization_id, credential_id=credential_id
+        )
+        if integration:
+            return None, routing_context_from_integration(integration)
+
+        return None, None
+
     def _resolve_api_key(
         self,
         provider: ModelProvider,
@@ -253,11 +280,8 @@ class LLMService:
         start_time = time.time()
 
         # --- resolve API key from database --------------------------------
-        ai_provider = self._get_ai_provider(
+        ai_provider, credential_ctx = self._resolve_credential_context(
             llm_provider, db, organization_id, credential_id=credential_id
-        )
-        credential_ctx = (
-            routing_context_from_ai_provider(ai_provider) if ai_provider else None
         )
         if ai_provider:
             api_key = resolve_litellm_api_key(
@@ -327,6 +351,22 @@ class LLMService:
             model=model_str,
             credential=credential_ctx,
         )
+
+        # #region agent log
+        try:
+            import json as _json, time as _time
+            _msg_types = []
+            for _m in messages:
+                _c = _m.get("content")
+                if isinstance(_c, list):
+                    _msg_types.extend(
+                        p.get("type") for p in _c if isinstance(p, dict)
+                    )
+            with open("debug-bfc313.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps({"sessionId": "bfc313", "runId": "post-fix", "hypothesisId": "C", "location": "llm_service.py:generate_response", "message": "pre-completion routing", "data": {"effective_routing": effective_routing, "credential_mode": getattr(credential_ctx, "routing_mode", None), "credential_id": str(credential_id) if credential_id else None, "model": model_str, "has_api_base": "api_base" in call_kwargs, "custom_llm_provider": call_kwargs.get("custom_llm_provider"), "content_part_types": _msg_types}, "timestamp": int(_time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
         try:
             response = litellm.completion(**call_kwargs)

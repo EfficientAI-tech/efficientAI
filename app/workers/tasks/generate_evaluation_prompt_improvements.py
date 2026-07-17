@@ -31,6 +31,7 @@ def generate_evaluation_prompt_improvements_task(
     *,
     provider: str | None = None,
     model: str | None = None,
+    credential_id: str | None = None,
 ):
     from app.api.v1.routes.call_import_evaluations import (
         _aggregate_to_dict,
@@ -114,6 +115,7 @@ def generate_evaluation_prompt_improvements_task(
             db=db,
             provider=provider,
             model=model,
+            credential_id=UUID(credential_id) if credential_id else None,
             period_deltas=period_deltas,
         )
         evaluation.prompt_improvements = prompt_improvements_state_to_db(state)

@@ -7,8 +7,10 @@ without Celery / Redis.
 """
 
 import io
+import importlib.util
 import sys
 import types
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -41,6 +43,43 @@ def _ensure_default_workspace(db_session, org_id):
     return ws
 
 
+def _ensure_eval_worker_import_stubs() -> None:
+    """Avoid circular imports while loading ``evaluate_call_import_row_core``."""
+    tasks_root = Path(__file__).resolve().parents[2] / "app" / "workers" / "tasks"
+    if "app.workers.tasks" not in sys.modules:
+        tasks_pkg = types.ModuleType("app.workers.tasks")
+        tasks_pkg.__path__ = [str(tasks_root)]
+        sys.modules["app.workers.tasks"] = tasks_pkg
+    if "app.workers.tasks.evaluate_call_import_row" not in sys.modules:
+        sys.modules["app.workers.tasks.evaluate_call_import_row"] = types.ModuleType(
+            "app.workers.tasks.evaluate_call_import_row"
+        )
+
+
+def _load_eval_row_core_module():
+    """Load rollup helpers from disk; API tests stub ``app.workers.tasks``."""
+    _ensure_eval_worker_import_stubs()
+    module_name = "app.workers.tasks.evaluate_call_import_row_core"
+    existing = sys.modules.get(module_name)
+    if existing is not None and hasattr(existing, "reconcile_evaluation_counters"):
+        return existing
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "workers"
+        / "tasks"
+        / "evaluate_call_import_row_core.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load task module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture(autouse=True)
 def stub_workers(monkeypatch):
     """Stub the Celery task modules used by the evaluation route."""
@@ -69,16 +108,29 @@ def stub_workers(monkeypatch):
     fake_dispatch_module.dispatch_evaluation_rows_task = _DispatchTask()
     fake_dispatch_module.schedule_evaluation_dispatch = lambda *_a, **_kw: None
     fake_dispatch_module._needs_transcribe_for_eval = lambda *_a, **_kw: False
+    fake_dispatch_module.DIARIZATION_QUEUE = "diarization"
+    fake_dispatch_module.EVALUATIONS_QUEUE = "evaluations"
+    fake_dispatch_module.IMPORTS_QUEUE = "imports"
 
     fake_fair_module = types.ModuleType("app.workers.concurrency.fair_dispatch")
     fake_fair_module.schedule_fair_dispatch = lambda *_a, **_kw: None
     fake_fair_module.store_row_restricted_metrics = lambda *_a, **_kw: None
     fake_fair_module.store_evaluation_transcribe_overwrite = lambda *_a, **_kw: None
+    fake_fair_module.read_fair_dispatch_state = lambda: {
+        "global_rr_cursor": 0,
+        "dispatch_dedupe_active": False,
+        "dispatch_queue": "celery",
+        "at_capacity_backoff_seconds": 15,
+    }
+    fake_fair_module.read_workspace_eval_rr_cursor = lambda _workspace_id: 0
+    fake_fair_module.finish_eval_work_and_redispatch = lambda *_a, **_kw: None
 
     fake_celery = types.ModuleType("celery")
     fake_celery.group = lambda sigs: types.SimpleNamespace(
         apply_async=lambda: types.SimpleNamespace(id="celery-group-id"),
     )
+
+    fake_eval_core_module = _load_eval_row_core_module()
 
     previous = {
         "app.workers.tasks.process_call_import_row": sys.modules.get(
@@ -86,6 +138,9 @@ def stub_workers(monkeypatch):
         ),
         "app.workers.tasks.evaluate_call_import_row": sys.modules.get(
             "app.workers.tasks.evaluate_call_import_row"
+        ),
+        "app.workers.tasks.evaluate_call_import_row_core": sys.modules.get(
+            "app.workers.tasks.evaluate_call_import_row_core"
         ),
         "app.workers.concurrency.eval_dispatch": sys.modules.get(
             "app.workers.concurrency.eval_dispatch"
@@ -97,6 +152,7 @@ def stub_workers(monkeypatch):
     }
     sys.modules["app.workers.tasks.process_call_import_row"] = fake_import_module
     sys.modules["app.workers.tasks.evaluate_call_import_row"] = fake_eval_module
+    sys.modules["app.workers.tasks.evaluate_call_import_row_core"] = fake_eval_core_module
     sys.modules["app.workers.concurrency.eval_dispatch"] = fake_dispatch_module
     sys.modules["app.workers.concurrency.fair_dispatch"] = fake_fair_module
     sys.modules["celery"] = fake_celery
@@ -568,6 +624,18 @@ def _force_running(db_session, evaluation_id, *, task_id_prefix="celery-task"):
     return rows
 
 
+def _revoked_task_ids_from_calls(revoke) -> set[str]:
+    """Collect task ids from single or batch Celery revoke mock calls."""
+    ids: set[str] = set()
+    for call in revoke.call_args_list:
+        arg0 = call.args[0]
+        if isinstance(arg0, (list, tuple)):
+            ids.update(arg0)
+        else:
+            ids.add(arg0)
+    return ids
+
+
 def test_cancel_evaluation_flips_rows_and_revokes_tasks(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
@@ -587,14 +655,13 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     body = response.json()
-    # Two running rows -> all failed -> rollup is ``failed``.
-    assert body["status"] == "failed"
-    assert body["failed_rows"] == 2
-    assert body["completed_rows"] == 0
+    assert body["accepted"] is True
+    assert body["target_count"] == 2
+    assert body["evaluation_id"] == created["id"]
 
-    # DB state matches the response.
+    # DB state after background worker (sync-executed in tests).
     db_session.expire_all()
     refreshed = (
         db_session.query(CallImportEvaluationRow)
@@ -606,23 +673,75 @@ def test_cancel_evaluation_flips_rows_and_revokes_tasks(
         (r.error_message or "") == "Evaluation cancelled by user"
         for r in refreshed
     )
-    # ``celery_task_id`` is cleared so a stale poll can't accidentally
-    # re-revoke an already-cancelled task.
     assert all(r.celery_task_id is None for r in refreshed)
 
-    # Every fake task id was forwarded to Celery with terminate=True +
-    # SIGTERM — that's the contract that interrupts the worker mid-call.
-    revoked_task_ids = {call.args[0] for call in revoke.call_args_list}
+    parent = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == UUID(created["id"]))
+        .first()
+    )
+    assert parent.status == "failed"
+    assert parent.failed_rows == 2
+    assert parent.completed_rows == 0
+
+    revoked_task_ids = _revoked_task_ids_from_calls(revoke)
     assert revoked_task_ids == expected_task_ids
     for call in revoke.call_args_list:
         assert call.kwargs.get("terminate") is True
         assert call.kwargs.get("signal") == "SIGTERM"
 
 
+def test_cancel_evaluation_rollup_call_import_from_processing_partial(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Aborting an eval must not leave the import batch stuck in ``processing``.
+
+    Eval-primary batches materialize thousands of ``pending`` import rows and
+    only fetch a subset before the operator cancels. Once the evaluation run
+    is terminal, leftover pending rows must not block the parent rollup.
+    """
+    metric = _make_metric(db_session, org_id)
+    call_import, row_models = _make_call_import(
+        db_session,
+        org_id,
+        rows=5,
+        row_status=CallImportRowStatus.PENDING,
+    )
+    row_models[0].status = CallImportRowStatus.COMPLETED
+    call_import.status = CallImportStatus.PROCESSING
+    call_import.total_rows = 5
+    call_import.completed_rows = 1
+    call_import.failed_rows = 0
+    db_session.commit()
+
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    _force_running(db_session, created["id"])
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["target_count"] == 5
+
+    db_session.expire_all()
+    refreshed_import = (
+        db_session.query(CallImport)
+        .filter(CallImport.id == call_import.id)
+        .first()
+    )
+    assert refreshed_import.status == CallImportStatus.PARTIAL
+    assert refreshed_import.completed_rows == 1
+
+
 def test_cancel_evaluation_is_idempotent_for_terminal_runs(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
-    """Calling cancel on a run whose rows are already terminal is a 200
+    """Calling cancel on a run whose rows are already terminal is a 202
     no-op (no revokes, no DB churn) so the UI can fire it from a button
     without pre-checking state."""
     metric = _make_metric(db_session, org_id)
@@ -653,9 +772,10 @@ def test_cancel_evaluation_is_idempotent_for_terminal_runs(
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     body = response.json()
-    assert body["status"] == "completed"
+    assert body["target_count"] == 0
+    assert body["accepted"] is True
     revoke.assert_not_called()
 
 
@@ -773,3 +893,264 @@ def test_cancel_evaluation_row_unknown_row_returns_404(
         f"{created['id']}/rows/{uuid4()}/cancel"
     )
     assert response.status_code == 404
+
+
+def test_get_evaluation_includes_bulk_operation(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: "abort",
+    )
+
+    detail = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}"
+    )
+    assert detail.status_code == 200
+    assert detail.json()["bulk_operation"] == "abort"
+
+
+def test_cancel_returns_409_when_bulk_operation_active(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _force_running(db_session, created["id"])
+
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: "retry",
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.try_set_evaluation_bulk_operation",
+        lambda _evaluation_id, _operation: False,
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 409
+    assert "bulk retry operation" in response.json()["detail"]
+
+
+def test_cancel_row_returns_409_when_bulk_operation_active(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .first()
+    )
+
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: "abort",
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{eval_row.id}/cancel"
+    )
+    assert response.status_code == 409
+    assert "bulk abort operation" in response.json()["detail"]
+
+
+def test_retry_failed_rows_flips_partial_run_back_to_running(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Retry on a partially-completed run should reset failed rows and resume."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_uuid = UUID(created["id"])
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .order_by(CallImportEvaluationRow.created_at.asc())
+        .all()
+    )
+    eval_rows[0].status = "completed"
+    eval_rows[1].status = "failed"
+    eval_rows[1].error_message = "LLM timeout"
+    parent = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == eval_uuid)
+        .first()
+    )
+    parent.status = "partial"
+    parent.completed_rows = 1
+    parent.failed_rows = 1
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["requeued"] == 1
+
+    db_session.refresh(parent)
+    db_session.refresh(eval_rows[1])
+    assert parent.status == "running"
+    assert eval_rows[1].status == "pending"
+    assert eval_rows[1].error_message is None
+
+
+def test_retry_clears_failed_diarisation_to_idle_not_null(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Retry must not NULL out diarised_transcript_status (NOT NULL column)."""
+    metric = _make_metric(db_session, org_id)
+    call_import, rows = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    source_row = rows[0]
+    source_row.recording_s3_key = "audio/org/test.mp3"
+    source_row.diarised_transcript = None
+    source_row.diarised_transcript_status = "failed"
+    source_row.diarised_transcript_error = "STT timeout"
+
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .one()
+    )
+    eval_row.status = "failed"
+    eval_row.error_message = "Diarisation failed"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.refresh(source_row)
+    assert source_row.diarised_transcript_status == "idle"
+    assert source_row.diarised_transcript_error is None
+
+
+def test_retry_marks_existing_diarised_transcript_completed(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Eval-only retries should not force re-diarisation when a transcript exists."""
+    metric = _make_metric(db_session, org_id)
+    call_import, rows = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    source_row = rows[0]
+    source_row.recording_s3_key = "audio/org/test.mp3"
+    source_row.diarised_transcript = "agent: hello\nuser: hi"
+    source_row.diarised_transcript_status = "failed"
+
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .one()
+    )
+    eval_row.status = "failed"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={},
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.refresh(source_row)
+    assert source_row.diarised_transcript_status == "completed"
+    assert "hello" in (source_row.diarised_transcript or "")
+
+
+def test_evaluation_retry_can_override_telephony_credentials(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Retry should pin a new telephony integration on the batch when asked."""
+    metric = _make_metric(db_session, org_id)
+    wrong_integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        name="wrong",
+        auth_id="enc-wrong",
+        auth_token="enc-wrong",
+        is_active=True,
+    )
+    right_integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        name="right",
+        auth_id="enc-right",
+        auth_token="enc-right",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add_all([wrong_integration, right_integration])
+    db_session.commit()
+
+    call_import, _rows = _make_call_import(
+        db_session,
+        org_id,
+        rows=1,
+        integration=wrong_integration,
+    )
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .first()
+    )
+    eval_row.status = "failed"
+    eval_row.error_message = "import failed"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={
+            "provider": "exotel",
+            "telephony_integration_id": str(right_integration.id),
+        },
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.refresh(call_import)
+    assert call_import.telephony_integration_id == right_integration.id
+    assert call_import.provider == "exotel"

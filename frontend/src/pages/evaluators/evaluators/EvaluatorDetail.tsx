@@ -10,6 +10,7 @@ import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 import LLMAdvancedOptionsPanel from '../../../components/providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
+import { providerHasLLMModels } from '../../../lib/llmModelOptions'
 
 interface Evaluator {
   id: string
@@ -198,10 +199,13 @@ export default function EvaluatorDetail() {
     ])
   )
 
-  const llmProviders = configuredProviders.filter(p => {
-    const opts = modelConfigs[p]
-    return opts && opts.llm && opts.llm.length > 0
-  })
+  const llmProviders = configuredProviders.filter((p) =>
+    providerHasLLMModels(
+      p,
+      modelConfigs[p]?.llm ?? [],
+      aiproviders,
+    ),
+  )
 
   const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
     return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }

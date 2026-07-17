@@ -269,6 +269,7 @@ class CallImportStatus(str, enum.Enum):
                         no rows materialised yet, no worker enqueued.
       ``processing`` -> rows materialised + workers enqueued (today's
                         post-upload state).
+      ``deleting``   -> whole-batch teardown queued in background.
 
     ``pending`` is kept for backward compatibility with the legacy
     one-shot ``POST /upload`` endpoint which still flips through it
@@ -281,6 +282,7 @@ class CallImportStatus(str, enum.Enum):
     COMPLETED = "completed"
     PARTIAL = "partial"
     FAILED = "failed"
+    DELETING = "deleting"
 
 
 class CallImportRowStatus(str, enum.Enum):

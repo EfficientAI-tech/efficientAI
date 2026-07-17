@@ -346,7 +346,15 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
     type=int,
     help="Number of concurrent worker processes/threads (Celery --concurrency).",
 )
-def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optional[int]):
+@click.option(
+    "--pool",
+    "-P",
+    "pool",
+    default=None,
+    type=click.Choice(["prefork", "threads", "solo", "eventlet", "gevent"], case_sensitive=False),
+    help="Celery worker pool implementation (forwarded to celery's -P flag).",
+)
+def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optional[int], pool: Optional[str]):
     """Start the Celery worker for background task processing."""
     from app.config import load_config_from_file
     
@@ -370,6 +378,8 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         click.echo(f"   Queues: {queues}")
     if concurrency is not None:
         click.echo(f"   Concurrency: {concurrency}")
+    if pool:
+        click.echo(f"   Pool: {pool}")
     
     # Start Celery worker
     try:
@@ -379,6 +389,8 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
             cmd.append(f"--queues={queues}")
         if concurrency is not None:
             cmd.append(f"--concurrency={concurrency}")
+        if pool:
+            cmd.append(f"--pool={pool}")
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
         click.echo("\n👋 Celery worker stopped")
@@ -454,11 +466,11 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
 )
 @click.option(
     "--imports-worker-concurrency",
-    default=8,
+    default=32,
     type=int,
     help=(
         "Concurrency for the imports+diarization+evaluations worker "
-        "(default: 8; consumes imports, then diarization, then evaluations)"
+        "(default: 32; thread pool; consumes imports, then diarization, then evaluations)"
     ),
 )
 def start_all(
@@ -614,8 +626,12 @@ def start_all(
                 "app.workers.celery_app",
                 "worker",
                 f"--loglevel={worker_loglevel}",
+                "-Q",
+                "celery,audio-metrics",
+                "-c",
+                "8",
             ],
-            label="Celery worker (default queue)",
+            label="Celery worker (celery + audio-metrics queues, concurrency=8)",
             prefix="[WORKER]",
         )
 
@@ -629,12 +645,14 @@ def start_all(
                     f"--loglevel={worker_loglevel}",
                     "-Q",
                     "imports,diarization,evaluations",
+                    "-P",
+                    "threads",
                     "-c",
                     str(imports_worker_concurrency),
                 ],
                 label=(
                     "Celery worker (imports+diarization+evaluations queues, "
-                    f"concurrency={imports_worker_concurrency})"
+                    f"pool=threads, concurrency={imports_worker_concurrency})"
                 ),
                 prefix="[WORKER-IMPORTS]",
             )

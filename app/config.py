@@ -72,10 +72,20 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: Optional[str] = None
 
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
-    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 10
-    EVAL_ORG_INFLIGHT_LIMIT: int = 50
-    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 100
-    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 5
+    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
+    EVAL_ORG_INFLIGHT_LIMIT: int = 128
+    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 128
+    EVAL_JOB_INFLIGHT_LIMIT: int = 75
+    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
+    IMPORT_ORG_INFLIGHT_LIMIT: int = 16
+    IMPORT_GLOBAL_INFLIGHT_LIMIT: int = 16
+    TELEPHONY_IMPORT_CREDIT_LIMIT: int = 1000
+    TELEPHONY_IMPORT_CREDIT_WINDOW_SECONDS: int = 60
+    TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS: int = 15
+    TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS: int = 60
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -445,6 +455,46 @@ def load_config_from_file(config_path: str) -> None:
         if "eval_fair_dispatch_batch_size" in workers_config:
             settings.EVAL_FAIR_DISPATCH_BATCH_SIZE = int(
                 workers_config["eval_fair_dispatch_batch_size"]
+            )
+        if "eval_job_inflight_limit" in workers_config:
+            settings.EVAL_JOB_INFLIGHT_LIMIT = int(
+                workers_config["eval_job_inflight_limit"]
+            )
+        if "diarization_fair_dispatch_batch_size" in workers_config:
+            settings.DIARIZATION_FAIR_DISPATCH_BATCH_SIZE = int(
+                workers_config["diarization_fair_dispatch_batch_size"]
+            )
+        if "import_fair_dispatch_batch_size" in workers_config:
+            settings.IMPORT_FAIR_DISPATCH_BATCH_SIZE = int(
+                workers_config["import_fair_dispatch_batch_size"]
+            )
+        if "import_workspace_inflight_limit" in workers_config:
+            settings.IMPORT_WORKSPACE_INFLIGHT_LIMIT = int(
+                workers_config["import_workspace_inflight_limit"]
+            )
+        if "import_org_inflight_limit" in workers_config:
+            settings.IMPORT_ORG_INFLIGHT_LIMIT = int(
+                workers_config["import_org_inflight_limit"]
+            )
+        if "import_global_inflight_limit" in workers_config:
+            settings.IMPORT_GLOBAL_INFLIGHT_LIMIT = int(
+                workers_config["import_global_inflight_limit"]
+            )
+        if "telephony_import_credit_limit" in workers_config:
+            settings.TELEPHONY_IMPORT_CREDIT_LIMIT = int(
+                workers_config["telephony_import_credit_limit"]
+            )
+        if "telephony_import_credit_window_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_CREDIT_WINDOW_SECONDS = int(
+                workers_config["telephony_import_credit_window_seconds"]
+            )
+        if "telephony_import_backoff_base_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS = int(
+                workers_config["telephony_import_backoff_base_seconds"]
+            )
+        if "telephony_import_backoff_max_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS = int(
+                workers_config["telephony_import_backoff_max_seconds"]
             )
     
     if "storage" in config_data:

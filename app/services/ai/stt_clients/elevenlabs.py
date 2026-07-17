@@ -24,7 +24,7 @@ def transcribe_elevenlabs(
     Uses the multipart-form ``/v1/speech-to-text`` endpoint so we don't
     take a hard dependency on a specific ElevenLabs SDK version.
     """
-    chosen_model = (model or "scribe_v1").strip() or "scribe_v1"
+    chosen_model = (model or "scribe_v2").strip() or "scribe_v2"
 
     headers = {"xi-api-key": api_key}
     data: Dict[str, Any] = {"model_id": chosen_model}

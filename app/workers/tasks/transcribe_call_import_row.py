@@ -185,6 +185,18 @@ def _render_turns_as_text(
     return "\n".join(out)
 
 
+def _plain_text_from_turns(turns: Optional[List[Dict[str, Any]]]) -> str:
+    """Join turn text without speaker prefixes (single-speaker fallback)."""
+    if not turns:
+        return ""
+    parts: List[str] = []
+    for turn in turns:
+        text = (turn.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts).strip()
+
+
 # Sentinel error message stamped on rows that the operator cancelled
 # via ``POST /v1/call-imports/{id}/rows/{row_id}/cancel-diarisation``.
 # Kept in sync with :data:`app.api.v1.routes.call_imports.CANCELLED_BY_USER_ERROR`
@@ -308,6 +320,380 @@ def _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id: str) -> None:
     db.commit()
 
 
+def _was_cancelled_by_row_id(row_id: str | UUID) -> bool:
+    """Re-read the row in a short-lived session during slow I/O."""
+    from app.models.database import CallImportRow
+
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(CallImportRow)
+            .filter(CallImportRow.id == UUID(str(row_id)))
+            .first()
+        )
+        if row is None:
+            return False
+        return _was_cancelled_externally(db, row)
+    finally:
+        db.close()
+
+
+def _persist_diarization_failure(
+    row_id: str | UUID,
+    error_message: str,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Write a terminal diarisation failure without holding a long session."""
+    from app.models.database import CallImportRow
+
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(CallImportRow)
+            .filter(CallImportRow.id == UUID(str(row_id)))
+            .first()
+        )
+        if row is None:
+            return {"status": "skipped", "reason": "row_not_found"}
+        if _was_cancelled_externally(db, row):
+            return {"status": "cancelled", "reason": "cancelled_by_user"}
+        row.diarised_transcript_status = "failed"
+        row.diarised_transcript_error = error_message
+        db.commit()
+        return {"status": "failed", "reason": reason}
+    finally:
+        db.close()
+
+
+def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
+    """STT / S3 / LLM diarisation without a long-lived DB session."""
+    from app.models.enums import ModelProvider
+    from app.workers.tasks.helpers.llm_diarisation import (
+        LLMDiarisationError,
+        diarize_audio_with_llm,
+        diarize_transcript_with_llm,
+    )
+
+    row_id = ctx["row_id"]
+    normalised_mode = ctx["normalised_mode"]
+    recording_key = ctx["recording_key"]
+    organization_id = ctx["organization_id"]
+    llm_provider_value = ctx["llm_provider_value"]
+    llm_model_value = ctx["llm_model_value"]
+    llm_credential_uuid = ctx["llm_credential_uuid"]
+    effective_prompt = ctx["effective_prompt"]
+
+    plain_text: Optional[str] = None
+    raw_turns: Optional[List[Dict[str, Any]]] = None
+
+    if normalised_mode == "stt_llm":
+        from app.services.ai.transcription_service import transcription_service
+
+        provider_enum = ModelProvider(ctx["stt_provider"])
+        stt_model = ctx["stt_model"]
+        credential_uuid = ctx["credential_uuid"]
+        language = ctx["language"]
+
+        try:
+            stt_db = SessionLocal()
+            try:
+                result = transcription_service.transcribe(
+                    audio_file_key=recording_key,
+                    stt_provider=provider_enum,
+                    stt_model=stt_model,
+                    organization_id=organization_id,
+                    db=stt_db,
+                    language=language,
+                    enable_speaker_diarization=False,
+                    credential_id=credential_uuid,
+                )
+            finally:
+                stt_db.close()
+        except Exception as exc:  # noqa: BLE001 - want message on the row
+            logger.exception(
+                "transcribe_call_import_row failed for row {}", row_id
+            )
+            if _was_cancelled_by_row_id(row_id):
+                logger.info(
+                    "Row {} was cancelled by the user mid-flight; "
+                    "preserving cancelled state instead of writing "
+                    "STT failure.",
+                    row_id,
+                )
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                _summarize_exc(exc),
+                reason="transcription_error",
+            )
+
+        plain_text = (result.get("transcript") or "").strip() or None
+        if not plain_text:
+            if _was_cancelled_by_row_id(row_id):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                "Transcription returned an empty result.",
+                reason="empty_transcript",
+            )
+
+        try:
+            llm_db = SessionLocal()
+            try:
+                raw_turns = diarize_transcript_with_llm(
+                    plain_text,
+                    llm_provider=llm_provider_value,
+                    llm_model=llm_model_value,
+                    organization_id=organization_id,
+                    db=llm_db,
+                    custom_prompt=effective_prompt,
+                    credential_id=llm_credential_uuid,
+                )
+            finally:
+                llm_db.close()
+        except LLMDiarisationError as exc:
+            logger.warning(
+                "LLM diarisation failed for row {}: {}", row_id, exc
+            )
+            if _was_cancelled_by_row_id(row_id):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                _compact_diarisation_error(str(exc)),
+                reason="llm_diarisation_error",
+            )
+        except Exception as exc:  # noqa: BLE001 — same surfacing as STT
+            logger.exception(
+                "LLM diarisation crashed for row {}", row_id
+            )
+            if _was_cancelled_by_row_id(row_id):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                _summarize_exc(exc),
+                reason="llm_diarisation_error",
+            )
+    else:
+        from app.services.storage.s3_service import s3_service
+
+        try:
+            audio_bytes = s3_service.download_file_by_key(recording_key)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the row
+            logger.exception(
+                "Failed to fetch recording for LLM-only diarise on row {}",
+                row_id,
+            )
+            if _was_cancelled_by_row_id(row_id):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                "Failed to download recording from storage: "
+                f"{_summarize_exc(exc)}",
+                reason="recording_download_error",
+            )
+
+        try:
+            llm_db = SessionLocal()
+            try:
+                raw_turns = diarize_audio_with_llm(
+                    audio_bytes,
+                    llm_provider=llm_provider_value,
+                    llm_model=llm_model_value,
+                    organization_id=organization_id,
+                    db=llm_db,
+                    custom_prompt=effective_prompt,
+                    credential_id=llm_credential_uuid,
+                    audio_file_key=recording_key,
+                )
+            finally:
+                llm_db.close()
+        except LLMDiarisationError as exc:
+            logger.warning(
+                "LLM-only diarisation failed for row {}: {}", row_id, exc
+            )
+            if _was_cancelled_by_row_id(row_id):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                _compact_diarisation_error(str(exc)),
+                reason="llm_only_diarisation_error",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "LLM-only diarisation crashed for row {}", row_id
+            )
+            if _was_cancelled_by_row_id(row_id):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            return _persist_diarization_failure(
+                row_id,
+                _summarize_exc(exc),
+                reason="llm_only_diarisation_error",
+            )
+
+        if not raw_turns:
+            logger.info(
+                "transcribe_call_import_row: row {} LLM-only diariser "
+                "returned no turns (no audible speech detected); "
+                "marking diarisation completed with empty transcript.",
+                row_id,
+            )
+            if _was_cancelled_by_row_id(row_id):
+                return {
+                    "status": "cancelled",
+                    "reason": "cancelled_by_user",
+                }
+            return {
+                "status": "success",
+                "reason": "no_speech_detected",
+                "plain_text": None,
+                "raw_turns": [],
+            }
+
+    return {
+        "status": "success",
+        "reason": "pipeline_complete",
+        "plain_text": plain_text,
+        "raw_turns": raw_turns,
+    }
+
+
+def _finalize_diarization_row(
+    row_id: str | UUID,
+    *,
+    pipeline_ctx: dict[str, Any],
+    work_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist diarisation results after slow I/O completes."""
+    from app.models.database import CallImportRow
+    from app.models.enums import ModelProvider
+
+    normalised_mode = pipeline_ctx["normalised_mode"]
+    llm_provider_value = pipeline_ctx["llm_provider_value"]
+    llm_model_value = pipeline_ctx["llm_model_value"]
+    effective_prompt = pipeline_ctx["effective_prompt"]
+    stt_model = pipeline_ctx.get("stt_model")
+    provider_enum: Optional[ModelProvider] = None
+    if pipeline_ctx.get("stt_provider"):
+        provider_enum = ModelProvider(pipeline_ctx["stt_provider"])
+
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(CallImportRow)
+            .filter(CallImportRow.id == UUID(str(row_id)))
+            .first()
+        )
+        if row is None:
+            return {"status": "skipped", "reason": "row_not_found"}
+
+        if work_result.get("reason") == "no_speech_detected":
+            if _was_cancelled_externally(db, row):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            row.diarised_transcript = ""
+            row.diarised_segments = []
+            row.diarised_speaker_swap = False
+            row.transcribe_mode = normalised_mode
+            row.diarised_transcript_status = "completed"
+            row.diarised_transcript_error = (
+                "No audible speech detected in the recording; "
+                "diariser returned no turns."
+            )
+            row.diarised_prompt = effective_prompt
+            row.diarised_at = _now()
+            db.commit()
+            return {
+                "status": "completed",
+                "row_id": str(row_id),
+                "mode": normalised_mode,
+                "reason": "no_speech_detected",
+                "turn_count": 0,
+                "characters": 0,
+            }
+
+        plain_text = work_result.get("plain_text")
+        raw_turns = work_result.get("raw_turns") or []
+        turns = _segments_to_user_agent_turns(raw_turns)
+
+        distinct_roles = {turn.get("speaker") for turn in turns}
+        has_real_diarisation = len(distinct_roles - {None, ""}) >= 2
+        rendered_turns = (
+            _render_turns_as_text(turns, swap=False)
+            if turns and has_real_diarisation
+            else ""
+        )
+
+        transcript_to_store = (
+            rendered_turns or plain_text or _plain_text_from_turns(turns) or ""
+        ).strip()
+
+        if not transcript_to_store:
+            logger.info(
+                "transcribe_call_import_row: row {} diariser produced no "
+                "storable transcript; marking completed with empty transcript.",
+                row_id,
+            )
+            if _was_cancelled_externally(db, row):
+                return {
+                    "status": "cancelled",
+                    "reason": "cancelled_by_user",
+                }
+            row.diarised_transcript = ""
+            row.diarised_segments = turns if has_real_diarisation else None
+            row.diarised_speaker_swap = False
+            row.transcribe_mode = normalised_mode
+            row.diarised_transcript_status = "completed"
+            row.diarised_transcript_error = (
+                "Diariser returned no storable transcript text."
+            )
+            row.diarised_prompt = effective_prompt
+            row.diarised_at = _now()
+            db.commit()
+            return {
+                "status": "completed",
+                "row_id": str(row_id),
+                "mode": normalised_mode,
+                "reason": "empty_transcript",
+                "turn_count": len(turns) if has_real_diarisation else 0,
+                "characters": 0,
+            }
+
+        if _was_cancelled_externally(db, row):
+            logger.info(
+                "Row {} was cancelled by the user mid-flight; "
+                "skipping success write and preserving cancelled state.",
+                row_id,
+            )
+            return {"status": "cancelled", "reason": "cancelled_by_user"}
+
+        row.diarised_transcript = transcript_to_store
+        row.diarised_segments = turns if has_real_diarisation else None
+        row.diarised_speaker_swap = False
+        if normalised_mode == "stt_llm" and provider_enum is not None:
+            row.diarised_transcript_provider = provider_enum.value
+            row.diarised_transcript_model = stt_model
+        row.transcribe_mode = normalised_mode
+        row.diarised_transcript_status = "completed"
+        row.diarised_transcript_error = None
+        row.diarised_prompt = effective_prompt
+        row.diarised_at = _now()
+        db.commit()
+
+        return {
+            "status": "completed",
+            "row_id": str(row_id),
+            "mode": normalised_mode,
+            "provider": provider_enum.value if provider_enum else "llm_only",
+            "model": stt_model if normalised_mode == "stt_llm" else llm_model_value,
+            "llm_provider": llm_provider_value,
+            "llm_model": llm_model_value,
+            "characters": len(transcript_to_store),
+            "turn_count": len(turns) if has_real_diarisation else 0,
+        }
+    finally:
+        db.close()
+
+
 @celery_app.task(
     name="transcribe_call_import_row",
     bind=True,
@@ -360,479 +746,223 @@ def transcribe_call_import_row_task(
 
     from app.models.database import CallImportRow
     from app.models.enums import ModelProvider
+    from app.workers.tasks.helpers.llm_diarisation import (
+        DEFAULT_DIARIZATION_PROMPT,
+    )
 
-    db = SessionLocal()
     evaluation_id_for_dispatch: Optional[str] = None
     slot_task_id = _eval_slot_task_id or self.request.id
+    pipeline_ctx: dict[str, Any] | None = None
     try:
-        if run_eval_row_id:
-            from app.models.database import CallImportEvaluationRow
-
-            eval_row_for_chain = (
-                db.query(CallImportEvaluationRow)
-                .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-                .first()
-            )
-            if eval_row_for_chain is not None:
-                evaluation_id_for_dispatch = str(eval_row_for_chain.evaluation_id)
-        row_uuid = UUID(row_id)
-        row = db.query(CallImportRow).filter(CallImportRow.id == row_uuid).first()
-        if row is None:
-            logger.warning(
-                "transcribe_call_import_row: row {} not found, skipping",
-                row_id,
-            )
-            return {"status": "skipped", "reason": "row_not_found"}
-
-        # Cancellation guard at task entry.
-        #
-        # The cancel endpoint (``POST /v1/call-imports/{id}/rows/{row_id}/cancel-diarisation``)
-        # flips the row to ``failed`` + :data:`_CANCELLED_BY_USER_ERROR` and
-        # then ``celery_app.control.revoke(..., terminate=True, signal="SIGTERM")``
-        # the in-flight task. Combined with ``task_acks_late=True`` (see
-        # :mod:`app.workers.config`) the SIGTERM-killed task is NOT ACKed,
-        # so the broker redelivers the same ``task_id`` to another (or
-        # recycled) prefork child. Celery's default in-memory revoke list
-        # is per-worker and not persisted, so the redelivery target has no
-        # idea this task was revoked and would otherwise overwrite the
-        # cancel sentinel a few lines below (``status = "running"``,
-        # ``error = None``) and re-run the entire diarisation pipeline —
-        # which is exactly the "Stop diarisation removes the row, then it
-        # comes back and re-diarises" bug operators were hitting.
-        #
-        # The cheap, robust mitigation is to detect the sentinel at task
-        # entry and bail out as a no-op; the row stays in its cancelled-
-        # by-user terminal state and the redelivered task acks cleanly.
-        if (
-            (row.diarised_transcript_status or "").lower() == "failed"
-            and (row.diarised_transcript_error or "") == _CANCELLED_BY_USER_ERROR
-        ):
-            logger.info(
-                "transcribe_call_import_row: row {} already cancelled by "
-                "user (likely a redelivery after SIGTERM revoke); skipping",
-                row_id,
-            )
-            return {"status": "skipped", "reason": "cancelled_by_user"}
-
-        existing_diarised = (row.diarised_transcript or "").strip()
-        if existing_diarised and not overwrite_existing:
-            row.diarised_transcript_status = "completed"
-            db.commit()
-            return {
-                "status": "skipped",
-                "reason": "transcript_present",
-                "row_id": row_id,
-            }
-
-        recording_key = (row.recording_s3_key or "").strip()
-        if not recording_key:
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = (
-                "No recording available for this row; cannot diarise."
-            )
-            db.commit()
-            return {"status": "skipped", "reason": "no_recording"}
-
-        # Validate / normalise mode up-front so an invalid value
-        # surfaces a typed error on the row instead of being silently
-        # treated as legacy behavior.
-        normalised_mode = (mode or "stt_llm").strip().lower()
-        if normalised_mode not in {"stt_llm", "llm_only"}:
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = (
-                f"Unknown diarisation mode '{mode}'. Expected "
-                "'stt_llm' or 'llm_only'."
-            )
-            db.commit()
-            return {"status": "failed", "reason": "unknown_mode"}
-
-        # STT provider validation only matters in the two-stage path.
-        # In ``llm_only`` we skip it entirely so the user doesn't even
-        # need an STT credential configured.
-        provider_enum: Optional[ModelProvider] = None
-        if normalised_mode == "stt_llm":
-            if not stt_provider or not stt_model:
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    "STT provider/model not configured. Pick an STT "
-                    "model in the Diarise modal."
-                )
-                db.commit()
-                return {"status": "failed", "reason": "missing_stt"}
-            try:
-                provider_enum = ModelProvider(stt_provider.lower())
-            except ValueError:
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    f"Unknown STT provider '{stt_provider}'."
-                )
-                db.commit()
-                return {"status": "failed", "reason": "unknown_provider"}
-
-        # The LLM diariser is mandatory in BOTH modes: the two-stage
-        # path needs it to split STT output into turns, and the
-        # single-stage path uses it as the transcriber+diariser. We
-        # surface a typed failure on the row when the caller forgot
-        # to pick a model so the modal can show a specific banner
-        # instead of a generic celery error.
-        llm_provider_value = (diarization_llm_provider or "").strip()
-        llm_model_value = (diarization_llm_model or "").strip()
-        if not llm_provider_value or not llm_model_value:
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = (
-                "Diarisation LLM provider/model not configured. Pick "
-                "a chat model in the Diarise modal."
-            )
-            db.commit()
-            return {"status": "failed", "reason": "missing_llm_diariser"}
-
-        row.diarised_transcript_status = "running"
-        row.diarised_transcript_error = None
-        # Record which provider/model the user asked for *now* (rather
-        # than only on success) so the per-row error banner can show
-        # "Failed on deepgram/deepgram-nova-3" without the user having
-        # to remember what they picked in the modal. In ``llm_only``
-        # mode there is no STT, so we stamp a sentinel value that the
-        # UI can render as "LLM only" instead of pretending an STT
-        # provider was used.
-        if normalised_mode == "stt_llm" and provider_enum is not None:
-            row.diarised_transcript_provider = provider_enum.value
-            row.diarised_transcript_model = stt_model
-        else:
-            row.diarised_transcript_provider = "llm_only"
-            row.diarised_transcript_model = llm_model_value
-        row.diarised_llm_provider = llm_provider_value
-        row.diarised_llm_model = llm_model_value
+        db = SessionLocal()
         try:
-            llm_credential_uuid = (
-                UUID(diarization_llm_credential_id)
-                if diarization_llm_credential_id
-                else None
+            if run_eval_row_id:
+                from app.models.database import CallImportEvaluationRow
+
+                eval_row_for_chain = (
+                    db.query(CallImportEvaluationRow)
+                    .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
+                    .first()
+                )
+                if eval_row_for_chain is not None:
+                    evaluation_id_for_dispatch = str(
+                        eval_row_for_chain.evaluation_id
+                    )
+            row_uuid = UUID(row_id)
+            row = db.query(CallImportRow).filter(CallImportRow.id == row_uuid).first()
+            if row is None:
+                logger.warning(
+                    "transcribe_call_import_row: row {} not found, skipping",
+                    row_id,
+                )
+                return {"status": "skipped", "reason": "row_not_found"}
+
+            if (
+                (row.diarised_transcript_status or "").lower() == "failed"
+                and (row.diarised_transcript_error or "") == _CANCELLED_BY_USER_ERROR
+            ):
+                logger.info(
+                    "transcribe_call_import_row: row {} already cancelled by "
+                    "user (likely a redelivery after SIGTERM revoke); skipping",
+                    row_id,
+                )
+                return {"status": "skipped", "reason": "cancelled_by_user"}
+
+            existing_diarised = (row.diarised_transcript or "").strip()
+            if existing_diarised and not overwrite_existing:
+                row.diarised_transcript_status = "completed"
+                db.commit()
+                return {
+                    "status": "skipped",
+                    "reason": "transcript_present",
+                    "row_id": row_id,
+                }
+
+            recording_key = (row.recording_s3_key or "").strip()
+            if not recording_key:
+                row.diarised_transcript_status = "failed"
+                row.diarised_transcript_error = (
+                    "No recording available for this row; cannot diarise."
+                )
+                db.commit()
+                return {"status": "skipped", "reason": "no_recording"}
+
+            normalised_mode = (mode or "stt_llm").strip().lower()
+            if normalised_mode not in {"stt_llm", "llm_only"}:
+                row.diarised_transcript_status = "failed"
+                row.diarised_transcript_error = (
+                    f"Unknown diarisation mode '{mode}'. Expected "
+                    "'stt_llm' or 'llm_only'."
+                )
+                db.commit()
+                return {"status": "failed", "reason": "unknown_mode"}
+
+            provider_enum: Optional[ModelProvider] = None
+            if normalised_mode == "stt_llm":
+                if not stt_provider or not stt_model:
+                    row.diarised_transcript_status = "failed"
+                    row.diarised_transcript_error = (
+                        "STT provider/model not configured. Pick an STT "
+                        "model in the Diarise modal."
+                    )
+                    db.commit()
+                    return {"status": "failed", "reason": "missing_stt"}
+                try:
+                    provider_enum = ModelProvider(stt_provider.lower())
+                except ValueError:
+                    row.diarised_transcript_status = "failed"
+                    row.diarised_transcript_error = (
+                        f"Unknown STT provider '{stt_provider}'."
+                    )
+                    db.commit()
+                    return {"status": "failed", "reason": "unknown_provider"}
+
+            llm_provider_value = (diarization_llm_provider or "").strip()
+            llm_model_value = (diarization_llm_model or "").strip()
+            if not llm_provider_value or not llm_model_value:
+                row.diarised_transcript_status = "failed"
+                row.diarised_transcript_error = (
+                    "Diarisation LLM provider/model not configured. Pick "
+                    "a chat model in the Diarise modal."
+                )
+                db.commit()
+                return {"status": "failed", "reason": "missing_llm_diariser"}
+
+            row.diarised_transcript_status = "running"
+            row.diarised_transcript_error = None
+            if normalised_mode == "stt_llm" and provider_enum is not None:
+                row.diarised_transcript_provider = provider_enum.value
+                row.diarised_transcript_model = stt_model
+            else:
+                row.diarised_transcript_provider = "llm_only"
+                row.diarised_transcript_model = llm_model_value
+            row.diarised_llm_provider = llm_provider_value
+            row.diarised_llm_model = llm_model_value
+            try:
+                llm_credential_uuid = (
+                    UUID(diarization_llm_credential_id)
+                    if diarization_llm_credential_id
+                    else None
+                )
+            except (TypeError, ValueError):
+                llm_credential_uuid = None
+            row.diarised_llm_credential_id = llm_credential_uuid
+            row.celery_task_id = self.request.id
+
+            effective_prompt = (diarization_prompt or "").strip() or (
+                DEFAULT_DIARIZATION_PROMPT
             )
-        except (TypeError, ValueError):
-            llm_credential_uuid = None
-        row.diarised_llm_credential_id = llm_credential_uuid
-        row.celery_task_id = self.request.id
-        db.commit()
-
-        # The diariser helper resolves the canonical default when the
-        # caller leaves ``diarization_prompt`` blank. We materialise
-        # the effective string here so both the helper call AND the
-        # row's audit trail use the same value.
-        from app.workers.tasks.helpers.llm_diarisation import (
-            DEFAULT_DIARIZATION_PROMPT,
-            LLMDiarisationError,
-            diarize_audio_with_llm,
-            diarize_transcript_with_llm,
-        )
-
-        effective_prompt = (diarization_prompt or "").strip() or (
-            DEFAULT_DIARIZATION_PROMPT
-        )
-        row.diarised_prompt = effective_prompt
-
-        # ``plain_text`` is the STT pass output and only meaningful in
-        # ``stt_llm`` mode. We initialise it here so the shared
-        # finaliser block below ("transcript_to_store = rendered_turns
-        # or plain_text") can reference it unconditionally without
-        # raising NameError on the ``llm_only`` path (where STT is
-        # skipped entirely).
-        plain_text: Optional[str] = None
-
-        if normalised_mode == "stt_llm":
-            # ---- Two-stage path: STT then LLM diarise ---------------
-            # Lazy import — TranscriptionService transitively pulls in
-            # torch / pyannote / librosa, and we don't want to pay
-            # that cost at worker boot if the queue is idle.
-            from app.services.ai.transcription_service import (
-                transcription_service,
-            )
+            row.diarised_prompt = effective_prompt
 
             try:
                 credential_uuid = UUID(credential_id) if credential_id else None
             except (TypeError, ValueError):
                 credential_uuid = None
 
-            try:
-                assert provider_enum is not None  # narrowed above
-                result = transcription_service.transcribe(
-                    audio_file_key=recording_key,
-                    stt_provider=provider_enum,
-                    stt_model=stt_model,
-                    organization_id=row.organization_id,
-                    db=db,
-                    language=language,
-                    # We diarise via an LLM in a second pass below, so
-                    # the STT call only needs to produce plain text.
-                    # Skipping pyannote here avoids the HuggingFace-
-                    # token / speaker-count guesswork that the old
-                    # path required.
-                    enable_speaker_diarization=False,
-                    credential_id=credential_uuid,
-                )
-            except Exception as exc:  # noqa: BLE001 - want message on the row
-                logger.exception(
-                    "transcribe_call_import_row failed for row {}", row_id
-                )
-                if _was_cancelled_externally(db, row):
-                    logger.info(
-                        "Row {} was cancelled by the user mid-flight; "
-                        "preserving cancelled state instead of writing "
-                        "STT failure.",
-                        row_id,
-                    )
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _summarize_exc(exc)
-                db.commit()
-                return {"status": "failed", "reason": "transcription_error"}
+            db.commit()
 
-            plain_text = (result.get("transcript") or "").strip() or None
-            if not plain_text:
-                if _was_cancelled_externally(db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    "Transcription returned an empty result."
-                )
-                db.commit()
-                return {"status": "failed", "reason": "empty_transcript"}
+            pipeline_ctx = {
+                "row_id": row_id,
+                "normalised_mode": normalised_mode,
+                "recording_key": recording_key,
+                "organization_id": row.organization_id,
+                "stt_provider": provider_enum.value if provider_enum else None,
+                "stt_model": stt_model,
+                "credential_uuid": credential_uuid,
+                "language": language,
+                "llm_provider_value": llm_provider_value,
+                "llm_model_value": llm_model_value,
+                "llm_credential_uuid": llm_credential_uuid,
+                "effective_prompt": effective_prompt,
+            }
+        finally:
+            db.close()
 
-            try:
-                raw_turns = diarize_transcript_with_llm(
-                    plain_text,
-                    llm_provider=llm_provider_value,
-                    llm_model=llm_model_value,
-                    organization_id=row.organization_id,
-                    db=db,
-                    custom_prompt=effective_prompt,
-                    credential_id=llm_credential_uuid,
-                )
-            except LLMDiarisationError as exc:
-                logger.warning(
-                    "LLM diarisation failed for row {}: {}", row_id, exc
-                )
-                if _was_cancelled_externally(db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _compact_diarisation_error(str(exc))
-                db.commit()
-                return {"status": "failed", "reason": "llm_diarisation_error"}
-            except Exception as exc:  # noqa: BLE001 — same surfacing as STT
-                logger.exception(
-                    "LLM diarisation crashed for row {}", row_id
-                )
-                if _was_cancelled_externally(db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _summarize_exc(exc)
-                db.commit()
-                return {"status": "failed", "reason": "llm_diarisation_error"}
-        else:
-            # ---- Single-stage path: audio straight to multimodal LLM
-            # Download the recording bytes once and hand them off to
-            # the multimodal helper. We deliberately keep this branch
-            # short — all provider-specific shaping lives in the
-            # helper so adding e.g. Anthropic audio support later is
-            # a one-file change.
-            from app.services.storage.s3_service import s3_service
+        if pipeline_ctx is None:
+            return {"status": "skipped", "reason": "setup_incomplete"}
 
-            try:
-                audio_bytes = s3_service.download_file_by_key(recording_key)
-            except Exception as exc:  # noqa: BLE001 — surfaced to the row
-                logger.exception(
-                    "Failed to fetch recording for LLM-only diarise on row {}",
-                    row_id,
-                )
-                if _was_cancelled_externally(db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = (
-                    "Failed to download recording from storage: "
-                    f"{_summarize_exc(exc)}"
-                )
-                db.commit()
-                return {"status": "failed", "reason": "recording_download_error"}
+        work_result = _run_diarization_pipeline(pipeline_ctx)
+        if work_result["status"] in {"failed", "cancelled"}:
+            return work_result
 
-            try:
-                raw_turns = diarize_audio_with_llm(
-                    audio_bytes,
-                    llm_provider=llm_provider_value,
-                    llm_model=llm_model_value,
-                    organization_id=row.organization_id,
-                    db=db,
-                    custom_prompt=effective_prompt,
-                    credential_id=llm_credential_uuid,
-                    audio_file_key=recording_key,
-                )
-            except LLMDiarisationError as exc:
-                logger.warning(
-                    "LLM-only diarisation failed for row {}: {}", row_id, exc
-                )
-                if _was_cancelled_externally(db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _compact_diarisation_error(str(exc))
-                db.commit()
-                return {
-                    "status": "failed",
-                    "reason": "llm_only_diarisation_error",
-                }
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "LLM-only diarisation crashed for row {}", row_id
-                )
-                if _was_cancelled_externally(db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = _summarize_exc(exc)
-                db.commit()
-                return {
-                    "status": "failed",
-                    "reason": "llm_only_diarisation_error",
-                }
-
-            # No-audible-speech short-circuit (LLM-only path).
-            #
-            # The audio-diariser wire wrapper (see
-            # ``_build_audio_messages`` in ``llm_diarisation.py``)
-            # explicitly grants the model permission to return
-            # ``{"turns": []}`` for silence / static / hold music /
-            # corrupt audio. When that path triggers — or when the
-            # model legitimately decides the recording has no speech
-            # in it — we treat the row as a clean ``completed`` with
-            # an empty transcript instead of a failure: there's
-            # nothing for the operator to fix on a recording that
-            # genuinely has no speech, and a "failed" row would
-            # otherwise nag them to retry forever.
-            #
-            # The audit-trail ``diarised_transcript_error`` carries
-            # the human-readable reason so reviewers can distinguish
-            # this short-circuit from a real diarisation result even
-            # though the row's terminal status is ``completed``.
-            if not raw_turns:
-                logger.info(
-                    "transcribe_call_import_row: row {} LLM-only diariser "
-                    "returned no turns (no audible speech detected); "
-                    "marking diarisation completed with empty transcript.",
-                    row_id,
-                )
-                if _was_cancelled_externally(db, row):
-                    return {
-                        "status": "cancelled",
-                        "reason": "cancelled_by_user",
-                    }
-                row.diarised_transcript = ""
-                row.diarised_segments = []
-                row.diarised_speaker_swap = False
-                row.transcribe_mode = normalised_mode
-                row.diarised_transcript_status = "completed"
-                row.diarised_transcript_error = (
-                    "No audible speech detected in the recording; "
-                    "diariser returned no turns."
-                )
-                row.diarised_at = _now()
-                db.commit()
-                return {
-                    "status": "completed",
-                    "row_id": row_id,
-                    "mode": normalised_mode,
-                    "reason": "no_speech_detected",
-                    "turn_count": 0,
-                    "characters": 0,
-                }
-
-        turns = _segments_to_user_agent_turns(raw_turns)
-
-        # Guard against pseudo-diarisation: when the LLM emits a single
-        # speaker for the whole call we treat it the same as the
-        # legacy pyannote-unavailable fallback — store the plain text
-        # without speaker prefixes so the UI doesn't show a misleading
-        # ``agent: <everything>`` chat bubble.
-        distinct_roles = {turn.get("speaker") for turn in turns}
-        has_real_diarisation = len(distinct_roles - {None, ""}) >= 2
-        rendered_turns = (
-            _render_turns_as_text(turns, swap=False)
-            if turns and has_real_diarisation
-            else ""
+        return _finalize_diarization_row(
+            row_id,
+            pipeline_ctx=pipeline_ctx,
+            work_result=work_result,
         )
-
-        transcript_to_store = rendered_turns or plain_text
-
-        # Persist into ``diarised_transcript`` so the CSV-supplied
-        # production ``transcript`` is preserved as-is. The structured
-        # turns are persisted alongside on ``diarised_segments`` so the
-        # swap endpoint can re-render without re-running diarisation.
-        # We always reset ``diarised_speaker_swap`` to False on a fresh
-        # diarisation run — the heuristic is applied at write time so
-        # any prior swap flip is no longer meaningful for the new turns.
-        # ``diarised_segments`` is only populated when real diarisation
-        # happened — single-speaker fallback gets ``None`` so the swap
-        # button stays hidden (nothing meaningful to swap).
-        # Cancellation-aware finaliser: if the operator clicked "Stop
-        # Diarisation" while we were inside the LLM call (the most
-        # likely race window because the LLM call is by far the
-        # longest synchronous step), the route handler will already
-        # have flipped the row to ``failed`` + the cancellation
-        # sentinel. Writing ``completed`` over the top would silently
-        # swallow the user's intent, so we bail BEFORE the success
-        # commit and just leave the cancelled state intact. This is
-        # the only race window we actually need to guard — the error
-        # branches above each do their own check before writing.
-        if _was_cancelled_externally(db, row):
-            logger.info(
-                "Row {} was cancelled by the user mid-flight; "
-                "skipping success write and preserving cancelled state.",
+    except Exception as exc:  # noqa: BLE001 — terminal row state + no retry loop
+        logger.exception(
+            "transcribe_call_import_row crashed for row {}", row_id
+        )
+        fail_db = SessionLocal()
+        try:
+            row = (
+                fail_db.query(CallImportRow)
+                .filter(CallImportRow.id == UUID(row_id))
+                .first()
+            )
+            if row is not None:
+                if _was_cancelled_externally(fail_db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
+                if (row.diarised_transcript_status or "").lower() == "running":
+                    row.diarised_transcript_status = "failed"
+                    row.diarised_transcript_error = _summarize_exc(exc)
+                    fail_db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to persist unexpected-error state for row {}",
                 row_id,
             )
-            return {"status": "cancelled", "reason": "cancelled_by_user"}
-
-        row.diarised_transcript = transcript_to_store
-        row.diarised_segments = turns if has_real_diarisation else None
-        row.diarised_speaker_swap = False
-        # Re-stamp provider/model on success so the value matches the
-        # path the row actually went through. In ``stt_llm`` mode this
-        # is the STT provider/model; in ``llm_only`` mode we keep the
-        # sentinel value set before the LLM call so the UI can render
-        # "LLM only" without having to special-case missing fields.
-        if normalised_mode == "stt_llm" and provider_enum is not None:
-            row.diarised_transcript_provider = provider_enum.value
-            row.diarised_transcript_model = stt_model
-        row.transcribe_mode = normalised_mode
-        row.diarised_transcript_status = "completed"
-        row.diarised_transcript_error = None
-        row.diarised_at = _now()
-        db.commit()
-
-        return {
-            "status": "completed",
-            "row_id": row_id,
-            "mode": normalised_mode,
-            "provider": provider_enum.value if provider_enum else "llm_only",
-            "model": stt_model if normalised_mode == "stt_llm" else llm_model_value,
-            "llm_provider": llm_provider_value,
-            "llm_model": llm_model_value,
-            "characters": len(transcript_to_store),
-            "turn_count": len(turns) if has_real_diarisation else 0,
-        }
-    finally:
-        if run_eval_row_id:
             try:
-                _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id)
+                fail_db.rollback()
             except Exception:
-                logger.exception(
-                    "Failed to finalize eval-chain transcribe cleanup for row {}",
-                    run_eval_row_id,
-                )
+                pass
+        finally:
+            fail_db.close()
+        return {"status": "failed", "reason": "unexpected_error"}
+    finally:
+        cleanup_db = SessionLocal()
+        try:
+            if run_eval_row_id:
                 try:
-                    db.rollback()
-                    _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id)
+                    _apply_eval_chain_transcribe_cleanup(cleanup_db, run_eval_row_id)
                 except Exception:
                     logger.exception(
-                        "Failed to clear stale celery_task_id for eval row {}",
+                        "Failed to finalize eval-chain transcribe cleanup for row {}",
                         run_eval_row_id,
                     )
-        db.close()
+                    try:
+                        cleanup_db.rollback()
+                        _apply_eval_chain_transcribe_cleanup(
+                            cleanup_db, run_eval_row_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to clear stale celery_task_id for eval row {}",
+                            run_eval_row_id,
+                        )
+        finally:
+            cleanup_db.close()
         if run_eval_row_id:
             from app.workers.concurrency.fair_dispatch import (
                 finish_eval_work_and_redispatch,
@@ -842,3 +972,12 @@ def transcribe_call_import_row_task(
                 slot_task_id,
                 restricted_metric_ids=eval_restricted_metric_ids,
             )
+        else:
+            from app.workers.concurrency.limits import slot_registered_for_task
+
+            if slot_registered_for_task(slot_task_id):
+                from app.workers.concurrency.fair_diarization_dispatch import (
+                    finish_diarization_work_and_redispatch,
+                )
+
+                finish_diarization_work_and_redispatch(slot_task_id)

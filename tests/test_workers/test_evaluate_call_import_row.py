@@ -1074,3 +1074,216 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
     assert evaluation.completed_rows == 8
     assert evaluation.billed_completed_rows == 8
     assert recorded == []
+
+
+def test_evaluate_call_import_row_skip_audio_uses_existing_scores(
+    db_session, monkeypatch
+):
+    """LLM phase after audio chain merges scores already on the row."""
+    _, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=2
+    )
+    llm_metric, audio_metric = metrics[0], metrics[1]
+    audio_metric.name = "MOS Score"
+    source_rows[0].recording_s3_key = "recordings/test.mp3"
+    eval_row = eval_rows[0]
+    audio_id = str(audio_metric.id)
+    eval_row.metric_scores = {
+        audio_id: {
+            "value": 4.2,
+            "type": "rating",
+            "metric_name": audio_metric.name,
+        }
+    }
+    db_session.commit()
+
+    task_module = _patch_dependencies(monkeypatch, db_session)
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda *args, **kwargs: None,
+    )
+    result = task_module.evaluate_call_import_row_task.run(
+        str(eval_row.id),
+        _skip_audio=True,
+    )
+
+    assert result["status"] == "completed"
+    db_session.refresh(eval_row)
+    assert eval_row.metric_scores[audio_id]["value"] == 4.2
+    assert eval_row.metric_scores[str(llm_metric.id)]["value"] == 4
+
+
+def test_evaluate_call_import_row_audio_only_completes(db_session, monkeypatch):
+    """Audio-only evaluation finalizes without chaining LLM."""
+    org, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=1
+    )
+    metrics[0].name = "MOS Score"
+    db_session.commit()
+
+    from app.workers.tasks import evaluate_call_import_row_audio as audio_module
+
+    monkeypatch.setattr(
+        audio_module, "SessionLocal", lambda: _NonClosingSession(db_session)
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda *args, **kwargs: None,
+    )
+
+    source_rows[0].recording_s3_key = "audio/key.mp3"
+    db_session.commit()
+
+    def _fake_audio(*_args, **_kwargs):
+        mid = str(metrics[0].id)
+        return {
+            mid: {
+                "value": 3.5,
+                "type": "rating",
+                "metric_name": "MOS Score",
+            }
+        }
+
+    monkeypatch.setattr(
+        "app.workers.tasks.helpers.audio_evaluation.evaluate_audio_metrics",
+        _fake_audio,
+    )
+
+    chained = {"called": False}
+
+    def _no_chain(*_args, **_kwargs):
+        chained["called"] = True
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        _no_chain,
+    )
+
+    result = audio_module.evaluate_call_import_row_audio_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "completed"
+    assert result.get("phase") == "audio_only"
+    assert chained["called"] is False
+    db_session.refresh(eval_rows[0])
+    assert eval_rows[0].status == "completed"
+
+
+def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
+    db_session, monkeypatch
+):
+    """Broker failure chaining to LLM phase must not leave the row stuck running."""
+    _, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=2
+    )
+    llm_metric, audio_metric = metrics[0], metrics[1]
+    audio_metric.name = "MOS Score"
+    source_rows[0].recording_s3_key = "audio/key.mp3"
+    evaluation.status = "running"
+    db_session.commit()
+
+    from app.workers.tasks import evaluate_call_import_row_audio as audio_module
+
+    monkeypatch.setattr(
+        audio_module, "SessionLocal", lambda: _NonClosingSession(db_session)
+    )
+    redispatched = {"called": False}
+
+    def _track_redispatch(*_args, **_kwargs):
+        redispatched["called"] = True
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        _track_redispatch,
+    )
+
+    def _fake_audio(*_args, **_kwargs):
+        return {
+            str(audio_metric.id): {
+                "value": 3.5,
+                "type": "rating",
+                "metric_name": "MOS Score",
+            }
+        }
+
+    monkeypatch.setattr(
+        "app.workers.tasks.helpers.audio_evaluation.evaluate_audio_metrics",
+        _fake_audio,
+    )
+
+    def _raise_enqueue(*_args, **_kwargs):
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.evaluate_call_import_row.evaluate_call_import_row_task.apply_async",
+        _raise_enqueue,
+    )
+
+    result = audio_module.evaluate_call_import_row_audio_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "chain_enqueue_failed"
+    assert redispatched["called"] is True
+
+    db_session.refresh(eval_rows[0])
+    db_session.refresh(evaluation)
+    assert eval_rows[0].status == "failed"
+    assert eval_rows[0].error_message == "Failed to enqueue LLM evaluation phase"
+    assert eval_rows[0].finished_at is not None
+    assert str(audio_metric.id) in (eval_rows[0].metric_scores or {})
+    assert str(llm_metric.id) not in (eval_rows[0].metric_scores or {})
+
+    assert evaluation.failed_rows == 1
+    assert evaluation.status == "failed"
+
+
+def test_counter_deltas_for_status_transition():
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        counter_deltas_for_status_transition,
+    )
+
+    assert counter_deltas_for_status_transition("running", "completed") == (1, 0)
+    assert counter_deltas_for_status_transition("running", "failed") == (0, 1)
+    assert counter_deltas_for_status_transition("completed", "pending") == (-1, 0)
+    assert counter_deltas_for_status_transition("failed", "completed") == (1, -1)
+    assert counter_deltas_for_status_transition("running", "running") == (0, 0)
+
+
+def test_rollup_parent_incremental_without_row_scan(db_session, monkeypatch):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    query_calls = {"count": 0}
+    original_query = db_session.query
+
+    def _counting_query(*args, **kwargs):
+        query_calls["count"] += 1
+        return original_query(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "query", _counting_query)
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=3)
+    eval_rows[0].status = "completed"
+    # Worker commits the finishing row as completed before rollup runs.
+    eval_rows[1].status = "completed"
+    evaluation.total_rows = 3
+    evaluation.completed_rows = 1
+    evaluation.failed_rows = 0
+    evaluation.status = "running"
+    db_session.commit()
+
+    queries_before = query_calls["count"]
+    _rollup_parent(
+        db_session,
+        evaluation,
+        previous_row_status="running",
+        new_row_status="completed",
+    )
+
+    assert evaluation.completed_rows == 2
+    assert evaluation.status == "running"
+    # Incremental path should not query CallImportEvaluationRow statuses.
+    row_status_queries = query_calls["count"] - queries_before
+    assert row_status_queries <= 2

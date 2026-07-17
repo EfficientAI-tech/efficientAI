@@ -3,6 +3,7 @@ interface CallImportProgressBarProps {
   completed: number
   failed: number
   showLabel?: boolean
+  deleting?: boolean
 }
 
 export default function CallImportProgressBar({
@@ -10,7 +11,26 @@ export default function CallImportProgressBar({
   completed,
   failed,
   showLabel = true,
+  deleting = false,
 }: CallImportProgressBarProps) {
+  if (deleting) {
+    return (
+      <div className="w-full">
+        <div
+          className="w-full h-2 bg-gray-200 rounded-full overflow-hidden"
+          role="progressbar"
+          aria-busy="true"
+          aria-label="Removing import"
+        >
+          <div className="h-full w-full bg-gray-400 animate-pulse" />
+        </div>
+        {showLabel && (
+          <div className="mt-1 text-xs text-gray-500 italic">Removing…</div>
+        )}
+      </div>
+    )
+  }
+
   const safeTotal = Math.max(total, 0)
   const completedPct = safeTotal > 0 ? (completed / safeTotal) * 100 : 0
   const failedPct = safeTotal > 0 ? (failed / safeTotal) * 100 : 0

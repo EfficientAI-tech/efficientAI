@@ -3,8 +3,8 @@ import { AlertTriangle } from 'lucide-react'
 import Button from '../../../components/Button'
 import type { CallImport } from '../../../types/api'
 import TelephonyCredentialPicker, {
-  DIRECT_URL_CREDENTIAL,
   credentialSelectionFromState,
+  initialTelephonySelection,
   isCredentialSelectionValid,
 } from './TelephonyCredentialPicker'
 
@@ -22,16 +22,7 @@ interface RetryFailedImportModalProps {
 }
 
 function initialSelection(callImport: CallImport | undefined) {
-  if (callImport?.telephony_integration_id && callImport.provider) {
-    return {
-      provider: callImport.provider,
-      integrationId: callImport.telephony_integration_id,
-    }
-  }
-  if (!callImport?.telephony_integration_id && !callImport?.provider) {
-    return { provider: '', integrationId: DIRECT_URL_CREDENTIAL }
-  }
-  return { provider: callImport?.provider || '', integrationId: '' }
+  return initialTelephonySelection(callImport)
 }
 
 export default function RetryFailedImportModal({

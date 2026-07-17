@@ -555,6 +555,7 @@ def test_select_rows_for_transcription_skips_rows_with_existing_transcripts():
     ]
 
     fake_query = MagicMock()
+    fake_query.options.return_value = fake_query
     fake_query.filter.return_value = fake_query
     fake_query.order_by.return_value = SimpleNamespace(
         all=lambda: fake_rows
@@ -599,6 +600,7 @@ def test_select_rows_for_transcription_overwrite_replaces_existing():
         ),
     ]
     fake_query = MagicMock()
+    fake_query.options.return_value = fake_query
     fake_query.filter.return_value = fake_query
     fake_query.order_by.return_value = SimpleNamespace(
         all=lambda: fake_rows
@@ -629,6 +631,7 @@ def test_select_rows_for_transcription_raises_on_unknown_row_id():
     requested_id = uuid4()
 
     fake_query = MagicMock()
+    fake_query.options.return_value = fake_query
     fake_query.filter.return_value = fake_query
     fake_query.order_by.return_value = SimpleNamespace(all=lambda: [])
     fake_db = SimpleNamespace(query=lambda *_: fake_query)

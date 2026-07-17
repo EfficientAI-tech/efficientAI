@@ -59,10 +59,16 @@ import {
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import {
+  isLLMSelectionComplete,
+  resolveLLMModelForSubmit,
+} from '../../lib/llmModelOptions'
 import { useToast } from '../../hooks/useToast'
 import type {
   CallImportEvaluation,
+  CallImportEvaluationBulkActionResponse,
   CallImportEvaluationBaselineCandidate,
+  CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
   CallImportMetricAggregate,
   EvaluationTldrSummary,
@@ -86,11 +92,23 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import { getActiveWorkspaceId, useWorkspaceStore } from '../../store/workspaceStore'
 import StatusBadge from '../../components/shared/StatusBadge'
+import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
+import TelephonyCredentialPicker, {
+  credentialSelectionFromState,
+  initialTelephonySelection,
+  isCredentialSelectionValid,
+} from './components/TelephonyCredentialPicker'
 import MetricFlowChart, {
   flowFromSequence,
 } from './components/MetricFlowChart'
+import {
+  EVALUATION_BULK_OPERATION_POLL_MS,
+  evaluationBulkOperationDescription,
+  evaluationBulkOperationLabel,
+  type BulkEvaluationOperation,
+} from './evaluationBulkOperation'
 
 const PIE_COLORS = [
   '#6366f1',
@@ -355,6 +373,45 @@ export default function CallImportEvaluationDetail() {
   const queryClient = useQueryClient()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { showToast, ToastContainer } = useToast()
+
+  const evaluationQueryKey = [
+    'call-import-evaluation',
+    activeWorkspaceId,
+    id,
+    evalId,
+  ] as const
+
+  const setEvaluationBulkOperationOptimistic = (
+    operation: BulkEvaluationOperation | null,
+  ) => {
+    if (!id || !evalId) return
+    queryClient.setQueryData<CallImportEvaluation>(
+      evaluationQueryKey,
+      (prev) => (prev ? { ...prev, bulk_operation: operation } : prev),
+    )
+  }
+
+  const invalidateEvaluationQueries = () => {
+    queryClient.invalidateQueries({ queryKey: evaluationQueryKey })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
+    })
+    queryClient.invalidateQueries({
+      queryKey: [
+        'call-import-evaluation-pending-rows-count',
+        activeWorkspaceId,
+        id,
+        evalId,
+      ],
+    })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+    })
+  }
+
+  const bulkOperationConflictMessage =
+    'Another bulk operation is already running for this evaluation. Wait for it to finish.'
+
   const [searchParams] = useSearchParams()
   const deepLinkConversationId =
     searchParams.get('conversation_id')?.trim() || ''
@@ -459,8 +516,20 @@ export default function CallImportEvaluationDetail() {
     model: null,
     credential_id: null,
   })
+  const [retryTranscribeMode, setRetryTranscribeMode] = useState<
+    'stt_llm' | 'llm_only'
+  >('llm_only')
+  const [retryDiariserLLM, setRetryDiariserLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [retryDiarisationPrompt, setRetryDiarisationPrompt] = useState('')
   const [retryTranscribeOverwrite, setRetryTranscribeOverwrite] =
     useState(false)
+  const [retryTelephonyProvider, setRetryTelephonyProvider] = useState('')
+  const [retryTelephonyIntegrationId, setRetryTelephonyIntegrationId] =
+    useState('')
 
   // "Re-run metrics" UX (separate from the failed-row retry above).
   // The user picks one or more of the run's already-scored metrics
@@ -727,13 +796,20 @@ export default function CallImportEvaluationDetail() {
   })
 
   const evaluationQuery = useQuery({
-    queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
+    queryKey: evaluationQueryKey,
     queryFn: () => apiClient.getCallImportEvaluation(id!, evalId!),
     enabled: !!id && !!evalId,
     refetchInterval: (q) => {
-      const status = q.state.data?.status
+      const data = q.state.data
+      if (data?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
+      const status = data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
     },
+  })
+
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
   })
 
   const rowsQuery = useQuery({
@@ -775,6 +851,9 @@ export default function CallImportEvaluationDetail() {
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
+      if (evaluationQuery.data?.bulk_operation) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
     },
@@ -813,6 +892,9 @@ export default function CallImportEvaluationDetail() {
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
+      if (evaluationQuery.data?.bulk_operation) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
     },
@@ -977,6 +1059,28 @@ export default function CallImportEvaluationDetail() {
         retrySTT.model !== (evaluation?.stt_model ?? null) ||
         (retrySTT.credential_id ?? null) !==
           (evaluation?.stt_credential_id ?? null)
+      const diariserChanged =
+        retryDiariserLLM.provider !==
+          (evaluation?.diarisation_llm_provider ?? null) ||
+        retryDiariserLLM.model !==
+          (evaluation?.diarisation_llm_model ?? null) ||
+        (retryDiariserLLM.credential_id ?? null) !==
+          (evaluation?.diarisation_llm_credential_id ?? null)
+      const transcribeModeChanged =
+        retryTranscribeMode !== (evaluation?.transcribe_mode ?? 'stt_llm')
+      const diarisationPromptChanged =
+        retryDiarisationPrompt.trim() !==
+        (evaluation?.diarisation_prompt ?? '').trim()
+      const telephonySelection = credentialSelectionFromState(
+        retryTelephonyProvider,
+        retryTelephonyIntegrationId,
+      )
+      const callImport = callImportQuery.data
+      const telephonyChanged =
+        (telephonySelection.provider ?? null) !==
+          (callImport?.provider ?? null) ||
+        (telephonySelection.telephonyIntegrationId ?? null) !==
+          (callImport?.telephony_integration_id ?? null)
 
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         llmProvider:
@@ -1003,27 +1107,50 @@ export default function CallImportEvaluationDetail() {
           sttChanged && retrySTT.provider && retrySTT.model
             ? retrySTT.credential_id ?? null
             : undefined,
+        transcribeMode: transcribeModeChanged
+          ? retryTranscribeMode
+          : undefined,
+        diarizationLlmProvider:
+          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+            ? retryDiariserLLM.provider
+            : undefined,
+        diarizationLlmModel:
+          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+            ? resolveLLMModelForSubmit(retryDiariserLLM, aiProviders) ??
+              retryDiariserLLM.model
+            : undefined,
+        diarizationLlmCredentialId:
+          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+            ? retryDiariserLLM.credential_id ?? null
+            : undefined,
+        diarizationPrompt: diarisationPromptChanged
+          ? retryDiarisationPrompt.trim() || null
+          : undefined,
         transcribeOverwrite: retryTranscribeOverwrite,
+        provider: telephonyChanged ? telephonySelection.provider : undefined,
+        telephonyIntegrationId: telephonyChanged
+          ? telephonySelection.telephonyIntegrationId
+          : undefined,
       })
     },
-    onSuccess: () => {
+    onSuccess: (data: CallImportEvaluationRetryResponse) => {
+      if (data.requeued > 0) {
+        setEvaluationBulkOperationOptimistic('retry')
+      }
+      invalidateEvaluationQueries()
       queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+        queryKey: ['call-import', activeWorkspaceId, id],
       })
       setRetryError(null)
       setRetryConfirmOpen(false)
     },
     onError: (err: any) => {
       setRetryError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to retry the evaluation.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to retry the evaluation.',
       )
     },
   })
@@ -1046,7 +1173,17 @@ export default function CallImportEvaluationDetail() {
       model: evaluation.stt_model ?? null,
       credential_id: evaluation.stt_credential_id ?? null,
     })
+    setRetryTranscribeMode(evaluation.transcribe_mode ?? 'stt_llm')
+    setRetryDiariserLLM({
+      provider: evaluation.diarisation_llm_provider ?? null,
+      model: evaluation.diarisation_llm_model ?? null,
+      credential_id: evaluation.diarisation_llm_credential_id ?? null,
+    })
+    setRetryDiarisationPrompt(evaluation.diarisation_prompt ?? '')
     setRetryTranscribeOverwrite(false)
+    const telephonyInitial = initialTelephonySelection(callImportQuery.data)
+    setRetryTelephonyProvider(telephonyInitial.provider)
+    setRetryTelephonyIntegrationId(telephonyInitial.integrationId)
     setRetryError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryConfirmOpen])
@@ -1110,24 +1247,21 @@ export default function CallImportEvaluationDetail() {
         llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
       })
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+    onSuccess: (data: CallImportEvaluationRetryResponse) => {
+      if (data.requeued > 0) {
+        setEvaluationBulkOperationOptimistic('retry')
+      }
+      invalidateEvaluationQueries()
       setRerunError(null)
       setRerunMetricsOpen(false)
     },
     onError: (err: any) => {
       setRerunError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to re-run the selected metrics.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to re-run the selected metrics.',
       )
     },
   })
@@ -1155,9 +1289,11 @@ export default function CallImportEvaluationDetail() {
     },
     onError: (err: any) => {
       setRetryError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to retry this row.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to retry this row.',
       )
     },
     onSettled: () => {
@@ -1184,22 +1320,19 @@ export default function CallImportEvaluationDetail() {
     onMutate: () => {
       setCancelError(null)
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+    onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
+      if (data.target_count > 0) {
+        setEvaluationBulkOperationOptimistic('abort')
+      }
+      invalidateEvaluationQueries()
     },
     onError: (err: any) => {
       setCancelError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to abort this evaluation run.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to abort this evaluation run.',
       )
     },
   })
@@ -1209,26 +1342,20 @@ export default function CallImportEvaluationDetail() {
     onMutate: () => {
       setCancelError(null)
     },
-    onSuccess: () => {
+    onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
+      if (data.target_count > 0) {
+        setEvaluationBulkOperationOptimistic('force_fail_pending')
+      }
       setForceFailPendingOpen(false)
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-rows', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluation-pending-rows-count', activeWorkspaceId, id, evalId],
-      })
-      queryClient.invalidateQueries({
-        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
-      })
+      invalidateEvaluationQueries()
     },
     onError: (err: any) => {
       setCancelError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to force-fail pending rows.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to force-fail pending rows.',
       )
     },
   })
@@ -1256,9 +1383,11 @@ export default function CallImportEvaluationDetail() {
     },
     onError: (err: any) => {
       setCancelError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to abort this row.',
+        err?.response?.status === 409
+          ? err?.response?.data?.detail || bulkOperationConflictMessage
+          : err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to abort this row.',
       )
     },
     onSettled: () => {
@@ -1268,6 +1397,12 @@ export default function CallImportEvaluationDetail() {
 
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
+  const diarisationInFlightCount = callImport
+    ? (callImport.diarised_pending_rows ?? 0) +
+      (callImport.diarised_running_rows ?? 0)
+    : 0
+  const diarisedCompletedRows = callImport?.diarised_completed_rows ?? 0
+  const diarisedFailedRows = callImport?.diarised_failed_rows ?? 0
 
   // Derive the metric column list the same way CallImportDetail does so the
   // table stays consistent with what was actually scored, even if the
@@ -2062,6 +2197,8 @@ export default function CallImportEvaluationDetail() {
   const headerLabel = evaluation.name?.trim()
     ? evaluation.name
     : `Evaluation ${evaluation.id.slice(0, 8)}`
+  const bulkOperation = evaluation.bulk_operation ?? null
+  const bulkOperationActive = bulkOperation !== null
   const pendingRowCount = pendingRowsQuery.data?.total ?? 0
   const getMetricLlmLabel = (metricId: string): string => {
     const override = evaluation.metric_llm_overrides?.[metricId]
@@ -2098,11 +2235,20 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<XCircle className="h-4 w-4" />}
               onClick={() => {
-                if (cancelEvaluationMutation.isPending) return
+                if (
+                  cancelEvaluationMutation.isPending ||
+                  bulkOperationActive
+                ) {
+                  return
+                }
                 cancelEvaluationMutation.mutate()
               }}
-              isLoading={cancelEvaluationMutation.isPending}
-              disabled={cancelEvaluationMutation.isPending}
+              isLoading={
+                cancelEvaluationMutation.isPending || bulkOperation === 'abort'
+              }
+              disabled={
+                bulkOperationActive || cancelEvaluationMutation.isPending
+              }
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
               title="Abort every in-flight or queued row in this run"
             >
@@ -2115,12 +2261,22 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<AlertTriangle className="h-4 w-4" />}
               onClick={() => {
-                if (forceFailPendingMutation.isPending) return
+                if (
+                  forceFailPendingMutation.isPending ||
+                  bulkOperationActive
+                ) {
+                  return
+                }
                 setCancelError(null)
                 setForceFailPendingOpen(true)
               }}
-              isLoading={forceFailPendingMutation.isPending}
-              disabled={forceFailPendingMutation.isPending}
+              isLoading={
+                forceFailPendingMutation.isPending ||
+                bulkOperation === 'force_fail_pending'
+              }
+              disabled={
+                bulkOperationActive || forceFailPendingMutation.isPending
+              }
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
               title={`Mark ${pendingRowCount} pending row${
                 pendingRowCount === 1 ? '' : 's'
@@ -2135,11 +2291,18 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<RotateCw className="h-4 w-4" />}
               onClick={() => {
+                if (bulkOperationActive || retryAllFailedMutation.isPending) {
+                  return
+                }
                 setRetryError(null)
                 setRetryConfirmOpen(true)
               }}
-              isLoading={retryAllFailedMutation.isPending}
-              disabled={retryAllFailedMutation.isPending}
+              isLoading={
+                retryAllFailedMutation.isPending || bulkOperation === 'retry'
+              }
+              disabled={
+                bulkOperationActive || retryAllFailedMutation.isPending
+              }
               className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
               title={`Re-run evaluation on ${evaluation.failed_rows} failed row${
                 evaluation.failed_rows === 1 ? '' : 's'
@@ -2154,11 +2317,16 @@ export default function CallImportEvaluationDetail() {
               size="sm"
               leftIcon={<RefreshCw className="h-4 w-4" />}
               onClick={() => {
+                if (bulkOperationActive || rerunMetricsMutation.isPending) {
+                  return
+                }
                 setRerunError(null)
                 setRerunMetricsOpen(true)
               }}
-              isLoading={rerunMetricsMutation.isPending}
-              disabled={rerunMetricsMutation.isPending}
+              isLoading={
+                rerunMetricsMutation.isPending || bulkOperation === 'retry'
+              }
+              disabled={bulkOperationActive || rerunMetricsMutation.isPending}
               title="Re-score selected metrics across every row in this run, merging into existing scores."
             >
               Re-run metrics
@@ -2232,8 +2400,8 @@ export default function CallImportEvaluationDetail() {
       </div>
 
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0 flex-1">
+        <div className="space-y-4">
+          <div className="min-w-0">
             {!editingName ? (
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl font-bold text-gray-900 truncate">
@@ -2332,88 +2500,130 @@ export default function CallImportEvaluationDetail() {
               )}
             </div>
           </div>
-          <div className="w-72 flex-shrink-0">
-            <div className="text-xs font-medium text-gray-600 mb-1">
-              Evaluation progress
-            </div>
-            <CallImportProgressBar
-              total={evaluation.total_rows}
-              completed={evaluation.completed_rows}
-              failed={evaluation.failed_rows}
-            />
-            <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
-              <div className="bg-gray-50 rounded p-2 min-w-[72px]">
-                <div className="text-gray-500">Total</div>
-                <div className="font-semibold text-gray-900">
-                  {evaluation.total_rows}
-                </div>
-              </div>
-              <div className="bg-green-50 rounded p-2 min-w-[72px]">
-                <div className="text-green-700">Completed</div>
-                <div className="font-semibold text-green-800">
-                  {evaluation.completed_rows}
-                </div>
-              </div>
-              <div className="bg-red-50 rounded p-2 min-w-[72px]">
-                <div className="text-red-700">Failed</div>
-                <div className="font-semibold text-red-800">
-                  {evaluation.failed_rows}
-                </div>
-              </div>
-            </div>
 
-            {/*
-              Upstream diarisation progress. When the user kicked off
-              this run with auto-transcribe enabled on rows missing a
-              diarised transcript, the eval row stays ``pending`` while
-              the transcribe / diarise worker is in flight. Surfacing
-              the parent batch's diarisation counters here tells the
-              user the run isn't stalled — it's waiting on audio
-              processing — and the bar fills as the worker churns.
-              Polling on ``callImportQuery`` keeps these numbers fresh
-              without a manual refresh.
-            */}
-            {(() => {
-              const ci = callImport
-              if (!ci) return null
-              const diarisePending = ci.diarised_pending_rows ?? 0
-              const diariseRunning = ci.diarised_running_rows ?? 0
-              const diariseInFlight = diarisePending + diariseRunning
-              const diariseDone =
-                (ci.diarised_completed_rows ?? 0) +
-                (ci.diarised_failed_rows ?? 0)
-              const evalRunning =
-                evaluation.status === 'pending' ||
-                evaluation.status === 'running'
-              // Only render while the upstream pipeline is actively
-              // moving — once everything's settled we don't want a
-              // stale 100% bar lingering for terminal runs.
-              if (!evalRunning || diariseInFlight + diariseDone === 0) {
-                return null
-              }
-              return (
-                <div className="mt-4 pt-4 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-xs font-medium text-gray-600">
-                      Diarising audio
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+            {callImport && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 shadow-sm min-w-0">
+                <h3 className="text-sm font-semibold text-slate-900 mb-2.5 pb-2 border-b border-slate-200">
+                  Recording import
+                </h3>
+                <CallImportProgressBar
+                  total={callImport.total_rows}
+                  completed={callImport.completed_rows}
+                  failed={callImport.failed_rows}
+                />
+                <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="bg-white rounded-md border border-slate-100 p-2">
+                    <div className="text-gray-500">Total</div>
+                    <div className="font-semibold text-gray-900">
+                      {callImport.total_rows}
                     </div>
-                    {diariseInFlight > 0 && (
-                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        {diariseInFlight} in progress
-                      </div>
-                    )}
                   </div>
-                  <CallImportProgressBar
-                    total={ci.total_rows}
-                    completed={ci.diarised_completed_rows ?? 0}
-                    failed={ci.diarised_failed_rows ?? 0}
-                  />
+                  <div className="bg-white rounded-md border border-green-100 p-2">
+                    <div className="text-green-700">Completed</div>
+                    <div className="font-semibold text-green-800">
+                      {callImport.completed_rows}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md border border-red-100 p-2">
+                    <div className="text-red-700">Failed</div>
+                    <div className="font-semibold text-red-800">
+                      {callImport.failed_rows}
+                    </div>
+                  </div>
                 </div>
-              )
-            })()}
+              </div>
+            )}
+
+            {callImport && (
+              <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 shadow-sm min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-violet-200">
+                  <h3 className="text-sm font-semibold text-violet-950">
+                    Transcription &amp; diarisation
+                  </h3>
+                  {diarisationInFlightCount > 0 && (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-700 whitespace-nowrap">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      {diarisationInFlightCount} in progress
+                    </span>
+                  )}
+                </div>
+                <CallImportProgressBar
+                  total={callImport.total_rows}
+                  completed={diarisedCompletedRows}
+                  failed={diarisedFailedRows}
+                />
+                <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div className="bg-white rounded-md border border-violet-100 p-2">
+                    <div className="text-gray-500">Total</div>
+                    <div className="font-semibold text-gray-900">
+                      {callImport.total_rows}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md border border-green-100 p-2">
+                    <div className="text-green-700">Completed</div>
+                    <div className="font-semibold text-green-800">
+                      {diarisedCompletedRows}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-md border border-red-100 p-2">
+                    <div className="text-red-700">Failed</div>
+                    <div className="font-semibold text-red-800">
+                      {diarisedFailedRows}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 shadow-sm min-w-0">
+              <h3 className="text-sm font-semibold text-emerald-950 mb-2.5 pb-2 border-b border-emerald-200">
+                Evaluation progress
+              </h3>
+              <CallImportProgressBar
+                total={evaluation.total_rows}
+                completed={evaluation.completed_rows}
+                failed={evaluation.failed_rows}
+              />
+              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-white rounded-md border border-emerald-100 p-2">
+                  <div className="text-gray-500">Total</div>
+                  <div className="font-semibold text-gray-900">
+                    {evaluation.total_rows}
+                  </div>
+                </div>
+                <div className="bg-white rounded-md border border-green-100 p-2">
+                  <div className="text-green-700">Completed</div>
+                  <div className="font-semibold text-green-800">
+                    {evaluation.completed_rows}
+                  </div>
+                </div>
+                <div className="bg-white rounded-md border border-red-100 p-2">
+                  <div className="text-red-700">Failed</div>
+                  <div className="font-semibold text-red-800">
+                    {evaluation.failed_rows}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
+
+        {bulkOperation && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <Loader2 className="h-4 w-4 text-amber-600 mt-0.5 animate-spin shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm font-medium text-amber-900">
+                  {evaluationBulkOperationLabel(bulkOperation)}
+                </p>
+                <p className="text-xs text-amber-800 mt-0.5">
+                  {evaluationBulkOperationDescription(bulkOperation)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {evaluation.error_message && (
           <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
@@ -3461,7 +3671,12 @@ export default function CallImportEvaluationDetail() {
                           )}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
-                          <StatusBadge status={row.status} size="sm" />
+                          <div className="inline-flex items-center gap-1.5 flex-wrap">
+                            <StatusBadge status={row.status} size="sm" />
+                            <DiariseStatusPill
+                              status={row.diarised_transcript_status}
+                            />
+                          </div>
                         </td>
                         {displayMetrics.flatMap((metric) => {
                           const score = row.metric_scores?.[metric.id]
@@ -3554,15 +3769,22 @@ export default function CallImportEvaluationDetail() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  if (cancellingRowId) return
+                                  if (bulkOperationActive || cancellingRowId) {
+                                    return
+                                  }
                                   cancelRowMutation.mutate(row.id)
                                 }}
                                 disabled={
-                                  cancellingRowId !== null &&
-                                  cancellingRowId !== row.id
+                                  bulkOperationActive ||
+                                  (cancellingRowId !== null &&
+                                    cancellingRowId !== row.id)
                                 }
                                 className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
-                                title="Abort this row"
+                                title={
+                                  bulkOperationActive
+                                    ? 'Wait for the current bulk operation to finish'
+                                    : 'Abort this row'
+                                }
                                 aria-label="Abort evaluation row"
                               >
                                 {cancellingRowId === row.id ? (
@@ -3577,15 +3799,22 @@ export default function CallImportEvaluationDetail() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  if (pendingRetryRowId) return
+                                  if (bulkOperationActive || pendingRetryRowId) {
+                                    return
+                                  }
                                   retryRowMutation.mutate(row.id)
                                 }}
                                 disabled={
-                                  pendingRetryRowId !== null &&
-                                  pendingRetryRowId !== row.id
+                                  bulkOperationActive ||
+                                  (pendingRetryRowId !== null &&
+                                    pendingRetryRowId !== row.id)
                                 }
                                 className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
-                                title="Retry evaluation on this row"
+                                title={
+                                  bulkOperationActive
+                                    ? 'Wait for the current bulk operation to finish'
+                                    : 'Retry evaluation on this row'
+                                }
                                 aria-label="Retry evaluation row"
                               >
                                 {pendingRetryRowId === row.id ? (
@@ -3751,6 +3980,28 @@ export default function CallImportEvaluationDetail() {
                   </div>
                 </div>
 
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-900">
+                      Recording fetch
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Used when failed rows still need to download audio from
+                      Exotel or another provider. Exotel batches require a
+                      Recording URL column in the CSV. Switch credentials here if
+                      the original batch used the wrong integration.
+                    </p>
+                  </div>
+                  <TelephonyCredentialPicker
+                    selectedProvider={retryTelephonyProvider}
+                    selectedIntegrationId={retryTelephonyIntegrationId}
+                    onProviderChange={setRetryTelephonyProvider}
+                    onIntegrationChange={setRetryTelephonyIntegrationId}
+                    disabled={retryAllFailedMutation.isPending}
+                    compact
+                  />
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     LLM for re-evaluation
@@ -3769,24 +4020,68 @@ export default function CallImportEvaluationDetail() {
                 </div>
 
                 {evaluation.transcript_source === 'diarised' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      STT for re-diarisation
-                    </label>
-                    <p className="text-xs text-gray-500 mb-2">
-                      Only used when a retried row is missing its
-                      diarised transcript, or when you opt to overwrite
-                      below.
-                    </p>
-                    <ProviderModelPicker
-                      kind="stt"
-                      value={retrySTT}
-                      onChange={setRetrySTT}
-                      providerAllowList={STT_PROVIDER_ALLOWLIST}
-                      allowCredentialPick
-                      defaultLabel="Pick an STT provider"
-                    />
-                    <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Auto-diarise missing or overwritten transcripts
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">
+                        Rows that already have a diarised transcript are
+                        re-scored only unless you opt to overwrite below.
+                        Pick the same pipeline you would use for a new run.
+                      </p>
+                    </div>
+                    <div
+                      role="tablist"
+                      aria-label="Auto-diarise pipeline"
+                      className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={retryTranscribeMode === 'llm_only'}
+                        onClick={() => setRetryTranscribeMode('llm_only')}
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
+                          retryTranscribeMode === 'llm_only'
+                            ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        LLM only (audio in)
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={retryTranscribeMode === 'stt_llm'}
+                        onClick={() => setRetryTranscribeMode('stt_llm')}
+                        className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${
+                          retryTranscribeMode === 'stt_llm'
+                            ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        STT + LLM diariser
+                        <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+                          Advanced
+                        </span>
+                      </button>
+                    </div>
+                    {retryTranscribeMode === 'stt_llm' && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          STT for re-diarisation
+                        </label>
+                        <ProviderModelPicker
+                          kind="stt"
+                          value={retrySTT}
+                          onChange={setRetrySTT}
+                          providerAllowList={STT_PROVIDER_ALLOWLIST}
+                          allowCredentialPick
+                          defaultLabel="Pick an STT provider"
+                        />
+                      </div>
+                    )}
+                    <label className="flex items-start gap-2 text-sm text-gray-700">
                       <input
                         type="checkbox"
                         checked={retryTranscribeOverwrite}
@@ -3800,13 +4095,42 @@ export default function CallImportEvaluationDetail() {
                           Re-diarise existing transcripts
                         </span>{' '}
                         <span className="text-gray-500">
-                          — wipe the diarised transcript on every
-                          retried row so the new STT runs from scratch.
-                          Leave unchecked to keep existing transcripts
-                          and only re-score with the new LLM.
+                          — wipe the diarised transcript on every retried
+                          row so the pipeline runs from scratch. Leave
+                          unchecked to keep existing transcripts and only
+                          re-score with the new LLM.
                         </span>
                       </span>
                     </label>
+                    <div className="pt-3 border-t border-gray-200 space-y-2">
+                      <p className="text-xs font-medium text-gray-700">
+                        {retryTranscribeMode === 'stt_llm'
+                          ? 'Diariser LLM'
+                          : 'Multimodal diariser LLM'}
+                      </p>
+                      <p className="text-[11px] text-gray-500">
+                        {retryTranscribeMode === 'stt_llm'
+                          ? 'Used after STT when a row needs diarisation or overwrite.'
+                          : 'Receives audio directly when a row needs diarisation or overwrite.'}
+                      </p>
+                      <ProviderModelPicker
+                        kind="llm"
+                        value={retryDiariserLLM}
+                        onChange={setRetryDiariserLLM}
+                        allowCredentialPick
+                        audioCapableOnly={retryTranscribeMode === 'llm_only'}
+                        defaultLabel="Pick a diariser LLM"
+                      />
+                      <textarea
+                        value={retryDiarisationPrompt}
+                        onChange={(e) =>
+                          setRetryDiarisationPrompt(e.target.value)
+                        }
+                        rows={3}
+                        placeholder="Diarisation prompt (optional override)"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -3851,7 +4175,16 @@ export default function CallImportEvaluationDetail() {
                   disabled={
                     retryAllFailedMutation.isPending ||
                     !retryLLM.provider ||
-                    !retryLLM.model
+                    !retryLLM.model ||
+                    !isCredentialSelectionValid(
+                      retryTelephonyProvider,
+                      retryTelephonyIntegrationId,
+                    ) ||
+                    (retryTranscribeOverwrite &&
+                      retryTranscribeMode === 'stt_llm' &&
+                      (!retrySTT.provider || !retrySTT.model)) ||
+                    (retryTranscribeOverwrite &&
+                      !isLLMSelectionComplete(retryDiariserLLM, aiProviders))
                   }
                 >
                   Retry {evaluation.failed_rows} row
@@ -5100,6 +5433,7 @@ function RowDetailPanel({
             </p>
             <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-gray-500">
               <StatusBadge status={row.status} size="sm" />
+              <DiariseStatusPill status={row.diarised_transcript_status} />
               {row.row_index !== null && (
                 <span>Row #{(row.row_index ?? 0) + 1}</span>
               )}

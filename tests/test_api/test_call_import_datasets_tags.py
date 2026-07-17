@@ -32,32 +32,18 @@ from app.models.enums import CallImportParameterType
 
 @pytest.fixture(autouse=True)
 def stub_call_import_worker():
-    """Replace the Celery task that the upload route enqueues.
-
-    Each test creates a CallImport via ``POST /upload``; the route then
-    imports ``process_call_import_row_task`` and calls ``.delay()``. We
-    swap in a no-op so the tests don't require Celery / Redis.
-    """
-    fake_module = types.ModuleType("app.workers.tasks.process_call_import_row")
-
-    class _Task:
-        @staticmethod
-        def delay(*_args, **_kwargs):
-            class _Result:
-                id = "fake-task-id"
-
-            return _Result()
-
-    fake_module.process_call_import_row_task = _Task()
-    previous = sys.modules.get("app.workers.tasks.process_call_import_row")
-    sys.modules["app.workers.tasks.process_call_import_row"] = fake_module
+    """Replace fair import dispatch scheduling so upload routes don't need Redis."""
+    fake_module = types.ModuleType("app.workers.concurrency.fair_import_dispatch")
+    fake_module.schedule_fair_import_dispatch = lambda *_a, **_kw: None
+    previous = sys.modules.get("app.workers.concurrency.fair_import_dispatch")
+    sys.modules["app.workers.concurrency.fair_import_dispatch"] = fake_module
     try:
         yield
     finally:
         if previous is None:
-            sys.modules.pop("app.workers.tasks.process_call_import_row", None)
+            sys.modules.pop("app.workers.concurrency.fair_import_dispatch", None)
         else:
-            sys.modules["app.workers.tasks.process_call_import_row"] = previous
+            sys.modules["app.workers.concurrency.fair_import_dispatch"] = previous
 
 
 @pytest.fixture

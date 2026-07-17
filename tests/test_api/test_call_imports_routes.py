@@ -621,24 +621,18 @@ def test_delete_s3_objects_treats_bulk_exception_as_full_failure():
 
 @pytest.fixture(autouse=True)
 def _stub_import_worker():
-    """Replace the Celery enqueue so route tests don't talk to Redis."""
-    fake_module = types.ModuleType("app.workers.tasks.process_call_import_row")
-
-    class _Task:
-        @staticmethod
-        def delay(*_args, **_kwargs):
-            return types.SimpleNamespace(id="fake-task-id")
-
-    fake_module.process_call_import_row_task = _Task()
-    previous = sys.modules.get("app.workers.tasks.process_call_import_row")
-    sys.modules["app.workers.tasks.process_call_import_row"] = fake_module
+    """Replace fair import dispatch scheduling so route tests don't talk to Redis."""
+    fake_module = types.ModuleType("app.workers.concurrency.fair_import_dispatch")
+    fake_module.schedule_fair_import_dispatch = lambda *_a, **_kw: None
+    previous = sys.modules.get("app.workers.concurrency.fair_import_dispatch")
+    sys.modules["app.workers.concurrency.fair_import_dispatch"] = fake_module
     try:
         yield
     finally:
         if previous is None:
-            sys.modules.pop("app.workers.tasks.process_call_import_row", None)
+            sys.modules.pop("app.workers.concurrency.fair_import_dispatch", None)
         else:
-            sys.modules["app.workers.tasks.process_call_import_row"] = previous
+            sys.modules["app.workers.concurrency.fair_import_dispatch"] = previous
 
 
 def _seed_integration(db_session, org_id, *, provider="exotel"):
@@ -1581,6 +1575,30 @@ def test_upload_direct_url_rejects_when_recording_url_unmapped(
         },
     )
     assert response.status_code == 400
+    assert "recording_url" in response.json()["detail"].lower()
+
+
+def test_upload_exotel_rejects_when_recording_url_unmapped(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id, provider="exotel")
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data={
+            "provider": integration.provider,
+            "telephony_integration_id": str(integration.id),
+            "schema_id": str(schema.id),
+            "parameter_mapping": (
+                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
+                '"transcript": "Transcript"}'
+            ),
+            "skipped_columns": '["Recording URL"]',
+        },
+    )
+    assert response.status_code == 400
+    assert "exotel" in response.json()["detail"].lower()
     assert "recording_url" in response.json()["detail"].lower()
 
 

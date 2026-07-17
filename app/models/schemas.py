@@ -2717,6 +2717,68 @@ class CallImportListResponse(BaseModel):
     page_size: int
 
 
+class CallImportDispatchLimitSnapshot(BaseModel):
+    """Configured and live Redis in-flight caps for eval work."""
+
+    global_limit: int
+    global_inflight: int
+    global_at_capacity: bool
+    org_limit: int
+    org_inflight: int
+    org_at_capacity: bool
+    workspace_limit: int
+    job_limit: int
+    fair_dispatch_batch_size: int
+
+
+class CallImportDispatchFairDispatchSnapshot(BaseModel):
+    """Fair-dispatch scheduler metadata from Redis."""
+
+    global_rr_cursor: int
+    dispatch_dedupe_active: bool
+    dispatch_queue: str
+    at_capacity_backoff_seconds: int
+
+
+class CallImportDispatchEvaluationSnapshot(BaseModel):
+    """One in-flight evaluation run with row counters."""
+
+    evaluation_id: UUID
+    call_import_id: UUID
+    status: str
+    total_rows: int
+    pending_rows: int
+    running_rows: int
+    job_inflight: int
+    job_at_capacity: bool
+
+
+class CallImportDispatchWorkspaceSnapshot(BaseModel):
+    """Per-workspace pending dispatch + slot usage."""
+
+    workspace_id: UUID
+    workspace_name: Optional[str] = None
+    workspace_slug: Optional[str] = None
+    inflight: int
+    inflight_at_capacity: bool
+    pending_dispatch_rows: int
+    pending_import_rows: int
+    eval_rr_cursor: int
+    active_evaluations: int
+    evaluations: List[CallImportDispatchEvaluationSnapshot] = Field(
+        default_factory=list
+    )
+
+
+class CallImportDispatchDiagnosticsResponse(BaseModel):
+    """Live operator snapshot for call-import eval fair dispatch."""
+
+    limits: CallImportDispatchLimitSnapshot
+    fair_dispatch: CallImportDispatchFairDispatchSnapshot
+    workspaces: List[CallImportDispatchWorkspaceSnapshot]
+    generated_at: datetime
+
+
 class CallImportUploadResponse(BaseModel):
     """Response returned right after a CSV is accepted."""
 
@@ -2726,6 +2788,19 @@ class CallImportUploadResponse(BaseModel):
     dataset: Optional[str] = None
     tags: List[CallImportTagResponse] = Field(default_factory=list)
     message: str
+
+
+class CallImportDeleteResponse(BaseModel):
+    """Response after a whole-batch call-import delete is accepted."""
+
+    id: UUID
+    status: Literal["accepted", "completed"] = Field(
+        ...,
+        description=(
+            "``accepted`` when teardown was queued to run asynchronously; "
+            "``completed`` when the batch was already removed."
+        ),
+    )
 
 
 class CallImportPreviewResponse(BaseModel):
@@ -3055,6 +3130,33 @@ class CallImportEvaluationCreate(BaseModel):
             "callers retain previous behaviour."
         ),
     )
+    # Telephony credentials for unified pipeline (required when batch is mapped).
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Telephony provider key. Required together with "
+            "``telephony_integration_id`` when starting evaluation "
+            "from a mapped batch. Omit both for direct-URL import."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "TelephonyIntegration credential for recording fetch. "
+            "Required together with ``provider`` for credentialed import."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_telephony_credential_mode(self) -> "CallImportEvaluationCreate":
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL evaluation."
+            )
+        return self
 
 
 class CallImportEvaluationUpdate(BaseModel):
@@ -3231,6 +3333,50 @@ class CallImportEvaluationRetryRequest(BaseModel):
             "diarised transcript skip diarisation and only re-evaluate."
         ),
     )
+    transcribe_mode: Optional[Literal["stt_llm", "llm_only"]] = Field(
+        default=None,
+        description=(
+            "Override the run's diarisation pipeline mode for this retry. "
+            "``stt_llm`` runs STT then an LLM diariser; ``llm_only`` feeds "
+            "audio directly to a multimodal diariser LLM."
+        ),
+    )
+
+    # Telephony credentials for rows that must re-fetch recordings.
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override the batch's telephony provider for this retry pass. "
+            "Must be paired with ``telephony_integration_id``. Omit both "
+            "fields to keep the batch's existing pinned credentials."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Override the telephony credential used when re-fetching "
+            "recordings during this retry. Must be paired with "
+            "``provider``. Omit both to keep existing credentials; send "
+            "both as null for direct-URL retry."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_telephony_credential_mode(self) -> "CallImportEvaluationRetryRequest":
+        fields_set = self.model_fields_set
+        if (
+            "provider" not in fields_set
+            and "telephony_integration_id" not in fields_set
+        ):
+            return self
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL retry."
+            )
+        return self
 
 
 class CallImportEvaluationRetrySkippedItem(BaseModel):
@@ -3268,6 +3414,17 @@ class CallImportEvaluationRetryResponse(BaseModel):
         default_factory=list,
         description="Rows the caller asked for that we did not re-enqueue.",
     )
+
+
+class CallImportEvaluationBulkActionResponse(BaseModel):
+    """Acknowledgement for bulk cancel / force-fail requests accepted off-thread."""
+
+    accepted: bool = True
+    target_count: int = Field(
+        ...,
+        description="How many rows the background worker will process.",
+    )
+    evaluation_id: UUID
 
 
 class CallImportMetricSummary(BaseModel):
@@ -3354,6 +3511,16 @@ class CallImportEvaluationResponse(BaseModel):
     # Run Evaluation modal. The frontend uses this to gate the
     # "Discovered metrics" panel on the Flow tab.
     discover_new_metrics: bool = False
+    bulk_operation: Optional[
+        Literal["abort", "force_fail_pending", "retry"]
+    ] = Field(
+        default=None,
+        description=(
+            "When set, a bulk background operation (abort, force-fail pending, "
+            "or retry) is still running for this evaluation. Other mutating "
+            "actions are rejected until it completes."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -3388,6 +3555,8 @@ class CallImportEvaluationRowResponse(BaseModel):
     recording_url: Optional[str] = None
     recording_date: Optional[date] = None
     recording_s3_key: Optional[str] = None
+    diarised_transcript_status: Optional[str] = None
+    diarised_transcript_error: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
@@ -3424,6 +3593,13 @@ class CallImportRowBulkDeleteResponse(BaseModel):
     deleted: int = Field(
         ...,
         description="How many rows were actually removed (unknown ids are skipped).",
+    )
+    status: Literal["completed", "accepted"] = Field(
+        default="completed",
+        description=(
+            "``accepted`` when deletion was queued to run asynchronously; "
+            "``completed`` when rows were removed before the response."
+        ),
     )
 
 
@@ -3692,6 +3868,13 @@ class CallImportTranscribeResponse(BaseModel):
         default_factory=dict,
         description="Per-reason breakdown of skipped rows for the UI to surface.",
     )
+    accepted: bool = Field(
+        default=False,
+        description=(
+            "When true, diarization setup was queued to a background worker "
+            "and ``queued`` reflects zero until the worker finishes enqueue."
+        ),
+    )
 
 
 class CallImportCancelDiarisationRequest(BaseModel):
@@ -3879,6 +4062,7 @@ class EvaluationInsightsRequest(BaseModel):
     regenerate: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(
         default=None,
         ge=20,
@@ -3939,6 +4123,7 @@ class EvaluationUserInsightsRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
 
 
@@ -4172,6 +4357,7 @@ class EvaluationPromptImprovementsRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
 
 
 class EvaluationMetricClustersRequest(BaseModel):
@@ -4181,6 +4367,7 @@ class EvaluationMetricClustersRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
     evaluation_row_ids: Optional[List[UUID]] = Field(
         default=None,

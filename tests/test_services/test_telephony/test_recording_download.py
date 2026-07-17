@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from app.services.telephony.exotel_client import ExotelInvalidContentError
+from app.services.telephony.exotel_client import (
+    CredentialedRecordingThrottledError,
+    ExotelAuthError,
+    ExotelInvalidContentError,
+)
 from app.services.telephony import recording_download as module
 
 
@@ -72,3 +76,88 @@ def test_download_public_recording_fetches_allowlisted_host(monkeypatch):
         "https://api.exotel.com/recording.mp3",
         auth=None,
     )
+
+
+def _mock_authenticated_response(status_code: int, *, text: str = "nope"):
+    return httpx.Response(
+        status_code,
+        headers={"content-type": "audio/mpeg"} if status_code == 200 else {},
+        content=b"audio-bytes" if status_code == 200 else text.encode(),
+        request=httpx.Request("GET", "https://api.exotel.com/recording.mp3"),
+    )
+
+
+def test_download_recording_url_authenticated_401_is_throttled(monkeypatch):
+    monkeypatch.setattr(
+        module.settings,
+        "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
+        ["exotel.com"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.telephony_credential_rate_limit.penalize_telephony_credential",
+        lambda *_a, **_kw: 15,
+    )
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = _mock_authenticated_response(401)
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+
+    with patch.object(module.socket, "getaddrinfo") as mock_getaddrinfo:
+        mock_getaddrinfo.return_value = [(None, None, None, None, ("52.0.0.1", 0))]
+        with patch.object(module.httpx, "Client", return_value=mock_client):
+            with pytest.raises(CredentialedRecordingThrottledError, match="401"):
+                module.download_recording_url(
+                    "https://api.exotel.com/recording.mp3",
+                    auth=("user", "pass"),
+                    credential_fingerprint="fp-test",
+                )
+
+
+def test_download_recording_url_authenticated_400_is_throttled(monkeypatch):
+    monkeypatch.setattr(
+        module.settings,
+        "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
+        ["exotel.com"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.telephony_credential_rate_limit.penalize_telephony_credential",
+        lambda *_a, **_kw: 20,
+    )
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = _mock_authenticated_response(400, text="Bad Request")
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+
+    with patch.object(module.socket, "getaddrinfo") as mock_getaddrinfo:
+        mock_getaddrinfo.return_value = [(None, None, None, None, ("52.0.0.1", 0))]
+        with patch.object(module.httpx, "Client", return_value=mock_client):
+            with pytest.raises(CredentialedRecordingThrottledError, match="400"):
+                module.download_recording_url(
+                    "https://api.exotel.com/recording.mp3",
+                    auth=("user", "pass"),
+                    credential_fingerprint="fp-test",
+                )
+
+
+def test_download_recording_url_public_401_stays_non_retryable(monkeypatch):
+    monkeypatch.setattr(
+        module.settings,
+        "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
+        ["exotel.com"],
+        raising=False,
+    )
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = _mock_authenticated_response(401)
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+
+    with patch.object(module.socket, "getaddrinfo") as mock_getaddrinfo:
+        mock_getaddrinfo.return_value = [(None, None, None, None, ("52.0.0.1", 0))]
+        with patch.object(module.httpx, "Client", return_value=mock_client):
+            with pytest.raises(ExotelAuthError, match="401"):
+                module.download_public_recording("https://api.exotel.com/recording.mp3")

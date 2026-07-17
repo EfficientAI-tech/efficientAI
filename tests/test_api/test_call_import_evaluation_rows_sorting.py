@@ -363,3 +363,66 @@ def test_sort_by_row_index_desc_uses_requested_direction(
         params={"sort_by": "row_index", "sort_dir": "desc"},
     )
     assert _ids(response.json()["items"]) == ["row-2", "row-1", "row-0"]
+
+
+def test_evaluation_rows_include_source_diarised_transcript_status(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """List endpoint surfaces upstream diarisation status from CallImportRow."""
+    call_import, evaluation, _ = _seed_eval_with_rows(
+        db_session,
+        org_id,
+        rows=[
+            {"conversation_id": "call-done", "status": "pending", "score_value": None},
+            {"conversation_id": "call-running", "status": "pending", "score_value": None},
+        ],
+    )
+
+    source_rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .order_by(CallImportRow.row_index.asc())
+        .all()
+    )
+    source_rows[0].diarised_transcript_status = "completed"
+    source_rows[1].diarised_transcript_status = "running"
+    source_rows[1].diarised_transcript_error = "stt timeout"
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/rows"
+    )
+    assert response.status_code == 200, response.text
+    by_conv = {item["conversation_id"]: item for item in response.json()["items"]}
+    assert by_conv["call-done"]["diarised_transcript_status"] == "completed"
+    assert by_conv["call-running"]["diarised_transcript_status"] == "running"
+    assert by_conv["call-running"]["diarised_transcript_error"] == "stt timeout"
+
+
+def test_evaluation_rows_transcript_falls_back_to_csv_when_not_diarised(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Cancel/retry/list responses keep the CSV transcript until diarised exists."""
+    call_import, evaluation, _ = _seed_eval_with_rows(
+        db_session,
+        org_id,
+        rows=[
+            {"conversation_id": "call-csv", "status": "pending", "score_value": None},
+        ],
+    )
+
+    source_row = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .one()
+    )
+    source_row.transcript = "csv production transcript"
+    source_row.diarised_transcript = None
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/rows"
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["transcript"] == "csv production transcript"

@@ -1902,8 +1902,9 @@ class CallImportRow(Base):
     # to it by a single canonical name across the schema definition,
     # exports, and downstream evaluation tables.
     conversation_id = Column(String(255), nullable=False, index=True)
-    # Optional at upload time; the worker resolves it via Exotel's Calls API when
-    # absent and writes the resolved URL back here so retries are cheap.
+    # Supplied via CSV for Exotel credentialed imports (required per row).
+    # Nullable in the schema for legacy rows imported before recording_url
+    # was mandatory on every Exotel upload.
     recording_url = Column(Text, nullable=True)
     # Date-only call recording date supplied by the import schema. Used
     # for historical report comparisons without timezone/time ambiguity.

@@ -723,6 +723,7 @@ export type CallImportStatus =
   | 'completed'
   | 'partial'
   | 'failed'
+  | 'deleting'
 
 export type CallImportRowStatus =
   | 'pending'
@@ -1200,6 +1201,11 @@ export interface CallImportEvaluation {
    * evaluation detail Flow tab.
    */
   discover_new_metrics?: boolean
+  /**
+   * Set while a bulk background operation (abort, force-fail, retry) is
+   * still running. The UI disables other mutating actions until cleared.
+   */
+  bulk_operation?: 'abort' | 'force_fail_pending' | 'retry' | null
 }
 
 /**
@@ -1584,6 +1590,8 @@ export interface CallImportEvaluationRow {
    * provider URL.
    */
   recording_s3_key: string | null
+  diarised_transcript_status?: string | null
+  diarised_transcript_error?: string | null
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   metric_scores: Record<string, any>
   error_message: string | null
@@ -1658,6 +1666,12 @@ export interface CallImportEvaluationRetryResponse {
   skipped: CallImportEvaluationRetrySkippedItem[]
 }
 
+export interface CallImportEvaluationBulkActionResponse {
+  accepted: boolean
+  target_count: number
+  evaluation_id: string
+}
+
 // --- Diarization / transcription ---
 
 export interface CallImportTranscribeRequest {
@@ -1699,6 +1713,12 @@ export interface CallImportTranscribeResponse {
   queued: number
   skipped_rows: number
   skipped_reason_counts: Record<string, number>
+  accepted?: boolean
+}
+
+export interface CallImportRowBulkDeleteResponse {
+  deleted: number
+  status?: 'completed' | 'accepted'
 }
 
 export interface CallImportRetryFailedRowsResponse {

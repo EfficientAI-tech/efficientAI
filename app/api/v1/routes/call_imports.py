@@ -4,9 +4,8 @@ Users upload a CSV plus a per-batch column mapping (CSV header -> system
 field). The backend persists a CallImport batch + one CallImportRow per
 line, then fans the rows out to the Celery ``imports`` queue where each
 row is downloaded using the telephony credential pinned on the batch.
-When a row has no recording URL, the worker resolves it via the chosen
-provider's call detail endpoint (Exotel today; Plivo CSVs must include
-the URL).
+Exotel credentialed imports require a ``recording_url`` on every row;
+direct-URL imports (no credential) also require a mapped recording URL.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.auth.rbac import require_admin
 from app.database import get_db
 from app.dependencies import (
     get_api_key,
@@ -33,6 +33,9 @@ from app.dependencies import (
     require_enterprise_feature,
 )
 from app.services.billing.flexprice_service import record_call_import_batch_created
+from app.services.call_imports.dispatch_diagnostics import (
+    build_call_import_dispatch_diagnostics,
+)
 from app.models.database import (
     CallImport,
     CallImportRow,
@@ -50,7 +53,9 @@ from app.models.schemas import (
     CallImportCancelDiarisationRequest,
     CallImportCancelDiarisationResponse,
     CallImportDetailResponse,
+    CallImportDeleteResponse,
     CallImportDiarisationPromptDefaultResponse,
+    CallImportDispatchDiagnosticsResponse,
     CallImportInsightsMetric,
     CallImportInsightsResponse,
     CallImportInsightsRunPoint,
@@ -977,6 +982,38 @@ def _validate_direct_url_import_ready(
         )
 
 
+def _validate_exotel_import_ready(
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, Any],
+) -> None:
+    """Ensure Exotel credentialed import has a mapped recording_url column."""
+    rec_url_param = next(
+        (
+            p
+            for p in parameters
+            if p.type == CallImportParameterType.RECORDING_URL.value
+        ),
+        None,
+    )
+    if rec_url_param is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Exotel import requires a schema parameter of type "
+                "'recording_url'."
+            ),
+        )
+    mapped_header = (parameter_mapping or {}).get(rec_url_param.name)
+    if not (mapped_header or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Exotel import requires the 'recording_url' parameter to "
+                "be mapped to a source column."
+            ),
+        )
+
+
 def _resolve_telephony_integration(
     db: Session,
     organization_id: UUID,
@@ -1130,28 +1167,13 @@ def _enqueue_row_tasks(
     call_import: CallImport,
     row_models: List[CallImportRow],
 ) -> None:
-    """Fan rows out to the ``imports`` Celery queue.
-
-    Mirrors the legacy upload handler: on enqueue failure we mark the
-    individual row FAILED and keep going so the rest of the batch
-    still makes progress.
-    """
-    from app.workers.tasks.process_call_import_row import (
-        process_call_import_row_task,
+    """Schedule fair round-robin dispatch for pending import rows."""
+    del db, call_import, row_models
+    from app.workers.concurrency.fair_import_dispatch import (
+        schedule_fair_import_dispatch,
     )
 
-    for row_model in row_models:
-        try:
-            process_call_import_row_task.delay(str(row_model.id))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Failed to enqueue call import row {} for import {}",
-                row_model.id,
-                call_import.id,
-            )
-            row_model.status = CallImportRowStatus.FAILED
-            row_model.error_message = f"Failed to enqueue: {exc}"
-    db.commit()
+    schedule_fair_import_dispatch(max_workspace_turns=999)
 
 
 def _ensure_blob_storage_enabled() -> None:
@@ -1572,18 +1594,35 @@ async def start_call_import(
     call_import_id: UUID,
     payload: CallImportStartRequest,
     background_tasks: BackgroundTasks,
+    legacy: bool = Query(
+        False,
+        description=(
+            "Deprecated escape hatch for import-only processing. "
+            "New batches should use Run Evaluation instead."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
-    """IMPORT stage of the staged call-import flow.
+    """Deprecated IMPORT stage — use Run Evaluation for new batches.
 
-    Re-fetches the staged source file from S3, materialises one row per
-    parsed data line, and fans them out to the ``imports`` Celery queue
-    so the existing per-row pipeline takes over.
+    Recording fetch is part of the unified evaluation pipeline. This
+    endpoint remains available only with ``?legacy=true`` for backward
+    compatibility.
     """
-    del api_key
+    del api_key, background_tasks
+
+    if not legacy:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Standalone import is deprecated. Use Run Evaluation — "
+                "recording fetch is part of the evaluation pipeline. "
+                "Append ?legacy=true to use the import-only path."
+            ),
+        )
 
     from sqlalchemy.orm import selectinload as _selectinload
 
@@ -1639,46 +1678,17 @@ async def start_call_import(
             payload.telephony_integration_id,
             payload.provider or "",
         )
+        if (integration.provider or "").lower() == "exotel":
+            _validate_exotel_import_ready(
+                parameters, dict(call_import.parameter_mapping or {})
+            )
     else:
         _validate_direct_url_import_ready(
             parameters, dict(call_import.parameter_mapping or {})
         )
         integration = None
 
-    # Re-fetch the staged source file from S3 each time IMPORT runs so
-    # the parse is always against the artefact we promised the user
-    # (vs. drifting state from a half-cached buffer).
-    from app.services.storage.s3_service import s3_service, StorageError
-
-    if not s3_service.is_enabled():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "S3 is required to read the staged source file: "
-                f"{s3_service.get_status_message() or 'not configured'}"
-            ),
-        )
-
-    try:
-        file_bytes = s3_service.download_file_by_key(call_import.source_s3_key)
-    except StorageError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Could not read staged source file from S3: {exc}",
-        )
-
-    cleaned_skipped = _clean_skipped_columns(
-        list(call_import.skipped_columns or [])
-    )
-
-    parsed_rows = _parse_source_file(
-        file_bytes,
-        call_import.source_format,
-        call_import.sheet_name,
-        parameters,
-        dict(call_import.parameter_mapping or {}),
-        cleaned_skipped,
-    )
+    _ensure_blob_storage_enabled()
 
     if integration is not None:
         call_import.provider = integration.provider
@@ -1686,39 +1696,35 @@ async def start_call_import(
     else:
         call_import.provider = None
         call_import.telephony_integration_id = None
-    call_import.total_rows = len(parsed_rows)
+
+    call_import.total_rows = 0
     call_import.completed_rows = 0
     call_import.failed_rows = 0
-
-    row_models = _materialize_rows(
-        db, call_import, parsed_rows, organization_id
-    )
-
+    call_import.error_message = None
     call_import.status = CallImportStatus.PROCESSING
     db.commit()
     db.refresh(call_import)
 
-    background_tasks.add_task(
-        record_call_import_batch_created,
-        organization_id,
-        call_import.id,
-        workspace_id=workspace_id,
-        total_rows=call_import.total_rows,
-        source="csv",
-        provider=call_import.provider,
+    from app.workers.tasks.call_import_bulk_ops import (
+        materialize_call_import_rows_task,
     )
 
-    _enqueue_row_tasks(db, call_import, row_models)
+    materialize_call_import_rows_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        str(workspace_id),
+        schedule_import_dispatch=True,
+    )
 
     return CallImportUploadResponse(
         id=call_import.id,
-        total_rows=call_import.total_rows,
+        total_rows=0,
         status=call_import.status,
         dataset=call_import.dataset,
         tags=_tag_response_payload(call_import.tags),
         message=(
-            f"Accepted {call_import.total_rows} rows for import. "
-            "Recordings will be fetched asynchronously."
+            "Import accepted. Rows are being materialized in the background; "
+            "recordings will be fetched asynchronously."
         ),
     )
 
@@ -1865,6 +1871,8 @@ async def upload_call_import_csv(
         integration = _resolve_telephony_integration(
             db, organization_id, telephony_integration_id, provider or ""
         )
+        if (integration.provider or "").lower() == "exotel":
+            _validate_exotel_import_ready(parameters, cleaned_mapping)
     else:
         _validate_direct_url_import_ready(parameters, cleaned_mapping)
         integration = None
@@ -2231,6 +2239,47 @@ async def list_call_imports(
 
 
 @router.get(
+    "/dispatch-diagnostics",
+    response_model=CallImportDispatchDiagnosticsResponse,
+    operation_id="getCallImportDispatchDiagnostics",
+    dependencies=[Depends(require_admin)],
+)
+async def get_call_import_dispatch_diagnostics(
+    workspace_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Optional workspace filter. When omitted, returns every workspace "
+            "in the organization with active eval dispatch state."
+        ),
+    ),
+    include_idle_workspaces: bool = Query(
+        False,
+        description=(
+            "When true, include org workspaces with zero pending rows and "
+            "zero in-flight slots."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportDispatchDiagnosticsResponse:
+    """Live eval slot usage and fair-dispatch state for operators.
+
+    Org admins use this to diagnose cross-workspace starvation (e.g. one
+    workspace's 10k run blocking another's pending eval rows) by inspecting
+    Redis in-flight counters, pending dispatch rows, and scheduler cursors.
+    """
+    del api_key
+    payload = build_call_import_dispatch_diagnostics(
+        db,
+        organization_id,
+        workspace_id=workspace_id,
+        include_idle_workspaces=include_idle_workspaces,
+    )
+    return CallImportDispatchDiagnosticsResponse.model_validate(payload)
+
+
+@router.get(
     "/datasets",
     response_model=List[str],
     operation_id="listCallImportDatasets",
@@ -2424,6 +2473,15 @@ async def get_call_import_detail(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Call import not found",
         )
+
+    if call_import.status == CallImportStatus.PROCESSING:
+        from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+
+        prior_status = call_import.status
+        rollup_call_import_batch_status(db, call_import)
+        if call_import.status != prior_status:
+            db.commit()
+            db.refresh(call_import)
 
     rows_query = db.query(CallImportRow).filter(
         CallImportRow.call_import_id == call_import.id
@@ -2639,7 +2697,8 @@ def _delete_s3_objects(
 
 @router.delete(
     "/{call_import_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=CallImportDeleteResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="deleteCallImport",
 )
 async def delete_call_import(
@@ -2647,13 +2706,13 @@ async def delete_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> Response:
-    """Delete a call-import batch, its rows, and every associated S3 recording.
+) -> CallImportDeleteResponse:
+    """Delete a call-import batch asynchronously.
 
-    Idempotent and safe to retry. If the batch is still in flight we revoke
-    pending Celery tasks before tearing down the rows so workers can't
-    write back to deleted records.
+    Flips the batch to ``deleting`` and enqueues background teardown so
+    large imports (thousands of rows + S3 objects) do not block the API.
     """
+    del api_key
 
     call_import = (
         db.query(CallImport)
@@ -2664,38 +2723,32 @@ async def delete_call_import(
         .first()
     )
     if not call_import:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Call import not found",
+        return CallImportDeleteResponse(
+            id=call_import_id,
+            status="completed",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .all()
-    )
+    if call_import.status == CallImportStatus.DELETING:
+        return CallImportDeleteResponse(
+            id=call_import.id,
+            status="accepted",
+        )
 
-    _revoke_pending_tasks(rows)
-
-    deleted_objects, s3_errors = _delete_s3_objects(
-        organization_id=organization_id,
-        call_import_id=call_import.id,
-        rows=rows,
-    )
-
-    db.delete(call_import)  # cascades to call_import_rows
+    call_import.status = CallImportStatus.DELETING
+    call_import.error_message = None
     db.commit()
 
-    logger.info(
-        "Deleted call_import {} (org={}, rows={}, s3_objects_deleted={}, s3_errors={})",
-        call_import.id,
-        organization_id,
-        len(rows),
-        deleted_objects,
-        s3_errors,
+    from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
+
+    delete_call_import_task.delay(
+        str(call_import_id),
+        str(organization_id),
     )
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return CallImportDeleteResponse(
+        id=call_import.id,
+        status="accepted",
+    )
 
 
 @router.delete(
@@ -2786,39 +2839,9 @@ def _recompute_call_import_counters(
     diverge between the per-row and bulk paths.
     """
 
-    remaining = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .all()
-    )
-    completed = sum(
-        1 for r in remaining if r.status == CallImportRowStatus.COMPLETED
-    )
-    failed = sum(
-        1 for r in remaining if r.status == CallImportRowStatus.FAILED
-    )
-    pending_or_processing = sum(
-        1
-        for r in remaining
-        if r.status in (CallImportRowStatus.PENDING, CallImportRowStatus.PROCESSING)
-    )
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
 
-    call_import.total_rows = len(remaining)
-    call_import.completed_rows = completed
-    call_import.failed_rows = failed
-    if pending_or_processing > 0:
-        call_import.status = CallImportStatus.PROCESSING
-    elif len(remaining) == 0:
-        # No rows left — leave the batch in its current terminal status
-        # rather than synthesizing a misleading "completed". The user can
-        # delete the empty batch from the UI if they want it gone.
-        pass
-    elif failed == 0:
-        call_import.status = CallImportStatus.COMPLETED
-    elif completed == 0:
-        call_import.status = CallImportStatus.FAILED
-    else:
-        call_import.status = CallImportStatus.PARTIAL
+    rollup_call_import_batch_status(db, call_import)
 
 
 @router.post(
@@ -2870,6 +2893,17 @@ async def retry_failed_call_import_rows(
             )
             call_import.provider = integration.provider
             call_import.telephony_integration_id = integration.id
+            if (integration.provider or "").lower() == "exotel":
+                schema = _resolve_schema(
+                    db,
+                    organization_id,
+                    call_import.workspace_id,
+                    call_import.schema_id,
+                )
+                _validate_exotel_import_ready(
+                    list(schema.parameters),
+                    dict(call_import.parameter_mapping or {}),
+                )
         else:
             call_import.provider = None
             call_import.telephony_integration_id = None
@@ -2891,8 +2925,8 @@ async def retry_failed_call_import_rows(
             skipped=0,
         )
 
-    from app.workers.tasks.process_call_import_row import (
-        process_call_import_row_task,
+    from app.workers.concurrency.fair_import_dispatch import (
+        schedule_fair_import_dispatch,
     )
 
     # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
@@ -2906,29 +2940,27 @@ async def retry_failed_call_import_rows(
     _recompute_call_import_counters(db, call_import)
     db.commit()
 
-    requeued = 0
-    enqueue_failed = 0
-    skipped = 0
-
-    for row in failed_rows:
-        try:
-            process_call_import_row_task.delay(str(row.id))
-            requeued += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Failed to re-enqueue call import row {} for import {}",
-                row.id,
-                call_import.id,
-            )
+    try:
+        schedule_fair_import_dispatch(max_workspace_turns=999)
+        requeued = len(failed_rows)
+        enqueue_failed = 0
+        skipped = 0
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to schedule fair import dispatch for import {}",
+            call_import.id,
+        )
+        requeued = 0
+        enqueue_failed = len(failed_rows)
+        skipped = 0
+        for row in failed_rows:
             db.refresh(row)
             if row.status != CallImportRowStatus.PENDING:
                 skipped += 1
+                enqueue_failed -= 1
                 continue
             row.status = CallImportRowStatus.FAILED
             row.error_message = f"Failed to enqueue retry: {exc}"
-            enqueue_failed += 1
-
-    if enqueue_failed > 0:
         db.flush()
         _recompute_call_import_counters(db, call_import)
         db.commit()
@@ -2943,6 +2975,7 @@ async def retry_failed_call_import_rows(
 @router.post(
     "/{call_import_id}/rows/bulk-delete",
     response_model=CallImportRowBulkDeleteResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     operation_id="bulkDeleteCallImportRows",
 )
 async def bulk_delete_call_import_rows(
@@ -2961,8 +2994,6 @@ async def bulk_delete_call_import_rows(
     """
     del api_key
 
-    from app.services.storage.s3_service import s3_service
-
     call_import = (
         db.query(CallImport)
         .filter(
@@ -2977,50 +3008,20 @@ async def bulk_delete_call_import_rows(
             detail="Call import not found",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.id.in_(payload.row_ids),
-            CallImportRow.call_import_id == call_import.id,
-        )
-        .all()
-    )
-    if not rows:
-        return CallImportRowBulkDeleteResponse(deleted=0)
+    if not payload.row_ids:
+        return CallImportRowBulkDeleteResponse(deleted=0, status="completed")
 
-    _revoke_pending_tasks(rows)
+    from app.workers.tasks.call_import_bulk_ops import bulk_delete_call_import_rows_task
 
-    if s3_service.is_enabled():
-        for row in rows:
-            if not row.recording_s3_key:
-                continue
-            try:
-                s3_service.delete_file_by_key(row.recording_s3_key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Failed to delete S3 object {} for row {}: {}",
-                    row.recording_s3_key,
-                    row.id,
-                    exc,
-                )
+    row_id_strs = [str(rid) for rid in payload.row_ids]
 
-    deleted = 0
-    for row in rows:
-        db.delete(row)
-        deleted += 1
-    db.flush()
-
-    _recompute_call_import_counters(db, call_import)
-    db.commit()
-
-    logger.info(
-        "Bulk-deleted {} call_import_rows (call_import={}, org={})",
-        deleted,
-        call_import.id,
-        organization_id,
+    bulk_delete_call_import_rows_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        row_id_strs,
     )
 
-    return CallImportRowBulkDeleteResponse(deleted=deleted)
+    return CallImportRowBulkDeleteResponse(deleted=0, status="accepted")
 
 
 # ---------------------------------------------------------------------------
@@ -3034,60 +3035,18 @@ def _select_rows_for_transcription(
     payload: CallImportTranscribeRequest,
     requested_row_ids: Optional[List[UUID]] = None,
 ) -> tuple[List[CallImportRow], Dict[str, int]]:
-    """Pick which rows to enqueue for diarisation.
+    """Pick which rows to enqueue for diarisation (delegates to bulk_ops)."""
+    from app.services.call_imports.bulk_ops import select_rows_for_transcription
 
-    Centralises the "should this row be touched?" decision so both the
-    batch endpoint and the per-row endpoint apply the same rules:
-
-    * row must exist on the import,
-    * row must have an S3 recording (otherwise nothing to transcribe),
-    * if ``only_missing`` is set and ``overwrite_existing`` is not, rows
-      with a non-empty ``diarised_transcript`` are skipped (the
-      production ``transcript`` is intentionally ignored here — it
-      lives in a separate column and is never overwritten by this
-      worker).
-
-    Returns the list of rows to enqueue plus a per-reason skip count
-    that the response can surface so the user knows why a "no-op"
-    happened.
-    """
-
-    query = db.query(CallImportRow).filter(
-        CallImportRow.call_import_id == call_import.id
-    )
-    if requested_row_ids:
-        query = query.filter(CallImportRow.id.in_(requested_row_ids))
-    rows = query.order_by(CallImportRow.row_index.asc()).all()
-
-    if requested_row_ids:
-        found_ids = {r.id for r in rows}
-        missing = [rid for rid in requested_row_ids if rid not in found_ids]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Some row ids were not found on this import: "
-                    f"{[str(m) for m in missing]}"
-                ),
-            )
-
-    selected: List[CallImportRow] = []
-    skip_counts: Dict[str, int] = {}
-
-    for row in rows:
-        recording = (row.recording_s3_key or "").strip()
-        if not recording:
-            skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
-            continue
-        existing = (row.diarised_transcript or "").strip()
-        if existing and payload.only_missing and not payload.overwrite_existing:
-            skip_counts["transcript_present"] = (
-                skip_counts.get("transcript_present", 0) + 1
-            )
-            continue
-        selected.append(row)
-
-    return selected, skip_counts
+    try:
+        return select_rows_for_transcription(
+            db, call_import, payload, requested_row_ids=requested_row_ids
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post(
@@ -3127,66 +3086,20 @@ async def transcribe_call_import(
             detail="Call import not found",
         )
 
-    rows, skip_counts = _select_rows_for_transcription(
-        db, call_import, payload, requested_row_ids=payload.row_ids
+    from app.workers.tasks.call_import_bulk_ops import bulk_diarize_call_import_task
+
+    bulk_diarize_call_import_task.delay(
+        str(call_import_id),
+        str(organization_id),
+        payload.model_dump(mode="json"),
+        [str(rid) for rid in payload.row_ids] if payload.row_ids else None,
     )
-
-    # Mark the about-to-be-enqueued rows as ``pending`` so the UI can
-    # show a "Queued for diarisation" badge immediately, even before
-    # the worker picks the row up. The worker flips it to ``running``
-    # on entry.
-    for row in rows:
-        row.diarised_transcript_status = "pending"
-        row.diarised_transcript_error = None
-    db.commit()
-
-    if not rows:
-        return CallImportTranscribeResponse(
-            queued=0,
-            skipped_rows=sum(skip_counts.values()),
-            skipped_reason_counts=skip_counts,
-        )
-
-    from app.workers.concurrency import DIARIZATION_QUEUE
-    from app.workers.tasks.transcribe_call_import_row import (
-        transcribe_call_import_row_task,
-    )
-
-    enqueued = 0
-    for row in rows:
-        try:
-            transcribe_call_import_row_task.apply_async(
-                args=(
-                str(row.id),
-                payload.stt_provider,
-                payload.stt_model,
-                str(payload.credential_id) if payload.credential_id else None,
-                payload.language,
-                payload.overwrite_existing,
-                None,  # run_eval_row_id — not chained from this route
-                payload.diarization_llm_provider,
-                payload.diarization_llm_model,
-                str(payload.diarization_llm_credential_id)
-                if payload.diarization_llm_credential_id
-                else None,
-                payload.diarization_prompt,
-                payload.mode,
-                ),
-                queue=DIARIZATION_QUEUE,
-            )
-            enqueued += 1
-        except Exception as exc:
-            logger.exception(
-                "Failed to enqueue transcribe for row {}: {}", row.id, exc
-            )
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = f"Failed to enqueue: {exc}"
-    db.commit()
 
     return CallImportTranscribeResponse(
-        queued=enqueued,
-        skipped_rows=sum(skip_counts.values()),
-        skipped_reason_counts=skip_counts,
+        queued=0,
+        skipped_rows=0,
+        skipped_reason_counts={},
+        accepted=True,
     )
 
 
@@ -3227,64 +3140,26 @@ async def transcribe_call_import_row(
             detail="Call import not found",
         )
 
-    rows, skip_counts = _select_rows_for_transcription(
-        db, call_import, payload, requested_row_ids=[row_id]
-    )
+    from app.services.call_imports.bulk_ops import execute_bulk_diarization
 
-    for row in rows:
-        row.diarised_transcript_status = "pending"
-        row.diarised_transcript_error = None
-    db.commit()
-
-    if not rows:
-        return CallImportTranscribeResponse(
-            queued=0,
-            skipped_rows=sum(skip_counts.values()),
-            skipped_reason_counts=skip_counts,
-        )
-
-    from app.workers.concurrency import DIARIZATION_QUEUE
-    from app.workers.tasks.transcribe_call_import_row import (
-        transcribe_call_import_row_task,
-    )
-
-    target = rows[0]
     try:
-        transcribe_call_import_row_task.apply_async(
-            args=(
-            str(target.id),
-            payload.stt_provider,
-            payload.stt_model,
-            str(payload.credential_id) if payload.credential_id else None,
-            payload.language,
-            payload.overwrite_existing,
-            None,  # run_eval_row_id — not chained from this route
-            payload.diarization_llm_provider,
-            payload.diarization_llm_model,
-            str(payload.diarization_llm_credential_id)
-            if payload.diarization_llm_credential_id
-            else None,
-            payload.diarization_prompt,
-            payload.mode,
-            ),
-            queue=DIARIZATION_QUEUE,
+        result = execute_bulk_diarization(
+            db,
+            call_import,
+            payload,
+            requested_row_ids=[row_id],
         )
-        return CallImportTranscribeResponse(
-            queued=1,
-            skipped_rows=sum(skip_counts.values()),
-            skipped_reason_counts=skip_counts,
-        )
-    except Exception as exc:
-        logger.exception(
-            "Failed to enqueue transcribe for row {}: {}", target.id, exc
-        )
-        target.diarised_transcript_status = "failed"
-        target.diarised_transcript_error = f"Failed to enqueue: {exc}"
-        db.commit()
+    except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to enqueue transcription: {exc}",
-        )
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return CallImportTranscribeResponse(
+        queued=result.queued,
+        skipped_rows=result.skipped_rows,
+        skipped_reason_counts=result.skipped_reason_counts,
+    )
 
 
 # ---------------------------------------------------------------------------

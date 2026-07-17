@@ -399,7 +399,7 @@ def transcribe_sarvam(
     :mod:`app.workers.tasks.transcribe_call_import_row`, not by
     Sarvam, regardless of which Sarvam path produced the text.
     """
-    chosen_model = (model or "saarika:v2.5").strip() or "saarika:v2.5"
+    chosen_model = (model or "saaras:v3").strip() or "saaras:v3"
 
     # Cheaply probe duration to decide the routing. If the probe
     # fails we route to batch — batch handles short audio fine and

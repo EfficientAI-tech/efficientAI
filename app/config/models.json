@@ -74,55 +74,46 @@
   "gpt-5.5": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "OpenAI flagship — complex reasoning, agentic coding, 1M context"
+    "description": "OpenAI flagship \u2014 complex reasoning, agentic coding, 1M context"
   },
   "gpt-5.5-pro": {
     "provider": "openai",
     "model_type": "llm",
     "description": "Higher-accuracy GPT-5.5 variant with parallel test-time compute"
   },
-  "tts-1": {
+  "gpt-5.6-sol": {
     "provider": "openai",
-    "model_type": "tts"
+    "model_type": "llm",
+    "description": "GPT-5.6 flagship — frontier reasoning, agentic coding, and computer use (1M context)",
+    "featured": true,
+    "featured_rank": 1,
+    "highlights": ["Flagship", "1M context", "Agentic coding"]
   },
-  "tts-1-hd": {
+  "gpt-5.6-terra": {
     "provider": "openai",
-    "model_type": "tts"
+    "model_type": "llm",
+    "description": "GPT-5.6 balanced tier — strong everyday performance at lower cost than Sol"
+  },
+  "gpt-5.6-luna": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "GPT-5.6 fast tier — lowest-cost model for high-volume classification and extraction"
+  },
+  "gpt-5.6": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "OpenAI API alias for gpt-5.6-sol"
   },
   "gpt-4o-mini-tts": {
     "provider": "openai",
     "model_type": "tts",
     "featured": true,
     "featured_rank": 3,
-    "highlights": ["Natural prosody", "Multiple voices", "Studio quality"]
-  },
-  "claude-3-opus": {
-    "provider": "anthropic",
-    "model_type": "llm"
-  },
-  "claude-3-sonnet": {
-    "provider": "anthropic",
-    "model_type": "llm"
-  },
-  "claude-3-haiku": {
-    "provider": "anthropic",
-    "model_type": "llm"
-  },
-  "claude-3.5-sonnet": {
-    "provider": "anthropic",
-    "model_type": "llm"
-  },
-  "claude-3.5-haiku": {
-    "provider": "anthropic",
-    "model_type": "llm"
-  },
-  "claude-sonnet-4": {
-    "provider": "anthropic",
-    "model_type": "llm"
-  },
-  "claude-opus-4": {
-    "provider": "anthropic",
-    "model_type": "llm"
+    "highlights": [
+      "Natural prosody",
+      "Multiple voices",
+      "Studio quality"
+    ]
   },
   "claude-sonnet-4.5": {
     "provider": "anthropic",
@@ -147,27 +138,35 @@
   "claude-opus-4-7": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Opus 4.7 — stronger coding, vision, and complex multi-step tasks"
+    "description": "Claude Opus 4.7 \u2014 stronger coding, vision, and complex multi-step tasks"
   },
   "claude-opus-4-8": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Opus 4.8 — most capable Opus-tier model; 1M context, adaptive thinking"
+    "description": "Claude Opus 4.8 \u2014 most capable Opus-tier model; 1M context, adaptive thinking"
   },
   "claude-fable-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Fable 5 — Anthropic's most capable widely released model for demanding agentic work"
+    "description": "Claude Fable 5 \u2014 Anthropic's most capable widely released model for demanding agentic work"
   },
   "claude-mythos-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Mythos 5 — Fable 5 capabilities; limited availability via Project Glasswing"
+    "description": "Claude Mythos 5 \u2014 Fable 5 capabilities; limited availability via Project Glasswing"
+  },
+  "claude-sonnet-5": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Sonnet 5 \u2014 latest Sonnet tier; near-Opus quality with lower latency and cost",
+    "featured": true,
+    "featured_rank": 4,
+    "highlights": ["Latest Sonnet", "Agentic workflows", "Cost-efficient"]
   },
   "grok-4.3": {
     "provider": "xai",
     "model_type": "llm",
-    "description": "xAI flagship — low hallucination, agentic tool calling, 1M context"
+    "description": "xAI flagship \u2014 low hallucination, agentic tool calling, 1M context"
   },
   "grok-build-0.1": {
     "provider": "xai",
@@ -192,57 +191,57 @@
   "deepseek-v4-pro": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "DeepSeek V4 Pro — frontier MoE reasoning and coding (1M context)"
+    "description": "DeepSeek V4 Pro \u2014 frontier MoE reasoning and coding (1M context)"
   },
   "deepseek-v4-flash": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "DeepSeek V4 Flash — fast extraction, classification, and search"
+    "description": "DeepSeek V4 Flash \u2014 fast extraction, classification, and search"
   },
   "kimi-k2p6": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Kimi K2.6 — native multimodal agentic model for long-horizon coding"
+    "description": "Kimi K2.6 \u2014 native multimodal agentic model for long-horizon coding"
   },
   "kimi-k2p5": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Kimi K2.5 — unified vision/text agentic model with controllable reasoning"
+    "description": "Kimi K2.5 \u2014 unified vision/text agentic model with controllable reasoning"
   },
   "glm-5p1": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "GLM 5.1 — frontier open model for reasoning and agentic workflows"
+    "description": "GLM 5.1 \u2014 frontier open model for reasoning and agentic workflows"
   },
   "minimax-m2p7": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "MiniMax M2.7 — MoE model for complex agent harnesses and productivity tasks"
+    "description": "MiniMax M2.7 \u2014 MoE model for complex agent harnesses and productivity tasks"
   },
   "minimax-m2p5": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "MiniMax M2.5 — fast coding and agentic tool use at low cost"
+    "description": "MiniMax M2.5 \u2014 fast coding and agentic tool use at low cost"
   },
   "qwen3p6-plus": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Qwen 3.6 Plus — flagship multimodal model (Fireworks exclusive outside Alibaba)"
+    "description": "Qwen 3.6 Plus \u2014 flagship multimodal model (Fireworks exclusive outside Alibaba)"
   },
   "gpt-oss-120b": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "OpenAI gpt-oss-120b — high-quality open-weight model for general reasoning"
+    "description": "OpenAI gpt-oss-120b \u2014 high-quality open-weight model for general reasoning"
   },
   "gpt-oss-20b": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "OpenAI gpt-oss-20b — fast open-weight model for chat and classification"
+    "description": "OpenAI gpt-oss-20b \u2014 fast open-weight model for chat and classification"
   },
   "firefunction-v2": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "FireFunction V2 — Fireworks function-calling optimized model"
+    "description": "FireFunction V2 \u2014 Fireworks function-calling optimized model"
   },
   "google-speech-v2": {
     "provider": "google",
@@ -259,20 +258,16 @@
     "description": "Gemini 2.5 Flash used for audio transcription via LiteLLM proxy (fast, cost-efficient)",
     "featured": true,
     "featured_rank": 6,
-    "highlights": ["Fast transcription", "Cost-efficient", "Gemini 2.5"]
+    "highlights": [
+      "Fast transcription",
+      "Cost-efficient",
+      "Gemini 2.5"
+    ]
   },
   "gemini-2.5-flash-lite-stt": {
     "provider": "google",
     "model_type": "stt",
     "description": "Gemini 2.5 Flash Lite used for audio transcription via LiteLLM proxy (lowest cost)"
-  },
-  "gemini-2.0-flash": {
-    "provider": "google",
-    "model_type": "llm"
-  },
-  "gemini-2.0-flash-lite": {
-    "provider": "google",
-    "model_type": "llm"
   },
   "gemini-2.5-pro": {
     "provider": "google",
@@ -285,22 +280,35 @@
   "gemini-2.5-flash-lite": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 2.5 Flash Lite — lowest-latency 2.5 model; ideal for diarisation, classification, and other low-reasoning multimodal tasks"
+    "description": "Gemini 2.5 Flash Lite \u2014 lowest-latency 2.5 model; ideal for diarisation, classification, and other low-reasoning multimodal tasks"
   },
   "gemini-3-pro-preview": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3 Pro — advanced reasoning and multimodal understanding"
+    "description": "Gemini 3 Pro \u2014 advanced reasoning and multimodal understanding"
   },
   "gemini-3-flash-preview": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3 Flash — frontier-class performance at lower cost"
+    "description": "Gemini 3 Flash \u2014 frontier-class performance at lower cost"
   },
   "gemini-3.1-pro-preview": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3.1 Pro — latest reasoning model with 1M context"
+    "description": "Gemini 3.1 Pro \u2014 latest reasoning model with 1M context"
+  },
+  "gemini-3.5-flash": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini 3.5 Flash \u2014 GA flagship Flash model for agentic coding and long-horizon tasks",
+    "featured": true,
+    "featured_rank": 7,
+    "highlights": ["GA stable", "1M context", "Agentic coding"]
+  },
+  "gemini-3.1-flash-lite": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini 3.1 Flash Lite \u2014 cost-efficient stable model for high-volume lightweight tasks"
   },
   "azure-speech-v1": {
     "provider": "azure",
@@ -332,7 +340,11 @@
     "description": "Conversational STT with integrated turn detection for voice agents",
     "featured": true,
     "featured_rank": 4,
-    "highlights": ["Turn detection", "Voice agents", "Low latency"]
+    "highlights": [
+      "Turn detection",
+      "Voice agents",
+      "Low latency"
+    ]
   },
   "deepgram-nova-3": {
     "provider": "deepgram",
@@ -363,7 +375,11 @@
     "description": "Flagship streaming TTS with laughter, volume/speed/emotion controls, 42 languages",
     "featured": true,
     "featured_rank": 1,
-    "highlights": ["Ultra-low latency", "42 languages", "Emotion controls"]
+    "highlights": [
+      "Ultra-low latency",
+      "42 languages",
+      "Emotion controls"
+    ]
   },
   "cartesia-sonic-3-mini": {
     "provider": "cartesia",
@@ -372,11 +388,6 @@
   "cartesia-sonic-3-nano": {
     "provider": "cartesia",
     "model_type": "tts"
-  },
-  "cartesia-sonic-2": {
-    "provider": "cartesia",
-    "model_type": "tts",
-    "description": "Ultra-realistic speech with 90ms latency and voice cloning"
   },
   "eleven_v3": {
     "provider": "elevenlabs",
@@ -403,29 +414,17 @@
     "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi",
     "featured": true,
     "featured_rank": 2,
-    "highlights": ["~75ms latency", "Real-time", "Multilingual"]
-  },
-  "eleven_flash_v2": {
-    "provider": "elevenlabs",
-    "model_type": "tts",
-    "description": "Ultra-fast model optimized for real-time use (~75ms)",
-    "languages": "en"
+    "highlights": [
+      "~75ms latency",
+      "Real-time",
+      "Multilingual"
+    ]
   },
   "eleven_turbo_v2_5": {
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "High quality, low-latency model (~250ms-300ms)",
     "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi"
-  },
-  "eleven_turbo_v2": {
-    "provider": "elevenlabs",
-    "model_type": "tts",
-    "description": "High quality, low-latency model (~250ms-300ms)",
-    "languages": "en"
-  },
-  "eleven_monolingual_v1": {
-    "provider": "elevenlabs",
-    "model_type": "tts"
   },
   "eleven_multilingual_sts_v2": {
     "provider": "elevenlabs",
@@ -452,18 +451,16 @@
     "languages": "90+ languages",
     "featured": true,
     "featured_rank": 5,
-    "highlights": ["Real-time STT", "90+ languages", "Streaming"]
+    "highlights": [
+      "Real-time STT",
+      "90+ languages",
+      "Streaming"
+    ]
   },
   "scribe_v2": {
     "provider": "elevenlabs",
     "model_type": "stt",
     "description": "Most accurate transcription model with keyterm prompting and entity detection",
-    "languages": "90+ languages"
-  },
-  "scribe_v1": {
-    "provider": "elevenlabs",
-    "model_type": "stt",
-    "description": "Speech recognition model (outclassed by v2)",
     "languages": "90+ languages"
   },
   "eleven_text_to_sound_v2": {
@@ -480,14 +477,14 @@
   "murf-falcon": {
     "provider": "murf",
     "model_type": "tts",
-    "description": "Murf FALCON – ultra-low latency streaming TTS",
+    "description": "Murf FALCON \u2013 ultra-low latency streaming TTS",
     "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
     "voices_source_file": "murf_falcon_voices.json"
   },
   "murf-gen2": {
     "provider": "murf",
     "model_type": "tts",
-    "description": "Murf GEN2 – high-quality, natural-sounding TTS",
+    "description": "Murf GEN2 \u2013 high-quality, natural-sounding TTS",
     "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
     "voices_source_file": "murf_gen2_voices.json"
   },
@@ -513,17 +510,12 @@
   "sarvam-30b": {
     "provider": "sarvam",
     "model_type": "llm",
-    "description": "Sarvam 30B — balanced Indian-language + English chat model (64K context)"
+    "description": "Sarvam 30B \u2014 balanced Indian-language + English chat model (64K context)"
   },
   "sarvam-105b": {
     "provider": "sarvam",
     "model_type": "llm",
-    "description": "Sarvam 105B — flagship MoE for complex reasoning, coding, and agentic workflows (128K context)"
-  },
-  "saarika:v2.5": {
-    "provider": "sarvam",
-    "model_type": "stt",
-    "description": "State-of-the-art highly accurate Indian language STT"
+    "description": "Sarvam 105B \u2014 flagship MoE for complex reasoning, coding, and agentic workflows (128K context)"
   },
   "saaras:v3": {
     "provider": "sarvam",
@@ -729,260 +721,6 @@
         "id": "rupali",
         "name": "Rupali",
         "gender": "Female"
-      }
-    ]
-  },
-  "bulbul:v3-beta": {
-    "provider": "sarvam",
-    "model_type": "tts",
-    "description": "Beta Indian language TTS",
-    "voices": [
-      {
-        "id": "aditya",
-        "name": "Aditya",
-        "gender": "Male"
-      },
-      {
-        "id": "ritu",
-        "name": "Ritu",
-        "gender": "Female"
-      },
-      {
-        "id": "ashutosh",
-        "name": "Ashutosh",
-        "gender": "Male"
-      },
-      {
-        "id": "priya",
-        "name": "Priya",
-        "gender": "Female"
-      },
-      {
-        "id": "neha",
-        "name": "Neha",
-        "gender": "Female"
-      },
-      {
-        "id": "rahul",
-        "name": "Rahul",
-        "gender": "Male"
-      },
-      {
-        "id": "pooja",
-        "name": "Pooja",
-        "gender": "Female"
-      },
-      {
-        "id": "rohan",
-        "name": "Rohan",
-        "gender": "Male"
-      },
-      {
-        "id": "simran",
-        "name": "Simran",
-        "gender": "Female"
-      },
-      {
-        "id": "kavya",
-        "name": "Kavya",
-        "gender": "Female"
-      },
-      {
-        "id": "amit",
-        "name": "Amit",
-        "gender": "Male"
-      },
-      {
-        "id": "dev",
-        "name": "Dev",
-        "gender": "Male"
-      },
-      {
-        "id": "ishita",
-        "name": "Ishita",
-        "gender": "Female"
-      },
-      {
-        "id": "shreya",
-        "name": "Shreya",
-        "gender": "Female"
-      },
-      {
-        "id": "ratan",
-        "name": "Ratan",
-        "gender": "Male"
-      },
-      {
-        "id": "varun",
-        "name": "Varun",
-        "gender": "Male"
-      },
-      {
-        "id": "manan",
-        "name": "Manan",
-        "gender": "Male"
-      },
-      {
-        "id": "sumit",
-        "name": "Sumit",
-        "gender": "Male"
-      },
-      {
-        "id": "roopa",
-        "name": "Roopa",
-        "gender": "Female"
-      },
-      {
-        "id": "kabir",
-        "name": "Kabir",
-        "gender": "Male"
-      },
-      {
-        "id": "aayan",
-        "name": "Aayan",
-        "gender": "Male"
-      },
-      {
-        "id": "shubh",
-        "name": "Shubh",
-        "gender": "Male"
-      },
-      {
-        "id": "advait",
-        "name": "Advait",
-        "gender": "Male"
-      },
-      {
-        "id": "amelia",
-        "name": "Amelia",
-        "gender": "Female"
-      },
-      {
-        "id": "sophia",
-        "name": "Sophia",
-        "gender": "Female"
-      },
-      {
-        "id": "anand",
-        "name": "Anand",
-        "gender": "Male"
-      },
-      {
-        "id": "tanya",
-        "name": "Tanya",
-        "gender": "Female"
-      },
-      {
-        "id": "tarun",
-        "name": "Tarun",
-        "gender": "Male"
-      },
-      {
-        "id": "sunny",
-        "name": "Sunny",
-        "gender": "Male"
-      },
-      {
-        "id": "mani",
-        "name": "Mani",
-        "gender": "Male"
-      },
-      {
-        "id": "gokul",
-        "name": "Gokul",
-        "gender": "Male"
-      },
-      {
-        "id": "vijay",
-        "name": "Vijay",
-        "gender": "Male"
-      },
-      {
-        "id": "shruti",
-        "name": "Shruti",
-        "gender": "Female"
-      },
-      {
-        "id": "suhani",
-        "name": "Suhani",
-        "gender": "Female"
-      },
-      {
-        "id": "mohit",
-        "name": "Mohit",
-        "gender": "Male"
-      },
-      {
-        "id": "kavitha",
-        "name": "Kavitha",
-        "gender": "Female"
-      },
-      {
-        "id": "rehan",
-        "name": "Rehan",
-        "gender": "Male"
-      },
-      {
-        "id": "soham",
-        "name": "Soham",
-        "gender": "Male"
-      },
-      {
-        "id": "rupali",
-        "name": "Rupali",
-        "gender": "Female"
-      }
-    ]
-  },
-  "bulbul:v2": {
-    "provider": "sarvam",
-    "model_type": "tts",
-    "description": "Stable Indian language TTS",
-    "voices": [
-      {
-        "id": "meera",
-        "name": "Meera",
-        "gender": "Female"
-      },
-      {
-        "id": "arvind",
-        "name": "Arvind",
-        "gender": "Male"
-      },
-      {
-        "id": "anushka",
-        "name": "Anushka",
-        "gender": "Female"
-      },
-      {
-        "id": "manisha",
-        "name": "Manisha",
-        "gender": "Female"
-      },
-      {
-        "id": "vidya",
-        "name": "Vidya",
-        "gender": "Female"
-      },
-      {
-        "id": "arya",
-        "name": "Arya",
-        "gender": "Female"
-      },
-      {
-        "id": "abhilash",
-        "name": "Abhilash",
-        "gender": "Male"
-      },
-      {
-        "id": "karun",
-        "name": "Karun",
-        "gender": "Male"
-      },
-      {
-        "id": "hitesh",
-        "name": "Hitesh",
-        "gender": "Male"
       }
     ]
   }

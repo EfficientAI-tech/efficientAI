@@ -1,153 +1,98 @@
-"""Tests for workspace round-robin fair eval dispatch."""
+"""Tests for nested evaluation fair dispatch within a workspace."""
 
+from __future__ import annotations
+
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 from app.workers.concurrency import fair_dispatch as fair_dispatch_module
+from app.workers.concurrency.eval_dispatch import EvalDispatchOutcome
 
 
-def test_get_and_set_rr_cursor():
-    client = MagicMock()
-    client.get.return_value = "3"
-    with patch.object(fair_dispatch_module, "_get_redis", return_value=client):
-        assert fair_dispatch_module._get_rr_cursor() == 3
-        fair_dispatch_module._set_rr_cursor(5)
-    client.set.assert_called_once_with(fair_dispatch_module._RR_CURSOR_KEY, "5")
+@pytest.fixture(autouse=True)
+def _reset_eval_workspace_cursor(monkeypatch):
+    cursors: dict[str, int] = {}
+
+    def _get(workspace_id):
+        return cursors.get(str(workspace_id), 0)
+
+    def _set(workspace_id, cursor):
+        cursors[str(workspace_id)] = cursor
+
+    monkeypatch.setattr(
+        fair_dispatch_module,
+        "_get_workspace_eval_rr_cursor",
+        _get,
+    )
+    monkeypatch.setattr(
+        fair_dispatch_module,
+        "_set_workspace_eval_rr_cursor",
+        lambda workspace_id, cursor: _set(workspace_id, cursor),
+    )
 
 
-def test_schedule_fair_dispatch_enqueues_task():
-    with patch.object(
-        fair_dispatch_module.dispatch_fair_eval_rows_task,
-        "apply_async",
-    ) as mock_apply:
-        fair_dispatch_module.schedule_fair_dispatch(max_workspace_turns=1)
-    mock_apply.assert_called_once()
-    assert mock_apply.call_args.kwargs["kwargs"]["max_workspace_turns"] == 1
-
-
-def test_store_get_and_pop_row_restricted_metrics():
-    client = MagicMock()
-    client.get.return_value = '["metric-a", "metric-b"]'
-    row_id = uuid4()
-    key = f"{fair_dispatch_module._RESTRICTED_ROW_KEY_PREFIX}{row_id}"
-    with patch.object(fair_dispatch_module, "_get_redis", return_value=client):
-        fair_dispatch_module.store_row_restricted_metrics(
-            row_id,
-            ["metric-a", "metric-b"],
-        )
-        peeked = fair_dispatch_module.get_row_restricted_metrics(row_id)
-        assert peeked == ["metric-a", "metric-b"]
-        client.delete.assert_not_called()
-        popped = fair_dispatch_module.pop_row_restricted_metrics(row_id)
-    assert popped == ["metric-a", "metric-b"]
-    client.delete.assert_called_once_with(key)
-
-
-def test_get_row_restricted_metrics_does_not_delete_key():
-    client = MagicMock()
-    client.get.return_value = '["metric-a"]'
-    row_id = uuid4()
-    with patch.object(fair_dispatch_module, "_get_redis", return_value=client):
-        assert fair_dispatch_module.get_row_restricted_metrics(row_id) == ["metric-a"]
-    client.delete.assert_not_called()
-
-
-def test_dispatch_batch_preserves_restricted_metrics_when_at_capacity():
+def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
     workspace_id = uuid4()
-    eval_row = MagicMock()
-    eval_row.id = uuid4()
-    source_row = MagicMock()
-    evaluation = MagicMock(status="running")
+    eval_a = uuid4()
+    eval_b = uuid4()
 
-    with patch.object(
-        fair_dispatch_module,
-        "_pending_rows_for_workspace",
-        return_value=[(eval_row, source_row, evaluation)],
-    ), patch.object(
-        fair_dispatch_module,
-        "_try_dispatch_single_row",
-        return_value="at_capacity",
-    ), patch.object(
-        fair_dispatch_module,
-        "get_row_restricted_metrics",
-        return_value=["metric-a"],
-    ) as mock_get, patch.object(
-        fair_dispatch_module,
-        "clear_row_restricted_metrics",
-    ) as mock_clear, patch.object(
-        fair_dispatch_module,
-        "evaluation_transcribe_overwrite",
-        return_value=False,
-    ):
-        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
-            MagicMock(),
-            workspace_id,
-            batch_size=5,
-        )
+    row_a1 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
+    row_b1 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
+    row_a2 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
+    row_b2 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
 
-    assert dispatched == 0
-    mock_get.assert_called_once_with(eval_row.id)
-    mock_clear.assert_not_called()
+    source_a1 = SimpleNamespace(id=uuid4())
+    source_b1 = SimpleNamespace(id=uuid4())
+    source_a2 = SimpleNamespace(id=uuid4())
+    source_b2 = SimpleNamespace(id=uuid4())
 
+    evaluation_a = SimpleNamespace(id=eval_a, status="running")
+    evaluation_b = SimpleNamespace(id=eval_b, status="running")
 
-def test_dispatch_batch_clears_restricted_metrics_on_success():
-    workspace_id = uuid4()
-    eval_row = MagicMock()
-    eval_row.id = uuid4()
-    source_row = MagicMock()
-    evaluation = MagicMock(status="pending")
-
-    with patch.object(
-        fair_dispatch_module,
-        "_pending_rows_for_workspace",
-        return_value=[(eval_row, source_row, evaluation)],
-    ), patch.object(
-        fair_dispatch_module,
-        "_try_dispatch_single_row",
-        return_value="dispatched",
-    ), patch.object(
-        fair_dispatch_module,
-        "get_row_restricted_metrics",
-        return_value=["metric-a"],
-    ), patch.object(
-        fair_dispatch_module,
-        "clear_row_restricted_metrics",
-    ) as mock_clear, patch.object(
-        fair_dispatch_module,
-        "evaluation_transcribe_overwrite",
-        return_value=False,
-    ):
-        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
-            MagicMock(),
-            workspace_id,
-            batch_size=5,
-        )
-
-    assert dispatched == 1
-    mock_clear.assert_called_once_with(eval_row.id)
-
-
-def test_dispatch_batch_continues_past_diarisation_pending_row():
-    """Ready eval-only rows must not stall behind a transcribing row."""
-    workspace_id = uuid4()
-    blocked_eval_row = MagicMock()
-    ready_eval_row = MagicMock()
-    blocked_source = MagicMock()
-    ready_source = MagicMock()
-    evaluation = MagicMock(status="running")
-
-    with patch.object(
-        fair_dispatch_module,
-        "_pending_rows_for_workspace",
-        return_value=[
-            (blocked_eval_row, blocked_source, evaluation),
-            (ready_eval_row, ready_source, evaluation),
+    pending_by_eval = {
+        eval_a: [
+            (row_a1, source_a1, evaluation_a),
+            (row_a2, source_a2, evaluation_a),
         ],
+        eval_b: [
+            (row_b1, source_b1, evaluation_b),
+            (row_b2, source_b2, evaluation_b),
+        ],
+    }
+    dispatch_order: list[uuid4] = []
+
+    def _pending_rows_for_evaluation(_db, evaluation_id, *, limit):
+        rows = pending_by_eval.get(evaluation_id, [])
+        return rows[:limit]
+
+    def _try_dispatch_single_row(**kwargs):
+        evaluation = kwargs["evaluation"]
+        eval_row = kwargs["eval_row"]
+        dispatch_order.append(evaluation.id)
+        pending_by_eval[evaluation.id] = [
+            item
+            for item in pending_by_eval[evaluation.id]
+            if item[0].id != eval_row.id
+        ]
+        return EvalDispatchOutcome("dispatched")
+
+    db = MagicMock()
+    with patch.object(
+        fair_dispatch_module,
+        "_evaluations_with_pending_rows",
+        return_value=[eval_a, eval_b],
+    ), patch.object(
+        fair_dispatch_module,
+        "_pending_rows_for_evaluation",
+        side_effect=_pending_rows_for_evaluation,
     ), patch.object(
         fair_dispatch_module,
         "_try_dispatch_single_row",
-        side_effect=["skip", "dispatched"],
-    ) as mock_dispatch, patch.object(
+        side_effect=_try_dispatch_single_row,
+    ), patch.object(
         fair_dispatch_module,
         "get_row_restricted_metrics",
         return_value=None,
@@ -155,51 +100,86 @@ def test_dispatch_batch_continues_past_diarisation_pending_row():
         fair_dispatch_module,
         "evaluation_transcribe_overwrite",
         return_value=False,
+    ), patch.object(
+        fair_dispatch_module,
+        "clear_row_restricted_metrics",
     ):
-        db = MagicMock()
-        dispatched = fair_dispatch_module._dispatch_batch_for_workspace(
-            db,
-            workspace_id,
-            batch_size=5,
+        dispatched, hit_capacity, _backoff = (
+            fair_dispatch_module._dispatch_batch_for_workspace(
+                db,
+                workspace_id,
+                batch_size=4,
+            )
         )
 
-    assert dispatched == 1
-    assert mock_dispatch.call_count == 2
+    assert dispatched == 4
+    assert hit_capacity is False
+    assert dispatch_order == [eval_a, eval_b, eval_a, eval_b]
 
 
-def test_reserve_slot_and_enqueue_releases_slot_on_commit_failure():
-    from app.workers.concurrency import eval_dispatch as eval_dispatch_module
+def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
+    workspace_id = uuid4()
+    eval_job1 = uuid4()
+    eval_job2 = uuid4()
 
-    reserved_id = "reserved-task-id"
+    row_job1 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
+    row_job2 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
+    source_job1 = SimpleNamespace(id=uuid4())
+    source_job2 = SimpleNamespace(id=uuid4())
+    evaluation_job1 = SimpleNamespace(id=eval_job1, status="running")
+    evaluation_job2 = SimpleNamespace(id=eval_job2, status="pending")
+
+    pending_by_eval = {
+        eval_job1: [(row_job1, source_job1, evaluation_job1)] * 5,
+        eval_job2: [(row_job2, source_job2, evaluation_job2)],
+    }
+    dispatched_evaluations: list[uuid4] = []
+
+    def _pending_rows_for_evaluation(_db, evaluation_id, *, limit):
+        rows = pending_by_eval.get(evaluation_id, [])
+        return rows[:limit]
+
+    def _try_dispatch_single_row(**kwargs):
+        evaluation = kwargs["evaluation"]
+        dispatched_evaluations.append(evaluation.id)
+        pending_by_eval[evaluation.id] = pending_by_eval[evaluation.id][1:]
+        return EvalDispatchOutcome("dispatched")
+
     db = MagicMock()
-    db.commit.side_effect = RuntimeError("db commit failed")
-    evaluation = MagicMock(workspace_id=uuid4(), organization_id=uuid4())
-    eval_row = MagicMock()
-
-    def _enqueue_fn(task_id: str):
-        assert task_id == reserved_id
-        return MagicMock(id=reserved_id)
-
     with patch.object(
-        eval_dispatch_module,
-        "acquire_eval_slot",
-        return_value=True,
+        fair_dispatch_module,
+        "_evaluations_with_pending_rows",
+        return_value=[eval_job1, eval_job2],
     ), patch.object(
-        eval_dispatch_module,
-        "release_eval_slot_for_celery_task",
-    ) as mock_release, patch.object(
-        eval_dispatch_module,
-        "celery_uuid",
-        return_value=reserved_id,
+        fair_dispatch_module,
+        "_pending_rows_for_evaluation",
+        side_effect=_pending_rows_for_evaluation,
+    ), patch.object(
+        fair_dispatch_module,
+        "_try_dispatch_single_row",
+        side_effect=_try_dispatch_single_row,
+    ), patch.object(
+        fair_dispatch_module,
+        "get_row_restricted_metrics",
+        return_value=None,
+    ), patch.object(
+        fair_dispatch_module,
+        "evaluation_transcribe_overwrite",
+        return_value=False,
+    ), patch.object(
+        fair_dispatch_module,
+        "clear_row_restricted_metrics",
     ):
-        try:
-            eval_dispatch_module._reserve_slot_and_enqueue(
-                evaluation=evaluation,
-                eval_row=eval_row,
-                db=db,
-                enqueue_fn=_enqueue_fn,
+        dispatched, hit_capacity, _backoff = (
+            fair_dispatch_module._dispatch_batch_for_workspace(
+                db,
+                workspace_id,
+                batch_size=2,
             )
-        except RuntimeError:
-            pass
+        )
 
-    mock_release.assert_called_once_with(reserved_id)
+    assert dispatched == 2
+    assert hit_capacity is False
+    assert eval_job2 in dispatched_evaluations
+    assert dispatched_evaluations[0] == eval_job1
+    assert dispatched_evaluations[1] == eval_job2

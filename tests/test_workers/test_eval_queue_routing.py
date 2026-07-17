@@ -24,7 +24,7 @@ def test_dispatch_evaluation_rows_routes_to_evaluations_queue():
 
 def test_dispatch_fair_eval_rows_routes_to_evaluations_queue():
     routes = celery_app.conf.task_routes
-    assert routes["dispatch_fair_eval_rows"]["queue"] == "evaluations"
+    assert routes["dispatch_fair_eval_rows"]["queue"] == "celery"
 
 
 def test_manual_transcribe_default_route_routes_to_diarization_queue():

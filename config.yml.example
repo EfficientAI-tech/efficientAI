@@ -193,3 +193,23 @@ judge_alignment:
 # Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
 # Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 
+# Call-import worker concurrency (Redis fair-share for evaluations).
+# Scale eval_global_inflight_limit with worker-imports replica count × threads.
+# Enterprise K8s profiles: see deploy/k8s/configmap-workers-*.yaml and ONE-PAGER.md
+# Confluence: Enterprise K8s Scaling Guide (child of System Design v2.1)
+# workers:
+#   eval_global_inflight_limit: 384      # 12 replicas × 32 threads (recommended)
+#   eval_org_inflight_limit: 384
+#   eval_workspace_inflight_limit: 38      # global ÷ 10 workspaces
+#   eval_job_inflight_limit: 75
+#   eval_fair_dispatch_batch_size: 75
+#   diarization_fair_dispatch_batch_size: 75
+#   import_fair_dispatch_batch_size: 75
+#   import_global_inflight_limit: 16     # cap parallel recording fetches
+#   import_org_inflight_limit: 16
+#   import_workspace_inflight_limit: 8
+#   telephony_import_credit_limit: 1000   # authenticated recording fetches per credential/window
+#   telephony_import_credit_window_seconds: 60
+#   telephony_import_backoff_base_seconds: 15
+#   telephony_import_backoff_max_seconds: 60
+

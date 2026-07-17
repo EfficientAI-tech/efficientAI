@@ -15,6 +15,7 @@ import {
   summarizeLLMConfig,
   type LLMGenerationConfig,
 } from '../../config/llmGenerationParams'
+import { hasGatewayLLMCredential, providerHasLLMModels } from '../../lib/llmModelOptions'
 
 export default function VoiceBundles() {
   const [searchParams] = useSearchParams()
@@ -37,7 +38,7 @@ export default function VoiceBundles() {
     llm_config: { temperature: 0.7 },
     llm_credential_id: null,
     tts_provider: ModelProvider.OPENAI,
-    tts_model: 'tts-1',
+    tts_model: 'gpt-4o-mini-tts',
     tts_voice: '',
     tts_credential_id: null,
     s2s_provider: null,
@@ -215,7 +216,14 @@ export default function VoiceBundles() {
   }
 
   const getConfiguredProvidersForType = (type: 'stt' | 'llm' | 'tts' | 's2s'): ModelProvider[] =>
-    configuredProviders.filter((provider) => getModelOptions(provider)[type].length > 0)
+    configuredProviders.filter((provider) => {
+      const options = getModelOptions(provider)[type]
+      if (options.length > 0) return true
+      if (type === 'llm') {
+        return hasGatewayLLMCredential(aiproviders, provider)
+      }
+      return false
+    })
 
   // Keep provider defaults constrained to providers that support each modality.
   const getDefaultProvider = (
@@ -649,6 +657,7 @@ export default function VoiceBundles() {
           configuredProviders={configuredProviders}
           getModelOptions={getModelOptions}
           modelConfigs={modelConfigs}
+          aiProviders={aiproviders}
           renderCredentialPicker={renderCredentialPicker}
         />
       )}
@@ -670,6 +679,7 @@ export default function VoiceBundles() {
           configuredProviders={configuredProviders}
           getModelOptions={getModelOptions}
           modelConfigs={modelConfigs}
+          aiProviders={aiproviders}
           renderCredentialPicker={renderCredentialPicker}
         />
       )}
@@ -788,6 +798,7 @@ function VoiceBundleModal({
   updateModelOptions,
   configuredProviders,
   getModelOptions,
+  aiProviders,
   renderCredentialPicker,
 }: {
   title: string
@@ -800,6 +811,7 @@ function VoiceBundleModal({
   configuredProviders: ModelProvider[]
   getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }
   modelConfigs: Record<string, any>
+  aiProviders: AIProvider[]
   renderCredentialPicker: (
     leg: 'stt' | 'llm' | 'tts' | 's2s',
     provider: ModelProvider | null | undefined,
@@ -816,7 +828,13 @@ function VoiceBundleModal({
   const ttsDropdownRef = useRef<HTMLDivElement>(null)
   const s2sDropdownRef = useRef<HTMLDivElement>(null)
   const sttProviders = configuredProviders.filter((provider) => getModelOptions(provider).stt.length > 0)
-  const llmProviders = configuredProviders.filter((provider) => getModelOptions(provider).llm.length > 0)
+  const llmProviders = configuredProviders.filter((provider) =>
+    providerHasLLMModels(
+      provider,
+      getModelOptions(provider).llm,
+      aiProviders,
+    ),
+  )
   const ttsProviders = configuredProviders.filter((provider) => getModelOptions(provider).tts.length > 0)
   const s2sProviders = configuredProviders.filter((provider) => getModelOptions(provider).s2s.length > 0)
 

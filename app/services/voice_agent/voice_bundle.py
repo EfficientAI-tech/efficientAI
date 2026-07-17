@@ -214,10 +214,10 @@ def _get_stt_providers():
         },
         "sarvam": {
             "env_key": "SARVAM_API_KEY",
-            "default_model": "saarika:v2.5",
+            "default_model": "saaras:v3",
             "factory": lambda api_key, model: _get_service("SarvamSTTService")(
                 api_key=api_key,
-                model=model if model else "saarika:v2.5",
+                model=model if model else "saaras:v3",
             ),
         },
         "smallest": {
