@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, TypeVar
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, TypeVar, TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import case, func
@@ -13,7 +13,21 @@ from app.db_sharding.pool_manager import db_pool_manager
 from app.db_sharding.sessions import is_sharding_enabled
 from app.models.database import CallImportEvaluation, CallImportEvaluationRow, CallImportRow
 
+if TYPE_CHECKING:
+    from app.db_sharding.session_cache import ShardSessionCache
+
 T = TypeVar("T")
+
+
+def _open_shard_session(
+    shard_id: str,
+    shard_cache: Optional["ShardSessionCache"],
+) -> tuple[Session, bool]:
+    """Return (session, should_close). Uses cache when provided."""
+    if shard_cache is not None:
+        return shard_cache.session_for(shard_id), False
+    factory = db_pool_manager.shard_session_factory(shard_id)
+    return factory(), True
 
 
 def shard_ids_for_import(catalog_db: Session, call_import_id: UUID) -> List[str]:
@@ -224,7 +238,11 @@ def list_call_import_row_ids_filtered(
     return [row.id for row in merged if row.id is not None]
 
 
-def pending_eval_workspaces(catalog_db: Session) -> List[UUID]:
+def pending_eval_workspaces(
+    catalog_db: Session,
+    *,
+    shard_cache: Optional["ShardSessionCache"] = None,
+) -> List[UUID]:
     """Workspaces with pending eval rows (catalog + shard queries when sharded)."""
     if not is_sharding_enabled():
         return _pending_eval_workspaces_mono(catalog_db)
@@ -246,13 +264,13 @@ def pending_eval_workspaces(catalog_db: Session) -> List[UUID]:
     router = db_pool_manager.router
     assert router is not None
     for shard_id in router.shard_ids:
-        factory = db_pool_manager.shard_session_factory(shard_id)
-        shard_db = factory()
+        shard_db, close_shard = _open_shard_session(shard_id, shard_cache)
         try:
             for eid in collect_pending(shard_db, shard_id):
                 evaluation_ids.add(eid)
         finally:
-            shard_db.close()
+            if close_shard:
+                shard_db.close()
 
     if not evaluation_ids:
         return []
@@ -292,6 +310,8 @@ def _pending_eval_workspaces_mono(db: Session) -> List[UUID]:
 def evaluations_with_pending_rows(
     catalog_db: Session,
     workspace_id: UUID,
+    *,
+    shard_cache: Optional["ShardSessionCache"] = None,
 ) -> List[UUID]:
     if not is_sharding_enabled():
         return _evaluations_with_pending_mono(catalog_db, workspace_id)
@@ -316,8 +336,7 @@ def evaluations_with_pending_rows(
     assert router is not None
 
     for shard_id in router.shard_ids:
-        factory = db_pool_manager.shard_session_factory(shard_id)
-        shard_db = factory()
+        shard_db, close_shard = _open_shard_session(shard_id, shard_cache)
         try:
             rows = (
                 shard_db.query(CallImportEvaluationRow.evaluation_id)
@@ -331,7 +350,8 @@ def evaluations_with_pending_rows(
             )
             pending.update(row[0] for row in rows if row[0] is not None)
         finally:
-            shard_db.close()
+            if close_shard:
+                shard_db.close()
     return sorted(pending)
 
 
@@ -361,6 +381,7 @@ def pending_eval_row_triples(
     evaluation_id: UUID,
     *,
     limit: int,
+    shard_cache: Optional["ShardSessionCache"] = None,
 ) -> List[tuple]:
     """Return (eval_row, source_row, evaluation) tuples up to limit."""
     from app.models.database import CallImportEvaluation
@@ -401,8 +422,7 @@ def pending_eval_row_triples(
     for shard_id in router.shard_ids:
         if len(collected) >= limit:
             break
-        factory = db_pool_manager.shard_session_factory(shard_id)
-        shard_db = factory()
+        shard_db, close_shard = _open_shard_session(shard_id, shard_cache)
         try:
             batch = (
                 shard_db.query(CallImportEvaluationRow, CallImportRow)
@@ -422,7 +442,8 @@ def pending_eval_row_triples(
             for eval_row, source_row in batch:
                 collected.append((eval_row, source_row, evaluation))
         finally:
-            shard_db.close()
+            if close_shard:
+                shard_db.close()
     return collected
 
 

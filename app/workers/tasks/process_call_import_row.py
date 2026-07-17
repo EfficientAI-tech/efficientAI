@@ -95,10 +95,42 @@ def _safe_commit(
         return False
 
 
-def _row_or_import_gone(db, row_id: UUID) -> Optional[str]:
+def _row_or_import_gone(
+    db,
+    row_id: UUID,
+    *,
+    catalog_db=None,
+) -> Optional[str]:
     """Return a skip reason when the row or its parent import no longer exists."""
     from app.models.database import CallImport, CallImportRow
     from app.models.enums import CallImportStatus
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled() and catalog_db is not None and catalog_db is not db:
+        row_pk = (
+            db.query(CallImportRow.id)
+            .filter(CallImportRow.id == row_id)
+            .first()
+        )
+        if row_pk is None:
+            return "row_deleted"
+        call_import_id = (
+            db.query(CallImportRow.call_import_id)
+            .filter(CallImportRow.id == row_id)
+            .scalar()
+        )
+        if call_import_id is None:
+            return "row_deleted"
+        import_status = (
+            catalog_db.query(CallImport.status)
+            .filter(CallImport.id == call_import_id)
+            .scalar()
+        )
+        if import_status is None:
+            return "row_deleted"
+        if import_status == CallImportStatus.DELETING:
+            return "import_deleting"
+        return None
 
     db.expire_all()
     hit = (
@@ -525,7 +557,11 @@ def process_call_import_row_task(
                 return {"status": "skipped", "reason": "row_deleted"}
             raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
 
-        skip_reason = _row_or_import_gone(db, row_uuid)
+        skip_reason = _row_or_import_gone(
+            db,
+            row_uuid,
+            catalog_db=catalog_db if catalog_db is not row_db else None,
+        )
         if skip_reason:
             db.rollback()
             logger.info(

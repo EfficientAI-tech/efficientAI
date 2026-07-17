@@ -466,11 +466,12 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
 )
 @click.option(
     "--imports-worker-concurrency",
-    default=32,
+    default=12,
     type=int,
     help=(
         "Concurrency for the imports+diarization+evaluations worker "
-        "(default: 32; thread pool; consumes imports, then diarization, then evaluations)"
+        "(default: 12; thread pool). Use lower values (8–12) when DB sharding "
+        "is enabled; 32 threads can exhaust per-shard SQLAlchemy pools."
     ),
 )
 def start_all(

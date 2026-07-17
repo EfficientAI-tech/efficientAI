@@ -243,6 +243,8 @@ def bulk_insert_evaluation_rows(
     call_import_id: UUID,
     evaluation_id: UUID,
     source_row_ids: List[UUID],
+    *,
+    workspace_id: UUID,
 ) -> None:
     """Insert eval-row stubs in chunks without per-row ORM overhead."""
     if not source_row_ids:
@@ -258,6 +260,7 @@ def bulk_insert_evaluation_rows(
             call_import_id,
             evaluation_id,
             source_row_ids,
+            workspace_id=workspace_id,
             index_by_source_id=index_by_id,
         )
         return
@@ -269,6 +272,7 @@ def bulk_insert_evaluation_rows(
                 "id": uuid4(),
                 "evaluation_id": evaluation_id,
                 "call_import_row_id": source_row_id,
+                "workspace_id": workspace_id,
                 "status": "pending",
                 "metric_scores": {},
             }
@@ -310,7 +314,11 @@ def materialize_and_enqueue_evaluation(
         return
 
     bulk_insert_evaluation_rows(
-        db, evaluation.call_import_id, evaluation_id, source_row_ids
+        db,
+        evaluation.call_import_id,
+        evaluation_id,
+        source_row_ids,
+        workspace_id=evaluation.workspace_id,
     )
     db.commit()
 
@@ -1076,6 +1084,101 @@ def _cancel_evaluation_rows_all_shards(
     return total
 
 
+def _persist_evaluation_retry_targets(
+    catalog_db: Session,
+    evaluation: CallImportEvaluation,
+    targets: List[Tuple[CallImportEvaluationRow, CallImportRow]],
+    *,
+    metric_ids: Optional[List[UUID]] = None,
+    transcribe_overwrite: bool = False,
+) -> None:
+    """Apply retry resets on the correct DB session (per shard when sharding)."""
+    from collections import defaultdict
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.api.v1.routes.call_import_evaluations import (
+        _prepare_source_row_for_retry,
+        _reset_eval_row_for_retry,
+    )
+    from app.db_sharding.pool_manager import db_pool_manager
+    from app.db_sharding.row_ops import shard_id_for_row
+
+    task_ids: List[str] = []
+    for eval_row, _source_row in targets:
+        if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
+            task_id = (eval_row.celery_task_id or "").strip()
+            if task_id:
+                task_ids.append(task_id)
+    _batch_revoke_celery_task_ids(task_ids, terminate=False)
+
+    if not is_sharding_enabled():
+        for eval_row, source_row in targets:
+            _prepare_source_row_for_retry(
+                source_row,
+                transcribe_overwrite=transcribe_overwrite,
+            )
+            _reset_eval_row_for_retry(
+                eval_row,
+                metric_ids=metric_ids,
+                skip_revoke=True,
+            )
+        catalog_db.commit()
+        return
+
+    by_shard: dict[str, List[Tuple[UUID, UUID]]] = defaultdict(list)
+    for eval_row, source_row in targets:
+        shard_id = shard_id_for_row(
+            catalog_db,
+            evaluation.call_import_id,
+            int(source_row.row_index or 0),
+        )
+        by_shard[shard_id].append((eval_row.id, source_row.id))
+
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id, id_pairs in by_shard.items():
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            eval_row_ids = [pair[0] for pair in id_pairs]
+            source_row_ids = [pair[1] for pair in id_pairs]
+            eval_by_id = {
+                row.id: row
+                for row in shard_db.query(CallImportEvaluationRow)
+                .filter(CallImportEvaluationRow.id.in_(eval_row_ids))
+                .all()
+            }
+            source_by_id = {
+                row.id: row
+                for row in shard_db.query(CallImportRow)
+                .filter(CallImportRow.id.in_(source_row_ids))
+                .all()
+            }
+            for eval_row_id, source_row_id in id_pairs:
+                bound_eval = eval_by_id.get(eval_row_id)
+                bound_source = source_by_id.get(source_row_id)
+                if bound_eval is None or bound_source is None:
+                    continue
+                _prepare_source_row_for_retry(
+                    bound_source,
+                    transcribe_overwrite=transcribe_overwrite,
+                )
+                _reset_eval_row_for_retry(
+                    bound_eval,
+                    metric_ids=metric_ids,
+                    skip_revoke=True,
+                )
+                if metric_ids:
+                    flag_modified(bound_eval, "metric_scores")
+            shard_db.commit()
+        except Exception:
+            shard_db.rollback()
+            raise
+        finally:
+            shard_db.close()
+
+
 def execute_evaluation_retry(
     db: Session,
     evaluation_id: UUID,
@@ -1122,26 +1225,13 @@ def execute_evaluation_retry(
 
         for start in range(0, len(targets), _BULK_INSERT_CHUNK):
             chunk = targets[start : start + _BULK_INSERT_CHUNK]
-            task_ids: List[str] = []
-            for eval_row, source_row in chunk:
-                if eval_row.celery_task_id and eval_row.status in {
-                    "pending",
-                    "running",
-                }:
-                    task_id = (eval_row.celery_task_id or "").strip()
-                    if task_id:
-                        task_ids.append(task_id)
-                _prepare_source_row_for_retry(
-                    source_row,
-                    transcribe_overwrite=transcribe_overwrite,
-                )
-                _reset_eval_row_for_retry(
-                    eval_row,
-                    metric_ids=metric_ids,
-                    skip_revoke=True,
-                )
-            _batch_revoke_celery_task_ids(task_ids, terminate=False)
-            db.commit()
+            _persist_evaluation_retry_targets(
+                db,
+                evaluation,
+                chunk,
+                metric_ids=metric_ids,
+                transcribe_overwrite=transcribe_overwrite,
+            )
 
         try:
             evaluate_only, transcribe_chain = (
@@ -1158,9 +1248,25 @@ def execute_evaluation_retry(
                 "Failed to re-enqueue evaluation {} after retry reset",
                 evaluation_id,
             )
-            for eval_row, _ in targets:
-                eval_row.status = "failed"
-                eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+            err_msg = f"Failed to re-enqueue retry: {exc}"
+            target_ids = {eval_row.id for eval_row, _ in targets}
+            if is_sharding_enabled():
+                from app.db_sharding.eval_rows import foreach_evaluation_row_mutating
+
+                def _mark_failed(row: CallImportEvaluationRow) -> bool:
+                    if row.id not in target_ids:
+                        return False
+                    row.status = "failed"
+                    row.error_message = err_msg
+                    return True
+
+                foreach_evaluation_row_mutating(db, evaluation_id, _mark_failed)
+            else:
+                for eval_row, _ in targets:
+                    if eval_row.id in target_ids:
+                        eval_row.status = "failed"
+                        eval_row.error_message = err_msg
+                db.commit()
             _rollup_evaluation_status(evaluation, db)
             db.commit()
             return {
@@ -1169,6 +1275,8 @@ def execute_evaluation_retry(
                 "error": str(exc),
             }
 
+        evaluation.error_message = None
+        evaluation.finished_at = None
         _rollup_evaluation_status(evaluation, db)
         db.commit()
         return {

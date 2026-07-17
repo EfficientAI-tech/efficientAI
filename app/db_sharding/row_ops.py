@@ -181,6 +181,7 @@ def bulk_insert_evaluation_rows_on_shards(
     evaluation_id: UUID,
     source_row_ids: List[UUID],
     *,
+    workspace_id: UUID,
     index_by_source_id: dict[UUID, int],
 ) -> int:
     """Insert eval-row stubs on the same shard as each source import row."""
@@ -188,17 +189,19 @@ def bulk_insert_evaluation_rows_on_shards(
 
     if not source_row_ids:
         return 0
+
+    def _mapping(source_row_id: UUID) -> dict:
+        return {
+            "id": uuid4(),
+            "evaluation_id": evaluation_id,
+            "call_import_row_id": source_row_id,
+            "workspace_id": workspace_id,
+            "status": "pending",
+            "metric_scores": {},
+        }
+
     if not is_sharding_enabled():
-        mappings = [
-            {
-                "id": uuid4(),
-                "evaluation_id": evaluation_id,
-                "call_import_row_id": source_row_id,
-                "status": "pending",
-                "metric_scores": {},
-            }
-            for source_row_id in source_row_ids
-        ]
+        mappings = [_mapping(source_row_id) for source_row_id in source_row_ids]
         catalog_db.bulk_insert_mappings(EvalRowModel, mappings)
         catalog_db.flush()
         return len(mappings)
@@ -206,16 +209,7 @@ def bulk_insert_evaluation_rows_on_shards(
     inserted = 0
     for start in range(0, len(source_row_ids), 500):
         chunk = source_row_ids[start : start + 500]
-        mappings = [
-            {
-                "id": uuid4(),
-                "evaluation_id": evaluation_id,
-                "call_import_row_id": source_row_id,
-                "status": "pending",
-                "metric_scores": {},
-            }
-            for source_row_id in chunk
-        ]
+        mappings = [_mapping(source_row_id) for source_row_id in chunk]
         buckets = partition_eval_mappings_by_shard(
             catalog_db,
             call_import_id,

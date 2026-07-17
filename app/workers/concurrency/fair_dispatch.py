@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models.database import (
+    CallImport,
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
@@ -29,8 +30,11 @@ from app.db_sharding.scatter_gather import (
     pending_eval_workspaces as sharded_pending_eval_workspaces,
 )
 from app.db_sharding.sessions import is_sharding_enabled
+from app.db_sharding.session_cache import ShardSessionCache
 
 _RR_CURSOR_KEY = "eval:fair:rr_cursor"
+_DISPATCH_LOCK_KEY = "eval:fair:dispatch_lock"
+_DISPATCH_LOCK_TTL_SECONDS = 90
 _WS_EVAL_RR_CURSOR_KEY_PREFIX = "eval:fair:rr_cursor:ws:"
 _RESTRICTED_ROW_KEY_PREFIX = "eval:restricted:row:"
 _TRANSCRIBE_OVERWRITE_KEY_PREFIX = "eval:transcribe_overwrite:"
@@ -177,9 +181,35 @@ def _set_workspace_eval_rr_cursor(workspace_id: UUID, cursor: int) -> None:
         )
 
 
-def _workspaces_with_pending_rows(db: Session) -> List[UUID]:
+def _try_acquire_dispatch_lock() -> bool:
+    try:
+        return bool(
+            _get_redis().set(
+                _DISPATCH_LOCK_KEY,
+                "1",
+                nx=True,
+                ex=_DISPATCH_LOCK_TTL_SECONDS,
+            )
+        )
+    except redis.RedisError as exc:
+        logger.warning("Fair dispatch lock acquire failed: {}", exc)
+        return True
+
+
+def _release_dispatch_lock() -> None:
+    try:
+        _get_redis().delete(_DISPATCH_LOCK_KEY)
+    except redis.RedisError as exc:
+        logger.warning("Fair dispatch lock release failed: {}", exc)
+
+
+def _workspaces_with_pending_rows(
+    db: Session,
+    *,
+    shard_cache: ShardSessionCache | None = None,
+) -> List[UUID]:
     if is_sharding_enabled():
-        return sharded_pending_eval_workspaces(db)
+        return sharded_pending_eval_workspaces(db, shard_cache=shard_cache)
     rows = (
         db.query(CallImportEvaluation.workspace_id)
         .join(
@@ -204,9 +234,13 @@ def _workspaces_with_pending_rows(db: Session) -> List[UUID]:
 def _evaluations_with_pending_rows(
     db: Session,
     workspace_id: UUID,
+    *,
+    shard_cache: ShardSessionCache | None = None,
 ) -> List[UUID]:
     if is_sharding_enabled():
-        return sharded_evaluations_with_pending_rows(db, workspace_id)
+        return sharded_evaluations_with_pending_rows(
+            db, workspace_id, shard_cache=shard_cache
+        )
     rows = (
         db.query(CallImportEvaluation.id)
         .join(
@@ -230,10 +264,14 @@ def _pending_rows_for_evaluation(
     evaluation_id: UUID,
     *,
     limit: int,
+    shard_cache: ShardSessionCache | None = None,
 ) -> List[tuple[CallImportEvaluationRow, CallImportRow, CallImportEvaluation]]:
     if is_sharding_enabled():
         return sharded_pending_eval_row_triples(
-            db, evaluation_id, limit=limit
+            db,
+            evaluation_id,
+            limit=limit,
+            shard_cache=shard_cache,
         )
     return (
         db.query(CallImportEvaluationRow, CallImportRow, CallImportEvaluation)
@@ -262,12 +300,15 @@ def _dispatch_batch_for_workspace(
     workspace_id: UUID,
     *,
     batch_size: int,
+    shard_cache: ShardSessionCache | None = None,
 ) -> tuple[int, bool, int]:
     """Dispatch up to ``batch_size`` pending rows for one workspace turn.
 
     Returns ``(dispatched_count, hit_capacity, backoff_seconds)``.
     """
-    evaluations = _evaluations_with_pending_rows(db, workspace_id)
+    evaluations = _evaluations_with_pending_rows(
+        db, workspace_id, shard_cache=shard_cache
+    )
     if not evaluations:
         return 0, False, 0
 
@@ -283,11 +324,19 @@ def _dispatch_batch_for_workspace(
             db,
             evaluation_id,
             limit=max(1, batch_size - dispatched),
+            shard_cache=shard_cache,
         )
         if not pending:
             skips += 1
             cursor = (cursor + 1) % len(evaluations)
             continue
+
+        evaluation_header = pending[0][2]
+        call_import = (
+            db.query(CallImport)
+            .filter(CallImport.id == evaluation_header.call_import_id)
+            .first()
+        )
 
         evaluation_dispatched = False
         for eval_row, source_row, evaluation in pending:
@@ -301,6 +350,8 @@ def _dispatch_batch_for_workspace(
                 restricted_metric_ids=restricted_metric_ids,
                 transcribe_overwrite=transcribe_overwrite,
                 auto_transcribe=True,
+                call_import=call_import,
+                shard_cache=shard_cache,
             )
             if outcome.result == "dispatched":
                 clear_row_restricted_metrics(eval_row.id)
@@ -387,11 +438,16 @@ def schedule_fair_dispatch(
 @celery_app.task(name="dispatch_fair_eval_rows", queue=DISPATCH_QUEUE)
 def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
     """Round-robin pending eval rows across workspaces (batch K per turn)."""
+    if not _try_acquire_dispatch_lock():
+        schedule_fair_dispatch(max_workspace_turns=1, countdown=5)
+        return {"status": "deferred", "reason": "dispatch_lock_held"}
+
     db = SessionLocal()
+    shard_cache = ShardSessionCache() if is_sharding_enabled() else None
     total_dispatched = 0
     hit_capacity = False
     try:
-        workspaces = _workspaces_with_pending_rows(db)
+        workspaces = _workspaces_with_pending_rows(db, shard_cache=shard_cache)
         if not workspaces:
             return {"status": "ok", "dispatched": 0, "workspaces": 0}
 
@@ -410,6 +466,7 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
                     db,
                     workspace_id,
                     batch_size=batch_size,
+                    shard_cache=shard_cache,
                 )
             )
             hit_capacity = hit_capacity or workspace_at_capacity
@@ -425,7 +482,9 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
                 skips += 1
                 cursor = (cursor + 1) % len(workspaces)
 
-        if hit_capacity and _workspaces_with_pending_rows(db):
+        if hit_capacity and _workspaces_with_pending_rows(
+            db, shard_cache=shard_cache
+        ):
             _schedule_dispatch_deduped(
                 max_workspace_turns=1,
                 countdown=backoff_seconds or _DISPATCH_AT_CAPACITY_BACKOFF_SECONDS,
@@ -443,7 +502,10 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
         logger.exception("dispatch_fair_eval_rows failed")
         raise
     finally:
+        if shard_cache is not None:
+            shard_cache.close_all()
         db.close()
+        _release_dispatch_lock()
 
 
 def finish_eval_work_and_redispatch(

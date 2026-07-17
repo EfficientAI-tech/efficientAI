@@ -140,8 +140,9 @@ class DatabasePoolManager:
         shard_pool_size = pool_size
         shard_max_overflow = max_overflow
         if len(shard_entries) > 1:
-            shard_pool_size = max(2, pool_size // 2)
-            shard_max_overflow = max(2, max_overflow // 2)
+            per_shard = max(4, pool_size // len(shard_entries))
+            shard_pool_size = max(8, per_shard)
+            shard_max_overflow = max(8, max_overflow // len(shard_entries))
 
         self._catalog_engine = make_engine(catalog_url)
         self._catalog_session_factory = sessionmaker(

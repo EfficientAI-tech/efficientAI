@@ -10,7 +10,9 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
+from app.db_sharding.session_cache import ShardSessionCache
 from app.models.database import (
+    CallImport,
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
@@ -26,9 +28,10 @@ IMPORTS_QUEUE = "imports"
 DIARIZATION_QUEUE = "diarization"
 EVALUATIONS_QUEUE = "evaluations"
 AUDIO_METRICS_QUEUE = "audio-metrics"
-# Lightweight scheduler tasks — must not sit behind ``imports`` / ``evaluations``
-# fan-out on the call-import worker (see docker-compose queue order).
-DISPATCH_QUEUE = "celery"
+# Lightweight scheduler tasks — runs on ``evaluations`` so sandbox/dev can use
+# ``worker-imports`` (imports,diarization,evaluations) without a separate celery worker.
+# Row scoring also uses ``evaluations``; dispatch tasks are short DB/Redis work.
+DISPATCH_QUEUE = "evaluations"
 
 DispatchSingleRowResult = Literal[
     "dispatched", "skip", "at_capacity", "credential_throttled"
@@ -224,6 +227,72 @@ def _reserve_slot_and_enqueue(
     return True
 
 
+def _attach_sharded_eval_dispatch_rows(
+    catalog_db: Session,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow,
+    *,
+    shard_cache: ShardSessionCache | None = None,
+) -> tuple[Session, CallImportEvaluationRow, CallImportRow, bool] | None:
+    """Bind eval/source rows on a shard session without extra catalog connections."""
+    from app.db_sharding.pool_manager import db_pool_manager
+    from app.db_sharding.row_ops import shard_id_for_row
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if not is_sharding_enabled():
+        return catalog_db, eval_row, source_row, False
+
+    shard_id = shard_id_for_row(
+        catalog_db,
+        evaluation.call_import_id,
+        int(source_row.row_index or 0),
+    )
+    owns_session = shard_cache is None
+    if shard_cache is not None:
+        shard_db = shard_cache.session_for(shard_id)
+    else:
+        shard_db = db_pool_manager.shard_session_factory(shard_id)()
+    try:
+        bound_eval = (
+            shard_db.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.id == eval_row.id)
+            .first()
+        )
+        bound_source = (
+            shard_db.query(CallImportRow)
+            .filter(CallImportRow.id == source_row.id)
+            .first()
+        )
+        if bound_eval is None or bound_source is None:
+            if owns_session:
+                shard_db.close()
+            return None
+        if (bound_eval.status or "") != "pending" or bound_eval.celery_task_id:
+            if owns_session:
+                shard_db.close()
+            return None
+        return shard_db, bound_eval, bound_source, owns_session
+    except Exception:
+        if owns_session:
+            shard_db.close()
+        raise
+
+
+def _load_call_import_for_eval_row(
+    catalog_db: Session,
+    source_row: CallImportRow,
+) -> CallImport | None:
+    call_import_id = source_row.call_import_id
+    if call_import_id is None:
+        return None
+    return (
+        catalog_db.query(CallImport)
+        .filter(CallImport.id == call_import_id)
+        .first()
+    )
+
+
 def _try_dispatch_single_row(
     *,
     db: Session,
@@ -233,6 +302,8 @@ def _try_dispatch_single_row(
     restricted_metric_ids: Optional[List[str]] = None,
     transcribe_overwrite: bool = False,
     auto_transcribe: bool = True,
+    call_import: CallImport | None = None,
+    shard_cache: ShardSessionCache | None = None,
 ) -> EvalDispatchOutcome:
     """Dispatch one eval row (transcribe or evaluate).
 
@@ -242,6 +313,7 @@ def _try_dispatch_single_row(
       * ``at_capacity`` — inflight cap reached; stop the workspace batch
       * ``credential_throttled`` — shared telephony credential is backing off
     """
+    from app.db_sharding.sessions import is_sharding_enabled
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
     )
@@ -255,147 +327,166 @@ def _try_dispatch_single_row(
         process_call_import_row_task,
     )
 
-    if (evaluation.status or "").strip().lower() == "cancelled":
-        return EvalDispatchOutcome("skip")
-
-    if source_row.status == CallImportRowStatus.FAILED:
-        _fail_eval_row_for_import(db, eval_row, source_row)
-        return EvalDispatchOutcome("skip")
-
-    if source_row.status == CallImportRowStatus.PROCESSING:
-        if not (source_row.recording_s3_key or "").strip():
-            return EvalDispatchOutcome("skip")
-
-    if _needs_import_for_eval(source_row):
-        from app.workers.concurrency.import_dispatch import (
-            _peek_authenticated_import_credit,
-        )
-
-        call_import = source_row.call_import
-        throttled = _peek_authenticated_import_credit(
-            db=db,
-            call_import=call_import,
-        )
-        if throttled is not None:
-            return EvalDispatchOutcome(
-                "credential_throttled",
-                wait_seconds=throttled.wait_seconds,
-            )
-
-        def _enqueue_import(reserved_task_id: str):
-            source_row.celery_task_id = reserved_task_id
-            db.flush()
-            return process_call_import_row_task.apply_async(
-                args=(str(source_row.id),),
-                kwargs={
-                    "_eval_slot_task_id": reserved_task_id,
-                    "run_eval_row_id": str(eval_row.id),
-                },
-                queue=IMPORTS_QUEUE,
-                task_id=reserved_task_id,
-            )
-
-        if _reserve_slot_and_enqueue(
-            evaluation=evaluation,
-            eval_row=eval_row,
-            db=db,
-            enqueue_fn=_enqueue_import,
-        ):
-            return EvalDispatchOutcome("dispatched")
-        return EvalDispatchOutcome("at_capacity")
-
-    transcribe_mode = (
-        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
-    ).strip().lower()
-
-    if _needs_transcribe_for_eval(
-        evaluation,
-        source_row,
-        transcribe_overwrite=transcribe_overwrite,
-        auto_transcribe=auto_transcribe,
-    ):
-        if _diarisation_in_flight(source_row):
-            return EvalDispatchOutcome("skip")
-
-        dia_status = (source_row.diarised_transcript_status or "").strip().lower()
-        if (
-            dia_status == "failed"
-            and not transcribe_overwrite
-            and not (source_row.diarised_transcript or "").strip()
-        ):
-            return EvalDispatchOutcome("skip")
-
-        def _enqueue_transcribe(reserved_task_id: str):
-            source_row.diarised_transcript_status = "pending"
-            source_row.diarised_transcript_error = None
-            if transcribe_overwrite:
-                source_row.diarised_transcript = None
-            source_row.celery_task_id = reserved_task_id
-            db.flush()
-            return build_eval_chain_transcribe_apply_async(
-                evaluation=evaluation,
-                eval_row=eval_row,
-                source_row=source_row,
-                reserved_task_id=reserved_task_id,
-                restricted_metric_ids=restricted_metric_ids,
-                transcribe_overwrite=transcribe_overwrite,
-            )
-
-        if _reserve_slot_and_enqueue(
-            evaluation=evaluation,
-            eval_row=eval_row,
-            db=db,
-            enqueue_fn=_enqueue_transcribe,
-        ):
-            return EvalDispatchOutcome("dispatched")
-        return EvalDispatchOutcome("at_capacity")
-
-    if row_needs_audio_phase(
+    attached = _attach_sharded_eval_dispatch_rows(
         db,
         evaluation,
+        eval_row,
         source_row,
-        restricted_metric_ids=restricted_metric_ids,
-    ):
+        shard_cache=shard_cache,
+    )
+    if attached is None:
+        return EvalDispatchOutcome("skip")
 
-        def _enqueue_audio(reserved_task_id: str):
+    mutate_db, eval_row, source_row, owns_shard_session = attached
+    catalog_db = db
+
+    try:
+        if (evaluation.status or "").strip().lower() == "cancelled":
+            return EvalDispatchOutcome("skip")
+
+        if source_row.status == CallImportRowStatus.FAILED:
+            _fail_eval_row_for_import(mutate_db, eval_row, source_row)
+            return EvalDispatchOutcome("skip")
+
+        if source_row.status == CallImportRowStatus.PROCESSING:
+            if not (source_row.recording_s3_key or "").strip():
+                return EvalDispatchOutcome("skip")
+
+        if _needs_import_for_eval(source_row):
+            from app.workers.concurrency.import_dispatch import (
+                _peek_authenticated_import_credit,
+            )
+
+            call_import = call_import or _load_call_import_for_eval_row(
+                catalog_db, source_row
+            )
+            if call_import is None:
+                return EvalDispatchOutcome("skip")
+            throttled = _peek_authenticated_import_credit(
+                db=catalog_db,
+                call_import=call_import,
+            )
+            if throttled is not None:
+                return EvalDispatchOutcome(
+                    "credential_throttled",
+                    wait_seconds=throttled.wait_seconds,
+                )
+
+            def _enqueue_import(reserved_task_id: str):
+                source_row.celery_task_id = reserved_task_id
+                mutate_db.flush()
+                return process_call_import_row_task.apply_async(
+                    args=(str(source_row.id),),
+                    kwargs={
+                        "_eval_slot_task_id": reserved_task_id,
+                        "run_eval_row_id": str(eval_row.id),
+                    },
+                    queue=IMPORTS_QUEUE,
+                    task_id=reserved_task_id,
+                )
+
+            if _reserve_slot_and_enqueue(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                db=mutate_db,
+                enqueue_fn=_enqueue_import,
+            ):
+                return EvalDispatchOutcome("dispatched")
+            return EvalDispatchOutcome("at_capacity")
+
+        if _needs_transcribe_for_eval(
+            evaluation,
+            source_row,
+            transcribe_overwrite=transcribe_overwrite,
+            auto_transcribe=auto_transcribe,
+        ):
+            if _diarisation_in_flight(source_row):
+                return EvalDispatchOutcome("skip")
+
+            dia_status = (
+                source_row.diarised_transcript_status or ""
+            ).strip().lower()
+            if (
+                dia_status == "failed"
+                and not transcribe_overwrite
+                and not (source_row.diarised_transcript or "").strip()
+            ):
+                return EvalDispatchOutcome("skip")
+
+            def _enqueue_transcribe(reserved_task_id: str):
+                source_row.diarised_transcript_status = "pending"
+                source_row.diarised_transcript_error = None
+                if transcribe_overwrite:
+                    source_row.diarised_transcript = None
+                source_row.celery_task_id = reserved_task_id
+                mutate_db.flush()
+                return build_eval_chain_transcribe_apply_async(
+                    evaluation=evaluation,
+                    eval_row=eval_row,
+                    source_row=source_row,
+                    reserved_task_id=reserved_task_id,
+                    restricted_metric_ids=restricted_metric_ids,
+                    transcribe_overwrite=transcribe_overwrite,
+                )
+
+            if _reserve_slot_and_enqueue(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                db=mutate_db,
+                enqueue_fn=_enqueue_transcribe,
+            ):
+                return EvalDispatchOutcome("dispatched")
+            return EvalDispatchOutcome("at_capacity")
+
+        if row_needs_audio_phase(
+            catalog_db,
+            evaluation,
+            source_row,
+            restricted_metric_ids=restricted_metric_ids,
+        ):
+
+            def _enqueue_audio(reserved_task_id: str):
+                kwargs = {"_eval_slot_task_id": reserved_task_id}
+                if restricted_metric_ids:
+                    kwargs["restricted_metric_ids"] = restricted_metric_ids
+                return evaluate_call_import_row_audio_task.apply_async(
+                    args=(str(eval_row.id),),
+                    kwargs=kwargs,
+                    queue=AUDIO_METRICS_QUEUE,
+                    task_id=reserved_task_id,
+                )
+
+            if _reserve_slot_and_enqueue(
+                evaluation=evaluation,
+                eval_row=eval_row,
+                db=mutate_db,
+                enqueue_fn=_enqueue_audio,
+            ):
+                return EvalDispatchOutcome("dispatched")
+            return EvalDispatchOutcome("at_capacity")
+
+        def _enqueue_eval(reserved_task_id: str):
             kwargs = {"_eval_slot_task_id": reserved_task_id}
             if restricted_metric_ids:
                 kwargs["restricted_metric_ids"] = restricted_metric_ids
-            return evaluate_call_import_row_audio_task.apply_async(
+            return evaluate_call_import_row_task.apply_async(
                 args=(str(eval_row.id),),
                 kwargs=kwargs,
-                queue=AUDIO_METRICS_QUEUE,
+                queue=EVALUATIONS_QUEUE,
                 task_id=reserved_task_id,
             )
 
         if _reserve_slot_and_enqueue(
             evaluation=evaluation,
             eval_row=eval_row,
-            db=db,
-            enqueue_fn=_enqueue_audio,
+            db=mutate_db,
+            enqueue_fn=_enqueue_eval,
         ):
             return EvalDispatchOutcome("dispatched")
         return EvalDispatchOutcome("at_capacity")
-
-    def _enqueue_eval(reserved_task_id: str):
-        kwargs = {"_eval_slot_task_id": reserved_task_id}
-        if restricted_metric_ids:
-            kwargs["restricted_metric_ids"] = restricted_metric_ids
-        return evaluate_call_import_row_task.apply_async(
-            args=(str(eval_row.id),),
-            kwargs=kwargs,
-            queue=EVALUATIONS_QUEUE,
-            task_id=reserved_task_id,
-        )
-
-    if _reserve_slot_and_enqueue(
-        evaluation=evaluation,
-        eval_row=eval_row,
-        db=db,
-        enqueue_fn=_enqueue_eval,
-    ):
-        return EvalDispatchOutcome("dispatched")
-    return EvalDispatchOutcome("at_capacity")
+    finally:
+        if owns_shard_session and is_sharding_enabled() and mutate_db is not db:
+            mutate_db.close()
 
 
 @celery_app.task(name="dispatch_evaluation_rows", queue=EVALUATIONS_QUEUE)
