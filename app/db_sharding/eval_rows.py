@@ -20,6 +20,87 @@ from app.models.database import CallImportEvaluation, CallImportEvaluationRow, C
 T = TypeVar("T")
 
 
+def load_evaluation_rows_for_run(
+    catalog_db: Session,
+    evaluation_id: UUID,
+) -> List[CallImportEvaluationRow]:
+    """All evaluation rows for a run (scatter-gather when sharded)."""
+    return [eval_row for eval_row, _ in load_evaluation_row_pairs(catalog_db, evaluation_id)]
+
+
+def find_evaluation_row_in_run(
+    catalog_db: Session,
+    evaluation_id: UUID,
+    eval_row_id: UUID,
+) -> Tuple[Optional[CallImportEvaluationRow], Optional[CallImportRow]]:
+    for eval_row, source_row in load_evaluation_row_pairs(catalog_db, evaluation_id):
+        if eval_row.id == eval_row_id:
+            return eval_row, source_row
+    return None, None
+
+
+def count_evaluation_rows_for_run(
+    catalog_db: Session,
+    evaluation_id: UUID,
+    *,
+    statuses: Optional[Sequence[str]] = None,
+) -> int:
+    rows = load_evaluation_rows_for_run(catalog_db, evaluation_id)
+    if not statuses:
+        return len(rows)
+    allowed = set(statuses)
+    return sum(1 for row in rows if (row.status or "") in allowed)
+
+
+def foreach_evaluation_row_mutating(
+    catalog_db: Session,
+    evaluation_id: UUID,
+    mutate: Callable[[CallImportEvaluationRow], bool],
+) -> int:
+    """Run ``mutate(row)`` on every eval row; commit per shard when sharded."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    if not is_sharding_enabled():
+        rows = (
+            catalog_db.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+            .all()
+        )
+        changed = 0
+        for row in rows:
+            if mutate(row):
+                flag_modified(row, "metric_scores")
+                changed += 1
+        return changed
+
+    router = db_pool_manager.router
+    assert router is not None
+    total = 0
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            rows = (
+                shard_db.query(CallImportEvaluationRow)
+                .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+                .all()
+            )
+            shard_changed = False
+            for row in rows:
+                if mutate(row):
+                    flag_modified(row, "metric_scores")
+                    shard_changed = True
+                    total += 1
+            if shard_changed:
+                shard_db.commit()
+        except Exception:
+            shard_db.rollback()
+            raise
+        finally:
+            shard_db.close()
+    return total
+
+
 def scatter_gather_eval_query(
     catalog_db: Session,
     build_query: Callable[[Session], Query],

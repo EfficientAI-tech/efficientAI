@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Iterable, List, Optional, Sequence, TypeVar
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, TypeVar
 from uuid import UUID
 
 from sqlalchemy import case, func
@@ -75,6 +75,153 @@ def _run_on_shard(shard_id: str, fn: Callable[[Session, str], T]) -> T:
 
 def merge_rows_by_index(rows: Iterable[CallImportRow]) -> List[CallImportRow]:
     return sorted(rows, key=lambda r: int(r.row_index or 0))
+
+
+def _apply_call_import_row_filters(
+    query,
+    *,
+    search_term: str,
+    diarised_status_filter: Optional[str],
+):
+    if search_term:
+        query = query.filter(
+            CallImportRow.conversation_id.ilike(f"%{search_term}%")
+        )
+    if diarised_status_filter:
+        query = query.filter(
+            CallImportRow.diarised_transcript_status == diarised_status_filter
+        )
+    return query
+
+
+def _merged_call_import_rows_for_import(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+) -> List[CallImportRow]:
+    """All matching rows merged by ``row_index`` (scatter-gather when sharded)."""
+    if not is_sharding_enabled():
+        query = catalog_db.query(CallImportRow).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        return query.order_by(CallImportRow.row_index.asc()).all()
+
+    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
+        query = db.query(CallImportRow).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        return query.order_by(CallImportRow.row_index.asc()).all()
+
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+    merged: List[CallImportRow] = []
+    for part in scatter_gather_on_shards(shard_ids, load_shard):
+        merged.extend(part)
+    merged = merge_rows_by_index(merged)
+    if merged:
+        return merged
+
+    query = catalog_db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import_id
+    )
+    query = _apply_call_import_row_filters(
+        query,
+        search_term=search_term,
+        diarised_status_filter=diarised_status_filter,
+    )
+    return query.order_by(CallImportRow.row_index.asc()).all()
+
+
+def count_call_import_rows_filtered(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+) -> int:
+    if not is_sharding_enabled():
+        query = catalog_db.query(func.count(CallImportRow.id)).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        return int(query.scalar() or 0)
+
+    total = 0
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+
+    def count_shard(db: Session, _shard_id: str) -> int:
+        query = db.query(func.count(CallImportRow.id)).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        return int(query.scalar() or 0)
+
+    for part in scatter_gather_on_shards(shard_ids, count_shard):
+        total += int(part)
+    if total == 0:
+        query = catalog_db.query(func.count(CallImportRow.id)).filter(
+            CallImportRow.call_import_id == call_import_id
+        )
+        query = _apply_call_import_row_filters(
+            query,
+            search_term=search_term,
+            diarised_status_filter=diarised_status_filter,
+        )
+        total = int(query.scalar() or 0)
+    return total
+
+
+def fetch_call_import_rows_filtered_page(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+    offset: int,
+    limit: int,
+) -> List[CallImportRow]:
+    merged = _merged_call_import_rows_for_import(
+        catalog_db,
+        call_import_id,
+        search_term=search_term,
+        diarised_status_filter=diarised_status_filter,
+    )
+    return merged[offset : offset + limit]
+
+
+def list_call_import_row_ids_filtered(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    search_term: str = "",
+    diarised_status_filter: Optional[str] = None,
+) -> List[UUID]:
+    merged = _merged_call_import_rows_for_import(
+        catalog_db,
+        call_import_id,
+        search_term=search_term,
+        diarised_status_filter=diarised_status_filter,
+    )
+    return [row.id for row in merged if row.id is not None]
 
 
 def pending_eval_workspaces(catalog_db: Session) -> List[UUID]:
@@ -407,22 +554,7 @@ def fetch_call_import_rows_page(
             .all()
         )
 
-    merged: List[CallImportRow] = []
-
-    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
-        return (
-            db.query(CallImportRow)
-            .filter(CallImportRow.call_import_id == call_import_id)
-            .order_by(CallImportRow.row_index.asc())
-            .all()
-        )
-
-    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
-    for part in scatter_gather_on_shards(shard_ids, load_shard):
-        merged.extend(part)
-    merged = merge_rows_by_index(merged)
-    if not merged:
-        merged = _legacy_catalog_rows(catalog_db, call_import_id)
+    merged = _merged_call_import_rows_for_import(catalog_db, call_import_id)
     return merged[offset : offset + limit]
 
 
@@ -437,6 +569,53 @@ def _legacy_catalog_rows(
         .order_by(CallImportRow.row_index.asc())
         .all()
     )
+
+
+def aggregate_diarised_transcript_counts(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> Dict[str, int]:
+    """Batch-wide diarisation status counts (scatter-gather when sharded)."""
+    if not is_sharding_enabled():
+        counts: Dict[str, int] = {}
+        for status_value, count in (
+            catalog_db.query(CallImportRow.diarised_transcript_status, func.count())
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .group_by(CallImportRow.diarised_transcript_status)
+            .all()
+        ):
+            if isinstance(status_value, str):
+                counts[status_value] = int(count or 0)
+        return counts
+
+    merged: Dict[str, int] = {}
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+
+    def count_shard(db: Session, _shard_id: str) -> Dict[str, int]:
+        part: Dict[str, int] = {}
+        for status_value, count in (
+            db.query(CallImportRow.diarised_transcript_status, func.count())
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .group_by(CallImportRow.diarised_transcript_status)
+            .all()
+        ):
+            if isinstance(status_value, str):
+                part[status_value] = int(count or 0)
+        return part
+
+    for part in scatter_gather_on_shards(shard_ids, count_shard):
+        for key, value in part.items():
+            merged[key] = merged.get(key, 0) + int(value)
+    if not merged:
+        for status_value, count in (
+            catalog_db.query(CallImportRow.diarised_transcript_status, func.count())
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .group_by(CallImportRow.diarised_transcript_status)
+            .all()
+        ):
+            if isinstance(status_value, str):
+                merged[status_value] = int(count or 0)
+    return merged
 
 
 def count_call_import_rows(
