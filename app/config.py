@@ -3,7 +3,7 @@
 import json
 import yaml
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "efficientai"
+
+    # Database sharding (call-import row shards; default off)
+    DB_SHARDING_ENABLED: bool = False
+    DB_CATALOG_URL: Optional[str] = None
+    DB_SHARD_ROW_CHUNK_SIZE: int = 500
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_SHARD_ENTRIES: List[dict] = []
 
     # Redis
     REDIS_URL: Optional[str] = None
@@ -416,7 +424,21 @@ def load_config_from_file(config_path: str) -> None:
                 f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
                 f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
             )
-    
+        if "pool_size" in db_config:
+            settings.DB_POOL_SIZE = int(db_config["pool_size"])
+        if "max_overflow" in db_config:
+            settings.DB_MAX_OVERFLOW = int(db_config["max_overflow"])
+        if "catalog_url" in db_config:
+            settings.DB_CATALOG_URL = db_config["catalog_url"]
+        sharding_cfg = db_config.get("sharding") or {}
+        if isinstance(sharding_cfg, dict):
+            if "enabled" in sharding_cfg:
+                settings.DB_SHARDING_ENABLED = bool(sharding_cfg["enabled"])
+            if "row_chunk_size" in sharding_cfg:
+                settings.DB_SHARD_ROW_CHUNK_SIZE = int(sharding_cfg["row_chunk_size"])
+        if "shards" in db_config and isinstance(db_config["shards"], list):
+            settings.DB_SHARD_ENTRIES = list(db_config["shards"])
+
     if "redis" in config_data:
         redis_config = config_data["redis"]
         if "url" in redis_config:

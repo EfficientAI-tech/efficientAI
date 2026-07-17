@@ -21,6 +21,7 @@ operational:
 
 # Database Configuration
 database:
+  # Legacy single-DB mode: use one database (e.g. efficientai). Sharding off (default).
   url: "postgresql://efficientai:password@localhost:5432/efficientai"
   # Alternative: specify individual components
   # user: "efficientai"
@@ -28,6 +29,30 @@ database:
   # host: "localhost"
   # port: 5432
   # db: "efficientai"
+
+  # Connection pool (per process; use smaller values when many data shards)
+  pool_size: 10
+  max_overflow: 20
+
+  # Data-plane sharding (call-import rows today; same shard slots can host other
+  # high-volume row data later). Default off — single database.url only.
+  #
+  # When enabled, prefer generic physical names (not call-import-specific):
+  #   catalog  → efficientai_catalog  (metadata, headers, registry, integrations)
+  #   shards   → efficientai_data_01, efficientai_data_02, …
+  #   shard id → data-shard-01, data-shard-02, … (labels in config + registry)
+  #
+  # catalog_url: "postgresql://efficientai:password@localhost:5432/efficientai_catalog"
+  sharding:
+    enabled: false
+    row_chunk_size: 500
+  # shards:
+  #   - id: data-shard-01
+  #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_01"
+  #   - id: data-shard-02
+  #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_02"
+  #   - id: data-shard-03
+  #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_03"
 
 # Redis Configuration
 redis:

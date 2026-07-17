@@ -16,6 +16,12 @@ from app.models.enums import CallImportRowStatus, CallImportStatus
 from app.workers.concurrency.eval_dispatch import IMPORTS_QUEUE
 from app.workers.concurrency.import_dispatch import _try_dispatch_single_import_row
 from app.workers.config import celery_app
+from app.db_sharding.import_dispatch import (
+    call_imports_with_pending_rows as sharded_call_imports_with_pending_rows,
+    pending_import_row_for_call_import as sharded_pending_import_row,
+    pending_import_workspaces as sharded_pending_import_workspaces,
+)
+from app.db_sharding.sessions import is_sharding_enabled
 
 _RR_CURSOR_KEY = "import:fair:rr_cursor"
 _WS_CALL_IMPORT_RR_CURSOR_KEY_PREFIX = "import:fair:rr_cursor:ws:"
@@ -74,6 +80,8 @@ def _set_workspace_call_import_rr_cursor(workspace_id: UUID, cursor: int) -> Non
 
 
 def _workspaces_with_pending_imports(db: Session) -> List[UUID]:
+    if is_sharding_enabled():
+        return sharded_pending_import_workspaces(db)
     rows = (
         db.query(CallImport.workspace_id)
         .join(CallImportRow, CallImportRow.call_import_id == CallImport.id)
@@ -92,6 +100,8 @@ def _call_imports_with_pending_rows(
     db: Session,
     workspace_id: UUID,
 ) -> List[UUID]:
+    if is_sharding_enabled():
+        return sharded_call_imports_with_pending_rows(db, workspace_id)
     rows = (
         db.query(CallImport.id)
         .join(CallImportRow, CallImportRow.call_import_id == CallImport.id)
@@ -111,6 +121,9 @@ def _pending_row_for_call_import(
     db: Session,
     call_import_id: UUID,
 ) -> tuple[CallImportRow, CallImport] | None:
+    if is_sharding_enabled():
+        pending = sharded_pending_import_row(db, call_import_id)
+        return pending
     row = (
         db.query(CallImportRow, CallImport)
         .join(CallImport, CallImport.id == CallImportRow.call_import_id)

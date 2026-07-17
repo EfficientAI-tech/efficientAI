@@ -23,6 +23,12 @@ from app.workers.concurrency.eval_dispatch import (
     _try_dispatch_single_row,
 )
 from app.workers.config import celery_app
+from app.db_sharding.scatter_gather import (
+    evaluations_with_pending_rows as sharded_evaluations_with_pending_rows,
+    pending_eval_row_triples as sharded_pending_eval_row_triples,
+    pending_eval_workspaces as sharded_pending_eval_workspaces,
+)
+from app.db_sharding.sessions import is_sharding_enabled
 
 _RR_CURSOR_KEY = "eval:fair:rr_cursor"
 _WS_EVAL_RR_CURSOR_KEY_PREFIX = "eval:fair:rr_cursor:ws:"
@@ -172,6 +178,8 @@ def _set_workspace_eval_rr_cursor(workspace_id: UUID, cursor: int) -> None:
 
 
 def _workspaces_with_pending_rows(db: Session) -> List[UUID]:
+    if is_sharding_enabled():
+        return sharded_pending_eval_workspaces(db)
     rows = (
         db.query(CallImportEvaluation.workspace_id)
         .join(
@@ -197,6 +205,8 @@ def _evaluations_with_pending_rows(
     db: Session,
     workspace_id: UUID,
 ) -> List[UUID]:
+    if is_sharding_enabled():
+        return sharded_evaluations_with_pending_rows(db, workspace_id)
     rows = (
         db.query(CallImportEvaluation.id)
         .join(
@@ -221,6 +231,10 @@ def _pending_rows_for_evaluation(
     *,
     limit: int,
 ) -> List[tuple[CallImportEvaluationRow, CallImportRow, CallImportEvaluation]]:
+    if is_sharding_enabled():
+        return sharded_pending_eval_row_triples(
+            db, evaluation_id, limit=limit
+        )
     return (
         db.query(CallImportEvaluationRow, CallImportRow, CallImportEvaluation)
         .join(

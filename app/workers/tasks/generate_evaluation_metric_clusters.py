@@ -69,15 +69,9 @@ def generate_evaluation_metric_clusters_task(
             UUID(credential_id) if credential_id else None,
         )
 
-        rows = (
-            db.query(CallImportEvaluationRow, CallImportRow)
-            .join(
-                CallImportRow,
-                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
-            )
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-            .all()
-        )
+        from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+
+        rows = load_evaluation_row_pairs(db, evaluation.id)
         completed_pairs = [
             (eval_row, source_row)
             for eval_row, source_row in rows

@@ -1879,6 +1879,23 @@ class CallImport(Base):
     )
 
 
+class CallImportShardSlice(Base):
+    """Registry row: which shard stores a slice of rows for an import."""
+
+    __tablename__ = "call_import_shard_slices"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slice_id = Column(Integer, primary_key=True)
+    shard_id = Column(String(64), nullable=False, index=True)
+    row_index_min = Column(Integer, nullable=False)
+    row_index_max = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class CallImportRow(Base):
     """A single row within a CallImport batch (one CSV line / one external call)."""
 
@@ -1895,6 +1912,12 @@ class CallImportRow(Base):
         index=True,
     )
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     row_index = Column(Integer, nullable=False)
     # Was historically named ``external_call_id``; renamed to
@@ -2312,6 +2335,12 @@ class CallImportEvaluationRow(Base):
     call_import_row_id = Column(
         UUID(as_uuid=True),
         ForeignKey("call_import_rows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )

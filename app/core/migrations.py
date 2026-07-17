@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 from sqlalchemy import text, inspect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import ProgrammingError
 from app.database import engine, SessionLocal, Base
 import logging
@@ -19,11 +19,44 @@ logger = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 
 
+def _migration_scope_for_file(migration_file: Path) -> str:
+    import importlib.util
+
+    version = migration_file.stem
+    spec = importlib.util.spec_from_file_location(f"migrations_scope_{version}", migration_file)
+    if spec is None or spec.loader is None:
+        return "all"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return str(getattr(module, "MIGRATION_SCOPE", "all") or "all")
+
+
+def _migration_applies_to_engine(migration_file: Path, engine_role: str) -> bool:
+    if engine_role in ("all", "legacy"):
+        return True
+    scope = _migration_scope_for_file(migration_file)
+    if scope == "all":
+        return True
+    return scope == engine_role
+
+
+def _engine_role_for_url(engine_url: str) -> str:
+    from app.config import settings
+
+    if not getattr(settings, "DB_SHARDING_ENABLED", False):
+        return "legacy"
+    catalog_url = getattr(settings, "DB_CATALOG_URL", None) or settings.DATABASE_URL
+    if str(engine_url) == str(catalog_url):
+        return "catalog"
+    return "shard"
+
+
 class MigrationRunner:
     """Handles running database migrations in order."""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, engine_role: str = "legacy"):
         self.db = db
+        self.engine_role = engine_role
         self.ensure_migrations_table()
     
     def ensure_migrations_table(self):
@@ -81,6 +114,8 @@ class MigrationRunner:
         for migration_file in migration_files:
             version = migration_file.stem  # filename without .py
             if version not in applied and not version.startswith("__"):
+                if not _migration_applies_to_engine(migration_file, self.engine_role):
+                    continue
                 pending.append(migration_file)
         
         return pending
@@ -163,85 +198,77 @@ def run_migrations():
     """
     Run all pending database migrations.
     This should be called on application startup.
-    
+
+    When sharding is enabled, applies the same migration set to each unique
+    engine URL (catalog + row shards) until catalog/shard split (Phase 8).
+
     Raises:
         RuntimeError: If migrations fail, preventing application startup
     """
+    from app.db_sharding.pool_manager import db_pool_manager
+
     # Ensure logging is configured at INFO level
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         force=True
     )
-    
+
     logger.info("=" * 60)
     logger.info("🔄 Starting database migrations...")
     logger.info("=" * 60)
-    
-    db = SessionLocal()
-    try:
-        runner = MigrationRunner(db)
-        
-        # Check current migration status
-        applied = runner.get_applied_migrations()
-        pending = runner.get_pending_migrations()
-        
-        if applied:
-            logger.info(f"📊 Currently applied migrations: {len(applied)}")
-            for version in applied[-5:]:  # Show last 5
-                logger.info(f"   ✓ {version}")
-            if len(applied) > 5:
-                logger.info(f"   ... and {len(applied) - 5} more")
-        
-        if not pending:
-            logger.info("✅ Database is up to date - no migrations needed")
-            return
-        
-        # Run migrations
-        success = runner.run_all()
-        if not success:
-            logger.error("")
-            logger.error("=" * 60)
-            logger.error("❌ MIGRATION FAILED - Application cannot start!")
-            logger.error("=" * 60)
-            logger.error("The application will not start until migrations succeed.")
-            logger.error("")
-            logger.error("To diagnose the issue:")
-            logger.error("  1. Run: eai migrate --verbose")
-            logger.error("  2. Check the error messages above")
-            logger.error("  3. Fix any database schema issues")
-            logger.error("=" * 60)
-            raise RuntimeError("Database migrations failed")
-        
-        # Verify migrations were applied
-        logger.info("")
-        logger.info("🔍 Verifying migrations were applied...")
-        final_pending = runner.get_pending_migrations()
-        if final_pending:
-            logger.warning(f"⚠️  Warning: {len(final_pending)} migration(s) still pending after run:")
-            for migration_file in final_pending:
-                logger.warning(f"   - {migration_file.name}")
-            logger.warning("This may indicate a migration tracking issue.")
-        else:
-            logger.info("✅ Verification complete - all migrations applied successfully")
-        
-        logger.info("=" * 60)
-        
-    except RuntimeError:
-        # Re-raise RuntimeError (migration failures)
-        raise
-    except Exception as e:
-        logger.error("")
-        logger.error("=" * 60)
-        logger.error("❌ UNEXPECTED ERROR during migrations!")
-        logger.error("=" * 60)
-        logger.error(f"Error: {e}")
-        import traceback
-        logger.error(f"Traceback:\n{traceback.format_exc()}")
-        logger.error("=" * 60)
-        raise
-    finally:
-        db.close()
+
+    engines = db_pool_manager.all_engines_for_migrations()
+    for idx, eng in enumerate(engines):
+        url_hint = str(eng.url).split("@")[-1] if eng.url else f"engine-{idx}"
+        logger.info("Migration target: %s", url_hint)
+        factory = sessionmaker(autocommit=False, autoflush=False, bind=eng)
+        db = factory()
+        try:
+            engine_role = _engine_role_for_url(str(eng.url))
+            runner = MigrationRunner(db, engine_role=engine_role)
+
+            applied = runner.get_applied_migrations()
+            pending = runner.get_pending_migrations()
+
+            if applied:
+                logger.info(f"📊 Currently applied migrations: {len(applied)}")
+                for version in applied[-5:]:
+                    logger.info(f"   ✓ {version}")
+                if len(applied) > 5:
+                    logger.info(f"   ... and {len(applied) - 5} more")
+
+            if not pending:
+                logger.info("✅ Database is up to date - no migrations needed (%s)", url_hint)
+                continue
+
+            success = runner.run_all()
+            if not success:
+                logger.error("")
+                logger.error("=" * 60)
+                logger.error("❌ MIGRATION FAILED - Application cannot start!")
+                logger.error("=" * 60)
+                logger.error("Target: %s", url_hint)
+                raise RuntimeError("Database migrations failed")
+
+            final_pending = runner.get_pending_migrations()
+            if final_pending:
+                logger.warning(
+                    f"⚠️  Warning: {len(final_pending)} migration(s) still pending after run on {url_hint}"
+                )
+            else:
+                logger.info("✅ Verification complete - all migrations applied (%s)", url_hint)
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error("❌ UNEXPECTED ERROR during migrations on %s: %s", url_hint, e)
+            import traceback
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise
+        finally:
+            db.close()
+
+    logger.info("=" * 60)
 
 
 def check_migrations_status() -> Tuple[bool, List[str]]:

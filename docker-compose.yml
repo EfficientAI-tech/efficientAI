@@ -16,6 +16,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-efficientai}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Optional: generic catalog + data DBs for sharding tests (first init only):
+      # - ./docker/postgres/init-sharding-dbs.sh:/docker-entrypoint-initdb.d/02-init-sharding-dbs.sh:ro
+      # See config.docker.sharding.example.yml
     ports:
       - "5432:5432"
     healthcheck:

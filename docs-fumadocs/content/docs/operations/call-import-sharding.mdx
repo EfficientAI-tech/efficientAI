@@ -1,0 +1,47 @@
+---
+title: Call-import sharding operations
+description: Pools, PgBouncer, and observability for multi-node Postgres
+---
+
+# Call-import sharding operations
+
+## Configuration
+
+See `config.yml.example` under `database.sharding`. Default is **off** (`enabled: false`).
+
+**Naming:** use generic Postgres database names (`efficientai_catalog`, `efficientai_data_01`, …)
+and config shard ids (`data-shard-01`, …). Routing is call-import-specific today; the same
+data-plane slots can be reused for other row-heavy features later.
+
+| Profile | `enabled` | `shards` | `catalog_url` |
+|---------|-----------|----------|---------------|
+| Legacy | false | — | — |
+| Single-node enterprise | true | 1 entry | optional |
+| Standard | true | 3–5 | dedicated |
+| High volume | true | 6+ | dedicated |
+
+## Connection pools
+
+When `len(shards) > 1`, use smaller per-process pools (`pool_size` 3–5, `max_overflow` 5–10)
+so API + workers × shards stay under Postgres `max_connections`.
+
+## PgBouncer (optional)
+
+Point `database.url`, `catalog_url`, and each shard `url` at PgBouncer (`:6432`) in
+transaction pooling mode. Keep SQLAlchemy `pool_pre_ping` enabled.
+
+## Observability
+
+Row Celery tasks log `shard_id` on the import worker hot path. Fair dispatch uses
+per-shard pending scans when sharding is enabled—watch Redis eval/import progress keys
+(`eval:progress`, `import:progress`) alongside catalog parent counters.
+
+## Rebalance
+
+Dry-run registry updates:
+
+```bash
+python scripts/rebalance_call_import_shards.py <call_import_uuid> --target-shard data-shard-02
+```
+
+Use `--apply` only after pausing the import and copying row data between shards.

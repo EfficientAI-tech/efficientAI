@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.auth.rbac import require_admin
 from app.database import get_db
+from app.db_sharding.sessions import is_sharding_enabled
 from app.dependencies import (
     get_api_key,
     get_organization_id,
@@ -2505,6 +2506,15 @@ async def get_call_import_detail(
 
     if row_limit == 0:
         rows: List[CallImportRow] = []
+    elif is_sharding_enabled() and not search_term and not diarised_status_filter:
+        from app.db_sharding.scatter_gather import fetch_call_import_rows_page
+
+        rows = fetch_call_import_rows_page(
+            db,
+            call_import.id,
+            offset=row_offset,
+            limit=row_limit,
+        )
     else:
         rows = (
             rows_query.order_by(CallImportRow.row_index)

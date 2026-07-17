@@ -486,6 +486,14 @@ def _serialize_eval(
         db, row.organization_id, metric_ids_for_lookup
     )
 
+    from app.services.call_imports.progress_counters import (
+        flush_eval_progress_to_catalog,
+        merge_eval_counters_for_ui,
+    )
+
+    flush_eval_progress_to_catalog(db, row.id)
+    ui_completed, ui_failed = merge_eval_counters_for_ui(row)
+
     return CallImportEvaluationResponse(
         id=row.id,
         call_import_id=row.call_import_id,
@@ -513,8 +521,8 @@ def _serialize_eval(
         ],
         status=row.status,
         total_rows=row.total_rows,
-        completed_rows=row.completed_rows,
-        failed_rows=row.failed_rows,
+        completed_rows=ui_completed,
+        failed_rows=ui_failed,
         error_message=row.error_message,
         llm_provider=row.llm_provider,
         llm_model=row.llm_model,
@@ -1570,8 +1578,40 @@ async def list_call_import_evaluation_rows(
         # so a typo'd / stale ``sort_by`` doesn't quietly invert the
         # default order.
         query = query.order_by(CallImportRow.row_index.asc())
-    total = query.count()
-    rows = query.offset((page - 1) * page_size).limit(page_size).all()
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        all_rows = list(load_evaluation_row_pairs(db, eval_id))
+        if status_filter:
+            status_value = status_filter.strip().lower()
+            all_rows = [
+                (eval_row_obj, source_row)
+                for eval_row_obj, source_row in all_rows
+                if (eval_row_obj.status or "").lower() == status_value
+            ]
+        if q and q.strip():
+            needle = q.strip().lower()
+            all_rows = [
+                (eval_row_obj, source_row)
+                for eval_row_obj, source_row in all_rows
+                if needle in (source_row.conversation_id or "").lower()
+                or needle in (source_row.transcript or "").lower()
+                or needle in (source_row.diarised_transcript or "").lower()
+            ]
+        if flow_parent_id or discovered_parent_id or metric_id:
+            from app.db_sharding.eval_rows import scatter_gather_eval_query
+
+            all_rows = scatter_gather_eval_query(
+                db, lambda session: query.with_session(session).all()
+            )
+        else:
+            all_rows.sort(key=lambda pair: int(pair[1].row_index or 0))
+        total = len(all_rows)
+        rows = all_rows[(page - 1) * page_size : page * page_size]
+    else:
+        total = query.count()
+        rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
     # Row detail shows the diarised transcript that normal metrics score.
     items: List[CallImportEvaluationRowResponse] = [
@@ -1782,13 +1822,25 @@ async def export_call_import_evaluation_csv(
         *metric_headers,
     ]
 
-    rows = (
-        db.query(CallImportEvaluationRow, CallImportRow)
-        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .order_by(CallImportRow.row_index.asc())
-        .all()
-    )
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        rows = sorted(
+            load_evaluation_row_pairs(db, eval_id),
+            key=lambda pair: int(pair[1].row_index or 0),
+        )
+    else:
+        rows = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
 
     def _project_rows() -> Iterator[Dict[str, str]]:
         for eval_row, source_row in rows:
@@ -3258,13 +3310,25 @@ async def generate_call_import_evaluation_pdf_report(
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
     is_internal = payload.report_type == "internal"
-    rows = (
-        db.query(CallImportEvaluationRow, CallImportRow)
-        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .order_by(CallImportRow.row_index.asc())
-        .all()
-    )
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        rows = sorted(
+            load_evaluation_row_pairs(db, eval_id),
+            key=lambda pair: int(pair[1].row_index or 0),
+        )
+    else:
+        rows = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
     report_config = payload.report_config if isinstance(payload.report_config, dict) else {}
     metrics = _display_metrics_for_pdf_report(db, organization_id, evaluation)
     configured_quality_ids = {
@@ -7746,6 +7810,19 @@ async def delete_call_import_evaluation_row(
     if not evaluation:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        from app.db_sharding.eval_rows import delete_evaluation_row_on_shards
+
+        if not delete_evaluation_row_on_shards(eval_row_id, eval_id):
+            raise HTTPException(
+                status_code=404, detail="Evaluation row not found in this run"
+            )
+        _rollup_evaluation_status(evaluation, db)
+        db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     eval_row = (
         db.query(CallImportEvaluationRow)
         .filter(
@@ -8197,6 +8274,18 @@ def _gather_retry_targets(
     in flight; ``include_completed`` controls whether previously-
     successful rows are eligible.
     """
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        from app.db_sharding.eval_rows import gather_retry_targets_sharded
+
+        return gather_retry_targets_sharded(
+            db,
+            evaluation,
+            requested_ids,
+            include_completed=include_completed,
+        )
+
     eval_rows_query = db.query(CallImportEvaluationRow).filter(
         CallImportEvaluationRow.evaluation_id == evaluation.id
     )

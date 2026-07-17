@@ -20,6 +20,12 @@ from app.workers.concurrency.diarization_dispatch import (
 )
 from app.workers.concurrency.eval_dispatch import DIARIZATION_QUEUE
 from app.workers.config import celery_app
+from app.db_sharding.import_dispatch import (
+    call_imports_with_pending_diarization as sharded_call_imports_diarize,
+    pending_diarization_row_for_call_import as sharded_pending_diarize_row,
+    pending_diarization_workspaces as sharded_pending_diarize_workspaces,
+)
+from app.db_sharding.sessions import is_sharding_enabled
 
 _RR_CURSOR_KEY = "diarisation:fair:rr_cursor"
 _WS_CALL_IMPORT_RR_CURSOR_KEY_PREFIX = "diarisation:fair:rr_cursor:ws:"
@@ -76,6 +82,8 @@ def _set_workspace_call_import_rr_cursor(workspace_id: UUID, cursor: int) -> Non
 
 
 def _workspaces_with_pending_diarization(db: Session) -> List[UUID]:
+    if is_sharding_enabled():
+        return sharded_pending_diarize_workspaces(db)
     rows = (
         db.query(CallImport.workspace_id)
         .join(CallImportRow, CallImportRow.call_import_id == CallImport.id)
@@ -93,6 +101,8 @@ def _call_imports_with_pending_diarization(
     db: Session,
     workspace_id: UUID,
 ) -> List[UUID]:
+    if is_sharding_enabled():
+        return sharded_call_imports_diarize(db, workspace_id)
     rows = (
         db.query(CallImport.id)
         .join(CallImportRow, CallImportRow.call_import_id == CallImport.id)
@@ -111,6 +121,9 @@ def _pending_row_for_call_import(
     db: Session,
     call_import_id: UUID,
 ) -> tuple[CallImportRow, CallImport] | None:
+    if is_sharding_enabled():
+        pending = sharded_pending_diarize_row(db, call_import_id)
+        return pending
     row = (
         db.query(CallImportRow, CallImport)
         .join(CallImport, CallImport.id == CallImportRow.call_import_id)

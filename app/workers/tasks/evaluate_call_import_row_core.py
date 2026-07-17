@@ -243,7 +243,18 @@ def reconcile_evaluation_counters(
     db: Session,
     evaluation: CallImportEvaluation,
 ) -> None:
-    """Sync parent counters from child rows using one aggregate query."""
+    """Sync parent counters from child rows using aggregate queries."""
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import aggregate_evaluation_row_counts
+
+        total, completed, failed = aggregate_evaluation_row_counts(db, evaluation.id)
+        evaluation.total_rows = total
+        evaluation.completed_rows = completed
+        evaluation.failed_rows = failed
+        return
+
     counts = (
         db.query(
             func.count().label("total"),
@@ -276,6 +287,13 @@ def reconcile_evaluation_counters(
 
 def _count_in_progress_rows(db: Session, evaluation_id: UUID) -> int:
     """Count rows still pending or running (cheap indexed query)."""
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import count_eval_rows_in_progress
+
+        return count_eval_rows_in_progress(db, evaluation_id)
+
     return int(
         db.query(func.count())
         .filter(
@@ -313,20 +331,30 @@ def _apply_parent_status_from_counters(
 
 
 def commit_terminal_row_and_rollup(
-    db: Session,
+    row_db: Session,
     evaluation: CallImportEvaluation,
     eval_row: CallImportEvaluationRow,
     *,
     previous_row_status: str,
+    catalog_db: Session | None = None,
 ) -> None:
-    db.commit()
+    parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
+    row_db.commit()
+    if parent_db is not row_db:
+        evaluation = (
+            parent_db.query(CallImportEvaluation)
+            .filter(CallImportEvaluation.id == evaluation.id)
+            .first()
+        )
+        if evaluation is None:
+            return
     rollup_parent(
-        db,
+        parent_db,
         evaluation,
         previous_row_status=previous_row_status,
         new_row_status=eval_row.status,
     )
-    db.commit()
+    parent_db.commit()
 
 
 def rollup_parent(
@@ -360,15 +388,19 @@ def rollup_parent(
                 )
             )
             db.flush()
+            from app.services.call_imports.progress_counters import (
+                record_eval_row_terminal,
+            )
+
+            record_eval_row_terminal(
+                evaluation_id,
+                completed_delta=completed_delta,
+                failed_delta=failed_delta,
+            )
     else:
         reconcile_evaluation_counters(db, evaluation)
 
-    evaluation = (
-        db.query(CallImportEvaluation)
-        .filter(CallImportEvaluation.id == evaluation_id)
-        .with_for_update()
-        .one()
-    )
+    db.refresh(evaluation)
     if previous_row_status is not None and new_row_status is not None:
         expected_in_progress = (
             int(evaluation.total_rows or 0)
@@ -377,19 +409,18 @@ def rollup_parent(
         )
         if expected_in_progress != _count_in_progress_rows(db, evaluation_id):
             reconcile_evaluation_counters(db, evaluation)
-            db.flush()
-            evaluation = (
-                db.query(CallImportEvaluation)
-                .filter(CallImportEvaluation.id == evaluation_id)
-                .with_for_update()
-                .one()
-            )
-    _apply_parent_status_from_counters(evaluation)
+            db.refresh(evaluation)
 
     completed = int(evaluation.completed_rows or 0)
     already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
     delta = completed - already_billed
     if delta > 0:
+        evaluation = (
+            db.query(CallImportEvaluation)
+            .filter(CallImportEvaluation.id == evaluation_id)
+            .with_for_update()
+            .one()
+        )
         from app.services.billing.flexprice_service import (
             record_call_import_evaluation_completed,
         )
@@ -406,6 +437,8 @@ def rollup_parent(
         )
         if billing_accepted:
             evaluation.billed_completed_rows = completed
+
+    _apply_parent_status_from_counters(evaluation)
 
 
 def parse_restricted_metric_uuids(

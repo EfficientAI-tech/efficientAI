@@ -13,15 +13,17 @@ from uuid import UUID, uuid4
 
 from loguru import logger
 from sqlalchemy.orm import Session, load_only
+from sqlalchemy import func
+
+from app.db_sharding.sessions import is_sharding_enabled
 
 from app.models.database import (
     CallImport,
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
-    CallImportRowStatus,
 )
-from app.models.enums import CallImportStatus
+from app.models.enums import CallImportRowStatus, CallImportStatus
 from app.models.schemas import CallImportTranscribeRequest
 
 _BULK_INSERT_CHUNK = 1000
@@ -206,6 +208,10 @@ def _completed_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
 
 
 def count_all_source_rows(db: Session, call_import_id: UUID) -> int:
+    from app.db_sharding.scatter_gather import count_call_import_rows
+
+    if is_sharding_enabled():
+        return count_call_import_rows(db, call_import_id)
     from sqlalchemy import func
 
     return int(
@@ -217,6 +223,10 @@ def count_all_source_rows(db: Session, call_import_id: UUID) -> int:
 
 
 def _all_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
+    from app.db_sharding.scatter_gather import list_source_row_ids_ordered
+
+    if is_sharding_enabled():
+        return list_source_row_ids_ordered(db, call_import_id)
     return [
         row_id
         for (row_id,) in (
@@ -230,11 +240,26 @@ def _all_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
 
 def bulk_insert_evaluation_rows(
     db: Session,
+    call_import_id: UUID,
     evaluation_id: UUID,
     source_row_ids: List[UUID],
 ) -> None:
     """Insert eval-row stubs in chunks without per-row ORM overhead."""
     if not source_row_ids:
+        return
+
+    if is_sharding_enabled():
+        from app.db_sharding.row_ops import bulk_insert_evaluation_rows_on_shards
+        from app.db_sharding.scatter_gather import source_row_index_map
+
+        index_by_id = source_row_index_map(db, call_import_id)
+        bulk_insert_evaluation_rows_on_shards(
+            db,
+            call_import_id,
+            evaluation_id,
+            source_row_ids,
+            index_by_source_id=index_by_id,
+        )
         return
 
     for start in range(0, len(source_row_ids), _BULK_INSERT_CHUNK):
@@ -284,26 +309,15 @@ def materialize_and_enqueue_evaluation(
         db.commit()
         return
 
-    bulk_insert_evaluation_rows(db, evaluation_id, source_row_ids)
+    bulk_insert_evaluation_rows(
+        db, evaluation.call_import_id, evaluation_id, source_row_ids
+    )
     db.commit()
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
-        .all()
-    )
-    source_rows = (
-        db.query(CallImportRow)
-        .options(load_only(*_EVAL_SOURCE_COLUMNS))
-        .filter(CallImportRow.id.in_(source_row_ids))
-        .all()
-    )
-    source_by_id = {row.id: row for row in source_rows}
-    bucket: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-    for eval_row in eval_rows:
-        source_row = source_by_id.get(eval_row.call_import_row_id)
-        if source_row is not None:
-            bucket.append((eval_row, source_row))
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+
+    pairs = load_evaluation_row_pairs(db, evaluation_id)
+    bucket: List[Tuple[CallImportEvaluationRow, CallImportRow]] = list(pairs)
 
     try:
         _enqueue_eval_rows_with_optional_transcribe(
@@ -532,6 +546,7 @@ def bulk_materialize_call_import_rows(
                     "id": uuid4(),
                     "call_import_id": call_import.id,
                     "organization_id": organization_id,
+                    "workspace_id": call_import.workspace_id,
                     "row_index": idx,
                     "conversation_id": row["conversation_id"],
                     "recording_date": (
@@ -548,7 +563,13 @@ def bulk_materialize_call_import_rows(
                     "status": CallImportRowStatus.PENDING,
                 }
             )
-        db.bulk_insert_mappings(CallImportRow, mappings)
+        from app.db_sharding.row_ops import bulk_insert_mappings_on_shards
+
+        bulk_insert_mappings_on_shards(
+            db,
+            call_import.id,
+            mappings,
+        )
     db.flush()
     return len(parsed_rows)
 
@@ -606,8 +627,12 @@ def execute_call_import_materialization(
         .filter(CallImportRow.call_import_id == call_import.id)
         .limit(1)
         .first()
+        if not is_sharding_enabled()
+        else None
     )
-    if existing_rows is not None:
+    if existing_rows is not None or (
+        is_sharding_enabled() and int(call_import.total_rows or 0) > 0
+    ):
         logger.info(
             "execute_call_import_materialization: import {} already has rows",
             call_import_id,
@@ -670,6 +695,9 @@ def execute_call_import_materialization(
             parsed_rows,
             organization_id,
         )
+        from app.db_sharding.row_ops import register_shard_slices
+
+        register_shard_slices(db, call_import.id, row_count)
         db.commit()
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -702,6 +730,101 @@ def execute_call_import_materialization(
     return {"total_rows": row_count, "status": "processing"}
 
 
+def _aggregate_import_row_status_counts(
+    db: Session,
+    call_import_id: UUID,
+) -> tuple[int, int, int, int, int]:
+    """Return total, completed, failed, pending, processing via SQL aggregate."""
+    if is_sharding_enabled():
+        from app.db_sharding.pool_manager import db_pool_manager
+        from app.db_sharding.scatter_gather import shard_ids_for_import
+
+        total = completed = failed = pending = processing = 0
+        for shard_id in shard_ids_for_import(db, call_import_id):
+            factory = db_pool_manager.shard_session_factory(shard_id)
+            shard_db = factory()
+            try:
+                row = (
+                    shard_db.query(
+                        func.count(CallImportRow.id),
+                        func.count().filter(
+                            CallImportRow.status == CallImportRowStatus.COMPLETED
+                        ),
+                        func.count().filter(
+                            CallImportRow.status == CallImportRowStatus.FAILED
+                        ),
+                        func.count().filter(
+                            CallImportRow.status == CallImportRowStatus.PENDING
+                        ),
+                        func.count().filter(
+                            CallImportRow.status == CallImportRowStatus.PROCESSING
+                        ),
+                    )
+                    .filter(CallImportRow.call_import_id == call_import_id)
+                    .one()
+                )
+                total += int(row[0] or 0)
+                completed += int(row[1] or 0)
+                failed += int(row[2] or 0)
+                pending += int(row[3] or 0)
+                processing += int(row[4] or 0)
+            finally:
+                shard_db.close()
+        if total == 0:
+            row = (
+                db.query(
+                    func.count(CallImportRow.id),
+                    func.count().filter(
+                        CallImportRow.status == CallImportRowStatus.COMPLETED
+                    ),
+                    func.count().filter(
+                        CallImportRow.status == CallImportRowStatus.FAILED
+                    ),
+                    func.count().filter(
+                        CallImportRow.status == CallImportRowStatus.PENDING
+                    ),
+                    func.count().filter(
+                        CallImportRow.status == CallImportRowStatus.PROCESSING
+                    ),
+                )
+                .filter(CallImportRow.call_import_id == call_import_id)
+                .one()
+            )
+            total = int(row[0] or 0)
+            if total > 0:
+                return (
+                    total,
+                    int(row[1] or 0),
+                    int(row[2] or 0),
+                    int(row[3] or 0),
+                    int(row[4] or 0),
+                )
+        return total, completed, failed, pending, processing
+
+    row = (
+        db.query(
+            func.count(CallImportRow.id),
+            func.count().filter(
+                CallImportRow.status == CallImportRowStatus.COMPLETED
+            ),
+            func.count().filter(CallImportRow.status == CallImportRowStatus.FAILED),
+            func.count().filter(CallImportRow.status == CallImportRowStatus.PENDING),
+            func.count().filter(
+                CallImportRow.status == CallImportRowStatus.PROCESSING
+            ),
+        )
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .one()
+    )
+    return (
+        int(row[0] or 0),
+        int(row[1] or 0),
+        int(row[2] or 0),
+        int(row[3] or 0),
+        int(row[4] or 0),
+    )
+
+
 def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> None:
     """Recompute batch counters and terminal status on the parent import.
 
@@ -711,17 +834,8 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     parent stuck in ``processing`` once every evaluation run is terminal.
     """
 
-    counts = (
-        db.query(CallImportRow.status)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .all()
-    )
-    total = len(counts)
-    completed = sum(1 for (status,) in counts if status == CallImportRowStatus.COMPLETED)
-    failed = sum(1 for (status,) in counts if status == CallImportRowStatus.FAILED)
-    pending = sum(1 for (status,) in counts if status == CallImportRowStatus.PENDING)
-    processing = sum(
-        1 for (status,) in counts if status == CallImportRowStatus.PROCESSING
+    total, completed, failed, pending, processing = _aggregate_import_row_status_counts(
+        db, call_import.id
     )
     pending_or_processing = pending + processing
 
@@ -788,6 +902,15 @@ def count_evaluation_cancel_targets(
     mode: Literal["abort", "force_fail_pending"],
 ) -> int:
     """Count rows eligible for bulk cancel without loading full ORM objects."""
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import count_evaluation_cancel_targets_sharded
+
+        return count_evaluation_cancel_targets_sharded(
+            db,
+            evaluation_id,
+            pending_only=(mode == "force_fail_pending"),
+            in_progress_only=(mode == "abort"),
+        )
     from sqlalchemy import func
 
     query = db.query(func.count(CallImportEvaluationRow.id)).filter(
@@ -837,10 +960,7 @@ def execute_evaluation_cancel(
     mode: Literal["abort", "force_fail_pending"],
 ) -> dict:
     """Cancel eval rows in chunks off the API thread."""
-    from app.api.v1.routes.call_import_evaluations import (
-        EVAL_CANCELLED_BY_USER_ERROR,
-        _rollup_evaluation_status,
-    )
+    from app.api.v1.routes.call_import_evaluations import _rollup_evaluation_status
 
     evaluation = (
         db.query(CallImportEvaluation)
@@ -856,41 +976,17 @@ def execute_evaluation_cancel(
 
     try:
         cancelled_total = 0
-        while True:
-            query = (
-                db.query(CallImportEvaluationRow)
-                .options(load_only(*_EVAL_CANCEL_COLUMNS))
-                .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+        if is_sharding_enabled():
+            cancelled_total = _cancel_evaluation_rows_all_shards(
+                evaluation_id,
+                mode=mode,
             )
-            if mode == "abort":
-                query = query.filter(
-                    CallImportEvaluationRow.status.in_(("pending", "running"))
-                )
-            else:
-                query = query.filter(CallImportEvaluationRow.status == "pending")
-
-            rows = (
-                query.order_by(CallImportEvaluationRow.id.asc())
-                .limit(_BULK_INSERT_CHUNK)
-                .all()
+        else:
+            cancelled_total = _cancel_evaluation_rows_on_session(
+                db,
+                evaluation_id,
+                mode=mode,
             )
-            if not rows:
-                break
-
-            task_ids: List[str] = []
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                task_id = (row.celery_task_id or "").strip()
-                if task_id:
-                    task_ids.append(task_id)
-                row.status = "failed"
-                row.error_message = EVAL_CANCELLED_BY_USER_ERROR
-                row.finished_at = now
-                row.celery_task_id = None
-                cancelled_total += 1
-
-            _batch_revoke_celery_task_ids(task_ids, terminate=True)
-            db.commit()
 
         db.refresh(evaluation)
         _rollup_evaluation_status(evaluation, db)
@@ -907,6 +1003,77 @@ def execute_evaluation_cancel(
         )
 
         clear_evaluation_bulk_operation(evaluation_id)
+
+
+def _cancel_evaluation_rows_on_session(
+    db: Session,
+    evaluation_id: UUID,
+    *,
+    mode: Literal["abort", "force_fail_pending"],
+) -> int:
+    from app.api.v1.routes.call_import_evaluations import EVAL_CANCELLED_BY_USER_ERROR
+
+    cancelled_total = 0
+    while True:
+        query = (
+            db.query(CallImportEvaluationRow)
+            .options(load_only(*_EVAL_CANCEL_COLUMNS))
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+        )
+        if mode == "abort":
+            query = query.filter(
+                CallImportEvaluationRow.status.in_(("pending", "running"))
+            )
+        else:
+            query = query.filter(CallImportEvaluationRow.status == "pending")
+
+        rows = (
+            query.order_by(CallImportEvaluationRow.id.asc())
+            .limit(_BULK_INSERT_CHUNK)
+            .all()
+        )
+        if not rows:
+            break
+
+        task_ids: List[str] = []
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            task_id = (row.celery_task_id or "").strip()
+            if task_id:
+                task_ids.append(task_id)
+            row.status = "failed"
+            row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+            row.finished_at = now
+            row.celery_task_id = None
+            cancelled_total += 1
+
+        _batch_revoke_celery_task_ids(task_ids, terminate=True)
+        db.commit()
+    return cancelled_total
+
+
+def _cancel_evaluation_rows_all_shards(
+    evaluation_id: UUID,
+    *,
+    mode: Literal["abort", "force_fail_pending"],
+) -> int:
+    from app.db_sharding.pool_manager import db_pool_manager
+
+    router = db_pool_manager.router
+    assert router is not None
+    total = 0
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            total += _cancel_evaluation_rows_on_session(
+                shard_db,
+                evaluation_id,
+                mode=mode,
+            )
+        finally:
+            shard_db.close()
+    return total
 
 
 def execute_evaluation_retry(
