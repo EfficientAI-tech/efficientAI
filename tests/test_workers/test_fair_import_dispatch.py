@@ -9,6 +9,7 @@ import pytest
 
 from app.models.database import CallImport, CallImportRow
 from app.models.enums import CallImportRowStatus, CallImportStatus
+from app.workers.concurrency.import_dispatch import ImportDispatchOutcome
 
 
 def _seed_pending_rows(db_session, *, workspace_count: int = 2, jobs_per_ws: int = 2):
@@ -75,7 +76,7 @@ def test_dispatch_fair_import_rows_advances_workspace_cursor(
     )
 
     _, workspaces, _, _ = _seed_pending_rows(db_session, workspace_count=2)
-    mock_dispatch_batch.side_effect = [2, 1]
+    mock_dispatch_batch.side_effect = [(2, False, 0), (1, False, 0)]
 
     with patch(
         "app.workers.concurrency.fair_import_dispatch.SessionLocal",
@@ -93,7 +94,7 @@ def test_dispatch_fair_import_rows_advances_workspace_cursor(
 
 @patch(
     "app.workers.concurrency.fair_import_dispatch._try_dispatch_single_import_row",
-    return_value="dispatched",
+    return_value=ImportDispatchOutcome("dispatched"),
 )
 @patch(
     "app.workers.concurrency.fair_import_dispatch._get_workspace_call_import_rr_cursor",
@@ -118,7 +119,9 @@ def test_dispatch_batch_interleaves_call_imports(
     ws_id = workspaces[0].id
     ws_imports = [ci for ci in call_imports if ci.workspace_id == ws_id]
 
-    dispatched = _dispatch_batch_for_workspace(db_session, ws_id, batch_size=2)
+    dispatched, _hit_capacity, _backoff = _dispatch_batch_for_workspace(
+        db_session, ws_id, batch_size=2
+    )
 
     assert dispatched == 2
     assert mock_try_dispatch.call_count == 2
@@ -132,7 +135,7 @@ def test_dispatch_batch_interleaves_call_imports(
 
 @patch(
     "app.workers.concurrency.fair_import_dispatch._try_dispatch_single_import_row",
-    return_value="at_capacity",
+    return_value=ImportDispatchOutcome("at_capacity"),
 )
 @patch(
     "app.workers.concurrency.fair_import_dispatch._get_workspace_call_import_rr_cursor",
@@ -154,7 +157,9 @@ def test_dispatch_batch_persists_cursor_on_at_capacity(
     _, workspaces, _, _ = _seed_pending_rows(db_session, workspace_count=1, jobs_per_ws=1)
     ws_id = workspaces[0].id
 
-    dispatched = _dispatch_batch_for_workspace(db_session, ws_id, batch_size=5)
+    dispatched, _hit_capacity, _backoff = _dispatch_batch_for_workspace(
+        db_session, ws_id, batch_size=5
+    )
 
     assert dispatched == 0
     mock_set_ws_cursor.assert_called_once_with(ws_id, 0)
@@ -192,7 +197,10 @@ def test_try_dispatch_single_import_row_enqueues_task(
     mock_release,
     db_session,
 ):
-    from app.workers.concurrency.import_dispatch import _try_dispatch_single_import_row
+    from app.workers.concurrency.import_dispatch import (
+        ImportDispatchOutcome,
+        _try_dispatch_single_import_row,
+    )
 
     _, _, call_imports, rows = _seed_pending_rows(db_session, workspace_count=1, jobs_per_ws=1)
     row = rows[0]
@@ -213,7 +221,7 @@ def test_try_dispatch_single_import_row_enqueues_task(
             call_import=call_import,
         )
 
-    assert result == "dispatched"
+    assert result == ImportDispatchOutcome("dispatched")
     mock_acquire.assert_called_once()
     fake_task.apply_async.assert_called_once()
     db_session.refresh(row)

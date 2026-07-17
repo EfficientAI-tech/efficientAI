@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from app.workers.concurrency import fair_dispatch as fair_dispatch_module
+from app.workers.concurrency.eval_dispatch import EvalDispatchOutcome
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +77,7 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
             for item in pending_by_eval[evaluation.id]
             if item[0].id != eval_row.id
         ]
-        return "dispatched"
+        return EvalDispatchOutcome("dispatched")
 
     db = MagicMock()
     with patch.object(
@@ -103,10 +104,12 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
         fair_dispatch_module,
         "clear_row_restricted_metrics",
     ):
-        dispatched, hit_capacity = fair_dispatch_module._dispatch_batch_for_workspace(
-            db,
-            workspace_id,
-            batch_size=4,
+        dispatched, hit_capacity, _backoff = (
+            fair_dispatch_module._dispatch_batch_for_workspace(
+                db,
+                workspace_id,
+                batch_size=4,
+            )
         )
 
     assert dispatched == 4
@@ -140,7 +143,7 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
         evaluation = kwargs["evaluation"]
         dispatched_evaluations.append(evaluation.id)
         pending_by_eval[evaluation.id] = pending_by_eval[evaluation.id][1:]
-        return "dispatched"
+        return EvalDispatchOutcome("dispatched")
 
     db = MagicMock()
     with patch.object(
@@ -167,10 +170,12 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
         fair_dispatch_module,
         "clear_row_restricted_metrics",
     ):
-        dispatched, hit_capacity = fair_dispatch_module._dispatch_batch_for_workspace(
-            db,
-            workspace_id,
-            batch_size=2,
+        dispatched, hit_capacity, _backoff = (
+            fair_dispatch_module._dispatch_batch_for_workspace(
+                db,
+                workspace_id,
+                batch_size=2,
+            )
         )
 
     assert dispatched == 2

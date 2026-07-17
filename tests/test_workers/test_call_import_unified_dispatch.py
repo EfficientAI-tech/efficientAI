@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from app.models.enums import CallImportRowStatus
 from app.workers.concurrency.eval_dispatch import (
+    EvalDispatchOutcome,
     _needs_import_for_eval,
     _needs_transcribe_for_eval,
     _try_dispatch_single_row,
@@ -83,7 +84,15 @@ def test_needs_transcribe_after_recording_ready():
 def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
     evaluation = _evaluation()
     eval_row = SimpleNamespace(id=uuid4(), celery_task_id=None, status="pending")
-    source_row = _source_row()
+    source_row = _source_row(
+        call_import=SimpleNamespace(
+            id=uuid4(),
+            organization_id=evaluation.organization_id,
+            workspace_id=evaluation.workspace_id,
+            provider=None,
+            telephony_integration_id=None,
+        ),
+    )
     captured = {}
 
     class _AsyncResult:
@@ -114,7 +123,7 @@ def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
         source_row=source_row,
     )
 
-    assert result == "dispatched"
+    assert result == EvalDispatchOutcome("dispatched")
     assert captured["apply_async_kwargs"]["kwargs"]["run_eval_row_id"] == str(
         eval_row.id
     )

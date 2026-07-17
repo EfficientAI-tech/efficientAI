@@ -16,6 +16,7 @@ from app.workers.concurrency.diarization_dispatch import (
 )
 from app.workers.concurrency.eval_dispatch import (
     DIARIZATION_QUEUE,
+    EvalDispatchOutcome,
     _try_dispatch_single_row,
 )
 
@@ -115,7 +116,7 @@ def test_eval_chain_transcribe_uses_diarization_queue(
         source_row=source_row,
     )
 
-    assert result == "dispatched"
+    assert result == EvalDispatchOutcome("dispatched")
     stub_worker_task_modules.apply_async.assert_called_once()
     call_kwargs = stub_worker_task_modules.apply_async.call_args.kwargs
     assert call_kwargs["queue"] == DIARIZATION_QUEUE
@@ -164,7 +165,7 @@ def test_eval_dispatch_skips_failed_diarization_without_overwrite(
         transcribe_overwrite=False,
     )
 
-    assert result == "skip"
+    assert result == EvalDispatchOutcome("skip")
     stub_worker_task_modules.apply_async.assert_not_called()
 
 

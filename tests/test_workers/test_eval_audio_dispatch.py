@@ -20,6 +20,7 @@ from app.models.enums import CallImportRowStatus, CallImportStatus
 from app.workers.concurrency.eval_dispatch import (
     AUDIO_METRICS_QUEUE,
     EVALUATIONS_QUEUE,
+    EvalDispatchOutcome,
     _try_dispatch_single_row,
 )
 from app.workers.config import celery_app
@@ -155,7 +156,7 @@ def test_dispatch_routes_audio_phase_to_audio_metrics_queue(
         source_row=source_row,
     )
 
-    assert result == "dispatched"
+    assert result == EvalDispatchOutcome("dispatched")
     assert captured["queue"] == AUDIO_METRICS_QUEUE
 
 
@@ -191,5 +192,5 @@ def test_dispatch_routes_llm_only_to_evaluations_queue(db_session, monkeypatch):
         source_row=source_row,
     )
 
-    assert result == "dispatched"
+    assert result == EvalDispatchOutcome("dispatched")
     assert captured["queue"] == EVALUATIONS_QUEUE
