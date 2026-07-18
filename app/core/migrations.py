@@ -40,14 +40,34 @@ def _migration_applies_to_engine(migration_file: Path, engine_role: str) -> bool
     return scope == engine_role
 
 
+def _canonical_db_url_key(url: str) -> tuple:
+    """Compare DB URLs ignoring driver suffix normalisation (postgresql vs postgresql+psycopg2)."""
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    driver = (parsed.drivername or "").split("+", 1)[0]
+    return (
+        driver,
+        parsed.username or "",
+        parsed.password or "",
+        parsed.host or "",
+        parsed.port,
+        parsed.database or "",
+    )
+
+
 def _engine_role_for_url(engine_url: str) -> str:
     from app.config import settings
 
     if not getattr(settings, "DB_SHARDING_ENABLED", False):
         return "legacy"
     catalog_url = getattr(settings, "DB_CATALOG_URL", None) or settings.DATABASE_URL
-    if str(engine_url) == str(catalog_url):
-        return "catalog"
+    try:
+        if _canonical_db_url_key(engine_url) == _canonical_db_url_key(catalog_url):
+            return "catalog"
+    except Exception:
+        if str(engine_url) == str(catalog_url):
+            return "catalog"
     return "shard"
 
 

@@ -253,6 +253,9 @@ def reconcile_evaluation_counters(
         evaluation.total_rows = total
         evaluation.completed_rows = completed
         evaluation.failed_rows = failed
+        from app.services.call_imports.progress_counters import clear_eval_progress_redis
+
+        clear_eval_progress_redis(evaluation.id)
         return
 
     counts = (
@@ -283,6 +286,9 @@ def reconcile_evaluation_counters(
     evaluation.total_rows = int(counts.total or 0)
     evaluation.completed_rows = int(counts.completed or 0)
     evaluation.failed_rows = int(counts.failed or 0)
+    from app.services.call_imports.progress_counters import clear_eval_progress_redis
+
+    clear_eval_progress_redis(evaluation.id)
 
 
 def _count_in_progress_rows(db: Session, evaluation_id: UUID) -> int:
@@ -388,17 +394,12 @@ def rollup_parent(
                 )
             )
             db.flush()
-            from app.services.call_imports.progress_counters import (
-                record_eval_row_terminal,
-            )
-
-            record_eval_row_terminal(
-                evaluation_id,
-                completed_delta=completed_delta,
-                failed_delta=failed_delta,
-            )
     else:
         reconcile_evaluation_counters(db, evaluation)
+
+    from app.services.call_imports.progress_counters import clear_eval_progress_redis
+
+    clear_eval_progress_redis(evaluation_id)
 
     db.refresh(evaluation)
     if previous_row_status is not None and new_row_status is not None:

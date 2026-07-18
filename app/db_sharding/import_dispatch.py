@@ -13,6 +13,12 @@ from app.models.database import CallImport, CallImportRow
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
 
+def _import_blocked_by_rebalance(call_import_id: UUID) -> bool:
+    from app.db_sharding.rebalance import is_import_rebalance_locked
+
+    return is_import_rebalance_locked(call_import_id)
+
+
 def pending_import_workspaces(catalog_db: Session) -> List[UUID]:
     if not is_sharding_enabled():
         rows = (
@@ -47,6 +53,11 @@ def pending_import_workspaces(catalog_db: Session) -> List[UUID]:
             import_ids.update(row[0] for row in rows if row[0] is not None)
         finally:
             shard_db.close()
+    if not import_ids:
+        return []
+    from app.db_sharding.rebalance import filter_unlocked_call_import_ids
+
+    import_ids = set(filter_unlocked_call_import_ids(import_ids))
     if not import_ids:
         return []
     rows = (
@@ -110,7 +121,9 @@ def call_imports_with_pending_rows(
             pending.update(row[0] for row in rows if row[0] is not None)
         finally:
             shard_db.close()
-    return sorted(pending)
+    from app.db_sharding.rebalance import filter_unlocked_call_import_ids
+
+    return sorted(filter_unlocked_call_import_ids(pending))
 
 
 def pending_import_row_for_call_import(
@@ -126,6 +139,8 @@ def pending_import_row_for_call_import(
         .first()
     )
     if call_import is None:
+        return None
+    if _import_blocked_by_rebalance(call_import_id):
         return None
 
     if not is_sharding_enabled():
@@ -199,6 +214,11 @@ def pending_diarization_workspaces(catalog_db: Session) -> List[UUID]:
             shard_db.close()
     if not import_ids:
         return []
+    from app.db_sharding.rebalance import filter_unlocked_call_import_ids
+
+    import_ids = set(filter_unlocked_call_import_ids(import_ids))
+    if not import_ids:
+        return []
     rows = (
         catalog_db.query(CallImport.workspace_id)
         .filter(CallImport.id.in_(import_ids))
@@ -253,7 +273,9 @@ def call_imports_with_pending_diarization(
             pending.update(row[0] for row in rows if row[0] is not None)
         finally:
             shard_db.close()
-    return sorted(pending)
+    from app.db_sharding.rebalance import filter_unlocked_call_import_ids
+
+    return sorted(filter_unlocked_call_import_ids(pending))
 
 
 def pending_diarization_row_for_call_import(
@@ -264,6 +286,8 @@ def pending_diarization_row_for_call_import(
         catalog_db.query(CallImport).filter(CallImport.id == call_import_id).first()
     )
     if call_import is None:
+        return None
+    if _import_blocked_by_rebalance(call_import_id):
         return None
     if not is_sharding_enabled():
         row = (

@@ -96,18 +96,34 @@ def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
 
 
 def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportResponse:
-    """Catalog parent fields with Redis-backed import progress merged for the UI."""
+    """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
     from app.services.call_imports.progress_counters import (
-        flush_import_progress_to_catalog,
-        merge_import_counters_for_ui,
+        clear_import_progress_redis,
+        read_import_progress,
     )
 
-    flush_import_progress_to_catalog(db, call_import.id)
-    ui_completed, ui_failed = merge_import_counters_for_ui(call_import)
-    base = CallImportResponse.model_validate(call_import)
-    return base.model_copy(
-        update={"completed_rows": ui_completed, "failed_rows": ui_failed}
+    redis_completed, redis_failed = read_import_progress(call_import.id)
+    if (
+        redis_completed
+        or redis_failed
+        or int(call_import.completed_rows or 0) > int(call_import.total_rows or 0)
+        or int(call_import.failed_rows or 0) > int(call_import.total_rows or 0)
+    ):
+        rollup_call_import_batch_status(db, call_import)
+        db.flush()
+
+    clear_import_progress_redis(call_import.id)
+    db.refresh(call_import)
+    total = int(call_import.total_rows or 0)
+    completed = min(int(call_import.completed_rows or 0), total) if total else int(
+        call_import.completed_rows or 0
     )
+    failed = min(int(call_import.failed_rows or 0), total) if total else int(
+        call_import.failed_rows or 0
+    )
+    base = CallImportResponse.model_validate(call_import)
+    return base.model_copy(update={"completed_rows": completed, "failed_rows": failed})
 
 
 def _resolve_tags(

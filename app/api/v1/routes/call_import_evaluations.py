@@ -486,13 +486,15 @@ def _serialize_eval(
         db, row.organization_id, metric_ids_for_lookup
     )
 
-    from app.services.call_imports.progress_counters import (
-        flush_eval_progress_to_catalog,
-        merge_eval_counters_for_ui,
-    )
+    from app.services.call_imports.progress_counters import clear_eval_progress_redis
 
-    flush_eval_progress_to_catalog(db, row.id)
-    ui_completed, ui_failed = merge_eval_counters_for_ui(row)
+    clear_eval_progress_redis(row.id)
+    db.refresh(row)
+    total = int(row.total_rows or 0)
+    ui_completed = min(int(row.completed_rows or 0), total) if total else int(
+        row.completed_rows or 0
+    )
+    ui_failed = min(int(row.failed_rows or 0), total) if total else int(row.failed_rows or 0)
 
     return CallImportEvaluationResponse(
         id=row.id,
@@ -4871,9 +4873,10 @@ def _generate_and_persist_tldr_summary(
         ) from e
 
     summary = _parse_insights_response(llm_result.get("text", ""))
-    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
-
-    ui_completed, _ui_failed = merge_eval_counters_for_ui(evaluation)
+    total = int(evaluation.total_rows or 0)
+    ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
+        evaluation.completed_rows or 0
+    )
     summary.generated_at_completed_rows = ui_completed
     summary.provider = provider_enum.value
     summary.model = model_str

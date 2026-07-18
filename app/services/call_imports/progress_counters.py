@@ -94,16 +94,9 @@ def flush_eval_progress_to_catalog(db: Session, evaluation_id: UUID) -> None:
     completed_delta, failed_delta = read_eval_progress(evaluation_id)
     if not completed_delta and not failed_delta:
         return
-    evaluation = (
-        db.query(CallImportEvaluation)
-        .filter(CallImportEvaluation.id == evaluation_id)
-        .first()
-    )
-    if evaluation is None:
-        return
-    evaluation.completed_rows = int(evaluation.completed_rows or 0) + completed_delta
-    evaluation.failed_rows = int(evaluation.failed_rows or 0) + failed_delta
-    db.flush()
+
+    # Decrement Redis before the catalog write. If Redis fails, skip the flush
+    # entirely so merge_eval_counters_for_ui never double-counts stale deltas.
     try:
         client = _client()
         if completed_delta:
@@ -118,8 +111,57 @@ def flush_eval_progress_to_catalog(db: Session, evaluation_id: UUID) -> None:
                 _eval_failed_key(evaluation_id),
                 -failed_delta,
             )
-    except redis.RedisError:
-        pass
+    except redis.RedisError as exc:
+        logger.warning("eval progress flush skipped (redis decrement failed): {}", exc)
+        return
+
+    try:
+        evaluation = (
+            db.query(CallImportEvaluation)
+            .filter(CallImportEvaluation.id == evaluation_id)
+            .first()
+        )
+        if evaluation is None:
+            raise LookupError(f"evaluation {evaluation_id} not found")
+        evaluation.completed_rows = int(evaluation.completed_rows or 0) + completed_delta
+        evaluation.failed_rows = int(evaluation.failed_rows or 0) + failed_delta
+        db.flush()
+    except Exception as exc:
+        logger.warning(
+            "eval progress catalog flush failed, restoring redis deltas: {}",
+            exc,
+        )
+        record_eval_row_terminal(
+            evaluation_id,
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+        )
+
+
+def clear_import_progress_redis(call_import_id: UUID | str) -> None:
+    """Drop stale Redis deltas after catalog counters were reconciled from row data."""
+    try:
+        client = _client()
+        client.hdel(
+            "import:progress",
+            _import_completed_key(call_import_id),
+            _import_failed_key(call_import_id),
+        )
+    except redis.RedisError as exc:
+        logger.debug("import progress redis clear skipped: {}", exc)
+
+
+def clear_eval_progress_redis(evaluation_id: UUID | str) -> None:
+    """Drop stale Redis deltas after catalog counters were reconciled from row data."""
+    try:
+        client = _client()
+        client.hdel(
+            "eval:progress",
+            _eval_completed_key(evaluation_id),
+            _eval_failed_key(evaluation_id),
+        )
+    except redis.RedisError as exc:
+        logger.debug("eval progress redis clear skipped: {}", exc)
 
 
 def merge_eval_counters_for_ui(
@@ -186,14 +228,7 @@ def flush_import_progress_to_catalog(db: Session, call_import_id: UUID) -> None:
     completed_delta, failed_delta = read_import_progress(call_import_id)
     if not completed_delta and not failed_delta:
         return
-    call_import = (
-        db.query(CallImport).filter(CallImport.id == call_import_id).first()
-    )
-    if call_import is None:
-        return
-    call_import.completed_rows = int(call_import.completed_rows or 0) + completed_delta
-    call_import.failed_rows = int(call_import.failed_rows or 0) + failed_delta
-    db.flush()
+
     try:
         client = _client()
         if completed_delta:
@@ -208,5 +243,26 @@ def flush_import_progress_to_catalog(db: Session, call_import_id: UUID) -> None:
                 _import_failed_key(call_import_id),
                 -failed_delta,
             )
-    except redis.RedisError:
-        pass
+    except redis.RedisError as exc:
+        logger.warning("import progress flush skipped (redis decrement failed): {}", exc)
+        return
+
+    try:
+        call_import = (
+            db.query(CallImport).filter(CallImport.id == call_import_id).first()
+        )
+        if call_import is None:
+            raise LookupError(f"call_import {call_import_id} not found")
+        call_import.completed_rows = int(call_import.completed_rows or 0) + completed_delta
+        call_import.failed_rows = int(call_import.failed_rows or 0) + failed_delta
+        db.flush()
+    except Exception as exc:
+        logger.warning(
+            "import progress catalog flush failed, restoring redis deltas: {}",
+            exc,
+        )
+        record_import_row_terminal(
+            call_import_id,
+            completed_delta=completed_delta,
+            failed_delta=failed_delta,
+        )

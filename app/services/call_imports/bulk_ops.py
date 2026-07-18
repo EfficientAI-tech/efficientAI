@@ -895,6 +895,10 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
     else:
         call_import.status = CallImportStatus.PARTIAL
 
+    from app.services.call_imports.progress_counters import clear_import_progress_redis
+
+    clear_import_progress_redis(call_import.id)
+
 
 _EVAL_CANCEL_COLUMNS = (
     CallImportEvaluationRow.id,

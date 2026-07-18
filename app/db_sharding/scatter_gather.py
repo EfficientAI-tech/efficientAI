@@ -275,6 +275,12 @@ def pending_eval_workspaces(
     if not evaluation_ids:
         return []
 
+    from app.db_sharding.rebalance import filter_evaluations_not_rebalancing
+
+    evaluation_ids = set(filter_evaluations_not_rebalancing(catalog_db, evaluation_ids))
+    if not evaluation_ids:
+        return []
+
     rows = (
         catalog_db.query(CallImportEvaluation.workspace_id)
         .filter(
@@ -352,7 +358,9 @@ def evaluations_with_pending_rows(
         finally:
             if close_shard:
                 shard_db.close()
-    return sorted(pending)
+    from app.db_sharding.rebalance import filter_evaluations_not_rebalancing
+
+    return sorted(filter_evaluations_not_rebalancing(catalog_db, pending))
 
 
 def _evaluations_with_pending_mono(db: Session, workspace_id: UUID) -> List[UUID]:
@@ -392,6 +400,10 @@ def pending_eval_row_triples(
         .first()
     )
     if evaluation is None:
+        return []
+    from app.db_sharding.rebalance import is_import_rebalance_locked
+
+    if is_import_rebalance_locked(evaluation.call_import_id):
         return []
 
     if not is_sharding_enabled():

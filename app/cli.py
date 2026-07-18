@@ -798,6 +798,168 @@ api:
         sys.exit(1)
 
 
+def _bootstrap_sharding_config(config_path: str) -> None:
+    from app.config import load_config_from_file
+    from app.db_sharding.pool_manager import db_pool_manager
+
+    load_config_from_file(config_path)
+    db_pool_manager.reset()
+
+
+@click.group()
+def sharding():
+    """Call-import data-plane sharding admin (rebalance / registry)."""
+    pass
+
+
+main.add_command(sharding)
+
+
+@sharding.command("list-slices")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option(
+    "--call-import-id",
+    required=True,
+    help="Call import UUID whose slice registry to inspect",
+)
+def sharding_list_slices(config: str, call_import_id: str):
+    """Show catalog slice registry rows for a call import."""
+    from uuid import UUID
+
+    from app.db_sharding.pool_manager import open_catalog_session
+    from app.db_sharding.rebalance import RebalanceError, list_shard_slices, require_sharding_enabled
+
+    try:
+        _bootstrap_sharding_config(config)
+        require_sharding_enabled()
+        cid = UUID(call_import_id)
+    except (ValueError, RebalanceError) as exc:
+        click.echo(f"❌ {exc}", err=True)
+        sys.exit(1)
+
+    catalog = open_catalog_session()
+    try:
+        slices = list_shard_slices(catalog, cid)
+        if not slices:
+            click.echo(f"No registry slices for call_import {cid}")
+            return
+        click.echo(f"call_import_id: {cid}")
+        click.echo(f"slices: {len(slices)}")
+        for item in slices:
+            click.echo(
+                f"  slice {item.slice_id}: shard={item.shard_id} "
+                f"rows [{item.row_index_min}, {item.row_index_max}] "
+                f"(count={item.row_count})"
+            )
+    finally:
+        catalog.close()
+
+
+@sharding.command("rebalance-slices")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--call-import-id", required=True, help="Call import UUID to rebalance")
+@click.option("--from-shard", required=True, help="Source shard id (e.g. data-shard-01)")
+@click.option("--to-shard", required=True, help="Target shard id (e.g. data-shard-02)")
+@click.option(
+    "--slice-id",
+    "slice_ids",
+    multiple=True,
+    type=int,
+    help="Move only these slice ids (default: all slices on --from-shard)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Plan only: print row counts without copying or updating registry",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip quiescence checks (use only after pausing workers)",
+)
+def sharding_rebalance_slices(
+    config: str,
+    call_import_id: str,
+    from_shard: str,
+    to_shard: str,
+    slice_ids: tuple[int, ...],
+    dry_run: bool,
+    force: bool,
+):
+    """Copy call-import slice rows (and eval rows) from one shard to another."""
+    from uuid import UUID
+
+    from app.db_sharding.pool_manager import open_catalog_session
+    from app.db_sharding.rebalance import (
+        RebalanceError,
+        require_sharding_enabled,
+        build_rebalance_plan,
+        execute_rebalance_slices,
+    )
+
+    try:
+        _bootstrap_sharding_config(config)
+        require_sharding_enabled()
+        cid = UUID(call_import_id)
+    except (ValueError, RebalanceError) as exc:
+        click.echo(f"❌ {exc}", err=True)
+        sys.exit(1)
+
+    catalog = open_catalog_session()
+    try:
+        plan = build_rebalance_plan(
+            catalog,
+            cid,
+            from_shard_id=from_shard,
+            to_shard_id=to_shard,
+            slice_ids=slice_ids or None,
+        )
+        click.echo("Rebalance plan:")
+        click.echo(f"  call_import_id: {plan.call_import_id}")
+        click.echo(f"  from_shard:     {plan.from_shard_id}")
+        click.echo(f"  to_shard:       {plan.to_shard_id}")
+        click.echo(f"  slices:         {len(plan.slices)}")
+        for item in plan.slices:
+            click.echo(
+                f"    slice {item.slice_id}: rows [{item.row_index_min}, {item.row_index_max}]"
+            )
+        click.echo(f"  import_rows:    {plan.import_row_count}")
+        click.echo(f"  eval_rows:      {plan.eval_row_count}")
+
+        result = execute_rebalance_slices(
+            catalog,
+            plan,
+            dry_run=dry_run,
+            force=force,
+        )
+        if result.dry_run:
+            click.echo("✅ Dry run complete (no changes made)")
+        else:
+            click.echo(
+                "✅ Rebalance complete: "
+                f"slices={result.slices_moved}, "
+                f"import_rows={result.import_rows_moved}, "
+                f"eval_rows={result.eval_rows_moved}"
+            )
+    except RebalanceError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        sys.exit(1)
+    finally:
+        catalog.close()
+
+
 if __name__ == "__main__":
     main()
 
