@@ -71,6 +71,10 @@ from app.services.billing.flexprice_service import log_startup_status  # noqa: E
 
 log_startup_status(component="celery-worker")
 
+# Queues consumed by the dedicated call-import / evaluation worker.
+IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
+EVAL_CONTROL_QUEUE = "eval-control"
+
 # Create Celery app
 celery_app = Celery(
     "efficientai",
@@ -105,21 +109,21 @@ celery_app.conf.update(
 )
 
 # Route call-import recording fetch to the imports queue (preferred by workers
-# that consume ``imports,diarization,evaluations``). Diarisation work (manual
-# bulk transcribe and eval-chain transcribe) goes to the diarization queue.
-# Eval fair dispatch, LLM scoring, and post-eval LLM jobs go to the
-# evaluations queue so large scoring fan-outs do not head-of-line block
-# recording fetch for other workspaces.
+# that consume ``imports,diarization,eval-control,evaluations``). Diarisation
+# work (manual bulk transcribe and eval-chain transcribe) goes to the
+# diarization queue. Bulk eval control (materialize, cancel, retry) goes to
+# ``eval-control`` so operator actions are not head-of-line blocked by scoring.
+# Eval fair dispatch and LLM scoring go to the evaluations queue.
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
     "bulk_diarize_call_import": {"queue": "imports"},
     "bulk_delete_call_import_rows": {"queue": "imports"},
     "materialize_call_import_rows": {"queue": "imports"},
     "delete_call_import": {"queue": "imports"},
-    "materialize_call_import_evaluation": {"queue": "evaluations"},
-    "materialize_mapped_call_import_evaluation": {"queue": "evaluations"},
-    "retry_call_import_evaluation": {"queue": "evaluations"},
-    "cancel_call_import_evaluation": {"queue": "evaluations"},
+    "materialize_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "materialize_mapped_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "retry_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
+    "cancel_call_import_evaluation": {"queue": EVAL_CONTROL_QUEUE},
     "evaluate_call_import_row": {"queue": "evaluations"},
     "evaluate_call_import_row_audio": {"queue": "audio-metrics"},
     "transcribe_call_import_row": {"queue": "diarization"},

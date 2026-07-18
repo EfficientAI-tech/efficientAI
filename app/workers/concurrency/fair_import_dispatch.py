@@ -234,8 +234,18 @@ def schedule_fair_import_dispatch(
 @celery_app.task(name="dispatch_fair_import_rows", queue=IMPORTS_QUEUE)
 def dispatch_fair_import_rows_task(max_workspace_turns: int = 1) -> dict:
     """Round-robin pending import rows across workspaces (batch K per turn)."""
+    from app.workers.concurrency.dispatch_reconcile import (
+        reconcile_orphaned_import_dispatch_locks,
+    )
+
     db = SessionLocal()
     try:
+        reconciled = reconcile_orphaned_import_dispatch_locks(db)
+        if reconciled:
+            logger.info(
+                "Reconciled {} orphaned import-row dispatch lock(s) after restart",
+                reconciled,
+            )
         workspaces = _workspaces_with_pending_imports(db)
         if not workspaces:
             return {"status": "ok", "dispatched": 0, "workspaces": 0}

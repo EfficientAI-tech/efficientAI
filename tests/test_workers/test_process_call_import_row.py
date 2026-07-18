@@ -69,6 +69,7 @@ def _seed(db_session, *, row_count: int = 1):
         row = CallImportRow(
             call_import_id=call_import.id,
             organization_id=org.id,
+            workspace_id=workspace.id,
             row_index=idx,
             conversation_id=f"call-{idx}",
             recording_url=f"https://api.exotel.com/recordings/{idx}.mp3",
@@ -251,7 +252,7 @@ def _load_task_module():
     """
     module_name = "app.workers.tasks.process_call_import_row"
     existing = sys.modules.get(module_name)
-    if existing is not None and hasattr(existing, "SessionLocal"):
+    if existing is not None and hasattr(existing, "process_call_import_row_task"):
         task = getattr(existing, "process_call_import_row_task", None)
         if isinstance(task, types.FunctionType) or getattr(task, "_bind_task_wrapped", False):
             return existing
@@ -279,11 +280,32 @@ def _load_task_module():
 
 
 def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
-    """Wire up SessionLocal + the lazily-imported services the task uses."""
+    """Wire up row lookup + the lazily-imported services the task uses."""
+    from uuid import UUID
+
+    from app.models.database import CallImportRow
+
     task_module = _load_task_module()
 
+    def fake_locate_call_import_row(row_id):
+        rid = row_id if isinstance(row_id, UUID) else UUID(str(row_id))
+        row = db_session.query(CallImportRow).filter(CallImportRow.id == rid).first()
+        if row is None:
+            raise LookupError(f"call_import_row {rid} not found")
+        session = _NonClosingSession(db_session)
+        return session, session, row, "legacy"
+
     monkeypatch.setattr(
-        task_module, "SessionLocal", lambda: _NonClosingSession(db_session)
+        "app.db_sharding.row_ops.locate_call_import_row",
+        fake_locate_call_import_row,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops.is_sharding_enabled",
+        lambda: False,
     )
 
     # Telephony service: return our fake client regardless of provider.
@@ -909,8 +931,13 @@ def test_process_call_import_row_releases_slot_and_redispatches(db_session, monk
     finish_mock.assert_called_once_with("slot-task-abc")
 
 
-def test_rollup_parent_status_preserves_deleting(db_session):
+def test_rollup_parent_status_preserves_deleting(db_session, monkeypatch):
     from app.workers.tasks.process_call_import_row import _rollup_parent_status
+
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops.is_sharding_enabled",
+        lambda: False,
+    )
 
     _, call_import, rows = _seed(db_session, row_count=2)
     call_import.status = CallImportStatus.DELETING

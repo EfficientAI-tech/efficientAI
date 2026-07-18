@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from contextlib import contextmanager
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
@@ -100,13 +101,48 @@ def partition_mappings_by_shard(
     return buckets
 
 
+def _shard_db_is_postgresql(shard_db: Session) -> bool:
+    bind = shard_db.get_bind()
+    return bind is not None and bind.dialect.name == "postgresql"
+
+
 def _shard_write_without_catalog_fks(shard_db: Session) -> None:
     """Allow row inserts on shards when parent rows live on catalog only."""
+    if not _shard_db_is_postgresql(shard_db):
+        return
     shard_db.execute(text("SET session_replication_role = replica"))
 
 
 def _reset_shard_write_role(shard_db: Session) -> None:
+    if not _shard_db_is_postgresql(shard_db):
+        return
     shard_db.execute(text("SET session_replication_role = DEFAULT"))
+
+
+@contextmanager
+def shard_row_write_context(shard_db: Session) -> Iterator[None]:
+    """Bypass catalog-only FK parents while mutating shard row tables."""
+    if not is_sharding_enabled():
+        yield
+        return
+    _shard_write_without_catalog_fks(shard_db)
+    try:
+        yield
+    finally:
+        try:
+            _reset_shard_write_role(shard_db)
+        except Exception:
+            pass
+
+
+def flush_shard_row_session(shard_db: Session) -> None:
+    with shard_row_write_context(shard_db):
+        shard_db.flush()
+
+
+def commit_shard_row_session(shard_db: Session) -> None:
+    with shard_row_write_context(shard_db):
+        shard_db.commit()
 
 
 def bulk_insert_mappings_on_shards(

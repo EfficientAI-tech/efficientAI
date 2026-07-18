@@ -111,13 +111,15 @@ def _fail_eval_row_for_import(
 ) -> None:
     from datetime import datetime, timezone
 
+    from app.db_sharding.row_ops import commit_shard_row_session
+
     eval_row.status = "failed"
     eval_row.error_message = (
         source_row.error_message or "Recording fetch failed"
     )
     eval_row.finished_at = datetime.now(timezone.utc)
     eval_row.celery_task_id = None
-    db.commit()
+    commit_shard_row_session(db)
 
 
 def build_eval_chain_transcribe_apply_async(
@@ -176,22 +178,25 @@ def enqueue_eval_chain_transcribe_after_import(
     transcribe_overwrite: bool = False,
 ) -> bool:
     """Directly chain diarisation after a successful eval-chain recording fetch."""
-    source_row.diarised_transcript_status = "pending"
-    source_row.diarised_transcript_error = None
-    source_row.celery_task_id = slot_task_id
-    eval_row.celery_task_id = None
-    db.flush()
+    from app.db_sharding.row_ops import shard_row_write_context
 
-    async_result = build_eval_chain_transcribe_apply_async(
-        evaluation=evaluation,
-        eval_row=eval_row,
-        source_row=source_row,
-        reserved_task_id=slot_task_id,
-        restricted_metric_ids=restricted_metric_ids,
-        transcribe_overwrite=transcribe_overwrite,
-    )
-    eval_row.celery_task_id = async_result.id
-    db.commit()
+    with shard_row_write_context(db):
+        source_row.diarised_transcript_status = "pending"
+        source_row.diarised_transcript_error = None
+        source_row.celery_task_id = slot_task_id
+        eval_row.celery_task_id = None
+        db.flush()
+
+        async_result = build_eval_chain_transcribe_apply_async(
+            evaluation=evaluation,
+            eval_row=eval_row,
+            source_row=source_row,
+            reserved_task_id=slot_task_id,
+            restricted_metric_ids=restricted_metric_ids,
+            transcribe_overwrite=transcribe_overwrite,
+        )
+        eval_row.celery_task_id = async_result.id
+        db.commit()
     return True
 
 
@@ -212,15 +217,13 @@ def _reserve_slot_and_enqueue(
     ):
         return False
 
-    try:
-        async_result = enqueue_fn(reserved_task_id)
-    except Exception:
-        release_eval_slot_for_celery_task(reserved_task_id)
-        raise
+    from app.db_sharding.row_ops import shard_row_write_context
 
     try:
-        eval_row.celery_task_id = async_result.id
-        db.commit()
+        with shard_row_write_context(db):
+            async_result = enqueue_fn(reserved_task_id)
+            eval_row.celery_task_id = async_result.id
+            db.commit()
     except Exception:
         release_eval_slot_for_celery_task(reserved_task_id)
         raise
@@ -342,6 +345,13 @@ def _try_dispatch_single_row(
 
     try:
         if (evaluation.status or "").strip().lower() == "cancelled":
+            return EvalDispatchOutcome("skip")
+
+        from app.services.call_imports.evaluation_bulk_op import (
+            get_evaluation_bulk_operation,
+        )
+
+        if get_evaluation_bulk_operation(evaluation.id):
             return EvalDispatchOutcome("skip")
 
         if source_row.status == CallImportRowStatus.FAILED:

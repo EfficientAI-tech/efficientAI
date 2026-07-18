@@ -117,7 +117,8 @@ services:
 
   # Dedicated worker for call-import + evaluation queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
-  # then ``evaluations`` (eval materialize, fair dispatch, LLM scoring).
+  # then ``eval-control`` (cancel/retry/materialize), then ``evaluations``
+  # (fair dispatch + LLM scoring).
   # The default ``worker`` service handles ``celery`` (legacy) and
   # ``audio-metrics`` (Praat/UTMOS audio metric tasks).
   worker-imports:
@@ -149,7 +150,7 @@ services:
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     # Thread pool: keep concurrency near Redis inflight caps + headroom when sharding
     # (each task may hold catalog + shard connections for tens of seconds).
-    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,evaluations --pool threads --concurrency 12
+    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations --pool threads --concurrency 12
 
 volumes:
   postgres_data:

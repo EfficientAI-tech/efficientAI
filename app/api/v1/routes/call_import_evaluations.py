@@ -3793,6 +3793,8 @@ async def cancel_call_import_evaluation(
         )
 
     _claim_evaluation_bulk_operation(eval_id, "abort")
+    evaluation.status = "cancelled"
+    db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
         cancel_call_import_evaluation_task,

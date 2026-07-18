@@ -637,6 +637,8 @@ def start_all(
         )
 
         if imports_worker:
+            from app.workers.config import IMPORTS_WORKER_QUEUES
+
             worker_imports_process = _spawn_worker(
                 [
                     "celery",
@@ -645,14 +647,14 @@ def start_all(
                     "worker",
                     f"--loglevel={worker_loglevel}",
                     "-Q",
-                    "imports,diarization,evaluations",
+                    IMPORTS_WORKER_QUEUES,
                     "-P",
                     "threads",
                     "-c",
                     str(imports_worker_concurrency),
                 ],
                 label=(
-                    "Celery worker (imports+diarization+evaluations queues, "
+                    f"Celery worker ({IMPORTS_WORKER_QUEUES} queues, "
                     f"pool=threads, concurrency={imports_worker_concurrency})"
                 ),
                 prefix="[WORKER-IMPORTS]",
@@ -688,8 +690,10 @@ def start_all(
         if watch_frontend:
             click.echo(f"   Frontend watcher: Active (rebuilding on file changes)")
         if imports_worker:
+            from app.workers.config import IMPORTS_WORKER_QUEUES
+
             click.echo(
-                "   Workers: default queue + imports,diarization,evaluations queues "
+                f"   Workers: default queue + {IMPORTS_WORKER_QUEUES} "
                 f"(concurrency={imports_worker_concurrency}; imports preferred)"
             )
         else:

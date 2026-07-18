@@ -237,26 +237,36 @@ def _evaluations_with_pending_rows(
     *,
     shard_cache: ShardSessionCache | None = None,
 ) -> List[UUID]:
+    from app.services.call_imports.evaluation_bulk_op import (
+        get_evaluation_bulk_operation,
+    )
+
     if is_sharding_enabled():
-        return sharded_evaluations_with_pending_rows(
+        evaluation_ids = sharded_evaluations_with_pending_rows(
             db, workspace_id, shard_cache=shard_cache
         )
-    rows = (
-        db.query(CallImportEvaluation.id)
-        .join(
-            CallImportEvaluationRow,
-            CallImportEvaluationRow.evaluation_id == CallImportEvaluation.id,
+    else:
+        rows = (
+            db.query(CallImportEvaluation.id)
+            .join(
+                CallImportEvaluationRow,
+                CallImportEvaluationRow.evaluation_id == CallImportEvaluation.id,
+            )
+            .filter(
+                CallImportEvaluation.workspace_id == workspace_id,
+                CallImportEvaluation.status != "cancelled",
+                CallImportEvaluationRow.status == "pending",
+                CallImportEvaluationRow.celery_task_id.is_(None),
+            )
+            .distinct()
+            .all()
         )
-        .filter(
-            CallImportEvaluation.workspace_id == workspace_id,
-            CallImportEvaluation.status != "cancelled",
-            CallImportEvaluationRow.status == "pending",
-            CallImportEvaluationRow.celery_task_id.is_(None),
-        )
-        .distinct()
-        .all()
-    )
-    return sorted({row[0] for row in rows if row[0] is not None})
+        evaluation_ids = sorted({row[0] for row in rows if row[0] is not None})
+    return [
+        evaluation_id
+        for evaluation_id in evaluation_ids
+        if not get_evaluation_bulk_operation(evaluation_id)
+    ]
 
 
 def _pending_rows_for_evaluation(
@@ -447,6 +457,18 @@ def dispatch_fair_eval_rows_task(max_workspace_turns: int = 1) -> dict:
     total_dispatched = 0
     hit_capacity = False
     try:
+        from app.workers.concurrency.dispatch_reconcile import (
+            reconcile_orphaned_eval_dispatch_locks,
+        )
+
+        reconciled = reconcile_orphaned_eval_dispatch_locks(
+            db, shard_cache=shard_cache
+        )
+        if reconciled:
+            logger.info(
+                "Reconciled {} orphaned eval-row dispatch lock(s) after restart",
+                reconciled,
+            )
         workspaces = _workspaces_with_pending_rows(db, shard_cache=shard_cache)
         if not workspaces:
             return {"status": "ok", "dispatched": 0, "workspaces": 0}

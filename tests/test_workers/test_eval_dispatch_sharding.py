@@ -1,71 +1,102 @@
-"""Eval fair dispatch with sharded row sessions."""
-
-from __future__ import annotations
+"""Sharding commit paths for eval dispatch must bypass catalog-only FK parents."""
 
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from app.models.enums import CallImportRowStatus
-from app.workers.concurrency.eval_dispatch import (
-    EvalDispatchOutcome,
-    _load_call_import_for_eval_row,
-    _try_dispatch_single_row,
+from app.models.database import (
+    CallImportEvaluation,
+    CallImportEvaluationRow,
+    CallImportRow,
 )
 
 
-def test_load_call_import_for_eval_row_uses_catalog_query():
-    catalog_db = MagicMock()
-    call_import_id = uuid4()
-    source_row = MagicMock(call_import_id=call_import_id)
-    expected = MagicMock()
-    catalog_db.query.return_value.filter.return_value.first.return_value = expected
-
-    result = _load_call_import_for_eval_row(catalog_db, source_row)
-
-    assert result is expected
-    catalog_db.query.assert_called_once()
-
-
-def test_try_dispatch_import_path_reuses_catalog_session_when_sharded():
-    catalog_db = MagicMock()
-    evaluation = MagicMock(
-        status="running",
-        workspace_id=uuid4(),
-        organization_id=uuid4(),
+def _make_eval_bundle():
+    evaluation = CallImportEvaluation(
+        id=uuid4(),
         call_import_id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+        name="Eval",
+        selected_metric_ids=[],
+        status="running",
+        stt_provider="google",
+        stt_model="chirp",
     )
-    eval_row = MagicMock(id=uuid4(), status="pending", celery_task_id=None)
-    source_row = MagicMock(
-        status=CallImportRowStatus.PENDING,
-        recording_s3_key="",
-        recording_url="https://example.com/rec",
+    source_row = CallImportRow(
+        id=uuid4(),
         call_import_id=evaluation.call_import_id,
-        row_index=3,
+        organization_id=evaluation.organization_id,
+        workspace_id=evaluation.workspace_id,
+        row_index=0,
+        conversation_id="c1",
+        recording_url="https://example.com/a.mp3",
+        recording_s3_key="audio/a.mp3",
+        status="completed",
     )
-    call_import = MagicMock(provider="twilio")
-    shard_db = MagicMock()
+    eval_row = CallImportEvaluationRow(
+        id=uuid4(),
+        evaluation_id=evaluation.id,
+        call_import_row_id=source_row.id,
+        workspace_id=evaluation.workspace_id,
+        status="pending",
+        celery_task_id="old-task",
+    )
+    return evaluation, eval_row, source_row
 
-    with patch(
-        "app.workers.concurrency.eval_dispatch._attach_sharded_eval_dispatch_rows",
-        return_value=(shard_db, eval_row, source_row, False),
-    ), patch((
-        "app.db_sharding.sessions.is_sharding_enabled",
-        return_value=True,
-    ), patch(
-        "app.workers.concurrency.import_dispatch._peek_authenticated_import_credit",
-        return_value=None,
-    ), patch(
-        "app.workers.concurrency.limits.acquire_eval_slot",
-        return_value=False,
-    ):
-        outcome = _try_dispatch_single_row(
-            db=catalog_db,
+
+@patch("app.workers.concurrency.eval_dispatch.build_eval_chain_transcribe_apply_async")
+@patch("app.db_sharding.row_ops.shard_row_write_context")
+def test_enqueue_eval_chain_uses_shard_write_context(mock_context, mock_build_async):
+    from app.workers.concurrency.eval_dispatch import (
+        enqueue_eval_chain_transcribe_after_import,
+    )
+
+    evaluation, eval_row, source_row = _make_eval_bundle()
+    db = MagicMock()
+    mock_build_async.return_value = MagicMock(id="transcribe-task-id")
+    mock_context.return_value.__enter__ = MagicMock(return_value=None)
+    mock_context.return_value.__exit__ = MagicMock(return_value=False)
+
+    result = enqueue_eval_chain_transcribe_after_import(
+        db,
+        evaluation=evaluation,
+        eval_row=eval_row,
+        source_row=source_row,
+        slot_task_id="slot-task-id",
+    )
+
+    assert result is True
+    mock_context.assert_called_once_with(db)
+    db.flush.assert_called_once()
+    db.commit.assert_called_once()
+    assert eval_row.celery_task_id == "transcribe-task-id"
+    assert source_row.celery_task_id == "slot-task-id"
+
+
+@patch("app.workers.concurrency.eval_dispatch.acquire_eval_slot", return_value=True)
+@patch("app.db_sharding.row_ops.shard_row_write_context")
+def test_reserve_slot_and_enqueue_uses_shard_write_context(
+    mock_context, _mock_acquire
+):
+    from app.workers.concurrency.eval_dispatch import _reserve_slot_and_enqueue
+
+    evaluation, eval_row, _source_row = _make_eval_bundle()
+    db = MagicMock()
+    mock_context.return_value.__enter__ = MagicMock(return_value=None)
+    mock_context.return_value.__exit__ = MagicMock(return_value=False)
+
+    def enqueue_fn(_task_id: str):
+        return MagicMock(id="queued-task-id")
+
+    assert (
+        _reserve_slot_and_enqueue(
             evaluation=evaluation,
             eval_row=eval_row,
-            source_row=source_row,
-            call_import=call_import,
+            db=db,
+            enqueue_fn=enqueue_fn,
         )
-
-    assert outcome == EvalDispatchOutcome("at_capacity")
-    shard_db.close.assert_not_called()
-    catalog_db.close.assert_not_called()
+        is True
+    )
+    mock_context.assert_called_once_with(db)
+    db.commit.assert_called_once()
+    assert eval_row.celery_task_id == "queued-task-id"

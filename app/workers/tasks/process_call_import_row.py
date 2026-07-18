@@ -27,7 +27,6 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.database import SessionLocal
 from app.workers.config import celery_app
 
 
@@ -82,8 +81,14 @@ def _safe_commit(
     context: str = "update",
 ) -> bool:
     """Commit pending ORM changes; return False when the row/import was deleted."""
+    from app.db_sharding.row_ops import commit_shard_row_session
+    from app.db_sharding.sessions import is_sharding_enabled
+
     try:
-        db.commit()
+        if is_sharding_enabled():
+            commit_shard_row_session(db)
+        else:
+            db.commit()
         return True
     except StaleDataError:
         db.rollback()
@@ -552,8 +557,14 @@ def process_call_import_row_task(
                 .first()
             )
             if eval_row is not None:
+                # Evaluation headers live on the catalog when sharding is on.
+                eval_header_db = (
+                    catalog_db
+                    if catalog_db is not None and catalog_db is not row_db
+                    else db
+                )
                 evaluation = (
-                    db.query(CallImportEvaluation)
+                    eval_header_db.query(CallImportEvaluation)
                     .filter(CallImportEvaluation.id == eval_row.evaluation_id)
                     .first()
                 )
@@ -588,35 +599,45 @@ def process_call_import_row_task(
         if slot_registered_for_task(slot_task_id):
             if run_eval_row_id:
                 if not eval_chain_chained_transcribe:
-                    cleanup_db = SessionLocal()
-                    try:
-                        from app.models.database import CallImportEvaluationRow, CallImportRow
-                        from app.models.enums import CallImportRowStatus
-                        from app.workers.concurrency.eval_dispatch import (
-                            _fail_eval_row_for_import,
-                        )
+                    from app.db_sharding.row_ops import (
+                        close_row_sessions as close_eval_sessions,
+                        locate_call_import_evaluation_row,
+                    )
+                    from app.models.enums import CallImportRowStatus
+                    from app.workers.concurrency.eval_dispatch import (
+                        _fail_eval_row_for_import,
+                    )
 
-                        eval_row = (
-                            cleanup_db.query(CallImportEvaluationRow)
-                            .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-                            .first()
-                        )
-                        source_row = (
-                            cleanup_db.query(CallImportRow)
-                            .filter(CallImportRow.id == UUID(row_id))
-                            .first()
-                        )
-                        if (
-                            eval_row is not None
-                            and source_row is not None
-                            and source_row.status != CallImportRowStatus.COMPLETED
-                            and eval_row.status == "pending"
-                        ):
-                            _fail_eval_row_for_import(
-                                cleanup_db, eval_row, source_row
+                    try:
+                        cleanup_row_db, cleanup_catalog_db, eval_row, source_row, _ = (
+                            locate_call_import_evaluation_row(
+                                UUID(run_eval_row_id)
                             )
-                    finally:
-                        cleanup_db.close()
+                        )
+                    except LookupError:
+                        pass
+                    else:
+                        try:
+                            if (
+                                source_row.status
+                                != CallImportRowStatus.COMPLETED
+                                and eval_row.status == "pending"
+                            ):
+                                _fail_eval_row_for_import(
+                                    cleanup_row_db, eval_row, source_row
+                                )
+                            elif eval_row.status == "pending":
+                                from app.db_sharding.row_ops import (
+                                    commit_shard_row_session,
+                                )
+
+                                eval_row.celery_task_id = None
+                                source_row.celery_task_id = None
+                                commit_shard_row_session(cleanup_row_db)
+                        finally:
+                            close_eval_sessions(
+                                cleanup_row_db, cleanup_catalog_db
+                            )
 
                 from app.workers.concurrency.fair_dispatch import (
                     finish_eval_work_and_redispatch,
