@@ -28,11 +28,16 @@ _TASKS_PACKAGE_DIR = str(
 @pytest.fixture(autouse=True)
 def disable_db_sharding_for_tests(monkeypatch):
     """Tests use one SQLAlchemy session; ignore production shard routing."""
+    if os.getenv("SHARDING_INTEGRATION_TEST") == "1":
+        yield
+        return
+
     from app.config import settings
     from app.db_sharding.pool_manager import db_pool_manager
 
     monkeypatch.setattr(settings, "DB_SHARDING_ENABLED", False)
     db_pool_manager.reset()
+    yield
 
 
 @pytest.fixture(autouse=True)

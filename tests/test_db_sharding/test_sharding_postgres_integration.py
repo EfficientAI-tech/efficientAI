@@ -33,6 +33,9 @@ def sharding_postgres_env():
     from app.database import Base
     from app.db_sharding.pool_manager import db_pool_manager
 
+    # Register ORM models on Base.metadata before create_all (see init_db()).
+    import app.models.database  # noqa: F401
+
     for url in (catalog_url, shard_01, shard_02):
         engine = create_engine(url, pool_pre_ping=True)
         Base.metadata.create_all(bind=engine)
