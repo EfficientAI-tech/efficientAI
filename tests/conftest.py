@@ -20,6 +20,42 @@ os.environ["ALLOWED_AUDIO_FORMATS"] = '["wav","mp3","flac","m4a"]'
 # Ensure storage service singletons can initialize in test environments.
 os.environ["UPLOAD_DIR"] = "/tmp/efficientai-test-uploads"
 
+_TASKS_PACKAGE_DIR = str(
+    Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks"
+)
+
+
+@pytest.fixture(autouse=True)
+def disable_db_sharding_for_tests(monkeypatch):
+    """Tests use one SQLAlchemy session; ignore production shard routing."""
+    from app.config import settings
+    from app.db_sharding.pool_manager import db_pool_manager
+
+    monkeypatch.setattr(settings, "DB_SHARDING_ENABLED", False)
+    db_pool_manager.reset()
+
+
+@pytest.fixture(autouse=True)
+def ensure_workers_tasks_package():
+    """Keep ``app.workers.tasks`` importable without eager Celery imports."""
+    import importlib
+
+    workers_pkg = importlib.import_module("app.workers")
+    tasks_pkg = sys.modules.get("app.workers.tasks")
+    if tasks_pkg is None:
+        tasks_pkg = types.ModuleType("app.workers.tasks")
+        sys.modules["app.workers.tasks"] = tasks_pkg
+    tasks_pkg.__path__ = [_TASKS_PACKAGE_DIR]
+    workers_pkg.tasks = tasks_pkg
+
+    helpers_pkg = sys.modules.get("app.workers.tasks.helpers")
+    if helpers_pkg is None:
+        helpers_pkg = types.ModuleType("app.workers.tasks.helpers")
+        sys.modules["app.workers.tasks.helpers"] = helpers_pkg
+    helpers_pkg.__path__ = [
+        str(Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks" / "helpers")
+    ]
+
 
 @pytest.fixture
 def org_id():
@@ -295,8 +331,8 @@ def client(db_session, api_key, org_id):
     fake_workers_tasks_pkg = sys.modules.get("app.workers.tasks")
     if fake_workers_tasks_pkg is None:
         fake_workers_tasks_pkg = types.ModuleType("app.workers.tasks")
-        fake_workers_tasks_pkg.__path__ = []
         sys.modules["app.workers.tasks"] = fake_workers_tasks_pkg
+    fake_workers_tasks_pkg.__path__ = [_TASKS_PACKAGE_DIR]
 
     # ``app.workers.tasks`` is stubbed with an empty ``__path__`` so Celery
     # task modules are not eagerly imported, but several API routes and tests

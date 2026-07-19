@@ -250,42 +250,47 @@ def reconcile_evaluation_counters(
         from app.db_sharding.scatter_gather import aggregate_evaluation_row_counts
 
         total, completed, failed = aggregate_evaluation_row_counts(db, evaluation.id)
-        evaluation.total_rows = total
-        evaluation.completed_rows = completed
-        evaluation.failed_rows = failed
-        from app.services.call_imports.progress_counters import clear_eval_progress_redis
-
-        clear_eval_progress_redis(evaluation.id)
-        return
-
-    counts = (
-        db.query(
-            func.count().label("total"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (CallImportEvaluationRow.status == "completed", 1),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("completed"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (CallImportEvaluationRow.status == "failed", 1),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("failed"),
+    else:
+        counts = (
+            db.query(
+                func.count().label("total"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (CallImportEvaluationRow.status == "completed", 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("completed"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (CallImportEvaluationRow.status == "failed", 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("failed"),
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+            .one()
         )
-        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-        .one()
+        total = int(counts.total or 0)
+        completed = int(counts.completed or 0)
+        failed = int(counts.failed or 0)
+
+    db.execute(
+        update(CallImportEvaluation)
+        .where(CallImportEvaluation.id == evaluation.id)
+        .values(
+            total_rows=total,
+            completed_rows=completed,
+            failed_rows=failed,
+        )
     )
-    evaluation.total_rows = int(counts.total or 0)
-    evaluation.completed_rows = int(counts.completed or 0)
-    evaluation.failed_rows = int(counts.failed or 0)
+    db.flush()
+    db.refresh(evaluation)
     from app.services.call_imports.progress_counters import clear_eval_progress_redis
 
     clear_eval_progress_redis(evaluation.id)

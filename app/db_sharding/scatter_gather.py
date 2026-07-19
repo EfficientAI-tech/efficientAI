@@ -7,7 +7,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, TypeVar, 
 from uuid import UUID
 
 from sqlalchemy import case, func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.db_sharding.pool_manager import db_pool_manager
 from app.db_sharding.sessions import is_sharding_enabled
@@ -591,6 +591,99 @@ def fetch_call_import_rows_page(
     return merged[offset : offset + limit]
 
 
+def _load_call_import_rows_scatter(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    columns: tuple,
+    requested_row_ids: Optional[List[UUID]] = None,
+) -> List[CallImportRow]:
+    """Load import rows with ``load_only`` columns (catalog or scatter-gather)."""
+    if not is_sharding_enabled():
+        query = (
+            catalog_db.query(CallImportRow)
+            .options(load_only(*columns))
+            .filter(CallImportRow.call_import_id == call_import_id)
+        )
+        if requested_row_ids:
+            query = query.filter(CallImportRow.id.in_(requested_row_ids))
+        return query.order_by(CallImportRow.row_index.asc()).all()
+
+    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
+        query = (
+            db.query(CallImportRow)
+            .options(load_only(*columns))
+            .filter(CallImportRow.call_import_id == call_import_id)
+        )
+        if requested_row_ids:
+            query = query.filter(CallImportRow.id.in_(requested_row_ids))
+        return query.order_by(CallImportRow.row_index.asc()).all()
+
+    merged: List[CallImportRow] = []
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+    for part in scatter_gather_on_shards(shard_ids, load_shard):
+        merged.extend(part)
+    merged = merge_rows_by_index(merged)
+    if not merged:
+        query = (
+            catalog_db.query(CallImportRow)
+            .options(load_only(*columns))
+            .filter(CallImportRow.call_import_id == call_import_id)
+        )
+        if requested_row_ids:
+            query = query.filter(CallImportRow.id.in_(requested_row_ids))
+        merged = query.order_by(CallImportRow.row_index.asc()).all()
+    elif requested_row_ids:
+        requested = set(requested_row_ids)
+        merged = [row for row in merged if row.id in requested]
+    return merged
+
+
+def load_call_import_rows_for_transcription(
+    catalog_db: Session,
+    call_import_id: UUID,
+    *,
+    requested_row_ids: Optional[List[UUID]] = None,
+) -> List[CallImportRow]:
+    """Rows needed to decide diarization enqueue (shard-aware when enabled)."""
+    columns = (
+        CallImportRow.id,
+        CallImportRow.row_index,
+        CallImportRow.recording_s3_key,
+        CallImportRow.diarised_transcript,
+        CallImportRow.diarised_transcript_status,
+        CallImportRow.diarised_transcript_error,
+        CallImportRow.celery_task_id,
+    )
+    return _load_call_import_rows_scatter(
+        catalog_db,
+        call_import_id,
+        columns=columns,
+        requested_row_ids=requested_row_ids,
+    )
+
+
+def load_call_import_rows_for_delete(
+    catalog_db: Session,
+    call_import_id: UUID,
+    row_ids: List[UUID],
+) -> List[CallImportRow]:
+    """Rows targeted for bulk delete (shard-aware when enabled)."""
+    columns = (
+        CallImportRow.id,
+        CallImportRow.row_index,
+        CallImportRow.recording_s3_key,
+        CallImportRow.celery_task_id,
+        CallImportRow.status,
+    )
+    return _load_call_import_rows_scatter(
+        catalog_db,
+        call_import_id,
+        columns=columns,
+        requested_row_ids=row_ids,
+    )
+
+
 def _legacy_catalog_rows(
     catalog_db: Session,
     call_import_id: UUID,
@@ -684,6 +777,103 @@ def count_call_import_rows(
             or 0
         )
     return total
+
+
+def count_completed_call_import_rows(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> int:
+    """Completed import rows (scatter-gather when sharded)."""
+    from app.models.enums import CallImportRowStatus
+
+    if not is_sharding_enabled():
+        return int(
+            catalog_db.query(func.count(CallImportRow.id))
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.status == CallImportRowStatus.COMPLETED,
+            )
+            .scalar()
+            or 0
+        )
+
+    total = 0
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+
+    def count_shard(db: Session, _shard_id: str) -> int:
+        return int(
+            db.query(func.count(CallImportRow.id))
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.status == CallImportRowStatus.COMPLETED,
+            )
+            .scalar()
+            or 0
+        )
+
+    for part in scatter_gather_on_shards(shard_ids, count_shard):
+        total += int(part)
+    if total == 0:
+        total = int(
+            catalog_db.query(func.count(CallImportRow.id))
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.status == CallImportRowStatus.COMPLETED,
+            )
+            .scalar()
+            or 0
+        )
+    return total
+
+
+def list_completed_source_row_ids_ordered(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> List[UUID]:
+    """Completed source row ids ordered by row_index (shard-aware)."""
+    from app.models.enums import CallImportRowStatus
+
+    if not is_sharding_enabled():
+        rows = (
+            catalog_db.query(CallImportRow.id)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.status == CallImportRowStatus.COMPLETED,
+            )
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+        return [row_id for (row_id,) in rows if row_id is not None]
+
+    merged: List[CallImportRow] = []
+
+    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
+        return (
+            db.query(CallImportRow)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.status == CallImportRowStatus.COMPLETED,
+            )
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+    for part in scatter_gather_on_shards(shard_ids, load_shard):
+        merged.extend(part)
+    merged = merge_rows_by_index(merged)
+    if not merged:
+        rows = (
+            catalog_db.query(CallImportRow.id)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                CallImportRow.status == CallImportRowStatus.COMPLETED,
+            )
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+        return [row_id for (row_id,) in rows if row_id is not None]
+    return [row.id for row in merged if row.id is not None]
 
 
 def list_source_row_ids_ordered(
@@ -824,4 +1014,14 @@ def load_evaluation_row_pairs(
             )
         finally:
             shard_db.close()
+    if not pairs:
+        pairs = (
+            catalog_db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+            .all()
+        )
     return pairs

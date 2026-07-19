@@ -145,12 +145,12 @@ def test_eval_chain_cleanup_clears_stale_task_ids_and_redispatches(
     locate_calls = {"count": 0}
 
     class _CatalogWithoutEvalHeader(_NonClosingSession):
-        def query(self, model):
-            if model is CallImportEvaluation:
+        def query(self, *entities):
+            if entities and entities[0] is CallImportEvaluation:
                 empty = MagicMock()
                 empty.filter.return_value.first.return_value = None
                 return empty
-            return self._session.query(model)
+            return self._session.query(*entities)
 
     catalog_session = _CatalogWithoutEvalHeader(db_session)
 

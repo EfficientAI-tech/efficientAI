@@ -369,6 +369,128 @@ def close_row_sessions(row_db: Session, catalog_db: Optional[Session]) -> None:
         catalog_db.close()
 
 
+def update_call_import_rows_on_shards(
+    catalog_db: Session,
+    call_import_id: UUID,
+    updates: List[dict],
+) -> None:
+    """Apply field updates to import rows on the correct DB session(s)."""
+    if not updates:
+        return
+
+    allowed_fields = {
+        "diarised_transcript_status",
+        "diarised_transcript_error",
+        "celery_task_id",
+    }
+
+    if not is_sharding_enabled():
+        by_id = {item["id"]: item for item in updates}
+        rows = (
+            catalog_db.query(CallImportRow)
+            .filter(CallImportRow.id.in_(list(by_id.keys())))
+            .all()
+        )
+        for row in rows:
+            patch = by_id.get(row.id)
+            if patch is None:
+                continue
+            for field in allowed_fields:
+                if field in patch:
+                    setattr(row, field, patch[field])
+        catalog_db.commit()
+        return
+
+    by_shard: Dict[str, List[dict]] = defaultdict(list)
+    for item in updates:
+        row_index = int(item.get("row_index", 0))
+        shard_id = shard_id_for_row(catalog_db, call_import_id, row_index)
+        by_shard[shard_id].append(item)
+
+    for shard_id, shard_updates in by_shard.items():
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            by_id = {item["id"]: item for item in shard_updates}
+            rows = (
+                shard_db.query(CallImportRow)
+                .filter(CallImportRow.id.in_(list(by_id.keys())))
+                .all()
+            )
+            for row in rows:
+                patch = by_id.get(row.id)
+                if patch is None:
+                    continue
+                for field in allowed_fields:
+                    if field in patch:
+                        setattr(row, field, patch[field])
+            commit_shard_row_session(shard_db)
+        except Exception:
+            shard_db.rollback()
+            raise
+        finally:
+            shard_db.close()
+
+
+def delete_call_import_rows_on_shards(
+    catalog_db: Session,
+    call_import_id: UUID,
+    rows: List[CallImportRow],
+) -> int:
+    """Delete import rows from catalog or row shards."""
+    if not rows:
+        return 0
+
+    row_ids = [row.id for row in rows if row.id is not None]
+    if not row_ids:
+        return 0
+
+    if not is_sharding_enabled():
+        deleted = (
+            catalog_db.query(CallImportRow)
+            .filter(
+                CallImportRow.id.in_(row_ids),
+                CallImportRow.call_import_id == call_import_id,
+            )
+            .delete(synchronize_session=False)
+        )
+        catalog_db.flush()
+        return int(deleted or 0)
+
+    by_shard: Dict[str, List[UUID]] = defaultdict(list)
+    for row in rows:
+        if row.id is None:
+            continue
+        shard_id = shard_id_for_row(
+            catalog_db,
+            call_import_id,
+            int(row.row_index or 0),
+        )
+        by_shard[shard_id].append(row.id)
+
+    deleted_total = 0
+    for shard_id, shard_row_ids in by_shard.items():
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            deleted = (
+                shard_db.query(CallImportRow)
+                .filter(
+                    CallImportRow.id.in_(shard_row_ids),
+                    CallImportRow.call_import_id == call_import_id,
+                )
+                .delete(synchronize_session=False)
+            )
+            commit_shard_row_session(shard_db)
+            deleted_total += int(deleted or 0)
+        except Exception:
+            shard_db.rollback()
+            raise
+        finally:
+            shard_db.close()
+    return deleted_total
+
+
 def new_row_mapping(
     *,
     call_import: CallImport,

@@ -70,14 +70,13 @@ def select_rows_for_transcription(
     requested_row_ids: Optional[List[UUID]] = None,
 ) -> tuple[List[CallImportRow], Dict[str, int]]:
     """Pick rows to diarise, loading only columns needed for the decision."""
-    query = (
-        db.query(CallImportRow)
-        .options(load_only(*_ROW_TRANSCRIBE_COLUMNS))
-        .filter(CallImportRow.call_import_id == call_import.id)
+    from app.db_sharding.scatter_gather import load_call_import_rows_for_transcription
+
+    rows = load_call_import_rows_for_transcription(
+        db,
+        call_import.id,
+        requested_row_ids=requested_row_ids,
     )
-    if requested_row_ids:
-        query = query.filter(CallImportRow.id.in_(requested_row_ids))
-    rows = query.order_by(CallImportRow.row_index.asc()).all()
 
     if requested_row_ids:
         found_ids = {r.id for r in rows}
@@ -154,19 +153,34 @@ def execute_bulk_diarization(
     stored_set = set(stored_ids)
     failed_set = set(failed_ids)
 
+    updates: List[dict] = []
     queued = 0
     for row in rows:
         if row.id in stored_set:
-            row.diarised_transcript_status = "pending"
-            row.diarised_transcript_error = None
-            row.celery_task_id = None
+            updates.append(
+                {
+                    "id": row.id,
+                    "row_index": row.row_index,
+                    "diarised_transcript_status": "pending",
+                    "diarised_transcript_error": None,
+                    "celery_task_id": None,
+                }
+            )
             queued += 1
         elif row.id in failed_set:
-            row.diarised_transcript_status = "failed"
-            row.diarised_transcript_error = _REDIS_PARAMS_STORE_ERROR
+            updates.append(
+                {
+                    "id": row.id,
+                    "row_index": row.row_index,
+                    "diarised_transcript_status": "failed",
+                    "diarised_transcript_error": _REDIS_PARAMS_STORE_ERROR,
+                }
+            )
 
-    if stored_set or failed_set:
-        db.commit()
+    if updates:
+        from app.db_sharding.row_ops import update_call_import_rows_on_shards
+
+        update_call_import_rows_on_shards(db, call_import.id, updates)
 
     if queued > 0:
         schedule_fair_diarization_dispatch(max_workspace_turns=999)
@@ -179,32 +193,15 @@ def execute_bulk_diarization(
 
 
 def count_completed_source_rows(db: Session, call_import_id: UUID) -> int:
-    from sqlalchemy import func
+    from app.db_sharding.scatter_gather import count_completed_call_import_rows
 
-    return int(
-        db.query(func.count(CallImportRow.id))
-        .filter(
-            CallImportRow.call_import_id == call_import_id,
-            CallImportRow.status == CallImportRowStatus.COMPLETED,
-        )
-        .scalar()
-        or 0
-    )
+    return count_completed_call_import_rows(db, call_import_id)
 
 
 def _completed_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
-    return [
-        row_id
-        for (row_id,) in (
-            db.query(CallImportRow.id)
-            .filter(
-                CallImportRow.call_import_id == call_import_id,
-                CallImportRow.status == CallImportRowStatus.COMPLETED,
-            )
-            .order_by(CallImportRow.row_index.asc())
-            .all()
-        )
-    ]
+    from app.db_sharding.scatter_gather import list_completed_source_row_ids_ordered
+
+    return list_completed_source_row_ids_ordered(db, call_import_id)
 
 
 def count_all_source_rows(db: Session, call_import_id: UUID) -> int:
@@ -361,31 +358,17 @@ def execute_bulk_row_delete(
     if not row_ids:
         return 0
 
-    rows = (
-        db.query(CallImportRow)
-        .options(load_only(*_ROW_DELETE_COLUMNS))
-        .filter(
-            CallImportRow.id.in_(row_ids),
-            CallImportRow.call_import_id == call_import.id,
-        )
-        .all()
-    )
+    from app.db_sharding.row_ops import delete_call_import_rows_on_shards
+    from app.db_sharding.scatter_gather import load_call_import_rows_for_delete
+
+    rows = load_call_import_rows_for_delete(db, call_import.id, row_ids)
     if not rows:
         return 0
 
     _revoke_pending_tasks(rows)
     _delete_s3_objects(organization_id, call_import.id, rows)
 
-    deleted_ids = [row.id for row in rows]
-    deleted = (
-        db.query(CallImportRow)
-        .filter(
-            CallImportRow.id.in_(deleted_ids),
-            CallImportRow.call_import_id == call_import.id,
-        )
-        .delete(synchronize_session=False)
-    )
-    db.flush()
+    deleted = delete_call_import_rows_on_shards(db, call_import.id, rows)
 
     _recompute_call_import_counters(db, call_import)
     db.commit()

@@ -77,7 +77,12 @@ def _fake_async_result(task_id: str):
 def test_eval_chain_transcribe_uses_diarization_queue(
     _mock_acquire,
     stub_worker_task_modules,
+    monkeypatch,
 ):
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
     stub_worker_task_modules.apply_async.side_effect = (
         lambda **kwargs: _fake_async_result(kwargs["task_id"])
     )
@@ -86,6 +91,7 @@ def test_eval_chain_transcribe_uses_diarization_queue(
     source_row_id = uuid4()
     evaluation = SimpleNamespace(
         id=uuid4(),
+        call_import_id=uuid4(),
         workspace_id=uuid4(),
         organization_id=uuid4(),
         status="pending",
@@ -101,6 +107,8 @@ def test_eval_chain_transcribe_uses_diarization_queue(
     eval_row = SimpleNamespace(id=eval_row_id, celery_task_id=None)
     source_row = SimpleNamespace(
         id=source_row_id,
+        call_import_id=evaluation.call_import_id,
+        row_index=0,
         status=CallImportRowStatus.COMPLETED,
         recording_s3_key="audio/test.wav",
         diarised_transcript="",
@@ -133,6 +141,7 @@ def test_eval_dispatch_skips_failed_diarization_without_overwrite(
 ):
     evaluation = SimpleNamespace(
         id=uuid4(),
+        call_import_id=uuid4(),
         workspace_id=uuid4(),
         organization_id=uuid4(),
         status="pending",
@@ -148,6 +157,8 @@ def test_eval_dispatch_skips_failed_diarization_without_overwrite(
     eval_row = SimpleNamespace(id=uuid4(), celery_task_id=None)
     source_row = SimpleNamespace(
         id=uuid4(),
+        call_import_id=evaluation.call_import_id,
+        row_index=0,
         status=CallImportRowStatus.COMPLETED,
         recording_s3_key="audio/test.wav",
         diarised_transcript="",

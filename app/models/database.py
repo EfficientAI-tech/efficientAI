@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -2061,6 +2062,20 @@ class CallImportRow(Base):
     call_import = relationship("CallImport", back_populates="rows")
 
 
+@event.listens_for(CallImportRow, "before_insert")
+def _call_import_row_fill_workspace_id(_mapper, connection, target):
+    """Denormalize workspace_id from the parent import when omitted."""
+    if target.workspace_id is not None or target.call_import_id is None:
+        return
+    workspace_id = connection.execute(
+        select(CallImport.workspace_id).where(
+            CallImport.id == target.call_import_id
+        )
+    ).scalar_one_or_none()
+    if workspace_id is not None:
+        target.workspace_id = workspace_id
+
+
 class CallImportTag(Base):
     """User-defined tag that can be attached to one or more call imports.
 
@@ -2360,6 +2375,20 @@ class CallImportEvaluationRow(Base):
 
     evaluation = relationship("CallImportEvaluation", back_populates="row_results")
     source_row = relationship("CallImportRow")
+
+
+@event.listens_for(CallImportEvaluationRow, "before_insert")
+def _call_import_evaluation_row_fill_workspace_id(_mapper, connection, target):
+    """Denormalize workspace_id from the parent evaluation when omitted."""
+    if target.workspace_id is not None or target.evaluation_id is None:
+        return
+    workspace_id = connection.execute(
+        select(CallImportEvaluation.workspace_id).where(
+            CallImportEvaluation.id == target.evaluation_id
+        )
+    ).scalar_one_or_none()
+    if workspace_id is not None:
+        target.workspace_id = workspace_id
 
 
 class CallImportEvaluationReportSnapshot(Base):

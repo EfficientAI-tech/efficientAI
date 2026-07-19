@@ -16,7 +16,7 @@ import json
 import re
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
@@ -1174,6 +1174,7 @@ def _materialize_rows(
         row_model = CallImportRow(
             call_import_id=call_import.id,
             organization_id=organization_id,
+            workspace_id=call_import.workspace_id,
             row_index=idx,
             conversation_id=row["conversation_id"],
             recording_date=(
@@ -2105,25 +2106,13 @@ async def upload_call_import_audio(
         # intentionally have no telephony provider.
         call_import.provider = None
 
+        row_mappings: List[Dict[str, Any]] = []
         for idx, item in enumerate(prepared):
-            row = CallImportRow(
-                call_import_id=call_import.id,
-                organization_id=organization_id,
-                row_index=idx,
-                conversation_id=item["conversation_id"],
-                recording_url=None,
-                transcript=None,
-                transcript_source=None,
-                raw_columns={"conversation_id": item["conversation_id"]},
-                status=CallImportRowStatus.COMPLETED,
-            )
-            db.add(row)
-            db.flush()
-
+            row_id = uuid4()
             key = _audio_s3_key(
                 organization_id,
                 call_import.id,
-                row.id,
+                row_id,
                 item["extension"],
             )
             s3_service.upload_file_by_key(
@@ -2133,9 +2122,36 @@ async def upload_call_import_audio(
             )
             uploaded_keys.append(key)
 
-            row.recording_s3_key = key
-            row.recording_content_type = item["content_type"]
-            row.recording_size_bytes = len(item["contents"])
+            row_mappings.append(
+                {
+                    "id": row_id,
+                    "call_import_id": call_import.id,
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                    "row_index": idx,
+                    "conversation_id": item["conversation_id"],
+                    "recording_url": None,
+                    "transcript": None,
+                    "transcript_source": None,
+                    "raw_columns": {"conversation_id": item["conversation_id"]},
+                    "status": CallImportRowStatus.COMPLETED,
+                    "recording_s3_key": key,
+                    "recording_content_type": item["content_type"],
+                    "recording_size_bytes": len(item["contents"]),
+                }
+            )
+
+        if is_sharding_enabled():
+            from app.db_sharding.row_ops import (
+                bulk_insert_mappings_on_shards,
+                register_shard_slices,
+            )
+
+            bulk_insert_mappings_on_shards(db, call_import.id, row_mappings)
+            register_shard_slices(db, call_import.id, len(row_mappings))
+        else:
+            for mapping in row_mappings:
+                db.add(CallImportRow(**mapping))
 
         db.commit()
     except Exception as exc:
