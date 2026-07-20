@@ -980,13 +980,26 @@ def count_evaluation_cancel_targets_sharded(
     return total
 
 
+def _evaluation_row_pair_sort_key(
+    pair: tuple[CallImportEvaluationRow, CallImportRow],
+) -> tuple[int, str]:
+    _, source_row = pair
+    return (int(source_row.row_index or 0), str(pair[0].id))
+
+
+def _sort_evaluation_row_pairs(
+    pairs: List[tuple[CallImportEvaluationRow, CallImportRow]],
+) -> List[tuple[CallImportEvaluationRow, CallImportRow]]:
+    return sorted(pairs, key=_evaluation_row_pair_sort_key)
+
+
 def load_evaluation_row_pairs(
     catalog_db: Session,
     evaluation_id: UUID,
 ) -> List[tuple[CallImportEvaluationRow, CallImportRow]]:
     """All eval/source row pairs for insights and PDF aggregation."""
     if not is_sharding_enabled():
-        return (
+        pairs = (
             catalog_db.query(CallImportEvaluationRow, CallImportRow)
             .join(
                 CallImportRow,
@@ -995,6 +1008,7 @@ def load_evaluation_row_pairs(
             .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
             .all()
         )
+        return _sort_evaluation_row_pairs(pairs)
 
     pairs: List[tuple[CallImportEvaluationRow, CallImportRow]] = []
     router = db_pool_manager.router
@@ -1024,4 +1038,4 @@ def load_evaluation_row_pairs(
             .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
             .all()
         )
-    return pairs
+    return _sort_evaluation_row_pairs(pairs)

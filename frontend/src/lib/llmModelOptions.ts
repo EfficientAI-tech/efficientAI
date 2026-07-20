@@ -48,10 +48,8 @@ export function resolveLLMModelsForCredential(
   catalogModels: string[],
 ): LLMModelResolution {
   const gatewayModel = credential?.gateway_model?.trim()
-  if (
-    credential?.provider?.toLowerCase() === 'custom' &&
-    gatewayModel
-  ) {
+  const providerKey = String(credential?.provider ?? '').toLowerCase()
+  if (providerKey === 'custom' && gatewayModel) {
     return { mode: 'gateway_direct', model: gatewayModel }
   }
   if (credential && usesGatewayDirectModel(credential) && gatewayModel) {
@@ -183,21 +181,62 @@ export interface LLMSelectionValue {
   credential_id?: string | null
 }
 
+const DEFAULT_LLM_MODELS: Record<string, string> = {
+  openai: 'gpt-5-mini',
+  anthropic: 'claude-sonnet-4.6',
+  google: 'gemini-2.5-flash',
+  sarvam: 'sarvam-30b',
+}
+
+function resolveCredentialForSelection(
+  selection: LLMSelectionValue,
+  aiProviders: AIProvider[],
+): AIProvider | undefined {
+  if (selection.credential_id) {
+    const pinned = aiProviders.find(
+      (p) => p.is_active && p.id === selection.credential_id,
+    )
+    if (pinned) return pinned
+  }
+  if (!selection.provider) return undefined
+  return resolveActiveAIProvider(
+    aiProviders,
+    selection.provider,
+    selection.credential_id,
+  )
+}
+
 /** True when provider is set and a catalog or gateway model is resolved. */
 export function isLLMSelectionComplete(
   selection: LLMSelectionValue,
   aiProviders: AIProvider[],
 ): boolean {
-  if (!selection.provider) return false
+  if (!selection.provider && !selection.credential_id) return false
   if (selection.model?.trim()) return true
-  const credential = resolveActiveAIProvider(
-    aiProviders,
-    selection.provider,
-    selection.credential_id,
+
+  const credential = resolveCredentialForSelection(selection, aiProviders)
+  if (!credential) return false
+
+  const resolution = resolveLLMModelsForCredential(credential, [])
+  if (resolution.mode === 'gateway_direct') return true
+
+  // Gateway-routed credentials without a pinned gateway_model still
+  // resolve at request time (same as partials / metrics surfaces).
+  if (routesViaGateway(credential)) return true
+
+  return false
+}
+
+/** True when the selection is half-filled (not empty default, not complete). */
+export function isLLMSelectionPartial(
+  selection: LLMSelectionValue,
+  aiProviders: AIProvider[],
+): boolean {
+  const hasAnySelection = Boolean(
+    selection.provider || selection.model?.trim() || selection.credential_id,
   )
-  return (
-    resolveLLMModelsForCredential(credential, []).mode === 'gateway_direct'
-  )
+  if (!hasAnySelection) return false
+  return !isLLMSelectionComplete(selection, aiProviders)
 }
 
 /** Model string to send to APIs when gateway routing pins the model. */
@@ -206,12 +245,21 @@ export function resolveLLMModelForSubmit(
   aiProviders: AIProvider[],
 ): string | null {
   if (selection.model?.trim()) return selection.model.trim()
-  const credential = resolveActiveAIProvider(
-    aiProviders,
-    selection.provider ?? '',
-    selection.credential_id,
-  )
+
+  const credential = resolveCredentialForSelection(selection, aiProviders)
+  if (!credential) return null
+
   const resolution = resolveLLMModelsForCredential(credential, [])
   if (resolution.mode === 'gateway_direct') return resolution.model
+
+  if (routesViaGateway(credential)) {
+    const gatewayModel = credential.gateway_model?.trim()
+    if (gatewayModel) return gatewayModel
+    const providerKey = (credential.provider || selection.provider || '')
+      .toLowerCase()
+      .trim()
+    return DEFAULT_LLM_MODELS[providerKey] ?? 'gpt-5-mini'
+  }
+
   return null
 }

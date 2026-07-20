@@ -97,6 +97,7 @@ def _run_llm_scoring(
     ai_providers: list,
     llm_provider: str | None,
     llm_model: str | None,
+    llm_credential_id: str | None,
     llm_config: dict | None,
     metric_llm_overrides: dict,
     discover_new_metrics: bool,
@@ -119,22 +120,26 @@ def _run_llm_scoring(
         else None
     )
 
+    run_provider = (llm_provider or "").strip() or None
+    run_model = (llm_model or "").strip() or None
+    run_llm_config = llm_config if isinstance(llm_config, dict) else None
+    run_credential_id = (llm_credential_id or "").strip() or None
+    overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
+
     if comparison_metrics:
-        run_provider = (llm_provider or "").strip() or None
-        run_model = (llm_model or "").strip() or None
-        run_llm_config = llm_config if isinstance(llm_config, dict) else None
-        overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
         for cmp_metric in comparison_metrics:
             override = overrides.get(str(cmp_metric.id)) or {}
             provider = override.get("provider") or run_provider or None
             model = override.get("model") or run_model or None
             llm_cfg = override.get("llm_config") or run_llm_config
+            credential_id = override.get("credential_id") or run_credential_id
             evaluator_obj = None
             if provider and model:
                 evaluator_obj = SimpleNamespace(
                     llm_provider=provider,
                     llm_model=model,
                     llm_config=llm_cfg,
+                    llm_credential_id=credential_id,
                     custom_prompt=None,
                 )
             try:
@@ -185,36 +190,32 @@ def _run_llm_scoring(
 
         def _resolve_pm(
             metric: Metric,
-        ) -> tuple[str | None, str | None, dict | None]:
+        ) -> tuple[str | None, str | None, dict | None, str | None]:
             override = overrides.get(str(metric.id)) or {}
             provider = override.get("provider") or run_provider or None
             model = override.get("model") or run_model or None
             llm_cfg = override.get("llm_config") or run_llm_config
-            return provider, model, llm_cfg
+            credential_id = override.get("credential_id") or run_credential_id
+            return provider, model, llm_cfg, credential_id
 
-        run_provider = (llm_provider or "").strip() or None
-        run_model = (llm_model or "").strip() or None
-        run_llm_config = llm_config if isinstance(llm_config, dict) else None
-        overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
-
-        BucketKey = tuple[tuple[str | None, str | None, str | None], UUID | None]
+        BucketKey = tuple[tuple[str | None, str | None, str | None, str | None], UUID | None]
         groups: dict[BucketKey, list[Metric]] = {}
         for metric in standalone_metrics:
-            provider, model, llm_cfg = _resolve_pm(metric)
+            provider, model, llm_cfg, credential_id = _resolve_pm(metric)
             groups.setdefault(
-                ((provider, model, _llm_config_key(llm_cfg)), None),
+                ((provider, model, _llm_config_key(llm_cfg), credential_id), None),
                 [],
             ).append(metric)
         for parent_id, children in children_by_parent.items():
-            provider, model, llm_cfg = _resolve_pm(children[0])
+            provider, model, llm_cfg, credential_id = _resolve_pm(children[0])
             groups.setdefault(
-                ((provider, model, _llm_config_key(llm_cfg)), parent_id),
+                ((provider, model, _llm_config_key(llm_cfg), credential_id), parent_id),
                 [],
             ).extend(children)
 
         metric_discovery_emitted = False
         for (config, parent_id), bucket in groups.items():
-            provider, model, llm_config_key = config
+            provider, model, llm_config_key, credential_id = config
             llm_cfg = json.loads(llm_config_key) if llm_config_key else None
             evaluator_obj = None
             if provider and model:
@@ -222,6 +223,7 @@ def _run_llm_scoring(
                     llm_provider=provider,
                     llm_model=model,
                     llm_config=llm_cfg,
+                    llm_credential_id=credential_id,
                     custom_prompt=None,
                 )
             parent_metric = parents_by_id.get(parent_id) if parent_id else None
@@ -624,6 +626,11 @@ def evaluate_call_import_row_task(
                 "ai_providers": ai_providers,
                 "llm_provider": evaluation.llm_provider,
                 "llm_model": evaluation.llm_model,
+                "llm_credential_id": (
+                    str(evaluation.llm_credential_id)
+                    if evaluation.llm_credential_id
+                    else None
+                ),
                 "llm_config": evaluation.llm_config,
                 "metric_llm_overrides": evaluation.metric_llm_overrides,
                 "discover_new_metrics": bool(

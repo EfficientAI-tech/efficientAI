@@ -26,9 +26,9 @@ _TASKS_PACKAGE_DIR = str(
 
 
 @pytest.fixture(autouse=True)
-def disable_db_sharding_for_tests(monkeypatch):
+def disable_db_sharding_for_tests(monkeypatch, request):
     """Tests use one SQLAlchemy session; ignore production shard routing."""
-    if os.getenv("SHARDING_INTEGRATION_TEST") == "1":
+    if request.node.get_closest_marker("integration"):
         yield
         return
 

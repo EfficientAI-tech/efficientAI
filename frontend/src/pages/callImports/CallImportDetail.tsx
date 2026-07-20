@@ -60,8 +60,10 @@ import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
+import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import {
   isLLMSelectionComplete,
+  isLLMSelectionPartial,
   resolveLLMModelForSubmit,
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
@@ -578,6 +580,8 @@ export default function CallImportDetail() {
 
   const openRunEvaluationModal = useCallback(() => {
     setSelectedMetricIds([])
+    setRunLLM({ provider: null, model: null, credential_id: null })
+    void queryClient.invalidateQueries({ queryKey: ['ai-providers'] })
     if (!evalDiariserLLM.provider) {
       setEvalDiariserLLM({
         provider: 'openai',
@@ -593,6 +597,7 @@ export default function CallImportDetail() {
     defaultDiarisationPrompt,
     evalDiariserLLM.provider,
     evalDiarisationPrompt,
+    queryClient,
   ])
 
   const { data: aiProviders = [] } = useQuery({
@@ -4234,8 +4239,8 @@ export default function CallImportDetail() {
                         {/* Run-level LLM config */}
                         {(() => {
                           const llmPartial =
-                            Boolean(runLLM.provider) !==
-                            Boolean(runLLM.model)
+                            aiProviders.length > 0 &&
+                            isLLMSelectionPartial(runLLM, aiProviders)
                           return (
                             <div
                               className={`rounded-md border p-3 space-y-2 ${
@@ -4252,19 +4257,47 @@ export default function CallImportDetail() {
                                 metric. Leave empty to keep the default
                                 (OpenAI · gpt-4o).
                               </p>
-                              <ProviderModelPicker
-                                kind="llm"
-                                value={runLLM}
-                                onChange={setRunLLM}
-                                defaultLabel="Default (OpenAI · gpt-4o)"
-                                allowCredentialPick
+                              <AIProviderModelPicker
+                                provider={runLLM.provider ?? ''}
+                                model={runLLM.model ?? ''}
+                                credentialId={runLLM.credential_id ?? ''}
+                                onSelectionChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    provider: next.provider || null,
+                                    model: next.model || null,
+                                    credential_id: next.credentialId || null,
+                                  }))
+                                }
+                                onProviderChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    provider: next || null,
+                                  }))
+                                }
+                                onCredentialIdChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    credential_id: next || null,
+                                  }))
+                                }
+                                onModelChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    model: next || null,
+                                  }))
+                                }
+                                llm_config={runLLM.llm_config ?? null}
+                                onLLMConfigChange={(llm_config) =>
+                                  setRunLLM((prev) => ({ ...prev, llm_config }))
+                                }
                               />
                               {llmPartial && (
                                 <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
                                   <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
                                   <span>
-                                    {runLLM.provider
-                                      ? 'Pick a model for this provider, or clear the provider to use the default.'
+                                    {runLLM.provider || runLLM.credential_id
+                                      ? 'Pick a complete LLM credential (including Custom gateway models), or clear the selection to use the default.'
                                       : 'Pick a provider for this model, or clear the model to use the default.'}
                                   </span>
                                 </p>
@@ -4291,6 +4324,34 @@ export default function CallImportDetail() {
                                       model: null,
                                       credential_id: null,
                                     }
+                                    const updateOverride = (
+                                      patch: Partial<ProviderModelValue>,
+                                    ) => {
+                                      setMetricLLMOverrides((prev) => {
+                                        const copy = { ...prev }
+                                        const existing =
+                                          copy[target.id] || {
+                                            provider: null,
+                                            model: null,
+                                            credential_id: null,
+                                          }
+                                        const updated: ProviderModelValue = {
+                                          ...existing,
+                                          ...patch,
+                                        }
+                                        const cleared =
+                                          !updated.provider &&
+                                          !updated.model?.trim() &&
+                                          !updated.credential_id &&
+                                          !updated.llm_config
+                                        if (cleared) {
+                                          delete copy[target.id]
+                                        } else {
+                                          copy[target.id] = updated
+                                        }
+                                        return copy
+                                      })
+                                    }
                                     return (
                                       <div
                                         key={target.id}
@@ -4308,21 +4369,28 @@ export default function CallImportDetail() {
                                             </span>
                                           )}
                                         </p>
-                                        <ProviderModelPicker
-                                          kind="llm"
-                                          value={override}
-                                          onChange={(next) => {
-                                            setMetricLLMOverrides((prev) => {
-                                              const copy = { ...prev }
-                                              if (!next.provider && !next.model) {
-                                                delete copy[target.id]
-                                              } else {
-                                                copy[target.id] = next
-                                              }
-                                              return copy
+                                        <AIProviderModelPicker
+                                          provider={override.provider ?? ''}
+                                          model={override.model ?? ''}
+                                          credentialId={override.credential_id ?? ''}
+                                          onProviderChange={(next) =>
+                                            updateOverride({
+                                              provider: next || null,
                                             })
-                                          }}
-                                          defaultLabel="Use run default"
+                                          }
+                                          onCredentialIdChange={(next) =>
+                                            updateOverride({
+                                              credential_id: next || null,
+                                            })
+                                          }
+                                          onModelChange={(next) =>
+                                            updateOverride({ model: next || null })
+                                          }
+                                          onLLMConfigChange={(llm_config) =>
+                                            updateOverride({ llm_config })
+                                          }
+                                          llm_config={override.llm_config ?? null}
+                                          size="sm"
                                         />
                                       </div>
                                     )
@@ -4648,10 +4716,11 @@ export default function CallImportDetail() {
                         )
                       }
                       if (
-                        Boolean(runLLM.provider) !== Boolean(runLLM.model)
+                        aiProviders.length > 0 &&
+                        isLLMSelectionPartial(runLLM, aiProviders)
                       ) {
                         disabledReasons.push(
-                          'Finish the Evaluation LLM selection (pick both a provider and a model, or clear both).',
+                          'Finish the Evaluation LLM selection (pick a provider and model, or a Custom gateway credential, or clear both to use the default).',
                         )
                       }
                       const isDisabled =
@@ -4696,14 +4765,13 @@ export default function CallImportDetail() {
                               }
                         onClick={() => {
                           // Build a clean overrides payload — drop any
-                          // entries that didn't end up with both a
-                          // provider and a model set so the API doesn't
-                          // 400 on partial fills. We also discard
-                          // entries for ids that are no longer in
-                          // ``overrideTargets`` (e.g., the user set an
-                          // override for a parent then deselected every
-                          // one of its labels) so stale state doesn't
-                          // trip backend validation.
+                          // entries that didn't end up with a complete
+                          // LLM selection so the API doesn't 400 on
+                          // partial fills. We also discard entries for
+                          // ids that are no longer in ``overrideTargets``
+                          // (e.g., the user set an override for a parent
+                          // then deselected every one of its labels) so
+                          // stale state doesn't trip backend validation.
                           const overrides: Record<
                             string,
                             CallImportEvaluationLLMOverride
@@ -4712,10 +4780,12 @@ export default function CallImportDetail() {
                             metricLLMOverrides,
                           )) {
                             if (!overrideTargetIds.has(mid)) continue
-                            if (val.provider && val.model) {
+                            if (isLLMSelectionComplete(val, aiProviders)) {
                               overrides[mid] = {
-                                provider: val.provider,
-                                model: val.model,
+                                provider: val.provider!,
+                                model:
+                                  resolveLLMModelForSubmit(val, aiProviders) ??
+                                  val.model!,
                                 credential_id: val.credential_id || null,
                                 llm_config: val.llm_config || null,
                               }
@@ -4725,16 +4795,30 @@ export default function CallImportDetail() {
                               }
                             }
                           }
+                          const runLLMComplete = isLLMSelectionComplete(
+                            runLLM,
+                            aiProviders,
+                          )
                           runEvaluationMutation.mutate({
                             metric_ids: selectedMetricIds,
                             name: runDraftName.trim() || null,
                             // Diarised is the only supported source
                             // now; the backend rejects anything else.
                             transcript_sources: ['diarised'],
-                            llm_provider: runLLM.provider || null,
-                            llm_model: runLLM.model || null,
-                            llm_credential_id: runLLM.credential_id || null,
-                            llm_config: runLLM.llm_config || null,
+                            llm_provider: runLLMComplete
+                              ? runLLM.provider || null
+                              : null,
+                            llm_model: runLLMComplete
+                              ? resolveLLMModelForSubmit(runLLM, aiProviders) ??
+                                runLLM.model ??
+                                null
+                              : null,
+                            llm_credential_id: runLLMComplete
+                              ? runLLM.credential_id || null
+                              : null,
+                            llm_config: runLLMComplete
+                              ? runLLM.llm_config || null
+                              : null,
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,

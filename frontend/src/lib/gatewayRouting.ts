@@ -33,8 +33,11 @@ export function resolveActiveAIProvider(
   providerKey: string,
   credentialId?: string | null,
 ): AIProvider | undefined {
+  const normalizedKey = providerKey.toLowerCase()
   const rows = aiProviders.filter(
-    (p) => p.is_active && p.provider.toLowerCase() === providerKey.toLowerCase(),
+    (p) =>
+      p.is_active &&
+      String(p.provider ?? '').toLowerCase() === normalizedKey,
   )
   if (credentialId) {
     return rows.find((p) => p.id === credentialId)

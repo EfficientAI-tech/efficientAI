@@ -96,16 +96,17 @@ def test_import_row_filter_scatter_gather_two_shards(sharding_postgres_env):
 
     catalog = open_catalog_session()
     try:
-        catalog.add(Organization(id=org_id, name="Sharding CI Org"))
-        catalog.add(
-            Workspace(
-                id=workspace_id,
-                organization_id=org_id,
-                name="Default",
-                slug="default",
-                is_default=True,
-            )
+        org = Organization(id=org_id, name="Sharding CI Org")
+        workspace = Workspace(
+            id=workspace_id,
+            organization=org,
+            name="Default",
+            slug="default",
+            is_default=True,
         )
+        catalog.add_all([org, workspace])
+        catalog.flush()
+
         catalog.add(
             CallImport(
                 id=call_import_id,
