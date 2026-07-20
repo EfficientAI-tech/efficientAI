@@ -5381,6 +5381,8 @@ def _resolve_metric_cluster_row_selection(
     evaluation: CallImportEvaluation,
     eval_rows: List[CallImportEvaluationRow],
     evaluation_row_ids: Optional[List[UUID]],
+    *,
+    row_limit: Optional[int] = None,
     policies: Optional[Dict[str, MetricFailurePolicy]] = None,
 ) -> Tuple[List[Tuple[CallImportEvaluationRow, CallImportRow]], List[str]]:
     """Return filtered completed row pairs and the selected row id strings."""
@@ -5406,10 +5408,19 @@ def _resolve_metric_cluster_row_selection(
     eligible = list_eligible_cluster_rows(
         evaluation, completed_pairs, metrics, policies
     )
-    eligible_id_set = {str(item["evaluation_row_id"]) for item in eligible}
+    eligible_ordered_ids = [str(item["evaluation_row_id"]) for item in eligible]
+    eligible_id_set = set(eligible_ordered_ids)
+
+    if evaluation_row_ids is None and row_limit is not None:
+        selected_ids = eligible_ordered_ids[:row_limit]
+        filtered = filter_completed_row_pairs(
+            completed_pairs,
+            [UUID(rid) for rid in selected_ids],
+        )
+        return filtered, selected_ids
 
     if evaluation_row_ids is None:
-        selected_ids = sorted(eligible_id_set)
+        selected_ids = eligible_ordered_ids
         filtered = filter_completed_row_pairs(
             completed_pairs,
             [UUID(rid) for rid in selected_ids],
@@ -5750,6 +5761,8 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
 async def list_call_import_evaluation_metric_cluster_eligible_rows(
     call_import_id: UUID,
     eval_id: UUID,
+    limit: Optional[int] = Query(default=None, ge=1),
+    count_only: bool = Query(default=False),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -5777,11 +5790,15 @@ async def list_call_import_evaluation_metric_cluster_eligible_rows(
     metrics, _aggregates, policies, _source, _child_map = _clustering_context(
         db, evaluation, eval_rows
     )
-    raw_items = list_eligible_cluster_rows(
+    all_eligible = list_eligible_cluster_rows(
         evaluation, completed_pairs, metrics, policies
     )
+    total = len(all_eligible)
+    if count_only:
+        return MetricClusterEligibleRowsResponse(items=[], total=total)
+    raw_items = all_eligible if limit is None else all_eligible[:limit]
     items = [MetricClusterEligibleRow.model_validate(item) for item in raw_items]
-    return MetricClusterEligibleRowsResponse(items=items, total=len(items))
+    return MetricClusterEligibleRowsResponse(items=items, total=total)
 
 
 @router.get(
@@ -5862,6 +5879,12 @@ async def generate_call_import_evaluation_metric_clusters(
             ),
         )
 
+    if body.evaluation_row_ids and body.row_limit is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Specify either evaluation_row_ids or row_limit, not both.",
+        )
+
     if body.evaluation_row_ids:
         completed_pairs = _completed_row_pairs_for_evaluation(db, evaluation.id)
         completed_id_set = {str(eval_row.id) for eval_row, _ in completed_pairs}
@@ -5915,6 +5938,7 @@ async def generate_call_import_evaluation_metric_clusters(
         evaluation,
         eval_rows,
         body.evaluation_row_ids,
+        row_limit=body.row_limit,
         policies=merged_policies,
     )
     if not selected_row_ids:

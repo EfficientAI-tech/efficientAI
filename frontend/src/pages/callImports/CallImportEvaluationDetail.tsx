@@ -78,7 +78,6 @@ import type {
   MetricClustersRcaSummary,
   MetricFailurePolicy,
   MetricFailurePolicyMetricPreview,
-  MetricClusterEligibleRow,
   EvaluationUserInsightsState,
   EvaluationUserInsightItem,
   MetricPeriodDelta,
@@ -8432,47 +8431,36 @@ function UserInsightsStatusBanner({
   )
 }
 
-const METRIC_CLUSTER_ROW_PRESETS = [25, 50, 100, 200] as const
+const METRIC_CLUSTER_ROW_PRESETS = [25, 50, 500] as const
+type MetricClusterRowPreset =
+  (typeof METRIC_CLUSTER_ROW_PRESETS)[number] | 'all'
+
+function metricClusterSelectedCount(
+  totalEligible: number,
+  preset: MetricClusterRowPreset,
+): number {
+  if (totalEligible <= 0) return 0
+  if (preset === 'all') return totalEligible
+  return Math.min(preset, totalEligible)
+}
 
 function MetricClusterRowPicker({
-  rows,
-  selectedIds,
-  onChangeSelectedIds,
+  totalEligible,
+  preset,
+  onChangePreset,
   disabled,
 }: {
-  rows: MetricClusterEligibleRow[]
-  selectedIds: Set<string>
-  onChangeSelectedIds: (next: Set<string>) => void
+  totalEligible: number
+  preset: MetricClusterRowPreset
+  onChangePreset: (next: MetricClusterRowPreset) => void
   disabled?: boolean
 }) {
-  const selectFirstN = (n: number) => {
-    onChangeSelectedIds(
-      new Set(rows.slice(0, n).map((r) => r.evaluation_row_id)),
-    )
-  }
+  const selectedCount = metricClusterSelectedCount(totalEligible, preset)
 
-  const selectAll = () => {
-    onChangeSelectedIds(new Set(rows.map((r) => r.evaluation_row_id)))
-  }
+  const presetActive = (n: number) =>
+    preset !== 'all' && preset === n && selectedCount === n
 
-  const presetActive = (n: number) => {
-    const limit = Math.min(n, rows.length)
-    if (limit === 0 || selectedIds.size !== limit) return false
-    const firstIds = rows.slice(0, limit).map((r) => r.evaluation_row_id)
-    return firstIds.every((id) => selectedIds.has(id))
-  }
-
-  const allActive =
-    rows.length > 0 &&
-    selectedIds.size === rows.length &&
-    rows.every((r) => selectedIds.has(r.evaluation_row_id))
-
-  const toggleRow = (id: string) => {
-    const next = new Set(selectedIds)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    onChangeSelectedIds(next)
-  }
+  const allActive = preset === 'all' && totalEligible > 0
 
   const presetButtonClass = (active: boolean) =>
     'rounded-full px-2 py-0.5 border text-[10px] font-medium transition-colors disabled:opacity-40 ' +
@@ -8482,98 +8470,40 @@ function MetricClusterRowPicker({
 
   return (
     <div className="rounded-md border border-gray-200 bg-white">
-      <div className="px-3 py-2 border-b border-gray-100 bg-gray-50/80 space-y-2">
+      <div className="px-3 py-3 border-b border-gray-100 bg-gray-50/80 space-y-2">
         <div className="flex items-center justify-between gap-2">
           <p className="text-xs font-medium text-gray-700">
-            Calls to include ({selectedIds.size} / {rows.length})
+            Calls to include ({selectedCount} / {totalEligible} eligible)
           </p>
-          <div className="flex items-center gap-2 text-[11px] shrink-0">
-            <button
-              type="button"
-              className="text-primary-600 hover:underline disabled:opacity-50"
-              disabled={disabled || rows.length === 0}
-              onClick={selectAll}
-            >
-              All
-            </button>
-            <span className="text-gray-300">|</span>
-            <button
-              type="button"
-              className="text-gray-600 hover:underline disabled:opacity-50"
-              disabled={disabled || selectedIds.size === 0}
-              onClick={() => onChangeSelectedIds(new Set())}
-            >
-              Clear
-            </button>
-          </div>
         </div>
-        {rows.length > 0 ? (
+        {totalEligible > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] text-gray-500 mr-0.5">Quick:</span>
-            {METRIC_CLUSTER_ROW_PRESETS.filter((n) => n <= rows.length).map(
-              (n) => (
-                <button
-                  key={n}
-                  type="button"
-                  disabled={disabled}
-                  className={presetButtonClass(presetActive(n))}
-                  onClick={() => selectFirstN(n)}
-                >
-                  First {n}
-                </button>
-              ),
-            )}
-            {rows.length > METRIC_CLUSTER_ROW_PRESETS[METRIC_CLUSTER_ROW_PRESETS.length - 1] ? (
+            {METRIC_CLUSTER_ROW_PRESETS.map((n) => (
               <button
+                key={n}
                 type="button"
                 disabled={disabled}
-                className={presetButtonClass(allActive)}
-                onClick={selectAll}
+                className={presetButtonClass(presetActive(n))}
+                onClick={() => onChangePreset(n)}
               >
-                All {rows.length}
+                First {n}
               </button>
-            ) : null}
+            ))}
+            <button
+              type="button"
+              disabled={disabled}
+              className={presetButtonClass(allActive)}
+              onClick={() => onChangePreset('all')}
+            >
+              All {totalEligible}
+            </button>
           </div>
-        ) : null}
+        ) : (
+          <p className="text-xs text-gray-500">
+            No completed calls with a flagged quality metric yet.
+          </p>
+        )}
       </div>
-      {rows.length === 0 ? (
-        <p className="px-3 py-3 text-xs text-gray-500">
-          No completed calls with a flagged quality metric yet.
-        </p>
-      ) : (
-        <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100">
-          {rows.map((row) => {
-            const id = row.evaluation_row_id
-            const label =
-              row.conversation_id?.trim() ||
-              (row.row_index != null ? `Row ${row.row_index}` : id.slice(0, 8))
-            const metrics = row.flagged_metric_names.join(', ')
-            return (
-              <li key={id}>
-                <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50/80">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 rounded border-gray-300"
-                    checked={selectedIds.has(id)}
-                    disabled={disabled}
-                    onChange={() => toggleRow(id)}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs font-medium text-gray-900 truncate">
-                      {label}
-                    </span>
-                    {metrics ? (
-                      <span className="block text-[10px] text-gray-500 truncate">
-                        Flagged: {metrics}
-                      </span>
-                    ) : null}
-                  </span>
-                </label>
-              </li>
-            )
-          })}
-        </ul>
-      )}
     </div>
   )
 }
@@ -8811,8 +8741,7 @@ function MetricClusterGenerationModal({
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
-  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
-  const [selectionTouched, setSelectionTouched] = useState(false)
+  const [rowPreset, setRowPreset] = useState<MetricClusterRowPreset>(25)
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [policies, setPolicies] = useState<Record<string, MetricFailurePolicy>>(
     {},
@@ -8844,25 +8773,27 @@ function MetricClusterGenerationModal({
       getActiveWorkspaceId(),
       callImportId,
       evaluationId,
-      policiesSource,
-      JSON.stringify(policies),
     ],
     queryFn: () =>
       apiClient.listCallImportEvaluationMetricClusterEligibleRows(
         callImportId,
         evaluationId,
+        { count_only: true },
       ),
     enabled: open && !!callImportId && !!evaluationId,
     staleTime: 30_000,
   })
 
-  const eligibleRows = eligibleRowsQuery.data?.items ?? []
+  const totalEligible = eligibleRowsQuery.data?.total ?? 0
+  const selectedRowCount = metricClusterSelectedCount(totalEligible, rowPreset)
+
   const hasExistingClusters = !!state?.groups?.length
 
   useEffect(() => {
     if (!open) return
     setError(null)
     onError?.(null)
+    setRowPreset(25)
   }, [open])
 
   useEffect(() => {
@@ -8916,33 +8847,13 @@ function MetricClusterGenerationModal({
     llmPickerTouched,
   ])
 
-  useEffect(() => {
-    if (!open || selectionTouched || eligibleRows.length === 0) return
-    const fromState = state?.selected_evaluation_row_ids
-    if (fromState?.length) {
-      const valid = fromState.filter((id) =>
-        eligibleRows.some((r) => r.evaluation_row_id === id),
-      )
-      if (valid.length) {
-        setSelectedRowIds(new Set(valid))
-        return
-      }
-    }
-    setSelectedRowIds(new Set(eligibleRows.map((r) => r.evaluation_row_id)))
-  }, [
-    open,
-    eligibleRows,
-    selectionTouched,
-    state?.selected_evaluation_row_ids,
-  ])
-
   const reportError = (message: string | null) => {
     setError(message)
     onError?.(message)
   }
 
   const handleGenerate = async () => {
-    if (selectedRowIds.size === 0) {
+    if (selectedRowCount === 0) {
       reportError('Select at least one call to cluster.')
       return
     }
@@ -8964,9 +8875,6 @@ function MetricClusterGenerationModal({
     reportError(null)
     try {
       const force = hasExistingClusters
-      const allSelected =
-        eligibleRows.length > 0 &&
-        selectedRowIds.size === eligibleRows.length
       await apiClient.generateCallImportEvaluationMetricClusters(
         callImportId,
         evaluationId,
@@ -8975,9 +8883,7 @@ function MetricClusterGenerationModal({
           regenerate: force,
           provider: pickerProvider || undefined,
           model: pickerModel || undefined,
-          evaluation_row_ids: allSelected
-            ? undefined
-            : Array.from(selectedRowIds),
+          row_limit: rowPreset === 'all' ? undefined : rowPreset,
           failure_policies: policies,
         },
       )
@@ -9048,12 +8954,9 @@ function MetricClusterGenerationModal({
               <p className="text-xs text-gray-500">Loading eligible calls…</p>
             ) : (
               <MetricClusterRowPicker
-                rows={eligibleRows}
-                selectedIds={selectedRowIds}
-                onChangeSelectedIds={(next) => {
-                  setSelectionTouched(true)
-                  setSelectedRowIds(next)
-                }}
+                totalEligible={totalEligible}
+                preset={rowPreset}
+                onChangePreset={setRowPreset}
                 disabled={generating}
               />
             )}
@@ -9092,7 +8995,7 @@ function MetricClusterGenerationModal({
             variant="primary"
             onClick={handleGenerate}
             isLoading={generating}
-            disabled={generating || selectedRowIds.size === 0}
+            disabled={generating || selectedRowCount === 0}
           >
             Generate clusters
           </Button>
