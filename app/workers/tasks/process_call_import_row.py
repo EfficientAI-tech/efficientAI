@@ -27,7 +27,6 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.database import SessionLocal
 from app.workers.config import celery_app
 
 
@@ -82,8 +81,14 @@ def _safe_commit(
     context: str = "update",
 ) -> bool:
     """Commit pending ORM changes; return False when the row/import was deleted."""
+    from app.db_sharding.row_ops import commit_shard_row_session
+    from app.db_sharding.sessions import is_sharding_enabled
+
     try:
-        db.commit()
+        if is_sharding_enabled():
+            commit_shard_row_session(db)
+        else:
+            db.commit()
         return True
     except StaleDataError:
         db.rollback()
@@ -95,10 +100,42 @@ def _safe_commit(
         return False
 
 
-def _row_or_import_gone(db, row_id: UUID) -> Optional[str]:
+def _row_or_import_gone(
+    db,
+    row_id: UUID,
+    *,
+    catalog_db=None,
+) -> Optional[str]:
     """Return a skip reason when the row or its parent import no longer exists."""
     from app.models.database import CallImport, CallImportRow
     from app.models.enums import CallImportStatus
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled() and catalog_db is not None and catalog_db is not db:
+        row_pk = (
+            db.query(CallImportRow.id)
+            .filter(CallImportRow.id == row_id)
+            .first()
+        )
+        if row_pk is None:
+            return "row_deleted"
+        call_import_id = (
+            db.query(CallImportRow.call_import_id)
+            .filter(CallImportRow.id == row_id)
+            .scalar()
+        )
+        if call_import_id is None:
+            return "row_deleted"
+        import_status = (
+            catalog_db.query(CallImport.status)
+            .filter(CallImport.id == call_import_id)
+            .scalar()
+        )
+        if import_status is None:
+            return "row_deleted"
+        if import_status == CallImportStatus.DELETING:
+            return "import_deleting"
+        return None
 
     db.expire_all()
     hit = (
@@ -159,6 +196,15 @@ def _rollup_parent_status(db, call_import) -> None:
     rollup_call_import_batch_status(db, call_import)
 
 
+def _rollup_parent_on_catalog(catalog_db, row_db, call_import) -> None:
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    target = catalog_db if is_sharding_enabled() and catalog_db is not row_db else row_db
+    _rollup_parent_status(target, call_import)
+    if target is not row_db:
+        target.commit()
+
+
 @celery_app.task(name="process_call_import_row", bind=True, max_retries=3)
 def process_call_import_row_task(
     self,
@@ -194,15 +240,31 @@ def process_call_import_row_task(
 
     slot_task_id = _eval_slot_task_id or self.request.id
     eval_chain_chained_transcribe = False
-    db = SessionLocal()
+    row_db = catalog_db = None
+    from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
+    from app.models.database import CallImport
+
     try:
-        row_uuid = UUID(row_id)
-        row = db.query(CallImportRow).filter(CallImportRow.id == row_uuid).first()
-        if row is None:
+        try:
+            row_db, catalog_db, row, shard_id = locate_call_import_row(row_id)
+        except LookupError:
             logger.warning("CallImportRow {} not found, skipping", row_id)
             return {"status": "skipped", "reason": "row_not_found"}
 
-        call_import = row.call_import
+        db = row_db
+        row_uuid = row.id
+
+        if catalog_db is not row_db:
+            call_import = (
+                catalog_db.query(CallImport)
+                .filter(CallImport.id == row.call_import_id)
+                .first()
+            )
+            logger.bind(shard_id=shard_id).debug(
+                "process_call_import_row on shard {}", shard_id
+            )
+        else:
+            call_import = row.call_import
 
         from app.models.enums import CallImportStatus
 
@@ -236,7 +298,7 @@ def process_call_import_row_task(
                 # for legacy rows imported before the column existed.
                 client = telephony_service.get_provider_client(
                     row.organization_id,
-                    db,
+                    catalog_db if catalog_db is not row_db else db,
                     provider=call_import.provider,
                     credential_id=call_import.telephony_integration_id,
                 )
@@ -246,7 +308,7 @@ def process_call_import_row_task(
                 row.error_message = f"Provider client error: {exc}"
                 if not _safe_commit(db, row_id=row_id, context="provider_client_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_status(db, call_import)
+                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
                 if not _safe_commit(db, row_id=row_id, context="rollup_provider_client_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "provider_client_error"}
@@ -272,7 +334,7 @@ def process_call_import_row_task(
                 row.error_message = msg
                 if not _safe_commit(db, row_id=row_id, context="direct_url_no_source"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_status(db, call_import)
+                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
                 if not _safe_commit(db, row_id=row_id, context="rollup_direct_url_no_source"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "no_recording_source"}
@@ -320,7 +382,7 @@ def process_call_import_row_task(
                 )
                 if not _safe_commit(db, row_id=row_id, context="direct_url_failed"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_status(db, call_import)
+                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
                 if not _safe_commit(db, row_id=row_id, context="rollup_direct_url_failed"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "non_retryable_provider_error"}
@@ -353,7 +415,7 @@ def process_call_import_row_task(
                 row.error_message = msg
                 if not _safe_commit(db, row_id=row_id, context="no_recording_source"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_status(db, call_import)
+                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
                 if not _safe_commit(db, row_id=row_id, context="rollup_no_recording_source"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "no_recording_source"}
@@ -419,7 +481,7 @@ def process_call_import_row_task(
                 )
                 if not _safe_commit(db, row_id=row_id, context="non_retryable_provider_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
-                _rollup_parent_status(db, call_import)
+                _rollup_parent_on_catalog(catalog_db, row_db, call_import)
                 if not _safe_commit(db, row_id=row_id, context="rollup_non_retryable_provider_error"):
                     return {"status": "skipped", "reason": "row_deleted"}
                 return {"status": "failed", "reason": "non_retryable_provider_error"}
@@ -434,7 +496,7 @@ def process_call_import_row_task(
             row.error_message = f"Cloud blob storage unavailable: {err}"
             if not _safe_commit(db, row_id=row_id, context="s3_unavailable"):
                 return {"status": "skipped", "reason": "row_deleted"}
-            _rollup_parent_status(db, call_import)
+            _rollup_parent_on_catalog(catalog_db, row_db, call_import)
             if not _safe_commit(db, row_id=row_id, context="rollup_s3_unavailable"):
                 return {"status": "skipped", "reason": "row_deleted"}
             return {"status": "failed", "reason": "s3_unavailable"}
@@ -456,7 +518,11 @@ def process_call_import_row_task(
                 return {"status": "skipped", "reason": "row_deleted"}
             raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
 
-        skip_reason = _row_or_import_gone(db, row_uuid)
+        skip_reason = _row_or_import_gone(
+            db,
+            row_uuid,
+            catalog_db=catalog_db if catalog_db is not row_db else None,
+        )
         if skip_reason:
             db.rollback()
             logger.info(
@@ -469,12 +535,13 @@ def process_call_import_row_task(
         row.recording_s3_key = key
         row.recording_content_type = content_type
         row.recording_size_bytes = len(audio_bytes)
+        previous_import_status = row.status
         row.status = CallImportRowStatus.COMPLETED
         row.error_message = None
         if not _safe_commit(db, row_id=row_id, context="mark_completed"):
             return {"status": "skipped", "reason": "row_deleted"}
 
-        _rollup_parent_status(db, call_import)
+        _rollup_parent_on_catalog(catalog_db, row_db, call_import)
         if not _safe_commit(db, row_id=row_id, context="rollup_completed"):
             return {"status": "skipped", "reason": "row_deleted"}
 
@@ -490,8 +557,14 @@ def process_call_import_row_task(
                 .first()
             )
             if eval_row is not None:
+                # Evaluation headers live on the catalog when sharding is on.
+                eval_header_db = (
+                    catalog_db
+                    if catalog_db is not None and catalog_db is not row_db
+                    else db
+                )
                 evaluation = (
-                    db.query(CallImportEvaluation)
+                    eval_header_db.query(CallImportEvaluation)
                     .filter(CallImportEvaluation.id == eval_row.evaluation_id)
                     .first()
                 )
@@ -519,41 +592,52 @@ def process_call_import_row_task(
         )
         return {"status": "skipped", "reason": "row_deleted"}
     finally:
-        db.close()
+        if row_db is not None:
+            close_row_sessions(row_db, catalog_db if catalog_db is not row_db else None)
         from app.workers.concurrency.limits import slot_registered_for_task
 
         if slot_registered_for_task(slot_task_id):
             if run_eval_row_id:
                 if not eval_chain_chained_transcribe:
-                    cleanup_db = SessionLocal()
-                    try:
-                        from app.models.database import CallImportEvaluationRow, CallImportRow
-                        from app.models.enums import CallImportRowStatus
-                        from app.workers.concurrency.eval_dispatch import (
-                            _fail_eval_row_for_import,
-                        )
+                    from app.db_sharding.row_ops import (
+                        close_row_sessions as close_eval_sessions,
+                        locate_call_import_evaluation_row,
+                    )
+                    from app.workers.concurrency.eval_dispatch import (
+                        _fail_eval_row_for_import,
+                        recover_eval_row_for_eval_chain,
+                        source_row_import_blocks_eval,
+                    )
 
-                        eval_row = (
-                            cleanup_db.query(CallImportEvaluationRow)
-                            .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-                            .first()
-                        )
-                        source_row = (
-                            cleanup_db.query(CallImportRow)
-                            .filter(CallImportRow.id == UUID(row_id))
-                            .first()
-                        )
-                        if (
-                            eval_row is not None
-                            and source_row is not None
-                            and source_row.status != CallImportRowStatus.COMPLETED
-                            and eval_row.status == "pending"
-                        ):
-                            _fail_eval_row_for_import(
-                                cleanup_db, eval_row, source_row
+                    try:
+                        cleanup_row_db, cleanup_catalog_db, eval_row, source_row, _ = (
+                            locate_call_import_evaluation_row(
+                                UUID(run_eval_row_id)
                             )
-                    finally:
-                        cleanup_db.close()
+                        )
+                    except LookupError:
+                        pass
+                    else:
+                        try:
+                            if source_row_import_blocks_eval(source_row):
+                                if eval_row.status == "pending":
+                                    _fail_eval_row_for_import(
+                                        cleanup_row_db, eval_row, source_row
+                                    )
+                            else:
+                                recover_eval_row_for_eval_chain(eval_row)
+                                if eval_row.status == "pending":
+                                    from app.db_sharding.row_ops import (
+                                        commit_shard_row_session,
+                                    )
+
+                                    eval_row.celery_task_id = None
+                                    source_row.celery_task_id = None
+                                    commit_shard_row_session(cleanup_row_db)
+                        finally:
+                            close_eval_sessions(
+                                cleanup_row_db, cleanup_catalog_db
+                            )
 
                 from app.workers.concurrency.fair_dispatch import (
                     finish_eval_work_and_redispatch,

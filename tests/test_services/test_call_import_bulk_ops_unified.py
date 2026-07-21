@@ -139,6 +139,10 @@ def test_bulk_diarization_stores_redis_params_before_pending_commit(
     db_session,
 ):
     """Rows must not be visible to the fair dispatcher until params exist."""
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops.is_sharding_enabled",
+        lambda: False,
+    )
     org = Organization(id=uuid4(), name="Diar Org")
     ws = Workspace(
         id=uuid4(),

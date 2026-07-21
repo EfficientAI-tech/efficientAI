@@ -4376,6 +4376,14 @@ class EvaluationMetricClustersRequest(BaseModel):
             "all completed rows with at least one flagged quality metric are used."
         ),
     )
+    row_limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Use the first N eligible rows (by row order). Mutually exclusive "
+            "with evaluation_row_ids."
+        ),
+    )
     failure_policies: Optional[Dict[str, MetricFailurePolicy]] = Field(
         default=None,
         description="Per-metric failure policies confirmed in the cluster modal.",

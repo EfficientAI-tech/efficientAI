@@ -486,6 +486,15 @@ def _serialize_eval(
         db, row.organization_id, metric_ids_for_lookup
     )
 
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
+
+    ui_completed_raw, ui_failed_raw = merge_eval_counters_for_ui(row)
+    total = int(row.total_rows or 0)
+    ui_completed = (
+        min(ui_completed_raw, total) if total else ui_completed_raw
+    )
+    ui_failed = min(ui_failed_raw, total) if total else ui_failed_raw
+
     return CallImportEvaluationResponse(
         id=row.id,
         call_import_id=row.call_import_id,
@@ -513,8 +522,8 @@ def _serialize_eval(
         ],
         status=row.status,
         total_rows=row.total_rows,
-        completed_rows=row.completed_rows,
-        failed_rows=row.failed_rows,
+        completed_rows=ui_completed,
+        failed_rows=ui_failed,
         error_message=row.error_message,
         llm_provider=row.llm_provider,
         llm_model=row.llm_model,
@@ -1505,6 +1514,7 @@ async def list_call_import_evaluation_rows(
     sort_recognized = False
     sort_by_clean = (sort_by or "").strip()
     primary_sort = None
+    metric_uuid: Optional[UUID] = None
     if sort_by_clean == "row_index":
         sort_recognized = True
         # Falls through to the default ``order_by`` below with
@@ -1570,8 +1580,83 @@ async def list_call_import_evaluation_rows(
         # so a typo'd / stale ``sort_by`` doesn't quietly invert the
         # default order.
         query = query.order_by(CallImportRow.row_index.asc())
-    total = query.count()
-    rows = query.offset((page - 1) * page_size).limit(page_size).all()
+    from app.db_sharding.eval_rows import fetch_evaluation_row_pairs_page
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    def _pair_row_index(
+        pair: Tuple[CallImportEvaluationRow, CallImportRow],
+    ) -> int:
+        return int(pair[1].row_index or 0)
+
+    def _directed_string(value: Optional[str], desc: bool) -> Tuple[int, ...]:
+        text = value or ""
+        if not desc:
+            return (0, *text.encode("utf-8"))
+        return (1, *(-byte for byte in text.encode("utf-8")))
+
+    if sort_by_clean == "conversation_id":
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[Any, ...]:
+            return (
+                _directed_string(pair[1].conversation_id, direction_desc),
+                _pair_row_index(pair),
+            )
+    elif sort_by_clean == "status":
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[Any, ...]:
+            return (
+                _directed_string(pair[0].status, direction_desc),
+                _pair_row_index(pair),
+            )
+    elif sort_by_clean.startswith("metric:") and metric_uuid is not None:
+        metric_id_str = str(metric_uuid)
+
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[Any, ...]:
+            scores = pair[0].metric_scores or {}
+            entry = scores.get(metric_id_str, {})
+            raw_value = entry.get("value") if isinstance(entry, dict) else None
+            null_rank = 1 if raw_value is None else 0
+            return (
+                null_rank,
+                _directed_string(
+                    str(raw_value) if raw_value is not None else None,
+                    direction_desc,
+                ),
+                _pair_row_index(pair),
+            )
+    elif sort_recognized and sort_by_clean == "row_index":
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[int, ...]:
+            idx = _pair_row_index(pair)
+            return (-idx,) if direction_desc else (idx,)
+    else:
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[int, ...]:
+            return (_pair_row_index(pair),)
+
+    if is_sharding_enabled():
+        def _build_query(session: Session):
+            return query.with_session(session)
+
+        total, rows = fetch_evaluation_row_pairs_page(
+            db,
+            _build_query,
+            page=page,
+            page_size=page_size,
+            sort_key=_pair_sort_key,
+            bounded_shard_fetch=(
+                not sort_recognized or sort_by_clean == "row_index"
+            ),
+        )
+    else:
+        total = query.count()
+        rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
     # Row detail shows the diarised transcript that normal metrics score.
     items: List[CallImportEvaluationRowResponse] = [
@@ -1782,13 +1867,25 @@ async def export_call_import_evaluation_csv(
         *metric_headers,
     ]
 
-    rows = (
-        db.query(CallImportEvaluationRow, CallImportRow)
-        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .order_by(CallImportRow.row_index.asc())
-        .all()
-    )
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        rows = sorted(
+            load_evaluation_row_pairs(db, eval_id),
+            key=lambda pair: int(pair[1].row_index or 0),
+        )
+    else:
+        rows = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
 
     def _project_rows() -> Iterator[Dict[str, str]]:
         for eval_row, source_row in rows:
@@ -3258,13 +3355,25 @@ async def generate_call_import_evaluation_pdf_report(
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
     is_internal = payload.report_type == "internal"
-    rows = (
-        db.query(CallImportEvaluationRow, CallImportRow)
-        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .order_by(CallImportRow.row_index.asc())
-        .all()
-    )
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        rows = sorted(
+            load_evaluation_row_pairs(db, eval_id),
+            key=lambda pair: int(pair[1].row_index or 0),
+        )
+    else:
+        rows = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
     report_config = payload.report_config if isinstance(payload.report_config, dict) else {}
     metrics = _display_metrics_for_pdf_report(db, organization_id, evaluation)
     configured_quality_ids = {
@@ -3727,6 +3836,8 @@ async def cancel_call_import_evaluation(
         )
 
     _claim_evaluation_bulk_operation(eval_id, "abort")
+    evaluation.status = "cancelled"
+    db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
         cancel_call_import_evaluation_task,
@@ -3847,6 +3958,34 @@ async def cancel_call_import_evaluation_row(
         )
 
     _require_no_evaluation_bulk_operation(eval_id)
+
+    from app.db_sharding.eval_rows import evaluation_row_session
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        try:
+            with evaluation_row_session(eval_row_id) as (
+                row_db,
+                _catalog_db,
+                eval_row,
+                source_row,
+                _shard_id,
+            ):
+                if eval_row.evaluation_id != eval_id:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Evaluation row not found in this run",
+                    )
+                _apply_evaluation_cancel([eval_row])
+                row_db.commit()
+                _rollup_evaluation_status(evaluation, db)
+                db.commit()
+                row_db.refresh(eval_row)
+                return _to_evaluation_row_response(eval_row, source_row)
+        except LookupError as exc:
+            raise HTTPException(
+                status_code=404, detail="Evaluation row not found in this run"
+            ) from exc
 
     eval_row = (
         db.query(CallImportEvaluationRow)
@@ -4337,11 +4476,7 @@ async def get_call_import_evaluation_aggregate(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
 
     metrics = _compute_metric_aggregates(db, evaluation, eval_rows)
 
@@ -4349,15 +4484,9 @@ async def get_call_import_evaluation_aggregate(
     resolved_baseline_id: Optional[UUID] = None
     if baseline_evaluation_id is not None:
         call_import = _require_import(db, call_import_id, organization_id)
-        rows = (
-            db.query(CallImportEvaluationRow, CallImportRow)
-            .join(
-                CallImportRow,
-                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
-            )
-            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-            .all()
-        )
+        from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+
+        rows = load_evaluation_row_pairs(db, eval_id)
         period_start, _, _, _ = _report_period_from_rows(rows)
         baseline_evaluation = _resolve_baseline_evaluation(
             db,
@@ -4737,11 +4866,10 @@ def _generate_and_persist_tldr_summary(
 ) -> EvaluationTldrSummary:
     """LLM TLDR generation used by the imports-queue Celery worker."""
     eval_id = evaluation.id
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+
+    pairs = load_evaluation_row_pairs(db, eval_id)
+    eval_rows = [eval_row for eval_row, _ in pairs]
     aggregate = _compute_metric_aggregates(db, evaluation, eval_rows)
     if not aggregate:
         raise HTTPException(
@@ -4790,7 +4918,11 @@ def _generate_and_persist_tldr_summary(
         ) from e
 
     summary = _parse_insights_response(llm_result.get("text", ""))
-    summary.generated_at_completed_rows = evaluation.completed_rows
+    total = int(evaluation.total_rows or 0)
+    ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
+        evaluation.completed_rows or 0
+    )
+    summary.generated_at_completed_rows = ui_completed
     summary.provider = provider_enum.value
     summary.model = model_str
     summary.is_stale = False
@@ -5008,12 +5140,7 @@ def _enqueue_user_insights_job(
     llm_budget = normalize_max_llm_calls(max_llm_calls)
 
     completed_count = (
-        db.query(CallImportEvaluationRow)
-        .filter(
-            CallImportEvaluationRow.evaluation_id == evaluation.id,
-            CallImportEvaluationRow.status == "completed",
-        )
-        .count()
+        _count_completed_eval_rows(db, evaluation.id)
         if db is not None
         else evaluation.completed_rows
     )
@@ -5118,11 +5245,7 @@ async def generate_call_import_evaluation_user_insights(
         if cached is not None and cached.status in {"running", "completed"}:
             return cached
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
     if not any(row.status == "completed" for row in eval_rows):
         raise HTTPException(
             status_code=400,
@@ -5268,19 +5391,27 @@ def _enqueue_prompt_improvements_job(
         db.commit()
 
 
+def _load_eval_rows(db: Session, evaluation_id: UUID) -> List[CallImportEvaluationRow]:
+    from app.db_sharding.eval_rows import load_evaluation_rows_for_run
+
+    return load_evaluation_rows_for_run(db, evaluation_id)
+
+
+def _count_completed_eval_rows(db: Session, evaluation_id: UUID) -> int:
+    from app.db_sharding.eval_rows import count_evaluation_rows_for_run
+
+    return count_evaluation_rows_for_run(
+        db, evaluation_id, statuses=["completed"]
+    )
+
+
 def _completed_row_pairs_for_evaluation(
     db: Session,
     evaluation_id: UUID,
 ) -> List[Tuple[CallImportEvaluationRow, CallImportRow]]:
-    row_pairs = (
-        db.query(CallImportEvaluationRow, CallImportRow)
-        .join(
-            CallImportRow,
-            CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
-        )
-        .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
-        .all()
-    )
+    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+
+    row_pairs = load_evaluation_row_pairs(db, evaluation_id)
     return [
         (eval_row, source_row)
         for eval_row, source_row in row_pairs
@@ -5293,6 +5424,8 @@ def _resolve_metric_cluster_row_selection(
     evaluation: CallImportEvaluation,
     eval_rows: List[CallImportEvaluationRow],
     evaluation_row_ids: Optional[List[UUID]],
+    *,
+    row_limit: Optional[int] = None,
     policies: Optional[Dict[str, MetricFailurePolicy]] = None,
 ) -> Tuple[List[Tuple[CallImportEvaluationRow, CallImportRow]], List[str]]:
     """Return filtered completed row pairs and the selected row id strings."""
@@ -5318,10 +5451,19 @@ def _resolve_metric_cluster_row_selection(
     eligible = list_eligible_cluster_rows(
         evaluation, completed_pairs, metrics, policies
     )
-    eligible_id_set = {str(item["evaluation_row_id"]) for item in eligible}
+    eligible_ordered_ids = [str(item["evaluation_row_id"]) for item in eligible]
+    eligible_id_set = set(eligible_ordered_ids)
+
+    if evaluation_row_ids is None and row_limit is not None:
+        selected_ids = eligible_ordered_ids[:row_limit]
+        filtered = filter_completed_row_pairs(
+            completed_pairs,
+            [UUID(rid) for rid in selected_ids],
+        )
+        return filtered, selected_ids
 
     if evaluation_row_ids is None:
-        selected_ids = sorted(eligible_id_set)
+        selected_ids = eligible_ordered_ids
         filtered = filter_completed_row_pairs(
             completed_pairs,
             [UUID(rid) for rid in selected_ids],
@@ -5377,11 +5519,7 @@ def _enqueue_metric_clusters_job(
     total_calls = 1
     row_ids_for_task: Optional[List[str]] = None
     if db is not None:
-        eval_rows = (
-            db.query(CallImportEvaluationRow)
-            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
-            .all()
-        )
+        eval_rows = _load_eval_rows(db, evaluation.id)
         if selected_evaluation_row_ids is None:
             _, selected_evaluation_row_ids = _resolve_metric_cluster_row_selection(
                 db,
@@ -5552,11 +5690,7 @@ async def get_call_import_evaluation_metric_cluster_failure_policies(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
     metrics, aggregates, policies, source, child_names_by_parent = _clustering_context(
         db, evaluation, eval_rows
     )
@@ -5613,11 +5747,7 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
     metrics, aggregates, _existing, _source, child_names_by_parent = _clustering_context(
         db, evaluation, eval_rows
     )
@@ -5674,6 +5804,8 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
 async def list_call_import_evaluation_metric_cluster_eligible_rows(
     call_import_id: UUID,
     eval_id: UUID,
+    limit: Optional[int] = Query(default=None, ge=1),
+    count_only: bool = Query(default=False),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -5696,20 +5828,20 @@ async def list_call_import_evaluation_metric_cluster_eligible_rows(
             status_code=404, detail="Call import evaluation not found"
         )
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
     completed_pairs = _completed_row_pairs_for_evaluation(db, eval_id)
     metrics, _aggregates, policies, _source, _child_map = _clustering_context(
         db, evaluation, eval_rows
     )
-    raw_items = list_eligible_cluster_rows(
+    all_eligible = list_eligible_cluster_rows(
         evaluation, completed_pairs, metrics, policies
     )
+    total = len(all_eligible)
+    if count_only:
+        return MetricClusterEligibleRowsResponse(items=[], total=total)
+    raw_items = all_eligible if limit is None else all_eligible[:limit]
     items = [MetricClusterEligibleRow.model_validate(item) for item in raw_items]
-    return MetricClusterEligibleRowsResponse(items=items, total=len(items))
+    return MetricClusterEligibleRowsResponse(items=items, total=total)
 
 
 @router.get(
@@ -5780,11 +5912,7 @@ async def generate_call_import_evaluation_metric_clusters(
         if cached is not None and cached.status in {"running", "completed"}:
             return cached
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
     if not any(row.status == "completed" for row in eval_rows):
         raise HTTPException(
             status_code=400,
@@ -5792,6 +5920,12 @@ async def generate_call_import_evaluation_metric_clusters(
                 "No completed rows yet. Wait for at least one row to "
                 "finish scoring before generating metric clusters."
             ),
+        )
+
+    if body.evaluation_row_ids and body.row_limit is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Specify either evaluation_row_ids or row_limit, not both.",
         )
 
     if body.evaluation_row_ids:
@@ -5847,6 +5981,7 @@ async def generate_call_import_evaluation_metric_clusters(
         evaluation,
         eval_rows,
         body.evaluation_row_ids,
+        row_limit=body.row_limit,
         policies=merged_policies,
     )
     if not selected_row_ids:
@@ -6379,15 +6514,14 @@ def _get_running_discovered_labels(
     """
 
     parent_id_str = str(parent_metric_id)
-    rows = (
-        db.query(CallImportEvaluationRow.metric_scores)
-        .filter(
-            CallImportEvaluationRow.evaluation_id == eval_id,
-            CallImportEvaluationRow.status
-            == CallImportRowStatus.COMPLETED.value,
-        )
-        .all()
-    )
+    from app.db_sharding.eval_rows import load_evaluation_rows_for_run
+
+    eval_rows = load_evaluation_rows_for_run(db, eval_id)
+    rows = [
+        (row.metric_scores,)
+        for row in eval_rows
+        if row.status == CallImportRowStatus.COMPLETED.value
+    ]
 
     # Suppress slugs that have either:
     #  * been promoted to a real child of the parent (so the panel doesn't
@@ -6499,15 +6633,14 @@ def _get_running_discovered_metrics(
          "count": 12}
     """
 
-    rows = (
-        db.query(CallImportEvaluationRow.metric_scores)
-        .filter(
-            CallImportEvaluationRow.evaluation_id == eval_id,
-            CallImportEvaluationRow.status
-            == CallImportRowStatus.COMPLETED.value,
-        )
-        .all()
-    )
+    from app.db_sharding.eval_rows import load_evaluation_rows_for_run
+
+    eval_rows = load_evaluation_rows_for_run(db, eval_id)
+    rows = [
+        (row.metric_scores,)
+        for row in eval_rows
+        if row.status == CallImportRowStatus.COMPLETED.value
+    ]
 
     promoted_slugs: set[str] = set()
     if organization_id is not None:
@@ -6935,11 +7068,7 @@ async def get_call_import_evaluation_flow(
         )
         extra_children = [c for c in all_children if c.id not in existing_ids]
 
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    eval_rows = _load_eval_rows(db, eval_id)
 
     alias_map = _alias_map_for_parent(evaluation, parent.id)
     return _build_flow_graph(
@@ -7101,28 +7230,21 @@ async def merge_call_import_evaluation_discovered_labels(
         )
 
     parent_id_str = str(parent.id)
-    rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    from app.db_sharding.eval_rows import foreach_evaluation_row_mutating
 
-    for row in rows:
+    def _merge_discovered_label_row(row: CallImportEvaluationRow) -> bool:
         scores = (
             row.metric_scores
             if isinstance(row.metric_scores, dict)
             else None
         )
         if not scores:
-            continue
+            return False
         parent_entry = scores.get(parent_id_str)
         if not isinstance(parent_entry, dict):
-            continue
+            return False
 
         mutated = False
-        # 1. Rewrite the discovered_labels list. If the row already has
-        # an entry for to_key we keep that (it carries the user-chosen
-        # name + sample rationale) and just drop the from_key entry.
         discovered = parent_entry.get("discovered_labels")
         if isinstance(discovered, list):
             kept: List[Dict[str, Any]] = []
@@ -7153,9 +7275,6 @@ async def merge_call_import_evaluation_discovered_labels(
             if mutated:
                 parent_entry["discovered_labels"] = kept
 
-        # 2. Rewrite any discovered slugs inside the sequence array so
-        # the flow chart stays consistent. Dedupe so we don't end up
-        # with adjacent identical entries.
         seq = parent_entry.get("sequence")
         if isinstance(seq, list):
             new_seq: List[str] = []
@@ -7178,15 +7297,10 @@ async def merge_call_import_evaluation_discovered_labels(
                 mutated = True
 
         if mutated:
-            # ``JSON`` columns aren't auto-tracked when the same dict is
-            # mutated in place — ``scores`` IS ``row.metric_scores``, so
-            # the in-place edits above already updated SQLAlchemy's
-            # cached "committed" snapshot to the post-edit dict. Without
-            # ``flag_modified`` the subsequent ``dict(scores)`` reassign
-            # compares equal to that snapshot and SQLAlchemy skips the
-            # UPDATE, leaving the per-row payload stale on disk.
             row.metric_scores = dict(scores)
-            flag_modified(row, "metric_scores")
+        return mutated
+
+    foreach_evaluation_row_mutating(db, eval_id, _merge_discovered_label_row)
 
     # Persist the merge at the evaluation level too. This is what makes
     # the merge survive future scoring: rows that finish AFTER this
@@ -7301,27 +7415,21 @@ async def delete_call_import_evaluation_discovered_label(
         )
 
     parent_id_str = str(parent.id)
-    rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    from app.db_sharding.eval_rows import foreach_evaluation_row_mutating
 
-    for row in rows:
+    def _delete_discovered_label_row(row: CallImportEvaluationRow) -> bool:
         scores = (
             row.metric_scores
             if isinstance(row.metric_scores, dict)
             else None
         )
         if not scores:
-            continue
+            return False
         parent_entry = scores.get(parent_id_str)
         if not isinstance(parent_entry, dict):
-            continue
+            return False
 
         mutated = False
-
-        # 1. Strip the slug from discovered_labels.
         discovered = parent_entry.get("discovered_labels")
         if isinstance(discovered, list):
             kept = [
@@ -7337,8 +7445,6 @@ async def delete_call_import_evaluation_discovered_label(
                 parent_entry["discovered_labels"] = kept
                 mutated = True
 
-        # 2. Strip the slug from the sequence array, collapsing adjacent
-        # duplicates that the deletion exposes.
         seq = parent_entry.get("sequence")
         if isinstance(seq, list):
             new_seq: List[str] = []
@@ -7360,12 +7466,10 @@ async def delete_call_import_evaluation_discovered_label(
                 mutated = True
 
         if mutated:
-            # See merge endpoint above: in-place edits to ``scores`` /
-            # ``parent_entry`` already mutated SQLAlchemy's committed
-            # snapshot, so the reassign alone wouldn't trigger an
-            # UPDATE. Flagging the column forces it.
             row.metric_scores = dict(scores)
-            flag_modified(row, "metric_scores")
+        return mutated
+
+    foreach_evaluation_row_mutating(db, eval_id, _delete_discovered_label_row)
 
     # 3. Persist the tombstone on the evaluation so workers that finish
     # later don't re-surface the deleted slug. We also retarget any
@@ -7535,23 +7639,19 @@ async def merge_call_import_evaluation_discovered_metrics(
             items=[DiscoveredMetricItem(**item) for item in items_raw],
         )
 
-    rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    from app.db_sharding.eval_rows import foreach_evaluation_row_mutating
 
-    for row in rows:
+    def _merge_discovered_metric_row(row: CallImportEvaluationRow) -> bool:
         scores = (
             row.metric_scores
             if isinstance(row.metric_scores, dict)
             else None
         )
         if not scores:
-            continue
+            return False
         discovered = scores.get(DISCOVERED_METRICS_KEY)
         if not isinstance(discovered, list):
-            continue
+            return False
 
         kept: List[Dict[str, Any]] = []
         mutated = False
@@ -7582,7 +7682,9 @@ async def merge_call_import_evaluation_discovered_metrics(
         if mutated:
             scores[DISCOVERED_METRICS_KEY] = kept
             row.metric_scores = dict(scores)
-            flag_modified(row, "metric_scores")
+        return mutated
+
+    foreach_evaluation_row_mutating(db, eval_id, _merge_discovered_metric_row)
 
     raw_aliases = (
         evaluation.discovered_metric_aliases
@@ -7650,23 +7752,19 @@ async def delete_call_import_evaluation_discovered_metric(
             detail="key must be a non-empty slug.",
         )
 
-    rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
-    )
+    from app.db_sharding.eval_rows import foreach_evaluation_row_mutating
 
-    for row in rows:
+    def _delete_discovered_metric_row(row: CallImportEvaluationRow) -> bool:
         scores = (
             row.metric_scores
             if isinstance(row.metric_scores, dict)
             else None
         )
         if not scores:
-            continue
+            return False
         discovered = scores.get(DISCOVERED_METRICS_KEY)
         if not isinstance(discovered, list):
-            continue
+            return False
         kept = [
             e
             for e in discovered
@@ -7676,13 +7774,16 @@ async def delete_call_import_evaluation_discovered_metric(
                 == target_key
             )
         ]
-        if len(kept) != len(discovered):
-            if kept:
-                scores[DISCOVERED_METRICS_KEY] = kept
-            else:
-                scores.pop(DISCOVERED_METRICS_KEY, None)
-            row.metric_scores = dict(scores)
-            flag_modified(row, "metric_scores")
+        if len(kept) == len(discovered):
+            return False
+        if kept:
+            scores[DISCOVERED_METRICS_KEY] = kept
+        else:
+            scores.pop(DISCOVERED_METRICS_KEY, None)
+        row.metric_scores = dict(scores)
+        return True
+
+    foreach_evaluation_row_mutating(db, eval_id, _delete_discovered_metric_row)
 
     raw_aliases = (
         evaluation.discovered_metric_aliases
@@ -7745,6 +7846,19 @@ async def delete_call_import_evaluation_row(
     )
     if not evaluation:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        from app.db_sharding.eval_rows import delete_evaluation_row_on_shards
+
+        if not delete_evaluation_row_on_shards(eval_row_id, eval_id):
+            raise HTTPException(
+                status_code=404, detail="Evaluation row not found in this run"
+            )
+        _rollup_evaluation_status(evaluation, db)
+        db.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     eval_row = (
         db.query(CallImportEvaluationRow)
@@ -7903,22 +8017,29 @@ def _enqueue_eval_rows_with_optional_transcribe(
 
     eval_only_count = 0
     transcribe_count = 0
-    for eval_row, source_row in eval_rows_with_source:
-        if _needs_transcribe_for_eval(
-            evaluation,
-            source_row,
-            transcribe_overwrite=transcribe_overwrite,
-        ):
-            transcribe_count += 1
-        else:
-            eval_only_count += 1
+    if eval_rows_with_source:
+        for eval_row, source_row in eval_rows_with_source:
+            if _needs_transcribe_for_eval(
+                evaluation,
+                source_row,
+                transcribe_overwrite=transcribe_overwrite,
+            ):
+                transcribe_count += 1
+            else:
+                eval_only_count += 1
 
-    restricted_metric_ids_str: Optional[List[str]] = (
-        [str(mid) for mid in restricted_metric_ids] if restricted_metric_ids else None
-    )
-    if restricted_metric_ids_str:
-        for eval_row, _ in eval_rows_with_source:
-            store_row_restricted_metrics(eval_row.id, restricted_metric_ids_str)
+        restricted_metric_ids_str: Optional[List[str]] = (
+            [str(mid) for mid in restricted_metric_ids]
+            if restricted_metric_ids
+            else None
+        )
+        if restricted_metric_ids_str:
+            for eval_row, _ in eval_rows_with_source:
+                store_row_restricted_metrics(eval_row.id, restricted_metric_ids_str)
+    else:
+        restricted_metric_ids_str = (
+            [str(mid) for mid in restricted_metric_ids] if restricted_metric_ids else None
+        )
     store_evaluation_transcribe_overwrite(
         evaluation.id,
         overwrite=transcribe_overwrite,
@@ -8197,6 +8318,18 @@ def _gather_retry_targets(
     in flight; ``include_completed`` controls whether previously-
     successful rows are eligible.
     """
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    if is_sharding_enabled():
+        from app.db_sharding.eval_rows import gather_retry_targets_sharded
+
+        return gather_retry_targets_sharded(
+            db,
+            evaluation,
+            requested_ids,
+            include_completed=include_completed,
+        )
+
     eval_rows_query = db.query(CallImportEvaluationRow).filter(
         CallImportEvaluationRow.evaluation_id == evaluation.id
     )
@@ -8450,20 +8583,31 @@ async def retry_call_import_evaluation(
 
     skipped: List[CallImportEvaluationRetrySkippedItem] = []
     if requested_ids is None:
-        from sqlalchemy import func
+        from app.db_sharding.eval_rows import count_evaluation_rows_for_run
+        from app.db_sharding.sessions import is_sharding_enabled
 
-        count_query = db.query(func.count(CallImportEvaluationRow.id)).filter(
-            CallImportEvaluationRow.evaluation_id == eval_id
-        )
-        if include_completed:
-            count_query = count_query.filter(
-                CallImportEvaluationRow.status.in_(["failed", "completed"])
+        if is_sharding_enabled():
+            statuses = (
+                ["failed", "completed"] if include_completed else ["failed"]
+            )
+            target_count = count_evaluation_rows_for_run(
+                db, eval_id, statuses=statuses
             )
         else:
-            count_query = count_query.filter(
-                CallImportEvaluationRow.status == "failed"
+            from sqlalchemy import func
+
+            count_query = db.query(func.count(CallImportEvaluationRow.id)).filter(
+                CallImportEvaluationRow.evaluation_id == eval_id
             )
-        target_count = int(count_query.scalar() or 0)
+            if include_completed:
+                count_query = count_query.filter(
+                    CallImportEvaluationRow.status.in_(["failed", "completed"])
+                )
+            else:
+                count_query = count_query.filter(
+                    CallImportEvaluationRow.status == "failed"
+                )
+            target_count = int(count_query.scalar() or 0)
         if target_count == 0:
             return CallImportEvaluationRetryResponse(
                 requeued=0,
@@ -8570,15 +8714,14 @@ async def retry_call_import_evaluation_row(
 
     _require_no_evaluation_bulk_operation(eval_id)
 
-    eval_row = (
-        db.query(CallImportEvaluationRow)
-        .filter(
-            CallImportEvaluationRow.id == eval_row_id,
-            CallImportEvaluationRow.evaluation_id == eval_id,
-        )
-        .first()
+    from app.db_sharding.eval_rows import (
+        evaluation_row_session,
+        find_evaluation_row_in_run,
     )
-    if not eval_row:
+    from app.db_sharding.sessions import is_sharding_enabled
+
+    eval_row, _source_stub = find_evaluation_row_in_run(db, eval_id, eval_row_id)
+    if eval_row is None:
         raise HTTPException(
             status_code=404, detail="Evaluation row not found in this run"
         )
@@ -8594,8 +8737,6 @@ async def retry_call_import_evaluation_row(
 
     targets, _ = _gather_retry_targets(db, evaluation, [eval_row.id])
     if not targets:
-        # Status was ``completed`` (or source row vanished) — surface a
-        # 409 instead of silently no-op'ing so the UI can show why.
         raise HTTPException(
             status_code=409,
             detail=(
@@ -8604,9 +8745,22 @@ async def retry_call_import_evaluation_row(
             ),
         )
 
-    for er, source_row in targets:
-        _prepare_source_row_for_retry(source_row, transcribe_overwrite=False)
-        _reset_eval_row_for_retry(er)
+    if is_sharding_enabled():
+        with evaluation_row_session(eval_row_id) as (
+            row_db,
+            _catalog_db,
+            eval_row,
+            source_row,
+            _shard_id,
+        ):
+            _prepare_source_row_for_retry(source_row, transcribe_overwrite=False)
+            _reset_eval_row_for_retry(eval_row)
+            row_db.commit()
+            targets = [(eval_row, source_row)]
+    else:
+        for er, source_row in targets:
+            _prepare_source_row_for_retry(source_row, transcribe_overwrite=False)
+            _reset_eval_row_for_retry(er)
 
     evaluation.error_message = None
     evaluation.finished_at = None
@@ -8625,14 +8779,36 @@ async def retry_call_import_evaluation_row(
         logger.exception(
             "Failed to re-enqueue retry for evaluation row {}", eval_row_id
         )
-        eval_row.status = "failed"
-        eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+        if is_sharding_enabled():
+            with evaluation_row_session(eval_row_id) as (
+                row_db,
+                _catalog_db,
+                eval_row,
+                _source_row,
+                _shard_id,
+            ):
+                eval_row.status = "failed"
+                eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+                row_db.commit()
+        else:
+            eval_row.status = "failed"
+            eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
         _rollup_evaluation_status(evaluation, db)
         db.commit()
         raise HTTPException(
             status_code=500,
             detail=f"Failed to re-enqueue retry: {exc}",
         )
+
+    if is_sharding_enabled():
+        with evaluation_row_session(eval_row_id) as (
+            _row_db,
+            _catalog_db,
+            eval_row,
+            source_row,
+            _shard_id,
+        ):
+            return _to_evaluation_row_response(eval_row, source_row)
 
     db.refresh(eval_row)
     source_row = targets[0][1]

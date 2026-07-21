@@ -1,0 +1,3 @@
+# Data-plane shard migrations (row-heavy tables; call-import rows today).
+# Postgres databases are typically ``efficientai_data_01``, ``efficientai_data_02``, …
+# Set ``MIGRATION_SCOPE = "shard"`` on new migration modules here after split.

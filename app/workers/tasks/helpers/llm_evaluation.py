@@ -1193,6 +1193,13 @@ def evaluate_with_llm(
 
     evaluation_start_time = time.time()
     evaluator_llm_config = getattr(evaluator, "llm_config", None) if evaluator else None
+    evaluator_credential_id = getattr(evaluator, "llm_credential_id", None) if evaluator else None
+    parsed_credential_id = None
+    if evaluator_credential_id:
+        try:
+            parsed_credential_id = UUID(str(evaluator_credential_id))
+        except (TypeError, ValueError):
+            parsed_credential_id = None
     llm_result = llm_service.generate_response(
         messages=messages,
         llm_provider=llm_provider,
@@ -1201,6 +1208,7 @@ def evaluate_with_llm(
         db=db,
         llm_config=evaluator_llm_config,
         task_defaults={"temperature": 0.3, "max_tokens": dynamic_max_tokens},
+        credential_id=parsed_credential_id,
     )
     evaluation_time = time.time() - evaluation_start_time
 

@@ -38,6 +38,7 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
     workspace_id = uuid4()
     eval_a = uuid4()
     eval_b = uuid4()
+    call_import_id = uuid4()
 
     row_a1 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
     row_b1 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
@@ -49,8 +50,12 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
     source_a2 = SimpleNamespace(id=uuid4())
     source_b2 = SimpleNamespace(id=uuid4())
 
-    evaluation_a = SimpleNamespace(id=eval_a, status="running")
-    evaluation_b = SimpleNamespace(id=eval_b, status="running")
+    evaluation_a = SimpleNamespace(
+        id=eval_a, status="running", call_import_id=call_import_id
+    )
+    evaluation_b = SimpleNamespace(
+        id=eval_b, status="running", call_import_id=call_import_id
+    )
 
     pending_by_eval = {
         eval_a: [
@@ -64,7 +69,9 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
     }
     dispatch_order: list[uuid4] = []
 
-    def _pending_rows_for_evaluation(_db, evaluation_id, *, limit):
+    def _pending_rows_for_evaluation(
+        _db, evaluation_id, *, limit, shard_cache=None
+    ):
         rows = pending_by_eval.get(evaluation_id, [])
         return rows[:limit]
 
@@ -80,6 +87,13 @@ def test_dispatch_batch_interleaves_evaluations_in_same_workspace():
         return EvalDispatchOutcome("dispatched")
 
     db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=call_import_id,
+        organization_id=uuid4(),
+        workspace_id=workspace_id,
+        provider=None,
+        telephony_integration_id=None,
+    )
     with patch.object(
         fair_dispatch_module,
         "_evaluations_with_pending_rows",
@@ -121,13 +135,18 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
     workspace_id = uuid4()
     eval_job1 = uuid4()
     eval_job2 = uuid4()
+    call_import_id = uuid4()
 
     row_job1 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
     row_job2 = SimpleNamespace(id=uuid4(), status="pending", celery_task_id=None)
     source_job1 = SimpleNamespace(id=uuid4())
     source_job2 = SimpleNamespace(id=uuid4())
-    evaluation_job1 = SimpleNamespace(id=eval_job1, status="running")
-    evaluation_job2 = SimpleNamespace(id=eval_job2, status="pending")
+    evaluation_job1 = SimpleNamespace(
+        id=eval_job1, status="running", call_import_id=call_import_id
+    )
+    evaluation_job2 = SimpleNamespace(
+        id=eval_job2, status="pending", call_import_id=call_import_id
+    )
 
     pending_by_eval = {
         eval_job1: [(row_job1, source_job1, evaluation_job1)] * 5,
@@ -135,7 +154,9 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
     }
     dispatched_evaluations: list[uuid4] = []
 
-    def _pending_rows_for_evaluation(_db, evaluation_id, *, limit):
+    def _pending_rows_for_evaluation(
+        _db, evaluation_id, *, limit, shard_cache=None
+    ):
         rows = pending_by_eval.get(evaluation_id, [])
         return rows[:limit]
 
@@ -146,6 +167,13 @@ def test_dispatch_batch_job2_gets_rows_while_job1_has_backlog():
         return EvalDispatchOutcome("dispatched")
 
     db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=call_import_id,
+        organization_id=uuid4(),
+        workspace_id=workspace_id,
+        provider=None,
+        telephony_integration_id=None,
+    )
     with patch.object(
         fair_dispatch_module,
         "_evaluations_with_pending_rows",

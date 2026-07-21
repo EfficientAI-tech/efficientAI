@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -62,11 +63,15 @@ def test_select_rows_for_transcription_skips_without_recording():
         diarization_llm_model="gpt-4o-mini",
     )
 
-    selected, skip_counts = select_rows_for_transcription(
-        db,  # type: ignore[arg-type]
-        _FakeCallImport(import_id),  # type: ignore[arg-type]
-        payload,
-    )
+    with patch(
+        "app.db_sharding.scatter_gather.load_call_import_rows_for_transcription",
+        return_value=[row_with, row_without],
+    ):
+        selected, skip_counts = select_rows_for_transcription(
+            db,  # type: ignore[arg-type]
+            _FakeCallImport(import_id),  # type: ignore[arg-type]
+            payload,
+        )
 
     assert len(selected) == 1
     assert selected[0].id == row_with.id

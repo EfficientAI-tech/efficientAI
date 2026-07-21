@@ -1803,9 +1803,17 @@ class ApiClient {
   async listCallImportEvaluationMetricClusterEligibleRows(
     callImportId: string,
     evaluationId: string,
+    options?: {
+      limit?: number
+      count_only?: boolean
+    },
   ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
+    const params = new URLSearchParams()
+    if (options?.limit != null) params.set('limit', String(options.limit))
+    if (options?.count_only) params.set('count_only', 'true')
+    const query = params.toString()
     const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows`,
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows${query ? `?${query}` : ''}`,
     )
     return response.data
   }
@@ -1843,6 +1851,7 @@ class ApiClient {
       credential_id?: string | null
       max_llm_calls?: number | null
       evaluation_row_ids?: string[] | null
+      row_limit?: number | null
       failure_policies?: Record<
         string,
         import('../types/api').MetricFailurePolicy
@@ -1860,6 +1869,7 @@ class ApiClient {
     if (options?.evaluation_row_ids?.length) {
       body.evaluation_row_ids = options.evaluation_row_ids
     }
+    if (options?.row_limit != null) body.row_limit = options.row_limit
     if (options?.failure_policies) {
       body.failure_policies = options.failure_policies
     }

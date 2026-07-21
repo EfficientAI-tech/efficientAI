@@ -219,8 +219,8 @@ def download_recording_url(
                 f"Rate limited fetching recording (HTTP 429)",
                 retry_after_seconds=retry_after,
             )
-        raise ExotelInvalidContentError(
-            f"Unexpected HTTP 429 fetching recording: {resp.text[:200]}"
+        raise ExotelTransientError(
+            f"Rate limited fetching recording (HTTP 429): {resp.text[:200]}"
         )
     if 500 <= resp.status_code < 600:
         raise ExotelTransientError(
@@ -228,13 +228,11 @@ def download_recording_url(
         )
     if resp.status_code == 400:
         if auth is not None:
-            retry_after = _raise_credentialed_throttle(
-                fingerprint=credential_fingerprint,
-                message=f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}",
-            )
-            raise CredentialedRecordingThrottledError(
-                f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}",
-                retry_after_seconds=retry_after,
+            # Exotel occasionally returns transient 400s on valid credentialed fetches;
+            # retry the row but do not penalize the shared credential (that blocks
+            # every other worker for 60s).
+            raise ExotelTransientError(
+                f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}"
             )
         raise ExotelInvalidContentError(
             f"Unexpected HTTP 400 fetching recording: {resp.text[:200]}"

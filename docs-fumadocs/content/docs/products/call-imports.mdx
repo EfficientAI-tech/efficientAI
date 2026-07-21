@@ -17,3 +17,30 @@ Call Imports lets you bulk-import production call recordings via CSV and run bat
 - Run metrics and insights across imported production calls
 
 Contact the EfficientAI team for a license.
+
+## Sharded evaluation pipeline (ops)
+
+If evaluation runs stall after recordings import (rows show `completed` import but no diarization/scoring):
+
+1. Restart API and `worker-imports` after deploying fixes.
+2. **Retry evaluation** from the UI (use *Overwrite existing transcripts* if diarization previously failed).
+3. Or clear stale dispatch locks on shard DBs:
+
+```sql
+UPDATE call_import_evaluation_rows er
+SET celery_task_id = NULL
+FROM call_import_rows sr
+WHERE er.call_import_row_id = sr.id
+  AND er.status = 'pending'
+  AND er.celery_task_id IS NOT NULL
+  AND sr.status = 'completed'
+  AND sr.recording_s3_key IS NOT NULL;
+```
+
+Abort and force-fail run on the `eval-control` queue (before `evaluations` on `worker-imports`) so they are not blocked behind large scoring backlogs.
+
+When running locally via `eai start` or `eai worker`, the imports worker must consume **`imports,diarization,eval-control,evaluations`**. If `eval-control` is missing, Run Evaluation will enqueue materialize tasks that never run and recording imports will not start.
+
+## Database sharding (enterprise scale)
+
+For large batches (10k+ rows), call-import row data can be spread across multiple PostgreSQL data shards with a catalog database for metadata and routing. See [Call Import Sharding](/docs/advanced/call-import-sharding/) for the full system design, configuration, and scaling guide.

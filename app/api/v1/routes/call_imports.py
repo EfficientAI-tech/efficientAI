@@ -16,7 +16,7 @@ import json
 import re
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.auth.rbac import require_admin
 from app.database import get_db
+from app.db_sharding.sessions import is_sharding_enabled
 from app.dependencies import (
     get_api_key,
     get_organization_id,
@@ -92,6 +93,37 @@ def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
         return None
     cleaned = raw.strip()
     return cleaned or None
+
+
+def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportResponse:
+    """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
+    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+    from app.services.call_imports.progress_counters import (
+        clear_import_progress_redis,
+        read_import_progress,
+    )
+
+    redis_completed, redis_failed = read_import_progress(call_import.id)
+    if (
+        redis_completed
+        or redis_failed
+        or int(call_import.completed_rows or 0) > int(call_import.total_rows or 0)
+        or int(call_import.failed_rows or 0) > int(call_import.total_rows or 0)
+    ):
+        rollup_call_import_batch_status(db, call_import)
+        db.flush()
+
+    clear_import_progress_redis(call_import.id)
+    db.refresh(call_import)
+    total = int(call_import.total_rows or 0)
+    completed = min(int(call_import.completed_rows or 0), total) if total else int(
+        call_import.completed_rows or 0
+    )
+    failed = min(int(call_import.failed_rows or 0), total) if total else int(
+        call_import.failed_rows or 0
+    )
+    base = CallImportResponse.model_validate(call_import)
+    return base.model_copy(update={"completed_rows": completed, "failed_rows": failed})
 
 
 def _resolve_tags(
@@ -1142,6 +1174,7 @@ def _materialize_rows(
         row_model = CallImportRow(
             call_import_id=call_import.id,
             organization_id=organization_id,
+            workspace_id=call_import.workspace_id,
             row_index=idx,
             conversation_id=row["conversation_id"],
             recording_date=(
@@ -1458,7 +1491,7 @@ async def create_call_import(
         raise
 
     db.refresh(call_import)
-    return CallImportResponse.model_validate(call_import)
+    return _serialize_call_import(db, call_import)
 
 
 @router.patch(
@@ -1581,7 +1614,7 @@ async def update_call_import_mapping(
     call_import.status = CallImportStatus.MAPPED
     db.commit()
     db.refresh(call_import)
-    return CallImportResponse.model_validate(call_import)
+    return _serialize_call_import(db, call_import)
 
 
 @router.post(
@@ -2073,25 +2106,13 @@ async def upload_call_import_audio(
         # intentionally have no telephony provider.
         call_import.provider = None
 
+        row_mappings: List[Dict[str, Any]] = []
         for idx, item in enumerate(prepared):
-            row = CallImportRow(
-                call_import_id=call_import.id,
-                organization_id=organization_id,
-                row_index=idx,
-                conversation_id=item["conversation_id"],
-                recording_url=None,
-                transcript=None,
-                transcript_source=None,
-                raw_columns={"conversation_id": item["conversation_id"]},
-                status=CallImportRowStatus.COMPLETED,
-            )
-            db.add(row)
-            db.flush()
-
+            row_id = uuid4()
             key = _audio_s3_key(
                 organization_id,
                 call_import.id,
-                row.id,
+                row_id,
                 item["extension"],
             )
             s3_service.upload_file_by_key(
@@ -2101,9 +2122,36 @@ async def upload_call_import_audio(
             )
             uploaded_keys.append(key)
 
-            row.recording_s3_key = key
-            row.recording_content_type = item["content_type"]
-            row.recording_size_bytes = len(item["contents"])
+            row_mappings.append(
+                {
+                    "id": row_id,
+                    "call_import_id": call_import.id,
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                    "row_index": idx,
+                    "conversation_id": item["conversation_id"],
+                    "recording_url": None,
+                    "transcript": None,
+                    "transcript_source": None,
+                    "raw_columns": {"conversation_id": item["conversation_id"]},
+                    "status": CallImportRowStatus.COMPLETED,
+                    "recording_s3_key": key,
+                    "recording_content_type": item["content_type"],
+                    "recording_size_bytes": len(item["contents"]),
+                }
+            )
+
+        if is_sharding_enabled():
+            from app.db_sharding.row_ops import (
+                bulk_insert_mappings_on_shards,
+                register_shard_slices,
+            )
+
+            bulk_insert_mappings_on_shards(db, call_import.id, row_mappings)
+            register_shard_slices(db, call_import.id, len(row_mappings))
+        else:
+            for mapping in row_mappings:
+                db.add(CallImportRow(**mapping))
 
         db.commit()
     except Exception as exc:
@@ -2231,7 +2279,7 @@ async def list_call_imports(
     )
 
     return CallImportListResponse(
-        items=[CallImportResponse.model_validate(item) for item in items],
+        items=[_serialize_call_import(db, item) for item in items],
         total=total,
         page=page,
         page_size=page_size,
@@ -2416,7 +2464,7 @@ async def update_call_import(
 
     db.commit()
     db.refresh(call_import)
-    return CallImportResponse.model_validate(call_import)
+    return _serialize_call_import(db, call_import)
 
 
 @router.get(
@@ -2483,29 +2531,71 @@ async def get_call_import_detail(
             db.commit()
             db.refresh(call_import)
 
-    rows_query = db.query(CallImportRow).filter(
-        CallImportRow.call_import_id == call_import.id
-    )
-
     search_term = (q or "").strip()
     diarised_status_filter = (diarised_status or "").strip() or None
     filtered_total_rows: Optional[int] = None
-    if search_term:
-        rows_query = rows_query.filter(
-            CallImportRow.conversation_id.ilike(f"%{search_term}%")
-        )
-    if diarised_status_filter:
-        rows_query = rows_query.filter(
-            CallImportRow.diarised_transcript_status == diarised_status_filter
-        )
-    # Surface the post-filter total whenever any filter is active so
-    # the UI can paginate against the slice it's actually displaying.
-    if search_term or diarised_status_filter:
-        filtered_total_rows = rows_query.count()
+    has_row_filters = bool(search_term or diarised_status_filter)
+
+    if has_row_filters:
+        if is_sharding_enabled():
+            from app.db_sharding.scatter_gather import count_call_import_rows_filtered
+
+            filtered_total_rows = count_call_import_rows_filtered(
+                db,
+                call_import.id,
+                search_term=search_term,
+                diarised_status_filter=diarised_status_filter,
+            )
+        else:
+            rows_query = db.query(CallImportRow).filter(
+                CallImportRow.call_import_id == call_import.id
+            )
+            if search_term:
+                rows_query = rows_query.filter(
+                    CallImportRow.conversation_id.ilike(f"%{search_term}%")
+                )
+            if diarised_status_filter:
+                rows_query = rows_query.filter(
+                    CallImportRow.diarised_transcript_status == diarised_status_filter
+                )
+            filtered_total_rows = rows_query.count()
 
     if row_limit == 0:
         rows: List[CallImportRow] = []
+    elif is_sharding_enabled():
+        from app.db_sharding.scatter_gather import (
+            fetch_call_import_rows_filtered_page,
+            fetch_call_import_rows_page,
+        )
+
+        if has_row_filters:
+            rows = fetch_call_import_rows_filtered_page(
+                db,
+                call_import.id,
+                search_term=search_term,
+                diarised_status_filter=diarised_status_filter,
+                offset=row_offset,
+                limit=row_limit,
+            )
+        else:
+            rows = fetch_call_import_rows_page(
+                db,
+                call_import.id,
+                offset=row_offset,
+                limit=row_limit,
+            )
     else:
+        rows_query = db.query(CallImportRow).filter(
+            CallImportRow.call_import_id == call_import.id
+        )
+        if search_term:
+            rows_query = rows_query.filter(
+                CallImportRow.conversation_id.ilike(f"%{search_term}%")
+            )
+        if diarised_status_filter:
+            rows_query = rows_query.filter(
+                CallImportRow.diarised_transcript_status == diarised_status_filter
+            )
         rows = (
             rows_query.order_by(CallImportRow.row_index)
             .offset(row_offset)
@@ -2517,17 +2607,26 @@ async def get_call_import_detail(
     # across the whole batch — much cheaper than paging through every
     # row to recount on the client and lets the UI render a
     # transcribe/diarise progress bar without a separate roundtrip.
-    diarised_status_counts: Dict[str, int] = {}
-    for status_value, count in (
-        db.query(CallImportRow.diarised_transcript_status, func.count())
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .group_by(CallImportRow.diarised_transcript_status)
-        .all()
-    ):
-        if isinstance(status_value, str):
-            diarised_status_counts[status_value] = int(count or 0)
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import aggregate_diarised_transcript_counts
 
-    detail = CallImportDetailResponse.model_validate(call_import)
+        diarised_status_counts = aggregate_diarised_transcript_counts(
+            db, call_import.id
+        )
+    else:
+        diarised_status_counts: Dict[str, int] = {}
+        for status_value, count in (
+            db.query(CallImportRow.diarised_transcript_status, func.count())
+            .filter(CallImportRow.call_import_id == call_import.id)
+            .group_by(CallImportRow.diarised_transcript_status)
+            .all()
+        ):
+            if isinstance(status_value, str):
+                diarised_status_counts[status_value] = int(count or 0)
+
+    detail = CallImportDetailResponse.model_validate(
+        _serialize_call_import(db, call_import).model_dump()
+    )
     detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
     detail.filtered_total_rows = filtered_total_rows
     detail.diarised_pending_rows = diarised_status_counts.get("pending", 0)
@@ -2588,15 +2687,27 @@ async def list_call_import_row_ids(
             detail="Call import not found",
         )
 
+    search_term = (q or "").strip()
+    status_filter = (diarised_status or "").strip() or None
+
+    if is_sharding_enabled():
+        from app.db_sharding.scatter_gather import list_call_import_row_ids_filtered
+
+        ids = list_call_import_row_ids_filtered(
+            db,
+            call_import.id,
+            search_term=search_term,
+            diarised_status_filter=status_filter,
+        )
+        return CallImportRowIdsResponse(ids=ids, total=len(ids))
+
     rows_query = db.query(CallImportRow.id).filter(
         CallImportRow.call_import_id == call_import.id
     )
-    search_term = (q or "").strip()
     if search_term:
         rows_query = rows_query.filter(
             CallImportRow.conversation_id.ilike(f"%{search_term}%")
         )
-    status_filter = (diarised_status or "").strip() or None
     if status_filter:
         rows_query = rows_query.filter(
             CallImportRow.diarised_transcript_status == status_filter

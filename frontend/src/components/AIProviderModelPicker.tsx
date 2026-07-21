@@ -30,6 +30,8 @@ type CredentialRow = {
   name: string | null
   source: 'aiprovider' | 'integration'
   gateway_model?: string | null
+  routing_mode?: string | null
+  effective_routing?: string | null
 }
 
 /**
@@ -47,6 +49,7 @@ export default function AIProviderModelPicker({
   onCredentialIdChange,
   llm_config,
   onLLMConfigChange,
+  onSelectionChange,
   disabled = false,
   size = 'md',
   showAdvancedOptions = true,
@@ -59,6 +62,12 @@ export default function AIProviderModelPicker({
   onCredentialIdChange?: (next: string) => void
   llm_config?: LLMGenerationConfig | null
   onLLMConfigChange?: (next: LLMGenerationConfig | null) => void
+  /** Fires once with the full selection when the credential dropdown changes. */
+  onSelectionChange?: (next: {
+    provider: string
+    model: string
+    credentialId: string
+  }) => void
   disabled?: boolean
   size?: 'sm' | 'md'
   showAdvancedOptions?: boolean
@@ -93,6 +102,8 @@ export default function AIProviderModelPicker({
       name: p.name ?? null,
       source: 'aiprovider' as const,
       gateway_model: p.gateway_model ?? null,
+      routing_mode: p.routing_mode ?? null,
+      effective_routing: p.effective_routing ?? null,
     }))
     return [...aiRows, ...integrationRows]
   }, [aiProviders, integrations])
@@ -125,18 +136,38 @@ export default function AIProviderModelPicker({
       ? aiProviders.find((p) => p.id === selectedCredential.id)
       : undefined
 
+  const gatewayCredential: AIProvider | undefined = useMemo(() => {
+    if (selectedAiProvider) return selectedAiProvider
+    if (
+      selectedCredential?.source === 'aiprovider' &&
+      selectedCredential.gateway_model?.trim()
+    ) {
+      return {
+        id: selectedCredential.id,
+        provider: selectedCredential.provider as AIProvider['provider'],
+        gateway_model: selectedCredential.gateway_model,
+        routing_mode: (selectedCredential.routing_mode as AIProvider['routing_mode']) ?? 'gateway',
+        effective_routing: selectedCredential.effective_routing as AIProvider['effective_routing'],
+        is_active: true,
+        created_at: '',
+        updated_at: '',
+      }
+    }
+    return undefined
+  }, [selectedAiProvider, selectedCredential])
+
   const resolvedProvider = selectedCredential?.provider || provider
 
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', resolvedProvider],
     queryFn: () => apiClient.getModelOptions(resolvedProvider),
-    enabled: !!resolvedProvider,
+    enabled: !!resolvedProvider && !gatewayCredential?.gateway_model?.trim(),
   })
 
   const rawCatalogModels: string[] = modelOptions?.llm ?? []
 
-  const modelResolution = selectedAiProvider
-    ? resolveLLMModelsForCredential(selectedAiProvider, rawCatalogModels)
+  const modelResolution = gatewayCredential
+    ? resolveLLMModelsForCredential(gatewayCredential, rawCatalogModels)
     : { mode: 'catalog' as const, models: rawCatalogModels }
 
   const gatewayDirectModel =
@@ -167,6 +198,10 @@ export default function AIProviderModelPicker({
 
   const handleCredentialChange = (nextId: string) => {
     if (!nextId) {
+      if (onSelectionChange) {
+        onSelectionChange({ provider: '', model: '', credentialId: '' })
+        return
+      }
       onCredentialIdChange?.('')
       onProviderChange('')
       onModelChange('')
@@ -174,6 +209,14 @@ export default function AIProviderModelPicker({
     }
     const row = activeCredentials.find((p) => p.id === nextId)
     if (!row) return
+    if (onSelectionChange) {
+      onSelectionChange({
+        provider: row.provider,
+        model: '',
+        credentialId: row.id,
+      })
+      return
+    }
     onCredentialIdChange?.(row.id)
     onProviderChange(row.provider)
     onModelChange('')

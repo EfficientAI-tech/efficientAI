@@ -1,0 +1,22 @@
+# Example Docker Compose config with generic data-plane database names.
+# Copy to config.docker.yml (or merge into your existing file) and enable sharding
+# after mounting docker/postgres/init-sharding-dbs.sh on the db service.
+#
+# Align compose env DATABASE_URL with catalog for all services, e.g.:
+#   DATABASE_URL=postgresql://efficientai:password@db:5432/efficientai_catalog
+
+database:
+  url: "postgresql://efficientai:password@db:5432/efficientai_catalog"
+  catalog_url: "postgresql://efficientai:password@db:5432/efficientai_catalog"
+  pool_size: 3
+  max_overflow: 5
+  sharding:
+    enabled: true
+    row_chunk_size: 500
+  shards:
+    - id: data-shard-01
+      url: "postgresql://efficientai:password@db:5432/efficientai_data_01"
+    - id: data-shard-02
+      url: "postgresql://efficientai:password@db:5432/efficientai_data_02"
+    - id: data-shard-03
+      url: "postgresql://efficientai:password@db:5432/efficientai_data_03"

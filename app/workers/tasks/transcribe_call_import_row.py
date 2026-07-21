@@ -289,53 +289,77 @@ def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
     return _compact_diarisation_error(text, max_chars=max_chars)
 
 
-def _apply_eval_chain_transcribe_cleanup(db, run_eval_row_id: str) -> None:
+def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
     """Clear eval-row dispatch state after eval-chain transcribe completes."""
-    from app.models.database import CallImportEvaluationRow, CallImportRow
-
-    eval_row = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-        .first()
+    from app.db_sharding.row_ops import (
+        close_row_sessions,
+        locate_call_import_evaluation_row,
     )
-    if eval_row is None:
-        return
-
-    eval_row.celery_task_id = None
-    source_row = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.id == eval_row.call_import_row_id)
-        .first()
+    from app.models.database import CallImportEvaluation
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
     )
-    if (
-        source_row is not None
-        and (source_row.diarised_transcript_status or "").lower() == "failed"
-        and eval_row.status == "pending"
-    ):
-        eval_row.status = "failed"
-        eval_row.error_message = (
-            source_row.diarised_transcript_error or "Diarisation failed"
+
+    try:
+        row_db, catalog_db, eval_row, source_row, _ = (
+            locate_call_import_evaluation_row(UUID(run_eval_row_id))
         )
-        eval_row.finished_at = _now()
-    db.commit()
+    except LookupError:
+        return
+    try:
+        eval_row.celery_task_id = None
+        previous_status = eval_row.status or "pending"
+        marked_failed = False
+        if (
+            (source_row.diarised_transcript_status or "").lower() == "failed"
+            and eval_row.status == "pending"
+        ):
+            eval_row.status = "failed"
+            eval_row.error_message = (
+                source_row.diarised_transcript_error or "Diarisation failed"
+            )
+            eval_row.finished_at = _now()
+            marked_failed = True
+
+        if marked_failed:
+            parent_db = catalog_db if catalog_db is not None else row_db
+            evaluation = (
+                parent_db.query(CallImportEvaluation)
+                .filter(CallImportEvaluation.id == eval_row.evaluation_id)
+                .first()
+            )
+            if evaluation is not None:
+                commit_terminal_row_and_rollup(
+                    row_db,
+                    evaluation,
+                    eval_row,
+                    previous_row_status=previous_status,
+                    catalog_db=(
+                        catalog_db
+                        if catalog_db is not None and catalog_db is not row_db
+                        else None
+                    ),
+                )
+            else:
+                row_db.commit()
+        else:
+            row_db.commit()
+    finally:
+        close_row_sessions(row_db, catalog_db)
 
 
 def _was_cancelled_by_row_id(row_id: str | UUID) -> bool:
     """Re-read the row in a short-lived session during slow I/O."""
-    from app.models.database import CallImportRow
+    from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
 
-    db = SessionLocal()
     try:
-        row = (
-            db.query(CallImportRow)
-            .filter(CallImportRow.id == UUID(str(row_id)))
-            .first()
-        )
-        if row is None:
-            return False
-        return _was_cancelled_externally(db, row)
+        row_db, catalog_db, row, _ = locate_call_import_row(row_id)
+    except LookupError:
+        return False
+    try:
+        return _was_cancelled_externally(row_db, row)
     finally:
-        db.close()
+        close_row_sessions(row_db, catalog_db)
 
 
 def _persist_diarization_failure(
@@ -347,23 +371,21 @@ def _persist_diarization_failure(
     """Write a terminal diarisation failure without holding a long session."""
     from app.models.database import CallImportRow
 
-    db = SessionLocal()
+    from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
+
     try:
-        row = (
-            db.query(CallImportRow)
-            .filter(CallImportRow.id == UUID(str(row_id)))
-            .first()
-        )
-        if row is None:
-            return {"status": "skipped", "reason": "row_not_found"}
-        if _was_cancelled_externally(db, row):
+        row_db, catalog_db, row, _ = locate_call_import_row(row_id)
+    except LookupError:
+        return {"status": "skipped", "reason": "row_not_found"}
+    try:
+        if _was_cancelled_externally(row_db, row):
             return {"status": "cancelled", "reason": "cancelled_by_user"}
         row.diarised_transcript_status = "failed"
         row.diarised_transcript_error = error_message
-        db.commit()
+        row_db.commit()
         return {"status": "failed", "reason": reason}
     finally:
-        db.close()
+        close_row_sessions(row_db, catalog_db)
 
 
 def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -577,18 +599,15 @@ def _finalize_diarization_row(
     if pipeline_ctx.get("stt_provider"):
         provider_enum = ModelProvider(pipeline_ctx["stt_provider"])
 
-    db = SessionLocal()
-    try:
-        row = (
-            db.query(CallImportRow)
-            .filter(CallImportRow.id == UUID(str(row_id)))
-            .first()
-        )
-        if row is None:
-            return {"status": "skipped", "reason": "row_not_found"}
+    from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
 
+    try:
+        row_db, catalog_db, row, _ = locate_call_import_row(row_id)
+    except LookupError:
+        return {"status": "skipped", "reason": "row_not_found"}
+    try:
         if work_result.get("reason") == "no_speech_detected":
-            if _was_cancelled_externally(db, row):
+            if _was_cancelled_externally(row_db, row):
                 return {"status": "cancelled", "reason": "cancelled_by_user"}
             row.diarised_transcript = ""
             row.diarised_segments = []
@@ -601,7 +620,7 @@ def _finalize_diarization_row(
             )
             row.diarised_prompt = effective_prompt
             row.diarised_at = _now()
-            db.commit()
+            row_db.commit()
             return {
                 "status": "completed",
                 "row_id": str(row_id),
@@ -633,7 +652,7 @@ def _finalize_diarization_row(
                 "storable transcript; marking completed with empty transcript.",
                 row_id,
             )
-            if _was_cancelled_externally(db, row):
+            if _was_cancelled_externally(row_db, row):
                 return {
                     "status": "cancelled",
                     "reason": "cancelled_by_user",
@@ -648,7 +667,7 @@ def _finalize_diarization_row(
             )
             row.diarised_prompt = effective_prompt
             row.diarised_at = _now()
-            db.commit()
+            row_db.commit()
             return {
                 "status": "completed",
                 "row_id": str(row_id),
@@ -658,7 +677,7 @@ def _finalize_diarization_row(
                 "characters": 0,
             }
 
-        if _was_cancelled_externally(db, row):
+        if _was_cancelled_externally(row_db, row):
             logger.info(
                 "Row {} was cancelled by the user mid-flight; "
                 "skipping success write and preserving cancelled state.",
@@ -677,7 +696,7 @@ def _finalize_diarization_row(
         row.diarised_transcript_error = None
         row.diarised_prompt = effective_prompt
         row.diarised_at = _now()
-        db.commit()
+        row_db.commit()
 
         return {
             "status": "completed",
@@ -691,7 +710,7 @@ def _finalize_diarization_row(
             "turn_count": len(turns) if has_real_diarisation else 0,
         }
     finally:
-        db.close()
+        close_row_sessions(row_db, catalog_db)
 
 
 @celery_app.task(
@@ -754,22 +773,28 @@ def transcribe_call_import_row_task(
     slot_task_id = _eval_slot_task_id or self.request.id
     pipeline_ctx: dict[str, Any] | None = None
     try:
-        db = SessionLocal()
+        from app.db_sharding.row_ops import (
+            close_row_sessions,
+            locate_call_import_evaluation_row,
+            locate_call_import_row,
+        )
+
+        row_db = catalog_db = None
         try:
             if run_eval_row_id:
-                from app.models.database import CallImportEvaluationRow
-
-                eval_row_for_chain = (
-                    db.query(CallImportEvaluationRow)
-                    .filter(CallImportEvaluationRow.id == UUID(run_eval_row_id))
-                    .first()
-                )
-                if eval_row_for_chain is not None:
+                try:
+                    _er_db, _cat, eval_row_for_chain, _, _ = (
+                        locate_call_import_evaluation_row(UUID(run_eval_row_id))
+                    )
                     evaluation_id_for_dispatch = str(
                         eval_row_for_chain.evaluation_id
                     )
-            row_uuid = UUID(row_id)
-            row = db.query(CallImportRow).filter(CallImportRow.id == row_uuid).first()
+                    close_row_sessions(_er_db, _cat)
+                except LookupError:
+                    pass
+
+            row_db, catalog_db, row, _shard_id = locate_call_import_row(row_id)
+            row_uuid = row.id
             if row is None:
                 logger.warning(
                     "transcribe_call_import_row: row {} not found, skipping",
@@ -791,7 +816,7 @@ def transcribe_call_import_row_task(
             existing_diarised = (row.diarised_transcript or "").strip()
             if existing_diarised and not overwrite_existing:
                 row.diarised_transcript_status = "completed"
-                db.commit()
+                row_db.commit()
                 return {
                     "status": "skipped",
                     "reason": "transcript_present",
@@ -804,7 +829,7 @@ def transcribe_call_import_row_task(
                 row.diarised_transcript_error = (
                     "No recording available for this row; cannot diarise."
                 )
-                db.commit()
+                row_db.commit()
                 return {"status": "skipped", "reason": "no_recording"}
 
             normalised_mode = (mode or "stt_llm").strip().lower()
@@ -814,7 +839,7 @@ def transcribe_call_import_row_task(
                     f"Unknown diarisation mode '{mode}'. Expected "
                     "'stt_llm' or 'llm_only'."
                 )
-                db.commit()
+                row_db.commit()
                 return {"status": "failed", "reason": "unknown_mode"}
 
             provider_enum: Optional[ModelProvider] = None
@@ -825,7 +850,7 @@ def transcribe_call_import_row_task(
                         "STT provider/model not configured. Pick an STT "
                         "model in the Diarise modal."
                     )
-                    db.commit()
+                    row_db.commit()
                     return {"status": "failed", "reason": "missing_stt"}
                 try:
                     provider_enum = ModelProvider(stt_provider.lower())
@@ -834,7 +859,7 @@ def transcribe_call_import_row_task(
                     row.diarised_transcript_error = (
                         f"Unknown STT provider '{stt_provider}'."
                     )
-                    db.commit()
+                    row_db.commit()
                     return {"status": "failed", "reason": "unknown_provider"}
 
             llm_provider_value = (diarization_llm_provider or "").strip()
@@ -845,7 +870,7 @@ def transcribe_call_import_row_task(
                     "Diarisation LLM provider/model not configured. Pick "
                     "a chat model in the Diarise modal."
                 )
-                db.commit()
+                row_db.commit()
                 return {"status": "failed", "reason": "missing_llm_diariser"}
 
             row.diarised_transcript_status = "running"
@@ -879,7 +904,7 @@ def transcribe_call_import_row_task(
             except (TypeError, ValueError):
                 credential_uuid = None
 
-            db.commit()
+            row_db.commit()
 
             pipeline_ctx = {
                 "row_id": row_id,
@@ -896,7 +921,8 @@ def transcribe_call_import_row_task(
                 "effective_prompt": effective_prompt,
             }
         finally:
-            db.close()
+            if row_db is not None:
+                close_row_sessions(row_db, catalog_db)
 
         if pipeline_ctx is None:
             return {"status": "skipped", "reason": "setup_incomplete"}
@@ -911,58 +937,43 @@ def transcribe_call_import_row_task(
             work_result=work_result,
         )
     except Exception as exc:  # noqa: BLE001 — terminal row state + no retry loop
+        from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
+
         logger.exception(
             "transcribe_call_import_row crashed for row {}", row_id
         )
-        fail_db = SessionLocal()
         try:
-            row = (
-                fail_db.query(CallImportRow)
-                .filter(CallImportRow.id == UUID(row_id))
-                .first()
-            )
-            if row is not None:
-                if _was_cancelled_externally(fail_db, row):
-                    return {"status": "cancelled", "reason": "cancelled_by_user"}
-                if (row.diarised_transcript_status or "").lower() == "running":
-                    row.diarised_transcript_status = "failed"
-                    row.diarised_transcript_error = _summarize_exc(exc)
-                    fail_db.commit()
+            row_db, catalog_db, row, _ = locate_call_import_row(row_id)
+        except LookupError:
+            return {"status": "failed", "reason": "unexpected_error"}
+        try:
+            if _was_cancelled_externally(row_db, row):
+                return {"status": "cancelled", "reason": "cancelled_by_user"}
+            if (row.diarised_transcript_status or "").lower() == "running":
+                row.diarised_transcript_status = "failed"
+                row.diarised_transcript_error = _summarize_exc(exc)
+                row_db.commit()
         except Exception:
             logger.exception(
                 "Failed to persist unexpected-error state for row {}",
                 row_id,
             )
             try:
-                fail_db.rollback()
+                row_db.rollback()
             except Exception:
                 pass
         finally:
-            fail_db.close()
+            close_row_sessions(row_db, catalog_db)
         return {"status": "failed", "reason": "unexpected_error"}
     finally:
-        cleanup_db = SessionLocal()
-        try:
-            if run_eval_row_id:
-                try:
-                    _apply_eval_chain_transcribe_cleanup(cleanup_db, run_eval_row_id)
-                except Exception:
-                    logger.exception(
-                        "Failed to finalize eval-chain transcribe cleanup for row {}",
-                        run_eval_row_id,
-                    )
-                    try:
-                        cleanup_db.rollback()
-                        _apply_eval_chain_transcribe_cleanup(
-                            cleanup_db, run_eval_row_id
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to clear stale celery_task_id for eval row {}",
-                            run_eval_row_id,
-                        )
-        finally:
-            cleanup_db.close()
+        if run_eval_row_id:
+            try:
+                _apply_eval_chain_transcribe_cleanup(run_eval_row_id)
+            except Exception:
+                logger.exception(
+                    "Failed to finalize eval-chain transcribe cleanup for row {}",
+                    run_eval_row_id,
+                )
         if run_eval_row_id:
             from app.workers.concurrency.fair_dispatch import (
                 finish_eval_work_and_redispatch,

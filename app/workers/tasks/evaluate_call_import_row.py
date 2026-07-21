@@ -17,6 +17,7 @@ from typing import Any, List, Optional
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models.database import (
@@ -59,6 +60,30 @@ _metric_text_references_production = metric_text_references_production
 _commit_terminal_row_and_rollup = commit_terminal_row_and_rollup
 
 
+def _rollup_terminal(
+    row_db: Session,
+    catalog_db,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    *,
+    previous_row_status: str,
+) -> None:
+    cat = catalog_db if catalog_db is not row_db else None
+    _commit_terminal_row_and_rollup(
+        row_db,
+        evaluation,
+        eval_row,
+        previous_row_status=previous_row_status,
+        catalog_db=cat,
+    )
+
+
+def _persist_eval_sessions(row_db, catalog_db) -> None:
+    row_db.commit()
+    if catalog_db is not row_db:
+        catalog_db.commit()
+
+
 def _run_llm_scoring(
     *,
     eval_row_id: UUID,
@@ -72,6 +97,7 @@ def _run_llm_scoring(
     ai_providers: list,
     llm_provider: str | None,
     llm_model: str | None,
+    llm_credential_id: str | None,
     llm_config: dict | None,
     metric_llm_overrides: dict,
     discover_new_metrics: bool,
@@ -94,22 +120,26 @@ def _run_llm_scoring(
         else None
     )
 
+    run_provider = (llm_provider or "").strip() or None
+    run_model = (llm_model or "").strip() or None
+    run_llm_config = llm_config if isinstance(llm_config, dict) else None
+    run_credential_id = (llm_credential_id or "").strip() or None
+    overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
+
     if comparison_metrics:
-        run_provider = (llm_provider or "").strip() or None
-        run_model = (llm_model or "").strip() or None
-        run_llm_config = llm_config if isinstance(llm_config, dict) else None
-        overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
         for cmp_metric in comparison_metrics:
             override = overrides.get(str(cmp_metric.id)) or {}
             provider = override.get("provider") or run_provider or None
             model = override.get("model") or run_model or None
             llm_cfg = override.get("llm_config") or run_llm_config
+            credential_id = override.get("credential_id") or run_credential_id
             evaluator_obj = None
             if provider and model:
                 evaluator_obj = SimpleNamespace(
                     llm_provider=provider,
                     llm_model=model,
                     llm_config=llm_cfg,
+                    llm_credential_id=credential_id,
                     custom_prompt=None,
                 )
             try:
@@ -160,36 +190,32 @@ def _run_llm_scoring(
 
         def _resolve_pm(
             metric: Metric,
-        ) -> tuple[str | None, str | None, dict | None]:
+        ) -> tuple[str | None, str | None, dict | None, str | None]:
             override = overrides.get(str(metric.id)) or {}
             provider = override.get("provider") or run_provider or None
             model = override.get("model") or run_model or None
             llm_cfg = override.get("llm_config") or run_llm_config
-            return provider, model, llm_cfg
+            credential_id = override.get("credential_id") or run_credential_id
+            return provider, model, llm_cfg, credential_id
 
-        run_provider = (llm_provider or "").strip() or None
-        run_model = (llm_model or "").strip() or None
-        run_llm_config = llm_config if isinstance(llm_config, dict) else None
-        overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
-
-        BucketKey = tuple[tuple[str | None, str | None, str | None], UUID | None]
+        BucketKey = tuple[tuple[str | None, str | None, str | None, str | None], UUID | None]
         groups: dict[BucketKey, list[Metric]] = {}
         for metric in standalone_metrics:
-            provider, model, llm_cfg = _resolve_pm(metric)
+            provider, model, llm_cfg, credential_id = _resolve_pm(metric)
             groups.setdefault(
-                ((provider, model, _llm_config_key(llm_cfg)), None),
+                ((provider, model, _llm_config_key(llm_cfg), credential_id), None),
                 [],
             ).append(metric)
         for parent_id, children in children_by_parent.items():
-            provider, model, llm_cfg = _resolve_pm(children[0])
+            provider, model, llm_cfg, credential_id = _resolve_pm(children[0])
             groups.setdefault(
-                ((provider, model, _llm_config_key(llm_cfg)), parent_id),
+                ((provider, model, _llm_config_key(llm_cfg), credential_id), parent_id),
                 [],
             ).extend(children)
 
         metric_discovery_emitted = False
         for (config, parent_id), bucket in groups.items():
-            provider, model, llm_config_key = config
+            provider, model, llm_config_key, credential_id = config
             llm_cfg = json.loads(llm_config_key) if llm_config_key else None
             evaluator_obj = None
             if provider and model:
@@ -197,6 +223,7 @@ def _run_llm_scoring(
                     llm_provider=provider,
                     llm_model=model,
                     llm_config=llm_cfg,
+                    llm_credential_id=credential_id,
                     custom_prompt=None,
                 )
             parent_metric = parents_by_id.get(parent_id) if parent_id else None
@@ -306,20 +333,24 @@ def evaluate_call_import_row_task(
     scoring_inputs: dict[str, Any] | None = None
     restricted_metric_uuids: list[UUID] | None = None
     try:
-        db = SessionLocal()
+        from app.db_sharding.row_ops import (
+            close_row_sessions,
+            locate_call_import_evaluation_row,
+        )
+
+        row_db = catalog_db = None
         try:
             row_uuid = UUID(eval_row_id)
-            eval_row = (
-                db.query(CallImportEvaluationRow)
-                .filter(CallImportEvaluationRow.id == row_uuid)
-                .first()
-            )
-            if not eval_row:
+            try:
+                row_db, catalog_db, eval_row, source_row, _shard_id = (
+                    locate_call_import_evaluation_row(row_uuid)
+                )
+            except LookupError:
                 logger.warning("CallImportEvaluationRow {} not found", eval_row_id)
                 return {"status": "skipped", "reason": "row_not_found"}
 
             evaluation = (
-                db.query(CallImportEvaluation)
+                catalog_db.query(CallImportEvaluation)
                 .filter(CallImportEvaluation.id == eval_row.evaluation_id)
                 .first()
             )
@@ -329,26 +360,10 @@ def evaluate_call_import_row_task(
                 )
                 eval_row.status = "failed"
                 eval_row.error_message = "Evaluation parent not found"
-                db.commit()
+                row_db.commit()
                 return {"status": "failed", "reason": "evaluation_missing"}
 
             previous_row_status = eval_row.status
-            source_row = (
-                db.query(CallImportRow)
-                .filter(CallImportRow.id == eval_row.call_import_row_id)
-                .first()
-            )
-            if not source_row:
-                eval_row.status = "failed"
-                eval_row.error_message = "Source call import row not found"
-                eval_row.finished_at = _now()
-                _commit_terminal_row_and_rollup(
-                    db,
-                    evaluation,
-                    eval_row,
-                    previous_row_status=previous_row_status,
-                )
-                return {"status": "failed", "reason": "source_row_missing"}
 
             eval_row.status = "running"
             eval_row.celery_task_id = self.request.id
@@ -357,7 +372,7 @@ def evaluate_call_import_row_task(
             if evaluation.status == "pending":
                 evaluation.status = "running"
                 evaluation.started_at = evaluation.started_at or _now()
-            db.commit()
+            _persist_eval_sessions(row_db, catalog_db)
             previous_row_status = "running"
 
             production_transcript = (source_row.transcript or "").strip()
@@ -383,8 +398,9 @@ def evaluate_call_import_row_task(
                     eval_row.status = "completed"
                     eval_row.error_message = None
                     eval_row.finished_at = _now()
-                    _commit_terminal_row_and_rollup(
-                        db,
+                    _rollup_terminal(
+                        row_db,
+                        catalog_db,
                         evaluation,
                         eval_row,
                         previous_row_status=previous_row_status,
@@ -395,7 +411,7 @@ def evaluate_call_import_row_task(
                     }
 
             metrics = load_enabled_metrics(
-                db, evaluation, restricted_metric_ids=restricted_metric_ids
+                catalog_db, evaluation, restricted_metric_ids=restricted_metric_ids
             )
             if not metrics:
                 eval_row.status = "failed"
@@ -403,8 +419,9 @@ def evaluate_call_import_row_task(
                     "No enabled metrics selected for this evaluation"
                 )
                 eval_row.finished_at = _now()
-                _commit_terminal_row_and_rollup(
-                    db,
+                _rollup_terminal(
+                    row_db,
+                    catalog_db,
                     evaluation,
                     eval_row,
                     previous_row_status=previous_row_status,
@@ -417,6 +434,14 @@ def evaluate_call_import_row_task(
                 else {}
             )
             parent_import = getattr(source_row, "call_import", None)
+            if parent_import is None and source_row.call_import_id:
+                from app.models.database import CallImport
+
+                parent_import = (
+                    catalog_db.query(CallImport)
+                    .filter(CallImport.id == source_row.call_import_id)
+                    .first()
+                )
             custom_column_mapping = (
                 parent_import.custom_column_mapping
                 if parent_import is not None
@@ -472,8 +497,9 @@ def evaluate_call_import_row_task(
                 )
                 eval_row.metric_scores = _as_json_dict(metric_scores)
                 eval_row.finished_at = _now()
-                _commit_terminal_row_and_rollup(
-                    db,
+                _rollup_terminal(
+                    row_db,
+                    catalog_db,
                     evaluation,
                     eval_row,
                     previous_row_status=previous_row_status,
@@ -503,8 +529,9 @@ def evaluate_call_import_row_task(
                 )
                 eval_row.metric_scores = _as_json_dict(metric_scores)
                 eval_row.finished_at = _now()
-                _commit_terminal_row_and_rollup(
-                    db,
+                _rollup_terminal(
+                    row_db,
+                    catalog_db,
                     evaluation,
                     eval_row,
                     previous_row_status=previous_row_status,
@@ -526,7 +553,7 @@ def evaluate_call_import_row_task(
                 transcript_metrics = []
 
             ai_providers = (
-                db.query(AIProvider)
+                catalog_db.query(AIProvider)
                 .filter(
                     AIProvider.organization_id == evaluation.organization_id,
                     AIProvider.is_active.is_(True),
@@ -541,7 +568,7 @@ def evaluate_call_import_row_task(
             running_discovered_by_parent: dict[UUID, list] = {}
             if transcript_metrics and transcript:
                 parents_by_id, children_by_parent, standalone_metrics = (
-                    _build_parent_groups(db, transcript_metrics)
+                    _build_parent_groups(catalog_db, transcript_metrics)
                 )
                 if bool(getattr(evaluation, "discover_new_metrics", False)):
                     from app.api.v1.routes.call_import_evaluations import (
@@ -554,7 +581,7 @@ def evaluate_call_import_row_task(
                         else {}
                     )
                     running_discovered_metrics = _get_running_discovered_metrics(
-                        db,
+                        catalog_db,
                         evaluation.id,
                         organization_id=evaluation.organization_id,
                         alias_map=alias_map_metrics,
@@ -577,7 +604,7 @@ def evaluate_call_import_row_task(
                         continue
                     running_discovered_by_parent[parent_id] = (
                         _get_running_discovered_labels(
-                            db,
+                            catalog_db,
                             evaluation.id,
                             parent_metric.id,
                             organization_id=evaluation.organization_id,
@@ -599,6 +626,11 @@ def evaluate_call_import_row_task(
                 "ai_providers": ai_providers,
                 "llm_provider": evaluation.llm_provider,
                 "llm_model": evaluation.llm_model,
+                "llm_credential_id": (
+                    str(evaluation.llm_credential_id)
+                    if evaluation.llm_credential_id
+                    else None
+                ),
                 "llm_config": evaluation.llm_config,
                 "metric_llm_overrides": evaluation.metric_llm_overrides,
                 "discover_new_metrics": bool(
@@ -614,7 +646,8 @@ def evaluate_call_import_row_task(
                 "pre_llm_metric_scores": dict(metric_scores),
             }
         finally:
-            db.close()
+            if row_db is not None:
+                close_row_sessions(row_db, catalog_db)
 
         pre_llm_metric_scores = scoring_inputs.pop("pre_llm_metric_scores")
         llm_result = _run_llm_scoring(**scoring_inputs)
@@ -625,39 +658,47 @@ def evaluate_call_import_row_task(
         evaluation_failed = llm_result["evaluation_failed"]
         primary_error_message = llm_result["primary_error_message"]
 
-        db = SessionLocal()
+        row_db = catalog_db = None
         try:
-            eval_row = (
-                db.query(CallImportEvaluationRow)
-                .filter(CallImportEvaluationRow.id == UUID(eval_row_id))
-                .first()
+            from app.db_sharding.row_ops import (
+                close_row_sessions,
+                locate_call_import_evaluation_row,
             )
-            if not eval_row:
+
+            try:
+                row_db, catalog_db, eval_row, _source_row, _ = (
+                    locate_call_import_evaluation_row(UUID(eval_row_id))
+                )
+            except LookupError:
+                logger.warning(
+                    "[CallImportEval {}] Row not found on any shard — skipping",
+                    eval_row_id,
+                )
                 return {"status": "skipped", "reason": "row_not_found"}
             evaluation = (
-                db.query(CallImportEvaluation)
+                catalog_db.query(CallImportEvaluation)
                 .filter(CallImportEvaluation.id == eval_row.evaluation_id)
                 .first()
             )
             if not evaluation:
                 return {"status": "failed", "reason": "evaluation_missing"}
 
-            if _was_cancelled_externally(db, eval_row):
+            if _was_cancelled_externally(row_db, eval_row):
                 logger.info(
                     "[CallImportEval {}] Skipping terminal write; "
                     "row was cancelled by user",
                     eval_row.id,
                 )
                 try:
-                    rollup_parent(
-                        db,
+                    _rollup_parent(
+                        catalog_db,
                         evaluation,
                         previous_row_status="running",
                         new_row_status="failed",
                     )
-                    db.commit()
+                    catalog_db.commit()
                 except Exception:  # noqa: BLE001 — rollup is best-effort here
-                    db.rollback()
+                    catalog_db.rollback()
                 return {
                     "status": "cancelled",
                     "eval_row_id": eval_row_id,
@@ -678,7 +719,7 @@ def evaluate_call_import_row_task(
             )
 
             normalize_scores_with_aliases(
-                metric_scores, evaluation, db, evaluation.organization_id
+                metric_scores, evaluation, catalog_db, evaluation.organization_id
             )
 
             new_scores = _as_json_dict(metric_scores)
@@ -695,8 +736,9 @@ def evaluate_call_import_row_task(
             else:
                 eval_row.metric_scores = new_scores
             eval_row.finished_at = _now()
-            _commit_terminal_row_and_rollup(
-                db,
+            _rollup_terminal(
+                row_db,
+                catalog_db,
                 evaluation,
                 eval_row,
                 previous_row_status="running",
@@ -709,7 +751,8 @@ def evaluate_call_import_row_task(
                 "subset_retry": bool(restricted_metric_uuids),
             }
         finally:
-            db.close()
+            if row_db is not None:
+                close_row_sessions(row_db, catalog_db)
     finally:
         from app.workers.concurrency.fair_dispatch import (
             finish_eval_work_and_redispatch,
