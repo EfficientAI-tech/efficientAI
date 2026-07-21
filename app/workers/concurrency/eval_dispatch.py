@@ -108,18 +108,36 @@ def _fail_eval_row_for_import(
     db: Session,
     eval_row: CallImportEvaluationRow,
     source_row: CallImportRow,
+    *,
+    catalog_db: Session | None = None,
+    evaluation: CallImportEvaluation | None = None,
 ) -> None:
     from datetime import datetime, timezone
 
     from app.db_sharding.row_ops import commit_shard_row_session
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
 
+    previous_status = eval_row.status or "pending"
     eval_row.status = "failed"
     eval_row.error_message = (
         source_row.error_message or "Recording fetch failed"
     )
     eval_row.finished_at = datetime.now(timezone.utc)
     eval_row.celery_task_id = None
-    commit_shard_row_session(db)
+    if evaluation is not None:
+        commit_terminal_row_and_rollup(
+            db,
+            evaluation,
+            eval_row,
+            previous_row_status=previous_status,
+            catalog_db=(
+                catalog_db if catalog_db is not None and catalog_db is not db else None
+            ),
+        )
+    else:
+        commit_shard_row_session(db)
 
 
 def source_row_import_blocks_eval(source_row: CallImportRow) -> bool:
@@ -374,7 +392,13 @@ def _try_dispatch_single_row(
 
         if source_row.status == CallImportRowStatus.FAILED:
             if source_row_import_blocks_eval(source_row):
-                _fail_eval_row_for_import(mutate_db, eval_row, source_row)
+                _fail_eval_row_for_import(
+                    mutate_db,
+                    eval_row,
+                    source_row,
+                    catalog_db=catalog_db,
+                    evaluation=evaluation,
+                )
                 return EvalDispatchOutcome("skip")
 
         if source_row.status == CallImportRowStatus.PROCESSING:

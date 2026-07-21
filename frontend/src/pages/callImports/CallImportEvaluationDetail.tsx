@@ -410,6 +410,9 @@ export default function CallImportEvaluationDetail() {
     queryClient.invalidateQueries({
       queryKey: ['call-import-evaluations', activeWorkspaceId, id],
     })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import', activeWorkspaceId, id],
+    })
   }
 
   const bulkOperationConflictMessage =
@@ -781,20 +784,29 @@ export default function CallImportEvaluationDetail() {
     queryKey: ['call-import', activeWorkspaceId, id],
     queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
-    // Poll while diarisation is in flight so the per-run "Diarising
-    // audio…" progress bar updates as the upstream transcribe / diarise
-    // worker churns through this batch's rows. Stops polling once
-    // everything settles to terminal states.
+    // Poll while import, diarisation, or the linked evaluation is in flight
+    // so all three summary bars update without a hard refresh. Mirrors the
+    // broader conditions on CallImportDetail plus active eval-run status.
     refetchInterval: (q) => {
       const ci = q.state.data as
         | {
+            status?: string
             diarised_pending_rows?: number
             diarised_running_rows?: number
           }
         | undefined
+      if (ci?.status === 'deleting') return 3000
+      if (ci?.status === 'pending' || ci?.status === 'processing') return 5000
       const inFlight =
         (ci?.diarised_pending_rows ?? 0) + (ci?.diarised_running_rows ?? 0)
-      return inFlight > 0 ? 4000 : false
+      if (inFlight > 0) return 4000
+      const evaluation = queryClient.getQueryData(evaluationQueryKey) as
+        | { status?: string; bulk_operation?: unknown }
+        | undefined
+      if (evaluation?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
+      const evalStatus = evaluation?.status
+      if (evalStatus === 'pending' || evalStatus === 'running') return 4000
+      return false
     },
   })
 

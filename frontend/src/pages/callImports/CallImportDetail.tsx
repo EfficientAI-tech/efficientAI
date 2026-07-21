@@ -1008,6 +1008,12 @@ export default function CallImportDetail() {
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
+      void queryClient.refetchQueries({
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+      })
+      void queryClient.refetchQueries({
+        queryKey: ['call-import', activeWorkspaceId, id],
+      })
       setShowRunEval(false)
       setSelectedMetricIds([])
       setRunDraftName('')
@@ -1033,6 +1039,9 @@ export default function CallImportDetail() {
       if (siblings.length > 0) {
         return
       }
+      void queryClient.refetchQueries({
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, created.id],
+      })
       // Land directly on the dedicated detail page for the new run.
       navigate(`/call-imports/${id}/evaluations/${created.id}`)
     },

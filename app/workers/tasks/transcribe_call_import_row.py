@@ -295,6 +295,10 @@ def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
         close_row_sessions,
         locate_call_import_evaluation_row,
     )
+    from app.models.database import CallImportEvaluation
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        commit_terminal_row_and_rollup,
+    )
 
     try:
         row_db, catalog_db, eval_row, source_row, _ = (
@@ -304,6 +308,8 @@ def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
         return
     try:
         eval_row.celery_task_id = None
+        previous_status = eval_row.status or "pending"
+        marked_failed = False
         if (
             (source_row.diarised_transcript_status or "").lower() == "failed"
             and eval_row.status == "pending"
@@ -313,7 +319,31 @@ def _apply_eval_chain_transcribe_cleanup(run_eval_row_id: str) -> None:
                 source_row.diarised_transcript_error or "Diarisation failed"
             )
             eval_row.finished_at = _now()
-        row_db.commit()
+            marked_failed = True
+
+        if marked_failed:
+            parent_db = catalog_db if catalog_db is not None else row_db
+            evaluation = (
+                parent_db.query(CallImportEvaluation)
+                .filter(CallImportEvaluation.id == eval_row.evaluation_id)
+                .first()
+            )
+            if evaluation is not None:
+                commit_terminal_row_and_rollup(
+                    row_db,
+                    evaluation,
+                    eval_row,
+                    previous_row_status=previous_status,
+                    catalog_db=(
+                        catalog_db
+                        if catalog_db is not None and catalog_db is not row_db
+                        else None
+                    ),
+                )
+            else:
+                row_db.commit()
+        else:
+            row_db.commit()
     finally:
         close_row_sessions(row_db, catalog_db)
 
