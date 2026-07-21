@@ -665,9 +665,16 @@ def evaluate_call_import_row_task(
                 locate_call_import_evaluation_row,
             )
 
-            row_db, catalog_db, eval_row, _source_row, _ = (
-                locate_call_import_evaluation_row(UUID(eval_row_id))
-            )
+            try:
+                row_db, catalog_db, eval_row, _source_row, _ = (
+                    locate_call_import_evaluation_row(UUID(eval_row_id))
+                )
+            except LookupError:
+                logger.warning(
+                    "[CallImportEval {}] Row not found on any shard — skipping",
+                    eval_row_id,
+                )
+                return {"status": "skipped", "reason": "row_not_found"}
             evaluation = (
                 catalog_db.query(CallImportEvaluation)
                 .filter(CallImportEvaluation.id == eval_row.evaluation_id)

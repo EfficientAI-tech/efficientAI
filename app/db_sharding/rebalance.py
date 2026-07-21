@@ -384,11 +384,14 @@ def _copy_rows_between_shards(
     slices: Sequence[SliceInfo],
     from_shard_id: str,
     to_shard_id: str,
-) -> tuple[int, int]:
+) -> tuple[int, int, List[UUID], List[UUID]]:
+    """Copy rows to the target shard; source rows are deleted after catalog commit."""
     source_db = db_pool_manager.shard_session_factory(from_shard_id)()
     target_db = db_pool_manager.shard_session_factory(to_shard_id)()
     import_moved = 0
     eval_moved = 0
+    row_ids: List[UUID] = []
+    eval_row_ids: List[UUID] = []
     try:
         import_rows = (
             source_db.query(CallImportRow)
@@ -400,7 +403,7 @@ def _copy_rows_between_shards(
             .all()
         )
         if not import_rows:
-            return 0, 0
+            return 0, 0, [], []
 
         row_ids = [row.id for row in import_rows]
         eval_rows = (
@@ -408,6 +411,7 @@ def _copy_rows_between_shards(
             .filter(CallImportEvaluationRow.call_import_row_id.in_(row_ids))
             .all()
         )
+        eval_row_ids = [row.id for row in eval_rows]
 
         existing_import_ids = {
             row_id
@@ -418,7 +422,7 @@ def _copy_rows_between_shards(
         existing_eval_ids = {
             row_id
             for (row_id,) in target_db.query(CallImportEvaluationRow.id)
-            .filter(CallImportEvaluationRow.id.in_([row.id for row in eval_rows]))
+            .filter(CallImportEvaluationRow.id.in_(eval_row_ids))
             .all()
         }
 
@@ -448,12 +452,29 @@ def _copy_rows_between_shards(
 
         import_moved = len(import_rows)
         eval_moved = len(eval_rows)
+    finally:
+        source_db.close()
+        target_db.close()
 
-        if eval_rows:
+    return import_moved, eval_moved, row_ids, eval_row_ids
+
+
+def _delete_rows_from_source_shard(
+    *,
+    from_shard_id: str,
+    row_ids: Sequence[UUID],
+    eval_row_ids: Sequence[UUID],
+) -> None:
+    """Remove copied rows from the source shard after the catalog registry is updated."""
+    if not row_ids:
+        return
+    source_db = db_pool_manager.shard_session_factory(from_shard_id)()
+    try:
+        if eval_row_ids:
             source_db.query(CallImportEvaluationRow).filter(
-                CallImportEvaluationRow.id.in_([row.id for row in eval_rows])
+                CallImportEvaluationRow.id.in_(list(eval_row_ids))
             ).delete(synchronize_session=False)
-        source_db.query(CallImportRow).filter(CallImportRow.id.in_(row_ids)).delete(
+        source_db.query(CallImportRow).filter(CallImportRow.id.in_(list(row_ids))).delete(
             synchronize_session=False
         )
         source_db.commit()
@@ -462,9 +483,6 @@ def _copy_rows_between_shards(
         raise
     finally:
         source_db.close()
-        target_db.close()
-
-    return import_moved, eval_moved
 
 
 def _update_slice_registry(
@@ -522,7 +540,7 @@ def execute_rebalance_slices(
         )
 
     try:
-        import_moved, eval_moved = _copy_rows_between_shards(
+        import_moved, eval_moved, row_ids, eval_row_ids = _copy_rows_between_shards(
             call_import_id=plan.call_import_id,
             slices=plan.slices,
             from_shard_id=plan.from_shard_id,
@@ -541,6 +559,11 @@ def execute_rebalance_slices(
             to_shard_id=plan.to_shard_id,
         )
         catalog_db.commit()
+        _delete_rows_from_source_shard(
+            from_shard_id=plan.from_shard_id,
+            row_ids=row_ids,
+            eval_row_ids=eval_row_ids,
+        )
     except Exception:
         catalog_db.rollback()
         raise

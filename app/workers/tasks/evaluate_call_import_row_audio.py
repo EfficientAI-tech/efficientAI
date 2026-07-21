@@ -256,6 +256,12 @@ def evaluate_call_import_row_audio_task(
                 "eval_row_id": eval_row_id,
                 "phase": "audio_only",
             }
+    except LookupError:
+        logger.warning(
+            "[CallImportEval audio {}] Row not found on any shard — skipping",
+            eval_row_id,
+        )
+        return {"status": "skipped", "reason": "row_not_found"}
     finally:
         if not chain_llm:
             from app.workers.concurrency.fair_dispatch import (

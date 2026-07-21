@@ -149,6 +149,26 @@ def test_download_recording_url_authenticated_400_is_transient_without_penalty(
     penalize.assert_not_called()
 
 
+def test_download_recording_url_public_429_is_transient(monkeypatch):
+    monkeypatch.setattr(
+        module.settings,
+        "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
+        ["exotel.com"],
+        raising=False,
+    )
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = _mock_authenticated_response(429, text="Too Many Requests")
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+
+    with patch.object(module.socket, "getaddrinfo") as mock_getaddrinfo:
+        mock_getaddrinfo.return_value = [(None, None, None, None, ("52.0.0.1", 0))]
+        with patch.object(module.httpx, "Client", return_value=mock_client):
+            with pytest.raises(ExotelTransientError, match="429"):
+                module.download_public_recording("https://api.exotel.com/recording.mp3")
+
+
 def test_download_recording_url_public_401_stays_non_retryable(monkeypatch):
     monkeypatch.setattr(
         module.settings,

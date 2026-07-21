@@ -219,8 +219,8 @@ def download_recording_url(
                 f"Rate limited fetching recording (HTTP 429)",
                 retry_after_seconds=retry_after,
             )
-        raise ExotelInvalidContentError(
-            f"Unexpected HTTP 429 fetching recording: {resp.text[:200]}"
+        raise ExotelTransientError(
+            f"Rate limited fetching recording (HTTP 429): {resp.text[:200]}"
         )
     if 500 <= resp.status_code < 600:
         raise ExotelTransientError(

@@ -674,16 +674,24 @@ def execute_call_import_materialization(
     call_import.completed_rows = 0
     call_import.failed_rows = 0
 
+    row_count = len(parsed_rows)
     try:
+        if is_sharding_enabled():
+            from app.db_sharding.row_ops import register_shard_slices
+
+            register_shard_slices(db, call_import.id, row_count)
+            db.commit()
+
         row_count = bulk_materialize_call_import_rows(
             db,
             call_import,
             parsed_rows,
             organization_id,
         )
-        from app.db_sharding.row_ops import register_shard_slices
+        if not is_sharding_enabled():
+            from app.db_sharding.row_ops import register_shard_slices
 
-        register_shard_slices(db, call_import.id, row_count)
+            register_shard_slices(db, call_import.id, row_count)
         db.commit()
     except Exception as exc:  # noqa: BLE001
         logger.exception(

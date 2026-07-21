@@ -1,0 +1,51 @@
+---
+id: call-import-sharding
+title: Call Import Sharding
+sidebar_position: 4
+description: Multi-database sharding for large call-import batches
+---
+
+# Call Import Sharding
+
+For large batches (10k+ rows), call-import row data can be spread across multiple PostgreSQL **data shards** with a **catalog** database for metadata, routing, and parent counters.
+
+## Architecture
+
+- **Catalog DB** — `CallImport`, `CallImportEvaluation`, shard slice registry, dispatch metadata
+- **Data shards** — `CallImportRow`, `CallImportEvaluationRow` (partitioned by consistent hash on `row_index`)
+- **Scatter/gather reads** — API and workers query each shard and merge results
+- **Fair dispatch** — import/eval workers respect per-shard pending scans and Redis progress keys
+
+Enable sharding in `config.yml` under `database.sharding`. See `config.yml.example` and `config.docker.sharding.example.yml` for profiles.
+
+## Operations
+
+### Connection pools
+
+When `len(shards) > 1`, use smaller per-process pools (`pool_size` 3–5, `max_overflow` 5–10) so API + workers × shards stay under Postgres `max_connections`.
+
+### PgBouncer (optional)
+
+Point `database.url`, `catalog_url`, and each shard `url` at PgBouncer (`:6432`) in transaction pooling mode. Keep SQLAlchemy `pool_pre_ping` enabled.
+
+### Observability
+
+Row Celery tasks log `shard_id` on the import worker hot path. Watch Redis eval/import progress keys (`eval:progress`, `import:progress`) alongside catalog parent counters.
+
+### Rebalance
+
+Dry-run registry updates:
+
+```bash
+python scripts/rebalance_call_import_shards.py <call_import_uuid> --target-shard data-shard-02
+```
+
+Use `--apply` only after pausing the import. The rebalance tool copies rows to the target shard, updates the catalog registry, then removes copies from the source shard.
+
+## Troubleshooting stalled evaluations
+
+If evaluation runs stall after recordings import (rows show `completed` import but no diarization/scoring):
+
+1. Restart API and `worker-imports` after deploying fixes.
+2. **Retry evaluation** from the UI (use *Overwrite existing transcripts* if diarization previously failed).
+3. Ensure the imports worker consumes **`imports,diarization,eval-control,evaluations`**.
