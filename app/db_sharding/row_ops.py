@@ -144,43 +144,80 @@ def commit_shard_row_session(shard_db: Session) -> None:
         shard_db.commit()
 
 
-def bulk_insert_mappings_on_shards(
-    catalog_db: Session,
-    call_import_id: UUID,
-    mappings: List[dict],
-    *,
-    orm_class=CallImportRow,
-) -> int:
-    """Insert row mappings on the correct shard sessions; catalog_db unused when legacy."""
-    if not mappings:
-        return 0
-    if not is_sharding_enabled():
-        catalog_db.bulk_insert_mappings(orm_class, mappings)
-        catalog_db.flush()
-        return len(mappings)
-
-    from app.models.database import CallImportRow as RowModel
-
-    buckets = partition_mappings_by_shard(catalog_db, call_import_id, mappings)
-    inserted = 0
-    for shard_id, shard_mappings in buckets.items():
-        factory = db_pool_manager.shard_session_factory(shard_id)
-        shard_db = factory()
+def commit_pending_shard_sessions(sessions: List[Session]) -> None:
+    """Commit staged shard writes after the catalog transaction succeeds."""
+    for shard_db in sessions:
         try:
-            _shard_write_without_catalog_fks(shard_db)
-            shard_db.bulk_insert_mappings(RowModel, shard_mappings)
-            shard_db.commit()
-            inserted += len(shard_mappings)
-        except Exception:
-            shard_db.rollback()
-            raise
+            commit_shard_row_session(shard_db)
         finally:
             try:
                 _reset_shard_write_role(shard_db)
             except Exception:
                 pass
             shard_db.close()
-    return inserted
+
+
+def rollback_pending_shard_sessions(sessions: List[Session]) -> None:
+    """Discard staged shard writes when the catalog transaction fails."""
+    for shard_db in sessions:
+        try:
+            shard_db.rollback()
+        finally:
+            try:
+                _reset_shard_write_role(shard_db)
+            except Exception:
+                pass
+            shard_db.close()
+
+
+def bulk_insert_mappings_on_shards(
+    catalog_db: Session,
+    call_import_id: UUID,
+    mappings: List[dict],
+    *,
+    orm_class=CallImportRow,
+    defer_commit: bool = False,
+) -> tuple[int, List[Session]]:
+    """Insert row mappings on the correct shard sessions; catalog_db unused when legacy.
+
+    When ``defer_commit`` is true, rows are flushed on each shard but not committed
+    until ``commit_pending_shard_sessions`` runs after the catalog commit succeeds.
+    """
+    if not mappings:
+        return 0, []
+    if not is_sharding_enabled():
+        catalog_db.bulk_insert_mappings(orm_class, mappings)
+        catalog_db.flush()
+        return len(mappings), []
+
+    from app.models.database import CallImportRow as RowModel
+
+    buckets = partition_mappings_by_shard(catalog_db, call_import_id, mappings)
+    inserted = 0
+    pending: List[Session] = []
+    for shard_id, shard_mappings in buckets.items():
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            _shard_write_without_catalog_fks(shard_db)
+            shard_db.bulk_insert_mappings(RowModel, shard_mappings)
+            if defer_commit:
+                flush_shard_row_session(shard_db)
+                pending.append(shard_db)
+            else:
+                shard_db.commit()
+            inserted += len(shard_mappings)
+        except Exception:
+            shard_db.rollback()
+            raise
+        finally:
+            if not defer_commit:
+                try:
+                    _reset_shard_write_role(shard_db)
+                except Exception:
+                    pass
+                shard_db.close()
+    return inserted, pending
 
 
 def partition_eval_mappings_by_shard(
@@ -218,12 +255,13 @@ def bulk_insert_evaluation_rows_on_shards(
     *,
     workspace_id: UUID,
     index_by_source_id: dict[UUID, int],
-) -> int:
+    defer_commit: bool = False,
+) -> tuple[int, List[Session]]:
     """Insert eval-row stubs on the same shard as each source import row."""
     from app.models.database import CallImportEvaluationRow as EvalRowModel
 
     if not source_row_ids:
-        return 0
+        return 0, []
 
     def _mapping(source_row_id: UUID) -> dict:
         return {
@@ -239,9 +277,10 @@ def bulk_insert_evaluation_rows_on_shards(
         mappings = [_mapping(source_row_id) for source_row_id in source_row_ids]
         catalog_db.bulk_insert_mappings(EvalRowModel, mappings)
         catalog_db.flush()
-        return len(mappings)
+        return len(mappings), []
 
     inserted = 0
+    pending: List[Session] = []
     for start in range(0, len(source_row_ids), 500):
         chunk = source_row_ids[start : start + 500]
         mappings = [_mapping(source_row_id) for source_row_id in chunk]
@@ -257,18 +296,23 @@ def bulk_insert_evaluation_rows_on_shards(
             try:
                 _shard_write_without_catalog_fks(shard_db)
                 shard_db.bulk_insert_mappings(EvalRowModel, shard_mappings)
-                shard_db.commit()
+                if defer_commit:
+                    flush_shard_row_session(shard_db)
+                    pending.append(shard_db)
+                else:
+                    shard_db.commit()
                 inserted += len(shard_mappings)
             except Exception:
                 shard_db.rollback()
                 raise
             finally:
-                try:
-                    _reset_shard_write_role(shard_db)
-                except Exception:
-                    pass
-                shard_db.close()
-    return inserted
+                if not defer_commit:
+                    try:
+                        _reset_shard_write_role(shard_db)
+                    except Exception:
+                        pass
+                    shard_db.close()
+    return inserted, pending
 
 
 def locate_call_import_row(

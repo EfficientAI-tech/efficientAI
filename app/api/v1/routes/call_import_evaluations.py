@@ -486,15 +486,14 @@ def _serialize_eval(
         db, row.organization_id, metric_ids_for_lookup
     )
 
-    from app.services.call_imports.progress_counters import clear_eval_progress_redis
+    from app.services.call_imports.progress_counters import merge_eval_counters_for_ui
 
-    clear_eval_progress_redis(row.id)
-    db.refresh(row)
+    ui_completed_raw, ui_failed_raw = merge_eval_counters_for_ui(row)
     total = int(row.total_rows or 0)
-    ui_completed = min(int(row.completed_rows or 0), total) if total else int(
-        row.completed_rows or 0
+    ui_completed = (
+        min(ui_completed_raw, total) if total else ui_completed_raw
     )
-    ui_failed = min(int(row.failed_rows or 0), total) if total else int(row.failed_rows or 0)
+    ui_failed = min(ui_failed_raw, total) if total else ui_failed_raw
 
     return CallImportEvaluationResponse(
         id=row.id,
@@ -1651,6 +1650,9 @@ async def list_call_import_evaluation_rows(
             page=page,
             page_size=page_size,
             sort_key=_pair_sort_key,
+            bounded_shard_fetch=(
+                not sort_recognized or sort_by_clean == "row_index"
+            ),
         )
     else:
         total = query.count()

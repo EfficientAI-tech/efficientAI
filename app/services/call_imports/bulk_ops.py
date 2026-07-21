@@ -242,25 +242,26 @@ def bulk_insert_evaluation_rows(
     source_row_ids: List[UUID],
     *,
     workspace_id: UUID,
-) -> None:
+) -> List[Session]:
     """Insert eval-row stubs in chunks without per-row ORM overhead."""
     if not source_row_ids:
-        return
+        return []
 
     if is_sharding_enabled():
         from app.db_sharding.row_ops import bulk_insert_evaluation_rows_on_shards
         from app.db_sharding.scatter_gather import source_row_index_map
 
         index_by_id = source_row_index_map(db, call_import_id)
-        bulk_insert_evaluation_rows_on_shards(
+        _inserted, pending = bulk_insert_evaluation_rows_on_shards(
             db,
             call_import_id,
             evaluation_id,
             source_row_ids,
             workspace_id=workspace_id,
             index_by_source_id=index_by_id,
+            defer_commit=True,
         )
-        return
+        return pending
 
     for start in range(0, len(source_row_ids), _BULK_INSERT_CHUNK):
         chunk = source_row_ids[start : start + _BULK_INSERT_CHUNK]
@@ -277,6 +278,7 @@ def bulk_insert_evaluation_rows(
         ]
         db.bulk_insert_mappings(CallImportEvaluationRow, mappings)
     db.flush()
+    return []
 
 
 def materialize_and_enqueue_evaluation(
@@ -310,14 +312,26 @@ def materialize_and_enqueue_evaluation(
         db.commit()
         return
 
-    bulk_insert_evaluation_rows(
-        db,
-        evaluation.call_import_id,
-        evaluation_id,
-        source_row_ids,
-        workspace_id=evaluation.workspace_id,
-    )
-    db.commit()
+    pending_shard_sessions: List[Session] = []
+    try:
+        pending_shard_sessions = bulk_insert_evaluation_rows(
+            db,
+            evaluation.call_import_id,
+            evaluation_id,
+            source_row_ids,
+            workspace_id=evaluation.workspace_id,
+        )
+        db.commit()
+        from app.db_sharding.row_ops import commit_pending_shard_sessions
+
+        commit_pending_shard_sessions(pending_shard_sessions)
+        pending_shard_sessions = []
+    except Exception:
+        db.rollback()
+        from app.db_sharding.row_ops import rollback_pending_shard_sessions
+
+        rollback_pending_shard_sessions(pending_shard_sessions)
+        raise
 
     try:
         _enqueue_eval_rows_with_optional_transcribe(
@@ -514,13 +528,16 @@ def bulk_materialize_call_import_rows(
     call_import: CallImport,
     parsed_rows: List[Dict[str, Any]],
     organization_id: UUID,
-) -> int:
+    *,
+    defer_shard_commit: bool = False,
+) -> tuple[int, List[Session]]:
     """Insert import rows in chunks without per-row ORM overhead."""
     from app.api.v1.routes.call_imports import _parse_recording_date_cell
 
     if not parsed_rows:
-        return 0
+        return 0, []
 
+    pending: List[Session] = []
     for start in range(0, len(parsed_rows), _BULK_INSERT_CHUNK):
         chunk = parsed_rows[start : start + _BULK_INSERT_CHUNK]
         mappings = []
@@ -551,13 +568,15 @@ def bulk_materialize_call_import_rows(
             )
         from app.db_sharding.row_ops import bulk_insert_mappings_on_shards
 
-        bulk_insert_mappings_on_shards(
+        _inserted, shard_pending = bulk_insert_mappings_on_shards(
             db,
             call_import.id,
             mappings,
+            defer_commit=defer_shard_commit,
         )
+        pending.extend(shard_pending)
     db.flush()
-    return len(parsed_rows)
+    return len(parsed_rows), pending
 
 
 def execute_call_import_materialization(
@@ -675,30 +694,40 @@ def execute_call_import_materialization(
     call_import.failed_rows = 0
 
     row_count = len(parsed_rows)
+    pending_shard_sessions: List[Session] = []
     try:
         if is_sharding_enabled():
             from app.db_sharding.row_ops import register_shard_slices
 
             register_shard_slices(db, call_import.id, row_count)
-            db.commit()
 
-        row_count = bulk_materialize_call_import_rows(
+        row_count, pending_shard_sessions = bulk_materialize_call_import_rows(
             db,
             call_import,
             parsed_rows,
             organization_id,
+            defer_shard_commit=is_sharding_enabled(),
         )
         if not is_sharding_enabled():
             from app.db_sharding.row_ops import register_shard_slices
 
             register_shard_slices(db, call_import.id, row_count)
         db.commit()
+        if is_sharding_enabled():
+            from app.db_sharding.row_ops import commit_pending_shard_sessions
+
+            commit_pending_shard_sessions(pending_shard_sessions)
+            pending_shard_sessions = []
     except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        if is_sharding_enabled():
+            from app.db_sharding.row_ops import rollback_pending_shard_sessions
+
+            rollback_pending_shard_sessions(pending_shard_sessions)
         logger.exception(
             "Failed to materialize rows for call import {}",
             call_import_id,
         )
-        db.rollback()
         call_import.status = CallImportStatus.FAILED
         call_import.error_message = f"Failed to materialize import rows: {exc}"
         db.commit()

@@ -165,12 +165,16 @@ def fetch_evaluation_row_pairs_page(
     page_size: int,
     sort_key: PairSortKey,
     sort_desc: bool = False,
+    bounded_shard_fetch: bool = True,
 ) -> Tuple[int, List[Tuple[CallImportEvaluationRow, CallImportRow]]]:
     """Return ``(total, page_slice)`` without loading every eval row pair.
 
-    When sharding is enabled, each shard returns at most ``page * page_size``
-    rows matching the filtered/sorted query; results are merged in Python
-    and sliced to the requested page.
+    When sharding is enabled and ``bounded_shard_fetch`` is true (``row_index``
+    sort only), each shard returns at most ``page * page_size`` rows; results
+    are merged in Python and sliced to the requested page.
+
+    For other sort keys, every shard returns all matching rows so globally
+    correct ordering is preserved across shards.
     """
     page = max(1, page)
     page_size = max(1, page_size)
@@ -187,15 +191,19 @@ def fetch_evaluation_row_pairs_page(
         )
         return total, list(rows)
 
-    over_fetch = page * page_size
     merged: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
     router = db_pool_manager.router
     assert router is not None
+    over_fetch = page * page_size
     for shard_id in router.shard_ids:
         factory = db_pool_manager.shard_session_factory(shard_id)
         shard_db = factory()
         try:
-            merged.extend(build_query(shard_db).limit(over_fetch).all())
+            shard_query = build_query(shard_db)
+            if bounded_shard_fetch:
+                merged.extend(shard_query.limit(over_fetch).all())
+            else:
+                merged.extend(shard_query.all())
         finally:
             shard_db.close()
 
