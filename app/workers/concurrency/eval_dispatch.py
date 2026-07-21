@@ -122,6 +122,22 @@ def _fail_eval_row_for_import(
     commit_shard_row_session(db)
 
 
+def source_row_import_blocks_eval(source_row: CallImportRow) -> bool:
+    """True when import failure prevents the eval pipeline from continuing."""
+    if (source_row.recording_s3_key or "").strip():
+        return False
+    return source_row.status == CallImportRowStatus.FAILED
+
+
+def recover_eval_row_for_eval_chain(eval_row: CallImportEvaluationRow) -> None:
+    """Undo a premature eval-row failure so the eval chain can continue."""
+    if eval_row.status != "failed":
+        return
+    eval_row.status = "pending"
+    eval_row.error_message = None
+    eval_row.finished_at = None
+
+
 def build_eval_chain_transcribe_apply_async(
     *,
     evaluation: CallImportEvaluation,
@@ -179,6 +195,8 @@ def enqueue_eval_chain_transcribe_after_import(
 ) -> bool:
     """Directly chain diarisation after a successful eval-chain recording fetch."""
     from app.db_sharding.row_ops import shard_row_write_context
+
+    recover_eval_row_for_eval_chain(eval_row)
 
     with shard_row_write_context(db):
         source_row.diarised_transcript_status = "pending"
@@ -355,8 +373,9 @@ def _try_dispatch_single_row(
             return EvalDispatchOutcome("skip")
 
         if source_row.status == CallImportRowStatus.FAILED:
-            _fail_eval_row_for_import(mutate_db, eval_row, source_row)
-            return EvalDispatchOutcome("skip")
+            if source_row_import_blocks_eval(source_row):
+                _fail_eval_row_for_import(mutate_db, eval_row, source_row)
+                return EvalDispatchOutcome("skip")
 
         if source_row.status == CallImportRowStatus.PROCESSING:
             if not (source_row.recording_s3_key or "").strip():

@@ -163,8 +163,7 @@ class ExotelClient:
                 f"Exotel server error fetching call detail (HTTP {resp.status_code})"
             )
         if resp.status_code == 400:
-            self._penalize_if_fingerprinted()
-            raise CredentialedRecordingThrottledError(
+            raise ExotelTransientError(
                 f"Unexpected HTTP 400 fetching call detail: {resp.text[:200]}"
             )
         if resp.status_code >= 400:

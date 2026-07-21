@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, TypeVar, TYPE_CHECKING
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar, TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import case, func
@@ -890,21 +890,44 @@ def list_source_row_ids_ordered(
         )
         return [row[0] for row in rows if row[0] is not None]
 
-    merged = _legacy_catalog_rows(catalog_db, call_import_id)
+    merged: List[Tuple[UUID, int]] = [
+        (row_id, int(row_index or 0))
+        for row_id, row_index in catalog_db.query(
+            CallImportRow.id,
+            CallImportRow.row_index,
+        )
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+        if row_id is not None
+    ]
     shard_ids = shard_ids_for_import(catalog_db, call_import_id)
 
-    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
-        return (
-            db.query(CallImportRow)
+    def load_shard(db: Session, _shard_id: str) -> List[Tuple[UUID, int]]:
+        return [
+            (row_id, int(row_index or 0))
+            for row_id, row_index in db.query(
+                CallImportRow.id,
+                CallImportRow.row_index,
+            )
             .filter(CallImportRow.call_import_id == call_import_id)
             .order_by(CallImportRow.row_index.asc())
             .all()
-        )
+            if row_id is not None
+        ]
 
     for part in scatter_gather_on_shards(shard_ids, load_shard):
         merged.extend(part)
-    merged = merge_rows_by_index(merged)
-    return [row.id for row in merged if row.id is not None]
+    merged.sort(key=lambda pair: pair[1])
+    if merged:
+        return [row_id for row_id, _ in merged]
+
+    rows = (
+        catalog_db.query(CallImportRow.id)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .order_by(CallImportRow.row_index.asc())
+        .all()
+    )
+    return [row[0] for row in rows if row[0] is not None]
 
 
 def source_row_index_map(
@@ -920,20 +943,42 @@ def source_row_index_map(
         )
         return {row_id: int(row_index or 0) for row_id, row_index in rows}
 
-    merged: List[CallImportRow] = list(_legacy_catalog_rows(catalog_db, call_import_id))
+    merged: List[Tuple[UUID, int]] = [
+        (row_id, int(row_index or 0))
+        for row_id, row_index in catalog_db.query(
+            CallImportRow.id,
+            CallImportRow.row_index,
+        )
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+        if row_id is not None
+    ]
     shard_ids = shard_ids_for_import(catalog_db, call_import_id)
 
-    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
-        return (
-            db.query(CallImportRow)
+    def load_shard(db: Session, _shard_id: str) -> List[Tuple[UUID, int]]:
+        return [
+            (row_id, int(row_index or 0))
+            for row_id, row_index in db.query(
+                CallImportRow.id,
+                CallImportRow.row_index,
+            )
             .filter(CallImportRow.call_import_id == call_import_id)
             .all()
-        )
+            if row_id is not None
+        ]
 
     for part in scatter_gather_on_shards(shard_ids, load_shard):
         merged.extend(part)
-    merged = merge_rows_by_index(merged)
-    return {row.id: int(row.row_index or 0) for row in merged if row.id is not None}
+    merged.sort(key=lambda pair: pair[1])
+    if merged:
+        return {row_id: row_index for row_id, row_index in merged}
+
+    rows = (
+        catalog_db.query(CallImportRow.id, CallImportRow.row_index)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+    )
+    return {row_id: int(row_index or 0) for row_id, row_index in rows}
 
 
 def count_evaluation_cancel_targets_sharded(

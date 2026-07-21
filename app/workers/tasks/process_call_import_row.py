@@ -603,9 +603,10 @@ def process_call_import_row_task(
                         close_row_sessions as close_eval_sessions,
                         locate_call_import_evaluation_row,
                     )
-                    from app.models.enums import CallImportRowStatus
                     from app.workers.concurrency.eval_dispatch import (
                         _fail_eval_row_for_import,
+                        recover_eval_row_for_eval_chain,
+                        source_row_import_blocks_eval,
                     )
 
                     try:
@@ -618,22 +619,21 @@ def process_call_import_row_task(
                         pass
                     else:
                         try:
-                            if (
-                                source_row.status
-                                != CallImportRowStatus.COMPLETED
-                                and eval_row.status == "pending"
-                            ):
-                                _fail_eval_row_for_import(
-                                    cleanup_row_db, eval_row, source_row
-                                )
-                            elif eval_row.status == "pending":
-                                from app.db_sharding.row_ops import (
-                                    commit_shard_row_session,
-                                )
+                            if source_row_import_blocks_eval(source_row):
+                                if eval_row.status == "pending":
+                                    _fail_eval_row_for_import(
+                                        cleanup_row_db, eval_row, source_row
+                                    )
+                            else:
+                                recover_eval_row_for_eval_chain(eval_row)
+                                if eval_row.status == "pending":
+                                    from app.db_sharding.row_ops import (
+                                        commit_shard_row_session,
+                                    )
 
-                                eval_row.celery_task_id = None
-                                source_row.celery_task_id = None
-                                commit_shard_row_session(cleanup_row_db)
+                                    eval_row.celery_task_id = None
+                                    source_row.celery_task_id = None
+                                    commit_shard_row_session(cleanup_row_db)
                         finally:
                             close_eval_sessions(
                                 cleanup_row_db, cleanup_catalog_db

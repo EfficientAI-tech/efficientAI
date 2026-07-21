@@ -319,16 +319,11 @@ def materialize_and_enqueue_evaluation(
     )
     db.commit()
 
-    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
-
-    pairs = load_evaluation_row_pairs(db, evaluation_id)
-    bucket: List[Tuple[CallImportEvaluationRow, CallImportRow]] = list(pairs)
-
     try:
         _enqueue_eval_rows_with_optional_transcribe(
             db,
             evaluation,
-            bucket,
+            [],
             transcribe_overwrite=transcribe_overwrite,
         )
         evaluation.status = "running"

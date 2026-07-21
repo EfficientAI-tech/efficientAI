@@ -55,17 +55,16 @@ def register_shard_slices(
     assert router is not None
     chunk = router.row_chunk_size
     slice_meta: Dict[int, Dict[str, Any]] = {}
-    for idx in range(total_rows):
-        slice_id = idx // chunk
-        if slice_id not in slice_meta:
-            shard_id = router.shard_id_for_row(call_import_id, idx)
-            slice_meta[slice_id] = {
-                "shard_id": shard_id,
-                "row_index_min": idx,
-                "row_index_max": idx,
-            }
-        else:
-            slice_meta[slice_id]["row_index_max"] = idx
+    num_slices = (total_rows + chunk - 1) // chunk
+    for slice_id in range(num_slices):
+        row_index_min = slice_id * chunk
+        row_index_max = min((slice_id + 1) * chunk - 1, total_rows - 1)
+        shard_id = router.shard_id_for_row(call_import_id, row_index_min)
+        slice_meta[slice_id] = {
+            "shard_id": shard_id,
+            "row_index_min": row_index_min,
+            "row_index_max": row_index_max,
+        }
     for slice_id, meta in slice_meta.items():
         catalog_db.merge(
             CallImportShardSlice(

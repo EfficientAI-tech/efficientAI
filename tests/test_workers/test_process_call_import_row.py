@@ -449,6 +449,77 @@ def test_process_call_import_row_retries_when_credit_denied(db_session, monkeypa
     assert captured["countdown"] == 18
 
 
+def test_eval_chain_import_throttle_does_not_fail_eval_row(
+    db_session, monkeypatch
+):
+    from app.models.database import CallImportEvaluation, CallImportEvaluationRow
+
+    org, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+
+    evaluation = CallImportEvaluation(
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        workspace_id=call_import.workspace_id,
+        name="Eval",
+        selected_metric_ids=[],
+        status="running",
+        total_rows=1,
+        completed_rows=0,
+        failed_rows=0,
+    )
+    db_session.add(evaluation)
+    db_session.flush()
+    eval_row = CallImportEvaluationRow(
+        evaluation_id=evaluation.id,
+        call_import_row_id=row.id,
+        status="pending",
+    )
+    db_session.add(eval_row)
+    db_session.commit()
+
+    class _FingerprintedClient:
+        _credential_fingerprint = "fp-denied"
+
+        def download_recording(self, _url):
+            raise AssertionError("download should not run when credit is denied")
+
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, _FingerprintedClient(), fake_s3
+    )
+    from app.workers.concurrency.telephony_credential_rate_limit import CreditStatus
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.telephony_credential_rate_limit.consume_telephony_import_credit",
+        lambda _fp: CreditStatus(allowed=False, wait_seconds=15, remaining=0),
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits.slot_registered_for_task",
+        lambda _task_id: True,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda _task_id: None,
+    )
+
+    def _capture_retry(exc, countdown):
+        raise RetryCalled((exc, countdown))
+
+    monkeypatch.setattr(task_module.process_call_import_row_task, "retry", _capture_retry)
+
+    with pytest.raises(RetryCalled):
+        task_module.process_call_import_row_task.run(
+            str(row.id),
+            _eval_slot_task_id="slot-eval-chain",
+            run_eval_row_id=str(eval_row.id),
+        )
+
+    db_session.refresh(eval_row)
+    assert eval_row.status == "pending"
+    assert eval_row.error_message is None
+
+
 def test_process_call_import_row_marks_failed_on_auth_error_without_retry(db_session, monkeypatch):
     _, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]

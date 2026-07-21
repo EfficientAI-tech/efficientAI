@@ -9,6 +9,7 @@ from app.services.telephony.exotel_client import (
     CredentialedRecordingThrottledError,
     ExotelAuthError,
     ExotelInvalidContentError,
+    ExotelTransientError,
 )
 from app.services.telephony import recording_download as module
 
@@ -115,16 +116,19 @@ def test_download_recording_url_authenticated_401_is_throttled(monkeypatch):
                 )
 
 
-def test_download_recording_url_authenticated_400_is_throttled(monkeypatch):
+def test_download_recording_url_authenticated_400_is_transient_without_penalty(
+    monkeypatch,
+):
     monkeypatch.setattr(
         module.settings,
         "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
         ["exotel.com"],
         raising=False,
     )
+    penalize = MagicMock(return_value=20)
     monkeypatch.setattr(
         "app.workers.concurrency.telephony_credential_rate_limit.penalize_telephony_credential",
-        lambda *_a, **_kw: 20,
+        penalize,
     )
 
     mock_client = MagicMock()
@@ -135,12 +139,14 @@ def test_download_recording_url_authenticated_400_is_throttled(monkeypatch):
     with patch.object(module.socket, "getaddrinfo") as mock_getaddrinfo:
         mock_getaddrinfo.return_value = [(None, None, None, None, ("52.0.0.1", 0))]
         with patch.object(module.httpx, "Client", return_value=mock_client):
-            with pytest.raises(CredentialedRecordingThrottledError, match="400"):
+            with pytest.raises(ExotelTransientError, match="400"):
                 module.download_recording_url(
                     "https://api.exotel.com/recording.mp3",
                     auth=("user", "pass"),
                     credential_fingerprint="fp-test",
                 )
+
+    penalize.assert_not_called()
 
 
 def test_download_recording_url_public_401_stays_non_retryable(monkeypatch):

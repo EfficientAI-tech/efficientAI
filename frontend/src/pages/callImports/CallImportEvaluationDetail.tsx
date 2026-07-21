@@ -258,6 +258,10 @@ function isUserInsightMetricName(name: string): boolean {
 }
 
 const ROWS_PAGE_SIZE = 50
+const EVAL_PROGRESS_POLL_MS = 3000
+const EVAL_PROGRESS_POLL_LARGE_MS = 10000
+const EVAL_LARGE_ROW_THRESHOLD = 5000
+const ROWS_REFETCH_WHILE_RUNNING_MS = 20000
 
 const USER_INSIGHTS_SAMPLE_SIZE_OPTIONS = [50, 100, 150, 200, 300, 500] as const
 const DEFAULT_USER_INSIGHTS_SAMPLE_SIZE = 200
@@ -798,11 +802,16 @@ export default function CallImportEvaluationDetail() {
     queryKey: evaluationQueryKey,
     queryFn: () => apiClient.getCallImportEvaluation(id!, evalId!),
     enabled: !!id && !!evalId,
+    staleTime: 5000,
     refetchInterval: (q) => {
       const data = q.state.data
       if (data?.bulk_operation) return EVALUATION_BULK_OPERATION_POLL_MS
       const status = data?.status
-      return status === 'pending' || status === 'running' ? 3000 : false
+      if (status !== 'pending' && status !== 'running') return false
+      const totalRows = data?.total_rows ?? 0
+      return totalRows > EVAL_LARGE_ROW_THRESHOLD
+        ? EVAL_PROGRESS_POLL_LARGE_MS
+        : EVAL_PROGRESS_POLL_MS
     },
   })
 
@@ -848,13 +857,22 @@ export default function CallImportEvaluationDetail() {
         sort_by: sortBy || undefined,
         sort_dir: sortBy ? sortDir : undefined,
       }),
-    enabled: !!id && !!evalId,
+    enabled:
+      !!id &&
+      !!evalId &&
+      resultsTab === 'table' &&
+      (evaluationQuery.data?.status === 'running' ||
+        evaluationQuery.data?.status === 'completed' ||
+        evaluationQuery.data?.status === 'partial' ||
+        evaluationQuery.data?.status === 'failed'),
     refetchInterval: () => {
       if (evaluationQuery.data?.bulk_operation) {
         return EVALUATION_BULK_OPERATION_POLL_MS
       }
-      const status = evaluationQuery.data?.status
-      return status === 'pending' || status === 'running' ? 3000 : false
+      if (evaluationQuery.data?.status === 'running') {
+        return ROWS_REFETCH_WHILE_RUNNING_MS
+      }
+      return false
     },
   })
 
@@ -881,24 +899,6 @@ export default function CallImportEvaluationDetail() {
     deepLinkRowId,
   ])
 
-  const pendingRowsQuery = useQuery({
-    queryKey: ['call-import-evaluation-pending-rows-count', activeWorkspaceId, id, evalId],
-    queryFn: () =>
-      apiClient.listCallImportEvaluationRows(id!, evalId!, {
-        page: 1,
-        page_size: 1,
-        status: 'pending',
-      }),
-    enabled: !!id && !!evalId,
-    refetchInterval: () => {
-      if (evaluationQuery.data?.bulk_operation) {
-        return EVALUATION_BULK_OPERATION_POLL_MS
-      }
-      const status = evaluationQuery.data?.status
-      return status === 'pending' || status === 'running' ? 3000 : false
-    },
-  })
-
   // Lazy: only fetch aggregates when the user lands on the
   // visualizations tab. Refetches while the run is still in flight so
   // the chart fills in as workers complete rows.
@@ -916,10 +916,7 @@ export default function CallImportEvaluationDetail() {
         evalId!,
         vizBaselineEvaluationId,
       ),
-    enabled:
-      !!id &&
-      !!evalId &&
-      (resultsTab === 'visualizations' || resultsTab === 'table'),
+    enabled: !!id && !!evalId && resultsTab === 'visualizations',
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 5000 : false
@@ -2198,7 +2195,12 @@ export default function CallImportEvaluationDetail() {
     : `Evaluation ${evaluation.id.slice(0, 8)}`
   const bulkOperation = evaluation.bulk_operation ?? null
   const bulkOperationActive = bulkOperation !== null
-  const pendingRowCount = pendingRowsQuery.data?.total ?? 0
+  const pendingRowCount = Math.max(
+    0,
+    (evaluation.total_rows ?? 0) -
+      (evaluation.completed_rows ?? 0) -
+      (evaluation.failed_rows ?? 0),
+  )
   const getMetricLlmLabel = (metricId: string): string => {
     const override = evaluation.metric_llm_overrides?.[metricId]
     const overrideProvider = override?.provider?.trim()

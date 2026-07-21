@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Callable, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, List, Optional, Sequence, Tuple, TypeVar
 from uuid import UUID
 
 from sqlalchemy.orm import Query, Session
@@ -152,6 +152,56 @@ def paginate_pairs(
     start = max(0, (page - 1) * page_size)
     end = start + page_size
     return total, list(ordered[start:end])
+
+
+PairSortKey = Callable[[Tuple[CallImportEvaluationRow, CallImportRow]], Any]
+
+
+def fetch_evaluation_row_pairs_page(
+    catalog_db: Session,
+    build_query: Callable[[Session], Query],
+    *,
+    page: int,
+    page_size: int,
+    sort_key: PairSortKey,
+    sort_desc: bool = False,
+) -> Tuple[int, List[Tuple[CallImportEvaluationRow, CallImportRow]]]:
+    """Return ``(total, page_slice)`` without loading every eval row pair.
+
+    When sharding is enabled, each shard returns at most ``page * page_size``
+    rows matching the filtered/sorted query; results are merged in Python
+    and sliced to the requested page.
+    """
+    page = max(1, page)
+    page_size = max(1, page_size)
+    total = scatter_gather_eval_query_count(catalog_db, build_query)
+    if total == 0:
+        return 0, []
+
+    if not is_sharding_enabled():
+        rows = (
+            build_query(catalog_db)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return total, list(rows)
+
+    over_fetch = page * page_size
+    merged: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+    router = db_pool_manager.router
+    assert router is not None
+    for shard_id in router.shard_ids:
+        factory = db_pool_manager.shard_session_factory(shard_id)
+        shard_db = factory()
+        try:
+            merged.extend(build_query(shard_db).limit(over_fetch).all())
+        finally:
+            shard_db.close()
+
+    merged.sort(key=sort_key, reverse=sort_desc)
+    start = (page - 1) * page_size
+    return total, list(merged[start : start + page_size])
 
 
 def gather_retry_targets_sharded(

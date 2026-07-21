@@ -1515,6 +1515,7 @@ async def list_call_import_evaluation_rows(
     sort_recognized = False
     sort_by_clean = (sort_by or "").strip()
     primary_sort = None
+    metric_uuid: Optional[UUID] = None
     if sort_by_clean == "row_index":
         sort_recognized = True
         # Falls through to the default ``order_by`` below with
@@ -1580,37 +1581,77 @@ async def list_call_import_evaluation_rows(
         # so a typo'd / stale ``sort_by`` doesn't quietly invert the
         # default order.
         query = query.order_by(CallImportRow.row_index.asc())
-    from app.db_sharding.scatter_gather import load_evaluation_row_pairs
+    from app.db_sharding.eval_rows import fetch_evaluation_row_pairs_page
     from app.db_sharding.sessions import is_sharding_enabled
 
-    if is_sharding_enabled():
-        all_rows = list(load_evaluation_row_pairs(db, eval_id))
-        if status_filter:
-            status_value = status_filter.strip().lower()
-            all_rows = [
-                (eval_row_obj, source_row)
-                for eval_row_obj, source_row in all_rows
-                if (eval_row_obj.status or "").lower() == status_value
-            ]
-        if q and q.strip():
-            needle = q.strip().lower()
-            all_rows = [
-                (eval_row_obj, source_row)
-                for eval_row_obj, source_row in all_rows
-                if needle in (source_row.conversation_id or "").lower()
-                or needle in (source_row.transcript or "").lower()
-                or needle in (source_row.diarised_transcript or "").lower()
-            ]
-        if flow_parent_id or discovered_parent_id or metric_id:
-            from app.db_sharding.eval_rows import scatter_gather_eval_query
+    def _pair_row_index(
+        pair: Tuple[CallImportEvaluationRow, CallImportRow],
+    ) -> int:
+        return int(pair[1].row_index or 0)
 
-            all_rows = scatter_gather_eval_query(
-                db, lambda session: query.with_session(session).all()
+    def _directed_string(value: Optional[str], desc: bool) -> Tuple[int, ...]:
+        text = value or ""
+        if not desc:
+            return (0, *text.encode("utf-8"))
+        return (1, *(-byte for byte in text.encode("utf-8")))
+
+    if sort_by_clean == "conversation_id":
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[Any, ...]:
+            return (
+                _directed_string(pair[1].conversation_id, direction_desc),
+                _pair_row_index(pair),
             )
-        else:
-            all_rows.sort(key=lambda pair: int(pair[1].row_index or 0))
-        total = len(all_rows)
-        rows = all_rows[(page - 1) * page_size : page * page_size]
+    elif sort_by_clean == "status":
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[Any, ...]:
+            return (
+                _directed_string(pair[0].status, direction_desc),
+                _pair_row_index(pair),
+            )
+    elif sort_by_clean.startswith("metric:") and metric_uuid is not None:
+        metric_id_str = str(metric_uuid)
+
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[Any, ...]:
+            scores = pair[0].metric_scores or {}
+            entry = scores.get(metric_id_str, {})
+            raw_value = entry.get("value") if isinstance(entry, dict) else None
+            null_rank = 1 if raw_value is None else 0
+            return (
+                null_rank,
+                _directed_string(
+                    str(raw_value) if raw_value is not None else None,
+                    direction_desc,
+                ),
+                _pair_row_index(pair),
+            )
+    elif sort_recognized and sort_by_clean == "row_index":
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[int, ...]:
+            idx = _pair_row_index(pair)
+            return (-idx,) if direction_desc else (idx,)
+    else:
+        def _pair_sort_key(
+            pair: Tuple[CallImportEvaluationRow, CallImportRow],
+        ) -> Tuple[int, ...]:
+            return (_pair_row_index(pair),)
+
+    if is_sharding_enabled():
+        def _build_query(session: Session):
+            return query.with_session(session)
+
+        total, rows = fetch_evaluation_row_pairs_page(
+            db,
+            _build_query,
+            page=page,
+            page_size=page_size,
+            sort_key=_pair_sort_key,
+        )
     else:
         total = query.count()
         rows = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -7974,22 +8015,29 @@ def _enqueue_eval_rows_with_optional_transcribe(
 
     eval_only_count = 0
     transcribe_count = 0
-    for eval_row, source_row in eval_rows_with_source:
-        if _needs_transcribe_for_eval(
-            evaluation,
-            source_row,
-            transcribe_overwrite=transcribe_overwrite,
-        ):
-            transcribe_count += 1
-        else:
-            eval_only_count += 1
+    if eval_rows_with_source:
+        for eval_row, source_row in eval_rows_with_source:
+            if _needs_transcribe_for_eval(
+                evaluation,
+                source_row,
+                transcribe_overwrite=transcribe_overwrite,
+            ):
+                transcribe_count += 1
+            else:
+                eval_only_count += 1
 
-    restricted_metric_ids_str: Optional[List[str]] = (
-        [str(mid) for mid in restricted_metric_ids] if restricted_metric_ids else None
-    )
-    if restricted_metric_ids_str:
-        for eval_row, _ in eval_rows_with_source:
-            store_row_restricted_metrics(eval_row.id, restricted_metric_ids_str)
+        restricted_metric_ids_str: Optional[List[str]] = (
+            [str(mid) for mid in restricted_metric_ids]
+            if restricted_metric_ids
+            else None
+        )
+        if restricted_metric_ids_str:
+            for eval_row, _ in eval_rows_with_source:
+                store_row_restricted_metrics(eval_row.id, restricted_metric_ids_str)
+    else:
+        restricted_metric_ids_str = (
+            [str(mid) for mid in restricted_metric_ids] if restricted_metric_ids else None
+        )
     store_evaluation_transcribe_overwrite(
         evaluation.id,
         overwrite=transcribe_overwrite,
