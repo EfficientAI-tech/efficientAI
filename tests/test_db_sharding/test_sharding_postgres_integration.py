@@ -142,10 +142,11 @@ def test_import_row_filter_scatter_gather_two_shards(sharding_postgres_env):
                 "diarised_transcript_status": "pending",
             },
         ]
-        inserted = bulk_insert_mappings_on_shards(
+        inserted, pending_sessions = bulk_insert_mappings_on_shards(
             catalog, call_import_id, mappings, orm_class=CallImportRow
         )
         assert inserted == 2
+        assert pending_sessions == []
         register_shard_slices(catalog, call_import_id, 2)
         catalog.commit()
 
