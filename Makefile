@@ -1,4 +1,4 @@
-.PHONY: help install-dev check-pytest test test-docker-db test-unit test-integration test-phase1 test-file test-k
+.PHONY: help install-dev check-pytest test test-docker-db test-unit test-integration test-phase1 test-file test-k test-sharding test-sharding-integration
 
 PYTHON ?= python
 PYTEST ?= $(PYTHON) -m pytest
@@ -19,7 +19,8 @@ help: ## Show available make targets
 	@echo "  make test-integration  - run integration tests (marker: integration)"
 	@echo "  make test-phase1       - run current Phase 1 suites"
 	@echo "  make test-file FILE=...- run a specific test file/path"
-	@echo "  make test-k K=...      - run tests matching expression"
+	@echo "  make test-sharding       - run call-import db_sharding tests (unit; no integration marker)"
+	@echo "  make test-sharding-integration - run 2-shard Postgres integration tests (CI)"
 
 install-dev: ## Install project and dev dependencies
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -57,3 +58,10 @@ test-file: check-pytest ## Run one test module/file; usage: make test-file FILE=
 test-k: check-pytest ## Run tests by keyword expression; usage: make test-k K=password
 	@if [ -z "$(K)" ]; then echo "K is required. Example: make test-k K=password"; exit 1; fi
 	$(PYTEST) tests -k "$(K)" $(PYTEST_FLAGS) $(PYTEST_ARGS)
+
+test-sharding: check-pytest ## Run db_sharding unit tests (excludes integration marker)
+	$(PYTEST) tests/test_db_sharding -m "not integration" $(PYTEST_FLAGS) $(PYTEST_ARGS)
+
+test-sharding-integration: check-pytest ## Run 2-shard Postgres sharding integration tests
+	@if [ -z "$$SHARDING_INTEGRATION_TEST" ]; then export SHARDING_INTEGRATION_TEST=1; fi
+	$(PYTEST) tests/test_db_sharding/test_sharding_postgres_integration.py -m integration $(PYTEST_FLAGS) $(PYTEST_ARGS)

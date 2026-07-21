@@ -43,6 +43,7 @@ import type {
   CallImportEvaluationRow,
   CallImportEvaluationRowListResponse,
   CallImportEvaluationRetryResponse,
+  CallImportEvaluationBulkActionResponse,
   CallImportEvaluationAggregateResponse,
   CallImportInsightsResponse,
   CallImportTranscribeRequest,
@@ -1771,8 +1772,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteCallImport(id: string): Promise<void> {
-    await this.client.delete(`/api/v1/call-imports/${id}`)
+  async deleteCallImport(
+    id: string,
+  ): Promise<{ id: string; status: 'accepted' | 'completed' }> {
+    const response = await this.client.delete(`/api/v1/call-imports/${id}`)
+    return response.data
   }
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {
@@ -1782,7 +1786,7 @@ class ApiClient {
   async bulkDeleteCallImportRows(
     id: string,
     rowIds: string[],
-  ): Promise<{ deleted: number }> {
+  ): Promise<{ deleted: number; status?: 'completed' | 'accepted' }> {
     const response = await this.client.post(
       `/api/v1/call-imports/${id}/rows/bulk-delete`,
       { row_ids: rowIds },
@@ -1840,6 +1844,9 @@ class ApiClient {
        * panel on the evaluation detail Flow tab.
        */
       discover_new_metrics?: boolean
+      /** Telephony credentials when starting from a mapped batch. */
+      provider?: string | null
+      telephony_integration_id?: string | null
     },
   ): Promise<CallImportEvaluation> {
     const response = await this.client.post(
@@ -1897,6 +1904,7 @@ class ApiClient {
       regenerate?: boolean
       provider?: string | null
       model?: string | null
+      credential_id?: string | null
       max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationTldrSummary> {
@@ -1905,6 +1913,7 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
@@ -1952,6 +1961,7 @@ class ApiClient {
       force?: boolean
       provider?: string
       model?: string
+      credential_id?: string
     },
   ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
     const response = await this.client.post(
@@ -1964,9 +1974,17 @@ class ApiClient {
   async listCallImportEvaluationMetricClusterEligibleRows(
     callImportId: string,
     evaluationId: string,
+    options?: {
+      limit?: number
+      count_only?: boolean
+    },
   ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
+    const params = new URLSearchParams()
+    if (options?.limit != null) params.set('limit', String(options.limit))
+    if (options?.count_only) params.set('count_only', 'true')
+    const query = params.toString()
     const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows`,
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows${query ? `?${query}` : ''}`,
     )
     return response.data
   }
@@ -2001,8 +2019,10 @@ class ApiClient {
       force?: boolean
       provider?: string | null
       model?: string | null
+      credential_id?: string | null
       max_llm_calls?: number | null
       evaluation_row_ids?: string[] | null
+      row_limit?: number | null
       failure_policies?: Record<
         string,
         import('../types/api').MetricFailurePolicy
@@ -2015,10 +2035,12 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     if (options?.evaluation_row_ids?.length) {
       body.evaluation_row_ids = options.evaluation_row_ids
     }
+    if (options?.row_limit != null) body.row_limit = options.row_limit
     if (options?.failure_policies) {
       body.failure_policies = options.failure_policies
     }
@@ -2047,6 +2069,7 @@ class ApiClient {
       force?: boolean
       provider?: string | null
       model?: string | null
+      credential_id?: string | null
       max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationUserInsightsState> {
@@ -2056,6 +2079,7 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.credential_id) body.credential_id = options.credential_id
     if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
@@ -2437,6 +2461,18 @@ class ApiClient {
       sttModel?: string | null
       sttCredentialId?: string | null
       transcribeOverwrite?: boolean
+      transcribeMode?: 'stt_llm' | 'llm_only'
+      diarizationLlmProvider?: string | null
+      diarizationLlmModel?: string | null
+      diarizationLlmCredentialId?: string | null
+      diarizationPrompt?: string | null
+      /**
+       * Override telephony credentials on the batch when failed rows must
+       * re-fetch recordings. Send both fields together; omit to keep the
+       * batch's existing pinned credentials.
+       */
+      provider?: string | null
+      telephonyIntegrationId?: string | null
       /**
        * Metric-subset retry: when set, only these metrics are
        * recomputed and merged into the row's existing metric_scores
@@ -2472,6 +2508,28 @@ class ApiClient {
     }
     if (options?.transcribeOverwrite) {
       body.transcribe_overwrite = true
+    }
+    if (options?.transcribeMode) {
+      body.transcribe_mode = options.transcribeMode
+    }
+    if (options?.diarizationLlmProvider) {
+      body.diarization_llm_provider = options.diarizationLlmProvider
+    }
+    if (options?.diarizationLlmModel) {
+      body.diarization_llm_model = options.diarizationLlmModel
+    }
+    if (options?.diarizationLlmCredentialId !== undefined) {
+      body.diarization_llm_credential_id = options.diarizationLlmCredentialId
+    }
+    if (options?.diarizationPrompt !== undefined) {
+      body.diarization_prompt = options.diarizationPrompt
+    }
+    if (
+      options?.provider !== undefined ||
+      options?.telephonyIntegrationId !== undefined
+    ) {
+      body.provider = options.provider ?? null
+      body.telephony_integration_id = options.telephonyIntegrationId ?? null
     }
     if (options?.metricIds && options.metricIds.length > 0) {
       body.metric_ids = options.metricIds
@@ -2518,7 +2576,7 @@ class ApiClient {
   async cancelCallImportEvaluation(
     callImportId: string,
     evaluationId: string,
-  ): Promise<CallImportEvaluation> {
+  ): Promise<CallImportEvaluationBulkActionResponse> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/cancel`,
     )
@@ -2535,7 +2593,7 @@ class ApiClient {
   async forceFailCallImportEvaluationPending(
     callImportId: string,
     evaluationId: string,
-  ): Promise<CallImportEvaluation> {
+  ): Promise<CallImportEvaluationBulkActionResponse> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/force-fail-pending`,
     )
@@ -3455,6 +3513,7 @@ class ApiClient {
     examples?: Array<{ transcript: string; rating: any; notes?: string }>
     provider?: string
     model?: string
+    credential_id?: string
     llm_config?: Record<string, any>
   }): Promise<{
     name: string

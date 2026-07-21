@@ -621,24 +621,18 @@ def test_delete_s3_objects_treats_bulk_exception_as_full_failure():
 
 @pytest.fixture(autouse=True)
 def _stub_import_worker():
-    """Replace the Celery enqueue so route tests don't talk to Redis."""
-    fake_module = types.ModuleType("app.workers.tasks.process_call_import_row")
-
-    class _Task:
-        @staticmethod
-        def delay(*_args, **_kwargs):
-            return types.SimpleNamespace(id="fake-task-id")
-
-    fake_module.process_call_import_row_task = _Task()
-    previous = sys.modules.get("app.workers.tasks.process_call_import_row")
-    sys.modules["app.workers.tasks.process_call_import_row"] = fake_module
+    """Replace fair import dispatch scheduling so route tests don't talk to Redis."""
+    fake_module = types.ModuleType("app.workers.concurrency.fair_import_dispatch")
+    fake_module.schedule_fair_import_dispatch = lambda *_a, **_kw: None
+    previous = sys.modules.get("app.workers.concurrency.fair_import_dispatch")
+    sys.modules["app.workers.concurrency.fair_import_dispatch"] = fake_module
     try:
         yield
     finally:
         if previous is None:
-            sys.modules.pop("app.workers.tasks.process_call_import_row", None)
+            sys.modules.pop("app.workers.concurrency.fair_import_dispatch", None)
         else:
-            sys.modules["app.workers.tasks.process_call_import_row"] = previous
+            sys.modules["app.workers.concurrency.fair_import_dispatch"] = previous
 
 
 def _seed_integration(db_session, org_id, *, provider="exotel"):
@@ -803,14 +797,19 @@ def test_audio_upload_single_file_creates_completed_import(
     )
     db_session.add(tag)
     db_session.commit()
+    workspace_id = _default_workspace_id(db_session, org_id)
 
     fake_s3 = _fake_enabled_s3()
     with _patched_s3(fake_s3):
-        response = authenticated_client.post(
-            "/api/v1/call-imports/audio-upload",
-            files={"files": ("sales call.wav", b"RIFFfake-wav", "audio/wav")},
-            data={"dataset": "Manual recordings", "tag_ids": str(tag.id)},
-        )
+        with patch(
+            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            return_value=False,
+        ):
+            response = authenticated_client.post(
+                "/api/v1/call-imports/audio-upload",
+                files={"files": ("sales call.wav", b"RIFFfake-wav", "audio/wav")},
+                data={"dataset": "Manual recordings", "tag_ids": str(tag.id)},
+            )
 
     assert response.status_code == 201, response.text
     body = response.json()
@@ -830,6 +829,7 @@ def test_audio_upload_single_file_creates_completed_import(
         .filter(CallImportRow.call_import_id == call_import_id)
         .all()
     )
+    assert row.workspace_id == workspace_id
     assert row.conversation_id == "sales_call"
     assert row.status == CallImportRowStatus.COMPLETED
     assert row.transcript is None
@@ -839,20 +839,66 @@ def test_audio_upload_single_file_creates_completed_import(
     fake_s3.upload_file_by_key.assert_called_once()
 
 
+def test_audio_upload_uses_shard_insert_when_sharding_enabled(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    fake_s3 = _fake_enabled_s3()
+    inserted: list = []
+    registered: list = []
+
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports.is_sharding_enabled",
+        lambda: True,
+    )
+
+    def _fake_bulk_insert(_db, call_import_id, mappings):
+        inserted.extend(mappings)
+        return len(mappings)
+
+    def _fake_register_slices(_db, call_import_id, total_rows):
+        registered.append((call_import_id, total_rows))
+
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.bulk_insert_mappings_on_shards",
+        _fake_bulk_insert,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.register_shard_slices",
+        _fake_register_slices,
+    )
+
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"RIFFfake-wav", "audio/wav")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert response.status_code == 201, response.text
+    assert len(inserted) == 1
+    assert inserted[0]["workspace_id"] is not None
+    assert inserted[0]["recording_s3_key"]
+    assert registered == [(UUID(response.json()["id"]), 1)]
+
+
 def test_audio_upload_multiple_files_dedupes_filename_call_ids(
     authenticated_client, db_session, org_id, seed_org
 ):
     fake_s3 = _fake_enabled_s3()
     with _patched_s3(fake_s3):
-        response = authenticated_client.post(
-            "/api/v1/call-imports/audio-upload",
-            files=[
-                ("files", ("call.mp3", b"mp3-a", "audio/mpeg")),
-                ("files", ("call.mp3", b"mp3-b", "audio/mpeg")),
-                ("files", ("support flac.flac", b"flac", "audio/flac")),
-            ],
-            data={"dataset": "Manual recordings"},
-        )
+        with patch(
+            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            return_value=False,
+        ):
+            response = authenticated_client.post(
+                "/api/v1/call-imports/audio-upload",
+                files=[
+                    ("files", ("call.mp3", b"mp3-a", "audio/mpeg")),
+                    ("files", ("call.mp3", b"mp3-b", "audio/mpeg")),
+                    ("files", ("support flac.flac", b"flac", "audio/flac")),
+                ],
+                data={"dataset": "Manual recordings"},
+            )
 
     assert response.status_code == 201, response.text
     rows = (
@@ -1581,6 +1627,30 @@ def test_upload_direct_url_rejects_when_recording_url_unmapped(
         },
     )
     assert response.status_code == 400
+    assert "recording_url" in response.json()["detail"].lower()
+
+
+def test_upload_exotel_rejects_when_recording_url_unmapped(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id, provider="exotel")
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data={
+            "provider": integration.provider,
+            "telephony_integration_id": str(integration.id),
+            "schema_id": str(schema.id),
+            "parameter_mapping": (
+                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
+                '"transcript": "Transcript"}'
+            ),
+            "skipped_columns": '["Recording URL"]',
+        },
+    )
+    assert response.status_code == 400
+    assert "exotel" in response.json()["detail"].lower()
     assert "recording_url" in response.json()["detail"].lower()
 
 

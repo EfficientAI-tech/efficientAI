@@ -24,6 +24,39 @@ import EvaluatorSuiteWizard from '../components/EvaluatorSuiteWizard'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
 import { countDisplayMetrics, type MetricRow } from '../components/metricSelectionUtils'
+import { providerHasLLMModels } from '../../../lib/llmModelOptions'
+
+const DEFAULT_PERSONA_NAMES = [
+  "Grumpy Old Man",
+  "Confused Senior",
+  "Busy Professional",
+  "Friendly Customer",
+  "Angry Caller"
+]
+
+const DEFAULT_SCENARIO_NAMES = [
+  "Cancel Subscription",
+  "Check Balance",
+  "Technical Support",
+  "Make Complaint",
+  "Product Inquiry"
+]
+
+interface Evaluator {
+  id: string
+  evaluator_id: string
+  name?: string | null
+  agent_id?: string | null
+  persona_id?: string | null
+  scenario_id?: string | null
+  custom_prompt?: string | null
+  metric_ids?: string[] | null
+  llm_provider?: string | null
+  llm_model?: string | null
+  tags?: string[]
+  created_at: string
+  updated_at: string
+}
 
 export default function EvaluateTestAgents() {
   const navigate = useNavigate()
@@ -56,6 +89,56 @@ export default function EvaluateTestAgents() {
   const createMutation = useMutation({
     mutationFn: (data: Parameters<typeof apiClient.createEvaluatorSuite>[0]) =>
       apiClient.createEvaluatorSuite(data),
+  const llmProviders = configuredProviders.filter((p) =>
+    providerHasLLMModels(
+      p,
+      modelConfigs[p]?.llm ?? [],
+      aiproviders,
+    ),
+  )
+
+  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
+    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
+  }
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (llmDropdownRef.current && !llmDropdownRef.current.contains(event.target as Node)) {
+        setShowLlmDropdown(false)
+      }
+    }
+    if (showLlmDropdown) document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showLlmDropdown])
+
+  const selectedAgentObj = agents.find((a: any) => a.id === modalAgentId) as any
+  const selectedAgentVoiceBundleId = selectedAgentObj?.voice_bundle_id
+
+  const { data: agentVoiceBundle } = useQuery({
+    queryKey: ['voicebundle', selectedAgentVoiceBundleId],
+    queryFn: () => apiClient.getVoiceBundle(selectedAgentVoiceBundleId),
+    enabled: !!selectedAgentVoiceBundleId,
+  })
+
+  const voiceBundleTtsProvider = agentVoiceBundle?.tts_provider
+    ? (typeof agentVoiceBundle.tts_provider === 'string' ? agentVoiceBundle.tts_provider : String(agentVoiceBundle.tts_provider)).toLowerCase()
+    : null
+
+  const allPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
+  const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
+
+  const filteredPersonas = voiceBundleTtsProvider
+    ? allPersonas.filter((p: any) => p.tts_provider && p.tts_provider.toLowerCase() === voiceBundleTtsProvider)
+    : allPersonas
+
+  const incompatibleCount = voiceBundleTtsProvider
+    ? allPersonas.length - filteredPersonas.length
+    : 0
+
+  const createBulkMutation = useMutation({
+    mutationFn: (data: { name?: string; agent_id: string; scenario_id: string; persona_ids: string[]; tags?: string[] }) =>
+      apiClient.createEvaluatorsBulk(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       setShowCreateModal(false)

@@ -185,8 +185,8 @@ class AgentCreate(BaseModel):
     telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
-    voice_ai_integration_id: Optional[UUID] = None
-    voice_ai_agent_id: Optional[str] = None
+    voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
+    voice_ai_agent_id: str = Field(..., min_length=1, description="Voice AI agent ID is required")
 
     @field_validator('description')
     @classmethod
@@ -203,14 +203,6 @@ class AgentCreate(BaseModel):
             if not re.fullmatch(r'[\d+]+', v):
                 raise ValueError('Phone number must contain only digits and the + character.')
         return v
-
-    @model_validator(mode='after')
-    def validate_voice_config(self):
-        if self.voice_ai_integration_id and not self.voice_ai_agent_id:
-            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
-        if self.voice_ai_agent_id and not self.voice_ai_integration_id:
-            raise ValueError('voice_ai_integration_id is required when voice_ai_agent_id is provided.')
-        return self
 
     @model_validator(mode='after')
     def validate_phone_number(self):
@@ -737,10 +729,6 @@ class AIProviderCreate(BaseModel):
         ),
     )
     name: Optional[str] = None
-    endpoint_url: Optional[str] = Field(
-        None,
-        description="Azure OpenAI resource endpoint URL (Azure provider only).",
-    )
     routing_mode: CredentialRoutingMode = Field(
         CredentialRoutingMode.INHERIT,
         description="LLM routing preference: inherit org default, force gateway, or direct API key.",
@@ -793,19 +781,6 @@ class AIProviderCreate(BaseModel):
             return v
         trimmed = v.strip()
         return trimmed or None
-
-    @field_validator("endpoint_url")
-    @classmethod
-    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        trimmed = v.strip()
-        if not trimmed:
-            return None
-        lowered = trimmed.lower()
-        if not (lowered.startswith("http://") or lowered.startswith("https://")):
-            raise ValueError("endpoint_url must be an http(s) URL")
-        return trimmed
 
     @field_validator("gateway_model")
     @classmethod
@@ -867,10 +842,6 @@ class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
     api_key: Optional[str] = Field(None, min_length=1)
     name: Optional[str] = None
-    endpoint_url: Optional[str] = Field(
-        None,
-        description="Azure OpenAI resource endpoint URL (Azure provider only).",
-    )
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -939,19 +910,6 @@ class AIProviderUpdate(BaseModel):
     ) -> Optional[Dict[str, str]]:
         return _validate_gateway_extra_headers(v)
 
-    @field_validator("endpoint_url")
-    @classmethod
-    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return v
-        trimmed = v.strip()
-        if not trimmed:
-            return None
-        lowered = trimmed.lower()
-        if not (lowered.startswith("http://") or lowered.startswith("https://")):
-            raise ValueError("endpoint_url must be an http(s) URL")
-        return trimmed
-
 
 class AIProviderResponse(BaseModel):
     """Schema for AI Provider response."""
@@ -959,7 +917,6 @@ class AIProviderResponse(BaseModel):
     provider: ModelProvider
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
-    endpoint_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
@@ -1366,133 +1323,12 @@ class EvaluatorResponse(BaseModel):
 
 
 class EvaluatorBulkCreate(BaseModel):
-    """Schema for creating multiple evaluators at once (deprecated — use EvaluatorSuiteCreate)."""
+    """Schema for creating multiple evaluators at once."""
     name: Optional[str] = None
     agent_id: UUID
     scenario_id: UUID
     persona_ids: List[UUID]
     tags: Optional[List[str]] = None
-
-
-class EvaluatorSuiteCreate(BaseModel):
-    """Schema for creating an evaluator suite (agent + persona + N scenarios)."""
-    name: Optional[str] = None
-    agent_id: UUID
-    persona_id: UUID
-    scenario_ids: List[UUID] = Field(..., min_length=1)
-    metric_ids: Optional[List[UUID]] = None
-    llm_provider: Optional[ModelProvider] = None
-    llm_model: Optional[str] = None
-    llm_config: Optional[Dict[str, Any]] = None
-    tags: Optional[List[str]] = None
-    default_runs_per_combination: int = Field(default=1, ge=1)
-
-
-class EvaluatorSuiteUpdate(BaseModel):
-    """Schema for updating an evaluator suite."""
-    name: Optional[str] = None
-    metric_ids: Optional[List[UUID]] = None
-    llm_provider: Optional[ModelProvider] = None
-    llm_model: Optional[str] = None
-    llm_config: Optional[Dict[str, Any]] = None
-    tags: Optional[List[str]] = None
-    default_runs_per_combination: Optional[int] = Field(default=None, ge=1)
-
-
-class EvaluatorSuiteCombinationResponse(BaseModel):
-    """One agent+persona+scenario combination within a suite."""
-    id: UUID
-    evaluator_id: str
-    scenario_id: UUID
-    scenario_name: Optional[str] = None
-    scenario_description: Optional[str] = None
-    scenario_required_info: Optional[Dict[str, Any]] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class EvaluatorSuiteResponse(BaseModel):
-    """Schema for evaluator suite response."""
-    id: UUID
-    organization_id: UUID
-    name: Optional[str] = None
-    agent_id: UUID
-    persona_id: UUID
-    agent_name: Optional[str] = None
-    persona_name: Optional[str] = None
-    agent_call_type: Optional[str] = None
-    agent_call_medium: Optional[str] = None
-    metric_ids: Optional[List[str]] = None
-    llm_provider: Optional[ModelProvider] = None
-    llm_model: Optional[str] = None
-    llm_config: Optional[Dict[str, Any]] = None
-    tags: Optional[List[str]] = None
-    default_runs_per_combination: int = 1
-    round_robin_index: int = 0
-    combination_count: int = 0
-    combinations: List[EvaluatorSuiteCombinationResponse] = Field(default_factory=list)
-    created_at: datetime
-    updated_at: datetime
-    created_by: Optional[str] = None
-
-    @field_validator('llm_provider', mode='before')
-    @classmethod
-    def convert_llm_provider(cls, v):
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return ModelProvider(v_lower)
-            except ValueError:
-                for enum_member in ModelProvider:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid ModelProvider value: {v}")
-        return v
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class EvaluatorSuiteAddScenariosRequest(BaseModel):
-    """Add scenarios to an existing suite."""
-    scenario_ids: List[UUID] = Field(..., min_length=1)
-
-
-class RunEvaluatorSuiteRequest(BaseModel):
-    """Schema for running all combinations in a suite."""
-    runs_per_combination: int = Field(default=1, ge=1)
-    to_number: Optional[str] = None
-    from_number: Optional[str] = None
-
-
-class RunEvaluatorSuiteResponse(BaseModel):
-    """Response for suite batch run."""
-    total_runs: int
-    task_ids: List[str] = Field(default_factory=list)
-    evaluator_results: List["EvaluatorResultResponse"] = Field(default_factory=list)
-    phone_call_refs: List[str] = Field(default_factory=list)
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class RunNextCombinationRequest(BaseModel):
-    """Optional dial overrides for inbound round-robin test call."""
-    from_number: Optional[str] = None
-
-
-class RunNextCombinationResponse(BaseModel):
-    """Response for inbound round-robin single run."""
-    evaluator_id: UUID
-    scenario_id: UUID
-    scenario_name: str
-    combination_index: int
-    next_index: int
-    evaluator_result_id: Optional[UUID] = None
-    result_id: Optional[str] = None
-    task_id: Optional[str] = None
-    phone_call_ref: Optional[str] = None
-    call_short_id: Optional[str] = None
 
 
 class RunEvaluatorsRequest(BaseModel):
@@ -2167,11 +2003,7 @@ class CronJobCreate(BaseModel):
     cron_expression: str = Field(..., min_length=1, max_length=100, description="Cron expression (e.g., '0 9 * * 1-5')")
     timezone: str = Field(default="UTC", max_length=100, description="Timezone for the cron schedule")
     max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
-    evaluator_ids: Optional[List[UUID]] = Field(default=None, description="List of evaluator IDs to trigger")
-    evaluator_suite_ids: Optional[List[UUID]] = Field(
-        default=None,
-        description="Expand suite combinations (× default_runs_per_combination) into evaluator_ids",
-    )
+    evaluator_ids: List[UUID] = Field(..., min_length=1, description="List of evaluator IDs to trigger")
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -2191,7 +2023,6 @@ class CronJobUpdate(BaseModel):
     timezone: Optional[str] = Field(None, max_length=100)
     max_runs: Optional[int] = Field(None, ge=1, le=1000)
     evaluator_ids: Optional[List[UUID]] = None
-    evaluator_suite_ids: Optional[List[UUID]] = None
     status: Optional[CronJobStatus] = None
 
 
@@ -2434,35 +2265,9 @@ class TelephonyPhoneNumberResponse(BaseModel):
     number_type: Optional[str]
     capabilities: Optional[Dict[str, Any]]
     is_masking_pool: bool
-    inbound_enabled: bool = True
-    outbound_enabled: bool = True
-    source: str = "imported"
     agent_id: Optional[UUID]
-    linked_agent_name: Optional[str] = None
-    provider: Optional[str] = None
     is_active: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class TelephonyDialTargetCreate(BaseModel):
-    phone_number: str
-    label: Optional[str] = None
-
-
-class TelephonyDialTargetUpdate(BaseModel):
-    label: Optional[str] = None
-    phone_number: Optional[str] = None
-
-
-class TelephonyDialTargetResponse(BaseModel):
-    id: UUID
-    phone_number: str
-    label: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -2533,9 +2338,6 @@ class TelephonyOutboundCallRequest(BaseModel):
     to_number: str
     answer_url: Optional[str] = None
     agent_id: Optional[UUID] = None
-    evaluator_id: Optional[UUID] = None
-    persona_id: Optional[UUID] = None
-    scenario_id: Optional[UUID] = None
 
 
 class TelephonyOutboundCallResponse(BaseModel):
@@ -2915,6 +2717,68 @@ class CallImportListResponse(BaseModel):
     page_size: int
 
 
+class CallImportDispatchLimitSnapshot(BaseModel):
+    """Configured and live Redis in-flight caps for eval work."""
+
+    global_limit: int
+    global_inflight: int
+    global_at_capacity: bool
+    org_limit: int
+    org_inflight: int
+    org_at_capacity: bool
+    workspace_limit: int
+    job_limit: int
+    fair_dispatch_batch_size: int
+
+
+class CallImportDispatchFairDispatchSnapshot(BaseModel):
+    """Fair-dispatch scheduler metadata from Redis."""
+
+    global_rr_cursor: int
+    dispatch_dedupe_active: bool
+    dispatch_queue: str
+    at_capacity_backoff_seconds: int
+
+
+class CallImportDispatchEvaluationSnapshot(BaseModel):
+    """One in-flight evaluation run with row counters."""
+
+    evaluation_id: UUID
+    call_import_id: UUID
+    status: str
+    total_rows: int
+    pending_rows: int
+    running_rows: int
+    job_inflight: int
+    job_at_capacity: bool
+
+
+class CallImportDispatchWorkspaceSnapshot(BaseModel):
+    """Per-workspace pending dispatch + slot usage."""
+
+    workspace_id: UUID
+    workspace_name: Optional[str] = None
+    workspace_slug: Optional[str] = None
+    inflight: int
+    inflight_at_capacity: bool
+    pending_dispatch_rows: int
+    pending_import_rows: int
+    eval_rr_cursor: int
+    active_evaluations: int
+    evaluations: List[CallImportDispatchEvaluationSnapshot] = Field(
+        default_factory=list
+    )
+
+
+class CallImportDispatchDiagnosticsResponse(BaseModel):
+    """Live operator snapshot for call-import eval fair dispatch."""
+
+    limits: CallImportDispatchLimitSnapshot
+    fair_dispatch: CallImportDispatchFairDispatchSnapshot
+    workspaces: List[CallImportDispatchWorkspaceSnapshot]
+    generated_at: datetime
+
+
 class CallImportUploadResponse(BaseModel):
     """Response returned right after a CSV is accepted."""
 
@@ -2924,6 +2788,19 @@ class CallImportUploadResponse(BaseModel):
     dataset: Optional[str] = None
     tags: List[CallImportTagResponse] = Field(default_factory=list)
     message: str
+
+
+class CallImportDeleteResponse(BaseModel):
+    """Response after a whole-batch call-import delete is accepted."""
+
+    id: UUID
+    status: Literal["accepted", "completed"] = Field(
+        ...,
+        description=(
+            "``accepted`` when teardown was queued to run asynchronously; "
+            "``completed`` when the batch was already removed."
+        ),
+    )
 
 
 class CallImportPreviewResponse(BaseModel):
@@ -3253,6 +3130,33 @@ class CallImportEvaluationCreate(BaseModel):
             "callers retain previous behaviour."
         ),
     )
+    # Telephony credentials for unified pipeline (required when batch is mapped).
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Telephony provider key. Required together with "
+            "``telephony_integration_id`` when starting evaluation "
+            "from a mapped batch. Omit both for direct-URL import."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "TelephonyIntegration credential for recording fetch. "
+            "Required together with ``provider`` for credentialed import."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_telephony_credential_mode(self) -> "CallImportEvaluationCreate":
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL evaluation."
+            )
+        return self
 
 
 class CallImportEvaluationUpdate(BaseModel):
@@ -3429,6 +3333,50 @@ class CallImportEvaluationRetryRequest(BaseModel):
             "diarised transcript skip diarisation and only re-evaluate."
         ),
     )
+    transcribe_mode: Optional[Literal["stt_llm", "llm_only"]] = Field(
+        default=None,
+        description=(
+            "Override the run's diarisation pipeline mode for this retry. "
+            "``stt_llm`` runs STT then an LLM diariser; ``llm_only`` feeds "
+            "audio directly to a multimodal diariser LLM."
+        ),
+    )
+
+    # Telephony credentials for rows that must re-fetch recordings.
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Override the batch's telephony provider for this retry pass. "
+            "Must be paired with ``telephony_integration_id``. Omit both "
+            "fields to keep the batch's existing pinned credentials."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Override the telephony credential used when re-fetching "
+            "recordings during this retry. Must be paired with "
+            "``provider``. Omit both to keep existing credentials; send "
+            "both as null for direct-URL retry."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_telephony_credential_mode(self) -> "CallImportEvaluationRetryRequest":
+        fields_set = self.model_fields_set
+        if (
+            "provider" not in fields_set
+            and "telephony_integration_id" not in fields_set
+        ):
+            return self
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL retry."
+            )
+        return self
 
 
 class CallImportEvaluationRetrySkippedItem(BaseModel):
@@ -3466,6 +3414,17 @@ class CallImportEvaluationRetryResponse(BaseModel):
         default_factory=list,
         description="Rows the caller asked for that we did not re-enqueue.",
     )
+
+
+class CallImportEvaluationBulkActionResponse(BaseModel):
+    """Acknowledgement for bulk cancel / force-fail requests accepted off-thread."""
+
+    accepted: bool = True
+    target_count: int = Field(
+        ...,
+        description="How many rows the background worker will process.",
+    )
+    evaluation_id: UUID
 
 
 class CallImportMetricSummary(BaseModel):
@@ -3552,6 +3511,16 @@ class CallImportEvaluationResponse(BaseModel):
     # Run Evaluation modal. The frontend uses this to gate the
     # "Discovered metrics" panel on the Flow tab.
     discover_new_metrics: bool = False
+    bulk_operation: Optional[
+        Literal["abort", "force_fail_pending", "retry"]
+    ] = Field(
+        default=None,
+        description=(
+            "When set, a bulk background operation (abort, force-fail pending, "
+            "or retry) is still running for this evaluation. Other mutating "
+            "actions are rejected until it completes."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -3586,6 +3555,8 @@ class CallImportEvaluationRowResponse(BaseModel):
     recording_url: Optional[str] = None
     recording_date: Optional[date] = None
     recording_s3_key: Optional[str] = None
+    diarised_transcript_status: Optional[str] = None
+    diarised_transcript_error: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
@@ -3622,6 +3593,13 @@ class CallImportRowBulkDeleteResponse(BaseModel):
     deleted: int = Field(
         ...,
         description="How many rows were actually removed (unknown ids are skipped).",
+    )
+    status: Literal["completed", "accepted"] = Field(
+        default="completed",
+        description=(
+            "``accepted`` when deletion was queued to run asynchronously; "
+            "``completed`` when rows were removed before the response."
+        ),
     )
 
 
@@ -3890,6 +3868,13 @@ class CallImportTranscribeResponse(BaseModel):
         default_factory=dict,
         description="Per-reason breakdown of skipped rows for the UI to surface.",
     )
+    accepted: bool = Field(
+        default=False,
+        description=(
+            "When true, diarization setup was queued to a background worker "
+            "and ``queued`` reflects zero until the worker finishes enqueue."
+        ),
+    )
 
 
 class CallImportCancelDiarisationRequest(BaseModel):
@@ -4077,6 +4062,7 @@ class EvaluationInsightsRequest(BaseModel):
     regenerate: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(
         default=None,
         ge=20,
@@ -4137,6 +4123,7 @@ class EvaluationUserInsightsRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
 
 
@@ -4370,6 +4357,7 @@ class EvaluationPromptImprovementsRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
 
 
 class EvaluationMetricClustersRequest(BaseModel):
@@ -4379,12 +4367,21 @@ class EvaluationMetricClustersRequest(BaseModel):
     force: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    credential_id: Optional[UUID] = None
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
     evaluation_row_ids: Optional[List[UUID]] = Field(
         default=None,
         description=(
             "Subset of completed evaluation row IDs to cluster. When omitted, "
             "all completed rows with at least one flagged quality metric are used."
+        ),
+    )
+    row_limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Use the first N eligible rows (by row order). Mutually exclusive "
+            "with evaluation_row_ids."
         ),
     )
     failure_policies: Optional[Dict[str, MetricFailurePolicy]] = Field(

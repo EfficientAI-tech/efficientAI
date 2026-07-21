@@ -16,6 +16,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-efficientai}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Optional: generic catalog + data DBs for sharding tests (first init only):
+      # - ./docker/postgres/init-sharding-dbs.sh:/docker-entrypoint-initdb.d/02-init-sharding-dbs.sh:ro
+      # See config.docker.sharding.example.yml
     ports:
       - "5432:5432"
     healthcheck:
@@ -115,18 +118,21 @@ services:
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     ports:
       - "8001:8001"
-    command: eai start-worker-all --config /app/config.yml --loglevel info --media-port 8001
+    command: eai start-worker-all --config /app/config.yml --loglevel info --queues celery,audio-metrics --concurrency 8 --media-port 8001
 
   # Dedicated worker for call-import + evaluation queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
-  # then ``evaluations`` (eval rows, eval-chain transcribe, post-eval LLM).
+  # then ``eval-control`` (cancel/retry/materialize), then ``evaluations``
+  # (fair dispatch + LLM scoring).
+  # The default ``worker`` service handles ``celery`` (legacy) and
+  # ``audio-metrics`` (Praat/UTMOS audio metric tasks).
   worker-imports:
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
       args:
-        INSTALL_EXTRAS: "qualitative-voice"
+        INSTALL_EXTRAS: ""
     container_name: efficientai_worker_imports
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
@@ -147,7 +153,9 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,evaluations --concurrency 8
+    # Thread pool: keep concurrency near Redis inflight caps + headroom when sharding
+    # (each task may hold catalog + shard connections for tens of seconds).
+    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations --pool threads --concurrency 12
 
 volumes:
   postgres_data:

@@ -346,7 +346,15 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
     type=int,
     help="Number of concurrent worker processes/threads (Celery --concurrency).",
 )
-def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optional[int]):
+@click.option(
+    "--pool",
+    "-P",
+    "pool",
+    default=None,
+    type=click.Choice(["prefork", "threads", "solo", "eventlet", "gevent"], case_sensitive=False),
+    help="Celery worker pool implementation (forwarded to celery's -P flag).",
+)
+def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optional[int], pool: Optional[str]):
     """Start the Celery worker for background task processing."""
     from app.config import load_config_from_file
     
@@ -370,6 +378,8 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         click.echo(f"   Queues: {queues}")
     if concurrency is not None:
         click.echo(f"   Concurrency: {concurrency}")
+    if pool:
+        click.echo(f"   Pool: {pool}")
     
     # Start Celery worker
     try:
@@ -379,6 +389,8 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
             cmd.append(f"--queues={queues}")
         if concurrency is not None:
             cmd.append(f"--concurrency={concurrency}")
+        if pool:
+            cmd.append(f"--pool={pool}")
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
         click.echo("\n👋 Celery worker stopped")
@@ -566,11 +578,12 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
 )
 @click.option(
     "--imports-worker-concurrency",
-    default=8,
+    default=12,
     type=int,
     help=(
         "Concurrency for the imports+diarization+evaluations worker "
-        "(default: 8; consumes imports, then diarization, then evaluations)"
+        "(default: 12; thread pool). Use lower values (8–12) when DB sharding "
+        "is enabled; 32 threads can exhaust per-shard SQLAlchemy pools."
     ),
 )
 def start_all(
@@ -726,12 +739,18 @@ def start_all(
                 "app.workers.celery_app",
                 "worker",
                 f"--loglevel={worker_loglevel}",
+                "-Q",
+                "celery,audio-metrics",
+                "-c",
+                "8",
             ],
-            label="Celery worker (default queue)",
+            label="Celery worker (celery + audio-metrics queues, concurrency=8)",
             prefix="[WORKER]",
         )
 
         if imports_worker:
+            from app.workers.config import IMPORTS_WORKER_QUEUES
+
             worker_imports_process = _spawn_worker(
                 [
                     "celery",
@@ -740,13 +759,15 @@ def start_all(
                     "worker",
                     f"--loglevel={worker_loglevel}",
                     "-Q",
-                    "imports,diarization,evaluations",
+                    IMPORTS_WORKER_QUEUES,
+                    "-P",
+                    "threads",
                     "-c",
                     str(imports_worker_concurrency),
                 ],
                 label=(
-                    "Celery worker (imports+diarization+evaluations queues, "
-                    f"concurrency={imports_worker_concurrency})"
+                    f"Celery worker ({IMPORTS_WORKER_QUEUES} queues, "
+                    f"pool=threads, concurrency={imports_worker_concurrency})"
                 ),
                 prefix="[WORKER-IMPORTS]",
             )
@@ -781,8 +802,10 @@ def start_all(
         if watch_frontend:
             click.echo(f"   Frontend watcher: Active (rebuilding on file changes)")
         if imports_worker:
+            from app.workers.config import IMPORTS_WORKER_QUEUES
+
             click.echo(
-                "   Workers: default queue + imports,diarization,evaluations queues "
+                f"   Workers: default queue + {IMPORTS_WORKER_QUEUES} "
                 f"(concurrency={imports_worker_concurrency}; imports preferred)"
             )
         else:
@@ -889,6 +912,168 @@ api:
     except Exception as e:
         click.echo(f"❌ Error creating config file: {e}", err=True)
         sys.exit(1)
+
+
+def _bootstrap_sharding_config(config_path: str) -> None:
+    from app.config import load_config_from_file
+    from app.db_sharding.pool_manager import db_pool_manager
+
+    load_config_from_file(config_path)
+    db_pool_manager.reset()
+
+
+@click.group()
+def sharding():
+    """Call-import data-plane sharding admin (rebalance / registry)."""
+    pass
+
+
+main.add_command(sharding)
+
+
+@sharding.command("list-slices")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option(
+    "--call-import-id",
+    required=True,
+    help="Call import UUID whose slice registry to inspect",
+)
+def sharding_list_slices(config: str, call_import_id: str):
+    """Show catalog slice registry rows for a call import."""
+    from uuid import UUID
+
+    from app.db_sharding.pool_manager import open_catalog_session
+    from app.db_sharding.rebalance import RebalanceError, list_shard_slices, require_sharding_enabled
+
+    try:
+        _bootstrap_sharding_config(config)
+        require_sharding_enabled()
+        cid = UUID(call_import_id)
+    except (ValueError, RebalanceError) as exc:
+        click.echo(f"❌ {exc}", err=True)
+        sys.exit(1)
+
+    catalog = open_catalog_session()
+    try:
+        slices = list_shard_slices(catalog, cid)
+        if not slices:
+            click.echo(f"No registry slices for call_import {cid}")
+            return
+        click.echo(f"call_import_id: {cid}")
+        click.echo(f"slices: {len(slices)}")
+        for item in slices:
+            click.echo(
+                f"  slice {item.slice_id}: shard={item.shard_id} "
+                f"rows [{item.row_index_min}, {item.row_index_max}] "
+                f"(count={item.row_count})"
+            )
+    finally:
+        catalog.close()
+
+
+@sharding.command("rebalance-slices")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--call-import-id", required=True, help="Call import UUID to rebalance")
+@click.option("--from-shard", required=True, help="Source shard id (e.g. data-shard-01)")
+@click.option("--to-shard", required=True, help="Target shard id (e.g. data-shard-02)")
+@click.option(
+    "--slice-id",
+    "slice_ids",
+    multiple=True,
+    type=int,
+    help="Move only these slice ids (default: all slices on --from-shard)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Plan only: print row counts without copying or updating registry",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip quiescence checks (use only after pausing workers)",
+)
+def sharding_rebalance_slices(
+    config: str,
+    call_import_id: str,
+    from_shard: str,
+    to_shard: str,
+    slice_ids: tuple[int, ...],
+    dry_run: bool,
+    force: bool,
+):
+    """Copy call-import slice rows (and eval rows) from one shard to another."""
+    from uuid import UUID
+
+    from app.db_sharding.pool_manager import open_catalog_session
+    from app.db_sharding.rebalance import (
+        RebalanceError,
+        require_sharding_enabled,
+        build_rebalance_plan,
+        execute_rebalance_slices,
+    )
+
+    try:
+        _bootstrap_sharding_config(config)
+        require_sharding_enabled()
+        cid = UUID(call_import_id)
+    except (ValueError, RebalanceError) as exc:
+        click.echo(f"❌ {exc}", err=True)
+        sys.exit(1)
+
+    catalog = open_catalog_session()
+    try:
+        plan = build_rebalance_plan(
+            catalog,
+            cid,
+            from_shard_id=from_shard,
+            to_shard_id=to_shard,
+            slice_ids=slice_ids or None,
+        )
+        click.echo("Rebalance plan:")
+        click.echo(f"  call_import_id: {plan.call_import_id}")
+        click.echo(f"  from_shard:     {plan.from_shard_id}")
+        click.echo(f"  to_shard:       {plan.to_shard_id}")
+        click.echo(f"  slices:         {len(plan.slices)}")
+        for item in plan.slices:
+            click.echo(
+                f"    slice {item.slice_id}: rows [{item.row_index_min}, {item.row_index_max}]"
+            )
+        click.echo(f"  import_rows:    {plan.import_row_count}")
+        click.echo(f"  eval_rows:      {plan.eval_row_count}")
+
+        result = execute_rebalance_slices(
+            catalog,
+            plan,
+            dry_run=dry_run,
+            force=force,
+        )
+        if result.dry_run:
+            click.echo("✅ Dry run complete (no changes made)")
+        else:
+            click.echo(
+                "✅ Rebalance complete: "
+                f"slices={result.slices_moved}, "
+                f"import_rows={result.import_rows_moved}, "
+                f"eval_rows={result.eval_rows_moved}"
+            )
+    except RebalanceError as exc:
+        click.echo(f"❌ {exc}", err=True)
+        sys.exit(1)
+    finally:
+        catalog.close()
 
 
 if __name__ == "__main__":

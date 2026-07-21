@@ -3,7 +3,7 @@
 import json
 import yaml
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "efficientai"
+
+    # Database sharding (call-import row shards; default off)
+    DB_SHARDING_ENABLED: bool = False
+    DB_CATALOG_URL: Optional[str] = None
+    DB_SHARD_ROW_CHUNK_SIZE: int = 500
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_SHARD_ENTRIES: List[dict] = []
 
     # Redis
     REDIS_URL: Optional[str] = None
@@ -76,10 +84,20 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: Optional[str] = None
 
     # Call-import worker concurrency limits (Redis fair-share for evaluations)
-    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 10
-    EVAL_ORG_INFLIGHT_LIMIT: int = 50
-    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 100
-    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 5
+    EVAL_WORKSPACE_INFLIGHT_LIMIT: int = 100
+    EVAL_ORG_INFLIGHT_LIMIT: int = 128
+    EVAL_GLOBAL_INFLIGHT_LIMIT: int = 128
+    EVAL_JOB_INFLIGHT_LIMIT: int = 75
+    EVAL_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    DIARIZATION_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    IMPORT_FAIR_DISPATCH_BATCH_SIZE: int = 75
+    IMPORT_WORKSPACE_INFLIGHT_LIMIT: int = 8
+    IMPORT_ORG_INFLIGHT_LIMIT: int = 16
+    IMPORT_GLOBAL_INFLIGHT_LIMIT: int = 16
+    TELEPHONY_IMPORT_CREDIT_LIMIT: int = 1000
+    TELEPHONY_IMPORT_CREDIT_WINDOW_SECONDS: int = 60
+    TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS: int = 15
+    TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS: int = 60
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
@@ -422,7 +440,21 @@ def load_config_from_file(config_path: str) -> None:
                 f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
                 f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
             )
-    
+        if "pool_size" in db_config:
+            settings.DB_POOL_SIZE = int(db_config["pool_size"])
+        if "max_overflow" in db_config:
+            settings.DB_MAX_OVERFLOW = int(db_config["max_overflow"])
+        if "catalog_url" in db_config:
+            settings.DB_CATALOG_URL = db_config["catalog_url"]
+        sharding_cfg = db_config.get("sharding") or {}
+        if isinstance(sharding_cfg, dict):
+            if "enabled" in sharding_cfg:
+                settings.DB_SHARDING_ENABLED = bool(sharding_cfg["enabled"])
+            if "row_chunk_size" in sharding_cfg:
+                settings.DB_SHARD_ROW_CHUNK_SIZE = int(sharding_cfg["row_chunk_size"])
+        if "shards" in db_config and isinstance(db_config["shards"], list):
+            settings.DB_SHARD_ENTRIES = list(db_config["shards"])
+
     if "redis" in config_data:
         redis_config = config_data["redis"]
         if "url" in redis_config:
@@ -461,6 +493,46 @@ def load_config_from_file(config_path: str) -> None:
         if "eval_fair_dispatch_batch_size" in workers_config:
             settings.EVAL_FAIR_DISPATCH_BATCH_SIZE = int(
                 workers_config["eval_fair_dispatch_batch_size"]
+            )
+        if "eval_job_inflight_limit" in workers_config:
+            settings.EVAL_JOB_INFLIGHT_LIMIT = int(
+                workers_config["eval_job_inflight_limit"]
+            )
+        if "diarization_fair_dispatch_batch_size" in workers_config:
+            settings.DIARIZATION_FAIR_DISPATCH_BATCH_SIZE = int(
+                workers_config["diarization_fair_dispatch_batch_size"]
+            )
+        if "import_fair_dispatch_batch_size" in workers_config:
+            settings.IMPORT_FAIR_DISPATCH_BATCH_SIZE = int(
+                workers_config["import_fair_dispatch_batch_size"]
+            )
+        if "import_workspace_inflight_limit" in workers_config:
+            settings.IMPORT_WORKSPACE_INFLIGHT_LIMIT = int(
+                workers_config["import_workspace_inflight_limit"]
+            )
+        if "import_org_inflight_limit" in workers_config:
+            settings.IMPORT_ORG_INFLIGHT_LIMIT = int(
+                workers_config["import_org_inflight_limit"]
+            )
+        if "import_global_inflight_limit" in workers_config:
+            settings.IMPORT_GLOBAL_INFLIGHT_LIMIT = int(
+                workers_config["import_global_inflight_limit"]
+            )
+        if "telephony_import_credit_limit" in workers_config:
+            settings.TELEPHONY_IMPORT_CREDIT_LIMIT = int(
+                workers_config["telephony_import_credit_limit"]
+            )
+        if "telephony_import_credit_window_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_CREDIT_WINDOW_SECONDS = int(
+                workers_config["telephony_import_credit_window_seconds"]
+            )
+        if "telephony_import_backoff_base_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_BACKOFF_BASE_SECONDS = int(
+                workers_config["telephony_import_backoff_base_seconds"]
+            )
+        if "telephony_import_backoff_max_seconds" in workers_config:
+            settings.TELEPHONY_IMPORT_BACKOFF_MAX_SECONDS = int(
+                workers_config["telephony_import_backoff_max_seconds"]
             )
     
     if "storage" in config_data:

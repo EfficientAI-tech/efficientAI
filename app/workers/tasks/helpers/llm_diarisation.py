@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -58,6 +59,9 @@ from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
 
 from .json_utils import repair_truncated_json
+
+
+_DEBUG_LOG_PATH = Path(__file__).resolve().parents[4] / "debug-bfc313.log"
 
 
 DEFAULT_DIARIZATION_PROMPT = (
@@ -700,7 +704,40 @@ _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MiB raw → ~33 MB base64
 # Providers we currently know how to build a multimodal audio prompt
 # for. Adding a new provider means teaching ``_build_audio_messages``
 # how to shape its content parts; until then we surface a clean error.
+# ``custom`` is allowed separately when the org credential routes via
+# the LLM gateway with a pinned ``gateway_model`` (OpenAI-compatible).
 _AUDIO_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai", "google"})
+
+
+def _custom_gateway_audio_allowed(
+    *,
+    provider_value: str,
+    organization_id: UUID,
+    db: Session,
+    credential_id: Optional[UUID] = None,
+) -> bool:
+    """Return True when ``custom`` may be used for LLM-only diarisation."""
+    if provider_value != "custom":
+        return False
+
+    from app.services.credentials import resolve_ai_provider
+
+    try:
+        provider_enum = ModelProvider(provider_value)
+    except ValueError:
+        return False
+
+    ai_provider_row = resolve_ai_provider(
+        provider_enum.value,
+        db,
+        organization_id,
+        credential_id=credential_id,
+    )
+    if not ai_provider_row:
+        return False
+
+    gateway_model = (getattr(ai_provider_row, "gateway_model", None) or "").strip()
+    return bool(gateway_model)
 
 # Skip the Gemini Files API round-trip for tiny clips: the upload +
 # polling latency (~300-600 ms) outweighs the prompt-size savings until
@@ -954,7 +991,7 @@ def _build_audio_messages(
         "expected answer for empty / non-speech audio."
     )
 
-    if provider_value == "openai":
+    if provider_value == "openai" or provider_value == "custom":
         audio_part: Dict[str, Any] = {
             "type": "input_audio",
             "input_audio": {"data": audio_b64, "format": openai_format},
@@ -1041,11 +1078,18 @@ def diarize_audio_with_llm(
 
     provider_value = (llm_provider or "").strip().lower()
     if provider_value not in _AUDIO_SUPPORTED_PROVIDERS:
-        raise LLMDiarisationError(
-            f"Provider '{llm_provider}' is not supported in LLM-only "
-            "mode yet. Pick an OpenAI gpt-4o-audio model or a Google "
-            "Gemini model that accepts audio input."
-        )
+        if not _custom_gateway_audio_allowed(
+            provider_value=provider_value,
+            organization_id=organization_id,
+            db=db,
+            credential_id=credential_id,
+        ):
+            raise LLMDiarisationError(
+                f"Provider '{llm_provider}' is not supported in LLM-only "
+                "mode yet. Pick an OpenAI gpt-4o-audio model, a Google "
+                "Gemini model that accepts audio input, or a Custom "
+                "gateway credential with a gateway model configured."
+            )
 
     try:
         provider_enum = ModelProvider(provider_value)
@@ -1072,10 +1116,44 @@ def diarize_audio_with_llm(
     # Any failure on this path silently falls back to the legacy
     # inline-base64 transport below — the audio still gets diarised,
     # just slower.
+    from app.services.ai.llm_gateway import (
+        resolve_effective_routing,
+        routing_context_from_ai_provider,
+    )
+    from app.services.credentials import resolve_ai_provider
+
+    _ai_provider_row = resolve_ai_provider(
+        provider_enum.value,
+        db,
+        organization_id,
+        credential_id=credential_id,
+    )
+    _cred_ctx = (
+        routing_context_from_ai_provider(_ai_provider_row)
+        if _ai_provider_row
+        else None
+    )
+    _, _effective_routing = resolve_effective_routing(
+        organization_id, db, _cred_ctx
+    )
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId": "bfc313", "hypothesisId": "B", "location": "llm_diarisation.py:diarize_audio_with_llm", "message": "audio diariser credential routing", "data": {"credential_id": str(credential_id) if credential_id else None, "provider_row_id": str(getattr(_ai_provider_row, "id", None)), "routing_mode": getattr(_ai_provider_row, "routing_mode", None), "effective_routing": _effective_routing, "audio_bytes": len(audio_bytes), "files_api_threshold": _GEMINI_FILES_API_MIN_BYTES}, "timestamp": int(_time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # #endregion
+
     gemini_file_id: Optional[str] = None
+    # Gemini Files API uploads go directly to Google and bind the file to
+    # the org's provider API key. Bifrost / LiteLLM Proxy cannot fetch
+    # those URIs on the subsequent completion call (403). Only use the
+    # Files API fast-path when the diariser completion also routes direct.
     if (
         provider_value == "google"
         and len(audio_bytes) >= _GEMINI_FILES_API_MIN_BYTES
+        and _effective_routing == "direct"
     ):
         api_key = _resolve_provider_api_key(
             provider_enum,
@@ -1097,12 +1175,20 @@ def diarize_audio_with_llm(
                     len(audio_bytes),
                     resolved_mime,
                 )
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId": "bfc313", "runId": "post-fix", "hypothesisId": "C", "location": "llm_diarisation.py:diarize_audio_with_llm", "message": "audio transport chosen", "data": {"effective_routing": _effective_routing, "gemini_file_id_used": bool(gemini_file_id), "gemini_file_id_prefix": (gemini_file_id or "")[:80], "uses_inline_base64": gemini_file_id is None, "files_api_skipped_for_gateway": _effective_routing != "direct" and provider_value == "google" and len(audio_bytes) >= _GEMINI_FILES_API_MIN_BYTES}, "timestamp": int(_time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # #endregion
 
     # Only build the (expensive) base64 payload when we actually need
     # it for the wire — for the OpenAI path always, and for the Gemini
     # path only when the Files API upload didn't yield a file_id.
     audio_b64: Optional[str] = None
-    if provider_value == "openai" or gemini_file_id is None:
+    if provider_value in {"openai", "custom"} or gemini_file_id is None:
         audio_b64 = _b64.b64encode(audio_bytes).decode("ascii")
 
     messages = _build_audio_messages(
@@ -1200,7 +1286,7 @@ def _humanise_audio_call_error(
             "audio input via Chat Completions, which is what LLM-only "
             "diarisation uses. Pick an audio-capable model: OpenAI's "
             "gpt-4o-audio-preview / gpt-4o-mini-audio-preview, or any "
-            "Google Gemini 1.5+ model (gemini-1.5-pro, gemini-2.0-flash, "
+            "Google Gemini 2.5+ model (gemini-2.5-flash, "
             "gemini-2.5-pro, …)."
         )
     compact = msg.split("\nDetails:", 1)[0].strip()

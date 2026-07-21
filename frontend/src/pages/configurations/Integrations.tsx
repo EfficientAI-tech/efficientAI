@@ -171,7 +171,7 @@ export default function Integrations() {
   })
 
   const { data: aiproviders = [] } = useQuery({
-    queryKey: ['aiproviders'],
+    queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
   })
 
@@ -269,19 +269,19 @@ export default function Integrations() {
 
   const createAIProviderMutation = useMutation({
     mutationFn: (data: AIProviderCreate) => apiClient.createAIProvider(data),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['aiproviders'] }); showToast('AI Provider configured successfully!', 'success'); resetForm() },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['ai-providers'] }); showToast('AI Provider configured successfully!', 'success'); resetForm() },
     onError: (error: any) => { showToast(`Failed to configure provider: ${error.response?.data?.detail || error.message}`, 'error') },
   })
 
   const updateAIProviderMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<AIProviderUpdate> }) => apiClient.updateAIProvider(id, data),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['aiproviders'] }); showToast('AI Provider updated successfully!', 'success'); resetForm() },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['ai-providers'] }); showToast('AI Provider updated successfully!', 'success'); resetForm() },
     onError: (error: any) => { showToast(`Failed to update provider: ${error.response?.data?.detail || error.message}`, 'error') },
   })
 
   const deleteAIProviderMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteAIProvider(id),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['aiproviders'] }); showToast('AI Provider deleted successfully!', 'success'); setShowDeleteAIProviderModal(false); setAIProviderToDelete(null) },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['ai-providers'] }); showToast('AI Provider deleted successfully!', 'success'); setShowDeleteAIProviderModal(false); setAIProviderToDelete(null) },
     onError: (error: any) => { showToast(`Failed to delete provider: ${error.response?.data?.detail || error.message}`, 'error') },
   })
 
@@ -326,7 +326,7 @@ export default function Integrations() {
 
   const setDefaultAIProviderMutation = useMutation({
     mutationFn: (id: string) => apiClient.setDefaultAIProvider(id),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['aiproviders'] }); showToast('Default AI provider updated', 'success') },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['ai-providers'] }); showToast('Default AI provider updated', 'success') },
     onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to set default', 'error') },
   })
 

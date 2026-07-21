@@ -70,6 +70,7 @@ def test_litellm_model_name_maps_known_provider_prefixes():
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(service, "_resolve_api_key", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("AI provider sarvam not configured for this organization.")))
 
     with pytest.raises(RuntimeError, match="not configured"):
@@ -85,6 +86,7 @@ def test_generate_response_raises_when_provider_not_configured(monkeypatch):
 def test_generate_response_success_with_normalized_usage(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_resolve_api_key",
@@ -170,9 +172,63 @@ def test_generate_response_applies_llm_gateway(monkeypatch):
     assert captured["extra_headers"]["x-bf-vk"] == "test-vk"
 
 
+def test_generate_response_sarvam_integration_direct_skips_gateway(monkeypatch):
+    """Integration LLM credentials must honour per-credential direct routing."""
+    from app.config import settings
+
+    settings.LLM_GATEWAY_ENABLED = True
+    settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080/litellm"
+    settings.LLM_GATEWAY_VIRTUAL_KEY = "test-vk"
+
+    service = LLMService()
+    integration = SimpleNamespace(routing_mode="direct")
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        llm_module,
+        "resolve_integration",
+        lambda *_args, **_kwargs: integration,
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolve_api_key",
+        lambda *_args, **_kwargs: "sarvam-api-key",
+    )
+
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="sarvam reply"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+
+    result = service.generate_response(
+        messages=[{"role": "user", "content": "hello"}],
+        llm_provider=ModelProvider.SARVAM,
+        llm_model="sarvam-30b",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+    )
+
+    assert result["text"] == "sarvam reply"
+    assert captured["model"] == "sarvam/sarvam-30b"
+    assert captured.get("api_base") is None
+    assert captured.get("custom_llm_provider") is None
+    assert captured["api_key"] == "sarvam-api-key"
+
+
 def test_generate_response_wraps_litellm_errors(monkeypatch):
     service = LLMService()
     monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(llm_module, "resolve_integration", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         service,
         "_resolve_api_key",

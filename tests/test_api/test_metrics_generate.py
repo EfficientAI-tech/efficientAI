@@ -12,8 +12,10 @@ def test_generate_metric_uses_resolver(authenticated_client, monkeypatch, make_a
 
     resolver_calls = []
 
-    def _fake_resolver(org_id, db, provider, model):
-        resolver_calls.append({"provider": provider, "model": model})
+    def _fake_resolver(org_id, db, provider, model, credential_id=None):
+        resolver_calls.append(
+            {"provider": provider, "model": model, "credential_id": credential_id}
+        )
         return ModelProvider.ANTHROPIC, "claude-sonnet-4-20250514"
 
     monkeypatch.setattr(resolver_module, "get_llm_provider_and_model", _fake_resolver)
@@ -47,5 +49,9 @@ def test_generate_metric_uses_resolver(authenticated_client, monkeypatch, make_a
     assert body["provider"] == "anthropic"
     assert body["model"] == "claude-sonnet-4-20250514"
     assert resolver_calls == [
-        {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "credential_id": None,
+        }
     ]

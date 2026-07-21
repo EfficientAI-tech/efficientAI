@@ -128,7 +128,7 @@ def _generate_call_analysis(transcription, ai_providers, organization_id, result
     )
     if not chosen_provider:
         llm_provider = ModelProvider.GOOGLE
-        llm_model = "gemini-2.0-flash"
+        llm_model = "gemini-2.5-flash"
         chosen_provider = next(
             (p for p in ai_providers if provider_matches(p.provider, llm_provider)),
             None,

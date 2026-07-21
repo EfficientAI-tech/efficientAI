@@ -513,10 +513,26 @@ def resolve_effective_routing(
     credential_mode = credential.routing_mode if credential else "inherit"
 
     if credential_mode == "direct":
+        # #region agent log
+        try:
+            import json as _json, time as _time
+            with open("debug-bfc313.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps({"sessionId": "bfc313", "hypothesisId": "D", "location": "llm_gateway.py:resolve_effective_routing", "message": "credential direct override", "data": {"credential_mode": credential_mode, "effective": "direct", "org_enabled": org.get("enabled"), "platform_enabled": platform.get("enabled")}, "timestamp": int(_time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         return None, "direct"
 
     use_gateway = _org_wants_gateway(org, platform, credential_mode=credential_mode)
     if not use_gateway:
+        # #region agent log
+        try:
+            import json as _json, time as _time
+            with open("debug-bfc313.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps({"sessionId": "bfc313", "hypothesisId": "A", "location": "llm_gateway.py:resolve_effective_routing", "message": "gateway disabled", "data": {"credential_mode": credential_mode, "effective": "direct", "org_enabled": org.get("enabled"), "platform_enabled": platform.get("enabled")}, "timestamp": int(_time.time() * 1000)}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         return None, "direct"
 
     strict = credential_mode == "gateway"
@@ -531,6 +547,14 @@ def resolve_effective_routing(
     if config is None:
         return None, "direct"
 
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        with open("debug-bfc313.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId": "bfc313", "hypothesisId": "A", "location": "llm_gateway.py:resolve_effective_routing", "message": "gateway active", "data": {"credential_mode": credential_mode, "effective": config.gateway_type, "org_enabled": org.get("enabled"), "platform_enabled": platform.get("enabled"), "api_base": config.api_base}, "timestamp": int(_time.time() * 1000)}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     return config, config.gateway_type
 
 

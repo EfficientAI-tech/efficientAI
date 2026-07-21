@@ -7,6 +7,8 @@ import { apiClient } from '../../../lib/api'
 import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, ModelProvider, TelephonyProvider } from '../../../types/api'
 import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
 import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
+import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
+import { resolveLLMModelsForCredential, formatGatewayCredentialLabel } from '../../../lib/llmModelOptions'
 
 interface FormData {
   name: string
@@ -60,7 +62,7 @@ export default function CreateAgentModal({
   const [aiDescription, setAiDescription] = useState('')
   const [aiTone, setAiTone] = useState('professional')
   const [aiFormat, setAiFormat] = useState('structured')
-  const [aiProvider, setAiProvider] = useState('')
+  const [aiCredentialId, setAiCredentialId] = useState('')
   const [aiModel, setAiModel] = useState('')
   const [showUseSavedModal, setShowUseSavedModal] = useState(false)
   const [savedPromptSearch, setSavedPromptSearch] = useState('')
@@ -101,24 +103,41 @@ export default function CreateAgentModal({
   const telephonyNumbers = numbersForCallType(formData.call_type)
   const isTelephonyConfigError = !canUseProviderNumbers
 
+  const selectedAiProviderRow = aiCredentialId
+    ? aiProviders.find((p) => p.id === aiCredentialId)
+    : undefined
+  const aiProvider = selectedAiProviderRow?.provider ?? ''
+
   const { data: modelOptions } = useQuery({
     queryKey: ['model-options', aiProvider],
     queryFn: () => apiClient.getModelOptions(aiProvider),
     enabled: !!aiProvider,
   })
+
+  const llmModels = modelOptions?.llm || []
+  const modelResolution = selectedAiProviderRow
+    ? resolveLLMModelsForCredential(selectedAiProviderRow, llmModels)
+    : { mode: 'catalog' as const, models: llmModels }
+  const gatewayDirectModel =
+    modelResolution.mode === 'gateway_direct' ? modelResolution.model : null
+  const selectableModels =
+    modelResolution.mode === 'catalog' ? modelResolution.models : []
+
+  useEffect(() => {
+    if (gatewayDirectModel) {
+      if (aiModel) setAiModel('')
+      return
+    }
+    if (aiProvider && selectableModels.length > 0 && !selectableModels.includes(aiModel)) {
+      setAiModel(selectableModels[0])
+    }
+  }, [aiProvider, selectableModels, aiModel, gatewayDirectModel])
+
   const { data: savedPromptPartials = [], isLoading: isLoadingSavedPromptPartials } = useQuery<PromptPartial[]>({
     queryKey: ['create-agent-prompt-partials', savedPromptSearch],
     queryFn: () => apiClient.listPromptPartials(0, 100, savedPromptSearch.trim() || undefined),
     enabled: showUseSavedModal,
   })
-
-  const llmModels = modelOptions?.llm || []
-
-  useEffect(() => {
-    if (aiProvider && llmModels.length > 0 && !llmModels.includes(aiModel)) {
-      setAiModel(llmModels[0])
-    }
-  }, [aiProvider, llmModels, aiModel])
 
   useEffect(() => {
     if (formData.call_medium !== 'phone_call') {
@@ -238,7 +257,7 @@ export default function CreateAgentModal({
     setAiDescription('')
     setAiTone('professional')
     setAiFormat('structured')
-    setAiProvider('')
+    setAiCredentialId('')
     setAiModel('')
     setPhoneNumberInputMode('provider')
     setShowUseSavedModal(false)
@@ -669,37 +688,53 @@ export default function CreateAgentModal({
                       LLM Provider
                     </label>
                     <select
-                      value={aiProvider}
-                      onChange={(e) => { setAiProvider(e.target.value); setAiModel('') }}
+                      value={aiCredentialId}
+                      onChange={(e) => {
+                        setAiCredentialId(e.target.value)
+                        setAiModel('')
+                      }}
                       className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
                     >
                       <option value="">Auto-detect (use first available)</option>
                       {aiProviders.filter((p) => p.is_active).map((p) => (
-                        <option key={p.id} value={p.provider}>
-                          {getProviderLabel(p.provider as ModelProvider)}
-                          {p.name ? ` — ${p.name}` : ''}
+                        <option key={p.id} value={p.id}>
+                          {formatGatewayCredentialLabel(p, {
+                            custom: 'Custom',
+                            openai: 'OpenAI',
+                            anthropic: 'Anthropic',
+                            google: 'Google',
+                          })}
                         </option>
                       ))}
                     </select>
                   </div>
                   <div className="flex-1">
                     <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-                    <select
-                      value={aiModel}
-                      onChange={(e) => setAiModel(e.target.value)}
-                      disabled={!aiProvider}
-                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-                    >
-                      {!aiProvider ? (
-                        <option value="">Select a provider first</option>
-                      ) : llmModels.length === 0 ? (
-                        <option value="">Loading models...</option>
-                      ) : (
-                        llmModels.map((m: string) => (
-                          <option key={m} value={m}>{m}</option>
-                        ))
-                      )}
-                    </select>
+                    {gatewayDirectModel ? (
+                      <div
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                        title={gatewayDirectModel}
+                      >
+                        {gatewayDirectModel}
+                      </div>
+                    ) : (
+                      <select
+                        value={aiModel}
+                        onChange={(e) => setAiModel(e.target.value)}
+                        disabled={!aiCredentialId}
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+                      >
+                        {!aiCredentialId ? (
+                          <option value="">Select a provider first</option>
+                        ) : selectableModels.length === 0 ? (
+                          <option value="">Loading models...</option>
+                        ) : (
+                          selectableModels.map((m: string) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))
+                        )}
+                      </select>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2 justify-end">

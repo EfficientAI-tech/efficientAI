@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -30,6 +37,7 @@ import {
   Volume2,
   X,
   XCircle,
+  Loader2,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
@@ -38,7 +46,9 @@ import { formatDiarisationError } from '../../lib/diarisationErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
   CallImportEvaluation,
+  CallImportEvaluationBulkActionResponse,
   CallImportEvaluationLLMOverride,
+  CallImportEvaluationListResponse,
   CallImportRow,
   CallImportTag,
 } from '../../types/api'
@@ -46,18 +56,35 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
+import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
+import AIProviderModelPicker from '../../components/AIProviderModelPicker'
+import {
+  isLLMSelectionComplete,
+  isLLMSelectionPartial,
+  resolveLLMModelForSubmit,
+} from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
-import ImportPanel from './components/ImportPanel'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
 import InsightsMetricCard, {
   INSIGHTS_PALETTE,
 } from './components/InsightsMetricCard'
 import MappingPanel from './components/MappingPanel'
+import RunEvaluationStep from './components/RunEvaluationStep'
 import StageTracker from './components/StageTracker'
+import TelephonyCredentialPicker, {
+  credentialSelectionFromState,
+  isCredentialSelectionValid,
+} from './components/TelephonyCredentialPicker'
 import TranscriptView from './components/TranscriptView'
+import {
+  EVALUATION_BULK_OPERATION_POLL_MS,
+  evaluationBulkOperationLabel,
+  evaluationHasActiveBulkOperation,
+  type BulkEvaluationOperation,
+} from './evaluationBulkOperation'
 
 // Providers we know `TranscriptionService.transcribe()` already supports
 // for the full diarization-enabled path. Local Whisper is omitted since
@@ -250,6 +277,34 @@ export default function CallImportDetail() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+
+  const evaluationsQueryKey = [
+    'call-import-evaluations',
+    activeWorkspaceId,
+    id,
+  ] as const
+
+  const setEvaluationBulkOperationInList = (
+    evaluationId: string,
+    operation: BulkEvaluationOperation | null,
+  ) => {
+    if (!id) return
+    queryClient.setQueryData<CallImportEvaluationListResponse>(
+      evaluationsQueryKey,
+      (prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          items: prev.items.map((item) =>
+            item.id === evaluationId
+              ? { ...item, bulk_operation: operation }
+              : item,
+          ),
+        }
+      },
+    )
+  }
+
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
   // Transient "✓ Copied" feedback on the per-row Copy button next to
@@ -429,6 +484,8 @@ export default function CallImportDetail() {
     credential_id: null,
   })
   const [evalDiarisationPrompt, setEvalDiarisationPrompt] = useState('')
+  const [evalTelephonyProvider, setEvalTelephonyProvider] = useState('')
+  const [evalTelephonyIntegrationId, setEvalTelephonyIntegrationId] = useState('')
   const [activeTab, setActiveTab] = useState<
     'rows' | 'evaluations' | 'insights'
   >('rows')
@@ -521,6 +578,33 @@ export default function CallImportDetail() {
     staleTime: Infinity,
   })
 
+  const openRunEvaluationModal = useCallback(() => {
+    setSelectedMetricIds([])
+    setRunLLM({ provider: null, model: null, credential_id: null })
+    void queryClient.invalidateQueries({ queryKey: ['ai-providers'] })
+    if (!evalDiariserLLM.provider) {
+      setEvalDiariserLLM({
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        credential_id: null,
+      })
+    }
+    if (!evalDiarisationPrompt && defaultDiarisationPrompt) {
+      setEvalDiarisationPrompt(defaultDiarisationPrompt)
+    }
+    setShowRunEval(true)
+  }, [
+    defaultDiarisationPrompt,
+    evalDiariserLLM.provider,
+    evalDiarisationPrompt,
+    queryClient,
+  ])
+
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
   const [editingMeta, setEditingMeta] = useState(false)
   const [draftDataset, setDraftDataset] = useState('')
   const [draftTagIds, setDraftTagIds] = useState<string[]>([])
@@ -549,8 +633,15 @@ export default function CallImportDetail() {
 
   const deleteImportMutation = useMutation({
     mutationFn: (importId: string) => apiClient.deleteCallImport(importId),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
+      if (result.status === 'accepted') {
+        showToast(
+          'Deletion started — large imports may take a minute.',
+          'success',
+        )
+      }
       navigate('/call-imports')
     },
     onError: (err: unknown) => {
@@ -830,13 +921,19 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImport(id!, queryParams),
     enabled: !!id,
     refetchInterval: (query) => {
-      const status = query.state.data?.status
-      // Keep polling while the CSV import itself is in flight, or
-      // while any row has an active (pending/running) transcription —
-      // otherwise the user has to manually refresh to see whether
-      // the transcribe worker finished or failed.
-      if (status === 'pending' || status === 'processing') return 5000
-      const rows = query.state.data?.rows ?? []
+      const d = query.state.data
+      if (!d) return false
+      if (d.status === 'deleting') return 3000
+      // Keep polling while the CSV import itself is in flight.
+      if (d.status === 'pending' || d.status === 'processing') return 5000
+      // Batch-wide diarisation counters are pagination-independent —
+      // use them so off-page rows still drive polling (mirrors
+      // CallImportEvaluationDetail).
+      const diariseInFlight =
+        (d.diarised_pending_rows ?? 0) + (d.diarised_running_rows ?? 0)
+      if (diariseInFlight > 0) return 4000
+      // Fallback: legacy transcript_status on the current page slice.
+      const rows = d.rows ?? []
       const hasActiveTranscript = rows.some(
         (r: {
           transcript_status?: string | null
@@ -862,16 +959,27 @@ export default function CallImportDetail() {
   })
 
   const { data: evaluationsData } = useQuery({
-    queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+    queryKey: evaluationsQueryKey,
     queryFn: () => apiClient.listCallImportEvaluations(id!),
     enabled: !!id,
     refetchInterval: (query) => {
       const rows = query.state.data?.items || []
+      if (rows.some((row) => row.bulk_operation)) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       return rows.some((row) => row.status === 'pending' || row.status === 'running')
         ? 3000
         : false
     },
   })
+
+  const evaluationsWithBulkOperation = useMemo(
+    () =>
+      (evaluationsData?.items ?? []).filter((evaluation) =>
+        evaluationHasActiveBulkOperation(evaluation),
+      ),
+    [evaluationsData?.items],
+  )
 
   // Insights tab: fetched lazily so we don't pay for the cross-run
   // aggregation on first page load. Refetches on a 30s cadence while
@@ -883,6 +991,9 @@ export default function CallImportDetail() {
     enabled: !!id && activeTab === 'insights',
     refetchInterval: () => {
       const rows = evaluationsData?.items || []
+      if (rows.some((row) => row.bulk_operation)) {
+        return EVALUATION_BULK_OPERATION_POLL_MS
+      }
       return rows.some(
         (row) => row.status === 'pending' || row.status === 'running',
       )
@@ -897,6 +1008,12 @@ export default function CallImportDetail() {
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
+      void queryClient.refetchQueries({
+        queryKey: ['call-import-evaluations', activeWorkspaceId, id],
+      })
+      void queryClient.refetchQueries({
+        queryKey: ['call-import', activeWorkspaceId, id],
+      })
       setShowRunEval(false)
       setSelectedMetricIds([])
       setRunDraftName('')
@@ -922,6 +1039,9 @@ export default function CallImportDetail() {
       if (siblings.length > 0) {
         return
       }
+      void queryClient.refetchQueries({
+        queryKey: ['call-import-evaluation', activeWorkspaceId, id, created.id],
+      })
       // Land directly on the dedicated detail page for the new run.
       navigate(`/call-imports/${id}/evaluations/${created.id}`)
     },
@@ -961,7 +1081,9 @@ export default function CallImportDetail() {
         only_missing: !overwrite,
         overwrite_existing: overwrite,
         diarization_llm_provider: diariserLLM.provider as string,
-        diarization_llm_model: diariserLLM.model as string,
+        diarization_llm_model:
+          resolveLLMModelForSubmit(diariserLLM, aiProviders) ??
+          (diariserLLM.model as string),
         diarization_llm_credential_id: diariserLLM.credential_id ?? null,
         diarization_prompt: trimmedPrompt,
       }
@@ -1134,12 +1256,11 @@ export default function CallImportDetail() {
     onMutate: (evaluationId) => {
       setCancellingEvalId(evaluationId)
     },
-    onSuccess: () => {
-      // Backend has already flipped any running/pending rows to
-      // ``failed`` with the cancelled-by-user sentinel; refetch so the
-      // status pill and counters in this list reflect the cancel
-      // immediately rather than waiting for the 3s poll tick.
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
+    onSuccess: (data: CallImportEvaluationBulkActionResponse, evaluationId) => {
+      if (data.target_count > 0) {
+        setEvaluationBulkOperationInList(evaluationId, 'abort')
+      }
+      queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
     },
     onError: (err: any) => {
       // Cancel is idempotent on the server — the most likely failure
@@ -1163,14 +1284,25 @@ export default function CallImportDetail() {
   const bulkCancelEvalsMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const results = await Promise.allSettled(
-        ids.map((evalId) => apiClient.cancelCallImportEvaluation(id!, evalId)),
+        ids.map(async (evalId) => ({
+          evalId,
+          response: await apiClient.cancelCallImportEvaluation(id!, evalId),
+        })),
       )
       const fulfilled = results.filter((r) => r.status === 'fulfilled').length
       const rejected = results.filter((r) => r.status === 'rejected').length
-      return { fulfilled, rejected }
+      return { results, fulfilled, rejected }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', activeWorkspaceId, id] })
+    onSuccess: ({ results }) => {
+      for (const result of results) {
+        if (
+          result.status === 'fulfilled' &&
+          result.value.response.target_count > 0
+        ) {
+          setEvaluationBulkOperationInList(result.value.evalId, 'abort')
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
       setSelectedEvalIds(new Set())
     },
     onError: (err: any) => {
@@ -1191,6 +1323,8 @@ export default function CallImportDetail() {
   const failedImportRowsCount = data?.failed_rows ?? 0
   const diarisationInFlightCount =
     (data?.diarised_pending_rows ?? 0) + (data?.diarised_running_rows ?? 0)
+  const diarisedCompletedRows = data?.diarised_completed_rows ?? 0
+  const diarisedFailedRows = data?.diarised_failed_rows ?? 0
   // ``filtered_total_rows`` is set whenever any filter (search OR
   // diarisation-status) is active; pagination should always page
   // against whatever slice the user is actually looking at.
@@ -1398,7 +1532,10 @@ export default function CallImportDetail() {
   // until the user finishes the MAP + IMPORT steps. We swap out the
   // bottom of the page for the stage panels while the batch is still
   // pre-import so the user has a single linear next-action.
-  const preImport = data.status === 'uploaded' || data.status === 'mapped'
+  const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
+  const showWorkflowTabs = !needsMapping
+  const isDeleting = data.status === 'deleting'
+  const canRunEvaluation = data.status === 'mapped' || showWorkflowTabs
 
   // Selection state — ``selectedRowIds`` can now span pages (we no
   // longer wipe it on pagination), so distinguish "how many of the
@@ -1446,6 +1583,12 @@ export default function CallImportDetail() {
   return (
     <div className="space-y-6">
       <ToastContainer />
+      {isDeleting && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+          This import is being deleted in the background. Actions are disabled
+          until removal completes.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <Link
           to="/call-imports"
@@ -1455,33 +1598,16 @@ export default function CallImportDetail() {
           Back to Call Imports
         </Link>
         <div className="flex items-center gap-2">
-          {!preImport && (
+          {canRunEvaluation && !isDeleting && showWorkflowTabs && (
             <Button
               variant="primary"
               size="sm"
-              onClick={() => {
-                setSelectedMetricIds([])
-                // Seed sensible diariser defaults; the user can
-                // override before submitting. Same defaults as the
-                // standalone Transcribe modal so the two paths feel
-                // consistent.
-                if (!evalDiariserLLM.provider) {
-                  setEvalDiariserLLM({
-                    provider: 'openai',
-                    model: 'gpt-4o-mini',
-                    credential_id: null,
-                  })
-                }
-                if (!evalDiarisationPrompt && defaultDiarisationPrompt) {
-                  setEvalDiarisationPrompt(defaultDiarisationPrompt)
-                }
-                setShowRunEval(true)
-              }}
+              onClick={openRunEvaluationModal}
               disabled={!rows.length}
               title={
                 !rows.length
                   ? 'No rows to evaluate yet'
-                  : 'Open the run dialog — you must pick metrics and an STT provider/model before starting'
+                  : 'Open the run dialog — pick metrics, credentials, and models before starting'
               }
             >
               Run Evaluation
@@ -1537,6 +1663,7 @@ export default function CallImportDetail() {
               setDeleteError(null)
               setShowDeleteImport(true)
             }}
+            disabled={isDeleting}
             leftIcon={<Trash2 className="h-4 w-4" />}
             className="text-red-600 hover:text-red-700 hover:bg-red-50"
           >
@@ -1546,8 +1673,8 @@ export default function CallImportDetail() {
       </div>
 
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0 flex-1">
+        <div className="space-y-4">
+          <div className="min-w-0">
             <h1 className="text-2xl font-bold text-gray-900 truncate">
               {data.original_filename || '(unnamed import)'}
             </h1>
@@ -1572,69 +1699,71 @@ export default function CallImportDetail() {
               </span>
             </div>
           </div>
-          <div className="w-72 flex-shrink-0">
-            <div className="text-xs font-medium text-gray-600 mb-1">
-              Recording import
-            </div>
-            <CallImportProgressBar
-              total={data.total_rows}
-              completed={data.completed_rows}
-              failed={data.failed_rows}
-            />
-            <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
-              <div className="bg-gray-50 rounded p-2">
-                <div className="text-gray-500">Total</div>
-                <div className="font-semibold text-gray-900">{data.total_rows}</div>
-              </div>
-              <div className="bg-green-50 rounded p-2">
-                <div className="text-green-700">Completed</div>
-                <div className="font-semibold text-green-800">{data.completed_rows}</div>
-              </div>
-              <div className="bg-red-50 rounded p-2">
-                <div className="text-red-700">Failed</div>
-                <div className="font-semibold text-red-800">{data.failed_rows}</div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 shadow-sm min-w-0">
+              <h3 className="text-sm font-semibold text-slate-900 mb-2.5 pb-2 border-b border-slate-200">
+                Recording import
+              </h3>
+              <CallImportProgressBar
+                total={data.total_rows}
+                completed={data.completed_rows}
+                failed={data.failed_rows}
+                deleting={isDeleting}
+              />
+              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-white rounded-md border border-slate-100 p-2">
+                  <div className="text-gray-500">Total</div>
+                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
+                </div>
+                <div className="bg-white rounded-md border border-green-100 p-2">
+                  <div className="text-green-700">Completed</div>
+                  <div className="font-semibold text-green-800">{data.completed_rows}</div>
+                </div>
+                <div className="bg-white rounded-md border border-red-100 p-2">
+                  <div className="text-red-700">Failed</div>
+                  <div className="font-semibold text-red-800">{data.failed_rows}</div>
+                </div>
               </div>
             </div>
 
-            {/*
-              Transcription + diarisation progress, surfaced only once
-              the worker has actually been kicked off on at least one
-              row (otherwise every fresh batch would show a permanent
-              0% bar that means nothing). The ``pending`` + ``running``
-              counter is shown next to the bar so the user can see
-              "still working on N" while the bar fills with completed
-              + failed.
-            */}
-            {(() => {
-              const diariseInFlight =
-                (data.diarised_pending_rows ?? 0) +
-                (data.diarised_running_rows ?? 0)
-              const diariseDone =
-                (data.diarised_completed_rows ?? 0) +
-                (data.diarised_failed_rows ?? 0)
-              const hasActivity = diariseInFlight + diariseDone > 0
-              if (!hasActivity) return null
-              return (
-                <div className="mt-4 pt-4 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-xs font-medium text-gray-600">
-                      Transcription &amp; diarisation
-                    </div>
-                    {diariseInFlight > 0 && (
-                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        {diariseInFlight} in progress
-                      </div>
-                    )}
-                  </div>
-                  <CallImportProgressBar
-                    total={data.total_rows}
-                    completed={data.diarised_completed_rows ?? 0}
-                    failed={data.diarised_failed_rows ?? 0}
-                  />
+            <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 shadow-sm min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-2.5 pb-2 border-b border-violet-200">
+                <h3 className="text-sm font-semibold text-violet-950">
+                  Transcription &amp; diarisation
+                </h3>
+                {diarisationInFlightCount > 0 && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-violet-700 whitespace-nowrap">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    {diarisationInFlightCount} in progress
+                  </span>
+                )}
+              </div>
+              <CallImportProgressBar
+                total={data.total_rows}
+                completed={diarisedCompletedRows}
+                failed={diarisedFailedRows}
+                deleting={isDeleting}
+              />
+              <div className="mt-2.5 grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-white rounded-md border border-violet-100 p-2">
+                  <div className="text-gray-500">Total</div>
+                  <div className="font-semibold text-gray-900">{data.total_rows}</div>
                 </div>
-              )
-            })()}
+                <div className="bg-white rounded-md border border-green-100 p-2">
+                  <div className="text-green-700">Completed</div>
+                  <div className="font-semibold text-green-800">
+                    {diarisedCompletedRows}
+                  </div>
+                </div>
+                <div className="bg-white rounded-md border border-red-100 p-2">
+                  <div className="text-red-700">Failed</div>
+                  <div className="font-semibold text-red-800">
+                    {diarisedFailedRows}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1812,16 +1941,18 @@ export default function CallImportDetail() {
           confusing — skip it entirely for those. */}
       {data.source_s3_key && <StageTracker status={data.status} />}
 
-      {preImport && data.source_s3_key && (
+      {needsMapping && data.source_s3_key && (
         <>
           {(data.status === 'uploaded' || data.status === 'mapped') && (
             <MappingPanel callImport={data} />
           )}
-          {data.status === 'mapped' && <ImportPanel callImport={data} />}
+          {data.status === 'mapped' && !isDeleting && (
+            <RunEvaluationStep onRunEvaluation={openRunEvaluationModal} />
+          )}
         </>
       )}
 
-      {preImport ? null : (
+      {showWorkflowTabs ? (
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex gap-6" aria-label="Call import sections">
           <button
@@ -1869,9 +2000,9 @@ export default function CallImportDetail() {
           </button>
         </nav>
       </div>
-      )}
+      ) : null}
 
-      {!preImport && activeTab === 'rows' && (
+      {showWorkflowTabs && activeTab === 'rows' && (
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Rows</h2>
@@ -2292,32 +2423,7 @@ export default function CallImportDetail() {
                         )}
                       </span>
                       <StatusBadge status={row.status} size="sm" />
-                      {/* Diarisation status pill: only surfaced once
-                          the diarise/transcribe worker has touched
-                          this row. Lets the user spot failed rows
-                          inline without expanding the row, and makes
-                          the new diarisation status filter chip set
-                          self-evident. */}
-                      {(() => {
-                        const ds = row.diarised_transcript_status
-                        if (!ds || ds === 'idle') return null
-                        const tone =
-                          ds === 'failed'
-                            ? 'bg-red-100 text-red-700 border-red-200'
-                            : ds === 'completed'
-                            ? 'bg-green-100 text-green-700 border-green-200'
-                            : ds === 'running'
-                            ? 'bg-blue-100 text-blue-700 border-blue-200'
-                            : 'bg-gray-100 text-gray-700 border-gray-200'
-                        return (
-                          <span
-                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${tone}`}
-                            title={`Diarisation: ${ds}`}
-                          >
-                            Diarise: {ds}
-                          </span>
-                        )
-                      })()}
+                      <DiariseStatusPill status={row.diarised_transcript_status} />
                     </button>
 
                     <div className="flex items-center gap-1 flex-shrink-0">
@@ -2838,7 +2944,7 @@ export default function CallImportDetail() {
       </div>
       )}
 
-      {!preImport && activeTab === 'evaluations' && (
+      {showWorkflowTabs && activeTab === 'evaluations' && (
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
@@ -2908,6 +3014,45 @@ export default function CallImportDetail() {
           })()}
         </div>
 
+        {evaluationsWithBulkOperation.length > 0 && (
+          <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <Loader2 className="h-4 w-4 text-amber-600 mt-0.5 animate-spin shrink-0" />
+              <div className="flex-1 space-y-2">
+                <p className="text-sm font-medium text-amber-900">
+                  Background operations in progress
+                </p>
+                <ul className="space-y-1">
+                  {evaluationsWithBulkOperation.map((evaluation) => {
+                    const headerLabel = evaluation.name?.trim()
+                      ? evaluation.name
+                      : `Evaluation ${evaluation.id.slice(0, 8)}`
+                    return (
+                      <li
+                        key={evaluation.id}
+                        className="text-xs text-amber-800 flex flex-wrap items-center gap-x-1.5 gap-y-0.5"
+                      >
+                        <Link
+                          to={`/call-imports/${id}/evaluations/${evaluation.id}`}
+                          className="font-medium text-amber-900 hover:text-amber-950 underline-offset-2 hover:underline"
+                        >
+                          {headerLabel}
+                        </Link>
+                        <span aria-hidden="true">·</span>
+                        <span>
+                          {evaluationBulkOperationLabel(
+                            evaluation.bulk_operation!,
+                          )}
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
         {(evaluationsData?.items?.length || 0) === 0 ? (
           <p className="text-sm text-gray-500">
             No evaluations have been run for this dataset yet.
@@ -2941,6 +3086,9 @@ export default function CallImportDetail() {
             })()}
             {evaluationsData?.items.map((evaluation: CallImportEvaluation) => {
               const isSelected = selectedEvalIds.has(evaluation.id)
+              const bulkOperationActive = evaluationHasActiveBulkOperation(
+                evaluation,
+              )
               const headerLabel = evaluation.name?.trim()
                 ? evaluation.name
                 : `Evaluation ${evaluation.id.slice(0, 8)}`
@@ -2980,6 +3128,12 @@ export default function CallImportDetail() {
                     </div>
                     <div className="text-right flex-shrink-0">
                       <StatusBadge status={evaluation.status} size="sm" />
+                      {evaluation.bulk_operation && (
+                        <p className="text-[11px] text-amber-700 mt-1 flex items-center justify-end gap-1">
+                          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                          {evaluationBulkOperationLabel(evaluation.bulk_operation)}
+                        </p>
+                      )}
                       <p className="text-xs text-gray-500 mt-1">
                         {evaluation.completed_rows}/{evaluation.total_rows} rows
                       </p>
@@ -2992,12 +3146,14 @@ export default function CallImportDetail() {
                       size="sm"
                       leftIcon={<XCircle className="h-4 w-4" />}
                       isLoading={
-                        cancellingEvalId === evaluation.id &&
-                        cancelEvaluationMutation.isPending
+                        bulkOperationActive ||
+                        (cancellingEvalId === evaluation.id &&
+                          cancelEvaluationMutation.isPending)
                       }
                       disabled={
-                        cancellingEvalId === evaluation.id &&
-                        cancelEvaluationMutation.isPending
+                        bulkOperationActive ||
+                        (cancellingEvalId === evaluation.id &&
+                          cancelEvaluationMutation.isPending)
                       }
                       onClick={(e) => {
                         // Stop the click from bubbling into the parent
@@ -3005,10 +3161,15 @@ export default function CallImportDetail() {
                         // detail page mid-cancel).
                         e.preventDefault()
                         e.stopPropagation()
+                        if (bulkOperationActive) return
                         cancelEvaluationMutation.mutate(evaluation.id)
                       }}
                       className="flex-shrink-0 text-amber-700 hover:text-amber-800 hover:bg-amber-50"
-                      title="Abort this evaluation run"
+                      title={
+                        bulkOperationActive
+                          ? 'Wait for the current bulk operation to finish'
+                          : 'Abort this evaluation run'
+                      }
                     >
                       Abort
                     </Button>
@@ -3021,7 +3182,7 @@ export default function CallImportDetail() {
       </div>
       )}
 
-      {!preImport && activeTab === 'insights' && (
+      {showWorkflowTabs && activeTab === 'insights' && (
         <div className="bg-white shadow rounded-lg p-6 space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
@@ -3503,8 +3664,7 @@ export default function CallImportDetail() {
               (transcribeMode === 'llm_only'
                 ? true
                 : !!transcribeSTT.provider && !!transcribeSTT.model) &&
-              !!transcribeDiariserLLM.provider &&
-              !!transcribeDiariserLLM.model &&
+              isLLMSelectionComplete(transcribeDiariserLLM, aiProviders) &&
               targets.length > 0 &&
               !transcribeRowsMutation.isPending
             return (
@@ -3628,7 +3788,7 @@ export default function CallImportDetail() {
                         ) : (
                           <>
                             Pick a chat model that accepts audio input
-                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-1.5-pro</code>,{' '}
+                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-2.5-flash</code>,{' '}
                             <code className="px-1 bg-gray-100 rounded text-[11px]">gpt-4o-audio-preview</code>).
                             The model receives the recording bytes and
                             the prompt and must return a JSON array of{' '}
@@ -3842,7 +4002,11 @@ export default function CallImportDetail() {
                   <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
                     <div className="flex items-start justify-between gap-3">
                       <p className="text-sm text-gray-600">
-                        Pick the metrics to run against every completed row in this batch.
+                        Fetches recordings, diarizes, and scores each row in this
+                        batch. Pick metrics and models below
+                        {data.status === 'mapped'
+                          ? ', plus telephony credentials for recording fetch.'
+                          : '.'}
                       </p>
                       <Link
                         to="/metrics-management"
@@ -3874,6 +4038,28 @@ export default function CallImportDetail() {
                         Leave blank to fall back to the run's UUID prefix.
                       </p>
                     </div>
+
+                    {data.status === 'mapped' && (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-4 space-y-3">
+                        <div>
+                          <h4 className="text-sm font-semibold text-gray-900">
+                            Recording fetch
+                          </h4>
+                          <p className="text-xs text-gray-600 mt-0.5">
+                            Credentials used to download each row&apos;s recording as
+                            part of this evaluation run.
+                          </p>
+                        </div>
+                        <TelephonyCredentialPicker
+                          selectedProvider={evalTelephonyProvider}
+                          selectedIntegrationId={evalTelephonyIntegrationId}
+                          onProviderChange={setEvalTelephonyProvider}
+                          onIntegrationChange={setEvalTelephonyIntegrationId}
+                          disabled={runEvaluationMutation.isPending}
+                          compact
+                        />
+                      </div>
+                    )}
 
                     {enabledMetrics.length === 0 ? (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 space-y-2">
@@ -4062,8 +4248,8 @@ export default function CallImportDetail() {
                         {/* Run-level LLM config */}
                         {(() => {
                           const llmPartial =
-                            Boolean(runLLM.provider) !==
-                            Boolean(runLLM.model)
+                            aiProviders.length > 0 &&
+                            isLLMSelectionPartial(runLLM, aiProviders)
                           return (
                             <div
                               className={`rounded-md border p-3 space-y-2 ${
@@ -4080,19 +4266,47 @@ export default function CallImportDetail() {
                                 metric. Leave empty to keep the default
                                 (OpenAI · gpt-4o).
                               </p>
-                              <ProviderModelPicker
-                                kind="llm"
-                                value={runLLM}
-                                onChange={setRunLLM}
-                                defaultLabel="Default (OpenAI · gpt-4o)"
-                                allowCredentialPick
+                              <AIProviderModelPicker
+                                provider={runLLM.provider ?? ''}
+                                model={runLLM.model ?? ''}
+                                credentialId={runLLM.credential_id ?? ''}
+                                onSelectionChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    provider: next.provider || null,
+                                    model: next.model || null,
+                                    credential_id: next.credentialId || null,
+                                  }))
+                                }
+                                onProviderChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    provider: next || null,
+                                  }))
+                                }
+                                onCredentialIdChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    credential_id: next || null,
+                                  }))
+                                }
+                                onModelChange={(next) =>
+                                  setRunLLM((prev) => ({
+                                    ...prev,
+                                    model: next || null,
+                                  }))
+                                }
+                                llm_config={runLLM.llm_config ?? null}
+                                onLLMConfigChange={(llm_config) =>
+                                  setRunLLM((prev) => ({ ...prev, llm_config }))
+                                }
                               />
                               {llmPartial && (
                                 <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
                                   <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
                                   <span>
-                                    {runLLM.provider
-                                      ? 'Pick a model for this provider, or clear the provider to use the default.'
+                                    {runLLM.provider || runLLM.credential_id
+                                      ? 'Pick a complete LLM credential (including Custom gateway models), or clear the selection to use the default.'
                                       : 'Pick a provider for this model, or clear the model to use the default.'}
                                   </span>
                                 </p>
@@ -4119,6 +4333,34 @@ export default function CallImportDetail() {
                                       model: null,
                                       credential_id: null,
                                     }
+                                    const updateOverride = (
+                                      patch: Partial<ProviderModelValue>,
+                                    ) => {
+                                      setMetricLLMOverrides((prev) => {
+                                        const copy = { ...prev }
+                                        const existing =
+                                          copy[target.id] || {
+                                            provider: null,
+                                            model: null,
+                                            credential_id: null,
+                                          }
+                                        const updated: ProviderModelValue = {
+                                          ...existing,
+                                          ...patch,
+                                        }
+                                        const cleared =
+                                          !updated.provider &&
+                                          !updated.model?.trim() &&
+                                          !updated.credential_id &&
+                                          !updated.llm_config
+                                        if (cleared) {
+                                          delete copy[target.id]
+                                        } else {
+                                          copy[target.id] = updated
+                                        }
+                                        return copy
+                                      })
+                                    }
                                     return (
                                       <div
                                         key={target.id}
@@ -4136,21 +4378,28 @@ export default function CallImportDetail() {
                                             </span>
                                           )}
                                         </p>
-                                        <ProviderModelPicker
-                                          kind="llm"
-                                          value={override}
-                                          onChange={(next) => {
-                                            setMetricLLMOverrides((prev) => {
-                                              const copy = { ...prev }
-                                              if (!next.provider && !next.model) {
-                                                delete copy[target.id]
-                                              } else {
-                                                copy[target.id] = next
-                                              }
-                                              return copy
+                                        <AIProviderModelPicker
+                                          provider={override.provider ?? ''}
+                                          model={override.model ?? ''}
+                                          credentialId={override.credential_id ?? ''}
+                                          onProviderChange={(next) =>
+                                            updateOverride({
+                                              provider: next || null,
                                             })
-                                          }}
-                                          defaultLabel="Use run default"
+                                          }
+                                          onCredentialIdChange={(next) =>
+                                            updateOverride({
+                                              credential_id: next || null,
+                                            })
+                                          }
+                                          onModelChange={(next) =>
+                                            updateOverride({ model: next || null })
+                                          }
+                                          onLLMConfigChange={(llm_config) =>
+                                            updateOverride({ llm_config })
+                                          }
+                                          llm_config={override.llm_config ?? null}
+                                          size="sm"
                                         />
                                       </div>
                                     )
@@ -4181,8 +4430,10 @@ export default function CallImportDetail() {
                           const sttMissing =
                             evalTranscribeMode === 'stt_llm' &&
                             (!evalSTT.provider || !evalSTT.model)
-                          const diariserMissing =
-                            !evalDiariserLLM.provider || !evalDiariserLLM.model
+                          const diariserMissing = !isLLMSelectionComplete(
+                            evalDiariserLLM,
+                            aiProviders,
+                          )
                           const sectionIncomplete = sttMissing || (
                             evalTranscribeMode === 'llm_only' && diariserMissing
                           )
@@ -4432,6 +4683,18 @@ export default function CallImportDetail() {
 
                     {(() => {
                       const disabledReasons: string[] = []
+                      if (data.status === 'mapped') {
+                        if (
+                          !isCredentialSelectionValid(
+                            evalTelephonyProvider,
+                            evalTelephonyIntegrationId,
+                          )
+                        ) {
+                          disabledReasons.push(
+                            'Pick telephony credentials (or direct URL) for recording fetch.',
+                          )
+                        }
+                      }
                       if (enabledMetrics.length === 0) {
                         disabledReasons.push(
                           'Enable at least one agent metric in Metrics.',
@@ -4454,22 +4717,19 @@ export default function CallImportDetail() {
                           )
                         }
                       }
-                      if (!evalDiariserLLM.provider) {
+                      if (!isLLMSelectionComplete(evalDiariserLLM, aiProviders)) {
                         disabledReasons.push(
                           evalTranscribeMode === 'llm_only'
                             ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
-                            : 'Pick a diariser LLM provider — the STT output is split into agent / user turns by an LLM.',
-                        )
-                      } else if (!evalDiariserLLM.model) {
-                        disabledReasons.push(
-                          'Pick a diariser LLM model for the selected provider.',
+                            : 'Pick a diariser LLM provider and model (or a Custom gateway credential).',
                         )
                       }
                       if (
-                        Boolean(runLLM.provider) !== Boolean(runLLM.model)
+                        aiProviders.length > 0 &&
+                        isLLMSelectionPartial(runLLM, aiProviders)
                       ) {
                         disabledReasons.push(
-                          'Finish the Evaluation LLM selection (pick both a provider and a model, or clear both).',
+                          'Finish the Evaluation LLM selection (pick a provider and model, or a Custom gateway credential, or clear both to use the default).',
                         )
                       }
                       const isDisabled =
@@ -4514,14 +4774,13 @@ export default function CallImportDetail() {
                               }
                         onClick={() => {
                           // Build a clean overrides payload — drop any
-                          // entries that didn't end up with both a
-                          // provider and a model set so the API doesn't
-                          // 400 on partial fills. We also discard
-                          // entries for ids that are no longer in
-                          // ``overrideTargets`` (e.g., the user set an
-                          // override for a parent then deselected every
-                          // one of its labels) so stale state doesn't
-                          // trip backend validation.
+                          // entries that didn't end up with a complete
+                          // LLM selection so the API doesn't 400 on
+                          // partial fills. We also discard entries for
+                          // ids that are no longer in ``overrideTargets``
+                          // (e.g., the user set an override for a parent
+                          // then deselected every one of its labels) so
+                          // stale state doesn't trip backend validation.
                           const overrides: Record<
                             string,
                             CallImportEvaluationLLMOverride
@@ -4530,10 +4789,12 @@ export default function CallImportDetail() {
                             metricLLMOverrides,
                           )) {
                             if (!overrideTargetIds.has(mid)) continue
-                            if (val.provider && val.model) {
+                            if (isLLMSelectionComplete(val, aiProviders)) {
                               overrides[mid] = {
-                                provider: val.provider,
-                                model: val.model,
+                                provider: val.provider!,
+                                model:
+                                  resolveLLMModelForSubmit(val, aiProviders) ??
+                                  val.model!,
                                 credential_id: val.credential_id || null,
                                 llm_config: val.llm_config || null,
                               }
@@ -4543,16 +4804,30 @@ export default function CallImportDetail() {
                               }
                             }
                           }
+                          const runLLMComplete = isLLMSelectionComplete(
+                            runLLM,
+                            aiProviders,
+                          )
                           runEvaluationMutation.mutate({
                             metric_ids: selectedMetricIds,
                             name: runDraftName.trim() || null,
                             // Diarised is the only supported source
                             // now; the backend rejects anything else.
                             transcript_sources: ['diarised'],
-                            llm_provider: runLLM.provider || null,
-                            llm_model: runLLM.model || null,
-                            llm_credential_id: runLLM.credential_id || null,
-                            llm_config: runLLM.llm_config || null,
+                            llm_provider: runLLMComplete
+                              ? runLLM.provider || null
+                              : null,
+                            llm_model: runLLMComplete
+                              ? resolveLLMModelForSubmit(runLLM, aiProviders) ??
+                                runLLM.model ??
+                                null
+                              : null,
+                            llm_credential_id: runLLMComplete
+                              ? runLLM.credential_id || null
+                              : null,
+                            llm_config: runLLMComplete
+                              ? runLLM.llm_config || null
+                              : null,
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,
@@ -4582,12 +4857,29 @@ export default function CallImportDetail() {
                                 : null,
                             diarization_llm_provider:
                               evalDiariserLLM.provider,
-                            diarization_llm_model: evalDiariserLLM.model,
+                            diarization_llm_model:
+                              resolveLLMModelForSubmit(
+                                evalDiariserLLM,
+                                aiProviders,
+                              ) ?? evalDiariserLLM.model,
                             diarization_llm_credential_id:
                               evalDiariserLLM.credential_id || null,
                             diarization_prompt:
                               evalDiarisationPrompt.trim() || null,
                             discover_new_metrics: false,
+                            ...(data.status === 'mapped'
+                              ? (() => {
+                                  const cred = credentialSelectionFromState(
+                                    evalTelephonyProvider,
+                                    evalTelephonyIntegrationId,
+                                  )
+                                  return {
+                                    provider: cred.provider,
+                                    telephony_integration_id:
+                                      cred.telephonyIntegrationId,
+                                  }
+                                })()
+                              : {}),
                           })
                         }}
                               className="flex-1"
@@ -4657,7 +4949,10 @@ export default function CallImportDetail() {
         title="Delete call import?"
         description={(() => {
           const name = data.original_filename || '(unnamed)'
-          const inFlight = data.status === 'pending' || data.status === 'processing'
+          const inFlight =
+            data.status === 'pending' ||
+            data.status === 'processing' ||
+            data.status === 'deleting'
           const lines = [
             `“${name}” will be permanently deleted, along with all ${data.total_rows} row record${data.total_rows === 1 ? '' : 's'} and ${data.completed_rows} stored recording${data.completed_rows === 1 ? '' : 's'} in S3.`,
             inFlight

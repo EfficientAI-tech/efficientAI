@@ -90,11 +90,16 @@ class TelephonyService:
         if provider_key == "plivo":
             return PlivoClient(auth_id=auth_id, auth_token=auth_token)
         if provider_key == "exotel":
+            from app.workers.concurrency.telephony_credential_rate_limit import (
+                fingerprint_for_integration,
+            )
+
             return build_exotel_client_from_integration(
                 auth_id=auth_id,
                 auth_token=auth_token,
                 account_sid=integration.voice_app_id,
                 api_host=integration.sip_domain,
+                credential_fingerprint=fingerprint_for_integration(integration),
             )
         raise ValueError(f"Unsupported telephony provider: {provider}")
 

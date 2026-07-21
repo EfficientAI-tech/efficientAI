@@ -1534,7 +1534,7 @@ _STT_DEFAULT_MODELS = {
     "deepgram": "nova-2",
     "openai": "whisper-1",
     "elevenlabs": "scribe_v2",
-    "sarvam": "saarika:v2.5",
+    "sarvam": "saaras:v3",
 }
 
 
@@ -1742,8 +1742,8 @@ async def transcribe_turn(
 # ``ModelProvider`` and be reachable via LiteLLM.
 _SUMMARY_LLM_FALLBACK: List[tuple] = [
     (ModelProvider.OPENAI, "gpt-4o-mini"),
-    (ModelProvider.GOOGLE, "gemini-2.0-flash"),
-    (ModelProvider.ANTHROPIC, "claude-3-5-haiku-latest"),
+    (ModelProvider.GOOGLE, "gemini-2.5-flash"),
+    (ModelProvider.ANTHROPIC, "claude-haiku-4.5"),
 ]
 
 
@@ -1920,8 +1920,8 @@ async def summarize_transcript(
         # Voice bundle had a provider but no model; fill in a safe default.
         defaults = {
             ModelProvider.OPENAI: "gpt-4o-mini",
-            ModelProvider.GOOGLE: "gemini-2.0-flash",
-            ModelProvider.ANTHROPIC: "claude-3-5-haiku-latest",
+            ModelProvider.GOOGLE: "gemini-2.5-flash",
+            ModelProvider.ANTHROPIC: "claude-haiku-4.5",
         }
         llm_model = defaults.get(llm_provider) or "gpt-4o-mini"
 

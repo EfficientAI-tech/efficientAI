@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from app.models.database import CallImportEvaluation
 from tests.test_api.test_call_import_evaluation_insights import _seed_eval_with_data
+from tests.test_api.test_call_import_evaluations import _stub_celery_revoke
 
 
 def test_cancel_running_metric_clusters(
@@ -24,20 +25,7 @@ def test_cancel_running_metric_clusters(
     }
     db_session.commit()
 
-    revoked: list[tuple] = []
-
-    class _Control:
-        @staticmethod
-        def revoke(task_id, *, terminate=False, signal=None):
-            revoked.append((task_id, terminate, signal))
-
-    class _CeleryApp:
-        control = _Control()
-
-    monkeypatch.setattr(
-        "app.workers.celery_app.celery_app",
-        _CeleryApp(),
-    )
+    revoke = _stub_celery_revoke(monkeypatch)
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/metric-clusters/cancel",
@@ -49,7 +37,9 @@ def test_cancel_running_metric_clusters(
     assert body["progress"]["completed_llm_calls"] == 10
     assert body["progress"]["total_llm_calls"] == 352
 
-    assert revoked == [("clusters-task-abc", True, "SIGTERM")]
+    revoke.assert_called_once_with(
+        "clusters-task-abc", terminate=True, signal="SIGTERM"
+    )
 
     refreshed = (
         db_session.query(CallImportEvaluation)

@@ -1434,6 +1434,7 @@ class MetricGenerateRequest(BaseModel):
     )
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
     llm_config: Optional[Dict[str, Any]] = None
 
 
@@ -1557,7 +1558,7 @@ def generate_metric(
     messages = _build_metric_generation_messages(req)
 
     provider_enum, model_str = get_llm_provider_and_model(
-        organization_id, db, req.provider, req.model
+        organization_id, db, req.provider, req.model, req.credential_id
     )
 
     try:
@@ -1569,6 +1570,7 @@ def generate_metric(
             db=db,
             llm_config=req.llm_config,
             task_defaults={"temperature": 0.4, "max_tokens": 800},
+            credential_id=req.credential_id,
         )
     except Exception as e:
         logger.error(f"[Metric Generate] LLM call failed: {e}")

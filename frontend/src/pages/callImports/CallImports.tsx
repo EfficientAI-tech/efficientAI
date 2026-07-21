@@ -36,6 +36,7 @@ const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'Completed', value: 'completed' },
   { label: 'Partial', value: 'partial' },
   { label: 'Failed', value: 'failed' },
+  { label: 'Deleting', value: 'deleting' },
 ]
 
 type UploadTab = 'datasets' | 'audio'
@@ -70,10 +71,16 @@ export default function CallImports() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteCallImport(id),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setPendingDelete(null)
       setDeleteError(null)
+      if (result.status === 'accepted') {
+        showToast(
+          'Deletion started — large imports may take a minute.',
+          'success',
+        )
+      }
     },
     onError: (err: unknown) => {
       const message = getApiErrorMessage(err, 'Failed to delete import.')
@@ -102,6 +109,10 @@ export default function CallImports() {
       const hasActive = items.some(
         (i: CallImport) => i.status === 'pending' || i.status === 'processing',
       )
+      const hasDeleting = items.some(
+        (i: CallImport) => i.status === 'deleting',
+      )
+      if (hasDeleting) return 3000
       return hasActive ? 5000 : false
     },
   })
@@ -361,11 +372,16 @@ export default function CallImports() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {items.map((item: CallImport) => (
+                {items.map((item: CallImport) => {
+                  const isDeleting = item.status === 'deleting'
+                  return (
                   <tr
                     key={item.id}
-                    className="hover:bg-gray-50 cursor-pointer"
-                    onClick={() => navigate(`/call-imports/${item.id}`)}
+                    className={`hover:bg-gray-50 ${isDeleting ? 'opacity-60' : 'cursor-pointer'}`}
+                    onClick={() => {
+                      if (isDeleting) return
+                      navigate(`/call-imports/${item.id}`)
+                    }}
                   >
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900 truncate max-w-xs">
@@ -421,6 +437,7 @@ export default function CallImports() {
                         total={item.total_rows}
                         completed={item.completed_rows}
                         failed={item.failed_rows}
+                        deleting={isDeleting}
                       />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -436,7 +453,9 @@ export default function CallImports() {
                       <div className="flex justify-end items-center gap-3">
                         <Link
                           to={`/call-imports/${item.id}`}
-                          className="text-primary-600 hover:text-primary-700 font-medium"
+                          className={`font-medium ${isDeleting ? 'pointer-events-none text-gray-400' : 'text-primary-600 hover:text-primary-700'}`}
+                          aria-disabled={isDeleting}
+                          tabIndex={isDeleting ? -1 : undefined}
                         >
                           View
                         </Link>
@@ -450,7 +469,8 @@ export default function CallImports() {
                             setPendingDelete(item)
                           }}
                           disabled={
-                            deleteMutation.isPending && pendingDelete?.id === item.id
+                            isDeleting ||
+                            (deleteMutation.isPending && pendingDelete?.id === item.id)
                           }
                         >
                           <Trash2 className="h-4 w-4" />
@@ -458,7 +478,8 @@ export default function CallImports() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
 
@@ -508,7 +529,9 @@ export default function CallImports() {
           const total = pendingDelete.total_rows
           const completed = pendingDelete.completed_rows
           const inFlight =
-            pendingDelete.status === 'pending' || pendingDelete.status === 'processing'
+            pendingDelete.status === 'pending' ||
+            pendingDelete.status === 'processing' ||
+            pendingDelete.status === 'deleting'
           const lines = [
             `“${name}” will be permanently deleted, along with all ${total} row record${total === 1 ? '' : 's'} and ${completed} stored recording${completed === 1 ? '' : 's'} in S3.`,
             inFlight

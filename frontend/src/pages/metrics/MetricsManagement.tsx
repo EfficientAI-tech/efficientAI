@@ -296,6 +296,7 @@ export default function MetricsManagement() {
   ])
   const [aiProvider, setAIProvider] = useState('')
   const [aiModel, setAIModel] = useState('')
+  const [aiCredentialId, setAICredentialId] = useState('')
   const [aiLlmConfig, setAILlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
@@ -831,6 +832,7 @@ export default function MetricsManagement() {
       examples?: Array<{ transcript: string; rating: any; notes?: string }>
       provider?: string
       model?: string
+      credential_id?: string
       llm_config?: LLMGenerationConfig
     }) => apiClient.generateMetric(payload),
     onSuccess: (suggestion) => {
@@ -914,6 +916,7 @@ export default function MetricsManagement() {
     setAIExamples([{ transcript: '', rating: '', notes: '' }])
     setAIProvider('')
     setAIModel('')
+    setAICredentialId('')
     setAILlmConfig(null)
   }
 
@@ -922,6 +925,7 @@ export default function MetricsManagement() {
     const llmExtras = {
       ...(aiProvider ? { provider: aiProvider } : {}),
       ...(aiModel ? { model: aiModel } : {}),
+      ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
       ...(aiLlmConfig ? { llm_config: aiLlmConfig } : {}),
     }
     if (aiMode === 'description') {
@@ -1971,7 +1975,9 @@ export default function MetricsManagement() {
                         <AIProviderModelPicker
                           provider={aiProvider}
                           model={aiModel}
+                          credentialId={aiCredentialId}
                           onProviderChange={setAIProvider}
+                          onCredentialIdChange={setAICredentialId}
                           onModelChange={setAIModel}
                           onLLMConfigChange={setAILlmConfig}
                           llm_config={aiLlmConfig}

@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -1939,6 +1940,23 @@ class CallImport(Base):
     )
 
 
+class CallImportShardSlice(Base):
+    """Registry row: which shard stores a slice of rows for an import."""
+
+    __tablename__ = "call_import_shard_slices"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slice_id = Column(Integer, primary_key=True)
+    shard_id = Column(String(64), nullable=False, index=True)
+    row_index_min = Column(Integer, nullable=False)
+    row_index_max = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class CallImportRow(Base):
     """A single row within a CallImport batch (one CSV line / one external call)."""
 
@@ -1955,6 +1973,12 @@ class CallImportRow(Base):
         index=True,
     )
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     row_index = Column(Integer, nullable=False)
     # Was historically named ``external_call_id``; renamed to
@@ -1962,8 +1986,9 @@ class CallImportRow(Base):
     # to it by a single canonical name across the schema definition,
     # exports, and downstream evaluation tables.
     conversation_id = Column(String(255), nullable=False, index=True)
-    # Optional at upload time; the worker resolves it via Exotel's Calls API when
-    # absent and writes the resolved URL back here so retries are cheap.
+    # Supplied via CSV for Exotel credentialed imports (required per row).
+    # Nullable in the schema for legacy rows imported before recording_url
+    # was mandatory on every Exotel upload.
     recording_url = Column(Text, nullable=True)
     # Date-only call recording date supplied by the import schema. Used
     # for historical report comparisons without timezone/time ambiguity.
@@ -2095,6 +2120,20 @@ class CallImportRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     call_import = relationship("CallImport", back_populates="rows")
+
+
+@event.listens_for(CallImportRow, "before_insert")
+def _call_import_row_fill_workspace_id(_mapper, connection, target):
+    """Denormalize workspace_id from the parent import when omitted."""
+    if target.workspace_id is not None or target.call_import_id is None:
+        return
+    workspace_id = connection.execute(
+        select(CallImport.workspace_id).where(
+            CallImport.id == target.call_import_id
+        )
+    ).scalar_one_or_none()
+    if workspace_id is not None:
+        target.workspace_id = workspace_id
 
 
 class CallImportTag(Base):
@@ -2374,6 +2413,12 @@ class CallImportEvaluationRow(Base):
         nullable=False,
         index=True,
     )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     status = Column(String(20), nullable=False, default="pending", index=True)
     # Same shape as EvaluatorResult.metric_scores: {metric_id_str: {value, type, metric_name, ...}}
@@ -2390,6 +2435,20 @@ class CallImportEvaluationRow(Base):
 
     evaluation = relationship("CallImportEvaluation", back_populates="row_results")
     source_row = relationship("CallImportRow")
+
+
+@event.listens_for(CallImportEvaluationRow, "before_insert")
+def _call_import_evaluation_row_fill_workspace_id(_mapper, connection, target):
+    """Denormalize workspace_id from the parent evaluation when omitted."""
+    if target.workspace_id is not None or target.evaluation_id is None:
+        return
+    workspace_id = connection.execute(
+        select(CallImportEvaluation.workspace_id).where(
+            CallImportEvaluation.id == target.evaluation_id
+        )
+    ).scalar_one_or_none()
+    if workspace_id is not None:
+        target.workspace_id = workspace_id
 
 
 class CallImportEvaluationReportSnapshot(Base):

@@ -21,6 +21,7 @@ operational:
 
 # Database Configuration
 database:
+  # Legacy single-DB mode: use one database (e.g. efficientai). Sharding off (default).
   url: "postgresql://efficientai:password@localhost:5432/efficientai"
   # Alternative: specify individual components
   # user: "efficientai"
@@ -28,6 +29,30 @@ database:
   # host: "localhost"
   # port: 5432
   # db: "efficientai"
+
+  # Connection pool (per process; use smaller values when many data shards)
+  pool_size: 10
+  max_overflow: 20
+
+  # Data-plane sharding (call-import rows today; same shard slots can host other
+  # high-volume row data later). Default off — single database.url only.
+  #
+  # When enabled, prefer generic physical names (not call-import-specific):
+  #   catalog  → efficientai_catalog  (metadata, headers, registry, integrations)
+  #   shards   → efficientai_data_01, efficientai_data_02, …
+  #   shard id → data-shard-01, data-shard-02, … (labels in config + registry)
+  #
+  # catalog_url: "postgresql://efficientai:password@localhost:5432/efficientai_catalog"
+  sharding:
+    enabled: false
+    row_chunk_size: 500
+  # shards:
+  #   - id: data-shard-01
+  #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_01"
+  #   - id: data-shard-02
+  #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_02"
+  #   - id: data-shard-03
+  #     url: "postgresql://efficientai:password@localhost:5432/efficientai_data_03"
 
 # Redis Configuration
 redis:
@@ -207,4 +232,24 @@ judge_alignment:
 #   api_host: "https://us.api.flexprice.io/v1"
 # Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
 # Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
+
+# Call-import worker concurrency (Redis fair-share for evaluations).
+# Scale eval_global_inflight_limit with worker-imports replica count × threads.
+# Enterprise K8s profiles: see deploy/k8s/configmap-workers-*.yaml and ONE-PAGER.md
+# Confluence: Enterprise K8s Scaling Guide (child of System Design v2.1)
+# workers:
+#   eval_global_inflight_limit: 384      # 12 replicas × 32 threads (recommended)
+#   eval_org_inflight_limit: 384
+#   eval_workspace_inflight_limit: 38      # global ÷ 10 workspaces
+#   eval_job_inflight_limit: 75
+#   eval_fair_dispatch_batch_size: 75
+#   diarization_fair_dispatch_batch_size: 75
+#   import_fair_dispatch_batch_size: 75
+#   import_global_inflight_limit: 16     # cap parallel recording fetches
+#   import_org_inflight_limit: 16
+#   import_workspace_inflight_limit: 8
+#   telephony_import_credit_limit: 1000   # authenticated recording fetches per credential/window
+#   telephony_import_credit_window_seconds: 60
+#   telephony_import_backoff_base_seconds: 15
+#   telephony_import_backoff_max_seconds: 60
 

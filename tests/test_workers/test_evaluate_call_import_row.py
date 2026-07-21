@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+import sys
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -123,13 +124,73 @@ def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
     return org, call_import, metrics, source_rows, evaluation, eval_rows
 
 
-def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
-    """Stub SessionLocal and the LLM helper inside the eval task module."""
-    from app.workers.tasks import evaluate_call_import_row as task_module
+def _bound_celery_self():
+    class _Request:
+        id = "test-celery-id"
+
+    class _Self:
+        request = _Request()
+        max_retries = 2
+
+    return _Self()
+
+
+def _ensure_bound_task_run(task):
+    """API tests stub Celery with ``fn.run = fn``; restore bind=True calling."""
+    underlying = task.run
+
+    def _run(*args, **kwargs):
+        try:
+            return underlying(*args, **kwargs)
+        except TypeError as exc:
+            if "required positional argument" not in str(exc):
+                raise
+            return underlying(_bound_celery_self(), *args, **kwargs)
+
+    task.run = _run
+    return task
+
+
+def _patch_row_location(monkeypatch, db_session):
+    """Route shard-aware row lookup to the pytest session."""
+
+    def _locate(eval_row_id):
+        eid = eval_row_id if isinstance(eval_row_id, UUID) else UUID(str(eval_row_id))
+        row = (
+            db_session.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.id == eid)
+            .first()
+        )
+        if row is None:
+            raise LookupError(f"call_import_evaluation_row {eid} not found")
+        eval_row, source_row = row
+        wrapped = _NonClosingSession(db_session)
+        return wrapped, wrapped, eval_row, source_row, "legacy"
 
     monkeypatch.setattr(
-        task_module, "SessionLocal", lambda: _NonClosingSession(db_session)
+        "app.db_sharding.row_ops.locate_call_import_evaluation_row",
+        _locate,
     )
+    monkeypatch.setattr(
+        "app.db_sharding.eval_rows.locate_call_import_evaluation_row",
+        _locate,
+    )
+
+
+def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
+    """Stub SessionLocal and the LLM helper inside the eval task module."""
+    import importlib
+
+    session_factory = lambda: _NonClosingSession(db_session)
+    monkeypatch.setattr("app.database.SessionLocal", session_factory)
+    _patch_row_location(monkeypatch, db_session)
+
+    task_module = importlib.import_module("app.workers.tasks.evaluate_call_import_row")
+    monkeypatch.setattr(task_module, "SessionLocal", session_factory)
 
     def _default_eval(*_args, **_kwargs):
         metrics = _kwargs.get("llm_metrics") or (_args[1] if len(_args) > 1 else [])
@@ -148,8 +209,25 @@ def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
         "evaluate_with_llm",
         evaluate_with_llm or _default_eval,
     )
+    _ensure_bound_task_run(task_module.evaluate_call_import_row_task)
 
     return task_module
+
+
+def _patch_audio_task(monkeypatch, db_session):
+    import importlib
+
+    _patch_row_location(monkeypatch, db_session)
+    for mod_name in (
+        "app.workers.tasks.evaluate_call_import_row_audio",
+        "app.workers.tasks.evaluate_call_import_row",
+    ):
+        sys.modules.pop(mod_name, None)
+    audio_module = importlib.import_module(
+        "app.workers.tasks.evaluate_call_import_row_audio"
+    )
+    _ensure_bound_task_run(audio_module.evaluate_call_import_row_audio_task)
+    return audio_module
 
 
 def test_evaluate_call_import_row_happy_path(db_session, monkeypatch):
@@ -1074,3 +1152,228 @@ def test_rollup_parent_does_not_decrease_watermark_when_completed_rows_drop(
     assert evaluation.completed_rows == 8
     assert evaluation.billed_completed_rows == 8
     assert recorded == []
+
+
+def test_evaluate_call_import_row_skip_audio_uses_existing_scores(
+    db_session, monkeypatch
+):
+    """LLM phase after audio chain merges scores already on the row."""
+    _, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=2
+    )
+    llm_metric, audio_metric = metrics[0], metrics[1]
+    audio_metric.name = "MOS Score"
+    source_rows[0].recording_s3_key = "recordings/test.mp3"
+    eval_row = eval_rows[0]
+    audio_id = str(audio_metric.id)
+    eval_row.metric_scores = {
+        audio_id: {
+            "value": 4.2,
+            "type": "rating",
+            "metric_name": audio_metric.name,
+        }
+    }
+    db_session.commit()
+
+    task_module = _patch_dependencies(monkeypatch, db_session)
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda *args, **kwargs: None,
+    )
+    result = task_module.evaluate_call_import_row_task.run(
+        str(eval_row.id),
+        _skip_audio=True,
+    )
+
+    assert result["status"] == "completed"
+    db_session.refresh(eval_row)
+    assert eval_row.metric_scores[audio_id]["value"] == 4.2
+    assert eval_row.metric_scores[str(llm_metric.id)]["value"] == 4
+
+
+def test_evaluate_call_import_row_audio_only_completes(db_session, monkeypatch):
+    """Audio-only evaluation finalizes without chaining LLM."""
+    org, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=1
+    )
+    metrics[0].name = "MOS Score"
+    db_session.commit()
+
+    audio_module = _patch_audio_task(monkeypatch, db_session)
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        lambda *args, **kwargs: None,
+    )
+
+    source_rows[0].recording_s3_key = "audio/key.mp3"
+    db_session.commit()
+
+    import importlib
+
+    audio_eval = importlib.import_module(
+        "app.workers.tasks.helpers.audio_evaluation"
+    )
+
+    def _fake_audio(*_args, **_kwargs):
+        mid = str(metrics[0].id)
+        return {
+            mid: {
+                "value": 3.5,
+                "type": "rating",
+                "metric_name": "MOS Score",
+            }
+        }
+
+    monkeypatch.setattr(audio_eval, "evaluate_audio_metrics", _fake_audio)
+
+    import importlib
+
+    llm_task_module = importlib.import_module(
+        "app.workers.tasks.evaluate_call_import_row"
+    )
+
+    chained = {"called": False}
+
+    def _no_chain(*_args, **_kwargs):
+        chained["called"] = True
+
+    monkeypatch.setattr(
+        llm_task_module.evaluate_call_import_row_task,
+        "apply_async",
+        _no_chain,
+    )
+
+    result = audio_module.evaluate_call_import_row_audio_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "completed"
+    assert result.get("phase") == "audio_only"
+    assert chained["called"] is False
+    db_session.refresh(eval_rows[0])
+    assert eval_rows[0].status == "completed"
+
+
+def test_evaluate_call_import_row_audio_chain_enqueue_failure_marks_failed(
+    db_session, monkeypatch
+):
+    """Broker failure chaining to LLM phase must not leave the row stuck running."""
+    _, _ci, metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=2
+    )
+    llm_metric, audio_metric = metrics[0], metrics[1]
+    audio_metric.name = "MOS Score"
+    source_rows[0].recording_s3_key = "audio/key.mp3"
+    evaluation.status = "running"
+    db_session.commit()
+
+    audio_module = _patch_audio_task(monkeypatch, db_session)
+    redispatched = {"called": False}
+
+    def _track_redispatch(*_args, **_kwargs):
+        redispatched["called"] = True
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        _track_redispatch,
+    )
+
+    import importlib
+
+    audio_eval = importlib.import_module(
+        "app.workers.tasks.helpers.audio_evaluation"
+    )
+
+    def _fake_audio(*_args, **_kwargs):
+        return {
+            str(audio_metric.id): {
+                "value": 3.5,
+                "type": "rating",
+                "metric_name": "MOS Score",
+            }
+        }
+
+    monkeypatch.setattr(audio_eval, "evaluate_audio_metrics", _fake_audio)
+
+    import importlib
+
+    llm_task_module = importlib.import_module(
+        "app.workers.tasks.evaluate_call_import_row"
+    )
+
+    def _raise_enqueue(*_args, **_kwargs):
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(
+        llm_task_module.evaluate_call_import_row_task,
+        "apply_async",
+        _raise_enqueue,
+    )
+
+    result = audio_module.evaluate_call_import_row_audio_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "chain_enqueue_failed"
+    assert redispatched["called"] is True
+
+    db_session.refresh(eval_rows[0])
+    db_session.refresh(evaluation)
+    assert eval_rows[0].status == "failed"
+    assert eval_rows[0].error_message == "Failed to enqueue LLM evaluation phase"
+    assert eval_rows[0].finished_at is not None
+    assert str(audio_metric.id) in (eval_rows[0].metric_scores or {})
+    assert str(llm_metric.id) not in (eval_rows[0].metric_scores or {})
+
+    assert evaluation.failed_rows == 1
+    assert evaluation.status == "failed"
+
+
+def test_counter_deltas_for_status_transition():
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        counter_deltas_for_status_transition,
+    )
+
+    assert counter_deltas_for_status_transition("running", "completed") == (1, 0)
+    assert counter_deltas_for_status_transition("running", "failed") == (0, 1)
+    assert counter_deltas_for_status_transition("completed", "pending") == (-1, 0)
+    assert counter_deltas_for_status_transition("failed", "completed") == (1, -1)
+    assert counter_deltas_for_status_transition("running", "running") == (0, 0)
+
+
+def test_rollup_parent_incremental_without_row_scan(db_session, monkeypatch):
+    from app.workers.tasks.evaluate_call_import_row import _rollup_parent
+
+    query_calls = {"count": 0}
+    original_query = db_session.query
+
+    def _counting_query(*args, **kwargs):
+        query_calls["count"] += 1
+        return original_query(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "query", _counting_query)
+
+    _, _, _, _, evaluation, eval_rows = _seed(db_session, row_count=3)
+    eval_rows[0].status = "completed"
+    # Worker commits the finishing row as completed before rollup runs.
+    eval_rows[1].status = "completed"
+    evaluation.total_rows = 3
+    evaluation.completed_rows = 1
+    evaluation.failed_rows = 0
+    evaluation.status = "running"
+    db_session.commit()
+
+    queries_before = query_calls["count"]
+    _rollup_parent(
+        db_session,
+        evaluation,
+        previous_row_status="running",
+        new_row_status="completed",
+    )
+
+    assert evaluation.completed_rows == 2
+    assert evaluation.status == "running"
+    # Incremental path should not query CallImportEvaluationRow statuses.
+    row_status_queries = query_calls["count"] - queries_before
+    assert row_status_queries <= 2

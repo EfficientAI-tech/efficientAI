@@ -57,16 +57,18 @@ def _make_fake_row():
 
 
 def _patch_session(monkeypatch, task_module, fake_row):
-    fake_query = MagicMock()
-    fake_query.filter.return_value = fake_query
-    fake_query.first.return_value = fake_row
-
     fake_db = SimpleNamespace(
-        query=lambda *_a, **_kw: fake_query,
         commit=lambda: None,
         close=lambda: None,
+        flush=lambda: None,
     )
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: fake_db)
+
+    def _locate(_row_id):
+        return fake_db, fake_db, fake_row, "legacy"
+
+    monkeypatch.setattr("app.db_sharding.row_ops.locate_call_import_row", _locate)
+    monkeypatch.setattr("app.db_sharding.row_ops.close_row_sessions", lambda *_a: None)
+    monkeypatch.setattr("app.database.SessionLocal", lambda: fake_db)
     return fake_db
 
 
@@ -554,13 +556,7 @@ def test_select_rows_for_transcription_skips_rows_with_existing_transcripts():
         ),
     ]
 
-    fake_query = MagicMock()
-    fake_query.filter.return_value = fake_query
-    fake_query.order_by.return_value = SimpleNamespace(
-        all=lambda: fake_rows
-    )
-
-    fake_db = SimpleNamespace(query=lambda *_: fake_query)
+    fake_db = SimpleNamespace()
 
     payload = CallImportTranscribeRequest(
         stt_provider="deepgram",
@@ -570,9 +566,13 @@ def test_select_rows_for_transcription_skips_rows_with_existing_transcripts():
         only_missing=True,
         overwrite_existing=False,
     )
-    selected, skip_counts = _select_rows_for_transcription(
-        fake_db, call_import, payload
-    )
+    with patch(
+        "app.db_sharding.scatter_gather.load_call_import_rows_for_transcription",
+        return_value=fake_rows,
+    ):
+        selected, skip_counts = _select_rows_for_transcription(
+            fake_db, call_import, payload
+        )
 
     # Two rows selected: the bare row, and the one with only a production
     # transcript.
@@ -598,12 +598,7 @@ def test_select_rows_for_transcription_overwrite_replaces_existing():
             row_index=0,
         ),
     ]
-    fake_query = MagicMock()
-    fake_query.filter.return_value = fake_query
-    fake_query.order_by.return_value = SimpleNamespace(
-        all=lambda: fake_rows
-    )
-    fake_db = SimpleNamespace(query=lambda *_: fake_query)
+    fake_db = SimpleNamespace()
 
     payload = CallImportTranscribeRequest(
         stt_provider="deepgram",
@@ -613,9 +608,13 @@ def test_select_rows_for_transcription_overwrite_replaces_existing():
         only_missing=True,
         overwrite_existing=True,
     )
-    selected, skip_counts = _select_rows_for_transcription(
-        fake_db, call_import, payload
-    )
+    with patch(
+        "app.db_sharding.scatter_gather.load_call_import_rows_for_transcription",
+        return_value=fake_rows,
+    ):
+        selected, skip_counts = _select_rows_for_transcription(
+            fake_db, call_import, payload
+        )
 
     assert len(selected) == 1
     assert skip_counts == {}
@@ -628,10 +627,7 @@ def test_select_rows_for_transcription_raises_on_unknown_row_id():
     call_import = SimpleNamespace(id=uuid4())
     requested_id = uuid4()
 
-    fake_query = MagicMock()
-    fake_query.filter.return_value = fake_query
-    fake_query.order_by.return_value = SimpleNamespace(all=lambda: [])
-    fake_db = SimpleNamespace(query=lambda *_: fake_query)
+    fake_db = SimpleNamespace()
 
     payload = CallImportTranscribeRequest(
         stt_provider="deepgram",
@@ -640,10 +636,14 @@ def test_select_rows_for_transcription_raises_on_unknown_row_id():
         diarization_llm_model="gpt-4o-mini",
     )
 
-    with pytest.raises(HTTPException) as exc:
-        _select_rows_for_transcription(
-            fake_db, call_import, payload, requested_row_ids=[requested_id]
-        )
+    with patch(
+        "app.db_sharding.scatter_gather.load_call_import_rows_for_transcription",
+        return_value=[],
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _select_rows_for_transcription(
+                fake_db, call_import, payload, requested_row_ids=[requested_id]
+            )
     assert exc.value.status_code == 400
     assert str(requested_id) in exc.value.detail
 

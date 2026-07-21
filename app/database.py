@@ -1,20 +1,32 @@
 """Database connection and session management."""
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
-from app.config import settings
+from sqlalchemy.orm import declarative_base
 
-# Create database engine
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-    connect_args={"options": "-c timezone=UTC"},
-)
+from app.db_sharding.pool_manager import db_pool_manager
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+class _EngineProxy:
+    """Proxy so `from app.database import engine` works after lazy init."""
+
+    def __getattr__(self, name):
+        return getattr(db_pool_manager.catalog_engine, name)
+
+    def __repr__(self):
+        return repr(db_pool_manager.catalog_engine)
+
+
+engine = _EngineProxy()
+
+
+class _SessionLocalFactory:
+    def __call__(self):
+        factory = db_pool_manager.catalog_session_factory()
+        return factory()
+
+    def __getattr__(self, name):
+        return getattr(db_pool_manager.catalog_session_factory(), name)
+
+
+SessionLocal = _SessionLocalFactory()
 
 # Base class for models
 Base = declarative_base()
@@ -41,16 +53,15 @@ def init_db():
     # on a fresh database.
     import app.models.database  # noqa: F401
 
-    Base.metadata.create_all(bind=engine)
+    for eng in db_pool_manager.all_engines_for_migrations():
+        Base.metadata.create_all(bind=eng)
     _run_column_migrations()
 
 
 def _run_column_migrations():
     """Add new columns to existing tables if they don't exist yet."""
-    from sqlalchemy import text, inspect
-    
-    inspector = inspect(engine)
-    
+    from sqlalchemy import inspect, text
+
     migrations = [
         ("evaluators", "name", "ALTER TABLE evaluators ADD COLUMN name VARCHAR"),
         ("evaluators", "custom_prompt", "ALTER TABLE evaluators ADD COLUMN custom_prompt TEXT"),
@@ -60,23 +71,28 @@ def _run_column_migrations():
         ("evaluators", "llm_provider", "ALTER TABLE evaluators ADD COLUMN llm_provider VARCHAR"),
         ("evaluators", "llm_model", "ALTER TABLE evaluators ADD COLUMN llm_model VARCHAR"),
     ]
-    
-    with engine.begin() as conn:
-        existing_cols = {c["name"] for c in inspector.get_columns("evaluators")}
-        
-        for table, column, ddl in migrations:
-            if ddl and column not in existing_cols:
-                conn.execute(text(ddl))
-        
-        nullable_changes = [
-            ("evaluators", "agent_id"),
-            ("evaluators", "persona_id"),
-            ("evaluators", "scenario_id"),
-            ("evaluator_results", "agent_id"),
-        ]
-        for table, column in nullable_changes:
-            try:
-                conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL"))
-            except Exception:
-                pass
 
+    for eng in db_pool_manager.all_engines_for_migrations():
+        inspector = inspect(eng)
+        if not inspector.has_table("evaluators"):
+            continue
+        with eng.begin() as conn:
+            existing_cols = {c["name"] for c in inspector.get_columns("evaluators")}
+
+            for table, column, ddl in migrations:
+                if ddl and column not in existing_cols:
+                    conn.execute(text(ddl))
+
+            nullable_changes = [
+                ("evaluators", "agent_id"),
+                ("evaluators", "persona_id"),
+                ("evaluators", "scenario_id"),
+                ("evaluator_results", "agent_id"),
+            ]
+            for table, column in nullable_changes:
+                if not inspector.has_table(table):
+                    continue
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL"))
+                except Exception:
+                    pass

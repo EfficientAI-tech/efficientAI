@@ -41,6 +41,22 @@ export function credentialSelectionFromState(
   }
 }
 
+export function initialTelephonySelection(callImport?: {
+  provider?: string | null
+  telephony_integration_id?: string | null
+}) {
+  if (callImport?.telephony_integration_id && callImport.provider) {
+    return {
+      provider: callImport.provider,
+      integrationId: callImport.telephony_integration_id,
+    }
+  }
+  if (!callImport?.telephony_integration_id && !callImport?.provider) {
+    return { provider: '', integrationId: DIRECT_URL_CREDENTIAL }
+  }
+  return { provider: callImport?.provider || '', integrationId: '' }
+}
+
 /**
  * Shared telephony provider + credential picker used for import start and
  * retry-failed flows.

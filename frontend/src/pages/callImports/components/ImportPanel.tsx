@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, PlayCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
+import { useWorkspaceStore } from '../../../store/workspaceStore'
 import type { CallImport } from '../../../types/api'
 import Button from '../../../components/Button'
 import TelephonyCredentialPicker, {
@@ -24,6 +25,7 @@ interface ImportPanelProps {
  */
 export default function ImportPanel({ callImport }: ImportPanelProps) {
   const queryClient = useQueryClient()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedIntegrationId, setSelectedIntegrationId] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -40,7 +42,8 @@ export default function ImportPanel({ callImport }: ImportPanelProps) {
     onSuccess: () => {
       setSubmitError(null)
       setIntegrationHint(false)
-      queryClient.invalidateQueries({ queryKey: ['call-import', callImport.id] })
+      const cacheKey = ['call-import', activeWorkspaceId, callImport.id]
+      queryClient.invalidateQueries({ queryKey: cacheKey })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
     },
     onError: (err: any) => {
