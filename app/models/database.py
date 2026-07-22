@@ -1810,6 +1810,9 @@ class CallImport(Base):
     # persisted so the IMPORT stage can re-parse the file with the same
     # mapping/skip intent.
     skipped_columns = Column(JSON, nullable=False, default=list)
+    # Rows skipped at parse time (missing/invalid conversation_id or URL).
+    # Shape: ``[{"source_row": int, "reason": str, "message": str}, ...]``.
+    source_row_skips = Column(JSON, nullable=False, default=list)
 
     # Free-text high-level segregation label. Powers the "Dataset" filter
     # at the top of the imports page; multiple imports can share a value.

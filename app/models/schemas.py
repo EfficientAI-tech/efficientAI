@@ -2639,6 +2639,26 @@ class CallImportPreviewSheet(BaseModel):
     )
 
 
+class CallImportSourceRowSkip(BaseModel):
+    """One source spreadsheet row skipped during parse (identity / recording URL)."""
+
+    source_row: int = Field(
+        ...,
+        description="1-based row index in the source file (same semantics as parse errors).",
+    )
+    reason: str = Field(
+        ...,
+        description=(
+            "Machine-readable skip reason, e.g. missing_conversation_id, "
+            "missing_recording_url, invalid_recording_url."
+        ),
+    )
+    message: str = Field(
+        ...,
+        description="Human-readable explanation shown in the UI.",
+    )
+
+
 class CallImportResponse(BaseModel):
     """Summary of a call-import batch."""
 
@@ -2664,6 +2684,13 @@ class CallImportResponse(BaseModel):
     # Persisted "drop these columns" decision captured at MAP time.
     # Empty for legacy one-shot uploads where the value was ephemeral.
     skipped_columns: List[str] = Field(default_factory=list)
+    source_row_skips: List[CallImportSourceRowSkip] = Field(
+        default_factory=list,
+        description=(
+            "Source rows skipped at parse time because of missing/invalid "
+            "conversation ID or recording URL."
+        ),
+    )
     # Source-file staging fields populated at UPLOAD time. ``None`` on
     # legacy batches imported via the one-shot ``POST /upload`` endpoint.
     source_s3_key: Optional[str] = None

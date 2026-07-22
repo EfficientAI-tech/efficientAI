@@ -111,13 +111,21 @@ def _standard_skipped() -> list[str]:
     return []
 
 
+def _parse_csv_rows(*args, **kwargs):
+    return _parse_csv(*args, **kwargs).rows
+
+
+def _parse_xlsx_rows(*args, **kwargs):
+    return _parse_xlsx(*args, **kwargs).rows
+
+
 def test_parse_csv_accepts_canonical_headers():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
         "abc-1,18/05/2026,https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
         "abc-2,19/05/2026,https://api.exotel.com/recordings/abc-2.mp3,Another call\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         _standard_params(),
         _standard_mapping(),
@@ -146,7 +154,7 @@ def test_parse_csv_accepts_flexible_day_first_recording_dates(raw_date, normaliz
         "CallID,Recording Date,Recording URL,Transcript\n"
         f"abc-1,{raw_date},https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         _standard_params(),
         _standard_mapping(),
@@ -160,7 +168,7 @@ def test_parse_csv_is_case_insensitive_on_headers():
         "callid,recording date,recording url,TRANSCRIPT\n"
         "id-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         _standard_params(),
         _standard_mapping(),
@@ -216,20 +224,99 @@ def test_parse_csv_rejects_unmapped_required_recording_url():
     assert "recording_url" in exc.value.detail.lower()
 
 
-def test_parse_csv_rejects_row_missing_conversation_id():
+def test_parse_csv_skips_row_missing_conversation_id():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
-        ",18/05/2026,https://x/recording.mp3,Some transcript\n"
+        "good-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
+        ",19/05/2026,https://x/2.mp3,Missing conv id\n"
+    )
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 1
+    assert result.rows[0]["conversation_id"] == "good-1"
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "missing_conversation_id"
+    assert result.skipped[0].source_row == 2
+
+
+def test_parse_csv_skips_row_missing_recording_url():
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
+        "abc-2,19/05/2026,,No URL\n"
+    )
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 1
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "missing_recording_url"
+    assert result.skipped[0].source_row == 2
+
+
+def test_parse_csv_skips_row_invalid_recording_url():
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,ftp://bad/recording.mp3,Some transcript\n"
+    )
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 0
+    assert len(result.skipped) == 1
+    assert result.skipped[0].reason == "invalid_recording_url"
+
+
+def test_parse_csv_skips_multiple_bad_rows():
+    lines = ["CallID,Recording Date,Recording URL,Transcript"]
+    for i in range(1, 9):
+        lines.append(
+            f"conv-{i},18/05/2026,https://x/{i}.mp3,row {i}"
+        )
+    lines.append(",18/05/2026,https://x/bad1.mp3,missing conv")
+    lines.append("conv-10,18/05/2026,not-a-url,invalid url")
+    result = _parse_csv(
+        _csv_bytes("\n".join(lines) + "\n"),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 8
+    assert len(result.skipped) == 2
+    assert {s.source_row for s in result.skipped} == {9, 10}
+
+
+def test_raise_if_no_importable_rows_when_all_skipped():
+    from app.api.v1.routes.call_imports import (
+        CallImportParseResult,
+        CallImportParseSkip,
+        _raise_if_no_importable_rows,
+    )
+
+    result = CallImportParseResult(
+        rows=[],
+        skipped=[
+            CallImportParseSkip(
+                source_row=2,
+                reason="missing_recording_url",
+                message="Row 2 is missing the required 'recording_url' value.",
+            )
+        ],
     )
     with pytest.raises(HTTPException) as exc:
-        _parse_csv(
-            _csv_bytes(csv_text),
-            _standard_params(),
-            _standard_mapping(),
-            _standard_skipped(),
-        )
+        _raise_if_no_importable_rows(result)
     assert exc.value.status_code == 400
-    assert "conversation_id" in exc.value.detail.lower()
+    assert "No importable rows" in exc.value.detail
 
 
 def test_parse_csv_rejects_missing_recording_date_value():
@@ -277,7 +364,7 @@ def test_parse_csv_accepts_blank_recording_date_when_optional():
         "CallID,Recording Date,Recording URL,Transcript\n"
         "abc-1,,https://x/recording.mp3,Some transcript\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         params,
         _standard_mapping(),
@@ -315,7 +402,7 @@ def test_parse_csv_works_without_recording_date_parameter():
         "CallID,Recording URL,Transcript\n"
         "abc-1,https://x/recording.mp3,Some transcript\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         params,
         mapping,
@@ -350,7 +437,7 @@ def test_parse_csv_skips_completely_blank_rows():
         ",,,\n"
         "abc-2,19/05/2026,https://x/2.mp3,Other transcript\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         _standard_params(),
         _standard_mapping(),
@@ -365,7 +452,7 @@ def test_parse_csv_strips_utf8_bom():
         "\ufeffCallID,Recording Date,Recording URL,Transcript\n"
         "abc-1,18/05/2026,https://x/recording.mp3,T1\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         _standard_params(),
         _standard_mapping(),
@@ -398,7 +485,7 @@ def test_parse_csv_accepts_explicitly_skipped_columns():
         "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
         "abc-1,18/05/2026,https://x/r.mp3,hi,alice\n"
     )
-    rows = _parse_csv(
+    rows = _parse_csv_rows(
         _csv_bytes(csv_text),
         _standard_params(),
         _standard_mapping(),
@@ -421,7 +508,7 @@ def test_parse_csv_with_custom_text_parameter_is_preserved_per_row():
         "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
         "conv-1,18/05/2026,https://x/r1.mp3,hello there,alice\n"
     )
-    rows = _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
+    rows = _parse_csv_rows(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
     assert rows[0]["parameter_values"]["agent_name"] == "alice"
     assert rows[0]["parameter_values"]["conversation_id"] == "conv-1"
 
@@ -440,7 +527,7 @@ def test_parse_csv_coerces_typed_parameter_values():
         "CallID,Recording Date,Recording URL,Transcript,Latency,Answered\n"
         "conv-1,18/05/2026,https://x/r.mp3,hi,123.5,true\n"
     )
-    rows = _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
+    rows = _parse_csv_rows(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
     assert rows[0]["parameter_values"]["latency_ms"] == 123.5
     assert rows[0]["parameter_values"]["answered"] is True
 
@@ -1280,7 +1367,7 @@ def test_parse_xlsx_accepts_canonical_headers():
             ]
         }
     )
-    rows = _parse_xlsx(
+    rows = _parse_xlsx_rows(
         blob, "Calls", _standard_params(), _standard_mapping(), _standard_skipped()
     )
     assert len(rows) == 2
@@ -1299,7 +1386,7 @@ def test_parse_xlsx_accepts_native_excel_recording_date_cells():
             ]
         }
     )
-    rows = _parse_xlsx(
+    rows = _parse_xlsx_rows(
         blob, "Calls", _standard_params(), _standard_mapping(), _standard_skipped()
     )
     assert rows[0]["recording_date"] == "08/04/2026"
@@ -1314,7 +1401,7 @@ def test_parse_xlsx_coerces_numeric_call_ids_without_decimal_suffix():
             ]
         }
     )
-    rows = _parse_xlsx(
+    rows = _parse_xlsx_rows(
         blob, "Calls", _standard_params(), _standard_mapping(), _standard_skipped()
     )
     assert rows[0]["conversation_id"] == "12345"
@@ -1331,7 +1418,7 @@ def test_parse_xlsx_skips_fully_blank_rows():
             ]
         }
     )
-    rows = _parse_xlsx(
+    rows = _parse_xlsx_rows(
         blob, "Calls", _standard_params(), _standard_mapping(), _standard_skipped()
     )
     assert [r["conversation_id"] for r in rows] == ["abc-1", "abc-2"]

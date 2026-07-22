@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID, uuid4
@@ -85,6 +86,33 @@ router = APIRouter(
     tags=["Call Imports"],
     dependencies=[Depends(require_enterprise_feature("call_imports"))],
 )
+
+
+@dataclass(frozen=True)
+class CallImportParseSkip:
+    """One source row excluded during CSV/Excel parse (identity / recording URL)."""
+
+    source_row: int
+    reason: str
+    message: str
+
+
+@dataclass
+class CallImportParseResult:
+    rows: List[Dict[str, Any]] = field(default_factory=list)
+    skipped: List[CallImportParseSkip] = field(default_factory=list)
+
+
+def parse_skips_to_json(skips: List[CallImportParseSkip]) -> List[Dict[str, Any]]:
+    """Persistable JSON shape for ``CallImport.source_row_skips``."""
+    return [
+        {
+            "source_row": item.source_row,
+            "reason": item.reason,
+            "message": item.message,
+        }
+        for item in skips
+    ]
 
 
 def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
@@ -415,6 +443,14 @@ def _coerce_parameter_value(
     return cell
 
 
+def _recording_url_cell_is_valid_http(raw: str) -> bool:
+    cell = (raw or "").strip()
+    if not cell:
+        return False
+    lower = cell.lower()
+    return lower.startswith("http://") or lower.startswith("https://")
+
+
 def _parameter_is_required(param: CallImportSchemaParameter) -> bool:
     """Return whether a schema parameter must be mapped on every upload."""
     if param.is_required:
@@ -438,7 +474,7 @@ def _apply_schema_mapping(
     *,
     source_label: str = "CSV",
     validate_only: bool = False,
-) -> List[Dict[str, Any]]:
+) -> CallImportParseResult:
     """Schema-driven row projection: parameter -> CSV header -> typed value.
 
     Validates that every required schema parameter is mapped to a CSV
@@ -552,9 +588,10 @@ def _apply_schema_mapping(
         # run; the row loop only matters at IMPORT time. Skip it (and
         # the "no data rows" guard at the bottom of the function) so
         # the caller gets a clean pass when the mapping is shaped right.
-        return []
+        return CallImportParseResult()
 
     parsed: List[Dict[str, Any]] = []
+    skipped: List[CallImportParseSkip] = []
     for idx, row in enumerate(rows_iter):
         # Drop fully-blank lines - matches the legacy parser behavior so
         # trailing-newline edge cases don't fail an otherwise-good upload.
@@ -566,20 +603,59 @@ def _apply_schema_mapping(
         if not non_blank:
             continue
 
+        source_row = idx + 1
         conv_value = (row.get(conv_canonical) or "").strip() if conv_canonical else ""
         if not conv_value:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    f"Row {idx + 1} is missing the '{conv_param.name}' "
-                    "(conversation_id) value."
-                ),
+            skipped.append(
+                CallImportParseSkip(
+                    source_row=source_row,
+                    reason="missing_conversation_id",
+                    message=(
+                        f"Row {source_row} is missing the '{conv_param.name}' "
+                        "(conversation_id) value."
+                    ),
+                )
             )
+            continue
+
+        if rec_canonical and rec_url_param_name:
+            rec_param = next(
+                (p for p in parameters if p.name == rec_url_param_name),
+                None,
+            )
+            if rec_param is not None and _parameter_is_required(rec_param):
+                rec_raw = (row.get(rec_canonical) or "").strip()
+                if not rec_raw:
+                    skipped.append(
+                        CallImportParseSkip(
+                            source_row=source_row,
+                            reason="missing_recording_url",
+                            message=(
+                                f"Row {source_row} is missing the required "
+                                f"'{rec_url_param_name}' value."
+                            ),
+                        )
+                    )
+                    continue
+                if not _recording_url_cell_is_valid_http(rec_raw):
+                    skipped.append(
+                        CallImportParseSkip(
+                            source_row=source_row,
+                            reason="invalid_recording_url",
+                            message=(
+                                f"Row {source_row}: value for "
+                                f"'{rec_url_param_name}' is not a valid recording "
+                                "URL (must start with http:// or https://)."
+                            ),
+                        )
+                    )
+                    continue
 
         # Materialize every mapped parameter into the per-row snapshot,
         # running per-type coercion so a bad cell aborts the upload
         # rather than silently storing garbage.
         parameter_values: Dict[str, Any] = {}
+        row_skipped = False
         for param in parameters:
             canonical = canonical_by_param[param.name]
             if canonical is None:
@@ -595,14 +671,29 @@ def _apply_schema_mapping(
                 param_name=param.name,
             )
             if _parameter_is_required(param) and coerced is None:
+                if param_type == CallImportParameterType.RECORDING_URL:
+                    skipped.append(
+                        CallImportParseSkip(
+                            source_row=source_row,
+                            reason="missing_recording_url",
+                            message=(
+                                f"Row {source_row} is missing the required "
+                                f"'{param.name}' value."
+                            ),
+                        )
+                    )
+                    row_skipped = True
+                    break
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
-                        f"Row {idx + 1} is missing the required "
+                        f"Row {source_row} is missing the required "
                         f"'{param.name}' value."
                     ),
                 )
             parameter_values[param.name] = coerced
+        if row_skipped:
+            continue
 
         rec_value = (
             (row.get(rec_canonical) or "").strip() if rec_canonical else ""
@@ -628,13 +719,33 @@ def _apply_schema_mapping(
             }
         )
 
-    if not parsed:
+    if not parsed and not skipped:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{source_label} did not contain any data rows.",
         )
 
-    return parsed
+    return CallImportParseResult(rows=parsed, skipped=skipped)
+
+
+def _raise_if_no_importable_rows(
+    result: CallImportParseResult, *, source_label: str = "CSV"
+) -> None:
+    """Sync upload / API callers fail fast when every data row was skipped."""
+    if result.rows:
+        return
+    if result.skipped:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"No importable rows. {len(result.skipped)} row(s) skipped due "
+                "to missing or invalid conversation ID or recording URL."
+            ),
+        )
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"{source_label} did not contain any data rows.",
+    )
 
 
 def _parse_csv(
@@ -642,7 +753,7 @@ def _parse_csv(
     parameters: List[CallImportSchemaParameter],
     parameter_mapping: Dict[str, str],
     skipped_columns: List[str],
-) -> List[Dict[str, Any]]:
+) -> CallImportParseResult:
     """Parse a CSV file using the resolved schema parameters."""
     if not file_bytes:
         raise HTTPException(
@@ -778,7 +889,7 @@ def _parse_xlsx(
     parameters: List[CallImportSchemaParameter],
     parameter_mapping: Dict[str, str],
     skipped_columns: List[str],
-) -> List[Dict[str, Any]]:
+) -> CallImportParseResult:
     """Parse a single worksheet from an xlsx/xlsm workbook.
 
     ``sheet_name`` must match one of the workbook's sheets (case
@@ -1148,7 +1259,7 @@ def _parse_source_file(
     parameters: List[CallImportSchemaParameter],
     cleaned_mapping: Dict[str, str],
     cleaned_skipped: List[str],
-) -> List[Dict[str, Any]]:
+) -> CallImportParseResult:
     """Run the format-appropriate parser against a buffer of file bytes."""
     if fmt == "csv":
         return _parse_csv(file_bytes, parameters, cleaned_mapping, cleaned_skipped)
@@ -1913,6 +2024,7 @@ async def upload_call_import_csv(
     parsed_rows = _parse_source_file(
         file_bytes, fmt, sheet_name_clean, parameters, cleaned_mapping, cleaned_skipped
     )
+    _raise_if_no_importable_rows(parsed_rows, source_label=fmt)
 
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
@@ -1932,10 +2044,11 @@ async def upload_call_import_csv(
         column_mapping={},
         extra_columns=[],
         custom_column_mapping={},
-        total_rows=len(parsed_rows),
+        total_rows=len(parsed_rows.rows),
         completed_rows=0,
         failed_rows=0,
         status=CallImportStatus.PENDING,
+        source_row_skips=parse_skips_to_json(parsed_rows.skipped),
     )
     if tag_rows:
         call_import.tags = tag_rows
@@ -1947,7 +2060,7 @@ async def upload_call_import_csv(
         call_import.provider = None
 
     row_models = _materialize_rows(
-        db, call_import, parsed_rows, organization_id
+        db, call_import, parsed_rows.rows, organization_id
     )
 
     call_import.status = CallImportStatus.PROCESSING

@@ -137,13 +137,42 @@ _MAX_TRANSCRIPT_CHARS = 60_000
 # turn. Without an explicit ``max_tokens`` many providers default to a
 # low cap (e.g. 4096) and truncate mid-JSON on longer calls.
 _DIARISATION_MIN_MAX_TOKENS = 4096
-_DIARISATION_MAX_MAX_TOKENS = 16_384
+# Default output ceiling for models without an explicit entry below.
+_DIARISATION_DEFAULT_MAX_MAX_TOKENS = 16_384
+# Backward-compatible alias (tests and legacy references).
+_DIARISATION_MAX_MAX_TOKENS = _DIARISATION_DEFAULT_MAX_MAX_TOKENS
+
+# Substrings matched against normalised ``llm_model`` names (LiteLLM /
+# provider prefixes like ``gemini/gemini-2.5-flash`` included). Longer
+# needles should appear before shorter shared prefixes.
+_MODEL_OUTPUT_TOKEN_CEILINGS: tuple[tuple[str, int], ...] = (
+    ("gemini-2.5-flash", 65_536),
+    ("gemini-2.5-pro", 65_536),
+    ("gemini-2.0-flash", 65_536),
+    ("gemini-2.0-pro", 65_536),
+    ("gemini-1.5-pro", 65_536),
+    ("gemini-1.5-flash", 65_536),
+)
+
+
+def _diarisation_output_token_ceiling(llm_model: str) -> int:
+    """Provider/model-specific max ``max_tokens`` for diariser completions."""
+    name = (llm_model or "").strip().lower()
+    if name:
+        for needle, ceiling in _MODEL_OUTPUT_TOKEN_CEILINGS:
+            if needle in name:
+                return ceiling
+    return _DIARISATION_DEFAULT_MAX_MAX_TOKENS
 
 
 def _estimate_diarisation_max_tokens(
-    *, text_length: int = 0, audio_bytes: int = 0
+    *,
+    text_length: int = 0,
+    audio_bytes: int = 0,
+    llm_model: str = "",
 ) -> int:
     """Scale the diariser output budget to the input payload size."""
+    ceiling = _diarisation_output_token_ceiling(llm_model)
     if text_length > 0:
         # ~0.45 tokens/char covers JSON keys + per-turn wrapping.
         estimated = int(text_length * 0.45) + 512
@@ -153,10 +182,7 @@ def _estimate_diarisation_max_tokens(
         estimated = int(estimated_chars * 0.45) + 512
     else:
         estimated = _DIARISATION_MIN_MAX_TOKENS
-    return min(
-        _DIARISATION_MAX_MAX_TOKENS,
-        max(_DIARISATION_MIN_MAX_TOKENS, estimated),
-    )
+    return min(ceiling, max(_DIARISATION_MIN_MAX_TOKENS, estimated))
 
 
 def _generate_diarisation_response(
@@ -173,11 +199,13 @@ def _generate_diarisation_response(
     audio_bytes: int = 0,
 ) -> Dict[str, Any]:
     """Call the diariser LLM with a scaled ``max_tokens`` and one retry."""
+    ceiling = _diarisation_output_token_ceiling(llm_model)
     base_budget = _estimate_diarisation_max_tokens(
         text_length=content_length,
         audio_bytes=audio_bytes,
+        llm_model=llm_model,
     )
-    retry_budget = min(_DIARISATION_MAX_MAX_TOKENS, base_budget * 2)
+    retry_budget = min(ceiling, base_budget * 2)
     budgets = [base_budget] if retry_budget <= base_budget else [base_budget, retry_budget]
 
     response: Dict[str, Any] = {}
@@ -600,6 +628,14 @@ def _parse_turns_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]
         )
         raise LLMDiarisationError(
             f"{prefix}{snippet}{'…' if len(raw_text) > 400 else ''}"
+        )
+
+    if response.get("truncated"):
+        raise LLMDiarisationError(
+            "LLM diariser response was truncated by max_tokens (the "
+            "transcript was cut off mid-call). Switch to STT + LLM "
+            "diariser mode, pick a model with a larger output limit, "
+            "or shorten the diarisation prompt."
         )
 
     turns: List[Dict[str, Any]] = []

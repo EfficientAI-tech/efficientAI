@@ -985,6 +985,12 @@ export interface WorkspaceRoleUpdate {
   capabilities?: string[]
 }
 
+export interface CallImportSourceRowSkip {
+  source_row: number
+  reason: string
+  message: string
+}
+
 export interface CallImport {
   id: string
   organization_id: string
@@ -1032,6 +1038,10 @@ export interface CallImport {
    * ephemeral.
    */
   skipped_columns: string[]
+  /**
+   * Source rows skipped at parse time (missing/invalid conversation ID or URL).
+   */
+  source_row_skips?: CallImportSourceRowSkip[]
   /** S3 key for the staged source file. ``null`` on legacy batches. */
   source_s3_key: string | null
   /** ``'csv'`` / ``'xlsx'`` for staged files, or ``'audio'`` for manual uploads. */
