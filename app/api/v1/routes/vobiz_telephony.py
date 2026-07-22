@@ -50,6 +50,9 @@ from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from efficientai.runner.utils import parse_telephony_websocket
 from efficientai.serializers.vobiz import VobizFrameSerializer
 
+# Exposed at module scope so tests can patch `.delay` without importing Celery tasks.
+initiate_vobiz_outbound_call_task = None
+
 router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony"])
 ws_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Media"])
 
@@ -320,9 +323,13 @@ async def create_vobiz_outbound_call(
     db.commit()
     db.refresh(recording)
 
-    from app.workers.tasks.initiate_vobiz_outbound import initiate_vobiz_outbound_call_task
+    task = initiate_vobiz_outbound_call_task
+    if task is None:
+        from app.workers.tasks.initiate_vobiz_outbound import (
+            initiate_vobiz_outbound_call_task as task,
+        )
 
-    initiate_vobiz_outbound_call_task.delay(
+    task.delay(
         organization_id=str(organization_id),
         call_ref=session.call_ref,
         from_number=from_number,

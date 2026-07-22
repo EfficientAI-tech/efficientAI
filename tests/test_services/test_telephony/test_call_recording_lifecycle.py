@@ -15,9 +15,18 @@ from app.services.telephony.call_recording_lifecycle import (
 )
 
 
-def _make_vobiz_recording(db_session, org_id, *, call_ref: str, provider_call_id=None, call_event="call_in_progress"):
+def _make_vobiz_recording(
+    db_session,
+    org_id,
+    *,
+    workspace_id,
+    call_ref: str,
+    provider_call_id=None,
+    call_event="call_in_progress",
+):
     row = CallRecording(
         organization_id=org_id,
+        workspace_id=workspace_id,
         call_short_id="123456",
         status=CallRecordingStatus.PENDING,
         source=CallRecordingSource.WEBHOOK,
@@ -32,11 +41,12 @@ def _make_vobiz_recording(db_session, org_id, *, call_ref: str, provider_call_id
     return row
 
 
-def test_find_call_recording_matches_request_uuid_in_call_data(db_session, org_id, seed_org):
+def test_find_call_recording_matches_request_uuid_in_call_data(db_session, org_id, seed_org, default_workspace):
     call_ref = "ref-1"
     row = _make_vobiz_recording(
         db_session,
         org_id,
+        workspace_id=default_workspace.id,
         call_ref=call_ref,
         provider_call_id="request-uuid-1",
         call_event="ringing",
@@ -49,11 +59,12 @@ def test_find_call_recording_matches_request_uuid_in_call_data(db_session, org_i
     assert found.id == row.id
 
 
-def test_link_provider_call_id_updates_row(db_session, org_id, seed_org):
+def test_link_provider_call_id_updates_row(db_session, org_id, seed_org, default_workspace):
     call_ref = "ref-2"
     row = _make_vobiz_recording(
         db_session,
         org_id,
+        workspace_id=default_workspace.id,
         call_ref=call_ref,
         provider_call_id="request-uuid-2",
     )
@@ -64,9 +75,15 @@ def test_link_provider_call_id_updates_row(db_session, org_id, seed_org):
     assert linked.call_data["call_uuid"] == "call-uuid-2"
 
 
-def test_finalize_call_on_media_disconnect_marks_call_ended(db_session, org_id, seed_org):
+def test_finalize_call_on_media_disconnect_marks_call_ended(db_session, org_id, seed_org, default_workspace):
     call_ref = "ref-3"
-    _make_vobiz_recording(db_session, org_id, call_ref=call_ref, call_event="call_in_progress")
+    _make_vobiz_recording(
+        db_session,
+        org_id,
+        workspace_id=default_workspace.id,
+        call_ref=call_ref,
+        call_event="call_in_progress",
+    )
 
     result = finalize_call_on_media_disconnect(db_session, call_ref=call_ref)
     assert result is not None
@@ -91,9 +108,14 @@ def test_resolve_telephony_messages_prefers_live_user_turns():
     assert messages[1]["role"] == "assistant"
 
 
-def test_append_live_transcript_turn_persists_to_db(db_session, org_id, seed_org):
+def test_append_live_transcript_turn_persists_to_db(db_session, org_id, seed_org, default_workspace):
     call_ref = "ref-append"
-    row = _make_vobiz_recording(db_session, org_id, call_ref=call_ref)
+    row = _make_vobiz_recording(
+        db_session,
+        org_id,
+        workspace_id=default_workspace.id,
+        call_ref=call_ref,
+    )
 
     append_live_transcript_turn(
         db_session,
@@ -108,9 +130,14 @@ def test_append_live_transcript_turn_persists_to_db(db_session, org_id, seed_org
     assert updated.call_data["live_transcript"][0]["content"] == "Hello there"
 
 
-def test_persist_telephony_call_artifacts_writes_messages(db_session, org_id, seed_org):
+def test_persist_telephony_call_artifacts_writes_messages(db_session, org_id, seed_org, default_workspace):
     call_ref = "ref-persist"
-    row = _make_vobiz_recording(db_session, org_id, call_ref=call_ref)
+    row = _make_vobiz_recording(
+        db_session,
+        org_id,
+        workspace_id=default_workspace.id,
+        call_ref=call_ref,
+    )
 
     persist_telephony_call_artifacts(
         db_session,
@@ -141,11 +168,12 @@ def test_conversation_turns_to_messages_maps_roles():
     assert messages[1]["role"] == "assistant"
 
 
-def test_update_call_from_vobiz_event_uses_call_ref_when_ids_differ(db_session, org_id, seed_org):
+def test_update_call_from_vobiz_event_uses_call_ref_when_ids_differ(db_session, org_id, seed_org, default_workspace):
     call_ref = "ref-4"
     row = _make_vobiz_recording(
         db_session,
         org_id,
+        workspace_id=default_workspace.id,
         call_ref=call_ref,
         provider_call_id="request-uuid-4",
         call_event="call_in_progress",

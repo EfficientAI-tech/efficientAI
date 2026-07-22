@@ -14,6 +14,7 @@ from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
 from app.services.evaluators.evaluator_helpers import generate_unique_evaluator_id, is_custom_evaluator, validate_metric_ids
 from app.services.evaluators.evaluator_run_service import queue_evaluator_runs
+from app.services.billing.flexprice_service import record_evaluator_run_requested
 from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle, Metric
 from app.models.schemas import (
     EvaluatorCreate,
@@ -503,8 +504,6 @@ def run_evaluators(
     db: Session = Depends(get_db),
 ):
     """Run multiple evaluators in the active workspace in parallel using Celery workers."""
-    from app.services.billing.flexprice_service import record_evaluator_run_requested
-
     if not request.evaluator_ids:
         raise HTTPException(status_code=400, detail="No evaluator IDs provided")
 

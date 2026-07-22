@@ -69,6 +69,43 @@ def org_id():
 
 
 @pytest.fixture
+def seed_org(db_session, org_id):
+    from app.models.database import Organization
+
+    org = db_session.query(Organization).filter(Organization.id == org_id).first()
+    if org is None:
+        org = Organization(id=org_id, name="Test Org")
+        db_session.add(org)
+        db_session.commit()
+    return org
+
+
+@pytest.fixture
+def default_workspace(db_session, org_id, seed_org):
+    from app.models.database import Workspace
+
+    ws = (
+        db_session.query(Workspace)
+        .filter(
+            Workspace.organization_id == org_id,
+            Workspace.is_default.is_(True),
+        )
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+        db_session.add(ws)
+        db_session.commit()
+        db_session.refresh(ws)
+    return ws
+
+
+@pytest.fixture
 def api_key():
     """Stable API key for authenticated test clients."""
     return "test_api_key_123"
@@ -255,6 +292,7 @@ def client(db_session, api_key, org_id):
 
         fake_model_config_module.model_config_service = _FakeModelConfigService()
         fake_llm_module.llm_service = _FakeLLMService()
+        fake_llm_module._resolve_azure_endpoint_from_provider = lambda *_args, **_kwargs: None
         fake_transcription_module.transcription_service = _FakeTranscriptionService()
         fake_ai_pkg.model_config_service = fake_model_config_module
         fake_ai_pkg.llm_service = fake_llm_module
@@ -660,6 +698,7 @@ def client(db_session, api_key, org_id):
         evaluations,
         evaluator_results,
         evaluators,
+        evaluator_suites,
         iam,
         integrations,
         manual_evaluations,
@@ -679,6 +718,7 @@ def client(db_session, api_key, org_id):
         voice_agent,
         voice_playground,
         voicebundles,
+        vobiz_telephony,
         workspaces,
         workspace_iam,
     )
@@ -689,6 +729,7 @@ def client(db_session, api_key, org_id):
     app.include_router(results.router, prefix="/api/v1")
     app.include_router(agents.router, prefix="/api/v1")
     app.include_router(evaluators.router, prefix="/api/v1")
+    app.include_router(evaluator_suites.router, prefix="/api/v1")
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
@@ -716,6 +757,7 @@ def client(db_session, api_key, org_id):
     app.include_router(voice_agent.router, prefix="/api/v1")
     app.include_router(voice_playground.router, prefix="/api/v1")
     app.include_router(telephony.router, prefix="/api/v1")
+    app.include_router(vobiz_telephony.router, prefix="/api/v1")
     app.include_router(call_imports.router, prefix="/api/v1")
     app.include_router(call_import_schemas.router, prefix="/api/v1")
     app.include_router(call_import_tags.router, prefix="/api/v1")

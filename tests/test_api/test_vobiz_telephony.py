@@ -10,6 +10,18 @@ from app.models.enums import CallRecordingStatus, TelephonyProvider
 from app.services.telephony.vobiz_session import create_call_session
 
 
+def _patch_vobiz_webhook_base(monkeypatch, url: str = "https://public.example.com") -> str:
+    monkeypatch.setattr(
+        "app.services.telephony.vobiz_agent_context.vobiz_webhook_base_url",
+        lambda: url,
+    )
+    monkeypatch.setattr(
+        "app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url",
+        lambda: url,
+    )
+    return url
+
+
 def _seed_vobiz_phone(db_session, org_id, *, phone_number="+919876543210", agent_id=None):
     workspace = (
         db_session.query(Workspace)
@@ -48,10 +60,7 @@ def test_vobiz_answer_webhook_returns_stream_xml(client, db_session, org_id, see
     agent = make_agent()
     _seed_vobiz_phone(db_session, org_id, agent_id=agent.id)
 
-    monkeypatch.setattr(
-        "app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url",
-        lambda: "https://public.example.com",
-    )
+    _patch_vobiz_webhook_base(monkeypatch)
 
     response = client.post(
         "/api/v1/telephony/vobiz/webhooks/answer",
@@ -75,10 +84,7 @@ def test_vobiz_answer_webhook_uses_outbound_call_ref(client, db_session, org_id,
         direction="outbound",
     )
 
-    monkeypatch.setattr(
-        "app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url",
-        lambda: "https://public.example.com",
-    )
+    _patch_vobiz_webhook_base(monkeypatch)
 
     response = client.post(
         f"/api/v1/telephony/vobiz/webhooks/answer?call_ref={session.call_ref}",
@@ -105,10 +111,7 @@ def test_vobiz_answer_webhook_includes_persona_scenario_from_session(
         scenario_id=str(scenario.id),
     )
 
-    monkeypatch.setattr(
-        "app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url",
-        lambda: "https://public.example.com",
-    )
+    _patch_vobiz_webhook_base(monkeypatch)
 
     response = client.post(
         f"/api/v1/telephony/vobiz/webhooks/answer?call_ref={session.call_ref}",

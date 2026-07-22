@@ -185,8 +185,8 @@ class AgentCreate(BaseModel):
     telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
-    voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
-    voice_ai_agent_id: str = Field(..., min_length=1, description="Voice AI agent ID is required")
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
 
     @field_validator('description')
     @classmethod
@@ -729,6 +729,10 @@ class AIProviderCreate(BaseModel):
         ),
     )
     name: Optional[str] = None
+    endpoint_url: Optional[str] = Field(
+        None,
+        description="Provider endpoint URL (required for Azure OpenAI).",
+    )
     routing_mode: CredentialRoutingMode = Field(
         CredentialRoutingMode.INHERIT,
         description="LLM routing preference: inherit org default, force gateway, or direct API key.",
@@ -777,6 +781,14 @@ class AIProviderCreate(BaseModel):
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         trimmed = v.strip()
@@ -842,6 +854,7 @@ class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
     api_key: Optional[str] = Field(None, min_length=1)
     name: Optional[str] = None
+    endpoint_url: Optional[str] = None
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -917,6 +930,7 @@ class AIProviderResponse(BaseModel):
     provider: ModelProvider
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
+    endpoint_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
@@ -1355,6 +1369,105 @@ class RunEvaluatorsResponse(BaseModel):
             }
         },
     )
+
+
+class EvaluatorSuiteCombinationResponse(BaseModel):
+    """One agent+persona+scenario combination inside a suite."""
+    id: UUID
+    evaluator_id: str
+    scenario_id: Optional[UUID] = None
+    scenario_name: Optional[str] = None
+    scenario_description: Optional[str] = None
+    scenario_required_info: Optional[Any] = None
+
+
+class EvaluatorSuiteCreate(BaseModel):
+    """Schema for creating an evaluator suite."""
+    name: Optional[str] = None
+    agent_id: UUID
+    persona_id: UUID
+    scenario_ids: List[UUID]
+    metric_ids: Optional[List[UUID]] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
+    default_runs_per_combination: int = 1
+
+
+class EvaluatorSuiteUpdate(BaseModel):
+    """Schema for updating an evaluator suite."""
+    name: Optional[str] = None
+    tags: Optional[List[str]] = None
+    default_runs_per_combination: Optional[int] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    metric_ids: Optional[List[UUID]] = None
+
+
+class EvaluatorSuiteResponse(BaseModel):
+    """Schema for evaluator suite response."""
+    id: UUID
+    organization_id: UUID
+    name: Optional[str] = None
+    agent_id: UUID
+    persona_id: UUID
+    agent_name: Optional[str] = None
+    persona_name: Optional[str] = None
+    agent_call_type: Optional[str] = None
+    agent_call_medium: Optional[str] = None
+    metric_ids: Optional[List[str]] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
+    default_runs_per_combination: int = 1
+    round_robin_index: int = 0
+    combination_count: int = 0
+    combinations: List[EvaluatorSuiteCombinationResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str] = None
+
+
+class EvaluatorSuiteAddScenariosRequest(BaseModel):
+    """Schema for adding scenarios to an existing suite."""
+    scenario_ids: List[UUID]
+
+
+class RunEvaluatorSuiteRequest(BaseModel):
+    """Schema for running all combinations in a suite."""
+    runs_per_combination: Optional[int] = None
+    to_number: Optional[str] = None
+    from_number: Optional[str] = None
+
+
+class RunEvaluatorSuiteResponse(BaseModel):
+    """Schema for suite run response."""
+    total_runs: int
+    task_ids: List[str] = Field(default_factory=list)
+    evaluator_results: List["EvaluatorResultResponse"] = Field(default_factory=list)
+    phone_call_refs: List[str] = Field(default_factory=list)
+
+
+class RunNextCombinationRequest(BaseModel):
+    """Schema for running the next round-robin combination."""
+    from_number: Optional[str] = None
+
+
+class RunNextCombinationResponse(BaseModel):
+    """Schema for round-robin run response."""
+    evaluator_id: UUID
+    scenario_id: Optional[UUID] = None
+    scenario_name: str
+    combination_index: int
+    next_index: int
+    evaluator_result_id: Optional[UUID] = None
+    result_id: Optional[str] = None
+    task_id: Optional[str] = None
+    phone_call_ref: Optional[str] = None
+    call_short_id: Optional[str] = None
 
 
 # Metric Schemas
@@ -2003,7 +2116,14 @@ class CronJobCreate(BaseModel):
     cron_expression: str = Field(..., min_length=1, max_length=100, description="Cron expression (e.g., '0 9 * * 1-5')")
     timezone: str = Field(default="UTC", max_length=100, description="Timezone for the cron schedule")
     max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
-    evaluator_ids: List[UUID] = Field(..., min_length=1, description="List of evaluator IDs to trigger")
+    evaluator_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Evaluator IDs to trigger (expanded with evaluator_suite_ids when both are set).",
+    )
+    evaluator_suite_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Evaluator suite IDs whose combinations are expanded into evaluator_ids.",
+    )
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -2023,6 +2143,7 @@ class CronJobUpdate(BaseModel):
     timezone: Optional[str] = Field(None, max_length=100)
     max_runs: Optional[int] = Field(None, ge=1, le=1000)
     evaluator_ids: Optional[List[UUID]] = None
+    evaluator_suite_ids: Optional[List[UUID]] = None
     status: Optional[CronJobStatus] = None
 
 
@@ -2197,6 +2318,29 @@ class PromptPartialDetailResponse(PromptPartialResponse):
 # ============================================
 # TELEPHONY SCHEMAS (provider-agnostic)
 # ============================================
+
+
+class TelephonyDialTargetCreate(BaseModel):
+    """Schema for creating a saved outbound dial target."""
+    phone_number: str
+    label: Optional[str] = None
+
+
+class TelephonyDialTargetUpdate(BaseModel):
+    """Schema for updating a saved outbound dial target."""
+    phone_number: Optional[str] = None
+    label: Optional[str] = None
+
+
+class TelephonyDialTargetResponse(BaseModel):
+    """Schema for dial target response."""
+    id: UUID
+    phone_number: str
+    label: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TelephonyIntegrationCreate(BaseModel):
