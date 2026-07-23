@@ -125,6 +125,8 @@ def _parse_request_payload(raw: Any) -> Dict[str, Any]:
 
 
 async def _read_webhook_payload(request: Request) -> Dict[str, Any]:
+    if not getattr(request.state, "webhook_raw_body", None):
+        request.state.webhook_raw_body = await request.body()
     params: Dict[str, Any] = dict(request.query_params)
     content_type = (request.headers.get("content-type") or "").lower()
     if "application/json" in content_type:

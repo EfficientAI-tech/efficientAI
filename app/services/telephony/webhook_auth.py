@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
@@ -92,10 +89,37 @@ def _resolve_auth_token_for_phone(
         .first()
     )
     if integration:
-        return decrypt_api_key(integration.auth_token).strip().strip()
+        return decrypt_api_key(integration.auth_token).strip()
 
     if provider == "vobiz":
         return _platform_vobiz_auth_token()
+    return None
+
+
+def _resolve_vobiz_auth_token_by_auth_id(auth_id: str, db: Session) -> Optional[str]:
+    candidate = (auth_id or "").strip()
+    if not candidate:
+        return None
+
+    platform_id = (settings.VOBIZ_AUTH_ID or "").strip()
+    if platform_id and candidate.lower() == platform_id.lower():
+        return _platform_vobiz_auth_token()
+
+    rows = (
+        db.query(TelephonyIntegration)
+        .filter(
+            TelephonyIntegration.provider == "vobiz",
+            TelephonyIntegration.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in rows:
+        try:
+            stored_id = decrypt_api_key(row.auth_id).strip()
+        except Exception:
+            continue
+        if stored_id.lower() == candidate.lower():
+            return decrypt_api_key(row.auth_token).strip()
     return None
 
 
@@ -223,6 +247,12 @@ def resolve_vobiz_auth_token(
         if row:
             return _auth_token_for_vobiz_org(db, row.organization_id)
 
+    parent_auth_id = params.get("ParentAuthID") or params.get("auth_id")
+    if parent_auth_id:
+        token = _resolve_vobiz_auth_token_by_auth_id(str(parent_auth_id), db)
+        if token:
+            return token
+
     if webhook_kind == "answer":
         phone_number = params.get("To") or params.get("to") or params.get("From") or params.get("from")
         return _resolve_auth_token_for_phone(phone_number, db, provider="vobiz")
@@ -280,12 +310,13 @@ def verify_vobiz_webhook(
         expected_v1 = compute_plivo_v1_webhook_signature(auth_token, uri, sign_params)
         logger.warning(
             "Vobiz webhook rejected: invalid signature for kind={} uri={} sign_param_keys={} "
-            "signature_headers={} (use hangup URL .../webhooks/events; sandbox auth_token must "
-            "match the Vobiz account for this number)",
+            "signature_headers={} parent_auth_id={} (use hangup URL .../webhooks/events; "
+            "auth_token must match ParentAuthID / Vobiz account that signed the callback)",
             webhook_kind,
             uri,
             sorted(sign_params.keys()),
             signature_header_names_for_log(request),
+            params.get("ParentAuthID") or params.get("auth_id"),
         )
         if settings.DEBUG:
             v1_header = request.headers.get("X-Plivo-Signature") or request.headers.get("X-Vobiz-Signature")
