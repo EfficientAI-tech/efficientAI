@@ -1,11 +1,22 @@
 """API tests for evaluator suite routes."""
 
+import importlib
+import types
 from uuid import uuid4
 
 
 class _FakeTaskResult:
     def __init__(self, task_id):
         self.id = task_id
+
+
+def _patch_run_evaluator_task_delay(monkeypatch, delay_fn):
+    celery_app_module = importlib.import_module("app.workers.celery_app")
+    monkeypatch.setattr(
+        celery_app_module,
+        "run_evaluator_task",
+        types.SimpleNamespace(delay=delay_fn),
+    )
 
 
 def test_create_evaluator_suite(
@@ -60,8 +71,6 @@ def test_list_and_get_evaluator_suite(
 def test_run_evaluator_suite_expands_runs(
     authenticated_client, monkeypatch, make_agent, make_persona, make_scenario
 ):
-    from app.workers import celery_app
-
     agent = make_agent(call_medium="web_call")
     persona = make_persona()
     s1 = make_scenario(name="A", agent_id=agent.id)
@@ -84,7 +93,7 @@ def test_run_evaluator_suite_expands_runs(
         counter["i"] += 1
         return _FakeTaskResult(f"task-{counter['i']}")
 
-    monkeypatch.setattr(celery_app.run_evaluator_task, "delay", _fake_delay)
+    _patch_run_evaluator_task_delay(monkeypatch, _fake_delay)
 
     run_response = authenticated_client.post(
         f"/api/v1/evaluator-suites/{suite_id}/run",

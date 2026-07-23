@@ -459,6 +459,10 @@ def client(db_session, api_key, org_id):
     fake_celery_app_module.process_call_import_row_task = _FakePromptOptTask()
     fake_celery_app_module.run_judge_alignment_task = _FakePromptOptTask()
     sys.modules["app.workers.celery_app"] = fake_celery_app_module
+    import importlib
+
+    workers_pkg = importlib.import_module("app.workers")
+    workers_pkg.celery_app = fake_celery_app_module
 
     # Bulk call-import tasks: materialize runs synchronously in API tests;
     # diarize/delete are no-ops (return immediately).

@@ -104,6 +104,7 @@ def _resolve_auth_token_for_call_event(
 ) -> Optional[str]:
     call_uuid = (
         params.get("CallUUID")
+        or params.get("call_uuid")
         or params.get("RequestUUID")
         or params.get("CallSid")
         or params.get("call_sid")
@@ -199,11 +200,15 @@ def resolve_vobiz_auth_token(
     call_ref: Optional[str] = None,
 ) -> Optional[str]:
     if call_ref:
+        from app.services.telephony.call_recording_lifecycle import find_call_recording
         from app.services.telephony.vobiz_session import get_call_session
 
         session = get_call_session(call_ref)
         if session and session.organization_id:
             return _auth_token_for_vobiz_org(db, UUID(session.organization_id))
+        row = find_call_recording(db, call_ref=call_ref, provider_call_id=None)
+        if row:
+            return _auth_token_for_vobiz_org(db, row.organization_id)
 
     if webhook_kind == "answer":
         phone_number = params.get("To") or params.get("to") or params.get("From") or params.get("from")
