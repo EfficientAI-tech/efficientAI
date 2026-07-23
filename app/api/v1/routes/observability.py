@@ -502,6 +502,10 @@ async def stream_call_live_events(
     if not call_recording:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call not found")
 
+    bound_recording_id = call_recording.id
+    bound_org_id = organization_id
+    bound_workspace_id = workspace_id
+
     live_events = {
         "outbound_initiated",
         "ringing",
@@ -520,7 +524,13 @@ async def stream_call_live_events(
             try:
                 row = (
                     session.query(CallRecording)
-                    .filter(CallRecording.call_short_id == call_short_id)
+                    .filter(
+                        CallRecording.id == bound_recording_id,
+                        CallRecording.call_short_id == call_short_id,
+                        CallRecording.organization_id == bound_org_id,
+                        CallRecording.workspace_id == bound_workspace_id,
+                        CallRecording.source == CallRecordingSource.WEBHOOK,
+                    )
                     .first()
                 )
                 if not row:

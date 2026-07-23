@@ -39,6 +39,7 @@ from app.services.telephony.vobiz_number_service import (
     import_vobiz_numbers,
     list_available_vobiz_numbers,
 )
+from app.services.telephony.webhook_auth import verify_vobiz_webhook
 from app.services.telephony.vobiz_outbound_pool import (
     configured_outbound_pool,
     release_pool_slot,
@@ -360,15 +361,15 @@ async def vobiz_answer_webhook(
 ):
     payload = await _read_webhook_payload(request)
     params = extract_webhook_params(payload)
+    if not call_ref:
+        call_ref = request.query_params.get("call_ref")
+    verify_vobiz_webhook(request, params, "answer", db, call_ref=call_ref)
     logger.info(
         "Vobiz answer webhook To={} From={} call_ref={}",
         params.get("to"),
         params.get("from"),
         call_ref or request.query_params.get("call_ref"),
     )
-    if not call_ref:
-        call_ref = request.query_params.get("call_ref")
-
     agent_id, organization_id, session_token = _resolve_agent_for_answer(
         db, params, call_ref=call_ref
     )
@@ -467,11 +468,12 @@ async def vobiz_events_webhook(
 ):
     payload = await _read_webhook_payload(request)
     params = extract_webhook_params(payload)
+    call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
+    verify_vobiz_webhook(request, params, "events", db, call_ref=call_ref)
     call_uuid = params.get("call_uuid")
     if not call_uuid:
         return {"status": "ignored"}
 
-    call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
     update_call_from_vobiz_event(
         db,
         provider_call_id=call_uuid,
@@ -513,6 +515,8 @@ async def vobiz_recording_ready_webhook(
 ):
     payload = await _read_webhook_payload(request)
     params = extract_webhook_params(payload)
+    call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
+    verify_vobiz_webhook(request, params, "recording", db, call_ref=call_ref)
     recording_url = params.get("recording_url")
     call_uuid = params.get("call_uuid")
     logger.info(

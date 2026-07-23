@@ -27,6 +27,21 @@ def _patch_vobiz_webhook_base(monkeypatch, url: str = "https://public.example.co
     return url
 
 
+def _patch_vobiz_webhook_signature(monkeypatch):
+    monkeypatch.setattr(
+        "plivo.utils.validate_signature",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.webhook_auth.settings.VOBIZ_AUTH_TOKEN",
+        "vobiz-auth-token",
+    )
+
+
+def _vobiz_webhook_headers() -> dict[str, str]:
+    return {"X-Plivo-Signature": "test-signature"}
+
+
 def _seed_vobiz_phone(db_session, org_id, *, phone_number="+919876543210", agent_id=None):
     workspace = (
         db_session.query(Workspace)
@@ -66,10 +81,12 @@ def test_vobiz_answer_webhook_returns_stream_xml(client, db_session, org_id, see
     _seed_vobiz_phone(db_session, org_id, agent_id=agent.id)
 
     _patch_vobiz_webhook_base(monkeypatch)
+    _patch_vobiz_webhook_signature(monkeypatch)
 
     response = client.post(
         "/api/v1/telephony/vobiz/webhooks/answer",
         data={"To": "+919876543210", "From": "+919111111111", "CallUUID": "uuid-1"},
+        headers=_vobiz_webhook_headers(),
     )
 
     assert response.status_code == 200
@@ -90,10 +107,12 @@ def test_vobiz_answer_webhook_uses_outbound_call_ref(client, db_session, org_id,
     )
 
     _patch_vobiz_webhook_base(monkeypatch)
+    _patch_vobiz_webhook_signature(monkeypatch)
 
     response = client.post(
         f"/api/v1/telephony/vobiz/webhooks/answer?call_ref={session.call_ref}",
         data={"To": "+919111111111", "From": "+919876543210", "CallUUID": "uuid-2"},
+        headers=_vobiz_webhook_headers(),
     )
 
     assert response.status_code == 200
@@ -117,10 +136,12 @@ def test_vobiz_answer_webhook_includes_persona_scenario_from_session(
     )
 
     _patch_vobiz_webhook_base(monkeypatch)
+    _patch_vobiz_webhook_signature(monkeypatch)
 
     response = client.post(
         f"/api/v1/telephony/vobiz/webhooks/answer?call_ref={session.call_ref}",
         data={"To": "+919111111111", "From": "+919876543210", "CallUUID": "uuid-3"},
+        headers=_vobiz_webhook_headers(),
     )
 
     assert response.status_code == 200
@@ -128,13 +149,26 @@ def test_vobiz_answer_webhook_includes_persona_scenario_from_session(
     assert f"scenario_id={scenario.id}" in response.text
 
 
-def test_vobiz_answer_webhook_rejects_unconfigured_number(client, db_session, org_id, seed_org):
+def test_vobiz_answer_webhook_rejects_unconfigured_number(client, db_session, org_id, seed_org, monkeypatch):
+    _patch_vobiz_webhook_signature(monkeypatch)
     response = client.post(
         "/api/v1/telephony/vobiz/webhooks/answer",
         data={"To": "+919000000000", "From": "+919111111111"},
+        headers=_vobiz_webhook_headers(),
     )
-    assert response.status_code == 200
-    assert "No active routing" in response.text
+    assert response.status_code == 403
+
+
+def test_vobiz_answer_webhook_rejects_missing_signature(client, db_session, org_id, seed_org, make_agent):
+    agent = make_agent()
+    _seed_vobiz_phone(db_session, org_id, agent_id=agent.id)
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/webhooks/answer",
+        data={"To": "+919876543210", "From": "+919111111111"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Missing webhook signature"
 
 
 def test_vobiz_inbound_routing_is_org_scoped(db_session, org_id, seed_org, make_agent):
@@ -249,8 +283,10 @@ def test_delete_inactive_imported_vobiz_number(client, db_session, org_id, seed_
     )
 
 
-def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_id, seed_org, make_agent):
+def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_id, seed_org, make_agent, monkeypatch):
     agent = make_agent()
+    _seed_vobiz_phone(db_session, org_id)
+    _patch_vobiz_webhook_signature(monkeypatch)
     call_ref = "outbound-ref-1"
     row = CallRecording(
         organization_id=org_id,
@@ -260,7 +296,7 @@ def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_i
         source=CallRecordingSource.WEBHOOK,
         call_event="call_in_progress",
         call_data={"call_ref": call_ref, "live_transcript": []},
-        provider_call_id="request-uuid-events",
+        provider_call_id="call-uuid-events",
         provider_platform="vobiz",
         agent_id=agent.id,
     )
@@ -270,6 +306,7 @@ def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_i
     response = client.post(
         f"/api/v1/telephony/vobiz/webhooks/events?call_ref={call_ref}",
         data={"CallUUID": "call-uuid-events", "CallStatus": "completed"},
+        headers=_vobiz_webhook_headers(),
     )
     assert response.status_code == 200
 
@@ -282,9 +319,11 @@ def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_i
 @patch("app.api.v1.routes.vobiz_telephony.ingest_carrier_recording_url")
 def test_vobiz_recording_ready_webhook_finds_call_by_request_uuid(
     mock_ingest,
-    client, db_session, org_id, seed_org, make_agent
+    client, db_session, org_id, seed_org, make_agent, monkeypatch
 ):
     agent = make_agent()
+    _seed_vobiz_phone(db_session, org_id)
+    _patch_vobiz_webhook_signature(monkeypatch)
     call_ref = "outbound-ref-2"
     row = CallRecording(
         organization_id=org_id,
@@ -311,6 +350,7 @@ def test_vobiz_recording_ready_webhook_finds_call_by_request_uuid(
             "CallUUID": "request-uuid-rec",
             "RecordUrl": "https://recordings.example.com/call.wav",
         },
+        headers=_vobiz_webhook_headers(),
     )
     assert response.status_code == 200
 
