@@ -55,6 +55,7 @@ import type {
   CallImportRetryFailedRowsResponse,
   Workspace,
   LLMGenerationConfig,
+  TestAgent,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -898,25 +899,26 @@ class ApiClient {
     return response.data
   }
 
-  async getAgent(agentId: string): Promise<any> {
+  async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
     return response.data
   }
 
   async updateAgent(agentId: string, data: {
     name?: string
-    phone_number?: string
+    phone_number?: string | null
     telephony_phone_number_id?: string | null
     language?: string
     description?: string | null
     call_type?: string
     call_medium?: string
-    voice_bundle_id?: string
+    silence_hangup_secs?: number
+    voice_bundle_id?: string | null
     ai_provider_id?: string
-    voice_ai_integration_id?: string
-    voice_ai_agent_id?: string
+    voice_ai_integration_id?: string | null
+    voice_ai_agent_id?: string | null
     prompt_variables?: Record<string, string>
-  }): Promise<any> {
+  }): Promise<TestAgent> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
   }

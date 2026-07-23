@@ -15,6 +15,7 @@ from app.services.evaluators.evaluator_suite_service import (
     generate_unique_result_id,
     pick_round_robin_combination,
 )
+from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
 from app.services.evaluators.evaluator_result_status import has_meaningful_metric_scores
 
 
@@ -236,7 +237,7 @@ def enqueue_linked_evaluator_result_if_ready(
     if call_recording.provider_platform:
         result.provider_platform = call_recording.provider_platform
 
-    result.call_data = call_data
+    result.call_data = slim_call_data_for_evaluator_result(call_data)
     db.commit()
     db.refresh(result)
 

@@ -217,6 +217,7 @@ judge_alignment:
 #   media_base: "https://media.vobiz.ai"
 #   webhook_base_url: "https://your-public-host.example.com"
 #   webhook_verify: true   # set false ONLY on local dev (never in sandbox/prod)
+#   carrier_session_recording: false  # true = Vobiz <Record> + download MP3 from media.vobiz.ai
 #   media_ws_base_url: "ws://localhost:8001"
 #   from_number: "+918011223344"
 #   outbound_pool:

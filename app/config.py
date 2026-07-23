@@ -185,6 +185,8 @@ class Settings(BaseSettings):
     VOBIZ_MEDIA_BASE: str = "https://media.vobiz.ai"
     VOBIZ_WEBHOOK_BASE_URL: str = ""
     VOBIZ_WEBHOOK_VERIFY: bool = True
+    # When False (default), answer XML omits Vobiz <Record>; use pipeline WAV merge only.
+    VOBIZ_CARRIER_SESSION_RECORDING: bool = False
     VOBIZ_FROM_NUMBER: str = ""
     VOBIZ_OUTBOUND_POOL: List[str] = []
     VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: int = 5
@@ -743,6 +745,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.VOBIZ_WEBHOOK_BASE_URL = vobiz_cfg["webhook_base_url"]
         if "webhook_verify" in vobiz_cfg:
             settings.VOBIZ_WEBHOOK_VERIFY = bool(vobiz_cfg["webhook_verify"])
+        if "carrier_session_recording" in vobiz_cfg:
+            settings.VOBIZ_CARRIER_SESSION_RECORDING = bool(vobiz_cfg["carrier_session_recording"])
         if vobiz_cfg.get("media_ws_base_url"):
             settings.MEDIA_WS_BASE_URL = vobiz_cfg["media_ws_base_url"]
         if vobiz_cfg.get("from_number"):

@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -344,22 +345,56 @@ export default function CreateAgentModal({
     (integration) => integration.id === formData.voice_ai_integration_id,
   )
 
+  const renderPortal = (content: ReactNode) => {
+    if (typeof document === 'undefined') return null
+    return createPortal(content, document.body)
+  }
+
+  useEffect(() => {
+    if (!isOpen) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [isOpen])
+
   if (!isOpen) return null
 
-  return (
-    <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
+  return renderPortal(
+    <>
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6 bg-gray-900/50 backdrop-blur-sm"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl ring-1 ring-gray-200/80 w-[min(96vw,88rem)] h-[min(92vh,920px)] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-agent-modal-title"
+      >
+        <div className="flex items-center justify-between shrink-0 px-6 py-5 border-b border-gray-100">
           <div>
-            <h2 className="text-xl font-bold text-gray-900">Create Test Agent</h2>
-            <p className="text-sm text-gray-500 mt-0.5">Step {currentStep} of {CREATE_STEPS.length}</p>
+            <h2 id="create-agent-modal-title" className="text-2xl font-bold text-gray-900 tracking-tight">
+              Create Test Agent
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Step {currentStep} of {CREATE_STEPS.length} · {CREATE_STEPS[currentStep - 1]?.title}
+            </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            aria-label="Close"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="mb-6">
+        <div className="shrink-0 px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <div className="flex items-center">
             {CREATE_STEPS.map((step, index) => {
               const isComplete = currentStep > step.id
@@ -393,8 +428,9 @@ export default function CreateAgentModal({
             })}
           </div>
         </div>
-        
-        <div className="space-y-4">
+
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+        <div className="space-y-4 w-full">
           {currentStep === 1 && (
             <>
           {/* Name */}
@@ -800,12 +836,12 @@ export default function CreateAgentModal({
               <textarea
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full min-h-[320px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
-                rows={14}
+                className="w-full min-h-[420px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
+                rows={18}
                 placeholder="Describe the agent's purpose, behavior, and expected interactions... Markdown is supported (at least 10 words)"
               />
             ) : (
-              <div className="min-h-[320px] max-h-[480px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
+              <div className="min-h-[420px] max-h-[560px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
                 {formData.description ? (
                   <ReactMarkdown>{formData.description}</ReactMarkdown>
                 ) : (
@@ -907,41 +943,43 @@ export default function CreateAgentModal({
             </>
           )}
 
-          {/* Actions */}
-          <div className="flex gap-3 pt-4 border-t border-gray-200">
-            <Button type="button" variant="outline" onClick={onClose}>
-              Cancel
+        </div>
+        </div>
+
+        <div className="shrink-0 px-6 py-4 border-t border-gray-100 bg-gray-50/80 flex gap-3">
+          <Button type="button" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          {currentStep > 1 && (
+            <Button type="button" variant="outline" onClick={handleBack}>
+              Back
             </Button>
-            {currentStep > 1 && (
-              <Button type="button" variant="outline" onClick={handleBack}>
-                Back
-              </Button>
-            )}
-            <div className="flex-1" />
-            {currentStep < 3 ? (
-              <Button
-                type="button"
-                variant="primary"
-                onClick={(e) => handleNext(e as React.MouseEvent)}
-              >
-                Next
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="primary"
-                onClick={handleCreate}
-                isLoading={createMutation.isPending}
-              >
-                Create Agent
-              </Button>
-            )}
-          </div>
+          )}
+          <div className="flex-1" />
+          {currentStep < 3 ? (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={(e) => handleNext(e as React.MouseEvent)}
+            >
+              Next
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={handleCreate}
+              isLoading={createMutation.isPending}
+            >
+              Create Agent
+            </Button>
+          )}
         </div>
       </div>
+    </div>
 
       {showUseSavedModal && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-gray-900/55 backdrop-blur-sm" onClick={() => {
           setShowUseSavedModal(false)
           setSavedPromptSearch('')
           setSelectedSavedPromptId('')
@@ -1036,6 +1074,6 @@ export default function CreateAgentModal({
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }

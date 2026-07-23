@@ -188,7 +188,10 @@ def test_process_evaluator_result_uses_existing_transcript_and_adds_call_analysi
     assert result["transcription"] == "existing transcript"
     assert persisted.status == "completed"
     assert persisted.call_data["call_analysis"]["call_successful"] is True
-    assert persisted.call_data["generated"]["call_analysis"]["user_sentiment"] == "Neutral"
+    assert persisted.call_data["call_analysis"]["user_sentiment"] == "Neutral"
+    assert "generated" not in persisted.call_data or "call_analysis" not in (
+        persisted.call_data.get("generated") or {}
+    )
     verify_session.close()
 
 

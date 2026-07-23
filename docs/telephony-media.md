@@ -14,8 +14,9 @@ Set **`MEDIA_WS_BASE_URL`** (see `env.example`) so Vobiz answer XML points at th
 
 ## Recording artifacts
 
-1. **Carrier session recording (preferred for natural mono)** — Vobiz `recording-ready` webhook ([`vobiz_telephony.py`](app/api/v1/routes/vobiz_telephony.py)) downloads the session MP3/WAV URL (allowlisted hosts in `RECORDING_URL_ALLOWED_HOST_SUFFIXES`, includes `vobiz.ai`) and sets `call_data.recording_s3_key`. If a pipeline merge was stored first, it is moved to `pipeline_recording_s3_key` when the carrier file arrives.
-2. **Pipeline capture** — Dual-track WAV from the STT/TTS (or Gemini) pipeline on the Vobiz media WebSocket: recorders use **stream timeline** (sequential frames, no wall-clock padding). Celery merges with lag detection + optional bot playback delay (`TELEPHONY_BOT_PLAYBACK_DELAY_MS`, default 400ms). If inbound audio already contains agent energy, merge uploads **inbound-only** to avoid double-counting. Otherwise tracks are delay-aligned and summed in Python (NumPy). Stored as `recording_s3_key` until the Vobiz carrier webhook replaces it with the PSTN mix.
+1. **Pipeline capture (default)** — Dual-track WAV from the STT/TTS (or Gemini) pipeline on the Vobiz media WebSocket: recorders use **stream timeline** (sequential frames, no wall-clock padding). Celery merges with lag detection + optional bot playback delay (`TELEPHONY_BOT_PLAYBACK_DELAY_MS`, default 400ms). If inbound audio already contains agent energy, merge uploads **inbound-only** to avoid double-counting. Otherwise tracks are delay-aligned and summed in Python (NumPy). Stored on `CallRecording.call_data.recording_s3_key` via `finalize_telephony_recording`.
+
+2. **Carrier session recording (optional)** — Set `vobiz.carrier_session_recording: true` to add Vobiz `<Record>` on answer XML and ingest MP3 from `recording-ready` (allowlisted `vobiz.ai` hosts). When disabled, answer XML is stream-only and audio comes from Celery `finalize_telephony_recording` only.
 
 Evaluators queue when transcript and/or `recording_s3_key` are present (`enqueue_linked_evaluator_result_if_ready`), typically after Celery finalize or carrier ingest — not from media disconnect alone (avoids racing pipeline finalize).
 

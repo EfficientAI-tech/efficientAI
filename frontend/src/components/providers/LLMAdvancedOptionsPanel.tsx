@@ -17,6 +17,8 @@ interface LLMAdvancedOptionsPanelProps {
   /** When true, show Gemini thinking note. */
   showGeminiNote?: boolean
   className?: string
+  /** Start with advanced fields visible (e.g. inline configuration editor). */
+  defaultExpanded?: boolean
 }
 
 export default function LLMAdvancedOptionsPanel({
@@ -26,8 +28,9 @@ export default function LLMAdvancedOptionsPanel({
   disabled = false,
   showGeminiNote = true,
   className,
+  defaultExpanded = false,
 }: LLMAdvancedOptionsPanelProps) {
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(defaultExpanded)
   const params = getVisibleLLMParams(provider)
   const summary = summarizeLLMConfig(value)
   const providerKey = (provider || '').toLowerCase()

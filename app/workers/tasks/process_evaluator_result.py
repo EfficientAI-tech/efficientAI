@@ -23,6 +23,7 @@ from app.workers.tasks.helpers.llm_evaluation import (
     evaluate_with_llm,
     handle_llm_evaluation_error,
 )
+from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
 
 
 def _make_json_serializable(obj):
@@ -608,12 +609,7 @@ def process_evaluator_result_task(self, result_id: str):
                     if call_analysis:
                         existing_call_data = dict(result.call_data) if isinstance(result.call_data, dict) else {}
                         existing_call_data["call_analysis"] = call_analysis
-                        generated = existing_call_data.get("generated", {})
-                        if not isinstance(generated, dict):
-                            generated = {}
-                        generated["call_analysis"] = call_analysis
-                        existing_call_data["generated"] = generated
-                        result.call_data = existing_call_data
+                        result.call_data = slim_call_data_for_evaluator_result(existing_call_data)
                 except Exception as analysis_err:
                     logger.warning(
                         f"[EvaluatorResult {result.result_id}] Call analysis failed (non-fatal): {analysis_err}"
@@ -624,6 +620,8 @@ def process_evaluator_result_task(self, result_id: str):
 
             result.metric_scores = _make_json_serializable(metric_scores)
             flag_modified(result, "metric_scores")
+            if isinstance(result.call_data, dict):
+                result.call_data = slim_call_data_for_evaluator_result(result.call_data)
             if isinstance(result.call_data, (dict, list)):
                 result.call_data = _make_json_serializable(result.call_data)
                 flag_modified(result, "call_data")

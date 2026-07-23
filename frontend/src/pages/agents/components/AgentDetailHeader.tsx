@@ -1,65 +1,71 @@
-import { ArrowLeft, Edit2, Save } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { Edit2, Save, X } from 'lucide-react'
 import Button from '../../../components/Button'
 
 interface AgentDetailHeaderProps {
+  agentName?: string
   agentId?: string | null
   isEditMode: boolean
   isPending: boolean
   onEditClick: () => void
   onCancelEdit: () => void
   onSave: () => void
+  /** When true, omits the title block (name shown elsewhere). */
+  hideTitle?: boolean
 }
 
 export default function AgentDetailHeader({
+  agentName,
   agentId,
   isEditMode,
   isPending,
   onEditClick,
   onCancelEdit,
   onSave,
+  hideTitle = false,
 }: AgentDetailHeaderProps) {
-  const navigate = useNavigate()
-
   return (
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-4">
-        <Button onClick={() => navigate('/agents')} variant="outline">
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Agents
-        </Button>
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">
-            {isEditMode ? 'Edit Agent' : 'Agent Details'}
+    <div className={`flex items-center gap-2 shrink-0 ${hideTitle ? '' : 'flex-col sm:flex-row sm:justify-between w-full'}`}>
+      {!hideTitle && (
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl font-bold text-gray-900 truncate">
+            {isEditMode ? 'Edit Agent' : agentName || 'Agent Details'}
           </h1>
           {agentId && (
-            <p className="text-sm text-gray-500 mt-1">
+            <p className="text-sm text-gray-500 mt-0.5">
               Agent ID: <span className="font-mono font-semibold text-primary-600">{agentId}</span>
             </p>
           )}
         </div>
-      </div>
-      <div className="flex items-center gap-3">
+      )}
+      <div className="flex items-center gap-2">
         {!isEditMode ? (
-          <Button
+          <button
+            type="button"
             onClick={onEditClick}
-            variant="primary"
-            leftIcon={<Edit2 className="w-4 h-4" />}
+            className="inline-flex items-center justify-center h-9 w-9 rounded-lg border border-gray-200 bg-white text-gray-600 hover:text-primary-600 hover:border-primary-300 hover:bg-primary-50 transition-colors"
+            title="Edit agent"
+            aria-label="Edit agent"
           >
-            Edit
-          </Button>
+            <Edit2 className="h-4 w-4" />
+          </button>
         ) : (
           <>
-            <Button onClick={onCancelEdit} variant="outline">
+            <Button
+              onClick={onCancelEdit}
+              variant="outline"
+              size="sm"
+              leftIcon={<X className="h-3.5 w-3.5" />}
+            >
               Cancel
             </Button>
             <Button
               onClick={onSave}
               variant="primary"
-              leftIcon={<Save className="w-4 h-4" />}
+              size="sm"
+              leftIcon={<Save className="h-3.5 w-3.5" />}
               isLoading={isPending}
             >
-              Save Changes
+              Save
             </Button>
           </>
         )}

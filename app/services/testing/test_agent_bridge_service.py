@@ -939,10 +939,6 @@ class TestAgentBridgeService:
                         poll_db.commit()
                         logger.info("[Bridge Poll] Status: FETCHING_DETAILS")
 
-                        # Store FULL call_data from provider
-                        result.call_data = call_metrics
-                        logger.info(f"[Bridge Poll] ✅ Stored call_data with {len(call_metrics)} keys: {list(call_metrics.keys())}")
-
                         # Extract duration (provider-specific)
                         duration_ms = call_metrics.get("duration_ms")
                         duration_seconds = call_metrics.get("duration_seconds")
@@ -972,7 +968,18 @@ class TestAgentBridgeService:
                             logger.warning("[Bridge Poll] ⚠️ No transcript extracted from call_data")
 
                         if speaker_segments:
+                            result.speaker_segments = speaker_segments
                             logger.info(f"[Bridge Poll] ✅ Derived {len(speaker_segments)} speaker segments from call_data")
+
+                        from app.services.evaluators.evaluator_result_call_data import (
+                            slim_call_data_for_evaluator_result,
+                        )
+
+                        result.call_data = slim_call_data_for_evaluator_result(call_metrics)
+                        logger.info(
+                            "[Bridge Poll] ✅ Stored slim call_data ({} keys)",
+                            len(result.call_data),
+                        )
 
                         # Download call audio from provider and upload to S3
                         audio_s3_key = None

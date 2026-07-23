@@ -455,10 +455,12 @@ async def vobiz_answer_webhook(
         persona_id=persona_id,
         scenario_id=scenario_id,
     )
-    record_action_url = (
-        f"{vobiz_webhook_base_url()}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
-        f"?call_ref={session_token}"
-    )
+    record_action_url = None
+    if settings.VOBIZ_CARRIER_SESSION_RECORDING:
+        record_action_url = (
+            f"{vobiz_webhook_base_url()}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
+            f"?call_ref={session_token}"
+        )
     xml = stream_to_agent(ws_url, record_action_url=record_action_url)
     return Response(content=xml, media_type="application/xml")
 
@@ -544,8 +546,14 @@ async def vobiz_recording_ready_webhook(
             row.call_data = current
             flag_modified(row, "call_data")
             db.commit()
-            if recording_url:
+            if recording_url and settings.VOBIZ_CARRIER_SESSION_RECORDING:
                 ingest_carrier_recording_url(db, row, recording_url)
+            elif recording_url and not settings.VOBIZ_CARRIER_SESSION_RECORDING:
+                logger.debug(
+                    "Skipping Vobiz carrier recording ingest (VOBIZ_CARRIER_SESSION_RECORDING=false) "
+                    "call_short_id={}",
+                    row.call_short_id,
+                )
             # region agent log
             from app.utils.debug_agent_log import agent_debug_log
 

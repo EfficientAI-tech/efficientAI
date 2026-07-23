@@ -117,7 +117,7 @@ const simpleWalkthroughs: Record<
       {
         title: 'Step 1: Set call behavior',
         description: 'Choose Web Call or Phone Call, then choose Inbound or Outbound.',
-        bullets: ['Phone Call requires a valid phone number', 'Language and call type should match your use case'],
+        bullets: ['Phone Call requires a valid phone number', 'Language and call type should match your use case', 'Select an agent from the left list to open its detail tabs'],
       },
       {
         title: 'Step 2: Write the test agent prompt',

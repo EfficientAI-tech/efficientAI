@@ -2,14 +2,35 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import { format } from 'date-fns'
-import { RefreshCw, Globe, Phone, Eye, Code } from 'lucide-react'
-import { VoiceBundle, Integration, IntegrationPlatform } from '../../../types/api'
+import {
+  RefreshCw,
+  Globe,
+  Phone,
+  Eye,
+  Code,
+  Languages,
+  PhoneCall,
+  Radio,
+  Hash,
+} from 'lucide-react'
+import ParamSlider from './ParamSlider'
+import {
+  AGENT_LANGUAGE_LABELS,
+  OverviewSection,
+  OverviewStatCard,
+  OverviewDetailRow,
+  OverviewConfigBadge,
+  OVERVIEW_NOT_CONFIGURED,
+  formatSilenceHangupLabel,
+} from './AgentOverviewLayout'
+import { VoiceBundle, Integration, IntegrationPlatform, TestAgent } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
 import AgentPromptVisualization from './AgentPromptVisualization'
 import Button from '../../../components/Button'
 import type { AgentTalkMode } from './AgentTalkSidebar'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
+import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
 
 function stripCodeFences(text: string): string {
   const trimmed = text.trim()
@@ -20,28 +41,10 @@ function stripCodeFences(text: string): string {
   return trimmed
 }
 
-interface Agent {
-  id: string
-  name: string
-  phone_number?: string | null
-  language: string
-  description?: string | null
-  provider_prompt?: string | null
-  provider_prompt_synced_at?: string | null
-  call_type: string
-  call_medium: string
-  silence_hangup_secs?: number
-  created_at: string
-  updated_at: string
-  voice_bundle_id?: string | null
-  voice_ai_integration_id?: string | null
-  voice_ai_agent_id?: string | null
-}
-
 export type AgentDetailTab = 'overview' | 'test_agent' | 'voice_ai_agent'
 
 interface AgentInfoViewProps {
-  agent: Agent
+  agent: TestAgent
   voiceBundles: VoiceBundle[]
   integrations: Integration[]
   activeTab: AgentDetailTab
@@ -49,15 +52,6 @@ interface AgentInfoViewProps {
   isSyncingPrompt?: boolean
   onTalk?: (mode: AgentTalkMode) => void
   onEditVoiceBundle?: (bundleId: string) => void
-}
-
-const LANGUAGE_LABELS: Record<string, string> = {
-  en: 'English',
-  es: 'Spanish',
-  fr: 'French',
-  de: 'German',
-  zh: 'Chinese',
-  hi: 'Hindi',
 }
 
 const PROSE =
@@ -109,6 +103,7 @@ export default function AgentInfoView({
   const navigate = useNavigate()
   const [testPromptView, setTestPromptView] = useState<'text' | 'visualization'>('text')
   const [voiceAiPromptView, setVoiceAiPromptView] = useState<'text' | 'visualization'>('text')
+  const [testAgentSubTab, setTestAgentSubTab] = useState<TestAgentSubTab>('prompt')
 
   const linkedBundle = agent.voice_bundle_id
     ? voiceBundles.find((v) => v.id === agent.voice_bundle_id)
@@ -122,57 +117,148 @@ export default function AgentInfoView({
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
 
   if (activeTab === 'overview') {
+    const silenceSecs = agent.silence_hangup_secs ?? 15
+    const hasVoiceBundle = Boolean(agent.voice_bundle_id && linkedBundle)
+    const testAgentConfigured = hasVoiceBundle && linkedBundle!.is_active !== false
+    const voiceAiIntegrationId = agent.voice_ai_integration_id?.trim()
+    const voiceAiAgentId = agent.voice_ai_agent_id?.trim()
+    const hasVoiceAiIntegration = Boolean(voiceAiIntegrationId && voiceIntegration)
+    const hasVoiceAiAgentId = Boolean(voiceAiAgentId)
+    const voiceAiConfigured = hasVoiceAiIntegration && hasVoiceAiAgentId
+
+    const voiceBundleLabel = linkedBundle
+      ? linkedBundle.name
+      : agent.voice_bundle_id
+        ? 'Unknown bundle'
+        : OVERVIEW_NOT_CONFIGURED
+
+    const voiceAiIntegrationLabel = voiceIntegration
+      ? (() => {
+          const platformLabel = getIntegrationPlatformLabel(
+            voiceIntegration.platform as IntegrationPlatform,
+          )
+          const name = voiceIntegration.name?.trim()
+          return name ? `${name} (${platformLabel})` : platformLabel
+        })()
+      : voiceAiIntegrationId
+        ? 'Unknown integration'
+        : OVERVIEW_NOT_CONFIGURED
+
     return (
-      <div className="border border-gray-200 rounded-lg p-5 bg-gray-50">
-        <h3 className="text-base font-semibold text-gray-900 border-b border-gray-200 pb-2 mb-4">
-          General Information
-        </h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-4">
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</dt>
-            <dd className="mt-1 text-sm text-gray-900 font-medium">{agent.name}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Language</dt>
-            <dd className="mt-1 text-sm text-gray-900">
-              {LANGUAGE_LABELS[agent.language] || agent.language}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Call Type</dt>
-            <dd className="mt-1 text-sm text-gray-900 capitalize">{agent.call_type}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Call Medium</dt>
-            <dd className="mt-1 text-sm text-gray-900">
-              {agent.call_medium === 'phone_call' ? 'Phone Call' : 'Web Call'}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Silence hangup</dt>
-            <dd className="mt-1 text-sm text-gray-900">
-              {(agent.silence_hangup_secs ?? 15) === 0
-                ? 'Disabled'
-                : `${agent.silence_hangup_secs ?? 15} seconds`}
-            </dd>
-          </div>
-          {agent.phone_number && (
-            <div>
-              <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Phone Number</dt>
-              <dd className="mt-1 text-sm text-gray-900">{agent.phone_number}</dd>
+      <div className="space-y-5 w-full min-w-0">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Identity, call routing, voice stacks, and session behavior.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
+          <div className="xl:col-span-2 space-y-5 min-w-0">
+            <OverviewSection title="Agent profile" description="How this agent is identified and localized.">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <OverviewStatCard icon={Radio} label="Name" value={agent.name} accent="primary" />
+                <OverviewStatCard
+                  icon={Languages}
+                  label="Language"
+                  value={AGENT_LANGUAGE_LABELS[agent.language] || agent.language}
+                  accent="violet"
+                />
+              </div>
+            </OverviewSection>
+
+            <OverviewSection title="Call setup" description="Medium, direction, and phone number.">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <OverviewStatCard
+                  icon={PhoneCall}
+                  label="Call medium"
+                  value={agent.call_medium === 'phone_call' ? 'Phone call' : 'Web call'}
+                  accent="emerald"
+                />
+                <OverviewStatCard
+                  icon={Phone}
+                  label="Call type"
+                  value={<span className="capitalize">{agent.call_type}</span>}
+                />
+                <OverviewStatCard
+                  icon={Hash}
+                  label="Phone number"
+                  value={agent.phone_number?.trim() || OVERVIEW_NOT_CONFIGURED}
+                />
+              </div>
+            </OverviewSection>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <OverviewSection
+                title="Live session"
+                description="Automatic hangup when the line stays silent."
+              >
+                <ParamSlider
+                  label="End call after silence"
+                  helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable.`}
+                  min={0}
+                  max={600}
+                  step={1}
+                  integer
+                  value={silenceSecs}
+                  onChange={() => {}}
+                  disabled
+                />
+              </OverviewSection>
+
+              <OverviewSection title="Timeline">
+                <div className="space-y-1">
+                  <OverviewDetailRow
+                    label="Created"
+                    value={format(new Date(agent.created_at), 'MMM d, yyyy · HH:mm')}
+                  />
+                  <OverviewDetailRow
+                    label="Last updated"
+                    value={format(new Date(agent.updated_at), 'MMM d, yyyy · HH:mm')}
+                  />
+                </div>
+              </OverviewSection>
             </div>
-          )}
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Created</dt>
-            <dd className="mt-1 text-sm text-gray-900">
-              {format(new Date(agent.created_at), 'MMM d, yyyy HH:mm')}
-            </dd>
           </div>
-          <div>
-            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Updated</dt>
-            <dd className="mt-1 text-sm text-gray-900">
-              {format(new Date(agent.updated_at), 'MMM d, yyyy HH:mm')}
-            </dd>
+
+          <div className="space-y-5 min-w-0">
+            <OverviewSection
+              title="Test agent (EfficientAI)"
+              description="Internal voice stack for playground and evaluator runs."
+            >
+              <dl>
+                <OverviewDetailRow
+                  label="Status"
+                  value={<OverviewConfigBadge configured={testAgentConfigured} />}
+                />
+                <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+              </dl>
+            </OverviewSection>
+
+            <OverviewSection
+              title="Voice AI agent"
+              description="External provider agent for side-by-side evaluation."
+            >
+              <dl>
+                <OverviewDetailRow
+                  label="Status"
+                  value={<OverviewConfigBadge configured={voiceAiConfigured} />}
+                />
+                <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                <OverviewDetailRow
+                  label="Provider agent ID"
+                  value={
+                    hasVoiceAiAgentId ? (
+                      <span className="font-mono text-xs font-semibold text-primary-700">
+                        {voiceAiAgentId}
+                      </span>
+                    ) : (
+                      OVERVIEW_NOT_CONFIGURED
+                    )
+                  }
+                />
+              </dl>
+            </OverviewSection>
           </div>
         </div>
       </div>
@@ -182,65 +268,78 @@ export default function AgentInfoView({
   if (activeTab === 'test_agent') {
     const canTalk = !!agent.voice_bundle_id
     return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Test Agent Configuration</h3>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Voice stack and prompt for EfficientAI test caller, evaluator runs, and playground.
-            </p>
-          </div>
-          {onTalk && (
-            <Button
-              type="button"
-              variant="primary"
-              onClick={() => onTalk('test_agent')}
-              disabled={!canTalk}
-              leftIcon={<Phone className="h-4 w-4" />}
-              title={canTalk ? 'Talk to test agent' : 'Configure a voice bundle first'}
-            >
-              Talk
-            </Button>
-          )}
-        </div>
+      <div className="space-y-4">
+        <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
 
-        <VoiceBundleDetailCard
-          bundle={linkedBundle}
-          onEdit={
-            linkedBundle && onEditVoiceBundle ? () => onEditVoiceBundle(linkedBundle.id) : undefined
-          }
-          onManageInVoiceBundles={() => navigate('/voicebundles')}
-        />
+        {testAgentSubTab === 'configuration' && (
+          <>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Voice stack for EfficientAI test caller, evaluator runs, and playground.
+                </p>
+              </div>
+              {onTalk && (
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={() => onTalk('test_agent')}
+                  disabled={!canTalk}
+                  leftIcon={<Phone className="h-4 w-4" />}
+                  title={canTalk ? 'Talk to test agent' : 'Configure a voice bundle first'}
+                >
+                  Talk
+                </Button>
+              )}
+            </div>
 
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h4 className="text-sm font-semibold text-gray-900">Test Agent Prompt</h4>
-            <div className="flex items-center gap-2 flex-wrap">
+            <VoiceBundleDetailCard
+              bundle={linkedBundle}
+              onEdit={
+                linkedBundle && onEditVoiceBundle ? () => onEditVoiceBundle(linkedBundle.id) : undefined
+              }
+              onManageInVoiceBundles={() => navigate('/voicebundles')}
+            />
+          </>
+        )}
+
+        {testAgentSubTab === 'prompt' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  System prompt used for internal test-agent behavior and evaluation context.
+                </p>
+              </div>
               <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
             </div>
-          </div>
 
-          {testPromptView === 'text' ? (
-            <div className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
-              <div className="p-5 max-h-[50vh] overflow-y-auto">
-                {agent.description ? (
-                  <div className={PROSE}>
-                    <ReactMarkdown>{agent.description}</ReactMarkdown>
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-400 italic">No prompt configured. Switch to edit mode to add one.</p>
-                )}
+            {testPromptView === 'text' ? (
+              <div className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                <div className="p-5 max-h-[50vh] overflow-y-auto">
+                  {agent.description ? (
+                    <div className={PROSE}>
+                      <ReactMarkdown>{agent.description}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">
+                      No prompt configured. Use Edit to add one.
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
-          ) : (
-            <AgentPromptVisualization
-              agentId={agent.id}
-              agentName={agent.name}
-              promptContent={agent.description || ''}
-              partialNameLabel="System Prompt"
-            />
-          )}
-        </div>
+            ) : (
+              <AgentPromptVisualization
+                agentId={agent.id}
+                agentName={agent.name}
+                promptContent={agent.description || ''}
+                partialNameLabel="System Prompt"
+              />
+            )}
+          </div>
+        )}
       </div>
     )
   }

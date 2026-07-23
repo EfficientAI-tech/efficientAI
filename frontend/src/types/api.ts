@@ -528,6 +528,8 @@ export interface TestAgent {
   voice_bundle_id?: string | null
   voice_ai_integration_id?: string | null
   voice_ai_agent_id?: string | null
+  provider_prompt?: string | null
+  provider_prompt_synced_at?: string | null
   created_at: string
   updated_at: string
 }

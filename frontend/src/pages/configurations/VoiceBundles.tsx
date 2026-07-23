@@ -21,6 +21,7 @@ export default function VoiceBundles() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const autoEditOpenedRef = useRef<string | null>(null)
+  const pendingEditFetchRef = useRef<string | null>(null)
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -54,23 +55,27 @@ export default function VoiceBundles() {
     return createPortal(content, document.body)
   }
 
-  const { data: voicebundles = [], isLoading } = useQuery({
+  const editId = searchParams.get('edit')
+
+  const { data: voicebundles = [], isLoading: voiceBundlesLoading } = useQuery({
     queryKey: ['voicebundles'],
     queryFn: () => apiClient.listVoiceBundles(),
   })
 
-  const { data: aiproviders = [] } = useQuery({
+  const { data: aiproviders = [], isLoading: aiProvidersLoading } = useQuery({
     queryKey: ['aiproviders'],
     queryFn: () => apiClient.listAIProviders(),
   })
 
-  const { data: integrations = [] } = useQuery({
+  const { data: integrations = [], isLoading: integrationsLoading } = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiClient.listIntegrations(),
   })
 
+  const providersLoading = aiProvidersLoading || integrationsLoading
+
   // Fetch model configurations for all providers
-  const { data: modelConfigs = {} } = useQuery({
+  const { data: modelConfigs = {}, isSuccess: modelConfigsReady } = useQuery({
     queryKey: ['model-configs'],
     queryFn: async () => {
       const providers = Object.values(ModelProvider)
@@ -381,6 +386,7 @@ export default function VoiceBundles() {
     setSelectedBundle(null)
     resetForm()
     autoEditOpenedRef.current = null
+    pendingEditFetchRef.current = null
     const returnTo = searchParams.get('return')
     const next = new URLSearchParams(searchParams)
     next.delete('edit')
@@ -393,16 +399,44 @@ export default function VoiceBundles() {
   }
 
   useEffect(() => {
-    const editId = searchParams.get('edit')
-    if (!editId || voicebundles.length === 0) return
-    if (autoEditOpenedRef.current === editId) return
-    const bundle = voicebundles.find((b: VoiceBundle) => b.id === editId)
-    if (bundle) {
-      autoEditOpenedRef.current = editId
-      openEditModal(bundle)
+    if (!editId) {
+      autoEditOpenedRef.current = null
+      pendingEditFetchRef.current = null
+      return
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per ?edit= id
-  }, [searchParams, voicebundles])
+
+    if (voiceBundlesLoading || providersLoading || !modelConfigsReady) return
+    if (configuredProviders.length === 0) return
+    if (autoEditOpenedRef.current === editId) return
+
+    const fromList = voicebundles.find((b: VoiceBundle) => b.id === editId)
+    if (fromList) {
+      autoEditOpenedRef.current = editId
+      openEditModal(fromList)
+      return
+    }
+
+    if (pendingEditFetchRef.current === editId) return
+    pendingEditFetchRef.current = editId
+
+    let cancelled = false
+    void apiClient
+      .getVoiceBundle(editId)
+      .then((bundle) => {
+        if (cancelled || searchParams.get('edit') !== editId) return
+        autoEditOpenedRef.current = editId
+        openEditModal(bundle as VoiceBundle)
+      })
+      .catch(() => {
+        pendingEditFetchRef.current = null
+        showToast('Voice bundle not found', 'error')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per ?edit= id when prerequisites load
+  }, [editId, voicebundles, voiceBundlesLoading, providersLoading, modelConfigsReady, configuredProviders.length])
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
@@ -453,15 +487,164 @@ export default function VoiceBundles() {
     }
   }
 
-  if (isLoading) {
+  const pageLoading =
+    voiceBundlesLoading ||
+    providersLoading ||
+    (Boolean(editId) && !modelConfigsReady)
+
+  const voiceBundleModals = (
+    <>
+      {showCreateModal && renderModal(
+        <VoiceBundleModal
+          title="Create VoiceBundle"
+          formData={formData}
+          setFormData={setFormData}
+          onSubmit={handleCreate}
+          onClose={() => {
+            setShowCreateModal(false)
+            resetForm()
+          }}
+          isLoading={createMutation.isPending}
+          updateModelOptions={updateModelOptions}
+          configuredProviders={configuredProviders}
+          getModelOptions={getModelOptions}
+          modelConfigs={modelConfigs}
+          aiProviders={aiproviders}
+          renderCredentialPicker={renderCredentialPicker}
+        />
+      )}
+
+      {showEditModal && selectedBundle && renderModal(
+        <VoiceBundleModal
+          title="Edit VoiceBundle"
+          formData={formData}
+          setFormData={setFormData}
+          onSubmit={handleUpdate}
+          onClose={closeEditModal}
+          isLoading={updateMutation.isPending}
+          updateModelOptions={updateModelOptions}
+          configuredProviders={configuredProviders}
+          getModelOptions={getModelOptions}
+          modelConfigs={modelConfigs}
+          aiProviders={aiproviders}
+          renderCredentialPicker={renderCredentialPicker}
+        />
+      )}
+
+      {showDeleteModal && selectedBundle && renderModal(
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
+          setShowDeleteModal(false)
+          setSelectedBundle(null)
+          setDeleteDependencies(null)
+        }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Delete VoiceBundle</h3>
+              <button
+                onClick={() => {
+                  setShowDeleteModal(false)
+                  setSelectedBundle(null)
+                  setDeleteDependencies(null)
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              {deleteDependencies && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-amber-800 mb-2">
+                        This VoiceBundle has dependent records
+                      </p>
+                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                        {deleteDependencies.agents && (
+                          <li>{deleteDependencies.agents} agent{deleteDependencies.agents !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
+                        )}
+                        {deleteDependencies.test_conversations && (
+                          <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
+                        )}
+                      </ul>
+                      <p className="text-xs text-amber-700">
+                        Force deleting will remove the VoiceBundle and unlink all dependent records.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                    <Trash2 className="h-6 w-6 text-red-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">
+                    Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedBundle.name}"</span>?
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    This action cannot be undone. The VoiceBundle will be permanently deleted.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteModal(false)
+                    setSelectedBundle(null)
+                    setDeleteDependencies(null)
+                  }}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                {deleteDependencies ? (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDelete(true)}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Force Delete All
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDelete()}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Delete
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
+  if (pageLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader className="h-8 w-8 animate-spin text-primary-600" />
-      </div>
+      <>
+        <ToastContainer />
+        <div className="flex items-center justify-center h-64">
+          <Loader className="h-8 w-8 animate-spin text-primary-600" />
+        </div>
+        {voiceBundleModals}
+      </>
     )
   }
 
-  // Show message if no providers configured
+  // Show message if no providers configured (after provider queries finish)
   if (configuredProviders.length === 0) {
     return (
       <div className="space-y-6">
@@ -484,6 +667,7 @@ export default function VoiceBundles() {
             </div>
           </div>
         </div>
+        {voiceBundleModals}
       </div>
     )
   }
@@ -693,144 +877,7 @@ export default function VoiceBundles() {
         </div>
       )}
 
-      {/* Create Modal */}
-      {showCreateModal && renderModal(
-        <VoiceBundleModal
-          title="Create VoiceBundle"
-          formData={formData}
-          setFormData={setFormData}
-          onSubmit={handleCreate}
-          onClose={() => {
-            setShowCreateModal(false)
-            resetForm()
-          }}
-          isLoading={createMutation.isPending}
-          updateModelOptions={updateModelOptions}
-          configuredProviders={configuredProviders}
-          getModelOptions={getModelOptions}
-          modelConfigs={modelConfigs}
-          aiProviders={aiproviders}
-          renderCredentialPicker={renderCredentialPicker}
-        />
-      )}
-
-      {/* Edit Modal */}
-      {showEditModal && selectedBundle && renderModal(
-        <VoiceBundleModal
-          title="Edit VoiceBundle"
-          formData={formData}
-          setFormData={setFormData}
-          onSubmit={handleUpdate}
-          onClose={closeEditModal}
-          isLoading={updateMutation.isPending}
-          updateModelOptions={updateModelOptions}
-          configuredProviders={configuredProviders}
-          getModelOptions={getModelOptions}
-          modelConfigs={modelConfigs}
-          aiProviders={aiproviders}
-          renderCredentialPicker={renderCredentialPicker}
-        />
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {showDeleteModal && selectedBundle && renderModal(
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
-          setShowDeleteModal(false)
-          setSelectedBundle(null)
-          setDeleteDependencies(null)
-        }}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Delete VoiceBundle</h3>
-              <button
-                onClick={() => {
-                  setShowDeleteModal(false)
-                  setSelectedBundle(null)
-                  setDeleteDependencies(null)
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              {deleteDependencies && (
-                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-amber-800 mb-2">
-                        This VoiceBundle has dependent records
-                      </p>
-                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
-                        {deleteDependencies.agents && (
-                          <li>{deleteDependencies.agents} agent{deleteDependencies.agents !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
-                        )}
-                        {deleteDependencies.test_conversations && (
-                          <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
-                        )}
-                      </ul>
-                      <p className="text-xs text-amber-700">
-                        Force deleting will remove the VoiceBundle and unlink all dependent records.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-start gap-4 mb-6">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-                    <Trash2 className="h-6 w-6 text-red-600" />
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedBundle.name}"</span>?
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    This action cannot be undone. The VoiceBundle will be permanently deleted.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowDeleteModal(false)
-                    setSelectedBundle(null)
-                    setDeleteDependencies(null)
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                {deleteDependencies ? (
-                  <Button
-                    variant="danger"
-                    onClick={() => confirmDelete(true)}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Force Delete All
-                  </Button>
-                ) : (
-                  <Button
-                    variant="danger"
-                    onClick={() => confirmDelete()}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Delete
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {voiceBundleModals}
     </div>
   )
 }

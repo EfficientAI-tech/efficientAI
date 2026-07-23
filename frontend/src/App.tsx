@@ -15,8 +15,7 @@ import Dashboard from './pages/dashboard/Dashboard'
 import PromptPartials from './pages/promptPartials/PromptPartials'
 
 // Agents
-import Agents from './pages/agents/Agents'
-import AgentDetail from './pages/agents/AgentDetail'
+import AgentsWorkspace from './pages/agents/AgentsWorkspace'
 
 // Personas
 import Personas from './pages/personas/Personas'
@@ -155,8 +154,8 @@ function App() {
           <Route path="playground" element={<AgentPlayground />} />
           <Route path="playground/call-recordings/:callShortId" element={<CallRecordingDetail />} />
           <Route path="playground/test-agent-results/:id" element={<TestAgentResultDetail />} />
-          <Route path="agents" element={<Agents />} />
-          <Route path="agents/:id" element={<AgentDetail />} />
+          <Route path="agents" element={<AgentsWorkspace />} />
+          <Route path="agents/:id" element={<AgentsWorkspace />} />
           <Route path="personas" element={<Personas />} />
           <Route path="scenarios" element={<Scenarios />} />
           <Route path="metrics" element={<Metrics />} />
