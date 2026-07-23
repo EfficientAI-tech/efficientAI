@@ -72,6 +72,7 @@ def upgrade(db: Session):
                     tags JSON NULL,
                     default_runs_per_combination INTEGER NOT NULL DEFAULT 1,
                     round_robin_index INTEGER NOT NULL DEFAULT 0,
+                    is_active BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW(),
                     created_by VARCHAR NULL
@@ -120,11 +121,24 @@ def upgrade(db: Session):
             )
         ).fetchall()
 
+        suite_has_is_active = _column_exists(db, "evaluator_suites", "is_active")
+
         for row in rows:
             suite_id = uuid.uuid4()
-            db.execute(
-                text(
-                    """
+            if suite_has_is_active:
+                insert_sql = """
+                    INSERT INTO evaluator_suites (
+                        id, organization_id, workspace_id, name, agent_id, persona_id,
+                        metric_ids, llm_provider, llm_model, llm_config, tags,
+                        default_runs_per_combination, round_robin_index, is_active, created_by
+                    ) VALUES (
+                        :id, :organization_id, :workspace_id, :name, :agent_id, :persona_id,
+                        :metric_ids, :llm_provider, :llm_model, :llm_config, :tags,
+                        1, 0, FALSE, :created_by
+                    )
+                """
+            else:
+                insert_sql = """
                     INSERT INTO evaluator_suites (
                         id, organization_id, workspace_id, name, agent_id, persona_id,
                         metric_ids, llm_provider, llm_model, llm_config, tags,
@@ -134,8 +148,9 @@ def upgrade(db: Session):
                         :metric_ids, :llm_provider, :llm_model, :llm_config, :tags,
                         1, 0, :created_by
                     )
-                    """
-                ),
+                """
+            db.execute(
+                text(insert_sql),
                 {
                     "id": suite_id,
                     "organization_id": row[1],
