@@ -14,7 +14,7 @@ import { useQuery } from '@tanstack/react-query'
 import Button from './Button'
 import VoiceOrb, { VoiceOrbSpeaker } from './VoiceOrb'
 import { useAgentStore } from '../store/agentStore'
-import { apiClient } from '../lib/api'
+import { apiClient, apiBaseUrl } from '../lib/api'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -410,7 +410,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
 
       // Use startBotAndConnect exactly like the Pipecat example
       // This handles RTVI protocol handshake automatically
-      let endpointUrl = customEndpoint || `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/voice-agent/connect`
+      let endpointUrl = customEndpoint || `${apiBaseUrl}/api/v1/voice-agent/connect`
 
       // Append agent_id, persona_id and scenario_id if present
       const params = new URLSearchParams()

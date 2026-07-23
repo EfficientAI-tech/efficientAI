@@ -422,8 +422,11 @@ type TTSReportOptionsPayload = {
 
 // When running in production (served from same origin), use relative path
 // Otherwise use environment variable or default
-const API_BASE_URL = import.meta.env.VITE_API_URL ||
+export const apiBaseUrl =
+  import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
+
+const API_BASE_URL = apiBaseUrl
 
 let refreshPromise: Promise<string | null> | null = null
 
