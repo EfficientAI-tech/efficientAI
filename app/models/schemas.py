@@ -187,6 +187,12 @@ class AgentCreate(BaseModel):
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
+    silence_hangup_secs: int = Field(
+        default=15,
+        ge=0,
+        le=600,
+        description="End live calls after this many seconds of silence (0 disables)",
+    )
 
     @field_validator('description')
     @classmethod
@@ -237,6 +243,8 @@ class AgentUpdate(BaseModel):
     voice_bundle_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
 
     @model_validator(mode='after')
     def validate_voice_config(self):
@@ -278,6 +286,8 @@ class AgentResponse(BaseModel):
     voice_ai_agent_id: Optional[str]
     provider_prompt: Optional[str] = None
     provider_prompt_synced_at: Optional[datetime] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: int = 15
     created_at: datetime
     updated_at: datetime
 
@@ -997,6 +1007,25 @@ class LLMGenerationConfig(BaseModel):
 
 
 # VoiceBundle Schemas
+
+def _validate_voice_bundle_tts_config(tts_config: Optional[Dict[str, Any]]) -> None:
+    if not tts_config:
+        return
+    hz = tts_config.get("sample_rate_hz")
+    if hz is None:
+        return
+    try:
+        hz_int = int(hz)
+    except (TypeError, ValueError):
+        raise ValueError("tts_config.sample_rate_hz must be an integer")
+    from app.services.voice_agent.tts_sample_rate import ALLOWED_TTS_CONFIG_SAMPLE_RATES
+
+    if hz_int not in ALLOWED_TTS_CONFIG_SAMPLE_RATES:
+        raise ValueError(
+            f"tts_config.sample_rate_hz must be one of {sorted(ALLOWED_TTS_CONFIG_SAMPLE_RATES)}"
+        )
+
+
 class VoiceBundleCreate(BaseModel):
     """Schema for creating a VoiceBundle."""
     name: str = Field(..., min_length=1, max_length=255)
@@ -1043,6 +1072,7 @@ class VoiceBundleCreate(BaseModel):
     @model_validator(mode='after')
     def validate_bundle_configuration(self):
         """Validate that required fields are provided based on bundle_type."""
+        _validate_voice_bundle_tts_config(self.tts_config)
         if self.bundle_type == VoiceBundleType.STT_LLM_TTS:
             if not self.stt_provider or not self.stt_model:
                 raise ValueError('STT provider and model are required for STT_LLM_TTS bundle type')
@@ -1093,6 +1123,11 @@ class VoiceBundleUpdate(BaseModel):
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
+
+    @model_validator(mode='after')
+    def validate_tts_config_sample_rate(self):
+        _validate_voice_bundle_tts_config(self.tts_config)
+        return self
 
 
 class VoiceBundleResponse(BaseModel):
@@ -1302,6 +1337,7 @@ class EvaluatorResponse(BaseModel):
     id: UUID
     evaluator_id: str
     organization_id: UUID
+    suite_id: Optional[UUID] = None
     name: Optional[str] = None
     agent_id: Optional[UUID] = None
     persona_id: Optional[UUID] = None
@@ -1424,6 +1460,8 @@ class EvaluatorSuiteResponse(BaseModel):
     tags: Optional[List[str]] = None
     default_runs_per_combination: int = 1
     round_robin_index: int = 0
+    is_active: bool = False
+    agent_suite_count: int = 1
     combination_count: int = 0
     combinations: List[EvaluatorSuiteCombinationResponse] = Field(default_factory=list)
     created_at: datetime
@@ -1468,6 +1506,15 @@ class RunNextCombinationResponse(BaseModel):
     task_id: Optional[str] = None
     phone_call_ref: Optional[str] = None
     call_short_id: Optional[str] = None
+
+
+class ChooseNextCombinationResponse(BaseModel):
+    """Advance inbound round-robin without initiating a call or evaluation run."""
+    evaluator_id: UUID
+    scenario_id: Optional[UUID] = None
+    scenario_name: str
+    combination_index: int
+    next_index: int
 
 
 # Metric Schemas
@@ -1805,6 +1852,54 @@ class EvaluatorResultUpdate(BaseModel):
     duration_seconds: Optional[float] = None
 
 
+class EvaluatorResultCounts(BaseModel):
+    """Rollup counts for evaluator result navigation."""
+
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    in_progress: int = 0
+    last_run_at: Optional[datetime] = None
+
+
+class EvaluatorResultsScenarioSummary(BaseModel):
+    scenario_id: UUID
+    scenario_name: str
+    counts: EvaluatorResultCounts
+
+
+class EvaluatorResultsSuiteSummary(BaseModel):
+    suite_id: UUID
+    suite_name: Optional[str] = None
+    agent_id: UUID
+    persona_id: Optional[UUID] = None
+    counts: EvaluatorResultCounts
+    scenarios: Optional[List["EvaluatorResultsScenarioSummary"]] = None
+
+
+class EvaluatorResultsAgentSummary(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    counts: EvaluatorResultCounts
+    suites: Optional[List[EvaluatorResultsSuiteSummary]] = None
+
+
+class EvaluatorResultsUnassignedSummary(BaseModel):
+    counts: EvaluatorResultCounts
+    recent_result_ids: List[str] = Field(default_factory=list)
+
+
+class EvaluatorResultsOverviewResponse(BaseModel):
+    workspace_counts: EvaluatorResultCounts
+    agents: List[EvaluatorResultsAgentSummary] = Field(default_factory=list)
+    unassigned: EvaluatorResultsUnassignedSummary
+
+
+class EvaluatorResultListResponse(BaseModel):
+    items: List["EvaluatorResultResponse"]
+    total: int
+
+
 class EvaluatorResultResponse(BaseModel):
     """Schema for evaluator result response."""
     id: UUID
@@ -1814,6 +1909,7 @@ class EvaluatorResultResponse(BaseModel):
     agent_id: Optional[UUID] = None  # Nullable for custom evaluators
     persona_id: Optional[UUID] = None  # Optional for playground test results
     scenario_id: Optional[UUID] = None  # Optional for playground test results
+    suite_id: Optional[UUID] = None  # From linked evaluator, when suite-backed
     name: Optional[str] = None  # Optional for playground test results
     timestamp: datetime
     duration_seconds: Optional[float]
@@ -4169,6 +4265,19 @@ class CallImportEvaluationAggregateResponse(BaseModel):
             "or inferred defaults from the Failure diagnostics flow."
         ),
     )
+
+
+class EvaluatorResultsAggregateResponse(BaseModel):
+    """Chart-friendly metric rollups for evaluator results in a suite or scenario scope."""
+
+    scope: str
+    suite_id: Optional[UUID] = None
+    agent_id: Optional[UUID] = None
+    scenario_id: Optional[UUID] = None
+    total_rows: int = 0
+    completed_rows: int = 0
+    failed_rows: int = 0
+    metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---

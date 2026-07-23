@@ -6,14 +6,29 @@ Bridges test voice AI agent (voice bundle) with configured Voice AI agent via in
 
 import asyncio
 import os
+import time
 from typing import Dict, Any, Optional
 from uuid import UUID
 from loguru import logger
 
-from app.models.database import Agent, Integration, VoiceBundle, EvaluatorResult, EvaluatorResultStatus
+from app.models.database import (
+    Agent,
+    Persona,
+    Scenario,
+    VoiceBundle,
+    Integration,
+    EvaluatorResult,
+    EvaluatorResultStatus,
+)
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
 from app.services.storage.s3_service import s3_service
+from app.services.testing.test_agent_simulation_prompt import (
+    build_persona_description_for_bridge,
+    build_test_agent_system_prompt,
+    compose_test_agent_simulation_prompt,
+    scenario_goal_from_required_info,
+)
 from app.workers.celery_app import process_evaluator_result_task
 
 
@@ -580,36 +595,29 @@ class TestAgentBridgeService:
                 )
                 test_agent = None
             else:
-                # Build test agent config from persona/scenario
-                scenario_goal = "Complete the test call successfully"
+                scenario_goal = scenario_goal_from_required_info(scenario)
                 first_message = f"Hello, this is {persona.name} calling."
 
-                if scenario.required_info:
-                    if isinstance(scenario.required_info, dict):
-                        scenario_goal = scenario.required_info.get("goal", scenario_goal)
-                        first_message = scenario.required_info.get("first_message", first_message)
+                if scenario.required_info and isinstance(scenario.required_info, dict):
+                    first_message = scenario.required_info.get("first_message", first_message)
 
-                persona_traits = []
-                if hasattr(persona, "gender") and persona.gender:
-                    gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
-                    persona_traits.append(f"{gender_val} caller")
-                if hasattr(persona, "tts_voice_name") and persona.tts_voice_name:
-                    persona_traits.append(f"voice: {persona.tts_voice_name}")
-                if hasattr(persona, "tts_provider") and persona.tts_provider:
-                    persona_traits.append(f"provider: {persona.tts_provider}")
-
-                persona_description = f"A caller named {persona.name}"
-                if persona_traits:
-                    persona_description += " (" + ", ".join(persona_traits) + ")"
+                persona_description = build_persona_description_for_bridge(persona)
+                simulation_prompt = compose_test_agent_simulation_prompt(agent, scenario)
+                caller_system_prompt = build_test_agent_system_prompt(
+                    agent,
+                    persona,
+                    scenario,
+                    max_turns=20,
+                    persona_description=persona_description,
+                )
 
                 test_agent_config = TestAgentConfig(
-                    # Who we are calling (the voice AI agent)
                     agent_name=agent.name or "Voice AI Agent",
                     agent_description=agent.description or "A voice AI assistant",
-                    # Who we are pretending to be (the test caller)
+                    test_agent_simulation_prompt=simulation_prompt,
+                    caller_system_prompt=caller_system_prompt,
                     persona_name=persona.name,
                     persona_description=persona_description,
-                    # The test scenario
                     scenario_description=getattr(scenario, "description", None) or scenario.name or "Test call scenario",
                     scenario_goal=scenario_goal,
                     first_message=first_message,
@@ -647,6 +655,16 @@ class TestAgentBridgeService:
             # Step 3: Start recording and connect test agent to Retell
             webrtc_bridge.is_bridging = True
 
+            from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+            agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
+            last_voice_activity = time.monotonic()
+            silence_watch_enabled = test_agent is not None and agent_silence_hangup_secs is not None
+
+            def touch_voice_activity() -> None:
+                nonlocal last_voice_activity
+                last_voice_activity = time.monotonic()
+
             # Start recording
             await webrtc_bridge.start_recording()
 
@@ -658,6 +676,7 @@ class TestAgentBridgeService:
 
                 async def send_audio_chunks(audio: bytes):
                     """Stream audio to voice provider in real-time chunks."""
+                    touch_voice_activity()
                     await test_agent.stream_audio_chunks(audio, webrtc_bridge.receive_audio_from_test_agent, chunk_duration_ms=chunk_ms)
                     # Tell ElevenLabs bridge that we're done sending real audio
                     # so the background silence stream can resume immediately.
@@ -666,6 +685,7 @@ class TestAgentBridgeService:
 
                 async def on_transcript_received(transcript: str):
                     """When voice agent finishes speaking, process with test agent."""
+                    touch_voice_activity()
                     logger.info(f"[Bridge WebRTC] Received transcript from {provider_platform}: {transcript[:50]}...")
                     audio = await test_agent.process_agent_transcript(transcript)
                     if audio:
@@ -678,6 +698,7 @@ class TestAgentBridgeService:
 
                 async def on_agent_start_talking():
                     """Voice AI agent started speaking -- test agent should wait."""
+                    touch_voice_activity()
                     logger.info(f"[Bridge WebRTC] {provider_platform} agent started speaking")
                     test_agent.agent_is_talking = True
 
@@ -738,6 +759,17 @@ class TestAgentBridgeService:
 
             while webrtc_bridge.is_connected and webrtc_bridge.is_bridging:
                 await asyncio.sleep(1)
+
+                if (
+                    silence_watch_enabled
+                    and agent_silence_hangup_secs is not None
+                    and time.monotonic() - last_voice_activity >= agent_silence_hangup_secs
+                ):
+                    logger.warning(
+                        f"[Bridge WebRTC] No voice activity for {agent_silence_hangup_secs}s — ending call"
+                    )
+                    webrtc_bridge.is_bridging = False
+                    break
 
                 # Check for timeout
                 elapsed = asyncio.get_event_loop().time() - start_time

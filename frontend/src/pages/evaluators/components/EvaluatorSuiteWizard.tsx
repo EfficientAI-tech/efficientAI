@@ -66,7 +66,11 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
 
   const { data: agents = [] } = useQuery({ queryKey: ['agents'], queryFn: () => apiClient.listAgents(), enabled: open })
   const { data: personas = [] } = useQuery({ queryKey: ['personas'], queryFn: () => apiClient.listPersonas(), enabled: open })
-  const { data: scenarios = [] } = useQuery({ queryKey: ['scenarios'], queryFn: () => apiClient.listScenarios(), enabled: open })
+  const { data: scenarios = [] } = useQuery({
+    queryKey: ['scenarios', modalAgentId],
+    queryFn: () => apiClient.listScenarios(0, 100, modalAgentId),
+    enabled: open && !!modalAgentId,
+  })
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', 'agent'],
     queryFn: () => apiClient.listMetrics('agent', true),
@@ -171,6 +175,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   onChange={(e) => {
                     setModalAgentId(e.target.value)
                     setSelectedPersonaId('')
+                    setSelectedScenarioIds([])
                   }}
                   className={MODERN_SELECT_CLASS}
                 >
@@ -228,6 +233,11 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                     <span className="text-sm">{s.name}</span>
                   </label>
                 ))}
+                {modalAgentId && filteredScenarios.length === 0 && (
+                  <p className="text-sm text-gray-500 p-2">
+                    No scenarios linked to this agent. Link scenarios to the agent on the Scenarios page, then return here.
+                  </p>
+                )}
               </div>
             </div>
           )}

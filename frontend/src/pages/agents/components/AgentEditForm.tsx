@@ -4,12 +4,12 @@ import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIn
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import { VoiceBundle, Integration, AIProvider, IntegrationPlatform, ModelProvider } from '../../../types/api'
-import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
+import { VoiceBundle, Integration, AIProvider, IntegrationPlatform } from '../../../types/api'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
 import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 import { TelephonyProvider } from '../../../types/api'
 import type { AgentDetailTab } from './AgentInfoView'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
+import AgentPromptComposer from './AgentPromptComposer'
 import {
   formatGatewayCredentialLabel,
   resolveLLMModelsForCredential,
@@ -20,6 +20,8 @@ interface FormData {
   phone_number: string
   language: string
   description: string
+  prompt_variables: Record<string, string>
+  silence_hangup_secs: number
   call_type: string
   call_medium: 'phone_call' | 'web_call'
   telephony_phone_number_id: string
@@ -38,6 +40,7 @@ interface AgentEditFormProps {
   showToast: (message: string, type: 'success' | 'error') => void
   activeTab: AgentDetailTab
   onSaveSystemPrompt: () => void
+  agentId?: string
 }
 
 const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
@@ -57,9 +60,11 @@ export default function AgentEditForm({
   showToast,
   activeTab,
   onSaveSystemPrompt,
+  agentId,
 }: AgentEditFormProps) {
   const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
   const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
+  const [includeLinkedScenarios, setIncludeLinkedScenarios] = useState(true)
   const [aiDescription, setAiDescription] = useState('')
   const [aiTone, setAiTone] = useState('professional')
   const [aiFormat, setAiFormat] = useState('structured')
@@ -136,8 +141,16 @@ export default function AgentEditForm({
   ])
 
   const generateDescriptionMutation = useMutation({
-    mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
-      apiClient.generateAgentDescription(data),
+    mutationFn: (data: {
+      description: string
+      tone?: string
+      format_style?: string
+      provider?: string
+      model?: string
+      agent_id?: string
+      include_linked_scenarios?: boolean
+      append_scenarios_to_output?: boolean
+    }) => apiClient.generateAgentDescription(data),
     onSuccess: (data) => {
       onChange({ ...formData, description: data.content })
       setShowAIGeneratePanel(false)
@@ -344,6 +357,31 @@ export default function AgentEditForm({
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              End call after silence (seconds)
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={600}
+              step={1}
+              value={formData.silence_hangup_secs}
+              onChange={(e) => {
+                const parsed = parseInt(e.target.value, 10)
+                onChange({
+                  ...formData,
+                  silence_hangup_secs: Number.isFinite(parsed) ? parsed : 15,
+                })
+              }}
+              className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Hang up live voice sessions when neither side speaks for this long. Resets on user or agent
+              voice activity. Default 15. Set 0 to disable.
+            </p>
+          </div>
+
           <div className="flex gap-3 pt-4 border-t border-gray-200">
             <Button
               type="button"
@@ -459,6 +497,17 @@ export default function AgentEditForm({
                     rows={3}
                     className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white mb-2"
                   />
+                  {agentId ? (
+                    <label className="flex items-center gap-2 text-xs text-gray-700 mb-2">
+                      <input
+                        type="checkbox"
+                        checked={includeLinkedScenarios}
+                        onChange={(e) => setIncludeLinkedScenarios(e.target.checked)}
+                        className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                      />
+                      Include linked scenarios as AI context (does not append to prompt)
+                    </label>
+                  ) : null}
                   <div className="grid grid-cols-2 gap-3 mb-2">
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Tone</label>
@@ -565,6 +614,13 @@ export default function AgentEditForm({
                           format_style: aiFormat,
                           ...(aiProvider ? { provider: aiProvider } : {}),
                           ...(aiModel ? { model: aiModel } : {}),
+                          ...(agentId
+                            ? {
+                                agent_id: agentId,
+                                include_linked_scenarios: includeLinkedScenarios,
+                                append_scenarios_to_output: false,
+                              }
+                            : {}),
                         })
                       }
                       disabled={generateDescriptionMutation.isPending || !aiDescription.trim()}
@@ -584,13 +640,87 @@ export default function AgentEditForm({
                 </div>
               )}
 
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <label className="text-sm font-medium text-gray-700">Custom prompt variables</label>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-primary-600 hover:text-primary-800"
+                    onClick={() => {
+                      const base = { ...(formData.prompt_variables || {}) }
+                      let n = 1
+                      let key = 'custom_var'
+                      while (base[key]) {
+                        n += 1
+                        key = `custom_var_${n}`
+                      }
+                      base[key] = ''
+                      onChange({ ...formData, prompt_variables: base })
+                    }}
+                  >
+                    + Add variable
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">
+                  Define keys you can insert with <code className="text-gray-700">{'{'}</code> or{' '}
+                  <code className="text-gray-700">@</code>. Values are optional descriptions for your team.
+                </p>
+                {Object.keys(formData.prompt_variables || {}).length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">No custom variables yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {Object.entries(formData.prompt_variables || {}).map(([key, desc]) => (
+                      <div key={key} className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={key}
+                          onChange={(e) => {
+                            const nextKey = e.target.value.replace(/\s+/g, '_')
+                            const vars = { ...(formData.prompt_variables || {}) }
+                            delete vars[key]
+                            if (nextKey) vars[nextKey] = desc
+                            onChange({ ...formData, prompt_variables: vars })
+                          }}
+                          className="w-36 px-2 py-1.5 text-xs font-mono border border-gray-300 rounded-md"
+                          placeholder="variable_key"
+                        />
+                        <input
+                          type="text"
+                          value={desc}
+                          onChange={(e) =>
+                            onChange({
+                              ...formData,
+                              prompt_variables: {
+                                ...(formData.prompt_variables || {}),
+                                [key]: e.target.value,
+                              },
+                            })
+                          }
+                          className="flex-1 min-w-[120px] px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+                          placeholder="Description (optional)"
+                        />
+                        <button
+                          type="button"
+                          className="text-xs text-red-600 hover:text-red-800"
+                          onClick={() => {
+                            const vars = { ...(formData.prompt_variables || {}) }
+                            delete vars[key]
+                            onChange({ ...formData, prompt_variables: vars })
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {descriptionEditorMode === 'write' ? (
-                <textarea
+                <AgentPromptComposer
                   value={formData.description}
-                  onChange={(e) => onChange({ ...formData, description: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm min-h-[380px]"
-                  rows={18}
-                  placeholder="Write your agent description here... Markdown is supported."
+                  onChange={(description) => onChange({ ...formData, description })}
+                  customVariables={formData.prompt_variables}
                 />
               ) : (
                 <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100">

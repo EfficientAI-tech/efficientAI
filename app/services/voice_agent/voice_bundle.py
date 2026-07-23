@@ -14,6 +14,7 @@ import os
 import time
 import wave
 import uuid
+import tempfile
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -244,74 +245,105 @@ def _get_tts_providers():
             "env_key": "CARTESIA_API_KEY",
             "default_voice": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
             "default_model": None,
-            "factory": lambda api_key, voice_id, model: _get_service("CartesiaTTSService")(
-                api_key=api_key,
-                voice_id=voice_id,
-            ),
         },
         "elevenlabs": {
             "env_key": "ELEVENLABS_API_KEY",
             "default_voice": "JBFqnCBsd6RMkjVDRZzb",
             "default_model": "eleven_multilingual_v2",
-            "factory": lambda api_key, voice_id, model: _get_service("ElevenLabsHttpTTSService")(
-                api_key=api_key,
-                voice_id=voice_id,
-                model=model,
-                aiohttp_session=__import__("aiohttp").ClientSession(),
-            ),
         },
         "openai": {
             "env_key": "OPENAI_API_KEY",
             "default_voice": "alloy",
             "default_model": "gpt-4o-mini-tts",
-            "factory": lambda api_key, voice_id, model: _get_service("OpenAITTSService")(
-                api_key=api_key,
-                voice=voice_id,
-                model=model,
-            ),
         },
         "murf": {
             "env_key": "MURF_API_KEY",
             "default_voice": "en-US-natalie",
             "default_model": "GEN2",
-            "factory": lambda api_key, voice_id, model: _get_service("MurfTTSService")(
-                api_key=api_key,
-                voice_id=voice_id,
-                model=model if model else "GEN2",
-            ),
         },
         "sarvam": {
             "env_key": "SARVAM_API_KEY",
             "default_voice": "ritu",
             "default_model": "bulbul:v3",
-            "factory": lambda api_key, voice_id, model: _get_service("SarvamTTSService")(
-                api_key=api_key,
-                voice_id=voice_id,
-                model=model if model else "bulbul:v3",
-            ),
         },
         "voicemaker": {
             "env_key": "VOICEMAKER_API_KEY",
             "default_voice": "ai3-Jony",
             "default_model": "neural",
-            "factory": lambda api_key, voice_id, model: _get_service("VoiceMakerTTSService")(
-                api_key=api_key,
-                voice_id=voice_id,
-                model=model if model else "neural",
-            ),
         },
         "smallest": {
             "env_key": "SMALLEST_API_KEY",
             "default_voice": "daniel",
             "default_model": "lightning-v3.1",
-            "factory": lambda api_key, voice_id, model: _get_service("SmallestTTSService")(
-                api_key=api_key,
-                voice_id=voice_id if voice_id else "daniel",
-                model=model if model else "lightning-v3.1",
-                sample_rate=24000,
-            ),
         },
     }
+
+
+def _instantiate_tts_service(
+    provider: str,
+    tts_cfg: dict,
+    *,
+    api_key: str,
+    voice_id: str,
+    model: str | None,
+    sample_rate: int,
+):
+    """Build a streaming TTS service for the voice bundle pipeline."""
+    from app.services.voice_agent.tts_sample_rate import provider_accepts_sample_rate_kwarg
+
+    sr_kw = {"sample_rate": sample_rate} if provider_accepts_sample_rate_kwarg(provider) else {}
+    provider = provider.strip().lower()
+
+    if provider == "cartesia":
+        return _get_service("CartesiaTTSService")(
+            api_key=api_key,
+            voice_id=voice_id,
+            **sr_kw,
+        )
+    if provider == "elevenlabs":
+        return _get_service("ElevenLabsHttpTTSService")(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model,
+            aiohttp_session=__import__("aiohttp").ClientSession(),
+            **sr_kw,
+        )
+    if provider == "openai":
+        return _get_service("OpenAITTSService")(
+            api_key=api_key,
+            voice=voice_id,
+            model=model,
+            **sr_kw,
+        )
+    if provider == "murf":
+        return _get_service("MurfTTSService")(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model if model else "GEN2",
+            **sr_kw,
+        )
+    if provider == "sarvam":
+        return _get_service("SarvamTTSService")(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model if model else "bulbul:v3",
+            **sr_kw,
+        )
+    if provider == "voicemaker":
+        return _get_service("VoiceMakerTTSService")(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model if model else "neural",
+            **sr_kw,
+        )
+    if provider == "smallest":
+        return _get_service("SmallestTTSService")(
+            api_key=api_key,
+            voice_id=voice_id if voice_id else "daniel",
+            model=model if model else "lightning-v3.1",
+            **sr_kw,
+        )
+    raise ValueError(f"Unsupported TTS provider '{provider}'")
 
 
 def _get_llm_providers():
@@ -491,6 +523,7 @@ async def run_voice_bundle_fastapi(
     serializer=None,
     telephony_mode: bool = False,
     call_short_id: str | None = None,
+    silence_hangup_secs: float | None = None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -554,14 +587,32 @@ async def run_voice_bundle_fastapi(
         raise ValueError(f"Missing required API keys for voice bundle: {', '.join(missing)}")
 
     try:
+        from app.services.voice_agent.tts_sample_rate import (
+            resolve_tts_sample_rate_hz,
+            resolve_websocket_audio_in_sample_rate_hz,
+            resolve_websocket_audio_out_sample_rate_hz,
+        )
+
         transport_serializer = serializer or imports["ProtobufFrameSerializer"]()
-        audio_sample_rate = 8000 if telephony_mode else 24000
+        tts_sample_rate = resolve_tts_sample_rate_hz(
+            voice_bundle,
+            tts_provider_value,
+            telephony_mode=telephony_mode,
+        )
+        transport_in_sample_rate = resolve_websocket_audio_in_sample_rate_hz(
+            telephony_mode=telephony_mode,
+        )
+        transport_out_sample_rate = resolve_websocket_audio_out_sample_rate_hz(
+            telephony_mode=telephony_mode,
+        )
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 add_wav_header=False,
+                audio_in_sample_rate=transport_in_sample_rate,
+                audio_out_sample_rate=transport_out_sample_rate,
                 vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
                 serializer=transport_serializer,
             ),
@@ -574,7 +625,14 @@ async def run_voice_bundle_fastapi(
         # Instantiate TTS service from the provider registry
         tts_voice_id = getattr(voice_bundle, "tts_voice", None) or tts_cfg["default_voice"]
         tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
-        tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model)
+        tts = _instantiate_tts_service(
+            tts_provider_value,
+            tts_cfg,
+            api_key=tts_api_key,
+            voice_id=tts_voice_id,
+            model=tts_model,
+            sample_rate=tts_sample_rate,
+        )
 
         llm_model = getattr(voice_bundle, "llm_model", None) or llm_cfg["default_model"]
         from app.services.ai.llm_generation_config import (
@@ -653,44 +711,97 @@ async def run_voice_bundle_fastapi(
         context = imports["LLMContext"](messages)
         context_aggregator = imports["LLMContextAggregatorPair"](context)
 
-        # Use AudioBufferProcessor for proper conversation recording
-        audio_buffer_input = imports["AudioBufferProcessor"](
-            sample_rate=audio_sample_rate,
-            num_channels=1,
+        use_aligned_recorders = telephony_mode
+        user_recorder = None
+        bot_recorder = None
+        user_audio_path = None
+        bot_audio_path = None
+        recording_start_time = time.time()
+
+        if use_aligned_recorders:
+            from app.services.voice_agent.audio_recorder import get_audio_recorder_class
+
+            AudioRecorder = get_audio_recorder_class()
+            user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
+            os.close(user_audio_fd)
+            bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
+            os.close(bot_audio_fd)
+            user_recorder = AudioRecorder(
+                user_audio_path,
+                recording_start_time,
+                target_sample_rate=tts_sample_rate,
+                recorder_name="UserAudioRecorder",
+                alignment_mode="stream",
+            )
+            bot_recorder = AudioRecorder(
+                bot_audio_path,
+                recording_start_time,
+                target_sample_rate=tts_sample_rate,
+                recorder_name="BotAudioRecorder",
+                alignment_mode="stream",
+            )
+            audio_buffer_input = None
+            audio_buffer_output = None
+            input_audio_chunks = []
+            output_audio_chunks = []
+        else:
+            audio_buffer_input = imports["AudioBufferProcessor"](
+                sample_rate=tts_sample_rate,
+                num_channels=1,
+            )
+            audio_buffer_output = imports["AudioBufferProcessor"](
+                sample_rate=tts_sample_rate,
+                num_channels=1,
+            )
+            input_audio_chunks = []
+            output_audio_chunks = []
+
+            @audio_buffer_input.event_handler("on_audio_data")
+            async def on_input_audio_data(buffer, audio, sample_rate, num_channels):
+                logger.debug(f"Input AudioBuffer captured {len(audio)} bytes")
+                if audio and len(audio) > 0:
+                    input_audio_chunks.append(audio)
+
+            @audio_buffer_output.event_handler("on_audio_data")
+            async def on_output_audio_data(buffer, audio, sample_rate, num_channels):
+                logger.debug(f"Output AudioBuffer captured {len(audio)} bytes")
+                if audio and len(audio) > 0:
+                    output_audio_chunks.append(audio)
+                recorded_audio_data["sample_rate"] = sample_rate
+                recorded_audio_data["num_channels"] = num_channels
+
+        pipeline_task_ref: list = []
+
+        async def on_silence_hangup():
+            if pipeline_task_ref:
+                await pipeline_task_ref[0].cancel()
+
+        silence_hangup_processor = None
+        if silence_hangup_secs is not None and silence_hangup_secs > 0:
+            from app.services.voice_agent.call_silence_hangup import CallSilenceHangupProcessor
+
+            silence_hangup_processor = CallSilenceHangupProcessor(
+                timeout_secs=silence_hangup_secs,
+                on_hangup=on_silence_hangup,
+            )
+
+        pipeline_task_params = imports["PipelineParams"](
+            enable_metrics=True,
+            enable_usage_metrics=True,
+            audio_in_sample_rate=transport_in_sample_rate,
+            audio_out_sample_rate=transport_out_sample_rate,
         )
-        
-        # Second buffer to capture OutputAudioRawFrame (bot audio)
-        audio_buffer_output = imports["AudioBufferProcessor"](
-            sample_rate=audio_sample_rate,
-            num_channels=1,
-        )
-        
-        # Track audio from both sources separately, then merge at the end
-        input_audio_chunks = []
-        output_audio_chunks = []
 
-        # Event handler to capture user (input) audio data
-        @audio_buffer_input.event_handler("on_audio_data")
-        async def on_input_audio_data(buffer, audio, sample_rate, num_channels):
-            logger.debug(f"Input AudioBuffer captured {len(audio)} bytes")
-            if audio and len(audio) > 0:
-                input_audio_chunks.append(audio)
-
-        # Event handler to capture bot (output) audio data
-        @audio_buffer_output.event_handler("on_audio_data")
-        async def on_output_audio_data(buffer, audio, sample_rate, num_channels):
-            logger.debug(f"Output AudioBuffer captured {len(audio)} bytes")
-            if audio and len(audio) > 0:
-                output_audio_chunks.append(audio)
-            # Store the sample rate/channels for final merge
-            recorded_audio_data["sample_rate"] = sample_rate
-            recorded_audio_data["num_channels"] = num_channels
-
-        pipeline_processors = [
-            ws_transport.input(),
-            audio_buffer_input,
-            stt,
-        ]
+        if use_aligned_recorders:
+            pipeline_processors = [ws_transport.input()]
+            if silence_hangup_processor:
+                pipeline_processors.append(silence_hangup_processor)
+            pipeline_processors.extend([user_recorder, stt])
+        else:
+            pipeline_processors = [ws_transport.input()]
+            if silence_hangup_processor:
+                pipeline_processors.append(silence_hangup_processor)
+            pipeline_processors.extend([audio_buffer_input, stt])
         if telephony_mode and call_short_id:
             from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
@@ -710,7 +821,7 @@ async def run_voice_bundle_fastapi(
 
         pipeline_processors.extend([
             tts,
-            audio_buffer_output,
+            bot_recorder if use_aligned_recorders else audio_buffer_output,
             ws_transport.output(),
             context_aggregator.assistant(),
         ])
@@ -720,17 +831,16 @@ async def run_voice_bundle_fastapi(
         if telephony_mode:
             task = imports["PipelineTask"](
                 pipeline,
-                params=imports["PipelineParams"](
-                    enable_metrics=True,
-                    enable_usage_metrics=True,
-                ),
+                params=pipeline_task_params,
             )
+            pipeline_task_ref.append(task)
 
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):
                 logger.info("Vobiz telephony client connected via WebSocket (voice bundle)")
-                await audio_buffer_input.start_recording()
-                await audio_buffer_output.start_recording()
+                if not use_aligned_recorders:
+                    await audio_buffer_input.start_recording()
+                    await audio_buffer_output.start_recording()
                 await task.queue_frames([imports["LLMRunFrame"]()])
 
             @ws_transport.event_handler("on_client_disconnected")
@@ -739,28 +849,28 @@ async def run_voice_bundle_fastapi(
                 await task.cancel()
         else:
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
-            pipeline = imports["Pipeline"](
-                [
-                    ws_transport.input(),
-                    audio_buffer_input,
-                    stt,
-                    context_aggregator.user(),
-                    rtvi,
-                    llm,
-                    tts,
-                    audio_buffer_output,
-                    ws_transport.output(),
-                    context_aggregator.assistant(),
-                ]
-            )
+            rtvi_processors = [ws_transport.input()]
+            if silence_hangup_processor:
+                rtvi_processors.append(silence_hangup_processor)
+            rtvi_processors.extend([
+                audio_buffer_input,
+                stt,
+                context_aggregator.user(),
+                rtvi,
+                llm,
+                tts,
+                audio_buffer_output,
+                ws_transport.output(),
+                context_aggregator.assistant(),
+            ])
+            pipeline = imports["Pipeline"](rtvi_processors)
             task = imports["PipelineTask"](
                 pipeline,
-                params=imports["PipelineParams"](
-                    enable_metrics=True,
-                    enable_usage_metrics=True,
-                ),
+                params=pipeline_task_params,
                 observers=[imports["RTVIObserver"](rtvi)],
             )
+            if silence_hangup_processor:
+                pipeline_task_ref.append(task)
 
             @rtvi.event_handler("on_client_ready")
             async def on_client_ready(rtvi):
@@ -787,17 +897,10 @@ async def run_voice_bundle_fastapi(
         try:
             await runner.run(task)
         finally:
-            # Stop recording and trigger final audio data handlers
-            await audio_buffer_input.stop_recording()
-            await audio_buffer_output.stop_recording()
-            logger.info("AudioBufferProcessors stopped recording")
-            
-            # Calculate duration
             duration_result = time.time() - call_start_time
-            
-            # Extract conversation transcript from the LLM context
+
             try:
-                raw_messages = context.messages if hasattr(context, 'messages') else []
+                raw_messages = context.messages if hasattr(context, "messages") else []
                 conversation_turns = []
                 transcript_parts = []
                 elapsed = 0.0
@@ -826,72 +929,138 @@ async def run_voice_bundle_fastapi(
                 logger.warning(f"Failed to extract conversation context: {ctx_err}")
                 conversation_turns = []
                 transcript_text = None
-            
-            # Merge captured audio chunks
-            total_input_audio = b''.join(input_audio_chunks) if input_audio_chunks else b''
-            total_output_audio = b''.join(output_audio_chunks) if output_audio_chunks else b''
-            
-            logger.info(f"Input audio: {len(total_input_audio)} bytes, Output audio: {len(total_output_audio)} bytes")
-            
-            # Upload the recorded audio to S3 if we have data
-            if len(total_input_audio) > 100 or len(total_output_audio) > 100:
-                try:
-                    import io
-                    from efficientai.audio.utils import mix_audio
-                    
-                    # Use the sample rate from the buffer (default to 24000 if not set)
-                    sample_rate = recorded_audio_data.get("sample_rate") or audio_sample_rate
-                    num_channels = 1  # Output is always mono mixed audio
-                    
-                    # Mix the two audio streams into one mono stream
-                    # mix_audio handles padding if streams have different lengths
-                    mixed_audio = mix_audio(total_input_audio, total_output_audio)
-                    logger.info(f"Mixed audio: {len(mixed_audio)} bytes")
-                    
-                    # Create WAV file in memory and upload to S3
-                    wav_buffer = io.BytesIO()
-                    with wave.open(wav_buffer, 'wb') as wf:
-                        wf.setnchannels(num_channels)
-                        wf.setsampwidth(2)  # 16-bit audio
-                        wf.setframerate(sample_rate)
-                        wf.writeframes(mixed_audio)
-                    
-                    wav_buffer.seek(0)
-                    file_content = wav_buffer.read()
-                    
-                    file_id = uuid.uuid4()
-                    meaningful_id = result_id if result_id else f"{int(time.time())}-{file_id.hex[:8]}"
-                    
-                    s3_key_result = s3_service.upload_file(
-                        file_content=file_content,
-                        file_id=file_id,
-                        file_format="wav",
+
+            if use_aligned_recorders:
+                await user_recorder.cleanup()
+                await bot_recorder.cleanup()
+
+                if telephony_mode and call_short_id:
+                    try:
+                        from app.workers.celery_app import finalize_telephony_recording_task
+
+                        finalize_telephony_recording_task.delay(
+                            call_short_id=call_short_id,
+                            user_audio_path=user_audio_path,
+                            bot_audio_path=bot_audio_path,
+                            call_start_time=call_start_time,
+                            organization_id=organization_id,
+                            evaluator_id=evaluator_id,
+                            result_id=result_id,
+                            conversation_turns=conversation_turns,
+                            transcript_text=transcript_text,
+                            duration=duration_result,
+                        )
+                        logger.info(
+                            "Queued finalize_telephony_recording for call_short_id={}",
+                            call_short_id,
+                        )
+                    except Exception as celery_err:
+                        logger.warning(
+                            "Celery unavailable for post-call recording finalize ({}); running inline",
+                            celery_err,
+                        )
+                        from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
+                        from app.database import SessionLocal
+                        from app.services.telephony.call_recording_lifecycle import (
+                            persist_telephony_call_artifacts,
+                        )
+
+                        s3_key_result, duration_result = merge_and_upload_audio(
+                            user_audio_path=user_audio_path,
+                            bot_audio_path=bot_audio_path,
+                            call_start_time=call_start_time,
+                            organization_id=organization_id,
+                            evaluator_id=evaluator_id,
+                            result_id=result_id,
+                        )
+                        db = SessionLocal()
+                        try:
+                            persist_telephony_call_artifacts(
+                                db,
+                                call_short_id=call_short_id,
+                                conversation_turns=conversation_turns,
+                                transcript_text=transcript_text,
+                                s3_key=s3_key_result,
+                                duration=duration_result,
+                            )
+                        finally:
+                            db.close()
+                elif user_audio_path and bot_audio_path:
+                    from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
+
+                    s3_key_result, duration_result = merge_and_upload_audio(
+                        user_audio_path=user_audio_path,
+                        bot_audio_path=bot_audio_path,
+                        call_start_time=call_start_time,
                         organization_id=organization_id,
                         evaluator_id=evaluator_id,
-                        meaningful_id=meaningful_id,
+                        result_id=result_id,
                     )
-                    logger.info(f"✅ Conversation audio uploaded to S3: {s3_key_result}")
-                except Exception as e:
-                    logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
             else:
-                logger.warning("No audio data captured or audio too small to upload")
+                await audio_buffer_input.stop_recording()
+                await audio_buffer_output.stop_recording()
+                logger.info("AudioBufferProcessors stopped recording")
+
+                total_input_audio = b"".join(input_audio_chunks) if input_audio_chunks else b""
+                total_output_audio = b"".join(output_audio_chunks) if output_audio_chunks else b""
+                logger.info(
+                    f"Input audio: {len(total_input_audio)} bytes, "
+                    f"Output audio: {len(total_output_audio)} bytes"
+                )
+
+                if len(total_input_audio) > 100 or len(total_output_audio) > 100:
+                    try:
+                        import io
+                        from efficientai.audio.utils import mix_audio
+
+                        sample_rate = recorded_audio_data.get("sample_rate") or tts_sample_rate
+                        num_channels = 1
+                        mixed_audio = mix_audio(total_input_audio, total_output_audio)
+                        logger.info(f"Mixed audio: {len(mixed_audio)} bytes")
+
+                        wav_buffer = io.BytesIO()
+                        with wave.open(wav_buffer, "wb") as wf:
+                            wf.setnchannels(num_channels)
+                            wf.setsampwidth(2)
+                            wf.setframerate(sample_rate)
+                            wf.writeframes(mixed_audio)
+
+                        wav_buffer.seek(0)
+                        file_content = wav_buffer.read()
+                        file_id = uuid.uuid4()
+                        meaningful_id = result_id if result_id else f"{int(time.time())}-{file_id.hex[:8]}"
+                        s3_key_result = s3_service.upload_file(
+                            file_content=file_content,
+                            file_id=file_id,
+                            file_format="wav",
+                            organization_id=organization_id,
+                            evaluator_id=evaluator_id,
+                            meaningful_id=meaningful_id,
+                        )
+                        logger.info(f"✅ Conversation audio uploaded to S3: {s3_key_result}")
+                    except Exception as e:
+                        logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
+                else:
+                    logger.warning("No audio data captured or audio too small to upload")
+
+                if telephony_mode and call_short_id:
+                    from app.database import SessionLocal
+                    from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
+
+                    db = SessionLocal()
+                    try:
+                        persist_telephony_call_artifacts(
+                            db,
+                            call_short_id=call_short_id,
+                            conversation_turns=conversation_turns,
+                            transcript_text=transcript_text,
+                            s3_key=s3_key_result,
+                            duration=duration_result,
+                        )
+                    finally:
+                        db.close()
 
             if telephony_mode and call_short_id:
-                from app.database import SessionLocal
-                from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
-
-                db = SessionLocal()
-                try:
-                    persist_telephony_call_artifacts(
-                        db,
-                        call_short_id=call_short_id,
-                        conversation_turns=conversation_turns,
-                        transcript_text=transcript_text,
-                        s3_key=s3_key_result,
-                        duration=duration_result,
-                    )
-                finally:
-                    db.close()
                 # region agent log
                 from app.utils.debug_agent_log import agent_debug_log
 
@@ -901,9 +1070,8 @@ async def run_voice_bundle_fastapi(
                     {
                         "call_short_id": call_short_id,
                         "conversation_turns_count": len(conversation_turns),
-                        "input_audio_bytes": len(total_input_audio),
-                        "output_audio_bytes": len(total_output_audio),
                         "s3_key_set": bool(s3_key_result),
+                        "aligned_recorders": use_aligned_recorders,
                     },
                     "H4",
                 )

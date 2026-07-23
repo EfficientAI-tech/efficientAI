@@ -463,6 +463,9 @@ async def websocket_endpoint(
         
         # Run the bot with the appropriate pipeline
         call_metadata = None
+        from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+        agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
         try:
             if use_voice_bundle_pipeline:
                 # Resolve per-provider keys for voice bundle
@@ -509,6 +512,7 @@ async def websocket_endpoint(
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
+                    silence_hangup_secs=agent_silence_hangup_secs,
                 )
             else:
                 call_metadata = await run_bot(
@@ -522,6 +526,7 @@ async def websocket_endpoint(
                     evaluator_id=str(evaluator.id) if evaluator else None,
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
+                    silence_hangup_secs=agent_silence_hangup_secs,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)

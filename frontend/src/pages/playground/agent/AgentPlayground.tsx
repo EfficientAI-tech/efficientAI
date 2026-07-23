@@ -64,13 +64,13 @@ export default function AgentPlayground() {
 
 
   // Fetch test voice agent evaluation results (playground results only, excluding Voice AI agent results)
-  const { data: testVoiceAgentResults = [], refetch: refetchTestResults } = useQuery({
+  const { data: testVoiceAgentList, refetch: refetchTestResults } = useQuery({
     queryKey: ['test-voice-agent-results'],
     queryFn: async () => {
-      // Fetch only playground results (evaluator_id is NULL) AND exclude Voice AI agent results (provider_platform is NULL)
       return await apiClient.listEvaluatorResults(undefined, true, true)
     },
   })
+  const testVoiceAgentResults = testVoiceAgentList?.items ?? []
 
   // Fetch call recordings (for Voice AI Agents tab)
   const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({

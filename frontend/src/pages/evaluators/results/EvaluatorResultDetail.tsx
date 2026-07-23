@@ -11,6 +11,8 @@ import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLab
 import VobizCallDetails from '../../../components/call-recordings/VobizCallDetails'
 import { useToast } from '../../../hooks/useToast'
 import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
+import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
+import ResultsHierarchyNav from './ResultsHierarchyNav'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -199,6 +201,9 @@ interface EvaluatorResultDetail {
   result_id: string
   name: string
   evaluator_id: string | null
+  agent_id?: string | null
+  scenario_id?: string | null
+  suite_id?: string | null
   timestamp: string
   duration_seconds: number | null
   status: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'fetching_details'
@@ -242,6 +247,7 @@ interface EvaluatorResultDetail {
     id: string
     evaluator_id: string
     name: string
+    suite_id?: string | null
   }
 }
 
@@ -328,8 +334,20 @@ function EvaluationStepper({ status }: { status: string }) {
   )
 }
 
-export default function EvaluatorResultDetailPage() {
-  const { id } = useParams<{ id: string }>()
+type EvaluatorResultDetailPageProps = {
+  /** When embedded in agent workspace, pass result id explicitly. */
+  resultIdOverride?: string
+  embedded?: boolean
+  onEmbeddedBack?: () => void
+}
+
+export default function EvaluatorResultDetailPage({
+  resultIdOverride,
+  embedded = false,
+  onEmbeddedBack,
+}: EvaluatorResultDetailPageProps = {}) {
+  const { id: routeId } = useParams<{ id: string }>()
+  const id = resultIdOverride ?? routeId
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const location = window.location.pathname
@@ -373,6 +391,40 @@ export default function EvaluatorResultDetailPage() {
     return ids
   }, [metrics])
 
+  const hierarchyCrumbs = useMemo(() => {
+    if (embedded || isFromPlayground || !result) return null
+    const resultData = result as EvaluatorResultDetail
+    const agentId = resultData.agent_id ?? resultData.agent?.id
+    const suiteId = resultData.suite_id ?? resultData.evaluator?.suite_id
+    const scenarioId = resultData.scenario_id ?? resultData.scenario?.id
+    const crumbs: { label: string; to?: string }[] = [{ label: 'Evaluation Results', to: '/results' }]
+    const workspaceUrl = (suite?: string, scenario?: string) => {
+      if (!agentId) return '/results'
+      const params = new URLSearchParams()
+      if (suite) params.set('suite', suite)
+      if (scenario) params.set('scenario', scenario)
+      const qs = params.toString()
+      return `/results/agents/${agentId}${qs ? `?${qs}` : ''}`
+    }
+    if (agentId && resultData.agent?.name) {
+      crumbs.push({ label: resultData.agent.name, to: workspaceUrl() })
+    }
+    if (agentId && suiteId) {
+      crumbs.push({
+        label: resultData.evaluator?.name || 'Suite',
+        to: workspaceUrl(String(suiteId)),
+      })
+    }
+    if (agentId && suiteId && scenarioId) {
+      crumbs.push({
+        label: resultData.scenario?.name || 'Scenario',
+        to: workspaceUrl(String(suiteId), String(scenarioId)),
+      })
+    }
+    crumbs.push({ label: resultData.result_id })
+    return crumbs
+  }, [result, isFromPlayground])
+
   const shouldHideMetricScore = (
     metricId: string,
     metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
@@ -411,6 +463,12 @@ export default function EvaluatorResultDetailPage() {
       setReEvalInProgress(false)
     }
   }, [result?.status, reEvalInProgress])
+
+  useEffect(() => {
+    if (result?.status === 'completed') {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+    }
+  }, [result?.status, queryClient])
 
   useEffect(() => {
     const providerRecordingUrl = result?.call_data?.recording_url
@@ -650,7 +708,7 @@ export default function EvaluatorResultDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
+      <div className={embedded ? 'flex items-center justify-center py-16' : 'flex items-center justify-center min-h-[60vh]'}>
         <div className="text-center">
           <Loader className="w-8 h-8 text-indigo-500 animate-spin mx-auto" />
           <p className="text-sm text-gray-500 mt-3">Loading evaluation details...</p>
@@ -667,9 +725,14 @@ export default function EvaluatorResultDetailPage() {
           <p className="text-sm font-medium text-rose-800">
             {error?.message || 'Result not found'}
           </p>
-          <Button onClick={() => navigate('/results')} variant="ghost" size="sm" className="mt-4">
+          <Button
+            onClick={() => (embedded && onEmbeddedBack ? onEmbeddedBack() : navigate('/results'))}
+            variant="ghost"
+            size="sm"
+            className="mt-4"
+          >
             <ArrowLeft className="w-4 h-4 mr-1.5" />
-            Back to Results
+            {embedded ? 'Back' : 'Back to Results'}
           </Button>
         </div>
       </div>
@@ -677,7 +740,8 @@ export default function EvaluatorResultDetailPage() {
   }
 
   const resultData = result as EvaluatorResultDetail
-  const statusConfig = getStatusConfig(resultData.status)
+  const displayStatus = displayEvaluatorResultStatus(resultData)
+  const statusConfig = getStatusConfig(displayStatus)
   const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
   const hasCallMediaOrTranscript = Boolean(
     audioS3Key ||
@@ -688,17 +752,36 @@ export default function EvaluatorResultDetailPage() {
   )
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div
+      className={
+        embedded
+          ? 'max-w-none'
+          : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'
+      }
+    >
       {/* Header */}
       <div className="mb-6">
-        <Button
-          variant="outline"
-          onClick={() => navigate(isFromPlayground ? '/playground' : '/results')}
-          leftIcon={<ArrowLeft className="h-4 w-4" />}
-          className="mb-4"
-        >
-          Back to {isFromPlayground ? 'Playground' : 'Results'}
-        </Button>
+        {embedded && onEmbeddedBack ? (
+          <Button
+            variant="outline"
+            onClick={onEmbeddedBack}
+            leftIcon={<ArrowLeft className="h-4 w-4" />}
+            className="mb-4"
+          >
+            Back to runs
+          </Button>
+        ) : hierarchyCrumbs ? (
+          <ResultsHierarchyNav crumbs={hierarchyCrumbs} />
+        ) : (
+          <Button
+            variant="outline"
+            onClick={() => navigate(isFromPlayground ? '/playground' : '/results')}
+            leftIcon={<ArrowLeft className="h-4 w-4" />}
+            className="mb-4"
+          >
+            Back to {isFromPlayground ? 'Playground' : 'Results'}
+          </Button>
+        )}
         
         <div className="bg-white shadow rounded-lg p-6">
           <div className="flex items-center justify-between">
@@ -832,12 +915,12 @@ export default function EvaluatorResultDetailPage() {
         
         <div>
           {/* Stepper progress (re-evaluate or initial evaluation) */}
-          {!reEvalInProgress && resultData.status === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
-           : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(resultData.status) ? (
+          {!reEvalInProgress && displayStatus === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
+           : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
             <EvaluationStepper status={
               reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
                 ? 'queued'
-                : resultData.status
+                : displayStatus
             } />
           ) : null}
 

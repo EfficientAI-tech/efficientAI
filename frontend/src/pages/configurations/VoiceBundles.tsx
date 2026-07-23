@@ -42,6 +42,7 @@ export default function VoiceBundles() {
     tts_provider: ModelProvider.OPENAI,
     tts_model: 'gpt-4o-mini-tts',
     tts_voice: '',
+    tts_config: { sample_rate_hz: 8000 },
     tts_credential_id: null,
     s2s_provider: null,
     s2s_model: null,
@@ -73,7 +74,7 @@ export default function VoiceBundles() {
     queryKey: ['model-configs'],
     queryFn: async () => {
       const providers = Object.values(ModelProvider)
-      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }> = {}
+      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates: number[] }> = {}
 
       for (const provider of providers) {
         try {
@@ -85,10 +86,11 @@ export default function VoiceBundles() {
             tts: options.tts || [],
             s2s: options.s2s || [],
             tts_voices: options.tts_voices || {},
+            tts_sample_rates: options.tts_sample_rates || [],
           }
         } catch (error) {
           // If provider not found in config, use empty arrays
-          configs[provider] = { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
+          configs[provider] = { stt: [], llm: [], tts: [], s2s: [], tts_voices: {}, tts_sample_rates: [] }
         }
       }
       return configs
@@ -213,8 +215,8 @@ export default function VoiceBundles() {
   )
 
   // Helper function to get model options for a provider
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
+  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates: number[] } => {
+    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [], tts_voices: {}, tts_sample_rates: [] }
   }
 
   const getConfiguredProvidersForType = (type: 'stt' | 'llm' | 'tts' | 's2s'): ModelProvider[] =>
@@ -334,6 +336,7 @@ export default function VoiceBundles() {
       tts_provider: defaultTtsProvider,
       tts_model: defaultTtsModel,
       tts_voice: '',
+      tts_config: { sample_rate_hz: 8000 },
       tts_credential_id: null,
       s2s_provider: null,
       s2s_model: null,
@@ -362,6 +365,9 @@ export default function VoiceBundles() {
       tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider, 'tts') : null,
       tts_model: bundle.tts_model || null,
       tts_voice: bundle.tts_voice || '',
+      tts_config: bundle.tts_config?.sample_rate_hz
+        ? { sample_rate_hz: Number(bundle.tts_config.sample_rate_hz) }
+        : { sample_rate_hz: 8000 },
       tts_credential_id: bundle.tts_credential_id || null,
       s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider, 's2s') : null,
       s2s_model: bundle.s2s_model || null,
@@ -440,7 +446,7 @@ export default function VoiceBundles() {
       } else if (type === 'tts') {
         const firstModel = models[0]
         const voices = options.tts_voices?.[firstModel] || []
-        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '', tts_credential_id: null })
+        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '', tts_credential_id: null, tts_config: { sample_rate_hz: 8000 } })
       } else if (type === 's2s') {
         setFormData({ ...formData, s2s_provider: provider, s2s_model: models[0], s2s_credential_id: null })
       }
@@ -645,6 +651,12 @@ export default function VoiceBundles() {
                                 <span>Voice: {bundle.tts_voice}</span>
                               </>
                             )}
+                            {bundle.tts_config?.sample_rate_hz && (
+                              <>
+                                <span className="text-gray-500"> • </span>
+                                <span>{Number(bundle.tts_config.sample_rate_hz) / 1000} kHz</span>
+                              </>
+                            )}
                           </div>
                         ) : (
                           <span className="text-gray-500">Not configured</span>
@@ -845,7 +857,7 @@ function VoiceBundleModal({
   isLoading: boolean
   updateModelOptions: (type: 'stt' | 'llm' | 'tts' | 's2s', provider: ModelProvider) => void
   configuredProviders: ModelProvider[]
-  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }
+  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates: number[] }
   modelConfigs: Record<string, any>
   aiProviders: AIProvider[]
   renderCredentialPicker: (
@@ -1371,6 +1383,43 @@ function VoiceBundleModal({
                     )
                   })()}
                 </div>
+                {(() => {
+                  const rates = formData.tts_provider
+                    ? getModelOptions(formData.tts_provider).tts_sample_rates
+                    : []
+                  if (rates.length === 0) {
+                    return (
+                      <p className="text-sm text-gray-500 md:col-span-2">
+                        This TTS provider does not expose configurable output sample rate in EfficientAI.
+                      </p>
+                    )
+                  }
+                  const currentHz = formData.tts_config?.sample_rate_hz ?? 8000
+                  return (
+                    <div>
+                      <label htmlFor="tts_sample_rate_hz" className="block text-sm font-medium text-gray-700 mb-1">
+                        Output frequency
+                      </label>
+                      <select
+                        id="tts_sample_rate_hz"
+                        value={currentHz}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            tts_config: { ...formData.tts_config, sample_rate_hz: Number(e.target.value) },
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        {rates.map((hz) => (
+                          <option key={hz} value={hz}>
+                            {hz / 1000} kHz
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )
+                })()}
                 {renderCredentialPicker(
                   'tts',
                   formData.tts_provider,

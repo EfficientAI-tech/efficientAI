@@ -1,5 +1,6 @@
 """Tests for Vobiz call recording lifecycle helpers."""
 
+from unittest.mock import patch
 from uuid import uuid4
 
 from app.models.database import CallRecording, CallRecordingSource
@@ -9,6 +10,7 @@ from app.services.telephony.call_recording_lifecycle import (
     conversation_turns_to_messages,
     finalize_call_on_media_disconnect,
     find_call_recording,
+    ingest_carrier_recording_url,
     link_provider_call_id,
     persist_telephony_call_artifacts,
     update_call_from_vobiz_event,
@@ -155,6 +157,64 @@ def test_persist_telephony_call_artifacts_writes_messages(db_session, org_id, se
     assert len(updated.call_data["messages"]) == 2
     assert updated.call_data["recording_s3_key"] == "org/audio/call.wav"
     assert updated.call_data["ended_at"]
+
+
+def test_persist_telephony_call_artifacts_keeps_carrier_recording_key(
+    db_session, org_id, seed_org, default_workspace
+):
+    call_ref = "ref-carrier-first"
+    row = _make_vobiz_recording(
+        db_session,
+        org_id,
+        workspace_id=default_workspace.id,
+        call_ref=call_ref,
+    )
+    row.call_data = {
+        **row.call_data,
+        "recording_s3_key": "org/carrier/session.mp3",
+    }
+    db_session.commit()
+
+    persist_telephony_call_artifacts(
+        db_session,
+        call_short_id=row.call_short_id,
+        s3_key="org/pipeline/merge.wav",
+        duration=5.0,
+    )
+
+    db_session.expire_all()
+    updated = db_session.query(CallRecording).filter(CallRecording.id == row.id).first()
+    assert updated.call_data["recording_s3_key"] == "org/carrier/session.mp3"
+    assert updated.call_data["pipeline_recording_s3_key"] == "org/pipeline/merge.wav"
+
+
+@patch("app.services.storage.s3_service.s3_service")
+@patch("app.services.telephony.recording_download.download_recording_url")
+def test_ingest_carrier_recording_url_sets_s3_key(
+    mock_download,
+    mock_s3,
+    db_session,
+    org_id,
+    seed_org,
+    default_workspace,
+):
+    row = _make_vobiz_recording(
+        db_session,
+        org_id,
+        workspace_id=default_workspace.id,
+        call_ref="ref-carrier-ingest",
+    )
+    mock_download.return_value = (b"audio-bytes", "audio/mpeg")
+    mock_s3.upload_file.return_value = "org/carrier/rec.mp3"
+
+    key = ingest_carrier_recording_url(
+        db_session,
+        row,
+        "https://media.vobiz.ai/rec.mp3",
+    )
+    assert key == "org/carrier/rec.mp3"
+    db_session.refresh(row)
+    assert row.call_data["recording_s3_key"] == "org/carrier/rec.mp3"
 
 
 def test_conversation_turns_to_messages_maps_roles():

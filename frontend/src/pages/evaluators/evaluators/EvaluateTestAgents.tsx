@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -16,6 +16,7 @@ import {
   Layers,
   PhoneIncoming,
   PhoneOutgoing,
+  ChevronRight,
 } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
@@ -24,39 +25,6 @@ import EvaluatorSuiteWizard from '../components/EvaluatorSuiteWizard'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
 import { countDisplayMetrics, type MetricRow } from '../components/metricSelectionUtils'
-import { providerHasLLMModels } from '../../../lib/llmModelOptions'
-
-const DEFAULT_PERSONA_NAMES = [
-  "Grumpy Old Man",
-  "Confused Senior",
-  "Busy Professional",
-  "Friendly Customer",
-  "Angry Caller"
-]
-
-const DEFAULT_SCENARIO_NAMES = [
-  "Cancel Subscription",
-  "Check Balance",
-  "Technical Support",
-  "Make Complaint",
-  "Product Inquiry"
-]
-
-interface Evaluator {
-  id: string
-  evaluator_id: string
-  name?: string | null
-  agent_id?: string | null
-  persona_id?: string | null
-  scenario_id?: string | null
-  custom_prompt?: string | null
-  metric_ids?: string[] | null
-  llm_provider?: string | null
-  llm_model?: string | null
-  tags?: string[]
-  created_at: string
-  updated_at: string
-}
 
 export default function EvaluateTestAgents() {
   const navigate = useNavigate()
@@ -67,6 +35,7 @@ export default function EvaluateTestAgents() {
   const [showRunModal, setShowRunModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [collapsedAgentIds, setCollapsedAgentIds] = useState<Set<string>>(new Set())
 
   useWalkthroughSectionState(
     'evaluators',
@@ -89,56 +58,6 @@ export default function EvaluateTestAgents() {
   const createMutation = useMutation({
     mutationFn: (data: Parameters<typeof apiClient.createEvaluatorSuite>[0]) =>
       apiClient.createEvaluatorSuite(data),
-  const llmProviders = configuredProviders.filter((p) =>
-    providerHasLLMModels(
-      p,
-      modelConfigs[p]?.llm ?? [],
-      aiproviders,
-    ),
-  )
-
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
-  }
-
-  // Close dropdown on outside click
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (llmDropdownRef.current && !llmDropdownRef.current.contains(event.target as Node)) {
-        setShowLlmDropdown(false)
-      }
-    }
-    if (showLlmDropdown) document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showLlmDropdown])
-
-  const selectedAgentObj = agents.find((a: any) => a.id === modalAgentId) as any
-  const selectedAgentVoiceBundleId = selectedAgentObj?.voice_bundle_id
-
-  const { data: agentVoiceBundle } = useQuery({
-    queryKey: ['voicebundle', selectedAgentVoiceBundleId],
-    queryFn: () => apiClient.getVoiceBundle(selectedAgentVoiceBundleId),
-    enabled: !!selectedAgentVoiceBundleId,
-  })
-
-  const voiceBundleTtsProvider = agentVoiceBundle?.tts_provider
-    ? (typeof agentVoiceBundle.tts_provider === 'string' ? agentVoiceBundle.tts_provider : String(agentVoiceBundle.tts_provider)).toLowerCase()
-    : null
-
-  const allPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
-  const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
-
-  const filteredPersonas = voiceBundleTtsProvider
-    ? allPersonas.filter((p: any) => p.tts_provider && p.tts_provider.toLowerCase() === voiceBundleTtsProvider)
-    : allPersonas
-
-  const incompatibleCount = voiceBundleTtsProvider
-    ? allPersonas.length - filteredPersonas.length
-    : 0
-
-  const createBulkMutation = useMutation({
-    mutationFn: (data: { name?: string; agent_id: string; scenario_id: string; persona_ids: string[]; tags?: string[] }) =>
-      apiClient.createEvaluatorsBulk(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       setShowCreateModal(false)
@@ -159,6 +78,38 @@ export default function EvaluateTestAgents() {
     const combinations = suites.reduce((sum, s) => sum + s.combination_count, 0)
     return { total: suites.length, inbound, outbound, web, combinations }
   }, [suites])
+
+  const sortedSuites = useMemo(() => {
+    return [...suites].sort((a, b) => {
+      const agentCmp = (a.agent_name || '').localeCompare(b.agent_name || '')
+      if (agentCmp !== 0) return agentCmp
+      if (a.is_active !== b.is_active) return a.is_active ? -1 : 1
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    })
+  }, [suites])
+
+  const suiteGroups = useMemo(() => {
+    const map = new Map<string, EvaluatorSuite[]>()
+    for (const suite of sortedSuites) {
+      const list = map.get(suite.agent_id) ?? []
+      list.push(suite)
+      map.set(suite.agent_id, list)
+    }
+    return Array.from(map.entries()).map(([agentId, groupSuites]) => ({
+      agentId,
+      agentName: groupSuites[0]?.agent_name || 'Unknown agent',
+      suites: groupSuites,
+    }))
+  }, [sortedSuites])
+
+  const toggleAgentCollapsed = (agentId: string) => {
+    setCollapsedAgentIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(agentId)) next.delete(agentId)
+      else next.add(agentId)
+      return next
+    })
+  }
 
   const toggleSuite = (id: string) => {
     setSelectedSuiteIds((prev) => {
@@ -309,6 +260,21 @@ export default function EvaluateTestAgents() {
                 {suites.length}
               </span>
             )}
+            {suites.length > 0 && suiteGroups.some((g) => g.suites.length > 1) && (
+              <button
+                type="button"
+                className="text-xs font-medium text-primary-600 hover:text-primary-800"
+                onClick={() => {
+                  const multiIds = suiteGroups.filter((g) => g.suites.length > 1).map((g) => g.agentId)
+                  const allCollapsed = multiIds.every((id) => collapsedAgentIds.has(id))
+                  setCollapsedAgentIds(allCollapsed ? new Set() : new Set(multiIds))
+                }}
+              >
+                {suiteGroups.filter((g) => g.suites.length > 1).every((g) => collapsedAgentIds.has(g.agentId))
+                  ? 'Expand all agents'
+                  : 'Collapse all agents'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -352,52 +318,174 @@ export default function EvaluateTestAgents() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenarios</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Metrics</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {suites.map((suite: EvaluatorSuite) => (
-                  <tr
-                    key={suite.id}
-                    className={`hover:bg-gray-50 transition-colors ${selectedSuiteIds.has(suite.id) ? 'bg-primary-50/40' : ''}`}
-                  >
-                    <td className="px-6 py-4">
-                      <button type="button" onClick={() => toggleSuite(suite.id)} className="text-gray-400 hover:text-primary-600">
-                        {selectedSuiteIds.has(suite.id) ? (
-                          <CheckSquare className="w-5 h-5 text-primary-600" />
-                        ) : (
-                          <Square className="w-5 h-5" />
+                {suiteGroups.map((group) => {
+                  const multi = group.suites.length > 1
+                  const collapsed = multi && collapsedAgentIds.has(group.agentId)
+                  const activeSuite = group.suites.find((s) => s.is_active) ?? group.suites[0]
+
+                  const renderSuiteRow = (suite: EvaluatorSuite, isSubSuite: boolean) => (
+                    <tr
+                      key={suite.id}
+                      className={`hover:bg-gray-50 transition-colors ${selectedSuiteIds.has(suite.id) ? 'bg-primary-50/40' : ''} ${isSubSuite ? 'bg-gray-50/30' : ''}`}
+                    >
+                      <td className="px-6 py-4">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleSuite(suite.id)
+                          }}
+                          className="text-gray-400 hover:text-primary-600"
+                        >
+                          {selectedSuiteIds.has(suite.id) ? (
+                            <CheckSquare className="w-5 h-5 text-primary-600" />
+                          ) : (
+                            <Square className="w-5 h-5" />
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-6 py-4">
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/evaluate-test-agents/${suite.id}`)}
+                          className={`text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left ${isSubSuite ? 'pl-6' : multi ? 'pl-2' : ''}`}
+                        >
+                          {isSubSuite && <span className="text-gray-400 mr-1">↳</span>}
+                          {suite.name || `${suite.agent_name || 'Suite'} · ${suite.persona_name || 'Persona'}`}
+                        </button>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-900">
+                        {!multi && (suite.agent_name || '—')}
+                        {multi && isSubSuite && (
+                          <span className="text-xs text-gray-500 pl-2">same agent</span>
                         )}
-                      </button>
-                    </td>
-                    <td className="px-6 py-4">
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/evaluate-test-agents/${suite.id}`)}
-                        className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left"
+                        {multi && !isSubSuite && !collapsed && (
+                          <span className="text-xs text-gray-500">{group.agentName}</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-900">{suite.persona_name || '—'}</td>
+                      <td className="px-6 py-4">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                          {suite.combination_count}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-50 text-gray-700 border border-gray-100">
+                          {(() => {
+                            const count = countDisplayMetrics(suite.metric_ids, metricRows)
+                            return count != null ? `${count} selected` : 'All'
+                          })()}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <CallTypeBadge medium={suite.agent_call_medium} callType={suite.agent_call_type} />
+                      </td>
+                      <td className="px-6 py-4">
+                        {suite.is_active ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            Active
+                          </span>
+                        ) : suite.agent_call_type === 'inbound' ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                            Inactive
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+
+                  if (!multi) {
+                    return renderSuiteRow(group.suites[0], false)
+                  }
+
+                  const groupAllSelected = group.suites.every((s) => selectedSuiteIds.has(s.id))
+                  const groupSomeSelected = group.suites.some((s) => selectedSuiteIds.has(s.id))
+
+                  return (
+                    <Fragment key={group.agentId}>
+                      <tr
+                        className="bg-slate-50/90 hover:bg-slate-100/90 cursor-pointer border-t border-slate-200"
+                        onClick={() => toggleAgentCollapsed(group.agentId)}
                       >
-                        {suite.name || `${suite.agent_name || 'Suite'} · ${suite.persona_name || 'Persona'}`}
-                      </button>
-                    </td>
-                    <td className="px-6 py-4 text-sm text-gray-900">{suite.agent_name || '—'}</td>
-                    <td className="px-6 py-4 text-sm text-gray-900">{suite.persona_name || '—'}</td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
-                        {suite.combination_count}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-50 text-gray-700 border border-gray-100">
-                        {(() => {
-                          const count = countDisplayMetrics(suite.metric_ids, metricRows)
-                          return count != null ? `${count} selected` : 'All'
-                        })()}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <CallTypeBadge medium={suite.agent_call_medium} callType={suite.agent_call_type} />
-                    </td>
-                  </tr>
-                ))}
+                        <td className="px-6 py-3">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSelectedSuiteIds((prev) => {
+                                const next = new Set(prev)
+                                if (groupAllSelected) {
+                                  group.suites.forEach((s) => next.delete(s.id))
+                                } else {
+                                  group.suites.forEach((s) => next.add(s.id))
+                                }
+                                return next
+                              })
+                            }}
+                            className="text-gray-400 hover:text-primary-600"
+                          >
+                            {groupAllSelected ? (
+                              <CheckSquare className="w-5 h-5 text-primary-600" />
+                            ) : groupSomeSelected ? (
+                              <CheckSquare className="w-5 h-5 text-primary-400 opacity-60" />
+                            ) : (
+                              <Square className="w-5 h-5" />
+                            )}
+                          </button>
+                        </td>
+                        <td className="px-6 py-3" colSpan={2}>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <ChevronRight
+                              className={`h-4 w-4 text-gray-500 shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`}
+                            />
+                            <span className="text-sm font-semibold text-gray-900 truncate">{group.agentName}</span>
+                            <span className="text-xs text-gray-500 shrink-0">
+                              {group.suites.length} suites
+                            </span>
+                          </div>
+                          {collapsed && (
+                            <p className="text-xs text-gray-500 mt-1 pl-6 truncate">
+                              Active: {activeSuite.name || activeSuite.persona_name || '—'}
+                              {activeSuite.is_active ? '' : ' (none marked active)'}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-gray-600">
+                          {collapsed ? activeSuite.persona_name || '—' : ''}
+                        </td>
+                        <td className="px-6 py-3">
+                          {collapsed && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
+                              {activeSuite.combination_count}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-3" colSpan={3}>
+                          {collapsed && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <CallTypeBadge
+                                medium={activeSuite.agent_call_medium}
+                                callType={activeSuite.agent_call_type}
+                              />
+                              {activeSuite.is_active && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                  Active
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                      {!collapsed && group.suites.map((suite, index) => renderSuiteRow(suite, index > 0))}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>

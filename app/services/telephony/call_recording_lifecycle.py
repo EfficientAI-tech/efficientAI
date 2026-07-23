@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import string
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
@@ -231,12 +232,25 @@ def create_inbound_call_recording(
     from_number: Optional[str],
     to_number: Optional[str],
     provider_call_id: Optional[str] = None,
+    evaluator_id: Optional[UUID] = None,
+    evaluator_result_id: Optional[UUID] = None,
 ) -> CallRecording:
     existing = find_call_recording(db, call_ref=call_ref, provider_call_id=provider_call_id)
     if existing:
         return existing
 
     call_short_id = "".join(random.choices(string.digits, k=6))
+    call_data: Dict[str, Any] = {
+        "call_ref": call_ref,
+        "call_short_id": call_short_id,
+        "direction": "inbound",
+        "from_number": from_number,
+        "to_number": to_number,
+        "started_at": _now_iso(),
+        "live_transcript": [],
+    }
+    if evaluator_id is not None:
+        call_data["evaluator_id"] = str(evaluator_id)
     row = CallRecording(
         organization_id=organization_id,
         workspace_id=agent.workspace_id,
@@ -244,18 +258,11 @@ def create_inbound_call_recording(
         status=CallRecordingStatus.PENDING,
         source=CallRecordingSource.WEBHOOK,
         call_event="call_started",
-        call_data={
-            "call_ref": call_ref,
-            "call_short_id": call_short_id,
-            "direction": "inbound",
-            "from_number": from_number,
-            "to_number": to_number,
-            "started_at": _now_iso(),
-            "live_transcript": [],
-        },
+        call_data=call_data,
         provider_call_id=provider_call_id,
         provider_platform="vobiz",
         agent_id=agent.id,
+        evaluator_result_id=evaluator_result_id,
     )
     db.add(row)
     db.commit()
@@ -374,7 +381,89 @@ def finalize_call_on_media_disconnect(
             "H3",
         )
         # endregion
+        # Evaluator dispatch runs after recording artifacts exist (Celery finalize or
+        # carrier recording webhook). Enqueue here only when audio is already on the row.
+        if updated.evaluator_result_id:
+            data_after = _fresh_call_data(db, updated)
+            if data_after.get("recording_s3_key"):
+                from app.services.evaluators.evaluator_inbound_service import (
+                    enqueue_linked_evaluator_result_if_ready,
+                )
+
+                enqueue_linked_evaluator_result_if_ready(db, updated)
     return updated
+
+
+def ingest_carrier_recording_url(
+    db: Session,
+    row: CallRecording,
+    recording_url: str,
+) -> Optional[str]:
+    """Download a carrier session recording and store as recording_s3_key (preferred artifact)."""
+    data = _fresh_call_data(db, row)
+    if data.get("recording_s3_key") and data.get("recording_source") == "carrier":
+        return str(data["recording_s3_key"])
+
+    existing_pipeline_key = data.get("recording_s3_key")
+
+    from loguru import logger
+
+    from app.services.storage.s3_service import s3_service
+    from app.services.telephony.recording_download import download_recording_url
+
+    try:
+        audio_bytes, content_type = download_recording_url(
+            recording_url,
+            user_supplied=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Carrier recording download failed for call_short_id={}: {}",
+            row.call_short_id,
+            exc,
+        )
+        return None
+
+    lowered = (content_type or "").lower()
+    if "wav" in lowered:
+        file_format = "wav"
+    elif "mpeg" in lowered or "mp3" in lowered:
+        file_format = "mp3"
+    else:
+        file_format = "mp3"
+
+    try:
+        file_id = uuid.uuid4()
+        meaningful_id = f"carrier-{row.call_short_id}-{int(datetime.now(timezone.utc).timestamp())}"
+        s3_key = s3_service.upload_file(
+            file_content=audio_bytes,
+            file_id=file_id,
+            file_format=file_format,
+            organization_id=str(row.organization_id),
+            evaluator_id=None,
+            meaningful_id=meaningful_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Carrier recording S3 upload failed for call_short_id={}: {}",
+            row.call_short_id,
+            exc,
+        )
+        return None
+
+    data["recording_s3_key"] = s3_key
+    if existing_pipeline_key and existing_pipeline_key != s3_key:
+        data["pipeline_recording_s3_key"] = existing_pipeline_key
+    data["recording_source"] = "carrier"
+    _save_call_data(db, row, data)
+
+    if row.evaluator_result_id:
+        from app.services.evaluators.evaluator_inbound_service import (
+            enqueue_linked_evaluator_result_if_ready,
+        )
+
+        enqueue_linked_evaluator_result_if_ready(db, row)
+    return s3_key
 
 
 def append_live_transcript_turn(
@@ -462,7 +551,10 @@ def persist_telephony_call_artifacts(
     if transcript_text:
         data["transcript"] = transcript_text
     if s3_key:
-        data["recording_s3_key"] = s3_key
+        if not data.get("recording_s3_key"):
+            data["recording_s3_key"] = s3_key
+        else:
+            data.setdefault("pipeline_recording_s3_key", s3_key)
     if duration is not None:
         data["duration_seconds"] = duration
     if not data.get("ended_at"):
@@ -486,4 +578,10 @@ def persist_telephony_call_artifacts(
         "H3",
     )
     # endregion
+    if row.evaluator_result_id:
+        from app.services.evaluators.evaluator_inbound_service import (
+            enqueue_linked_evaluator_result_if_ready,
+        )
+
+        enqueue_linked_evaluator_result_if_ready(db, row)
     return row

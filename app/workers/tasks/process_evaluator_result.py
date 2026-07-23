@@ -620,10 +620,15 @@ def process_evaluator_result_task(self, result_id: str):
                     )
 
             # Step 6: Complete
+            from sqlalchemy.orm.attributes import flag_modified
+
             result.metric_scores = _make_json_serializable(metric_scores)
+            flag_modified(result, "metric_scores")
             if isinstance(result.call_data, (dict, list)):
                 result.call_data = _make_json_serializable(result.call_data)
+                flag_modified(result, "call_data")
             result.status = EvaluatorResultStatus.COMPLETED.value
+            result.error_message = None
             db.commit()
 
             from app.services.billing.flexprice_service import (

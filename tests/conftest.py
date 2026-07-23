@@ -343,8 +343,11 @@ def client(db_session, api_key, org_id):
         sys.modules["app.services.voice_providers"] = fake_voice_providers_module
 
     if "app.services.voice_agent.bot_fast_api" not in sys.modules:
+        voice_agent_dir = str(
+            Path(__file__).resolve().parents[1] / "app" / "services" / "voice_agent"
+        )
         fake_voice_agent_pkg = types.ModuleType("app.services.voice_agent")
-        fake_voice_agent_pkg.__path__ = []
+        fake_voice_agent_pkg.__path__ = [voice_agent_dir]
         fake_bot_fast_api_module = types.ModuleType("app.services.voice_agent.bot_fast_api")
         fake_voice_bundle_module = types.ModuleType("app.services.voice_agent.voice_bundle")
         fake_bot_fast_api_module.run_bot = lambda *_args, **_kwargs: None
@@ -401,8 +404,7 @@ def client(db_session, api_key, org_id):
         sys.modules["app.workers.tasks.run_prompt_optimization"] = fake_run_prompt_opt_module
 
     class _FakePromptOptTask:
-        @staticmethod
-        def delay(*_args, **_kwargs):
+        def delay(self, *_args, **_kwargs):
             class _TaskResult:
                 id = "fake-prompt-opt-task-id"
 

@@ -19,6 +19,7 @@ from efficientai.audio.turn.base_turn_analyzer import (
     BaseTurnAnalyzer,
     EndOfTurnState,
 )
+from efficientai.audio.utils import create_stream_resampler
 from efficientai.audio.vad.vad_analyzer import VADAnalyzer, VADState
 from efficientai.frames.frames import (
     BotStartedSpeakingFrame,
@@ -71,6 +72,7 @@ class BaseInputTransport(FrameProcessor):
 
         # Input sample rate. It will be initialized on StartFrame.
         self._sample_rate = 0
+        self._input_resampler = create_stream_resampler()
 
         # Track bot speaking state for interruption logic
         self._bot_speaking = False
@@ -458,6 +460,13 @@ class BaseInputTransport(FrameProcessor):
                 frame: InputAudioRawFrame = await asyncio.wait_for(
                     self._audio_in_queue.get(), timeout=AUDIO_INPUT_TIMEOUT_SECS
                 )
+
+                if self._sample_rate and frame.sample_rate != self._sample_rate:
+                    frame.audio = await self._input_resampler.resample(
+                        frame.audio, frame.sample_rate, self._sample_rate
+                    )
+                    frame.sample_rate = self._sample_rate
+                    frame.num_frames = int(len(frame.audio) / (frame.num_channels * 2))
 
                 # If an audio filter is available, run it before VAD.
                 if self._params.audio_in_filter:

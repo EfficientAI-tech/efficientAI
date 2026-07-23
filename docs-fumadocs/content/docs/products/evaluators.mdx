@@ -14,7 +14,7 @@ Each scenario becomes one combination (1:1:N). You can:
 
 - Choose **metrics** to score at the suite level (optional — defaults to all enabled agent metrics)
 - **Outbound / web**: run every combination **X times** (total runs = N × X)
-- **Inbound**: use **round-robin** — each test-initiated call uses the next scenario in rotation
+- **Inbound**: one **active suite** per agent handles incoming calls; additional suites for the same agent stay inactive until you activate them. Each active suite rotates **scenarios** for that agent + persona.
 
 ---
 
@@ -33,7 +33,7 @@ Each scenario becomes one combination (1:1:N). You can:
 |---|---|
 | Web call | Queue Celery bridge runs for all combinations × runs |
 | Phone outbound | Batch outbound calls (requires dial target) |
-| Phone inbound | **Run next combination** — round-robin through scenarios |
+| Phone inbound | **Round-robin** on incoming calls; **Choose next** to advance manually (no outbound dial) |
 
 ---
 
@@ -44,6 +44,27 @@ Each scenario becomes one combination (1:1:N). You can:
 | POST | `/api/v1/evaluator-suites` | Create suite + combinations |
 | GET | `/api/v1/evaluator-suites` | List suites |
 | POST | `/api/v1/evaluator-suites/{id}/run` | Batch run (outbound/web) |
-| POST | `/api/v1/evaluator-suites/{id}/run-next` | Inbound round-robin single run |
+| POST | `/api/v1/evaluator-suites/{id}/activate` | Set active inbound suite for the agent |
+| POST | `/api/v1/evaluator-suites/{id}/choose-next` | Inbound: advance round-robin without a call |
 
 Legacy single-evaluator endpoints remain for backward compatibility.
+
+---
+
+## Evaluation results (UI)
+
+Open **Evaluation Results** in the sidebar to browse runs in hierarchy:
+
+**Agent workspace** — select an agent, then use the **left sidebar** (suites → scenarios). The main panel shows suite summary and quality metrics, or individual runs when a scenario is selected. URLs use `?suite=` and `?scenario=` query params for sharing.
+
+Legacy or manual runs without a suite appear under **Unassigned runs**.
+
+### Results API
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/evaluator-results` | Paginated list (`items`, `total`); filters: `agent_id`, `suite_id`, `scenario_id`, `status`, `unassigned_only`, `skip`, `limit` |
+| GET | `/api/v1/evaluator-results/overview` | Workspace rollups; optional `agent_id` or `suite_id` for drill-down |
+| GET | `/api/v1/evaluator-results/aggregate` | Metric distributions for `suite_id` or `agent_id` + `scenario_id` |
+
+**Phase 2 (planned):** LLM failure clustering and RCA for suite/scenario scopes, similar to Call Import **Visualizations → Clusters**.

@@ -24,7 +24,7 @@ from app.models.database import (
 from app.services.ai.transcription_service import transcription_service
 from app.services.ai.llm_service import llm_service
 from app.services.ai.tts_service import tts_service
-from app.services.storage.s3_service import s3_service
+from app.services.testing.test_agent_simulation_prompt import build_test_agent_system_prompt
 from sqlalchemy.orm import Session
 
 
@@ -43,39 +43,7 @@ class TestAgentService:
         db: Session,
     ) -> str:
         """Build system prompt from agent, persona, and scenario."""
-        prompt_parts = []
-
-        # Agent information
-        prompt_parts.append(f"You are a test agent interacting with: {agent.name}")
-        if agent.description:
-            prompt_parts.append(f"Agent description: {agent.description}")
-        prompt_parts.append(f"Agent phone number: {agent.phone_number}")
-        prompt_parts.append(f"Agent language: {agent.language.value}")
-
-        # Persona information
-        prompt_parts.append(f"\nYou are role-playing as: {persona.name}")
-        gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
-        prompt_parts.append(f"Persona gender: {gender_val}")
-        if persona.tts_provider:
-            prompt_parts.append(f"Voice provider: {persona.tts_provider}")
-        if persona.tts_voice_name:
-            prompt_parts.append(f"Voice: {persona.tts_voice_name}")
-
-        # Scenario information
-        prompt_parts.append(f"\nScenario: {scenario.name}")
-        if scenario.description:
-            prompt_parts.append(f"Scenario description: {scenario.description}")
-        if scenario.required_info:
-            prompt_parts.append(f"Required information to collect: {scenario.required_info}")
-
-        # Instructions
-        prompt_parts.append("\nInstructions:")
-        prompt_parts.append("- Respond naturally and in character as the persona")
-        prompt_parts.append("- Follow the scenario objectives")
-        prompt_parts.append("- Keep responses concise and conversational")
-        prompt_parts.append("- Do not break character")
-
-        return "\n".join(prompt_parts)
+        return build_test_agent_system_prompt(agent, persona, scenario)
 
     def _convert_webm_to_wav(self, webm_bytes: bytes) -> bytes:
         """Convert WebM audio bytes to WAV format using ffmpeg or pydub."""

@@ -15,7 +15,7 @@ from app.dependencies import get_db, get_organization_id, get_workspace_id, get_
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
-    Evaluator, EvaluatorResult, CallRecording,
+    Evaluator, EvaluatorResult, CallRecording, Scenario,
 )
 from sqlalchemy import and_
 from app.models.schemas import (
@@ -23,6 +23,36 @@ from app.models.schemas import (
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def resolve_agent_by_path_id(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    agent_id: str,
+) -> Agent:
+    """Resolve agent by UUID primary key or 6-digit agent_id (same as GET /agents/{id})."""
+    try:
+        agent_uuid = UUID(agent_id)
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.id == agent_uuid,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
+        ).first()
+    except ValueError:
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.agent_id == agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
+        ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return agent
 
 
 # ======================================================================
@@ -35,6 +65,9 @@ class GenerateAgentDescriptionRequest(BaseModel):
     format_style: Optional[str] = "structured"
     provider: Optional[str] = None
     model: Optional[str] = None
+    agent_id: Optional[UUID] = None
+    include_linked_scenarios: bool = True
+    append_scenarios_to_output: bool = False
 
 
 GENERATE_AGENT_DESCRIPTION_SYSTEM = (
@@ -57,11 +90,18 @@ from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_
 async def generate_agent_description(
     data: GenerateAgentDescriptionRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Generate an agent description using AI from a brief description."""
     from app.services.ai.llm_service import llm_service
+    from app.services.testing.test_agent_simulation_prompt import (
+        format_scenarios_for_generation_context,
+        format_scenarios_reference_appendix,
+        load_linked_scenarios_for_agent,
+        merge_generated_description_with_scenario_appendix,
+    )
 
     if not data.description.strip():
         raise HTTPException(400, "Description is required")
@@ -70,13 +110,37 @@ async def generate_agent_description(
         organization_id, db, data.provider, data.model
     )
 
-    user_prompt = (
-        f"Create a detailed agent description for the following:\n\n"
-        f"Description: {data.description}\n"
-        f"Tone: {data.tone or 'professional'}\n"
-        f"Format: {data.format_style or 'structured'}\n\n"
-        f"Generate a comprehensive, well-formatted agent description in markdown."
-    )
+    linked_scenarios = []
+    if data.agent_id and data.include_linked_scenarios:
+        agent = db.query(Agent).filter(
+            Agent.id == data.agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent {data.agent_id} not found")
+        linked_scenarios = load_linked_scenarios_for_agent(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agent_id=agent.id,
+        )
+
+    user_prompt_parts = [
+        "Create a detailed agent description for the following:",
+        "",
+        f"Description: {data.description}",
+        f"Tone: {data.tone or 'professional'}",
+        f"Format: {data.format_style or 'structured'}",
+    ]
+    scenario_context = format_scenarios_for_generation_context(linked_scenarios)
+    if scenario_context:
+        user_prompt_parts.extend(["", scenario_context])
+    user_prompt_parts.extend([
+        "",
+        "Generate a comprehensive, well-formatted agent description in markdown.",
+    ])
+    user_prompt = "\n".join(user_prompt_parts)
 
     messages = [
         {"role": "system", "content": GENERATE_AGENT_DESCRIPTION_SYSTEM},
@@ -93,7 +157,11 @@ async def generate_agent_description(
             temperature=0.7,
             max_tokens=4000,
         )
-        return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
+        content = result["text"]
+        if data.append_scenarios_to_output and linked_scenarios:
+            appendix = format_scenarios_reference_appendix(linked_scenarios)
+            content = merge_generated_description_with_scenario_appendix(content, appendix)
+        return {"content": content, "provider": provider_enum.value, "model": model_str}
     except Exception as e:
         logger.error(f"[Agents] AI description generation failed: {repr(e)}")
         raise HTTPException(500, f"AI generation failed: {str(e)}")
@@ -234,7 +302,8 @@ async def create_agent(
         voice_bundle_id=agent.voice_bundle_id,
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
-        voice_ai_agent_id=agent.voice_ai_agent_id
+        voice_ai_agent_id=agent.voice_ai_agent_id,
+        silence_hangup_secs=agent.silence_hangup_secs,
     )
     db.add(db_agent)
     db.commit()

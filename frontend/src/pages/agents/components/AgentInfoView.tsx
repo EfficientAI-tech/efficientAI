@@ -30,6 +30,7 @@ interface Agent {
   provider_prompt_synced_at?: string | null
   call_type: string
   call_medium: string
+  silence_hangup_secs?: number
   created_at: string
   updated_at: string
   voice_bundle_id?: string | null
@@ -147,6 +148,14 @@ export default function AgentInfoView({
               {agent.call_medium === 'phone_call' ? 'Phone Call' : 'Web Call'}
             </dd>
           </div>
+          <div>
+            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Silence hangup</dt>
+            <dd className="mt-1 text-sm text-gray-900">
+              {(agent.silence_hangup_secs ?? 15) === 0
+                ? 'Disabled'
+                : `${agent.silence_hangup_secs ?? 15} seconds`}
+            </dd>
+          </div>
           {agent.phone_number && (
             <div>
               <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Phone Number</dt>
@@ -206,7 +215,9 @@ export default function AgentInfoView({
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <h4 className="text-sm font-semibold text-gray-900">Test Agent Prompt</h4>
-            <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
+            <div className="flex items-center gap-2 flex-wrap">
+              <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
+            </div>
           </div>
 
           {testPromptView === 'text' ? (

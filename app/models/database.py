@@ -477,6 +477,8 @@ class Agent(Base):
     # Voice AI agent integration (Retell, Vapi, etc.)
     voice_ai_integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True, index=True)
     voice_ai_agent_id = Column(String, nullable=True)  # Agent ID from the external provider (Retell/Vapi)
+    prompt_variables = Column(JSON, nullable=True)
+    silence_hangup_secs = Column(Integer, nullable=False, server_default="15")
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -786,6 +788,7 @@ class EvaluatorSuite(Base):
     tags = Column(JSON, nullable=True)
     default_runs_per_combination = Column(Integer, nullable=False, default=1)
     round_robin_index = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1072,7 +1075,12 @@ class CallRecording(Base):
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Reference to our agent
     
     # Link to EvaluatorResult for metric evaluations
-    evaluator_result_id = Column(UUID(as_uuid=True), ForeignKey("evaluator_results.id"), nullable=True, index=True)
+    evaluator_result_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_results.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

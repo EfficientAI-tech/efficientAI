@@ -37,48 +37,6 @@ const DEFAULT_SCENARIO_NAMES = [
   'Make Complaint',
   'Product Inquiry',
 ]
-import { getProviderLabel, getProviderLogo } from '../../../config/providers'
-import LLMAdvancedOptionsPanel from '../../../components/providers/LLMAdvancedOptionsPanel'
-import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
-import { providerHasLLMModels } from '../../../lib/llmModelOptions'
-
-interface Evaluator {
-  id: string
-  evaluator_id: string
-  name?: string | null
-  agent_id?: string | null
-  persona_id?: string | null
-  scenario_id?: string | null
-  custom_prompt?: string | null
-  metric_ids?: string[] | null
-  llm_provider?: string | null
-  llm_model?: string | null
-  llm_config?: LLMGenerationConfig | null
-  tags?: string[]
-  created_at: string
-  updated_at: string
-}
-
-const markdownComponents = {
-  h1: ({ children }: any) => <h1 className="text-xl font-bold text-gray-900 mt-5 mb-2 first:mt-0 border-b border-gray-200 pb-1">{children}</h1>,
-  h2: ({ children }: any) => <h2 className="text-lg font-semibold text-gray-800 mt-4 mb-2 first:mt-0">{children}</h2>,
-  h3: ({ children }: any) => <h3 className="text-base font-semibold text-gray-800 mt-3 mb-1 first:mt-0">{children}</h3>,
-  h4: ({ children }: any) => <h4 className="text-sm font-semibold text-gray-800 mt-2 mb-1 first:mt-0">{children}</h4>,
-  p: ({ children }: any) => <p className="text-sm text-gray-700 mb-2 leading-relaxed">{children}</p>,
-  ul: ({ children }: any) => <ul className="list-disc list-inside text-sm text-gray-700 mb-2 space-y-1 ml-2">{children}</ul>,
-  ol: ({ children }: any) => <ol className="list-decimal list-inside text-sm text-gray-700 mb-2 space-y-1 ml-2">{children}</ol>,
-  li: ({ children }: any) => <li className="text-sm text-gray-700">{children}</li>,
-  strong: ({ children }: any) => <strong className="font-semibold text-gray-900">{children}</strong>,
-  em: ({ children }: any) => <em className="italic text-gray-600">{children}</em>,
-  code: ({ children }: any) => <code className="bg-gray-100 text-pink-600 text-xs px-1.5 py-0.5 rounded font-mono">{children}</code>,
-  pre: ({ children }: any) => <pre className="bg-gray-900 text-gray-100 text-xs p-3 rounded-md overflow-x-auto mb-2 font-mono">{children}</pre>,
-  blockquote: ({ children }: any) => <blockquote className="border-l-4 border-gray-300 pl-3 italic text-gray-600 text-sm my-2">{children}</blockquote>,
-  hr: () => <hr className="my-3 border-gray-200" />,
-  a: ({ children, href }: any) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{children}</a>,
-  table: ({ children }: any) => <table className="w-full border-collapse text-sm mb-2">{children}</table>,
-  th: ({ children }: any) => <th className="border border-gray-300 px-2 py-1 bg-gray-50 text-left font-semibold text-gray-800">{children}</th>,
-  td: ({ children }: any) => <td className="border border-gray-300 px-2 py-1 text-gray-700">{children}</td>,
-}
 
 export default function EvaluatorDetail() {
   const { id } = useParams<{ id: string }>()
@@ -101,6 +59,9 @@ export default function EvaluatorDetail() {
     queryFn: () => apiClient.getEvaluatorSuite(id!),
     enabled: !!id,
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.agent_call_type === 'inbound' ? 12_000 : false,
+    refetchIntervalInBackground: false,
   })
 
   const { data: agent } = useQuery({
@@ -110,9 +71,9 @@ export default function EvaluatorDetail() {
   })
 
   const { data: scenarios = [] } = useQuery({
-    queryKey: ['scenarios'],
-    queryFn: () => apiClient.listScenarios(),
-    enabled: isEditing,
+    queryKey: ['scenarios', suite?.agent_id],
+    queryFn: () => apiClient.listScenarios(0, 100, suite!.agent_id),
+    enabled: isEditing && !!suite?.agent_id,
   })
 
   const { data: metrics = [] } = useQuery({
@@ -164,33 +125,6 @@ export default function EvaluatorDetail() {
       showToast(err?.response?.data?.detail || 'Failed to add scenario', 'error')
     },
   })
-  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
-    const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
-    switch (platformLower) {
-      case 'deepgram': return ModelProvider.DEEPGRAM
-      case 'cartesia': return ModelProvider.CARTESIA
-      case 'elevenlabs': return ModelProvider.ELEVENLABS
-      case 'murf': return ModelProvider.MURF
-      case 'sarvam': return ModelProvider.SARVAM
-      case 'voicemaker': return ModelProvider.VOICEMAKER
-      default: return null
-    }
-  }
-
-  const configuredProviders = Array.from(
-    new Set([
-      ...(aiproviders.filter((p: AIProvider) => p.is_active).map((p: AIProvider) => p.provider as ModelProvider)),
-      ...(integrations.filter((i: Integration) => i.is_active).map((i: Integration) => mapIntegrationToProvider(i.platform)).filter((p): p is ModelProvider => Boolean(p))),
-    ])
-  )
-
-  const llmProviders = configuredProviders.filter((p) =>
-    providerHasLLMModels(
-      p,
-      modelConfigs[p]?.llm ?? [],
-      aiproviders,
-    ),
-  )
 
   const removeScenarioMutation = useMutation({
     mutationFn: (scenarioId: string) => apiClient.removeEvaluatorSuiteScenario(id!, scenarioId),
@@ -209,6 +143,17 @@ export default function EvaluatorDetail() {
       queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       navigate('/evaluate-test-agents')
       showToast('Suite deleted', 'success')
+    },
+  })
+
+  const activateMutation = useMutation({
+    mutationFn: () => apiClient.activateEvaluatorSuite(id!),
+    onSuccess: () => {
+      invalidateSuite()
+      showToast('Active suite updated for this agent', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to activate suite', 'error')
     },
   })
 
@@ -286,16 +231,19 @@ export default function EvaluatorDetail() {
 
       <EvaluatorDetailHeader
         title={displayTitle}
-        subtitle={!isEditing ? `${suite.combination_count} scenario combination${suite.combination_count !== 1 ? 's' : ''}` : undefined}
+        subtitle={!isEditing ? `${suite.combination_count} scenario combination${suite.combination_count !== 1 ? 's' : ''}${suite.agent_suite_count > 1 ? ` · ${suite.agent_suite_count} suites for this agent` : ''}` : undefined}
         callMedium={suite.agent_call_medium}
         callType={suite.agent_call_type}
         isEditing={isEditing}
         isInbound={isInbound}
+        isActive={suite.is_active}
         isSaving={updateMutation.isPending}
+        isActivating={activateMutation.isPending}
         onEdit={handleStartEdit}
         onCancelEdit={() => setIsEditing(false)}
         onSave={handleSave}
         onRun={() => setShowRunModal(true)}
+        onActivate={() => activateMutation.mutate()}
         onDelete={() => setShowDeleteModal(true)}
       />
 
@@ -399,7 +347,12 @@ export default function EvaluatorDetail() {
       </div>
 
       {isInbound ? (
-        <EvaluatorInboundCallPanel suite={suite} agentPhoneNumber={agent?.phone_number} />
+        <EvaluatorInboundCallPanel
+          suite={suite}
+          agentPhoneNumber={agent?.phone_number}
+          onSuiteUpdated={invalidateSuite}
+          showToast={showToast}
+        />
       ) : firstCombo ? (
         <EvaluatorOutboundCallPanel
           evaluatorId={firstCombo.id}

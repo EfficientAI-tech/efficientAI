@@ -19,6 +19,7 @@ from app.models.schemas import (
     RunEvaluatorSuiteResponse,
     RunNextCombinationRequest,
     RunNextCombinationResponse,
+    ChooseNextCombinationResponse,
 )
 from app.services.billing.flexprice_service import record_evaluator_run_requested
 from app.services.evaluators.evaluator_helpers import expand_suite_runs, load_suite_combinations
@@ -28,6 +29,7 @@ from app.services.evaluators.evaluator_phone_run_service import (
 )
 from app.services.evaluators.evaluator_run_service import queue_evaluator_runs
 from app.services.evaluators.evaluator_suite_service import (
+    activate_evaluator_suite,
     add_scenarios_to_suite,
     create_evaluator_suite,
     delete_evaluator_suite,
@@ -75,7 +77,7 @@ def list_suites(
             EvaluatorSuite.organization_id == organization_id,
             EvaluatorSuite.workspace_id == workspace_id,
         )
-        .order_by(EvaluatorSuite.created_at.desc())
+        .order_by(EvaluatorSuite.agent_id, EvaluatorSuite.is_active.desc(), EvaluatorSuite.created_at.desc())
         .all()
     )
     return [_build_suite_response(db, suite) for suite in suites]
@@ -126,6 +128,18 @@ def remove_scenario(
 ):
     suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
     return remove_scenario_from_suite(db, suite, scenario_id)
+
+
+@router.post("/{suite_id}/activate", response_model=EvaluatorSuiteResponse)
+def activate_suite(
+    suite_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Set this suite as the active inbound configuration for its agent."""
+    suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
+    return activate_evaluator_suite(db, suite)
 
 
 @router.delete("/{suite_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -210,6 +224,44 @@ def run_suite(
     )
 
 
+@router.post("/{suite_id}/choose-next", response_model=ChooseNextCombinationResponse)
+def choose_next_combination(
+    suite_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Advance inbound round-robin to the next scenario without placing a call."""
+    suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
+    agent = db.query(Agent).filter(Agent.id == suite.agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if (agent.call_type or "outbound").lower() != "inbound":
+        raise HTTPException(
+            status_code=400,
+            detail="choose-next is only for inbound agent suites",
+        )
+
+    if not suite.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail="Only the active suite for this agent can advance inbound rotation. Activate this suite first.",
+        )
+
+    selected, idx, next_index = pick_round_robin_combination(db, suite)
+    scenario = db.query(Scenario).filter(Scenario.id == selected.scenario_id).first()
+    scenario_name = scenario.name if scenario else "Unknown Scenario"
+
+    return ChooseNextCombinationResponse(
+        evaluator_id=selected.id,
+        scenario_id=selected.scenario_id,
+        scenario_name=scenario_name,
+        combination_index=idx,
+        next_index=next_index,
+    )
+
+
 @router.post("/{suite_id}/run-next", response_model=RunNextCombinationResponse)
 def run_next_combination(
     suite_id: UUID,
@@ -222,6 +274,12 @@ def run_next_combination(
     agent = db.query(Agent).filter(Agent.id == suite.agent_id).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    if (agent.call_type or "outbound").lower() == "inbound":
+        raise HTTPException(
+            status_code=400,
+            detail="Inbound suites use POST /evaluator-suites/{id}/choose-next to advance rotation without placing a call",
+        )
 
     if not agent.phone_number:
         raise HTTPException(status_code=400, detail="Agent has no inbound phone number configured")

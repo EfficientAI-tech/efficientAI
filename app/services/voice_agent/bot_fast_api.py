@@ -12,13 +12,12 @@ allowing the API/worker to start without loading Google AI SDKs at import time.
 
 import os
 import sys
-import wave
 import tempfile
 import time
 
-import numpy as np
 from loguru import logger
 
+from app.services.voice_agent.audio_recorder import get_audio_recorder_class
 from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
 
 
@@ -99,127 +98,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-def _create_audio_recorder_class():
-    """Create AudioRecorder class with lazy imports."""
-    imports = _get_imports()
-    FrameProcessor = imports["FrameProcessor"]
-    AudioRawFrame = imports["AudioRawFrame"]
-    EndFrame = imports["EndFrame"]
-    CancelFrame = imports["CancelFrame"]
-    
-    class AudioRecorder(FrameProcessor):
-        def __init__(self, filename: str, start_time: float, target_sample_rate: int = 24000, recorder_name: str = "AudioRecorder"):
-            super().__init__()
-            self.filename = filename
-            self.start_time = start_time
-            self.target_sample_rate = target_sample_rate
-            self.recorder_name = recorder_name
-            self.wave_file = None
-            self.params_set = False
-            self.sample_rate = 0
-            self.num_channels = 0
-            self.frames_received = 0
-            self.audio_frames_received = 0
-            self.last_frame_time = None
-            self.total_samples_written = 0
-
-        def _resample_audio(self, audio_bytes: bytes, in_rate: int, out_rate: int, num_channels: int) -> bytes:
-            """Resample audio using simple linear interpolation."""
-            if in_rate == out_rate:
-                return audio_bytes
-            
-            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-            
-            if num_channels > 1:
-                audio_array = audio_array.reshape(-1, num_channels)
-            
-            ratio = out_rate / in_rate
-            original_length = len(audio_array)
-            new_length = int(original_length * ratio)
-            
-            old_indices = np.arange(original_length)
-            new_indices = np.linspace(0, original_length - 1, new_length)
-            
-            if num_channels > 1:
-                resampled = np.zeros((new_length, num_channels), dtype=np.int16)
-                for ch in range(num_channels):
-                    resampled[:, ch] = np.interp(new_indices, old_indices, audio_array[:, ch]).astype(np.int16)
-                return resampled.tobytes()
-            else:
-                resampled = np.interp(new_indices, old_indices, audio_array).astype(np.int16)
-                return resampled.tobytes()
-
-        async def process_frame(self, frame, direction):
-            await super().process_frame(frame, direction)
-            
-            self.frames_received += 1
-            
-            if isinstance(frame, AudioRawFrame):
-                self.audio_frames_received += 1
-                if not self.wave_file:
-                    try:
-                        self.wave_file = wave.open(self.filename, 'wb')
-                        self.num_channels = frame.num_channels
-                        self.sample_rate = self.target_sample_rate
-                        self.wave_file.setnchannels(self.num_channels)
-                        self.wave_file.setsampwidth(2)
-                        self.wave_file.setframerate(self.sample_rate)
-                        self.params_set = True
-                    except Exception as e:
-                        logger.error(f"Failed to open wave file {self.filename}: {e}")
-                
-                if self.wave_file and self.params_set:
-                    try:
-                        current_time = time.time()
-                        
-                        if frame.sample_rate != self.sample_rate:
-                            audio_to_write = self._resample_audio(
-                                frame.audio,
-                                frame.sample_rate,
-                                self.sample_rate,
-                                frame.num_channels
-                            )
-                        else:
-                            audio_to_write = frame.audio
-                        
-                        if frame.num_channels != self.num_channels:
-                            logger.warning(
-                                f"Channel mismatch: expected {self.num_channels}ch, got {frame.num_channels}ch. Skipping frame."
-                            )
-                        else:
-                            elapsed_time = current_time - self.start_time
-                            expected_samples = int(elapsed_time * self.sample_rate)
-                            
-                            if expected_samples > self.total_samples_written:
-                                samples_to_pad = expected_samples - self.total_samples_written
-                                if samples_to_pad <= self.sample_rate:
-                                    silence_bytes = b'\x00' * (samples_to_pad * self.num_channels * 2)
-                                    self.wave_file.writeframes(silence_bytes)
-                                    self.total_samples_written += samples_to_pad
-                            
-                            num_samples = len(audio_to_write) // (self.num_channels * 2)
-                            self.wave_file.writeframes(audio_to_write)
-                            self.total_samples_written += num_samples
-                            self.last_frame_time = current_time
-                    except Exception as e:
-                        logger.error(f"Error writing audio frame: {e}")
-            
-            elif isinstance(frame, (EndFrame, CancelFrame)):
-                if self.wave_file:
-                    self.wave_file.close()
-                    self.wave_file = None
-            
-            await self.push_frame(frame, direction)
-
-        async def cleanup(self):
-            if self.wave_file:
-                self.wave_file.close()
-                self.wave_file = None
-    
-    return AudioRecorder
-
-
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -231,7 +110,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     """
     # Lazy load all efficientai dependencies
     imports = _get_imports()
-    AudioRecorder = _create_audio_recorder_class()
+    AudioRecorder = get_audio_recorder_class()
     
     # Initialize variables for return values
     call_start_time = time.time()
@@ -242,12 +121,25 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     
     try:
         transport_serializer = serializer or imports["ProtobufFrameSerializer"]()
+        from app.services.voice_agent.tts_sample_rate import (
+            resolve_websocket_audio_in_sample_rate_hz,
+            resolve_websocket_audio_out_sample_rate_hz,
+        )
+
+        transport_in_sample_rate = resolve_websocket_audio_in_sample_rate_hz(
+            telephony_mode=telephony_mode,
+        )
+        transport_out_sample_rate = resolve_websocket_audio_out_sample_rate_hz(
+            telephony_mode=telephony_mode,
+        )
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 add_wav_header=False,
+                audio_in_sample_rate=transport_in_sample_rate if telephony_mode else None,
+                audio_out_sample_rate=transport_out_sample_rate if telephony_mode else None,
                 vad_analyzer=imports["SileroVADAnalyzer"](),
                 serializer=transport_serializer,
             ),
@@ -301,11 +193,20 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         
         # Use a common start time for synchronization
         start_time = time.time()
+        recorder_alignment = "stream" if telephony_mode else "wall_clock"
         user_recorder = AudioRecorder(
-            user_audio_path, start_time, target_sample_rate=recorder_sample_rate, recorder_name="UserAudioRecorder"
+            user_audio_path,
+            start_time,
+            target_sample_rate=recorder_sample_rate,
+            recorder_name="UserAudioRecorder",
+            alignment_mode=recorder_alignment,
         )
         bot_recorder = AudioRecorder(
-            bot_audio_path, start_time, target_sample_rate=recorder_sample_rate, recorder_name="BotAudioRecorder"
+            bot_audio_path,
+            start_time,
+            target_sample_rate=recorder_sample_rate,
+            recorder_name="BotAudioRecorder",
+            alignment_mode=recorder_alignment,
         )
 
         from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
@@ -316,12 +217,26 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             create_live_transcript_processor(call_short_id) if telephony_mode and call_short_id else None
         )
 
+        pipeline_task_ref: list = []
+
+        async def on_silence_hangup():
+            if pipeline_task_ref:
+                await pipeline_task_ref[0].cancel()
+
+        silence_hangup_processor = None
+        if silence_hangup_secs is not None and silence_hangup_secs > 0:
+            from app.services.voice_agent.call_silence_hangup import CallSilenceHangupProcessor
+
+            silence_hangup_processor = CallSilenceHangupProcessor(
+                timeout_secs=silence_hangup_secs,
+                on_hangup=on_silence_hangup,
+            )
+
         if telephony_mode:
-            pipeline_processors = [
-                ws_transport.input(),
-                user_recorder,
-                context_aggregator.user(),
-            ]
+            pipeline_processors = [ws_transport.input()]
+            if silence_hangup_processor:
+                pipeline_processors.append(silence_hangup_processor)
+            pipeline_processors.extend([user_recorder, context_aggregator.user()])
             if user_transcript_processor:
                 pipeline_processors.append(user_transcript_processor)
             pipeline_processors.append(llm)
@@ -338,8 +253,11 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 params=imports["PipelineParams"](
                     enable_metrics=True,
                     enable_usage_metrics=True,
+                    audio_in_sample_rate=transport_in_sample_rate,
+                    audio_out_sample_rate=transport_out_sample_rate,
                 ),
             )
+            pipeline_task_ref.append(task)
 
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):

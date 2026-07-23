@@ -17,6 +17,8 @@ interface FormData {
   phone_number: string
   language: string
   description: string
+  prompt_variables: Record<string, string>
+  silence_hangup_secs: number
   call_type: string
   call_medium: 'phone_call' | 'web_call'
   telephony_phone_number_id: string
@@ -47,6 +49,8 @@ export default function AgentDetail() {
     phone_number: '',
     language: 'en',
     description: '',
+    prompt_variables: {},
+    silence_hangup_secs: 15,
     call_type: 'outbound',
     call_medium: 'phone_call',
     telephony_phone_number_id: '',
@@ -83,6 +87,8 @@ export default function AgentDetail() {
         phone_number: agent.phone_number || '',
         language: agent.language,
         description: agent.description || '',
+        prompt_variables: agent.prompt_variables || {},
+        silence_hangup_secs: agent.silence_hangup_secs ?? 15,
         call_type: agent.call_type,
         call_medium: agent.call_medium || 'phone_call',
         telephony_phone_number_id: agent.telephony_phone_number_id || '',
@@ -103,6 +109,8 @@ export default function AgentDetail() {
       }
 
       payload.description = data.description?.trim() || null
+      payload.prompt_variables = data.prompt_variables || {}
+      payload.silence_hangup_secs = data.silence_hangup_secs ?? 15
 
       if (data.call_medium === 'phone_call') {
         payload.phone_number = data.phone_number?.trim() || null
@@ -218,6 +226,8 @@ export default function AgentDetail() {
         phone_number: agent.phone_number || '',
         language: agent.language,
         description: agent.description || '',
+        prompt_variables: agent.prompt_variables || {},
+        silence_hangup_secs: agent.silence_hangup_secs ?? 15,
         call_type: agent.call_type,
         call_medium: agent.call_medium || 'phone_call',
         telephony_phone_number_id: agent.telephony_phone_number_id || '',
@@ -359,6 +369,7 @@ export default function AgentDetail() {
                   `${formData.name || agent.name} System Prompt`
                 )
               }
+              agentId={agent.id}
             />
           )}
         </div>

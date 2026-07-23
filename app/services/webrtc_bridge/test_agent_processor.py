@@ -66,6 +66,8 @@ class TestAgentConfig:
     # Context about the voice AI agent being tested
     agent_name: str = "Voice AI Agent"
     agent_description: str = "A voice AI assistant"
+    test_agent_simulation_prompt: Optional[str] = None
+    caller_system_prompt: Optional[str] = None
     
     # LLM config
     llm_model: str = "gpt-4o-mini"
@@ -126,22 +128,26 @@ class TestAgentProcessor:
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the LLM based on persona/scenario."""
+        if self.config.caller_system_prompt:
+            return self.config.caller_system_prompt
+        simulation = self.config.test_agent_simulation_prompt or (
+            f"Agent under test: {self.config.agent_name}\n\n"
+            f"Agent system prompt:\n{self.config.agent_description}\n\n"
+            f"Active test scenario:\n"
+            f"Description: {self.config.scenario_description}\n"
+            f"Goal: {self.config.scenario_goal}"
+        )
         return f"""You are simulating a caller in a voice conversation. Your role is to test a voice AI agent.
 
-WHO YOU ARE CALLING:
-- Agent Name: {self.config.agent_name}
-- Agent Role: {self.config.agent_description}
+TEST AGENT SIMULATION PROMPT
+{simulation}
 
-YOUR PERSONA (who you are pretending to be):
+PERSONA
 - Name: {self.config.persona_name}
 - Description: {self.config.persona_description}
 
-SCENARIO:
-- Description: {self.config.scenario_description}
-- Goal: {self.config.scenario_goal}
-
 INSTRUCTIONS:
-1. You are CALLING the voice AI agent described above
+1. You are CALLING the voice AI agent described in the test agent simulation prompt
 2. Stay in character as the persona described
 3. Follow the scenario and work toward the goal
 4. Speak naturally as if on a phone call
@@ -151,7 +157,7 @@ INSTRUCTIONS:
 8. If the conversation naturally concludes or you've achieved the goal, say goodbye
 9. Respond ONLY with what you would say - no stage directions or descriptions
 
-Your first message should naturally introduce yourself or state your reason for calling.
+You are calling: {self.config.agent_name}
 After {self.config.max_turns} exchanges, wrap up the conversation politely."""
 
     async def initialize(self):

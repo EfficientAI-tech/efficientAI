@@ -254,6 +254,7 @@ def make_evaluator(
             organization_id=org_id,
             workspace_id=overrides.get("workspace_id", default_workspace.id),
             name=overrides.get("name", "Evaluator A"),
+            suite_id=overrides.get("suite_id"),
             agent_id=agent_id,
             persona_id=persona_id,
             scenario_id=scenario_id,

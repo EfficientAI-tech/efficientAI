@@ -292,7 +292,7 @@ function getEvaluatorsWalkthrough(state?: EvaluatorsWalkthroughState): Walkthrou
         {
           title: 'Step 4: Review & save',
           description: 'Set default runs per combination and create the suite.',
-          bullets: ['Outbound total runs = combinations × runs per combination', 'Inbound uses round-robin Run next'],
+          bullets: ['Outbound total runs = combinations × runs per combination', 'Inbound: rotation on incoming calls; Choose next to skip ahead'],
         },
       ],
     }

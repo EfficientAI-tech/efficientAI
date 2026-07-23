@@ -36,9 +36,14 @@ EfficientAI supports three scenario creation paths:
 
 Scenarios are used to:
 
-- guide persona behavior during tests,
+- compose the **test agent simulation prompt** with the linked agent's core prompt during evaluator runs (web and phone simulator paths),
+- guide persona behavior during tests via a dedicated **Persona** section in the simulator LLM prompt,
 - provide evaluation context for scoring,
 - keep testing reproducible across repeated runs.
+
+Link scenarios to an agent with `agent_id` for organization and filtering on the Scenarios page. Linked scenarios can also inform AI **Generate Description** on the agent (context only).
+
+Filter the scenario list by **linked agent** (all, unlinked, or a specific test agent) from the Scenarios header.
 
 A good scenario is specific enough to be measurable, but open enough to preserve natural conversation flow.
 

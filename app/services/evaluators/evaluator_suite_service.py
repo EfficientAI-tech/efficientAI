@@ -31,6 +31,21 @@ from app.models.schemas import (
 )
 
 
+def _agent_suite_count(
+    db: Session,
+    workspace_id: UUID,
+    agent_id: UUID,
+) -> int:
+    return (
+        db.query(EvaluatorSuite)
+        .filter(
+            EvaluatorSuite.workspace_id == workspace_id,
+            EvaluatorSuite.agent_id == agent_id,
+        )
+        .count()
+    )
+
+
 def _build_suite_response(
     db: Session,
     suite: EvaluatorSuite,
@@ -83,6 +98,8 @@ def _build_suite_response(
         tags=suite.tags,
         default_runs_per_combination=suite.default_runs_per_combination or 1,
         round_robin_index=suite.round_robin_index or 0,
+        is_active=bool(getattr(suite, "is_active", False)),
+        agent_suite_count=_agent_suite_count(db, suite.workspace_id, suite.agent_id),
         combination_count=len(combo_responses),
         combinations=combo_responses,
         created_at=suite.created_at,
@@ -109,6 +126,21 @@ def get_suite_or_404(
     if not suite:
         raise HTTPException(status_code=404, detail="Evaluator suite not found")
     return suite
+
+
+def _validate_scenarios_for_agent(
+    scenarios: List[Scenario],
+    agent_id: UUID,
+) -> None:
+    for scenario in scenarios:
+        if scenario.agent_id != agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Scenario '{scenario.name}' is not linked to the selected agent. "
+                    "Link the scenario to this agent before adding it to the suite."
+                ),
+            )
 
 
 def _create_child_evaluators(
@@ -176,8 +208,19 @@ def create_evaluator_suite(
     if len(scenarios) != len(set(data.scenario_ids)):
         raise HTTPException(status_code=404, detail="One or more scenarios not found")
 
+    _validate_scenarios_for_agent(scenarios, data.agent_id)
+
     validate_agent_persona_tts(db, agent, persona)
     validated_metric_ids = validate_metric_ids(db, organization_id, data.metric_ids)
+
+    existing_for_agent = (
+        db.query(EvaluatorSuite)
+        .filter(
+            EvaluatorSuite.workspace_id == workspace_id,
+            EvaluatorSuite.agent_id == data.agent_id,
+        )
+        .count()
+    )
 
     suite = EvaluatorSuite(
         organization_id=organization_id,
@@ -192,6 +235,7 @@ def create_evaluator_suite(
         tags=data.tags,
         default_runs_per_combination=data.default_runs_per_combination,
         round_robin_index=0,
+        is_active=existing_for_agent == 0,
     )
     db.add(suite)
     db.flush()
@@ -279,6 +323,8 @@ def add_scenarios_to_suite(
     if len(scenarios) != len(new_ids):
         raise HTTPException(status_code=404, detail="One or more scenarios not found")
 
+    _validate_scenarios_for_agent(scenarios, suite.agent_id)
+
     _create_child_evaluators(db, suite, new_ids, suite.metric_ids)
     db.commit()
     db.refresh(suite)
@@ -319,6 +365,9 @@ def remove_scenario_from_suite(
 
 
 def delete_evaluator_suite(db: Session, suite: EvaluatorSuite) -> None:
+    was_active = bool(getattr(suite, "is_active", False))
+    agent_id = suite.agent_id
+    workspace_id = suite.workspace_id
     combinations = load_suite_combinations(db, suite.id, suite.organization_id, suite.workspace_id)
     for combo in combinations:
         db.query(EvaluatorResult).filter(EvaluatorResult.evaluator_id == combo.id).update(
@@ -326,6 +375,36 @@ def delete_evaluator_suite(db: Session, suite: EvaluatorSuite) -> None:
         )
     db.delete(suite)
     db.commit()
+
+    if was_active:
+        replacement = (
+            db.query(EvaluatorSuite)
+            .filter(
+                EvaluatorSuite.workspace_id == workspace_id,
+                EvaluatorSuite.agent_id == agent_id,
+            )
+            .order_by(EvaluatorSuite.created_at.desc())
+            .first()
+        )
+        if replacement:
+            replacement.is_active = True
+            db.commit()
+
+
+def activate_evaluator_suite(
+    db: Session,
+    suite: EvaluatorSuite,
+) -> EvaluatorSuiteResponse:
+    """Mark this suite as the active inbound configuration for its agent."""
+    db.query(EvaluatorSuite).filter(
+        EvaluatorSuite.workspace_id == suite.workspace_id,
+        EvaluatorSuite.agent_id == suite.agent_id,
+        EvaluatorSuite.id != suite.id,
+    ).update({EvaluatorSuite.is_active: False}, synchronize_session=False)
+    suite.is_active = True
+    db.commit()
+    db.refresh(suite)
+    return _build_suite_response(db, suite)
 
 
 def pick_round_robin_combination(

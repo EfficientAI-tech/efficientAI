@@ -46,6 +46,10 @@ import type {
   CallImportEvaluationBulkActionResponse,
   CallImportEvaluationAggregateResponse,
   CallImportInsightsResponse,
+  EvaluatorResultListResponse,
+  EvaluatorResultsOverviewResponse,
+  EvaluatorResultsAggregateResponse,
+  ListEvaluatorResultsParams,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
   CallImportRetryFailedRowsResponse,
@@ -355,6 +359,8 @@ export interface EvaluatorSuite {
   tags?: string[] | null
   default_runs_per_combination: number
   round_robin_index: number
+  is_active: boolean
+  agent_suite_count: number
   combination_count: number
   combinations: EvaluatorSuiteCombination[]
   created_at: string
@@ -379,6 +385,14 @@ export interface RunNextCombinationResponse {
   task_id?: string | null
   phone_call_ref?: string | null
   call_short_id?: string | null
+}
+
+export interface ChooseNextCombinationResponse {
+  evaluator_id: string
+  scenario_id: string
+  scenario_name: string
+  combination_index: number
+  next_index: number
 }
 
 type TTSReportOptionsPayload = {
@@ -898,6 +912,7 @@ class ApiClient {
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string
+    prompt_variables?: Record<string, string>
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -926,6 +941,9 @@ class ApiClient {
     format_style?: string
     provider?: string
     model?: string
+    agent_id?: string
+    include_linked_scenarios?: boolean
+    append_scenarios_to_output?: boolean
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/agents/generate-description', data)
     return response.data
@@ -1034,9 +1052,9 @@ class ApiClient {
   }
 
   // Scenarios endpoints
-  async listScenarios(skip = 0, limit = 100): Promise<any[]> {
+  async listScenarios(skip = 0, limit = 100, agentId?: string): Promise<any[]> {
     const response = await this.client.get('/api/v1/scenarios', {
-      params: { skip, limit },
+      params: { skip, limit, ...(agentId ? { agent_id: agentId } : {}) },
     })
     return response.data
   }
@@ -2787,7 +2805,7 @@ class ApiClient {
     return response.data
   }
 
-  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }> {
+  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates?: number[] }> {
     const response = await this.client.get(`/api/v1/model-config/providers/${provider}/options`)
     const data = response.data
     // Ensure s2s and tts_voices are always present (for backward compatibility)
@@ -3300,6 +3318,16 @@ class ApiClient {
     return response.data
   }
 
+  async chooseNextCombination(suiteId: string): Promise<ChooseNextCombinationResponse> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/choose-next`)
+    return response.data
+  }
+
+  async activateEvaluatorSuite(suiteId: string): Promise<EvaluatorSuite> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/activate`)
+    return response.data
+  }
+
   // Metric endpoints
   async createMetric(data: {
     name: string
@@ -3414,18 +3442,64 @@ class ApiClient {
   }
 
   // Evaluator Results endpoints
-  async listEvaluatorResults(evaluatorId?: string, playground?: boolean, testAgentsOnly?: boolean): Promise<any[]> {
-    const params: any = {}
-    if (evaluatorId) {
-      params.evaluator_id = evaluatorId
-    }
-    if (playground !== undefined) {
-      params.playground = playground
-    }
-    if (testAgentsOnly !== undefined) {
-      params.test_agents_only = testAgentsOnly
+  async listEvaluatorResults(
+    paramsOrEvaluatorId?: ListEvaluatorResultsParams | string,
+    playground?: boolean,
+    testAgentsOnly?: boolean,
+    agentId?: string
+  ): Promise<EvaluatorResultListResponse> {
+    let params: Record<string, unknown> = {}
+    if (typeof paramsOrEvaluatorId === 'string' || paramsOrEvaluatorId === undefined) {
+      if (paramsOrEvaluatorId) {
+        params.evaluator_id = paramsOrEvaluatorId
+      }
+      if (agentId) {
+        params.agent_id = agentId
+      }
+      if (playground !== undefined) {
+        params.playground = playground
+      }
+      if (testAgentsOnly !== undefined) {
+        params.test_agents_only = testAgentsOnly
+      }
+    } else {
+      const p = paramsOrEvaluatorId
+      if (p.skip !== undefined) params.skip = p.skip
+      if (p.limit !== undefined) params.limit = p.limit
+      if (p.evaluatorId) params.evaluator_id = p.evaluatorId
+      if (p.agentId) params.agent_id = p.agentId
+      if (p.suiteId) params.suite_id = p.suiteId
+      if (p.scenarioId) params.scenario_id = p.scenarioId
+      if (p.status) params.status = p.status
+      if (p.unassignedOnly) params.unassigned_only = true
+      if (p.playground !== undefined) params.playground = p.playground
+      if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
+    return response.data
+  }
+
+  async getEvaluatorResultsOverview(params?: {
+    agentId?: string
+    suiteId?: string
+  }): Promise<EvaluatorResultsOverviewResponse> {
+    const query: Record<string, string> = {}
+    if (params?.agentId) query.agent_id = params.agentId
+    if (params?.suiteId) query.suite_id = params.suiteId
+    const response = await this.client.get('/api/v1/evaluator-results/overview', { params: query })
+    return response.data
+  }
+
+  async getEvaluatorResultsAggregate(params: {
+    suiteId?: string
+    agentId?: string
+    scenarioId?: string
+  }): Promise<EvaluatorResultsAggregateResponse> {
+    const query: Record<string, string> = {}
+    if (params.suiteId) query.suite_id = params.suiteId
+    if (params.agentId) query.agent_id = params.agentId
+    if (params.scenarioId) query.scenario_id = params.scenarioId
+    const response = await this.client.get('/api/v1/evaluator-results/aggregate', { params: query })
     return response.data
   }
 

@@ -11,6 +11,7 @@ from app.services.telephony.vobiz_session import create_call_session
 
 
 def _patch_vobiz_webhook_base(monkeypatch, url: str = "https://public.example.com") -> str:
+    wss = url.replace("https://", "wss://").replace("http://", "ws://")
     monkeypatch.setattr(
         "app.services.telephony.vobiz_agent_context.vobiz_webhook_base_url",
         lambda: url,
@@ -18,6 +19,10 @@ def _patch_vobiz_webhook_base(monkeypatch, url: str = "https://public.example.co
     monkeypatch.setattr(
         "app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url",
         lambda: url,
+    )
+    monkeypatch.setattr(
+        "app.services.media_urls.media_ws_base_url",
+        lambda: wss,
     )
     return url
 
@@ -274,7 +279,9 @@ def test_vobiz_events_webhook_updates_call_by_call_ref(client, db_session, org_i
     assert updated.call_data.get("ended_at")
 
 
+@patch("app.api.v1.routes.vobiz_telephony.ingest_carrier_recording_url")
 def test_vobiz_recording_ready_webhook_finds_call_by_request_uuid(
+    mock_ingest,
     client, db_session, org_id, seed_org, make_agent
 ):
     agent = make_agent()
@@ -310,6 +317,7 @@ def test_vobiz_recording_ready_webhook_finds_call_by_request_uuid(
     db_session.expire_all()
     updated = db_session.query(CallRecording).filter(CallRecording.id == row.id).first()
     assert updated.call_data.get("recording_url") == "https://recordings.example.com/call.wav"
+    mock_ingest.assert_called_once()
 
 
 @patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")

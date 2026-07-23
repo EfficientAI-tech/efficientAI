@@ -28,6 +28,7 @@ from app.services.telephony.call_recording_lifecycle import (
     create_inbound_call_recording,
     finalize_call_on_media_disconnect,
     find_call_recording,
+    ingest_carrier_recording_url,
     link_provider_call_id,
     mark_call_in_progress,
     update_call_from_vobiz_event,
@@ -375,17 +376,41 @@ async def vobiz_answer_webhook(
         return Response(content=reject_call("No active routing found for this number."), media_type="application/xml")
 
     if not session_token:
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        inbound_evaluator_id: Optional[UUID] = None
+        inbound_evaluator_result_id: Optional[UUID] = None
+        if agent and agent.workspace_id:
+            from app.services.evaluators.evaluator_inbound_service import (
+                consume_inbound_evaluator_combination,
+                create_inbound_evaluator_result,
+                find_inbound_suite_for_agent,
+            )
+
+            suite = find_inbound_suite_for_agent(
+                db, agent, organization_id, agent.workspace_id
+            )
+            if suite:
+                selected, _idx, _next_idx = consume_inbound_evaluator_combination(db, suite)
+                inbound_evaluator_id = selected.id
+                result_row = create_inbound_evaluator_result(
+                    db,
+                    organization_id,
+                    agent.workspace_id,
+                    selected,
+                )
+                inbound_evaluator_result_id = result_row.id
+
         session = create_call_session(
             agent_id=str(agent_id),
             organization_id=str(organization_id),
             direction="inbound",
             from_number=params.get("from"),
             to_number=params.get("to"),
+            evaluator_id=str(inbound_evaluator_id) if inbound_evaluator_id else None,
         )
         session_token = session.call_ref
         persona_id = None
         scenario_id = None
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if agent:
             inbound_row = create_inbound_call_recording(
                 db,
@@ -395,6 +420,8 @@ async def vobiz_answer_webhook(
                 from_number=params.get("from"),
                 to_number=params.get("to"),
                 provider_call_id=params.get("call_uuid"),
+                evaluator_id=inbound_evaluator_id,
+                evaluator_result_id=inbound_evaluator_result_id,
             )
             # region agent log
             from app.utils.debug_agent_log import agent_debug_log
@@ -511,6 +538,8 @@ async def vobiz_recording_ready_webhook(
             row.call_data = current
             flag_modified(row, "call_data")
             db.commit()
+            if recording_url:
+                ingest_carrier_recording_url(db, row, recording_url)
             # region agent log
             from app.utils.debug_agent_log import agent_debug_log
 
@@ -616,6 +645,9 @@ async def vobiz_media_websocket(websocket: WebSocket):
             )
 
             if context.use_voice_bundle_pipeline:
+                from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+                hangup_secs = resolve_agent_silence_hangup_secs(context.agent)
                 await run_voice_bundle_fastapi(
                     websocket,
                     context.system_instruction,
@@ -630,11 +662,15 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     serializer=serializer,
                     telephony_mode=True,
                     call_short_id=call_short_id,
+                    silence_hangup_secs=hangup_secs,
                 )
             else:
                 if not context.google_api_key:
                     await websocket.close(code=1011, reason="Google API key not configured for agent")
                     return
+                from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+                hangup_secs = resolve_agent_silence_hangup_secs(context.agent)
                 await run_bot(
                     websocket,
                     context.google_api_key,
@@ -647,6 +683,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     serializer=serializer,
                     telephony_mode=True,
                     call_short_id=call_short_id,
+                    silence_hangup_secs=hangup_secs,
                 )
         except ValueError as e:
             logger.error("Vobiz media websocket setup failed: {}", e)

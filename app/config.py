@@ -198,6 +198,10 @@ class Settings(BaseSettings):
         "cloudfront.net",
     ]
 
+    # Live telephony pipeline recording merge (dual-track → natural mono)
+    TELEPHONY_BOT_PLAYBACK_DELAY_MS: int = 400
+    TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT: float = 0.35
+
     # Judge Alignment (AlignEval-style hybrid integration).
     # Operator-only knobs. Per-org thresholds and judge model selection
     # live in the database / UI, not here.

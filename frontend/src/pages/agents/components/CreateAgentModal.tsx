@@ -4,10 +4,9 @@ import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneInc
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, ModelProvider, TelephonyProvider } from '../../../types/api'
-import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
+import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, TelephonyProvider } from '../../../types/api'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
 import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
 import { resolveLLMModelsForCredential, formatGatewayCredentialLabel } from '../../../lib/llmModelOptions'
 
 interface FormData {
@@ -21,6 +20,7 @@ interface FormData {
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
+  silence_hangup_secs: number
 }
 
 interface CreateAgentModalProps {
@@ -79,7 +79,8 @@ export default function CreateAgentModal({
     telephony_phone_number_id: '',
     voice_bundle_id: '',
     voice_ai_integration_id: '',
-    voice_ai_agent_id: ''
+    voice_ai_agent_id: '',
+    silence_hangup_secs: 15,
   })
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
@@ -227,6 +228,8 @@ export default function CreateAgentModal({
         payload.voice_ai_agent_id = data.voice_ai_agent_id.trim()
       }
 
+      payload.silence_hangup_secs = data.silence_hangup_secs ?? 15
+
       return apiClient.createAgent(payload)
     },
     onSuccess: () => {
@@ -250,7 +253,8 @@ export default function CreateAgentModal({
       telephony_phone_number_id: '',
       voice_bundle_id: '',
       voice_ai_integration_id: '',
-      voice_ai_agent_id: ''
+      voice_ai_agent_id: '',
+      silence_hangup_secs: 15,
     })
     setDescriptionEditorMode('write')
     setShowAIGeneratePanel(false)
@@ -570,6 +574,30 @@ export default function CreateAgentModal({
                 </button>
               ))}
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              End call after silence (seconds)
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={600}
+              step={1}
+              value={formData.silence_hangup_secs}
+              onChange={(e) => {
+                const parsed = parseInt(e.target.value, 10)
+                setFormData((prev) => ({
+                  ...prev,
+                  silence_hangup_secs: Number.isFinite(parsed) ? parsed : 15,
+                }))
+              }}
+              className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Default 15. Set 0 to disable automatic hangup on silence.
+            </p>
           </div>
             </>
           )}

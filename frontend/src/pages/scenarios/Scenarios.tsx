@@ -82,10 +82,20 @@ export default function Scenarios() {
 
   // For Generate from Call
   const [callData, setCallData] = useState('')
+  const [agentFilter, setAgentFilter] = useState<string>('')
 
   const { data: scenarios = [], isLoading } = useQuery({
-    queryKey: ['scenarios'],
-    queryFn: () => apiClient.listScenarios(),
+    queryKey: ['scenarios', agentFilter],
+    queryFn: async () => {
+      if (agentFilter === 'unlinked') {
+        const all = await apiClient.listScenarios()
+        return all.filter((s: Scenario) => !s.agent_id)
+      }
+      if (agentFilter) {
+        return apiClient.listScenarios(0, 100, agentFilter)
+      }
+      return apiClient.listScenarios()
+    },
   })
 
   const { data: aiProviders = [] } = useQuery({
@@ -573,6 +583,20 @@ export default function Scenarios() {
           <p className="text-gray-600 mt-1">Create and manage conversation scenarios for testing</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <select
+            value={agentFilter}
+            onChange={(e) => setAgentFilter(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            aria-label="Filter by linked agent"
+          >
+            <option value="">All agents</option>
+            <option value="unlinked">Unlinked</option>
+            {availableAgents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+              </option>
+            ))}
+          </select>
           <Button
             variant="primary"
             onClick={() => setShowMainModal(true)}

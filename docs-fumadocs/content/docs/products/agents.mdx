@@ -46,6 +46,7 @@ If both are configured, you can compare outcomes across both paths from Playgrou
 | `voice_bundle_id` | UUID | Internal test stack for voice-bundle testing. |
 | `voice_ai_integration_id` | UUID | External provider integration reference. |
 | `voice_ai_agent_id` | String | External provider agent identifier. |
+| `silence_hangup_secs` | Integer | End live voice sessions after this many seconds without speech from either party (default `15`; `0` disables). |
 
 ## Inbound vs outbound calls
 
@@ -75,6 +76,19 @@ Sync can happen:
 - manually through "Sync Now" in the agent view.
 
 This keeps local review and optimization aligned with what is currently running on the provider.
+
+### Test agent prompt composer
+
+When editing the **Test Agent Prompt**, use inline triggers while writing markdown:
+
+- Type **`{`** to insert **variables** (built-in placeholders such as `{agent_name}`, `{call_type}`, plus **custom variables** you define on the agent).
+- Type **`@`** to insert **prompt partials** (full markdown from your workspace library) or variables from the same menu.
+
+Built-in variables are placeholders for authoring; runtime substitution during calls is not applied automatically yet. Custom variables are stored on the agent as `prompt_variables` (key → optional description).
+
+AI **Generate Description** can optionally use scenarios linked via `Scenario.agent_id` as **LLM context only**; it does not append a scenario reference block to your prompt.
+
+During evaluator runs, the simulator LLM uses a composed **test agent simulation prompt** (core agent prompt, plus the **active scenario** for that run) plus a separate **Persona** section. Legacy **Test scenarios (reference)** sections in stored prompts are ignored at runtime. See [Scenarios](/docs/products/scenarios/) and [Prompt Partials](/docs/products/prompt-partials/).
 
 ## Related setup guides
 
