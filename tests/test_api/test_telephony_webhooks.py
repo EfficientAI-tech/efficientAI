@@ -89,7 +89,7 @@ def test_answer_webhook_rejects_invalid_signature(
 ):
     _seed_plivo_phone(db_session, org_id)
     monkeypatch.setattr(
-        "app.services.telephony.webhook_auth.validate_plivo_v1_webhook_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: False,
     )
 
@@ -108,7 +108,7 @@ def test_answer_webhook_accepts_valid_signature(
 ):
     _seed_plivo_phone(db_session, org_id)
     monkeypatch.setattr(
-        "app.services.telephony.webhook_auth.validate_plivo_v1_webhook_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: True,
     )
 
@@ -138,7 +138,7 @@ def test_events_webhook_accepts_valid_signature(
 ):
     recording = _seed_call_recording(db_session, org_id, call_uuid="known-call")
     monkeypatch.setattr(
-        "app.services.telephony.webhook_auth.validate_plivo_v1_webhook_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: True,
     )
 

@@ -17,10 +17,12 @@ from app.core.encryption import decrypt_api_key
 from app.models.database import CallRecording, TelephonyIntegration, TelephonyPhoneNumber
 from app.services.credentials.resolver import resolve_telephony_integration
 from app.services.telephony.plivo_client import normalize_e164
-from app.services.telephony.webhook_signature_v1 import (
-    compute_plivo_v1_webhook_signature,
-    validate_plivo_v1_webhook_signature,
+from app.services.telephony.carrier_webhook_signature import (
+    signature_header_names_for_log,
+    signature_headers_present,
+    validate_plivo_compatible_webhook_signature,
 )
+from app.services.telephony.webhook_signature_v1 import compute_plivo_v1_webhook_signature
 
 WebhookKind = Literal["answer", "events", "masking"]
 VobizWebhookKind = Literal["answer", "events", "recording"]
@@ -166,8 +168,7 @@ def verify_plivo_webhook(
     db: Session,
 ) -> None:
     """Validate X-Plivo-Signature before processing webhook params."""
-    signature = request.headers.get("X-Plivo-Signature")
-    if not signature:
+    if not signature_headers_present(request):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Missing webhook signature",
@@ -186,7 +187,13 @@ def verify_plivo_webhook(
 
     uri = build_plivo_webhook_uri(request)
     sign_params = signature_params_from_request(request, params)
-    if not validate_plivo_v1_webhook_signature(auth_token, uri, sign_params, signature):
+    if not validate_plivo_compatible_webhook_signature(
+        request,
+        auth_token=auth_token,
+        uri=uri,
+        sign_params=sign_params,
+        method=request.method,
+    ):
         logger.warning(
             "Plivo webhook rejected: invalid signature for kind={} uri={}",
             webhook_kind,
@@ -239,8 +246,7 @@ def verify_vobiz_webhook(
         logger.warning("Vobiz webhook signature verification is disabled (VOBIZ_WEBHOOK_VERIFY=false)")
         return
 
-    signature = request.headers.get("X-Plivo-Signature") or request.headers.get("X-Vobiz-Signature")
-    if not signature:
+    if not signature_headers_present(request):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Missing webhook signature",
@@ -264,22 +270,29 @@ def verify_vobiz_webhook(
 
     uri = build_vobiz_webhook_uri(request)
     sign_params = signature_params_from_request(request, params)
-    if not validate_plivo_v1_webhook_signature(auth_token, uri, sign_params, signature):
-        expected = compute_plivo_v1_webhook_signature(auth_token, uri, sign_params)
+    if not validate_plivo_compatible_webhook_signature(
+        request,
+        auth_token=auth_token,
+        uri=uri,
+        sign_params=sign_params,
+        method=request.method,
+    ):
+        expected_v1 = compute_plivo_v1_webhook_signature(auth_token, uri, sign_params)
         logger.warning(
             "Vobiz webhook rejected: invalid signature for kind={} uri={} sign_param_keys={} "
-            "(sign with the Vobiz auth_token for the To number's telephony integration, "
-            "or platform VOBIZ_AUTH_TOKEN if the number uses the platform account; "
-            "quote + in shell: --param 'To=+91...')",
+            "signature_headers={} (use hangup URL .../webhooks/events; sandbox auth_token must "
+            "match the Vobiz account for this number)",
             webhook_kind,
             uri,
             sorted(sign_params.keys()),
+            signature_header_names_for_log(request),
         )
         if settings.DEBUG:
+            v1_header = request.headers.get("X-Plivo-Signature") or request.headers.get("X-Vobiz-Signature")
             logger.debug(
-                "Vobiz webhook signature debug: expected={} received={}",
-                expected,
-                (signature or "").strip(),
+                "Vobiz webhook signature debug: v1_expected={} v1_header={}",
+                expected_v1,
+                (v1_header or "").strip(),
             )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

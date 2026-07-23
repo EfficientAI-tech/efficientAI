@@ -29,7 +29,7 @@ def _patch_vobiz_webhook_base(monkeypatch, url: str = "https://public.example.co
 
 def _patch_vobiz_webhook_signature(monkeypatch):
     monkeypatch.setattr(
-        "app.services.telephony.webhook_auth.validate_plivo_v1_webhook_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: True,
     )
     monkeypatch.setattr(
