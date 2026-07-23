@@ -363,7 +363,7 @@ async def vobiz_answer_webhook(
     params = extract_webhook_params(payload)
     if not call_ref:
         call_ref = request.query_params.get("call_ref")
-    verify_vobiz_webhook(request, params, "answer", db, call_ref=call_ref)
+    verify_vobiz_webhook(request, payload, "answer", db, call_ref=call_ref)
     logger.info(
         "Vobiz answer webhook To={} From={} call_ref={}",
         params.get("to"),
@@ -469,7 +469,7 @@ async def vobiz_events_webhook(
     payload = await _read_webhook_payload(request)
     params = extract_webhook_params(payload)
     call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
-    verify_vobiz_webhook(request, params, "events", db, call_ref=call_ref)
+    verify_vobiz_webhook(request, payload, "events", db, call_ref=call_ref)
     call_uuid = params.get("call_uuid")
     if not call_uuid:
         return {"status": "ignored"}
@@ -516,7 +516,7 @@ async def vobiz_recording_ready_webhook(
     payload = await _read_webhook_payload(request)
     params = extract_webhook_params(payload)
     call_ref = request.query_params.get("call_ref") or payload.get("call_ref")
-    verify_vobiz_webhook(request, params, "recording", db, call_ref=call_ref)
+    verify_vobiz_webhook(request, payload, "recording", db, call_ref=call_ref)
     recording_url = params.get("recording_url")
     call_uuid = params.get("call_uuid")
     logger.info(

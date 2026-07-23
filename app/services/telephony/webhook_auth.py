@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
@@ -14,9 +17,19 @@ from app.core.encryption import decrypt_api_key
 from app.models.database import CallRecording, TelephonyIntegration, TelephonyPhoneNumber
 from app.services.credentials.resolver import resolve_telephony_integration
 from app.services.telephony.plivo_client import normalize_e164
+from app.services.telephony.webhook_signature_v1 import (
+    compute_plivo_v1_webhook_signature,
+    validate_plivo_v1_webhook_signature,
+)
 
 WebhookKind = Literal["answer", "events", "masking"]
 VobizWebhookKind = Literal["answer", "events", "recording"]
+
+
+def signature_params_from_request(request: Request, payload: Dict[str, Any]) -> Dict[str, str]:
+    """POST body fields used for V1 signing (exclude query-string keys duplicated in payload)."""
+    query_keys = set(request.query_params.keys())
+    return {k: str(v) for k, v in payload.items() if k not in query_keys}
 
 
 def build_plivo_webhook_uri(request: Request) -> str:
@@ -77,7 +90,7 @@ def _resolve_auth_token_for_phone(
         .first()
     )
     if integration:
-        return decrypt_api_key(integration.auth_token)
+        return decrypt_api_key(integration.auth_token).strip().strip()
 
     if provider == "vobiz":
         return _platform_vobiz_auth_token()
@@ -92,7 +105,7 @@ def _platform_vobiz_auth_token() -> Optional[str]:
 def _auth_token_for_vobiz_org(db: Session, org_id: UUID) -> Optional[str]:
     integration = resolve_telephony_integration("vobiz", db, org_id)
     if integration:
-        return decrypt_api_key(integration.auth_token)
+        return decrypt_api_key(integration.auth_token).strip()
     return _platform_vobiz_auth_token()
 
 
@@ -171,16 +184,9 @@ def verify_plivo_webhook(
             detail="Invalid webhook signature",
         )
 
-    try:
-        from plivo.utils import validate_signature
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Plivo SDK is not installed",
-        ) from exc
-
     uri = build_plivo_webhook_uri(request)
-    if not validate_signature(auth_token, uri, params, signature):
+    sign_params = signature_params_from_request(request, params)
+    if not validate_plivo_v1_webhook_signature(auth_token, uri, sign_params, signature):
         logger.warning(
             "Plivo webhook rejected: invalid signature for kind={} uri={}",
             webhook_kind,
@@ -227,6 +233,12 @@ def verify_vobiz_webhook(
     call_ref: Optional[str] = None,
 ) -> None:
     """Validate Vobiz (Plivo-compatible) webhook signature before processing."""
+    from app.config import settings
+
+    if not settings.VOBIZ_WEBHOOK_VERIFY:
+        logger.warning("Vobiz webhook signature verification is disabled (VOBIZ_WEBHOOK_VERIFY=false)")
+        return
+
     signature = request.headers.get("X-Plivo-Signature") or request.headers.get("X-Vobiz-Signature")
     if not signature:
         raise HTTPException(
@@ -250,21 +262,25 @@ def verify_vobiz_webhook(
             detail="Invalid webhook signature",
         )
 
-    try:
-        from plivo.utils import validate_signature
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Plivo SDK is not installed",
-        ) from exc
-
     uri = build_vobiz_webhook_uri(request)
-    if not validate_signature(auth_token, uri, params, signature):
+    sign_params = signature_params_from_request(request, params)
+    if not validate_plivo_v1_webhook_signature(auth_token, uri, sign_params, signature):
+        expected = compute_plivo_v1_webhook_signature(auth_token, uri, sign_params)
         logger.warning(
-            "Vobiz webhook rejected: invalid signature for kind={} uri={}",
+            "Vobiz webhook rejected: invalid signature for kind={} uri={} sign_param_keys={} "
+            "(sign with the Vobiz auth_token for the To number's telephony integration, "
+            "or platform VOBIZ_AUTH_TOKEN if the number uses the platform account; "
+            "quote + in shell: --param 'To=+91...')",
             webhook_kind,
             uri,
+            sorted(sign_params.keys()),
         )
+        if settings.DEBUG:
+            logger.debug(
+                "Vobiz webhook signature debug: expected={} received={}",
+                expected,
+                (signature or "").strip(),
+            )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid webhook signature",

@@ -184,6 +184,7 @@ class Settings(BaseSettings):
     VOBIZ_API_BASE: str = "https://api.vobiz.ai"
     VOBIZ_MEDIA_BASE: str = "https://media.vobiz.ai"
     VOBIZ_WEBHOOK_BASE_URL: str = ""
+    VOBIZ_WEBHOOK_VERIFY: bool = True
     VOBIZ_FROM_NUMBER: str = ""
     VOBIZ_OUTBOUND_POOL: List[str] = []
     VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: int = 5
@@ -740,6 +741,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.VOBIZ_MEDIA_BASE = vobiz_cfg["media_base"]
         if vobiz_cfg.get("webhook_base_url"):
             settings.VOBIZ_WEBHOOK_BASE_URL = vobiz_cfg["webhook_base_url"]
+        if "webhook_verify" in vobiz_cfg:
+            settings.VOBIZ_WEBHOOK_VERIFY = bool(vobiz_cfg["webhook_verify"])
         if vobiz_cfg.get("media_ws_base_url"):
             settings.MEDIA_WS_BASE_URL = vobiz_cfg["media_ws_base_url"]
         if vobiz_cfg.get("from_number"):
