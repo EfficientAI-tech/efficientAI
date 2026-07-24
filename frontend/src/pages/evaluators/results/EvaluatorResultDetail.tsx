@@ -215,7 +215,7 @@ interface EvaluatorResultDetail {
     start: number
     end: number
   }> | null
-  metric_scores: Record<string, { value: any; type: string; metric_name: string; parent_metric_id?: string | null }> | null
+  metric_scores: Record<string, { value: any; type: string; metric_name: string; parent_metric_id?: string | null; rationale?: string | null }> | null
   error_message: string | null
   call_event?: string | null
   provider_call_id?: string | null
@@ -608,6 +608,15 @@ export default function EvaluatorResultDetailPage({
     if (value === null || value === undefined) return <span className="text-gray-300">--</span>
     
     const normalizedType = type?.toLowerCase()
+
+    if (normalizedType === 'category') {
+      if (value === '') return <span className="text-gray-300">--</span>
+      return (
+        <span className="inline-flex max-w-full items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 text-sm font-semibold whitespace-normal break-words leading-snug">
+          {String(value)}
+        </span>
+      )
+    }
     
     if (metricName === 'Emotion Category') {
       const emotion = String(value).toLowerCase()
@@ -704,6 +713,16 @@ export default function EvaluatorResultDetailPage({
     }
 
     return <span className="block max-w-full text-base font-semibold leading-snug text-gray-900 whitespace-normal break-words">{String(value)}</span>
+  }
+
+  const renderMetricRationale = (metric: { rationale?: string | null }) => {
+    const rationale = typeof metric.rationale === 'string' ? metric.rationale.trim() : ''
+    if (!rationale) return null
+    return (
+      <p className="mt-2 text-xs text-gray-600 leading-relaxed border-t border-gray-100 pt-2">
+        {rationale}
+      </p>
+    )
   }
 
   if (isLoading) {
@@ -988,6 +1007,7 @@ export default function EvaluatorResultDetailPage({
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                            {renderMetricRationale(metric)}
                           </div>
                         ))}
                       </div>
@@ -1010,6 +1030,7 @@ export default function EvaluatorResultDetailPage({
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                            {renderMetricRationale(metric)}
                           </div>
                         ))}
                       </div>
@@ -1032,6 +1053,7 @@ export default function EvaluatorResultDetailPage({
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                            {renderMetricRationale(metric)}
                           </div>
                         ))}
                       </div>

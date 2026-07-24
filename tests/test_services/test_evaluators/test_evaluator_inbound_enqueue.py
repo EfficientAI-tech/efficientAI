@@ -128,6 +128,120 @@ def test_enqueue_linked_evaluator_result_copies_artifacts_and_dispatches(
     assert result.duration_seconds == 42.0
 
 
+def test_inbound_evaluator_persona_scenario_wired_into_call_session(
+    db_session, seed_org, default_workspace, monkeypatch
+):
+    """Round-robin evaluator persona/scenario must reach call session and voice prompt."""
+    from app.models.schemas import EvaluatorSuiteCreate
+    from app.services.evaluators.evaluator_inbound_service import (
+        consume_inbound_evaluator_combination,
+        find_inbound_suite_for_agent,
+    )
+    from app.services.evaluators.evaluator_suite_service import (
+        activate_evaluator_suite,
+        create_evaluator_suite,
+    )
+    from app.services.telephony.vobiz_agent_context import (
+        build_system_instruction,
+        build_vobiz_ws_url,
+    )
+    from app.services.telephony.vobiz_session import create_call_session, get_call_session
+
+    monkeypatch.setattr(
+        "app.services.telephony.vobiz_agent_context.vobiz_webhook_base_url",
+        lambda: "https://public.example.com",
+    )
+    monkeypatch.setattr(
+        "app.services.media_urls.media_ws_base_url",
+        lambda: "wss://public.example.com",
+    )
+
+    org = seed_org
+    workspace_id = default_workspace.id
+
+    agent = Agent(
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        agent_id="222333",
+        name="Inbound Agent",
+        call_type="inbound",
+        call_medium="phone_call",
+    )
+    persona = Persona(
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Eval Persona",
+    )
+    db_session.add(agent)
+    db_session.add(persona)
+    db_session.flush()
+
+    scenario = Scenario(
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Inbound wiring",
+        agent_id=agent.id,
+    )
+    db_session.add(scenario)
+    db_session.flush()
+
+    suite_resp = create_evaluator_suite(
+        db_session,
+        org.id,
+        workspace_id,
+        EvaluatorSuiteCreate(
+            agent_id=agent.id,
+            persona_id=persona.id,
+            scenario_ids=[scenario.id],
+        ),
+    )
+    from app.models.database import EvaluatorSuite
+
+    suite = db_session.query(EvaluatorSuite).filter(EvaluatorSuite.id == suite_resp.id).one()
+    activate_evaluator_suite(db_session, suite)
+
+    found = find_inbound_suite_for_agent(db_session, agent, org.id, workspace_id)
+    assert found is not None
+    selected, _idx, _next_idx = consume_inbound_evaluator_combination(db_session, found)
+
+    session = create_call_session(
+        agent_id=str(agent.id),
+        organization_id=str(org.id),
+        direction="inbound",
+        from_number="+919111111111",
+        to_number="+919876543210",
+        persona_id=str(selected.persona_id) if selected.persona_id else None,
+        scenario_id=str(selected.scenario_id) if selected.scenario_id else None,
+        evaluator_id=str(selected.id),
+    )
+
+    stored = get_call_session(session.call_ref)
+    assert stored is not None
+    assert stored.persona_id == str(persona.id)
+    assert stored.scenario_id == str(scenario.id)
+
+    ws_url = build_vobiz_ws_url(
+        agent_id=str(agent.id),
+        session=session.call_ref,
+        persona_id=stored.persona_id,
+        scenario_id=stored.scenario_id,
+    )
+    assert f"persona_id={persona.id}" in ws_url
+    assert f"scenario_id={scenario.id}" in ws_url
+
+    instruction = build_system_instruction(
+        db_session,
+        agent=agent,
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        persona_id=stored.persona_id,
+        scenario_id=stored.scenario_id,
+    )
+    assert instruction is not None
+    assert persona.name in instruction
+    assert scenario.name in instruction
+
+
 def test_enqueue_skips_when_no_artifacts(db_session, seed_org, default_workspace):
     org = seed_org
     workspace_id = default_workspace.id

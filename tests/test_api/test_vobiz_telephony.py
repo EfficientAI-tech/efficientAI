@@ -1,6 +1,7 @@
 """API tests for Vobiz telephony webhooks and number import."""
 
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
@@ -147,6 +148,68 @@ def test_vobiz_answer_webhook_includes_persona_scenario_from_session(
     assert response.status_code == 200
     assert f"persona_id={persona.id}" in response.text
     assert f"scenario_id={scenario.id}" in response.text
+
+
+def test_vobiz_inbound_answer_includes_evaluator_persona_scenario(
+    client,
+    db_session,
+    org_id,
+    seed_org,
+    default_workspace,
+    make_agent,
+    make_persona,
+    make_scenario,
+    monkeypatch,
+):
+    from app.models.schemas import EvaluatorSuiteCreate
+    from app.services.evaluators.evaluator_suite_service import (
+        activate_evaluator_suite,
+        create_evaluator_suite,
+    )
+    from app.services.telephony.vobiz_session import get_call_session
+
+    agent = make_agent(call_type="inbound", call_medium="phone_call")
+    persona = make_persona()
+    scenario = make_scenario(name="Inbound eval scenario", agent_id=agent.id)
+    _seed_vobiz_phone(db_session, org_id, agent_id=agent.id)
+
+    suite_resp = create_evaluator_suite(
+        db_session,
+        org_id,
+        default_workspace.id,
+        EvaluatorSuiteCreate(
+            agent_id=agent.id,
+            persona_id=persona.id,
+            scenario_ids=[scenario.id],
+        ),
+    )
+    from app.models.database import EvaluatorSuite
+
+    suite = db_session.query(EvaluatorSuite).filter(EvaluatorSuite.id == suite_resp.id).one()
+    activate_evaluator_suite(db_session, suite)
+
+    _patch_vobiz_webhook_base(monkeypatch)
+    _patch_vobiz_webhook_signature(monkeypatch)
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/webhooks/answer",
+        data={"To": "+919876543210", "From": "+919111111111", "CallUUID": "uuid-inbound-eval"},
+        headers=_vobiz_webhook_headers(),
+    )
+
+    assert response.status_code == 200
+    assert f"persona_id={persona.id}" in response.text
+    assert f"scenario_id={scenario.id}" in response.text
+
+    ws_url = response.text.split("<Stream")[1].split(">", 1)[1].split("</Stream>", 1)[0]
+    session_ref = parse_qs(urlparse(ws_url).query).get("session", [None])[0]
+    assert session_ref, "expected session in stream URL"
+
+    stored = get_call_session(session_ref)
+    assert stored is not None
+    assert stored.persona_id == str(persona.id)
+    assert stored.scenario_id == str(scenario.id)
+    assert stored.evaluator_id is not None
 
 
 def test_vobiz_answer_webhook_rejects_unconfigured_number(client, db_session, org_id, seed_org, monkeypatch):

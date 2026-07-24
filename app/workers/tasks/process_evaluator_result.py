@@ -223,6 +223,64 @@ def _categorize_metrics(enabled_metrics, has_audio):
     return llm_metrics, audio_metrics, skipped_scores
 
 
+def _evaluate_llm_metrics_grouped(
+    *,
+    transcription: str,
+    llm_metrics: list,
+    ai_providers,
+    organization_id,
+    result_id: str,
+    db,
+    evaluator,
+    agent,
+    persona,
+    scenario,
+) -> tuple[dict, float | None]:
+    """Evaluate LLM metrics, grouping categorization children by parent."""
+    from app.workers.tasks.evaluate_call_import_row_core import build_parent_groups
+
+    parents_by_id, children_by_parent, standalone_metrics = build_parent_groups(
+        db, llm_metrics
+    )
+    metric_scores: dict = {}
+    evaluation_time: float | None = None
+
+    def _run_bucket(bucket, parent_metric=None):
+        nonlocal evaluation_time
+        scores, eval_time = evaluate_with_llm(
+            transcription=transcription,
+            llm_metrics=bucket,
+            ai_providers=ai_providers,
+            organization_id=organization_id,
+            result_id=result_id,
+            db=db,
+            evaluator=evaluator,
+            agent=agent,
+            persona=persona,
+            scenario=scenario,
+            parent_metric=parent_metric,
+        )
+        metric_scores.update(scores)
+        if eval_time is not None:
+            evaluation_time = eval_time
+
+    if standalone_metrics:
+        _run_bucket(standalone_metrics, parent_metric=None)
+
+    for parent_id, children in children_by_parent.items():
+        parent_metric = parents_by_id.get(parent_id)
+        if not parent_metric:
+            logger.warning(
+                f"[EvaluatorResult {result_id}] Parent metric {parent_id} not found; "
+                "evaluating children as flat metrics"
+            )
+            _run_bucket(children, parent_metric=None)
+            continue
+        _run_bucket(children, parent_metric=parent_metric)
+
+    return metric_scores, evaluation_time
+
+
 def _normalize_platform(platform: object) -> str:
     """Normalize provider platform enum/string into lowercase string."""
     if not platform:
@@ -562,7 +620,7 @@ def process_evaluator_result_task(self, result_id: str):
                 db.commit()
 
                 try:
-                    llm_scores, evaluation_time = evaluate_with_llm(
+                    llm_scores, evaluation_time = _evaluate_llm_metrics_grouped(
                         transcription=transcription,
                         llm_metrics=llm_metrics,
                         ai_providers=ai_providers,

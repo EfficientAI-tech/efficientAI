@@ -382,6 +382,8 @@ async def vobiz_answer_webhook(
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         inbound_evaluator_id: Optional[UUID] = None
         inbound_evaluator_result_id: Optional[UUID] = None
+        inbound_persona_id: Optional[UUID] = None
+        inbound_scenario_id: Optional[UUID] = None
         if agent and agent.workspace_id:
             from app.services.evaluators.evaluator_inbound_service import (
                 consume_inbound_evaluator_combination,
@@ -395,6 +397,8 @@ async def vobiz_answer_webhook(
             if suite:
                 selected, _idx, _next_idx = consume_inbound_evaluator_combination(db, suite)
                 inbound_evaluator_id = selected.id
+                inbound_persona_id = selected.persona_id
+                inbound_scenario_id = selected.scenario_id
                 result_row = create_inbound_evaluator_result(
                     db,
                     organization_id,
@@ -409,11 +413,13 @@ async def vobiz_answer_webhook(
             direction="inbound",
             from_number=params.get("from"),
             to_number=params.get("to"),
+            persona_id=str(inbound_persona_id) if inbound_persona_id else None,
+            scenario_id=str(inbound_scenario_id) if inbound_scenario_id else None,
             evaluator_id=str(inbound_evaluator_id) if inbound_evaluator_id else None,
         )
         session_token = session.call_ref
-        persona_id = None
-        scenario_id = None
+        persona_id = session.persona_id
+        scenario_id = session.scenario_id
         if agent:
             inbound_row = create_inbound_call_recording(
                 db,
@@ -601,6 +607,9 @@ async def vobiz_media_websocket(websocket: WebSocket):
     if session.agent_id != agent_id:
         await websocket.close(code=1008, reason="Session does not match agent")
         return
+
+    persona_id = persona_id or session.persona_id
+    scenario_id = scenario_id or session.scenario_id
 
     await websocket.accept()
     db = next(get_db())

@@ -763,3 +763,89 @@ def test_evaluate_tts_comparison_returns_zero_when_no_completed_samples(db_sessi
     result = task_module.evaluate_tts_comparison_task.run(str(comp.id))
 
     assert result == {"evaluated": 0}
+
+
+def test_evaluate_llm_metrics_grouped_passes_parent_for_categorization_children(
+    db_session,
+    monkeypatch,
+):
+    from app.workers.tasks import process_evaluator_result as task_module
+
+    org = _seed_org(db_session)
+    workspace_id = _default_workspace_id(db_session, org.id)
+    parent = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Call Outcome",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        selection_mode="single_choice",
+    )
+    child_yes = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Yes",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        parent_metric_id=parent.id,
+    )
+    child_no = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="No",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        parent_metric_id=parent.id,
+    )
+    db_session.add_all([parent, child_yes, child_no])
+    db_session.commit()
+
+    parent_calls: list = []
+    flat_calls: list = []
+
+    def fake_evaluate_with_llm(*, llm_metrics, parent_metric=None, **kwargs):
+        if parent_metric is not None:
+            parent_calls.append((parent_metric, list(llm_metrics)))
+            return (
+                {
+                    str(parent.id): {
+                        "type": "category",
+                        "metric_name": parent.name,
+                        "value": "Yes",
+                    }
+                },
+                0.1,
+            )
+        flat_calls.append(list(llm_metrics))
+        return {}, 0.1
+
+    monkeypatch.setattr(task_module, "evaluate_with_llm", fake_evaluate_with_llm)
+
+    scores, _eval_time = task_module._evaluate_llm_metrics_grouped(
+        transcription="hello",
+        llm_metrics=[child_yes, child_no],
+        ai_providers=[],
+        organization_id=org.id,
+        result_id="710099",
+        db=db_session,
+        evaluator=None,
+        agent=None,
+        persona=None,
+        scenario=None,
+    )
+
+    assert len(parent_calls) == 1
+    assert parent_calls[0][0].id == parent.id
+    assert {m.id for m in parent_calls[0][1]} == {child_yes.id, child_no.id}
+    assert flat_calls == []
+    assert str(parent.id) in scores
+    assert scores[str(parent.id)]["type"] == "category"

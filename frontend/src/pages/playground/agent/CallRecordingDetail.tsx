@@ -186,6 +186,15 @@ const formatMetricValue = (value: any, type: string, metricName?: string): React
   if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
   
   const normalizedType = type?.toLowerCase()
+
+  if (normalizedType === 'category') {
+    if (value === '') return <span className="text-gray-400">N/A</span>
+    return (
+      <span className="inline-flex max-w-full items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 text-sm font-semibold whitespace-normal break-words leading-snug">
+        {String(value)}
+      </span>
+    )
+  }
   
   // Handle Emotion Category - categorical text values with styling
   if (metricName === 'Emotion Category') {
@@ -273,6 +282,16 @@ const formatMetricValue = (value: any, type: string, metricName?: string): React
   }
   
   return <span className="block max-w-full text-base font-semibold leading-snug text-gray-900 whitespace-normal break-words">{String(value)}</span>
+}
+
+const renderMetricRationale = (metric: { rationale?: string | null }) => {
+  const rationale = typeof metric.rationale === 'string' ? metric.rationale.trim() : ''
+  if (!rationale) return null
+  return (
+    <p className="mt-2 text-xs text-gray-600 leading-relaxed border-t border-gray-100 pt-2">
+      {rationale}
+    </p>
+  )
 }
 
 // Helper to check if a metric has a valid value
@@ -696,6 +715,7 @@ export default function CallRecordingDetail() {
                               </div>
                               <div>
                                 {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                                {renderMetricRationale(metric)}
                               </div>
                             </div>
                           ))}
@@ -720,6 +740,7 @@ export default function CallRecordingDetail() {
                               </div>
                               <div>
                                 {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                                {renderMetricRationale(metric)}
                               </div>
                             </div>
                           ))}
@@ -744,6 +765,7 @@ export default function CallRecordingDetail() {
                               </div>
                               <div>
                                 {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                                {renderMetricRationale(metric)}
                               </div>
                             </div>
                           ))}

@@ -20,6 +20,8 @@ Set **`MEDIA_WS_BASE_URL`** (see `env.example`) so Vobiz answer XML points at th
 
 Evaluators queue when transcript and/or `recording_s3_key` are present (`enqueue_linked_evaluator_result_if_ready`), typically after Celery finalize or carrier ingest — not from media disconnect alone (avoids racing pipeline finalize).
 
+Inbound calls with an **active evaluator suite** inject the round-robin combination's persona and scenario into the voice agent system instruction via `build_system_instruction` (same path as outbound phone evals).
+
 ## Local dev
 
 `docker-compose.yml` sets `MEDIA_WS_BASE_URL=ws://localhost:8001`. Run a media-capable process on that port (or leave unset to co-locate media WS on the main API for quick tests). Ensure Celery is running so post-call finalize is not left to the inline fallback.

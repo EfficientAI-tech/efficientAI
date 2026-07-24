@@ -327,12 +327,15 @@ export default function EvaluateTestAgents() {
                   const collapsed = multi && collapsedAgentIds.has(group.agentId)
                   const activeSuite = group.suites.find((s) => s.is_active) ?? group.suites[0]
 
-                  const renderSuiteRow = (suite: EvaluatorSuite, isSubSuite: boolean) => (
+                  const renderSuiteRow = (suite: EvaluatorSuite) => {
+                    const cellClass = multi ? 'py-4 pl-8 pr-6' : 'px-6 py-4'
+
+                    return (
                     <tr
                       key={suite.id}
-                      className={`hover:bg-gray-50 transition-colors ${selectedSuiteIds.has(suite.id) ? 'bg-primary-50/40' : ''} ${isSubSuite ? 'bg-gray-50/30' : ''}`}
+                      className={`hover:bg-gray-50 transition-colors ${selectedSuiteIds.has(suite.id) ? 'bg-primary-50/40' : ''}`}
                     >
-                      <td className="px-6 py-4">
+                      <td className={cellClass}>
                         <button
                           type="button"
                           onClick={(e) => {
@@ -348,32 +351,25 @@ export default function EvaluateTestAgents() {
                           )}
                         </button>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className={cellClass}>
                         <button
                           type="button"
                           onClick={() => navigate(`/evaluate-test-agents/${suite.id}`)}
-                          className={`text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left ${isSubSuite ? 'pl-6' : multi ? 'pl-2' : ''}`}
+                          className="text-sm font-medium text-primary-700 hover:text-primary-800 hover:underline text-left"
                         >
-                          {isSubSuite && <span className="text-gray-400 mr-1">↳</span>}
                           {suite.name || `${suite.agent_name || 'Suite'} · ${suite.persona_name || 'Persona'}`}
                         </button>
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-900">
-                        {!multi && (suite.agent_name || '—')}
-                        {multi && isSubSuite && (
-                          <span className="text-xs text-gray-500 pl-2">same agent</span>
-                        )}
-                        {multi && !isSubSuite && !collapsed && (
-                          <span className="text-xs text-gray-500">{group.agentName}</span>
-                        )}
+                      <td className={`${cellClass} text-sm text-gray-900`}>
+                        {suite.agent_name || group.agentName || '—'}
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-900">{suite.persona_name || '—'}</td>
-                      <td className="px-6 py-4">
+                      <td className={`${cellClass} text-sm text-gray-900`}>{suite.persona_name || '—'}</td>
+                      <td className={cellClass}>
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
                           {suite.combination_count}
                         </span>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className={cellClass}>
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-50 text-gray-700 border border-gray-100">
                           {(() => {
                             const count = countDisplayMetrics(suite.metric_ids, metricRows)
@@ -381,10 +377,10 @@ export default function EvaluateTestAgents() {
                           })()}
                         </span>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className={cellClass}>
                         <CallTypeBadge medium={suite.agent_call_medium} callType={suite.agent_call_type} />
                       </td>
-                      <td className="px-6 py-4">
+                      <td className={cellClass}>
                         {suite.is_active ? (
                           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
                             Active
@@ -398,10 +394,11 @@ export default function EvaluateTestAgents() {
                         )}
                       </td>
                     </tr>
-                  )
+                    )
+                  }
 
                   if (!multi) {
-                    return renderSuiteRow(group.suites[0], false)
+                    return renderSuiteRow(group.suites[0])
                   }
 
                   const groupAllSelected = group.suites.every((s) => selectedSuiteIds.has(s.id))
@@ -450,7 +447,7 @@ export default function EvaluateTestAgents() {
                             </span>
                           </div>
                           {collapsed && (
-                            <p className="text-xs text-gray-500 mt-1 pl-6 truncate">
+                            <p className="text-xs text-gray-500 mt-1 pl-8 truncate">
                               Active: {activeSuite.name || activeSuite.persona_name || '—'}
                               {activeSuite.is_active ? '' : ' (none marked active)'}
                             </p>
@@ -482,7 +479,7 @@ export default function EvaluateTestAgents() {
                           )}
                         </td>
                       </tr>
-                      {!collapsed && group.suites.map((suite, index) => renderSuiteRow(suite, index > 0))}
+                      {!collapsed && group.suites.map((suite) => renderSuiteRow(suite))}
                     </Fragment>
                   )
                 })}
