@@ -1341,6 +1341,44 @@ def test_estimate_diarisation_max_tokens_scales_with_transcript():
     assert long <= llm_diarisation._DIARISATION_MAX_MAX_TOKENS
 
 
+def test_estimate_diarisation_max_tokens_gemini_long_audio():
+    from app.workers.tasks.helpers import llm_diarisation
+
+    # ~15 min mono at the worker's byte heuristic (~320 KiB/min).
+    fifteen_min_bytes = 15 * 320_000
+    budget = llm_diarisation._estimate_diarisation_max_tokens(
+        audio_bytes=fifteen_min_bytes,
+        llm_model="gemini-2.5-flash",
+    )
+    assert budget > llm_diarisation._DIARISATION_MAX_MAX_TOKENS
+    assert budget <= 65_536
+
+
+def test_diarisation_output_token_ceiling_gemini():
+    from app.workers.tasks.helpers import llm_diarisation
+
+    assert (
+        llm_diarisation._diarisation_output_token_ceiling("gemini/gemini-2.5-flash")
+        == 65_536
+    )
+    assert (
+        llm_diarisation._diarisation_output_token_ceiling("gpt-4o-mini")
+        == llm_diarisation._DIARISATION_MAX_MAX_TOKENS
+    )
+
+
+def test_parse_turns_rejects_truncated_response_with_repairable_json():
+    from app.workers.tasks.helpers import llm_diarisation
+
+    response = {
+        "text": '{"turns": [{"speaker": "agent", "text": "Hello"}, {"speaker": "user", "text": "partial',
+        "truncated": True,
+    }
+    with pytest.raises(llm_diarisation.LLMDiarisationError) as exc_info:
+        llm_diarisation._parse_turns_from_response(response)
+    assert "truncated" in str(exc_info.value).lower()
+
+
 def test_diariser_passes_scaled_max_tokens(monkeypatch):
     from app.workers.tasks.helpers import llm_diarisation
 

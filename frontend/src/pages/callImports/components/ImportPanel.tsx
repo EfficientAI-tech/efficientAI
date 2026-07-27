@@ -63,7 +63,7 @@ export default function ImportPanel({ callImport }: ImportPanelProps) {
 
   const helperText = useMemo(() => {
     if (selectedIntegrationId === DIRECT_URL_CREDENTIAL) {
-      return 'Recordings will be downloaded directly from the recording URL column mapped in your schema. Each row must include a valid URL.'
+      return 'Recordings are downloaded from the recording URL column. Rows with a missing or invalid URL are skipped; the rest import normally.'
     }
     return 'Pick the telephony provider + credential to use when fetching recordings for this batch. Once started, the per-row workers pick up automatically and progress is reflected on this page.'
   }, [selectedIntegrationId])

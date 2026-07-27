@@ -1363,6 +1363,10 @@ SelectionMode = Literal["single_choice", "multi_label"]
 
 MetricScope = Literal["workspace", "organization"]
 
+# Max length for metric rubric text (description / example) accepted by
+# the API. DB columns are TEXT or unbounded VARCHAR; this cap is validation-only.
+METRIC_RUBRIC_TEXT_MAX_LENGTH = 32_000
+
 
 class MetricCreate(BaseModel):
     """Schema for creating a metric.
@@ -1387,7 +1391,7 @@ class MetricCreate(BaseModel):
     # in the LLM judge's rubric. Today this is mainly populated on
     # child sub-labels (one example per categorization label) but
     # standalone metrics may carry it too without a schema change.
-    example: Optional[str] = Field(default=None, max_length=4000)
+    example: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     metric_type: MetricType = MetricType.RATING
     metric_category: MetricCategory = MetricCategory.QUALITY
     trigger: MetricTrigger = MetricTrigger.ALWAYS
@@ -1467,11 +1471,11 @@ class MetricChildDraft(BaseModel):
     """One child sub-metric in a parent + children atomic create body."""
 
     name: str = Field(..., max_length=120)
-    description: Optional[str] = Field(default=None, max_length=4000)
+    description: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     # Optional illustrative example for this label. Surfaced alongside
     # ``description`` in the LLM judge's rubric so each label can carry
     # both its definition AND a "what does this look like?" example.
-    example: Optional[str] = Field(default=None, max_length=4000)
+    example: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     enabled: bool = True
     capture_rationale: Optional[bool] = True
     tags: Optional[List[str]] = None
@@ -1487,7 +1491,7 @@ class MetricCreateWithChildren(BaseModel):
     """
 
     name: str = Field(..., max_length=120)
-    description: Optional[str] = Field(default=None, max_length=4000)
+    description: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     selection_mode: SelectionMode
     metric_category: MetricCategory = MetricCategory.QUALITY
     enabled: bool = True
@@ -1517,10 +1521,10 @@ class MetricCreateWithChildren(BaseModel):
 class MetricUpdate(BaseModel):
     """Schema for updating a metric."""
     name: Optional[str] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     # ``None`` here means "leave unchanged"; pass an empty string to
     # clear a previously stored example.
-    example: Optional[str] = Field(default=None, max_length=4000)
+    example: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     metric_type: Optional[MetricType] = None
     trigger: Optional[MetricTrigger] = None
     enabled: Optional[bool] = None
@@ -2639,6 +2643,26 @@ class CallImportPreviewSheet(BaseModel):
     )
 
 
+class CallImportSourceRowSkip(BaseModel):
+    """One source spreadsheet row skipped during parse (identity / recording URL)."""
+
+    source_row: int = Field(
+        ...,
+        description="1-based row index in the source file (same semantics as parse errors).",
+    )
+    reason: str = Field(
+        ...,
+        description=(
+            "Machine-readable skip reason, e.g. missing_conversation_id, "
+            "missing_recording_url, invalid_recording_url."
+        ),
+    )
+    message: str = Field(
+        ...,
+        description="Human-readable explanation shown in the UI.",
+    )
+
+
 class CallImportResponse(BaseModel):
     """Summary of a call-import batch."""
 
@@ -2664,6 +2688,13 @@ class CallImportResponse(BaseModel):
     # Persisted "drop these columns" decision captured at MAP time.
     # Empty for legacy one-shot uploads where the value was ephemeral.
     skipped_columns: List[str] = Field(default_factory=list)
+    source_row_skips: List[CallImportSourceRowSkip] = Field(
+        default_factory=list,
+        description=(
+            "Source rows skipped at parse time because of missing/invalid "
+            "conversation ID or recording URL."
+        ),
+    )
     # Source-file staging fields populated at UPLOAD time. ``None`` on
     # legacy batches imported via the one-shot ``POST /upload`` endpoint.
     source_s3_key: Optional[str] = None
@@ -4550,7 +4581,7 @@ class PromoteDiscoveredChildRequest(BaseModel):
 
     key: str = Field(..., min_length=1, max_length=120)
     name: str = Field(..., min_length=1, max_length=120)
-    description: Optional[str] = Field(default=None, max_length=4000)
+    description: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     # Default True: when promoting a discovered label we want the new
     # sub-metric to always capture rationales going forward, since the
     # candidate was itself proposed *with* a rationale and the user
@@ -4639,7 +4670,7 @@ class PromoteDiscoveredMetricRequest(BaseModel):
 
     key: str = Field(..., min_length=1, max_length=120)
     name: str = Field(..., min_length=1, max_length=120)
-    description: Optional[str] = Field(default=None, max_length=4000)
+    description: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     metric_type: DiscoveredMetricSuggestedType = "boolean"
     capture_rationale: bool = True
     # Optional per-type config knobs passed through to ``Metric.custom_config``.

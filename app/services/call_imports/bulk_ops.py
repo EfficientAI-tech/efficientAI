@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 from uuid import UUID, uuid4
 
 from loguru import logger
+from fastapi import HTTPException
 from sqlalchemy.orm import Session, load_only
 from sqlalchemy import func
 
@@ -598,6 +599,7 @@ def execute_call_import_materialization(
         _enqueue_row_tasks,
         _parse_source_file,
         _resolve_schema,
+        parse_skips_to_json,
     )
     from app.models.enums import CallImportStatus
     from app.services.billing.flexprice_service import record_call_import_batch_created
@@ -680,20 +682,49 @@ def execute_call_import_materialization(
     )
     parameters = list(schema.parameters)
     cleaned_skipped = _clean_skipped_columns(list(call_import.skipped_columns or []))
-    parsed_rows = _parse_source_file(
-        file_bytes,
-        call_import.source_format,
-        call_import.sheet_name,
-        parameters,
-        dict(call_import.parameter_mapping or {}),
-        cleaned_skipped,
-    )
+    try:
+        parse_result = _parse_source_file(
+            file_bytes,
+            call_import.source_format,
+            call_import.sheet_name,
+            parameters,
+            dict(call_import.parameter_mapping or {}),
+            cleaned_skipped,
+        )
+    except HTTPException as exc:
+        call_import.status = CallImportStatus.FAILED
+        call_import.error_message = (
+            exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        )
+        call_import.source_row_skips = []
+        db.commit()
+        return {"total_rows": 0, "status": "failed"}
 
-    call_import.total_rows = len(parsed_rows)
+    call_import.source_row_skips = parse_skips_to_json(parse_result.skipped)
+    skipped_count = len(parse_result.skipped)
+
+    if not parse_result.rows:
+        if parse_result.skipped:
+            call_import.error_message = (
+                f"No importable rows. {skipped_count} row(s) skipped due "
+                "to missing or invalid conversation ID or recording URL."
+            )
+        else:
+            call_import.error_message = "Source file did not contain any data rows."
+        call_import.status = CallImportStatus.FAILED
+        call_import.total_rows = 0
+        db.commit()
+        return {
+            "total_rows": 0,
+            "status": "failed",
+            "source_rows_skipped": skipped_count,
+        }
+
+    call_import.total_rows = len(parse_result.rows)
     call_import.completed_rows = 0
     call_import.failed_rows = 0
 
-    row_count = len(parsed_rows)
+    row_count = len(parse_result.rows)
     pending_shard_sessions: List[Session] = []
     try:
         if is_sharding_enabled():
@@ -704,7 +735,7 @@ def execute_call_import_materialization(
         row_count, pending_shard_sessions = bulk_materialize_call_import_rows(
             db,
             call_import,
-            parsed_rows,
+            parse_result.rows,
             organization_id,
             defer_shard_commit=is_sharding_enabled(),
         )
@@ -750,7 +781,11 @@ def execute_call_import_materialization(
         call_import.id,
         organization_id,
     )
-    return {"total_rows": row_count, "status": "processing"}
+    return {
+        "total_rows": row_count,
+        "status": "processing",
+        "source_rows_skipped": skipped_count,
+    }
 
 
 def _aggregate_import_row_status_counts(

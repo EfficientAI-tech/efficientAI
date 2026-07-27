@@ -1932,6 +1932,36 @@ export default function CallImportDetail() {
             </div>
           </div>
         )}
+
+        {(data.source_row_skips?.length ?? 0) > 0 && data.total_rows > 0 && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-amber-900 space-y-2 min-w-0">
+                <p>
+                  Imported {data.total_rows} row
+                  {data.total_rows === 1 ? '' : 's'}.{' '}
+                  {data.source_row_skips!.length} source row
+                  {data.source_row_skips!.length === 1 ? '' : 's'} skipped
+                  — missing or invalid conversation ID / recording URL.
+                </p>
+                <ul className="list-disc pl-5 space-y-0.5 max-h-40 overflow-y-auto text-xs">
+                  {data.source_row_skips!.slice(0, 50).map((skip) => (
+                    <li key={`${skip.source_row}-${skip.reason}`}>
+                      {skip.message}
+                    </li>
+                  ))}
+                </ul>
+                {data.source_row_skips!.length > 50 && (
+                  <p className="text-xs text-amber-800">
+                    and {data.source_row_skips!.length - 50} more skipped row
+                    {data.source_row_skips!.length - 50 === 1 ? '' : 's'}.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Stage tracker: only meaningful for batches that came through
@@ -3736,8 +3766,8 @@ export default function CallImportDetail() {
                       </div>
                       <p className="text-[11px] text-gray-500">
                         {transcribeMode === 'llm_only'
-                          ? 'Recommended. Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview).'
-                          : 'Advanced fallback. Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt. Use this when you need a specific STT contract or to reuse an existing transcript artefact.'}
+                          ? 'Recommended. Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview). Recordings longer than about 8 minutes depend on the model’s output token limit—if diarisation fails or looks cut off, switch to STT + LLM diariser.'
+                          : 'Advanced fallback. Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt. Use this when you need a specific STT contract, longer recordings, or to reuse an existing transcript artefact.'}
                       </p>
                     </div>
                     {transcribeMode === 'stt_llm' && (
@@ -4473,7 +4503,7 @@ export default function CallImportDetail() {
                                   <span className="block text-[11px] text-gray-500">
                                     {evalTranscribeMode === 'stt_llm'
                                       ? "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised first via the STT provider you pick below."
-                                      : "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised by feeding the audio directly to the multimodal LLM you pick below."}
+                                      : "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised by feeding the audio directly to the multimodal LLM you pick below. Calls longer than about 8 minutes need enough output headroom—if results look cut off, use STT + LLM diariser instead."}
                                   </span>
                                 </span>
                               </label>
