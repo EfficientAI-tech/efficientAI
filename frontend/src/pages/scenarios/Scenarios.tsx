@@ -9,10 +9,15 @@ import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
 import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import type { GenerateScenariosFromPromptParams } from '../../types/agentTestSetupGeneration'
 import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
 import { resolveLLMModelsForCredential } from '../../lib/llmModelOptions'
+import {
+  buildScenarioEditGenerationUserPrompt,
+  SCENARIO_EDIT_GENERATION_SYSTEM_PROMPT,
+} from './scenarioGenerationPrompts'
 
 interface Scenario {
   id: string
@@ -37,6 +42,7 @@ interface GeneratedScenarioDraft {
   id: string
   name: string
   description: string
+  goal?: string
 }
 
 type CreateMode = 'agent_prompt' | 'call' | 'custom' | null
@@ -282,44 +288,6 @@ export default function Scenarios() {
     })
   }
 
-  const parseScenarioDraftsFromResponse = (text: string): GeneratedScenarioDraft[] => {
-    try {
-      const direct = JSON.parse(text)
-      if (Array.isArray(direct)) {
-        return direct
-          .filter((item: any) => item?.name && item?.description)
-          .map((item: any, index: number) => ({
-            id: `draft-${Date.now()}-${index}`,
-            name: String(item.name).trim(),
-            description: String(item.description).trim(),
-          }))
-      }
-    } catch {
-      // fall through to bracket extraction
-    }
-
-    const start = text.indexOf('[')
-    const end = text.lastIndexOf(']')
-    if (start !== -1 && end !== -1 && end > start) {
-      try {
-        const sliced = JSON.parse(text.slice(start, end + 1))
-        if (Array.isArray(sliced)) {
-          return sliced
-            .filter((item: any) => item?.name && item?.description)
-            .map((item: any, index: number) => ({
-              id: `draft-${Date.now()}-${index}`,
-              name: String(item.name).trim(),
-              description: String(item.description).trim(),
-            }))
-        }
-      } catch {
-        return []
-      }
-    }
-
-    return []
-  }
-
   const handleGenerateFromAgentPrompt = async () => {
     const selectedAgent = availableAgents.find((a) => a.id === selectedAgentIdForGeneration)
     if (!selectedAgent) {
@@ -347,42 +315,25 @@ export default function Scenarios() {
 
     setIsGeneratingFromAgentPrompt(true)
     try {
-      const messages = [
-        {
-          role: 'system',
-          content:
-            'You generate high-quality test scenarios for voice AI agents. Return ONLY valid JSON array with objects: { "name": string, "description": string }.',
-        },
-        {
-          role: 'user',
-          content: [
-            `Generate ${scenarioCount} diverse test scenarios from this agent system prompt.`,
-            `Agent Name: ${selectedAgent.name}`,
-            selectedAgent.language ? `Language: ${selectedAgent.language}` : '',
-            selectedAgent.call_type ? `Call Type: ${selectedAgent.call_type}` : '',
-            `System Prompt:\n${agentPrompt}`,
-            additionalAgentPromptContext.trim()
-              ? `Additional Generation Context:\n${additionalAgentPromptContext.trim()}`
-              : '',
-            'Requirements:',
-            '- Each scenario should test a different user intent or edge case.',
-            '- Keep name concise.',
-            '- Description should be specific and test-oriented.',
-            '- Return only JSON array, no markdown, no explanation.',
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        },
-      ]
-
-      const response = await apiClient.chatCompletion({
-        messages: messages as Array<{ role: string; content: string }>,
+      const generationRequest: GenerateScenariosFromPromptParams = {
+        test_agent_prompt: agentPrompt,
+        agent_name: selectedAgent.name,
+        scenario_count: scenarioCount,
+        language: selectedAgent.language,
+        call_type: selectedAgent.call_type,
+        additional_context: additionalAgentPromptContext.trim() || undefined,
         provider: selectedAIProvider,
         model: selectedModel,
-        llm_config: llmConfig,
-      })
+        ...(llmConfig ? { llm_config: llmConfig } : {}),
+      }
+      const response = await apiClient.generateScenariosFromPrompt(generationRequest)
 
-      const drafts = parseScenarioDraftsFromResponse(response.text)
+      const drafts = response.scenarios.map((item, index) => ({
+        id: `draft-${Date.now()}-${index}`,
+        name: String(item.name).trim(),
+        description: String(item.description).trim(),
+        goal: item.goal ? String(item.goal).trim() : undefined,
+      }))
       if (drafts.length === 0) {
         showToast('Could not parse generated scenarios. Try again.', 'error')
         return
@@ -419,7 +370,7 @@ export default function Scenarios() {
         name: draft.name.trim(),
         agent_id: selectedAgentIdForGeneration || undefined,
         description: draft.description?.trim() || undefined,
-        required_info: {},
+        required_info: draft.goal ? { goal: draft.goal } : {},
       })
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       showToast(`Saved scenario "${draft.name}"`, 'success')
@@ -516,21 +467,21 @@ export default function Scenarios() {
         messages: [
           {
             role: 'system',
-            content: 'You write concise, practical scenario descriptions for QA test scenarios.',
+            content: SCENARIO_EDIT_GENERATION_SYSTEM_PROMPT,
           },
           {
             role: 'user',
-            content: [
-              `Scenario Name: ${formData.name || selectedScenario.name}`,
-              `Current Description: ${formData.description || selectedScenario.description || 'None'}`,
-              `Request: ${editGeneratePrompt.trim()}`,
-              'Write only the updated scenario description text.',
-            ].join('\n'),
+            content: buildScenarioEditGenerationUserPrompt({
+              scenarioName: formData.name || selectedScenario.name,
+              currentDescription: formData.description || selectedScenario.description || 'None',
+              request: editGeneratePrompt.trim(),
+            }),
           },
         ],
         provider: selectedAIProvider,
         model: selectedModel,
         llm_config: llmConfig,
+        max_tokens: 4000,
       })
 
       setFormData((prev) => ({

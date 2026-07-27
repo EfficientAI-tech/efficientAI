@@ -215,12 +215,13 @@ judge_alignment:
 #   auth_token: "your-token-here"
 #   api_base: "https://api.vobiz.ai"
 #   media_base: "https://media.vobiz.ai"
-#   webhook_base_url: "https://your-public-host.example.com"
+#   webhook_base_url: "https://your-telephony-edge.example.com"
+#   # Public telephony edge (media service). Vobiz webhooks + carrier WS use this host.
+#   # Local split dev: ngrok http 8001, set this to the tunnel URL (no media_ws_base_url needed for Vobiz).
 #   webhook_verify: true   # set false ONLY on local dev (never in sandbox/prod)
 #   carrier_session_recording: false  # true = Vobiz <Record> + download MP3 from media.vobiz.ai
-#   # Public WebSocket base for live audio when media runs on a different host/port than webhooks.
-#   # Required when SERVICE_MODE=api on API and telephony-worker on :8001 (docker-compose ``media``).
-#   # Omit when SERVICE_MODE=all (single process) — falls back to webhook_base_url.
+#   # Optional override for browser voice-agent WS when telephony host differs from API.
+#   # Vobiz ignores this when webhook_base_url already points at telephony (https→wss fallback).
 #   media_ws_base_url: "ws://localhost:8001"
 #   from_number: "+918011223344"
 #   outbound_pool:

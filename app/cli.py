@@ -112,6 +112,17 @@ def start_frontend_watcher(frontend_dir: Path) -> FrontendWatcher:
     return watcher
 
 
+def _read_config_media_ws_base_url(config_path: Path) -> Optional[str]:
+    """Return vobiz.media_ws_base_url from YAML when explicitly configured."""
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        value = ((data.get("vobiz") or {}).get("media_ws_base_url") or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
 @main.command()
 @click.option(
     "--verbose",
@@ -186,17 +197,27 @@ def migrate(verbose: bool):
 )
 def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool, skip_migrations: bool):
     """Start the EfficientAI application server."""
-    from app.config import load_config_from_file, settings
-    
+    from app.config import apply_service_mode, load_config_from_file, settings
+
     # Load configuration from YAML file
     config_path = Path(config)
     if not config_path.exists():
         click.echo(f"❌ Config file not found: {config}", err=True)
         click.echo(f"💡 Create a config.yml file or use --config to specify a different path.", err=True)
         sys.exit(1)
-    
+
+    explicit_media_ws = _read_config_media_ws_base_url(config_path)
+    os.environ["SERVICE_MODE"] = "api"
+    if not explicit_media_ws:
+        # Single-process dev: co-locate voice WebSockets on the API port unless
+        # config.yml sets vobiz.media_ws_base_url (used with eai telephony-worker).
+        os.environ.pop("MEDIA_WS_BASE_URL", None)
+
     try:
         load_config_from_file(str(config_path))
+        apply_service_mode("api")
+        if not explicit_media_ws:
+            settings.MEDIA_WS_BASE_URL = ""
         click.echo(f"✅ Loaded configuration from {config_path}")
     except Exception as e:
         click.echo(f"❌ Error loading config: {e}", err=True)
@@ -414,7 +435,8 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
 @click.option("--port", default=None, type=int, help="Media server port (default 8001)")
 def telephony_worker(config: str, host: Optional[str], port: Optional[int]):
     """Start the media server for live voice WebSocket connections."""
-    from app.config import load_config_from_file, settings
+    os.environ["SERVICE_MODE"] = "media"
+    from app.config import apply_service_mode, load_config_from_file, settings
 
     config_path = Path(config)
     if not config_path.exists():
@@ -423,19 +445,27 @@ def telephony_worker(config: str, host: Optional[str], port: Optional[int]):
 
     try:
         load_config_from_file(str(config_path))
+        apply_service_mode("media")
     except Exception as e:
         click.echo(f"❌ Error loading config: {e}", err=True)
         sys.exit(1)
-
-    os.environ["SERVICE_MODE"] = "media"
     bind_host = host or settings.HOST
     bind_port = port or settings.MEDIA_PORT
+
+    from app.app_factory import create_app
+
+    app = create_app()
+    print(
+        f"[MEDIA] telephony-worker ready on {bind_host}:{bind_port} "
+        f"(SERVICE_MODE={settings.SERVICE_MODE}, media_routes mounted)",
+        flush=True,
+    )
 
     import uvicorn
 
     click.echo(f"🎙️  Starting EfficientAI media server on {bind_host}:{bind_port}")
     uvicorn.run(
-        "app.media_main:app",
+        app,
         host=bind_host,
         port=bind_port,
         reload=False,
@@ -495,8 +525,11 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     signal.signal(signal.SIGTERM, _handle_signal)
 
     port = media_port or settings.MEDIA_PORT
+    telephony_env = os.environ.copy()
+    telephony_env["SERVICE_MODE"] = "media"
     media_proc = subprocess.Popen(
-        ["eai", "telephony-worker", "--config", str(config_path), "--port", str(port)],
+        [sys.executable, "-m", "app.cli", "telephony-worker", "--config", str(config_path), "--port", str(port)],
+        env=telephony_env,
     )
     celery_proc = subprocess.Popen(
         ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"],
@@ -653,9 +686,6 @@ def start_all(
         sys.exit(1)
 
     bind_media_port = media_port or settings.MEDIA_PORT
-    if telephony_worker and not (settings.MEDIA_WS_BASE_URL or "").strip():
-        settings.MEDIA_WS_BASE_URL = f"ws://localhost:{bind_media_port}"
-        os.environ["MEDIA_WS_BASE_URL"] = settings.MEDIA_WS_BASE_URL
 
     os.environ["SERVICE_MODE"] = "api"
     
@@ -757,15 +787,20 @@ def start_all(
 
     if telephony_worker:
         try:
+            telephony_env = os.environ.copy()
+            telephony_env["SERVICE_MODE"] = "media"
             telephony_process = subprocess.Popen(
                 [
-                    "eai",
+                    sys.executable,
+                    "-m",
+                    "app.cli",
                     "telephony-worker",
                     "--config",
                     str(config_path),
                     "--port",
                     str(bind_media_port),
                 ],
+                env=telephony_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -785,7 +820,7 @@ def start_all(
 
             threading.Thread(target=_stream_telephony, daemon=True).start()
         except FileNotFoundError:
-            click.echo("❌ eai CLI not found for telephony-worker subprocess", err=True)
+            click.echo("❌ Python interpreter not found for telephony-worker subprocess", err=True)
             sys.exit(1)
         except Exception as e:
             click.echo(f"❌ Failed to start telephony media server: {e}", err=True)
@@ -872,10 +907,17 @@ def start_all(
         else:
             click.echo("   Workers: default queue only (--no-imports-worker)")
         if telephony_worker:
-            click.echo(
-                f"   Media WebSocket: {settings.MEDIA_WS_BASE_URL or f'ws://localhost:{bind_media_port}'}"
-                f"{settings.API_V1_PREFIX}/telephony/vobiz/ws"
-            )
+            telephony_public = (settings.VOBIZ_WEBHOOK_BASE_URL or "").strip()
+            click.echo(f"   Telephony edge: http://localhost:{bind_media_port} (local)")
+            if telephony_public:
+                click.echo(f"   Vobiz webhook_base_url: {telephony_public}")
+            else:
+                click.echo(
+                    "   Set vobiz.webhook_base_url to your telephony public URL "
+                    f"(e.g. ngrok http {bind_media_port}) for inbound PSTN"
+                )
+            if (settings.MEDIA_WS_BASE_URL or "").strip():
+                click.echo(f"   Browser voice-agent WS: {settings.MEDIA_WS_BASE_URL}")
         click.echo("\n📝 All services are running. Press Ctrl+C to stop.\n")
         
         # Run uvicorn in the main process (allows reload to work)

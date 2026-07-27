@@ -1,5 +1,10 @@
 import axios, { AxiosInstance } from 'axios'
 import type {
+  GenerateScenariosFromPromptParams,
+  GenerateTestPromptParams,
+  GenerateTestSetupParams,
+} from '../types/agentTestSetupGeneration'
+import type {
   AudioFile,
   Evaluation,
   EvaluationCreate,
@@ -966,6 +971,42 @@ class ApiClient {
     append_scenarios_to_output?: boolean
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/agents/generate-description', data)
+    return response.data
+  }
+
+  async generateTestPromptFromProduction(
+    data: GenerateTestPromptParams,
+  ): Promise<{
+    sections: Array<{ key: string; title: string; content: string }>
+    test_agent_prompt: string
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/agents/generate-test-prompt', data)
+    return response.data
+  }
+
+  async generateScenariosFromPrompt(
+    data: GenerateScenariosFromPromptParams,
+  ): Promise<{
+    scenarios: Array<{ name: string; description: string; goal?: string | null }>
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/agents/generate-scenarios-from-prompt', data)
+    return response.data
+  }
+
+  async generateTestSetupFromProduction(
+    data: GenerateTestSetupParams,
+  ): Promise<{
+    sections: Array<{ key: string; title: string; content: string }>
+    test_agent_prompt: string
+    scenarios: Array<{ name: string; description: string; goal?: string | null }>
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/agents/generate-test-setup', data)
     return response.data
   }
 

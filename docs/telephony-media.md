@@ -1,30 +1,71 @@
 # Telephony media workers and post-call processing
 
-Live Vobiz calls use a **long-lived WebSocket** on the media router (`app/api/v1/media.py`), not a Celery task slot. Post-call work (ffmpeg merge, S3 upload, `CallRecording` persist, inbound evaluator dispatch) runs in the **`finalize_telephony_recording`** Celery task after the WebSocket handler enqueues it from `voice_bundle` / Gemini bot teardown.
+Live Vobiz calls use a **long-lived WebSocket** on the telephony/media router (`app/api/v1/media.py`), not a Celery task slot. Post-call work (ffmpeg merge, S3 upload, `CallRecording` persist, inbound evaluator dispatch) runs in the **`finalize_telephony_recording`** Celery task after the WebSocket handler enqueues it from `voice_bundle` / Gemini bot teardown.
 
-## Deployment
+## Deployment (telephony edge)
 
 | Process | Role | Docker Compose service |
 |--------|------|------------------------|
-| **API** | HTTP CRUD, Vobiz webhooks (`SERVICE_MODE=api`) | `api` (:8000) |
-| **Media** | Live voice WebSockets only (`SERVICE_MODE=media`) | `media` (:8001) |
+| **API** | HTTP CRUD, UI, authenticated Vobiz admin (`numbers/*`, `calls/outbound`) | `api` (:8000) |
+| **Telephony (media)** | **Carrier-facing edge**: Vobiz webhooks + live WebSockets | `media` (:8001) |
 | **Celery workers** | Outbound dial, post-call finalize, evaluator scoring | `worker`, `worker-imports` |
 
-Set **`MEDIA_WS_BASE_URL`** (or `vobiz.media_ws_base_url` in config) so Vobiz answer XML points at a **publicly reachable** media host, e.g. `wss://media.example.com` or a second ngrok tunnel to `:8001`.
+Vobiz sees **one public host** (the telephony edge):
 
-The API does **not** proxy WebSocket audio. It only embeds the media URL in answer XML. Resolution order: `MEDIA_WS_BASE_URL` → else reuse `webhook_base_url` (https→wss). When API and media share one port (`SERVICE_MODE=all`), a separate media URL is not required.
+- `POST/GET /api/v1/telephony/vobiz/webhooks/answer`
+- `POST /api/v1/telephony/vobiz/webhooks/events`
+- `POST /api/v1/telephony/vobiz/webhooks/recording-ready`
+- `WSS /api/v1/telephony/vobiz/ws`
+
+Configure **`vobiz.webhook_base_url`** to that public URL (e.g. `https://telephony.staging.example.com`). When `media_ws_base_url` / `MEDIA_WS_BASE_URL` is unset, carrier answer XML reuses the same host (`https` → `wss`) via `carrier_media_ws_base_url()`.
+
+The product API does **not** proxy WebSocket audio and does **not** expose Vobiz carrier webhooks in split mode.
+
+### Browser voice-agent (Agents “Talk”)
+
+When API and telephony run on different ports, browser web calls still use API `/voice-agent/connect` and may need optional **`media_ws_base_url`** / `MEDIA_WS_BASE_URL` pointing at telephony for the returned `ws_url`. Vobiz PSTN does not need a separate media URL when `webhook_base_url` already targets telephony.
 
 ### Local dev
 
 - **`docker compose up`** — runs `api`, `media`, `worker`, `worker-imports`.
-- **`eai start-all`** — spawns telephony media server + Celery workers + API (`SERVICE_MODE=api` on the API process). Use `--no-telephony-worker` to skip media.
-- **`eai start`** — API only (production/docker `api` service).
+- **`eai start-all`** — spawns telephony worker + Celery + API.
+- **`eai start`** — single process; webhooks and WebSockets co-locate on `:8000` when `MEDIA_WS_BASE_URL` is unset.
 
-Override `MEDIA_WS_BASE_URL` when media is on a different public host than webhooks.
+#### Local Vobiz inbound test (split, staging-like)
+
+1. Start stack: `eai start-all` or `docker compose up api media worker`.
+2. Start Celery worker if not already running.
+3. **One ngrok tunnel to telephony**: `ngrok http 8001`
+4. In `config.yml`:
+
+   ```yaml
+   vobiz:
+     webhook_base_url: "https://<your-tunnel>.ngrok-free.dev"
+     webhook_verify: false   # local dev only
+   ```
+
+   Do **not** set `media_ws_base_url` for Vobiz (same host is used for WS).
+
+5. **Re-import** the phone number or update the Vobiz application answer URL so it points at the telephony tunnel (not `:8000`).
+6. Place an inbound call; confirm telephony logs show both **answer webhook** and **WebSocket accepted**.
+
+Optional: set `media_ws_base_url: "ws://localhost:8001"` (or ngrok wss URL) if testing **browser** voice-agent with split services.
+
+## Hard cutover checklist
+
+Use when moving from API-hosted webhooks to telephony edge:
+
+1. Deploy telephony/media with Vobiz `webhook_router` mounted.
+2. Set `vobiz.webhook_base_url` to the **telephony public URL** in all environments.
+3. Remove stale `MEDIA_WS_BASE_URL` from the API service env (optional; only needed for browser WS when split).
+4. **Re-register Vobiz answer URLs** — import numbers again or update applications in the Vobiz dashboard (stored URLs may still reference the old API host).
+5. Verify inbound call: telephony logs show `/webhooks/answer` and `/ws`; API logs do **not** show carrier webhooks.
+6. Verify outbound call: API `POST /calls/outbound` still works; callbacks hit telephony host.
+7. Enable `webhook_verify: true` in staging/prod after tunnel/LB URL is stable.
 
 ## Capacity
 
-One listen port accepts **many concurrent WebSocket connections** (one per live call). Scale media horizontally behind a WebSocket-capable load balancer; point `MEDIA_WS_BASE_URL` at the LB.
+One listen port accepts **many concurrent WebSocket connections** (one per live call). Scale telephony horizontally behind a WebSocket-capable load balancer; point `webhook_base_url` at the LB (webhooks and WS share the same host).
 
 ## Recording artifacts
 

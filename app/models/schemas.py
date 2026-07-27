@@ -283,6 +283,82 @@ class AgentPhoneAssignmentCheckResponse(BaseModel):
     conflict: Optional[AgentPhoneAssignmentConflict] = None
 
 
+class TestPromptSectionResponse(BaseModel):
+    """One canonical section of a generated test agent prompt."""
+    key: str
+    title: str
+    content: str
+
+
+class GeneratedScenarioDraftResponse(BaseModel):
+    """LLM-generated scenario draft before persistence."""
+    name: str
+    description: str
+    goal: Optional[str] = None
+
+
+class GenerateTestPromptRequest(BaseModel):
+    """Stage 1: map production prompt into sectioned test agent prompt."""
+    production_prompt: str = Field(..., min_length=1)
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+class GenerateTestPromptResponse(BaseModel):
+    sections: List[TestPromptSectionResponse]
+    test_agent_prompt: str
+    provider: str
+    model: str
+
+
+class GenerateScenariosFromPromptRequest(BaseModel):
+    """Stage 2: generate scenario drafts from test agent prompt."""
+    test_agent_prompt: str = Field(..., min_length=1)
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    scenario_count: int = Field(default=5, ge=1, le=10)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+class GenerateScenariosFromPromptResponse(BaseModel):
+    scenarios: List[GeneratedScenarioDraftResponse]
+    provider: str
+    model: str
+
+
+class GenerateTestSetupRequest(BaseModel):
+    """Convenience: run stage 1 then stage 2 sequentially."""
+    production_prompt: str = Field(..., min_length=1)
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    scenario_count: int = Field(default=5, ge=1, le=10)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+class GenerateTestSetupResponse(BaseModel):
+    sections: List[TestPromptSectionResponse]
+    test_agent_prompt: str
+    scenarios: List[GeneratedScenarioDraftResponse]
+    provider: str
+    model: str
+
+
 class AgentResponse(BaseModel):
     """Schema for agent response"""
     id: UUID

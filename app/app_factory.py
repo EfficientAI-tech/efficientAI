@@ -24,12 +24,28 @@ from app.database import init_db
 logger = logging.getLogger(__name__)
 
 
+def _service_mode() -> str:
+    """Prefer os.environ so subprocess / reload cannot leave stale settings."""
+    import os
+
+    return (os.environ.get("SERVICE_MODE") or settings.SERVICE_MODE or "api").strip().lower()
+
+
 def _includes_http_routes() -> bool:
-    return settings.SERVICE_MODE in ("api", "all")
+    return _service_mode() in ("api", "all")
 
 
 def _includes_media_routes() -> bool:
-    return settings.SERVICE_MODE in ("media", "all")
+    mode = _service_mode()
+    if mode in ("media", "all"):
+        return True
+    if mode == "api":
+        # Single-process dev: mount voice-agent / Vobiz WS on API when no
+        # dedicated media URL is configured (e.g. bare ``eai start``).
+        from app.services.media_urls import separate_media_server_configured
+
+        return not separate_media_server_configured()
+    return False
 
 
 @asynccontextmanager
@@ -147,6 +163,22 @@ def _mount_frontend(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     """Create API, media, or combined app based on SERVICE_MODE."""
+    import os
+
+    from app.config import apply_service_mode
+
+    env_mode = os.environ.get("SERVICE_MODE")
+    if env_mode:
+        apply_service_mode(env_mode)
+
+    mode = _service_mode()
+    print(
+        f"[{mode.upper()}] create_app: http_routes={_includes_http_routes()} "
+        f"media_routes={_includes_media_routes()} "
+        f"MEDIA_WS_BASE_URL={settings.MEDIA_WS_BASE_URL!r}",
+        flush=True,
+    )
+
     title_suffix = {
         "api": " API",
         "media": " Media",
@@ -174,6 +206,20 @@ def create_app() -> FastAPI:
         from app.api.v1.media import media_router
 
         app.include_router(media_router, prefix=settings.API_V1_PREFIX)
+        logger.info(
+            "Live voice WebSockets mounted (SERVICE_MODE=%s, MEDIA_WS_BASE_URL=%r)",
+            settings.SERVICE_MODE,
+            settings.MEDIA_WS_BASE_URL,
+        )
+        if _service_mode() == "media":
+            logger.info(
+                "Vobiz telephony edge: /telephony/vobiz/webhooks/* and /telephony/vobiz/ws"
+            )
+        if settings.SERVICE_MODE == "api":
+            logger.info(
+                "Voice WebSockets co-located on API (unset MEDIA_WS_BASE_URL to "
+                "keep this mode; set it to ws://host:8001 when running eai telephony-worker)"
+            )
 
     @app.get("/health")
     async def health_check():

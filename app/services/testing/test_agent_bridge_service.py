@@ -510,6 +510,11 @@ class TestAgentBridgeService:
                 .first()
             )
 
+            from app.services.voice_agent.resolve_tts_voice import (
+                log_effective_tts_voice,
+                resolve_effective_tts_voice_id,
+            )
+
             tts_voice_id = None
             tts_model = None
             tts_provider_str = None
@@ -517,31 +522,25 @@ class TestAgentBridgeService:
                 raw = getattr(voice_bundle, "tts_provider", None)
                 if raw:
                     tts_provider_str = (raw.value if hasattr(raw, "value") else str(raw)).lower()
-                tts_voice_id = getattr(voice_bundle, "tts_voice", None)
                 tts_model = getattr(voice_bundle, "tts_model", None)
+
+            tts_voice_id = resolve_effective_tts_voice_id(
+                persona=persona,
+                voice_bundle=voice_bundle,
+            )
+            log_effective_tts_voice(
+                logger,
+                path_name="Bridge WebRTC",
+                persona=persona,
+                voice_bundle=voice_bundle,
+                resolved_voice_id=tts_voice_id,
+            )
 
             if not tts_provider_str:
                 raise ValueError(
                     f"Voice bundle {voice_bundle_id} is missing tts_provider. "
                     f"Please configure the TTS provider in the voice bundle settings."
                 )
-
-            # #region agent log
-            import json as _json, time as _time
-            with open("debug-9ccd37.log", "a") as _f:
-                _f.write(_json.dumps({
-                    "sessionId": "9ccd37",
-                    "location": "test_agent_bridge_service.py:tts_resolve",
-                    "message": "Resolved voice bundle TTS provider",
-                    "data": {
-                        "tts_provider_str": tts_provider_str,
-                        "voice_bundle_id": str(voice_bundle_id),
-                        "provider_platform": provider_platform,
-                    },
-                    "timestamp": int(_time.time() * 1000),
-                    "hypothesisId": "A",
-                }) + "\n")
-            # #endregion
 
             tts_provider_enum_map = {
                 "cartesia": ModelProvider.CARTESIA,
@@ -632,23 +631,6 @@ class TestAgentBridgeService:
 
                 test_agent = TestAgentProcessor(test_agent_config)
                 await test_agent.initialize()
-
-                # #region agent log
-                with open("debug-9ccd37.log", "a") as _f:
-                    _f.write(_json.dumps({
-                        "sessionId": "9ccd37",
-                        "location": "test_agent_bridge_service.py:test_agent_init",
-                        "message": "Test agent initialized",
-                        "data": {
-                            "persona_name": persona.name,
-                            "tts_provider": tts_provider_str,
-                            "has_tts_key": bool(tts_api_key),
-                            "has_llm_key": bool(llm_api_key),
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                        "hypothesisId": "B",
-                    }) + "\n")
-                # #endregion
 
                 logger.info(f"[Bridge WebRTC] ✅ Test agent initialized: {persona.name}")
 

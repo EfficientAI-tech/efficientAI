@@ -25,6 +25,14 @@ from app.models.schemas import (
     AgentPhoneAssignmentCheckResponse,
     AgentPhoneAssignmentConflict,
     CallMediumEnum as CallMediumEnumSchema,
+    GenerateTestPromptRequest,
+    GenerateTestPromptResponse,
+    GenerateScenariosFromPromptRequest,
+    GenerateScenariosFromPromptResponse,
+    GenerateTestSetupRequest,
+    GenerateTestSetupResponse,
+    GeneratedScenarioDraftResponse,
+    TestPromptSectionResponse,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -211,6 +219,174 @@ async def generate_agent_description(
     except Exception as e:
         logger.error(f"[Agents] AI description generation failed: {repr(e)}")
         raise HTTPException(500, f"AI generation failed: {str(e)}")
+
+
+def _test_prompt_section_responses(sections) -> list[TestPromptSectionResponse]:
+    return [
+        TestPromptSectionResponse(key=s.key, title=s.title, content=s.content)
+        for s in sections
+    ]
+
+
+def _scenario_draft_responses(scenarios) -> list[GeneratedScenarioDraftResponse]:
+    return [
+        GeneratedScenarioDraftResponse(name=s.name, description=s.description, goal=s.goal)
+        for s in scenarios
+    ]
+
+
+@router.post("/generate-test-prompt", response_model=GenerateTestPromptResponse)
+async def generate_test_prompt(
+    data: GenerateTestPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Stage 1: map a production prompt into canonical test agent prompt sections."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_test_prompt_from_production,
+    )
+
+    if not data.production_prompt.strip():
+        raise HTTPException(400, "Production prompt is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        result = generate_test_prompt_from_production(
+            data.production_prompt,
+            agent_name=data.agent_name,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GenerateTestPromptResponse(
+            sections=_test_prompt_section_responses(result.sections),
+            test_agent_prompt=result.test_agent_prompt,
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logger.error(f"[Agents] Test prompt generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
+
+
+@router.post("/generate-scenarios-from-prompt", response_model=GenerateScenariosFromPromptResponse)
+async def generate_scenarios_from_prompt(
+    data: GenerateScenariosFromPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Stage 2: generate scenario drafts from a test agent prompt."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_scenarios_from_test_prompt,
+    )
+
+    if not data.test_agent_prompt.strip():
+        raise HTTPException(400, "Test agent prompt is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        result = generate_scenarios_from_test_prompt(
+            data.test_agent_prompt,
+            agent_name=data.agent_name,
+            scenario_count=data.scenario_count,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GenerateScenariosFromPromptResponse(
+            scenarios=_scenario_draft_responses(result.scenarios),
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logger.error(f"[Agents] Scenario generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
+
+
+@router.post("/generate-test-setup", response_model=GenerateTestSetupResponse)
+async def generate_test_setup(
+    data: GenerateTestSetupRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Run stage 1 then stage 2: sectioned test prompt + scenario drafts."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_scenarios_from_test_prompt,
+        generate_test_prompt_from_production,
+    )
+
+    if not data.production_prompt.strip():
+        raise HTTPException(400, "Production prompt is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        prompt_result = generate_test_prompt_from_production(
+            data.production_prompt,
+            agent_name=data.agent_name,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        scenario_result = generate_scenarios_from_test_prompt(
+            prompt_result.test_agent_prompt,
+            agent_name=data.agent_name,
+            scenario_count=data.scenario_count,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GenerateTestSetupResponse(
+            sections=_test_prompt_section_responses(prompt_result.sections),
+            test_agent_prompt=prompt_result.test_agent_prompt,
+            scenarios=_scenario_draft_responses(scenario_result.scenarios),
+            provider=prompt_result.provider,
+            model=prompt_result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logger.error(f"[Agents] Test setup generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
 
 
 def generate_unique_agent_id(db: Session) -> str:

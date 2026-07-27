@@ -165,6 +165,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             formatted_model_name = "models/gemini-2.5-flash-native-audio-preview-12-2025"
         logger.info(f"Using Gemini Live model: {formatted_model_name}")
         
+        # Gemini S2S uses native voices (e.g. Puck), not provider voice IDs from Persona/VoiceBundle.
         llm = imports["GeminiLiveLLMService"](
             api_key=google_api_key,
             voice_id="Puck",

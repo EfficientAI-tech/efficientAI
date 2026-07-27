@@ -51,12 +51,26 @@ async def websocket_endpoint(
     )
 
     if not bearer_token and not api_key:
-        print("WebSocket connection rejected: No credentials provided")
+        from urllib.parse import parse_qs
+
+        raw_qs = websocket.scope.get("query_string", b"")
+        if isinstance(raw_qs, bytes):
+            raw_qs = raw_qs.decode("utf-8", errors="replace")
+        parsed = parse_qs(raw_qs)
+        bearer_token = bearer_token or (parsed.get("token") or parsed.get("access_token") or [None])[0]
+        api_key = api_key or (parsed.get("X-API-Key") or parsed.get("api_key") or [None])[0]
+
+    if not bearer_token and not api_key:
+        print(
+            f"[MEDIA-WS] rejected: no credentials (query_string_len="
+            f"{len(websocket.scope.get('query_string') or b'')})",
+            flush=True,
+        )
         await websocket.close(code=1008, reason="Authentication required")
         return
 
     await websocket.accept()
-    print("WebSocket connection accepted")
+    print("[MEDIA-WS] WebSocket connection accepted", flush=True)
 
     try:
         db = next(get_db())
@@ -292,6 +306,7 @@ async def websocket_endpoint(
                 model_name = voice_bundle.s2s_model
         
         # 2. Add Persona information (characteristics)
+        persona = None
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
@@ -508,6 +523,7 @@ async def websocket_endpoint(
                     evaluator_id=str(evaluator.id) if evaluator else None,
                     result_id=result_id,
                     voice_bundle=voice_bundle,
+                    persona=persona,
                     stt_api_key=stt_api_key,
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
@@ -943,6 +959,11 @@ async def bot_connect(
         persona_id=persona_id,
         scenario_id=scenario_id,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
+        fallback_scheme=(
+            request.headers.get("x-forwarded-proto")
+            or getattr(request.url, "scheme", "http")
+            or "http"
+        ),
     )
     
     # Return the response in the format Pipecat expects

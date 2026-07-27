@@ -56,6 +56,7 @@ from efficientai.serializers.vobiz import VobizFrameSerializer
 initiate_vobiz_outbound_call_task = None
 
 router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony"])
+webhook_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Webhooks"])
 ws_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Media"])
 
 
@@ -354,8 +355,8 @@ async def create_vobiz_outbound_call(
     )
 
 
-@router.post("/webhooks/answer")
-@router.get("/webhooks/answer")
+@webhook_router.post("/webhooks/answer")
+@webhook_router.get("/webhooks/answer")
 async def vobiz_answer_webhook(
     request: Request,
     call_ref: Optional[str] = None,
@@ -471,7 +472,7 @@ async def vobiz_answer_webhook(
     return Response(content=xml, media_type="application/xml")
 
 
-@router.post("/webhooks/events")
+@webhook_router.post("/webhooks/events")
 async def vobiz_events_webhook(
     request: Request,
     db: Session = Depends(get_db),
@@ -518,7 +519,7 @@ async def vobiz_events_webhook(
     return {"status": "ok"}
 
 
-@router.post("/webhooks/recording-ready")
+@webhook_router.post("/webhooks/recording-ready")
 async def vobiz_recording_ready_webhook(
     request: Request,
     db: Session = Depends(get_db),
@@ -679,6 +680,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     persona_id,
                     scenario_id,
                     voice_bundle=context.voice_bundle,
+                    persona=context.persona,
                     stt_api_key=context.stt_api_key,
                     tts_api_key=context.tts_api_key,
                     llm_api_key=context.llm_api_key,

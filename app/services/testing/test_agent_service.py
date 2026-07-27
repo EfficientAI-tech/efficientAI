@@ -332,13 +332,19 @@ class TestAgentService:
                 }
 
             # Convert response to speech using TTS
+            from app.services.voice_agent.resolve_tts_voice import resolve_effective_tts_voice_id
+
+            tts_voice = resolve_effective_tts_voice_id(
+                persona=persona,
+                voice_bundle=voice_bundle,
+            )
             response_audio_bytes = tts_service.synthesize(
                 text=test_agent_text,
                 tts_provider=voice_bundle.tts_provider,
                 tts_model=voice_bundle.tts_model,
                 organization_id=organization_id,
                 db=db,
-                voice=voice_bundle.tts_voice,
+                voice=tts_voice,
                 config=voice_bundle.tts_config,
             )
 

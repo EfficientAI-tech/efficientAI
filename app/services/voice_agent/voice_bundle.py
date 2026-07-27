@@ -516,6 +516,7 @@ async def run_voice_bundle_fastapi(
     evaluator_id: str | None = None,
     result_id: str | None = None,
     voice_bundle=None,
+    persona=None,
     stt_api_key: str | None = None,
     tts_api_key: str | None = None,
     llm_api_key: str | None = None,
@@ -623,7 +624,23 @@ async def run_voice_bundle_fastapi(
         stt = stt_cfg["factory"](api_key=stt_api_key, model=stt_model)
 
         # Instantiate TTS service from the provider registry
-        tts_voice_id = getattr(voice_bundle, "tts_voice", None) or tts_cfg["default_voice"]
+        from app.services.voice_agent.resolve_tts_voice import (
+            log_effective_tts_voice,
+            resolve_effective_tts_voice_id,
+        )
+
+        tts_voice_id = resolve_effective_tts_voice_id(
+            persona=persona,
+            voice_bundle=voice_bundle,
+            default_voice=tts_cfg["default_voice"],
+        )
+        log_effective_tts_voice(
+            logger,
+            path_name="run_voice_bundle_fastapi",
+            persona=persona,
+            voice_bundle=voice_bundle,
+            resolved_voice_id=tts_voice_id,
+        )
         tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
         tts = _instantiate_tts_service(
             tts_provider_value,

@@ -3,9 +3,9 @@
 import json
 import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Dict, List, Optional, Union
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_MB: int = 500
-    ALLOWED_AUDIO_FORMATS: List[str] = ["wav", "mp3", "flac", "m4a"]
+    ALLOWED_AUDIO_FORMATS: Annotated[List[str], NoDecode] = ["wav", "mp3", "flac", "m4a"]
     BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
 
     # S3 Configuration
@@ -395,6 +395,15 @@ def validate_auth_configuration() -> None:
         raise RuntimeError(
             f"external_oidc is enabled but required settings are missing: {', '.join(missing)}"
         )
+
+
+def apply_service_mode(mode: str) -> None:
+    """Sync SERVICE_MODE on the module-level settings singleton and os.environ."""
+    import os
+
+    normalized = (mode or "api").strip().lower()
+    os.environ["SERVICE_MODE"] = normalized
+    settings.SERVICE_MODE = normalized
 
 
 def load_config_from_file(config_path: str) -> None:

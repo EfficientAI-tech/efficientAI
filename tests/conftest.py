@@ -19,10 +19,29 @@ from sqlalchemy.pool import StaticPool
 os.environ["ALLOWED_AUDIO_FORMATS"] = '["wav","mp3","flac","m4a"]'
 # Ensure storage service singletons can initialize in test environments.
 os.environ["UPLOAD_DIR"] = "/tmp/efficientai-test-uploads"
+# Local dev often sets SERVICE_MODE=media and config.yml media URLs; keep API tests on full app mode.
+os.environ["SERVICE_MODE"] = "api"
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC_ROOT = _REPO_ROOT / "src"
+for _path in (str(_REPO_ROOT), str(_SRC_ROOT)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 _TASKS_PACKAGE_DIR = str(
     Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks"
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_mode_for_app_factory(monkeypatch):
+    """Prevent local SERVICE_MODE / media URL config from breaking create_app tests."""
+    from app.config import settings
+
+    monkeypatch.setenv("SERVICE_MODE", "api")
+    monkeypatch.setattr(settings, "SERVICE_MODE", "api", raising=False)
+    monkeypatch.setattr(settings, "MEDIA_WS_BASE_URL", "", raising=False)
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -834,6 +853,38 @@ def client(db_session, api_key, org_id):
     app.dependency_overrides[get_workspace_id] = lambda: default_workspace.id
     app.dependency_overrides[get_workspace_context] = _override_workspace_context
     app.dependency_overrides[require_enterprise_feature] = lambda: None
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def telephony_client(db_session):
+    """Telephony edge TestClient (Vobiz carrier webhooks + media WebSocket routes only)."""
+    from contextlib import asynccontextmanager
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.v1.routes import vobiz_telephony
+    from app.database import get_db
+
+    app = FastAPI()
+
+    @asynccontextmanager
+    async def _noop_lifespan(_: object):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
+    app.include_router(vobiz_telephony.webhook_router, prefix="/api/v1")
+    app.include_router(vobiz_telephony.ws_router, prefix="/api/v1")
+
+    def _override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_get_db
 
     with TestClient(app) as test_client:
         yield test_client

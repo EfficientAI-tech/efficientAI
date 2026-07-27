@@ -29,6 +29,7 @@ class VobizAgentContext:
     organization_id: UUID
     workspace_id: Optional[UUID]
     voice_bundle: Optional[VoiceBundle]
+    persona: Optional[Persona]
     use_voice_bundle_pipeline: bool
     system_instruction: Optional[str]
     google_api_key: Optional[str]
@@ -180,6 +181,21 @@ def resolve_vobiz_agent_context(
         ).first()
 
     use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
+
+    persona: Optional[Persona] = None
+    if persona_id:
+        try:
+            persona_uuid = UUID(persona_id)
+            persona_query = db.query(Persona).filter(
+                Persona.id == persona_uuid,
+                Persona.organization_id == organization_id,
+            )
+            if workspace_id is not None:
+                persona_query = persona_query.filter(Persona.workspace_id == workspace_id)
+            persona = persona_query.first()
+        except ValueError:
+            persona = None
+
     system_instruction = build_system_instruction(
         db,
         agent=agent,
@@ -236,6 +252,7 @@ def resolve_vobiz_agent_context(
         organization_id=organization_id,
         workspace_id=workspace_id,
         voice_bundle=voice_bundle,
+        persona=persona,
         use_voice_bundle_pipeline=use_voice_bundle_pipeline,
         system_instruction=system_instruction,
         google_api_key=google_api_key,
@@ -247,6 +264,11 @@ def resolve_vobiz_agent_context(
 
 
 def vobiz_webhook_base_url() -> str:
+    """Public telephony edge base URL (webhooks + default carrier WebSocket host).
+
+    In split deploy this is the media/telephony service host (e.g. ``https://telephony.example.com``),
+    not the product API host. Number import and outbound dial register Vobiz callback URLs here.
+    """
     from app.config import settings
 
     base = settings.VOBIZ_WEBHOOK_BASE_URL or settings.PLIVO_WEBHOOK_BASE_URL
@@ -263,10 +285,10 @@ def build_vobiz_ws_url(
     scenario_id: Optional[str] = None,
 ) -> str:
     from app.config import settings
-    from app.services.media_urls import media_ws_base_url
+    from app.services.media_urls import carrier_media_ws_base_url
     from urllib.parse import quote
 
-    ws_base = media_ws_base_url()
+    ws_base = carrier_media_ws_base_url()
     if not ws_base:
         base = vobiz_webhook_base_url()
         ws_base = base.replace("https://", "wss://").replace("http://", "ws://")

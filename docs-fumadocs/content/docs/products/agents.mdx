@@ -27,6 +27,22 @@ Use the **agent list on the left** (public Agent ID + name) to switch between te
 
 Use **Create Test Agent** to add a new evaluation configuration. Each test agent gets a name, call settings, and a prompt that describes how the agent should behave during simulated or provider-backed test calls.
 
+### Generate from production prompt (recommended)
+
+On **Step 2 — Prompt**, choose **From production prompt** and paste your live production system prompt. EfficientAI runs a two-stage AI pipeline:
+
+1. **Generate test prompt** — maps the production prompt into five canonical sections stored in `description`:
+   - Purpose
+   - Behavior
+   - Expected Interactions
+   - Personality Traits
+   - Constraints
+2. **Generate scenarios** — creates test scenario drafts from the assembled test agent prompt (not the raw production text).
+
+Review and edit each section and scenario draft before creating the agent. Selected scenarios are saved automatically with `agent_id` linked.
+
+Choose **Write manually** to author the test agent prompt directly or use the existing brief-to-description **AI Generate** flow.
+
 ## Execution paths
 
 A test agent can run on one or both paths:

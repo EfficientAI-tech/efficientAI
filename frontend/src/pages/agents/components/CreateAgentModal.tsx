@@ -11,6 +11,12 @@ import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 import { resolveLLMModelsForCredential, formatGatewayCredentialLabel } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { extractPhoneConflictDetail, formatAgentPhoneConflictMessage } from './agentPhoneValidation'
+import {
+  assembleTestAgentPrompt,
+  emptyPromptSections,
+  type ScenarioDraftItem,
+  type TestPromptSectionDraft,
+} from './agentTestSetupConstants'
 
 interface FormData {
   name: string
@@ -72,6 +78,12 @@ export default function CreateAgentModal({
   const [selectedSavedPromptId, setSelectedSavedPromptId] = useState('')
   const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
   const [currentStep, setCurrentStep] = useState<CreateStep>(1)
+  const [promptInputMode, setPromptInputMode] = useState<'production' | 'manual'>('production')
+  const [productionPrompt, setProductionPrompt] = useState('')
+  const [promptSections, setPromptSections] = useState<TestPromptSectionDraft[]>(emptyPromptSections())
+  const [scenarioDrafts, setScenarioDrafts] = useState<ScenarioDraftItem[]>([])
+  const [scenarioCount, setScenarioCount] = useState(5)
+  const [setupAdditionalContext, setSetupAdditionalContext] = useState('')
   const [formData, setFormData] = useState<FormData>({
     name: '',
     phone_number: '',
@@ -176,6 +188,97 @@ export default function CreateAgentModal({
     telephonyNumbers,
   ])
 
+  const buildGenerationParams = () => ({
+    ...(aiProvider ? { provider: aiProvider } : {}),
+    ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
+    ...(aiModel ? { model: aiModel } : {}),
+  })
+
+  const syncDescriptionFromSections = (sections: TestPromptSectionDraft[]) => {
+    const assembled = assembleTestAgentPrompt(sections)
+    setFormData((prev) => ({ ...prev, description: assembled }))
+    return assembled
+  }
+
+  const updatePromptSection = (key: TestPromptSectionDraft['key'], content: string) => {
+    setPromptSections((prev) => {
+      const next = prev.map((section) =>
+        section.key === key ? { ...section, content } : section,
+      )
+      syncDescriptionFromSections(next)
+      return next
+    })
+  }
+
+  const generateTestPromptMutation = useMutation({
+    mutationFn: () => {
+      if (!formData.name.trim()) {
+        throw new Error('Agent name is required before generating a test prompt')
+      }
+      if (!productionPrompt.trim()) {
+        throw new Error('Production prompt is required')
+      }
+      return apiClient.generateTestPromptFromProduction({
+        production_prompt: productionPrompt,
+        agent_name: formData.name.trim(),
+        language: formData.language,
+        call_type: formData.call_type,
+        additional_context: setupAdditionalContext.trim() || undefined,
+        ...buildGenerationParams(),
+      })
+    },
+    onSuccess: (data) => {
+      const sections = data.sections.map((section) => ({
+        key: section.key as TestPromptSectionDraft['key'],
+        title: section.title,
+        content: section.content,
+      }))
+      setPromptSections(sections)
+      setFormData((prev) => ({ ...prev, description: data.test_agent_prompt }))
+      setDescriptionEditorMode('preview')
+      showToast('Test agent prompt generated from production prompt', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.message || err?.response?.data?.detail || 'Failed to generate test prompt', 'error')
+    },
+  })
+
+  const generateScenariosMutation = useMutation({
+    mutationFn: () => {
+      if (!formData.name.trim()) {
+        throw new Error('Agent name is required before generating scenarios')
+      }
+      const testAgentPrompt = formData.description.trim()
+      if (!testAgentPrompt) {
+        throw new Error('Generate or enter a test agent prompt first')
+      }
+      return apiClient.generateScenariosFromPrompt({
+        test_agent_prompt: testAgentPrompt,
+        agent_name: formData.name.trim(),
+        scenario_count: scenarioCount,
+        language: formData.language,
+        call_type: formData.call_type,
+        additional_context: setupAdditionalContext.trim() || undefined,
+        ...buildGenerationParams(),
+      })
+    },
+    onSuccess: (data) => {
+      setScenarioDrafts(
+        data.scenarios.map((scenario, index) => ({
+          id: `draft-${Date.now()}-${index}`,
+          name: scenario.name,
+          description: scenario.description,
+          goal: scenario.goal || undefined,
+          selected: true,
+        })),
+      )
+      showToast(`Generated ${data.scenarios.length} scenario drafts`, 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.message || err?.response?.data?.detail || 'Failed to generate scenarios', 'error')
+    },
+  })
+
   const generateDescriptionMutation = useMutation({
     mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
       apiClient.generateAgentDescription(data),
@@ -212,7 +315,7 @@ export default function CreateAgentModal({
   })
 
   const createMutation = useMutation({
-    mutationFn: (data: FormData) => {
+    mutationFn: async (data: FormData) => {
       const payload: any = {
         name: data.name,
         language: data.language,
@@ -241,12 +344,41 @@ export default function CreateAgentModal({
 
       payload.silence_hangup_secs = data.silence_hangup_secs ?? 15
 
-      return apiClient.createAgent(payload)
+      const agent = await apiClient.createAgent(payload)
+
+      const selectedDrafts = scenarioDrafts.filter((draft) => draft.selected)
+      let scenarioWarning: string | undefined
+      if (selectedDrafts.length > 0) {
+        const results = await Promise.allSettled(
+          selectedDrafts.map((draft) =>
+            apiClient.createScenario({
+              name: draft.name,
+              description: draft.description,
+              agent_id: agent.id,
+              required_info: draft.goal ? { goal: draft.goal } : {},
+            }),
+          ),
+        )
+        const failed = results.filter((result) => result.status === 'rejected').length
+        if (failed > 0) {
+          scenarioWarning = `${failed} of ${selectedDrafts.length} scenarios failed to save`
+        }
+      }
+
+      return { agent, scenarioWarning }
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const hadSelectedScenarios = scenarioDrafts.some((draft) => draft.selected)
       onSuccess()
       resetForm()
-      showToast('Agent created successfully!', 'success')
+      if (result.scenarioWarning) {
+        showToast(`Agent created. ${result.scenarioWarning}.`, 'error')
+      } else {
+        showToast(
+          hadSelectedScenarios ? 'Agent and scenarios created successfully!' : 'Agent created successfully!',
+          'success',
+        )
+      }
     },
     onError: (error: any) => {
       const conflictMessage = extractPhoneConflictDetail(error.response?.data?.detail)
@@ -280,6 +412,12 @@ export default function CreateAgentModal({
     setSavedPromptSearch('')
     setSelectedSavedPromptId('')
     setCurrentStep(1)
+    setPromptInputMode('production')
+    setProductionPrompt('')
+    setPromptSections(emptyPromptSections())
+    setScenarioDrafts([])
+    setScenarioCount(5)
+    setSetupAdditionalContext('')
   }
 
   const validateStep1 = (): boolean => {
@@ -671,6 +809,252 @@ export default function CreateAgentModal({
 
           {currentStep === 2 && (
             <>
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPromptInputMode('production')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                  promptInputMode === 'production'
+                    ? 'bg-primary-600 text-white border-primary-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                From production prompt
+              </button>
+              <button
+                type="button"
+                onClick={() => setPromptInputMode('manual')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+                  promptInputMode === 'manual'
+                    ? 'bg-primary-600 text-white border-primary-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                Write manually
+              </button>
+            </div>
+
+            {promptInputMode === 'production' ? (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Production Agent Prompt
+                  </label>
+                  <textarea
+                    value={productionPrompt}
+                    onChange={(e) => setProductionPrompt(e.target.value)}
+                    rows={8}
+                    placeholder="Paste the production system prompt from Retell, Vapi, or your voice platform..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm"
+                  />
+                </div>
+
+                <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">AI Provider</label>
+                      <select
+                        value={aiCredentialId}
+                        onChange={(e) => {
+                          setAiCredentialId(e.target.value)
+                          setAiModel('')
+                        }}
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+                      >
+                        <option value="">Auto-detect</option>
+                        {aiProviders.filter((p) => p.is_active).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {formatGatewayCredentialLabel(p, {
+                              custom: 'Custom',
+                              openai: 'OpenAI',
+                              anthropic: 'Anthropic',
+                              google: 'Google',
+                            })}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
+                      <select
+                        value={aiModel}
+                        onChange={(e) => setAiModel(e.target.value)}
+                        disabled={!aiProvider || !!gatewayDirectModel}
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
+                      >
+                        {gatewayDirectModel ? (
+                          <option value="">{gatewayDirectModel}</option>
+                        ) : (
+                          selectableModels.map((model) => (
+                            <option key={model} value={model}>{model}</option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Scenario count</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={scenarioCount}
+                        onChange={(e) => setScenarioCount(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Additional context (optional)</label>
+                    <textarea
+                      value={setupAdditionalContext}
+                      onChange={(e) => setSetupAdditionalContext(e.target.value)}
+                      rows={2}
+                      placeholder="Industry, compliance notes, or test priorities..."
+                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => generateTestPromptMutation.mutate()}
+                      disabled={generateTestPromptMutation.isPending || !productionPrompt.trim() || !formData.name.trim()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      {generateTestPromptMutation.isPending ? (
+                        <><Loader2 className="h-3 w-3 animate-spin" /> Generating test prompt...</>
+                      ) : (
+                        <><Sparkles className="h-3 w-3" /> Generate test prompt</>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => generateScenariosMutation.mutate()}
+                      disabled={generateScenariosMutation.isPending || !formData.description.trim() || !formData.name.trim()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50"
+                    >
+                      {generateScenariosMutation.isPending ? (
+                        <><Loader2 className="h-3 w-3 animate-spin" /> Generating scenarios...</>
+                      ) : (
+                        <><Sparkles className="h-3 w-3" /> Generate scenarios</>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-700">Test Agent Prompt Sections</label>
+                    <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setDescriptionEditorMode('write')}
+                        className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          descriptionEditorMode === 'write'
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        <Code className="h-3 w-3" />
+                        Edit sections
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDescriptionEditorMode('preview')}
+                        className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          descriptionEditorMode === 'preview'
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        <Eye className="h-3 w-3" />
+                        Preview
+                      </button>
+                    </div>
+                  </div>
+
+                  {descriptionEditorMode === 'write' ? (
+                    <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
+                      {promptSections.map((section) => (
+                        <div key={section.key}>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1">{section.title}</label>
+                          <textarea
+                            value={section.content}
+                            onChange={(e) => updatePromptSection(section.key, e.target.value)}
+                            rows={3}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono"
+                            placeholder={`Content for ${section.title}...`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="min-h-[240px] max-h-[320px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
+                      {formData.description ? (
+                        <ReactMarkdown>{formData.description}</ReactMarkdown>
+                      ) : (
+                        <p className="text-gray-400 italic">Generate a test prompt to preview...</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {scenarioDrafts.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Generated Scenarios ({scenarioDrafts.filter((d) => d.selected).length}/{scenarioDrafts.length} selected)
+                    </label>
+                    <div className="space-y-2 max-h-[240px] overflow-y-auto">
+                      {scenarioDrafts.map((draft) => (
+                        <div key={draft.id} className="border border-gray-200 rounded-lg p-3 bg-white">
+                          <label className="flex items-start gap-2">
+                            <input
+                              type="checkbox"
+                              checked={draft.selected}
+                              onChange={(e) =>
+                                setScenarioDrafts((prev) =>
+                                  prev.map((item) =>
+                                    item.id === draft.id ? { ...item, selected: e.target.checked } : item,
+                                  ),
+                                )
+                              }
+                              className="mt-1"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <input
+                                type="text"
+                                value={draft.name}
+                                onChange={(e) =>
+                                  setScenarioDrafts((prev) =>
+                                    prev.map((item) =>
+                                      item.id === draft.id ? { ...item, name: e.target.value } : item,
+                                    ),
+                                  )
+                                }
+                                className="w-full text-sm font-medium border border-gray-200 rounded px-2 py-1 mb-1"
+                              />
+                              <textarea
+                                value={draft.description}
+                                onChange={(e) =>
+                                  setScenarioDrafts((prev) =>
+                                    prev.map((item) =>
+                                      item.id === draft.id ? { ...item, description: e.target.value } : item,
+                                    ),
+                                  )
+                                }
+                                rows={3}
+                                className="w-full text-xs border border-gray-200 rounded px-2 py-1 font-mono"
+                              />
+                            </div>
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
           {/* Description with AI Generate */}
           <div>
             <div className="flex items-center justify-between mb-1">
@@ -883,6 +1267,15 @@ export default function CreateAgentModal({
             <p className={`mt-1 text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
               {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
             </p>
+          </div>
+              </>
+            )}
+
+            {promptInputMode === 'production' && (
+              <p className={`text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
+                {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum in assembled test prompt
+              </p>
+            )}
           </div>
             </>
           )}

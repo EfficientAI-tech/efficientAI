@@ -17,7 +17,7 @@ A Scenario defines the goal and context for a test conversation.
 EfficientAI supports three scenario creation paths:
 
 1. **Generate from Agent Prompt (AI-assisted)**  
-   Generate scenario drafts from the selected agent's prompt/description.
+   Generate scenario drafts from the selected agent's **test agent prompt** (`description`). Uses the same backend generator as agent creation stage 2. Each draft includes structured markdown sections: Background, Caller Intent, Conversation Flow, Success Criteria, and Edge Cases to Probe (150-300 words per scenario), plus an optional `goal` in `required_info`.
 2. **Generate from Call data**  
    Derive scenario content from call transcripts or call data.
 3. **Create Manually**  
@@ -28,7 +28,7 @@ EfficientAI supports three scenario creation paths:
 | Field | Description |
 |---|---|
 | `name` | Scenario title. |
-| `description` | What should happen in the conversation. |
+| `description` | What should happen in the conversation. AI-generated scenarios use structured sections (Background, Caller Intent, Conversation Flow, Success Criteria, Edge Cases) at 150-300 words. |
 | `required_info` | Structured key/value expectations for the test. |
 | `agent_id` | Optional linked agent for context. |
 
