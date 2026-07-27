@@ -22,6 +22,7 @@ from app.models.schemas import (
     MetricResponse,
     PromoteDiscoveredChildRequest,
     PromoteDiscoveredMetricRequest,
+    METRIC_RUBRIC_TEXT_MAX_LENGTH,
 )
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -1718,7 +1719,7 @@ class MetricParseBulkRequest(BaseModel):
     )
     parent_description: Optional[str] = Field(
         default=None,
-        max_length=4000,
+        max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH,
         description="Optional description used as the parent's LLM rubric.",
     )
     selection_mode: Optional[Literal["single_choice", "multi_label"]] = Field(
@@ -1830,7 +1831,7 @@ def _parse_label_blocks(prompt: str) -> List[ParsedLabel]:
             ParsedLabel(
                 label_name=name[:120],
                 definition=definition[:2000],
-                examples=examples[:4000],
+                examples=examples[:METRIC_RUBRIC_TEXT_MAX_LENGTH],
             )
         )
     return labels
@@ -1908,7 +1909,7 @@ def _llm_parse_labels(
             ParsedLabel(
                 label_name=name[:120],
                 definition=str(item.get("definition") or "")[:2000].strip(),
-                examples=str(item.get("examples") or "")[:4000].strip(),
+                examples=str(item.get("examples") or "")[:METRIC_RUBRIC_TEXT_MAX_LENGTH].strip(),
             )
         )
     return labels
@@ -1930,7 +1931,7 @@ def _build_description_from_label(label: ParsedLabel) -> str:
     if label.examples:
         parts.append(f"Examples:\n{label.examples}")
     description = "\n\n".join(parts)
-    return description[:4000]
+    return description[:METRIC_RUBRIC_TEXT_MAX_LENGTH]
 
 
 def _ensure_unique_metric_name(
