@@ -12,6 +12,7 @@ import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
 import AgentTalkSidebar, { type AgentTalkMode } from './components/AgentTalkSidebar'
 import { Save, X } from 'lucide-react'
+import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
 
 const VALID_TABS: AgentDetailTab[] = ['overview', 'test_agent', 'voice_ai_agent']
 
@@ -181,8 +182,12 @@ export default function AgentWorkspaceDetail({
       setIsEditMode(false)
       showToast('Agent updated successfully!', 'success')
     },
-    onError: (error: { response?: { data?: { detail?: string } }; message?: string }) => {
-      showToast(`Failed to update agent: ${error.response?.data?.detail || error.message}`, 'error')
+    onError: (error: { response?: { data?: { detail?: unknown } }; message?: string }) => {
+      const conflictMessage = extractPhoneConflictDetail(error.response?.data?.detail)
+      showToast(
+        conflictMessage || `Failed to update agent: ${error.message || 'Unknown error'}`,
+        'error',
+      )
     },
   })
 

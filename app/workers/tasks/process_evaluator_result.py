@@ -26,6 +26,13 @@ from app.workers.tasks.helpers.llm_evaluation import (
 from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
 
 
+def _commit_evaluator_result(db, result) -> None:
+    from app.services.live_entity_storage import sync_evaluator_result
+
+    sync_evaluator_result(db, result)
+    db.commit()
+
+
 def _make_json_serializable(obj):
     """Recursively convert non-JSON-native values (e.g., NumPy types)."""
     try:
@@ -420,7 +427,7 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
         return False
 
     result.audio_s3_key = s3_key
-    db.commit()
+    _commit_evaluator_result(db, result)
     db.refresh(result)
     logger.info(
         f"[EvaluatorResult {result.result_id}] Recovered missing audio and stored at {s3_key}"
@@ -685,7 +692,7 @@ def process_evaluator_result_task(self, result_id: str):
                 flag_modified(result, "call_data")
             result.status = EvaluatorResultStatus.COMPLETED.value
             result.error_message = None
-            db.commit()
+            _commit_evaluator_result(db, result)
 
             from app.services.billing.flexprice_service import (
                 record_playground_evaluation_completed,

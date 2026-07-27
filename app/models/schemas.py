@@ -269,6 +269,20 @@ class AgentUpdate(BaseModel):
         return self
 
 
+class AgentPhoneAssignmentConflict(BaseModel):
+    """Another agent already owns this phone number."""
+    agent_id: UUID
+    agent_name: str
+    phone_number: str
+
+
+class AgentPhoneAssignmentCheckResponse(BaseModel):
+    """Result of checking whether a phone number is free to assign."""
+    available: bool
+    phone_number: Optional[str] = None
+    conflict: Optional[AgentPhoneAssignmentConflict] = None
+
+
 class AgentResponse(BaseModel):
     """Schema for agent response"""
     id: UUID

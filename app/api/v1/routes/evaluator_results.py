@@ -401,6 +401,9 @@ def get_evaluator_result(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
+    from app.services.live_entity_storage import hydrate_evaluator_results
+
+    hydrate_evaluator_results([result])
     repair_evaluator_result_status_if_needed(db, result)
     
     # Build response

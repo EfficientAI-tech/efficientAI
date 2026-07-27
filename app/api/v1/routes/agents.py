@@ -19,10 +19,56 @@ from app.models.database import (
 )
 from sqlalchemy import and_
 from app.models.schemas import (
-    AgentCreate, AgentUpdate, AgentResponse, CallMediumEnum as CallMediumEnumSchema
+    AgentCreate,
+    AgentUpdate,
+    AgentResponse,
+    AgentPhoneAssignmentCheckResponse,
+    AgentPhoneAssignmentConflict,
+    CallMediumEnum as CallMediumEnumSchema,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _validate_agent_phone_assignment(
+    db: Session,
+    *,
+    organization_id: UUID,
+    call_medium,
+    phone_number: Optional[str],
+    telephony_phone_number_id: Optional[UUID],
+    exclude_agent_id: Optional[UUID] = None,
+) -> None:
+    """Raise HTTPException if phone assignment conflicts with another agent."""
+    if call_medium != CallMediumEnum.PHONE_CALL:
+        return
+    if not phone_number and not telephony_phone_number_id:
+        return
+
+    from app.services.telephony.phone_routing import find_agent_phone_assignment_conflict
+
+    conflict = find_agent_phone_assignment_conflict(
+        db,
+        organization_id=organization_id,
+        phone_number=phone_number,
+        telephony_phone_number_id=telephony_phone_number_id,
+        exclude_agent_id=exclude_agent_id,
+    )
+    if not conflict:
+        return
+    if conflict.get("error") == "telephony_not_found":
+        raise HTTPException(status_code=404, detail="Telephony phone number not found")
+
+    agent_name = conflict["agent_name"]
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "message": f'This number is already assigned to agent "{agent_name}".',
+            "agent_id": str(conflict["agent_id"]),
+            "agent_name": agent_name,
+            "phone_number": conflict["phone_number"],
+        },
+    )
 
 
 def resolve_agent_by_path_id(
@@ -284,7 +330,15 @@ async def create_agent(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
             )
-    
+
+    _validate_agent_phone_assignment(
+        db,
+        organization_id=organization_id,
+        call_medium=agent.call_medium,
+        phone_number=agent.phone_number,
+        telephony_phone_number_id=agent.telephony_phone_number_id,
+    )
+
     # Generate unique 6-digit agent_id
     agent_id = generate_unique_agent_id(db)
     
@@ -345,6 +399,60 @@ async def list_agents(
         Agent.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
     return agents
+
+
+@router.get("/check-phone-assignment", response_model=AgentPhoneAssignmentCheckResponse)
+async def check_phone_assignment(
+    phone_number: Optional[str] = Query(None),
+    telephony_phone_number_id: Optional[UUID] = Query(None),
+    exclude_agent_id: Optional[UUID] = Query(None),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Check whether a phone number is available for agent assignment in this org."""
+    if not phone_number and not telephony_phone_number_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="phone_number or telephony_phone_number_id is required",
+        )
+
+    from app.services.telephony.phone_routing import find_agent_phone_assignment_conflict
+
+    conflict = find_agent_phone_assignment_conflict(
+        db,
+        organization_id=organization_id,
+        phone_number=phone_number,
+        telephony_phone_number_id=telephony_phone_number_id,
+        exclude_agent_id=exclude_agent_id,
+    )
+    if conflict and conflict.get("error") == "telephony_not_found":
+        raise HTTPException(status_code=404, detail="Telephony phone number not found")
+    if conflict:
+        return AgentPhoneAssignmentCheckResponse(
+            available=False,
+            phone_number=conflict["phone_number"],
+            conflict=AgentPhoneAssignmentConflict(**conflict),
+        )
+
+    resolved_phone = phone_number
+    if telephony_phone_number_id:
+        from app.models.database import TelephonyPhoneNumber
+
+        row = (
+            db.query(TelephonyPhoneNumber)
+            .filter(
+                TelephonyPhoneNumber.id == telephony_phone_number_id,
+                TelephonyPhoneNumber.organization_id == organization_id,
+            )
+            .first()
+        )
+        if row:
+            resolved_phone = row.phone_number
+
+    return AgentPhoneAssignmentCheckResponse(
+        available=True,
+        phone_number=resolved_phone,
+    )
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -466,10 +574,34 @@ async def update_agent(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
             )
-    
+
+    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+
+    effective_call_medium = (
+        agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
+    )
+    effective_phone_number = (
+        agent_update.phone_number
+        if "phone_number" in update_data
+        else db_agent.phone_number
+    )
+    effective_telephony_id = (
+        agent_update.telephony_phone_number_id
+        if "telephony_phone_number_id" in update_data
+        else db_agent.telephony_phone_number_id
+    )
+
+    _validate_agent_phone_assignment(
+        db,
+        organization_id=organization_id,
+        call_medium=effective_call_medium,
+        phone_number=effective_phone_number,
+        telephony_phone_number_id=effective_telephony_id,
+        exclude_agent_id=db_agent.id,
+    )
+
     # Convert the update model to dict, handling None values properly
     # Use model_dump with exclude_unset to only get fields that were explicitly provided
-    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
     
     # Apply updates
     for field, value in update_data.items():

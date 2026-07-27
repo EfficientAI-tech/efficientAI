@@ -1033,6 +1033,9 @@ class EvaluatorResult(Base):
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
     call_data = Column(JSON, nullable=True)  # Full call details from provider (like CallRecording)
     
+    # Data-plane shard routing (payload rows on shard DBs when sharding enabled)
+    shard_id = Column(String(64), nullable=True, index=True)
+    
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1082,6 +1085,36 @@ class CallRecording(Base):
         index=True,
     )
     
+    shard_id = Column(String(64), nullable=True, index=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class EvaluatorResultPayload(Base):
+    """Heavy evaluator result fields stored on data shards when sharding is enabled."""
+
+    __tablename__ = "evaluator_result_payloads"
+
+    evaluator_result_id = Column(UUID(as_uuid=True), primary_key=True)
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    audio_s3_key = Column(String, nullable=True)
+    transcription = Column(String, nullable=True)
+    speaker_segments = Column(JSON, nullable=True)
+    metric_scores = Column(JSON, nullable=True)
+    call_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CallRecordingPayload(Base):
+    """Heavy call recording fields stored on data shards when sharding is enabled."""
+
+    __tablename__ = "call_recording_payloads"
+
+    call_recording_id = Column(UUID(as_uuid=True), primary_key=True)
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    call_data = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

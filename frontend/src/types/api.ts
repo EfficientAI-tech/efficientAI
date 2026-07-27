@@ -513,6 +513,18 @@ export interface VoiceBundleCreate {
 }
 
 // Test Agent Types
+export interface AgentPhoneAssignmentConflict {
+  agent_id: string
+  agent_name: string
+  phone_number: string
+}
+
+export interface AgentPhoneAssignmentCheckResponse {
+  available: boolean
+  phone_number?: string | null
+  conflict?: AgentPhoneAssignmentConflict | null
+}
+
 export interface TestAgent {
   id: string
   agent_id?: string | null

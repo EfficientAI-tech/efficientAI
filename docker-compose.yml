@@ -68,7 +68,8 @@ services:
       # AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=https;AccountName=...
       # AZURE_CONTAINER_NAME: your-container
       SERVICE_MODE: api
-      MEDIA_WS_BASE_URL: ws://localhost:8001
+      # Public URL Vobiz uses for live audio WS (override for ngrok/LB to :8001)
+      MEDIA_WS_BASE_URL: ${MEDIA_WS_BASE_URL:-ws://localhost:8001}
     volumes:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
@@ -83,6 +84,36 @@ services:
       redis:
         condition: service_healthy
     command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
+
+  # Live voice WebSockets (Vobiz inbound/outbound media). Scale horizontally for
+  # concurrent calls; point MEDIA_WS_BASE_URL at this host (or an LB in front).
+  media:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: "qualitative-voice"
+    container_name: efficientai_media
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      SERVICE_MODE: media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    ports:
+      - "8001:8001"
+    command: eai telephony-worker --config /app/config.yml --host 0.0.0.0 --port 8001
 
   worker:
     # Pre-built image from GitHub Container Registry
@@ -102,7 +133,6 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-      SERVICE_MODE: media
       # Optional GCS blob storage (match api service env when using gcs):
       # GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa.json
     depends_on:
@@ -116,9 +146,7 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
-    ports:
-      - "8001:8001"
-    command: eai start-worker-all --config /app/config.yml --loglevel info --queues celery,audio-metrics --concurrency 8 --media-port 8001
+    command: eai worker --config /app/config.yml --loglevel info --queues celery,audio-metrics --concurrency 8
 
   # Dedicated worker for call-import + evaluation queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),

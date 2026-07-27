@@ -62,3 +62,75 @@ def test_agent_delete_impact_without_dependencies(authenticated_client, make_age
     assert body["agent_name"] == "Impact Agent"
     assert body["dependencies"] == {}
     assert body["can_delete_without_force"] is True
+
+
+def _agent_payload(**overrides):
+    payload = {
+        "name": "Another Agent",
+        "language": "en",
+        "description": "This test support agent handles customer issues and guides users clearly.",
+        "call_type": "outbound",
+        "call_medium": "phone_call",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_create_agent_duplicate_phone_returns_409(authenticated_client, make_agent):
+    make_agent(name="Existing Agent", phone_number="+19998887777")
+
+    response = authenticated_client.post(
+        "/api/v1/agents",
+        json=_agent_payload(phone_number="+19998887777"),
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["agent_name"] == "Existing Agent"
+    assert "already assigned" in detail["message"]
+
+
+def test_update_agent_duplicate_phone_returns_409(authenticated_client, make_agent):
+    owner = make_agent(name="Owner Agent", phone_number="+18887776666", agent_id="111111")
+    make_agent(name="Other Agent", phone_number="+17776665555", agent_id="222222")
+
+    response = authenticated_client.put(
+        f"/api/v1/agents/{owner.agent_id}",
+        json={"phone_number": "+17776665555"},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["agent_name"] == "Other Agent"
+
+
+def test_check_phone_assignment_available(authenticated_client):
+    response = authenticated_client.get(
+        "/api/v1/agents/check-phone-assignment",
+        params={"phone_number": "+16665554444"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["conflict"] is None
+
+
+def test_check_phone_assignment_conflict(authenticated_client, make_agent):
+    make_agent(name="Mapped Agent", phone_number="+15554443333")
+
+    response = authenticated_client.get(
+        "/api/v1/agents/check-phone-assignment",
+        params={"phone_number": "+15554443333"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is False
+    assert body["conflict"]["agent_name"] == "Mapped Agent"
+
+
+def test_check_phone_assignment_requires_input(authenticated_client):
+    response = authenticated_client.get("/api/v1/agents/check-phone-assignment")
+
+    assert response.status_code == 400

@@ -228,6 +228,9 @@ def list_evaluator_results_page(
     results = (
         query.order_by(EvaluatorResult.timestamp.desc()).offset(skip).limit(limit).all()
     )
+    from app.services.live_entity_storage import hydrate_evaluator_results
+
+    hydrate_evaluator_results(results)
     items = [
         serialize_evaluator_result_row(db, row, resolve_speaker_segments=resolve_speaker_segments)
         for row in results

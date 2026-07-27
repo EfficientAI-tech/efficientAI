@@ -19,6 +19,8 @@ import {
   formatGatewayCredentialLabel,
   resolveLLMModelsForCredential,
 } from '../../../lib/llmModelOptions'
+import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
+import { formatAgentPhoneConflictMessage } from './agentPhoneValidation'
 
 interface FormData {
   name: string
@@ -100,6 +102,30 @@ export default function AgentEditForm({
   } = useOrgTelephony(formData.call_medium === 'phone_call')
   const telephonyNumbers = numbersForCallType(formData.call_type)
   const isTelephonyConfigError = !canUseProviderNumbers
+  const { conflict: phoneConflict, isChecking: isCheckingPhoneAssignment, hasConflict: hasPhoneConflict } =
+    useAgentPhoneAssignmentCheck({
+      enabled: formData.call_medium === 'phone_call',
+      callMedium: formData.call_medium,
+      phoneNumber: formData.phone_number,
+      telephonyPhoneNumberId:
+        phoneNumberInputMode === 'provider' ? formData.telephony_phone_number_id : undefined,
+      excludeAgentId: agentId,
+    })
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (formData.call_medium === 'phone_call') {
+      if (isCheckingPhoneAssignment) {
+        showToast('Checking phone number availability…', 'error')
+        return
+      }
+      if (hasPhoneConflict && phoneConflict) {
+        showToast(formatAgentPhoneConflictMessage(phoneConflict), 'error')
+        return
+      }
+    }
+    onSubmit(e)
+  }
 
   const llmModels = modelOptions?.llm || []
   const modelResolution = selectedAiProviderRow
@@ -185,7 +211,7 @@ export default function AgentEditForm({
     : undefined
 
   return (
-    <form onSubmit={onSubmit}>
+    <form onSubmit={handleFormSubmit}>
       {activeTab === 'overview' && (
         <div className="space-y-5 max-w-3xl">
           <OverviewSection title="Agent profile" description="Name and language shown to evaluators and logs.">
@@ -362,7 +388,9 @@ export default function AgentEditForm({
                             : ''}
                           {number.region ? ` - ${number.region}` : ''}
                           {number.country_iso2 ? ` (${number.country_iso2})` : ''}
-                          {number.agent_id ? ' [In use]' : ''}
+                          {number.agent_id && number.id !== formData.telephony_phone_number_id
+                            ? ` [Assigned to ${number.linked_agent_name || 'another agent'}]`
+                            : ''}
                         </option>
                       ))}
                     </select>
@@ -377,9 +405,19 @@ export default function AgentEditForm({
                           phone_number: e.target.value.replace(/[^\d+]/g, ''),
                         })
                       }
-                      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400"
+                      className={`w-full px-3 py-2.5 border rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400 ${
+                        hasPhoneConflict ? 'border-red-300' : 'border-gray-200'
+                      }`}
                       placeholder="+1234567890"
                     />
+                  )}
+                  {formData.call_medium === 'phone_call' && hasPhoneConflict && phoneConflict && (
+                    <p className="text-xs text-red-600 mt-1">
+                      {formatAgentPhoneConflictMessage(phoneConflict)}
+                    </p>
+                  )}
+                  {formData.call_medium === 'phone_call' && isCheckingPhoneAssignment && (
+                    <p className="text-xs text-gray-500 mt-1">Checking number availability…</p>
                   )}
                 </div>
               )}

@@ -53,6 +53,9 @@ def _fresh_call_data(db: Session, row: CallRecording) -> Dict[str, Any]:
 def _save_call_data(db: Session, row: CallRecording, data: Dict[str, Any]) -> None:
     row.call_data = data
     flag_modified(row, "call_data")
+    from app.services.live_entity_storage import sync_call_recording
+
+    sync_call_recording(db, row)
     db.commit()
     db.refresh(row)
 
@@ -265,6 +268,10 @@ def create_inbound_call_recording(
         evaluator_result_id=evaluator_result_id,
     )
     db.add(row)
+    db.flush()
+    from app.services.live_entity_storage import register_call_recording
+
+    register_call_recording(db, row)
     db.commit()
     db.refresh(row)
     return row

@@ -410,6 +410,10 @@ async def list_calls(
         .all()
     )
 
+    from app.services.live_entity_storage import hydrate_call_recordings
+
+    hydrate_call_recordings(call_recordings)
+
     agent_ids = [cr.agent_id for cr in call_recordings if cr.agent_id]
     agents_by_id = _load_agents_by_id(db, agent_ids)
 
@@ -446,6 +450,10 @@ async def get_call(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Call not found",
         )
+
+    from app.services.live_entity_storage import hydrate_call_recordings
+
+    hydrate_call_recordings([call_recording])
 
     # region agent log
     from app.utils.debug_agent_log import agent_debug_log

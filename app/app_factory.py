@@ -184,7 +184,17 @@ def create_app() -> FastAPI:
 
         @app.get("/health/detail")
         async def health_detail(_admin=Depends(require_admin)):
+            from app.database import SessionLocal
+            from app.services.observability.catalog_storage_stats import collect_catalog_storage_stats
+
             payload, status_code = build_health_status(detailed=True)
+            db = SessionLocal()
+            try:
+                payload["catalog_storage"] = collect_catalog_storage_stats(db)
+            except Exception as exc:
+                payload["catalog_storage"] = {"error": str(exc)}
+            finally:
+                db.close()
             return JSONResponse(content=payload, status_code=status_code)
 
     _mount_frontend(app)

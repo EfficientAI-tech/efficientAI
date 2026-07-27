@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     # api = CRUD + quick webhooks only; media = live voice WebSockets only; all = single-process dev
-    SERVICE_MODE: str = "all"
+    SERVICE_MODE: str = "api"
     MEDIA_WS_BASE_URL: str = ""
     MEDIA_PORT: int = 8001
 

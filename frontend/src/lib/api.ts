@@ -904,6 +904,21 @@ class ApiClient {
     return response.data
   }
 
+  async checkAgentPhoneAssignment(params: {
+    phoneNumber?: string
+    telephonyPhoneNumberId?: string
+    excludeAgentId?: string
+  }): Promise<import('../types/api').AgentPhoneAssignmentCheckResponse> {
+    const response = await this.client.get('/api/v1/agents/check-phone-assignment', {
+      params: {
+        phone_number: params.phoneNumber,
+        telephony_phone_number_id: params.telephonyPhoneNumberId,
+        exclude_agent_id: params.excludeAgentId,
+      },
+    })
+    return response.data
+  }
+
   async updateAgent(agentId: string, data: {
     name?: string
     phone_number?: string | null

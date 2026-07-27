@@ -9,6 +9,8 @@ import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, TelephonyPro
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
 import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
 import { resolveLLMModelsForCredential, formatGatewayCredentialLabel } from '../../../lib/llmModelOptions'
+import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
+import { extractPhoneConflictDetail, formatAgentPhoneConflictMessage } from './agentPhoneValidation'
 
 interface FormData {
   name: string
@@ -104,6 +106,14 @@ export default function CreateAgentModal({
   } = useOrgTelephony(isOpen && formData.call_medium === 'phone_call')
   const telephonyNumbers = numbersForCallType(formData.call_type)
   const isTelephonyConfigError = !canUseProviderNumbers
+  const { conflict: phoneConflict, isChecking: isCheckingPhoneAssignment, hasConflict: hasPhoneConflict } =
+    useAgentPhoneAssignmentCheck({
+      enabled: isOpen,
+      callMedium: formData.call_medium,
+      phoneNumber: phoneNumberInputMode === 'custom' ? formData.phone_number : formData.phone_number,
+      telephonyPhoneNumberId:
+        phoneNumberInputMode === 'provider' ? formData.telephony_phone_number_id : undefined,
+    })
 
   const selectedAiProviderRow = aiCredentialId
     ? aiProviders.find((p) => p.id === aiCredentialId)
@@ -239,7 +249,8 @@ export default function CreateAgentModal({
       showToast('Agent created successfully!', 'success')
     },
     onError: (error: any) => {
-      showToast(`Failed to create agent: ${error.response?.data?.detail || error.message}`, 'error')
+      const conflictMessage = extractPhoneConflictDetail(error.response?.data?.detail)
+      showToast(conflictMessage || `Failed to create agent: ${error.message}`, 'error')
     },
   })
 
@@ -287,6 +298,14 @@ export default function CreateAgentModal({
         return false
       } else if (!/^[\d+]+$/.test(formData.phone_number)) {
         showToast('Phone number must contain only digits and the + character.', 'error')
+        return false
+      }
+      if (isCheckingPhoneAssignment) {
+        showToast('Checking phone number availability…', 'error')
+        return false
+      }
+      if (hasPhoneConflict && phoneConflict) {
+        showToast(formatAgentPhoneConflictMessage(phoneConflict), 'error')
         return false
       }
     }
@@ -541,7 +560,9 @@ export default function CreateAgentModal({
                         : ''}
                       {number.region ? ` - ${number.region}` : ''}
                       {number.country_iso2 ? ` (${number.country_iso2})` : ''}
-                      {number.agent_id ? ' [In use]' : ''}
+                      {number.agent_id
+                        ? ` [Assigned to ${number.linked_agent_name || 'another agent'}]`
+                        : ''}
                     </option>
                   ))}
                 </select>
@@ -556,9 +577,19 @@ export default function CreateAgentModal({
                       phone_number: e.target.value.replace(/[^\d+]/g, ''),
                     })
                   }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
+                    hasPhoneConflict ? 'border-red-300' : 'border-gray-300'
+                  }`}
                   placeholder="+1234567890"
                 />
+              )}
+              {formData.call_medium === 'phone_call' && hasPhoneConflict && phoneConflict && (
+                <p className="text-xs text-red-600 mt-1">
+                  {formatAgentPhoneConflictMessage(phoneConflict)}
+                </p>
+              )}
+              {formData.call_medium === 'phone_call' && isCheckingPhoneAssignment && (
+                <p className="text-xs text-gray-500 mt-1">Checking number availability…</p>
               )}
             </div>
           )}

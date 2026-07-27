@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -10,6 +10,108 @@ from sqlalchemy.orm import Session
 
 from app.models.database import Agent, TelephonyPhoneNumber
 from app.services.telephony.plivo_client import expand_phone_candidates, normalize_e164
+
+
+def _conflict_payload(agent: Agent, phone_number: str) -> dict[str, Any]:
+    return {
+        "agent_id": agent.id,
+        "agent_name": agent.name,
+        "phone_number": phone_number,
+    }
+
+
+def find_agent_phone_assignment_conflict(
+    db: Session,
+    *,
+    organization_id: UUID,
+    phone_number: Optional[str] = None,
+    telephony_phone_number_id: Optional[UUID] = None,
+    exclude_agent_id: Optional[UUID] = None,
+) -> Optional[dict[str, Any]]:
+    """Return conflict info if the phone is already assigned to another agent in the org."""
+    candidates: list[str] = []
+
+    if telephony_phone_number_id:
+        number_row = (
+            db.query(TelephonyPhoneNumber)
+            .filter(
+                TelephonyPhoneNumber.id == telephony_phone_number_id,
+                TelephonyPhoneNumber.organization_id == organization_id,
+            )
+            .first()
+        )
+        if not number_row:
+            return {"error": "telephony_not_found"}
+        if number_row.agent_id and number_row.agent_id != exclude_agent_id:
+            agent = db.query(Agent).filter(Agent.id == number_row.agent_id).first()
+            if agent:
+                return _conflict_payload(agent, number_row.phone_number)
+        candidates.extend(expand_phone_candidates(number_row.phone_number))
+
+    if phone_number:
+        candidates.extend(expand_phone_candidates(phone_number))
+
+    seen: set[str] = set()
+    unique_candidates = []
+    for value in candidates:
+        if value and value not in seen:
+            seen.add(value)
+            unique_candidates.append(value)
+
+    if not unique_candidates:
+        return None
+
+    agent = (
+        db.query(Agent)
+        .filter(
+            Agent.organization_id == organization_id,
+            Agent.call_medium == "phone_call",
+            Agent.phone_number.in_(unique_candidates),
+        )
+        .first()
+    )
+    if agent and agent.id != exclude_agent_id:
+        return _conflict_payload(agent, agent.phone_number or unique_candidates[0])
+
+    number_row = (
+        db.query(TelephonyPhoneNumber)
+        .filter(
+            TelephonyPhoneNumber.organization_id == organization_id,
+            TelephonyPhoneNumber.phone_number.in_(unique_candidates),
+            TelephonyPhoneNumber.agent_id.isnot(None),
+        )
+        .first()
+    )
+    if number_row and number_row.agent_id != exclude_agent_id:
+        agent = db.query(Agent).filter(Agent.id == number_row.agent_id).first()
+        if agent:
+            return _conflict_payload(agent, number_row.phone_number)
+
+    linked_agent = (
+        db.query(Agent)
+        .join(
+            TelephonyPhoneNumber,
+            TelephonyPhoneNumber.id == Agent.telephony_phone_number_id,
+        )
+        .filter(
+            Agent.organization_id == organization_id,
+            Agent.call_medium == "phone_call",
+            TelephonyPhoneNumber.phone_number.in_(unique_candidates),
+        )
+        .first()
+    )
+    if linked_agent and linked_agent.id != exclude_agent_id:
+        number = (
+            db.query(TelephonyPhoneNumber)
+            .filter(TelephonyPhoneNumber.id == linked_agent.telephony_phone_number_id)
+            .first()
+        )
+        return _conflict_payload(
+            linked_agent,
+            number.phone_number if number else unique_candidates[0],
+        )
+
+    return None
 
 
 def safe_normalize_phone(phone_number: Optional[str]) -> Optional[str]:

@@ -453,7 +453,11 @@ def telephony_worker(config: str, host: Optional[str], port: Optional[int]):
 @click.option("--loglevel", "-l", default="info", help="Celery log level")
 @click.option("--media-port", default=None, type=int, help="Media server port (default 8001)")
 def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
-    """Start Celery worker and media server together."""
+    """Start Celery worker and media server together.
+
+    Deprecated: prefer separate ``eai telephony-worker`` and ``eai worker`` services
+    (see docker-compose ``media`` + ``worker``).
+    """
     import signal
     import atexit
 
@@ -586,6 +590,17 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
         "is enabled; 32 threads can exhaust per-shard SQLAlchemy pools."
     ),
 )
+@click.option(
+    "--telephony-worker/--no-telephony-worker",
+    default=True,
+    help="Spawn telephony media server for live voice WebSockets (default: on).",
+)
+@click.option(
+    "--media-port",
+    default=None,
+    type=int,
+    help="Telephony media server port (default: MEDIA_PORT / 8001).",
+)
 def start_all(
     config: str,
     host: Optional[str],
@@ -598,18 +613,21 @@ def start_all(
     worker_loglevel: str,
     imports_worker: bool,
     imports_worker_concurrency: int,
+    telephony_worker: bool,
+    media_port: Optional[int],
 ):
     """Start the application server and Celery worker(s) together.
 
-    By default this also spawns a second Celery worker that consumes the
-    `imports` queue (call-import CSV fan-out) so CSV processing does not
-    starve synthetic-calling, audio generation, and evaluation jobs on the
-    default queue. Use --no-imports-worker to skip it.
+    By default this also spawns a telephony media server (``eai telephony-worker``)
+    and a second Celery worker that consumes the ``imports`` queue (call-import CSV
+    fan-out). Use --no-telephony-worker or --no-imports-worker to skip either.
     """
     import signal
     import atexit
 
     click.echo("🚀 Starting EfficientAI (App + Worker)...")
+    if telephony_worker:
+        click.echo("   Telephony media server will run on a separate port (SERVICE_MODE=media).")
     if imports_worker:
         click.echo(
             "   This will start the API server, the default Celery worker, "
@@ -627,18 +645,24 @@ def start_all(
         sys.exit(1)
     
     try:
-        from app.config import load_config_from_file
+        from app.config import load_config_from_file, settings
         load_config_from_file(str(config_path))
         click.echo(f"✅ Loaded configuration from {config_path}")
     except Exception as e:
         click.echo(f"❌ Error loading config: {e}", err=True)
         sys.exit(1)
+
+    bind_media_port = media_port or settings.MEDIA_PORT
+    if telephony_worker and not (settings.MEDIA_WS_BASE_URL or "").strip():
+        settings.MEDIA_WS_BASE_URL = f"ws://localhost:{bind_media_port}"
+        os.environ["MEDIA_WS_BASE_URL"] = settings.MEDIA_WS_BASE_URL
+
+    os.environ["SERVICE_MODE"] = "api"
     
-    # Store worker processes for cleanup. We may spawn one or two:
-    #   - worker_process: the default-queue worker (existing behavior)
-    #   - worker_imports_process: dedicated worker for the `imports` queue
+    # Store worker processes for cleanup.
     worker_process = None
     worker_imports_process = None
+    telephony_process = None
 
     def _terminate(proc, label: str):
         """Best-effort terminate -> wait -> kill for a worker subprocess."""
@@ -657,7 +681,8 @@ def start_all(
 
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process, worker_imports_process
+        nonlocal worker_process, worker_imports_process, telephony_process
+        _terminate(telephony_process, "Telephony media server")
         _terminate(worker_process, "Celery worker (default)")
         _terminate(worker_imports_process, "Celery worker (imports)")
     
@@ -729,6 +754,42 @@ def start_all(
 
         threading.Thread(target=_stream, daemon=True).start()
         return proc
+
+    if telephony_worker:
+        try:
+            telephony_process = subprocess.Popen(
+                [
+                    "eai",
+                    "telephony-worker",
+                    "--config",
+                    str(config_path),
+                    "--port",
+                    str(bind_media_port),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            click.echo(
+                f"✅ Telephony media server started on port {bind_media_port} "
+                f"(pid={telephony_process.pid})"
+            )
+
+            def _stream_telephony():
+                if telephony_process.stdout:
+                    for line in iter(telephony_process.stdout.readline, ""):
+                        if line:
+                            click.echo(f"[MEDIA] {line.rstrip()}", err=False)
+                    telephony_process.stdout.close()
+
+            threading.Thread(target=_stream_telephony, daemon=True).start()
+        except FileNotFoundError:
+            click.echo("❌ eai CLI not found for telephony-worker subprocess", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"❌ Failed to start telephony media server: {e}", err=True)
+            sys.exit(1)
 
     # Start Celery workers as subprocess(es) with output streaming
     try:
@@ -810,6 +871,11 @@ def start_all(
             )
         else:
             click.echo("   Workers: default queue only (--no-imports-worker)")
+        if telephony_worker:
+            click.echo(
+                f"   Media WebSocket: {settings.MEDIA_WS_BASE_URL or f'ws://localhost:{bind_media_port}'}"
+                f"{settings.API_V1_PREFIX}/telephony/vobiz/ws"
+            )
         click.echo("\n📝 All services are running. Press Ctrl+C to stop.\n")
         
         # Run uvicorn in the main process (allows reload to work)

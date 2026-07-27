@@ -97,6 +97,10 @@ def create_inbound_evaluator_result(
         audio_s3_key=None,
     )
     db.add(evaluator_result)
+    db.flush()
+    from app.services.live_entity_storage import register_evaluator_result
+
+    register_evaluator_result(db, evaluator_result)
     db.commit()
     db.refresh(evaluator_result)
     return evaluator_result
@@ -238,8 +242,10 @@ def enqueue_linked_evaluator_result_if_ready(
         result.provider_platform = call_recording.provider_platform
 
     result.call_data = slim_call_data_for_evaluator_result(call_data)
+    from app.services.live_entity_storage import sync_evaluator_result
+
+    sync_evaluator_result(db, result)
     db.commit()
-    db.refresh(result)
 
     try:
         from app.workers.celery_app import process_evaluator_result_task
