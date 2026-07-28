@@ -12,7 +12,6 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.enums import ModelProvider
-from app.services.agent_flowchart import _extract_json_object
 from app.services.ai.llm_service import llm_service
 
 CANONICAL_SECTION_KEYS: tuple[str, ...] = (
@@ -40,26 +39,24 @@ SCENARIO_DESCRIPTION_SECTIONS: tuple[str, ...] = (
 )
 
 GENERATE_TEST_PROMPT_SYSTEM = (
-    "You are an expert at mapping production voice AI agent system prompts into "
-    "structured test agent prompts for QA evaluation.\n\n"
-    "Return STRICT JSON only:\n"
-    "{\n"
-    '  "sections": [\n'
-    '    {"key": "purpose", "title": "Purpose", "content": "markdown body only"},\n'
-    '    {"key": "behavior", "title": "Behavior", "content": "..."},\n'
-    '    {"key": "expected_interactions", "title": "Expected Interactions", "content": "..."},\n'
-    '    {"key": "personality_traits", "title": "Personality Traits", "content": "..."},\n'
-    '    {"key": "constraints", "title": "Constraints", "content": "..."}\n'
-    "  ]\n"
-    "}\n\n"
-    "Rules:\n"
-    "- Map content from the production prompt; do not invent capabilities not implied by the source.\n"
-    "- Preserve tools, policies, escalation paths, and tone faithfully within the appropriate section.\n"
-    "- If a section has no clear source content, use: \"Not specified in source prompt.\"\n"
-    "- Section content must be markdown body only (no ## heading in content).\n"
-    "- Suggest {variable} placeholders only where the production prompt clearly has dynamic slots.\n"
-    "- Return exactly five sections with the keys shown above.\n"
-    "- No markdown wrapper, no preamble."
+    "You are an expert at generating synthetic voice AI test agents.\n\n"
+    "You will receive the system prompt of a production voice AI agent.\n\n"
+    "Your task is to generate the foundational system prompt for the complementary test agent.\n\n"
+    "Do NOT generate a specific persona or scenario. Those are supplied separately.\n\n"
+    "Instead, generate instructions that define how the synthetic caller should generally behave "
+    "when interacting with this production agent.\n\n"
+    "The generated prompt should:\n\n"
+    "- Infer the complementary role from the production agent.\n"
+    "- Describe the test agent's general responsibilities.\n"
+    "- Define conversational behaviour.\n"
+    "- Define how information should be disclosed.\n"
+    "- Define how questions should be answered.\n"
+    "- Encourage realistic, human conversation.\n"
+    "- Avoid mentioning testing, QA, automation, prompts or evaluation.\n"
+    "- Assume persona-specific details and scenario context will be injected later.\n"
+    "- Leave placeholders where appropriate for persona and scenario.\n\n"
+    "The prompt should be reusable across many personas and scenarios.\n"
+    "Return only the generated system prompt."
 )
 
 GENERATE_SCENARIOS_SYSTEM = (
@@ -96,6 +93,15 @@ class ScenarioGenerationResult:
     scenarios: List[ScenarioDraft]
     provider: str
     model: str
+
+
+def _strip_llm_text_wrapper(text: str) -> str:
+    """Strip optional markdown fences and trim LLM preamble from plain-text responses."""
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:markdown|md|text)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+    return cleaned.strip()
 
 
 def _extract_json_array(text: str) -> List[Any]:
@@ -194,7 +200,6 @@ def build_test_prompt_user_message(
     additional_context: Optional[str] = None,
 ) -> str:
     parts = [
-        "Map the following production agent system prompt into the five canonical test agent prompt sections.",
         f"Agent Name: {agent_name}",
     ]
     if language:
@@ -264,7 +269,7 @@ def generate_test_prompt_from_production(
     llm_config: Optional[Dict[str, Any]] = None,
     credential_id: Optional[UUID] = None,
 ) -> TestPromptGenerationResult:
-    """Stage 1: map production prompt into canonical test agent prompt sections."""
+    """Stage 1: generate foundational test agent prompt from production prompt."""
     if not production_prompt.strip():
         raise ValueError("Production prompt is required")
 
@@ -293,12 +298,12 @@ def generate_test_prompt_from_production(
         credential_id=credential_id,
     )
 
-    raw = _extract_json_object(result["text"])
-    sections = _normalize_sections(raw.get("sections"))
-    test_agent_prompt = assemble_test_agent_prompt(sections)
+    test_agent_prompt = _strip_llm_text_wrapper(result["text"])
+    if not test_agent_prompt:
+        raise ValueError("LLM response did not contain a test agent prompt")
 
     return TestPromptGenerationResult(
-        sections=sections,
+        sections=[],
         test_agent_prompt=test_agent_prompt,
         provider=llm_provider.value,
         model=llm_model,

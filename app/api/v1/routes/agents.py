@@ -242,7 +242,7 @@ async def generate_test_prompt(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Stage 1: map a production prompt into canonical test agent prompt sections."""
+    """Stage 1: generate foundational test agent prompt from production prompt."""
     from app.services.testing.agent_test_setup_generation import (
         generate_test_prompt_from_production,
     )
@@ -334,7 +334,7 @@ async def generate_test_setup(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Run stage 1 then stage 2: sectioned test prompt + scenario drafts."""
+    """Run stage 1 then stage 2: foundational test prompt + scenario drafts."""
     from app.services.testing.agent_test_setup_generation import (
         generate_scenarios_from_test_prompt,
         generate_test_prompt_from_production,
@@ -464,16 +464,19 @@ async def create_agent(
             detail="phone_number is required when call_medium is phone_call"
         )
     
-    # Validate voice_bundle_id exists and belongs to organization
-    if agent.voice_bundle_id:
-        voice_bundle = db.query(VoiceBundle).filter(
-            and_(
-                VoiceBundle.id == agent.voice_bundle_id,
-                VoiceBundle.organization_id == organization_id
-            )
-        ).first()
-        if not voice_bundle:
-            raise HTTPException(status_code=404, detail="Voice bundle not found")
+    # Validate voice_bundle_id exists, is active, and belongs to organization
+    voice_bundle = db.query(VoiceBundle).filter(
+        and_(
+            VoiceBundle.id == agent.voice_bundle_id,
+            VoiceBundle.organization_id == organization_id,
+            VoiceBundle.is_active == True,
+        )
+    ).first()
+    if not voice_bundle:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Active voice bundle not found",
+        )
     
     # Validate voice_ai_integration_id exists and belongs to organization
     if agent.voice_ai_integration_id:

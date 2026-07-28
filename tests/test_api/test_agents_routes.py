@@ -1,8 +1,9 @@
 """API tests for agent routes."""
 
 
-def test_create_agent_success(authenticated_client, make_integration):
+def test_create_agent_success(authenticated_client, make_integration, make_voice_bundle):
     integration = make_integration()
+    voice_bundle = make_voice_bundle()
     payload = {
         "name": "Support Agent",
         "phone_number": "+1234567890",
@@ -10,6 +11,7 @@ def test_create_agent_success(authenticated_client, make_integration):
         "description": "This test support agent handles customer issues and guides users clearly.",
         "call_type": "outbound",
         "call_medium": "phone_call",
+        "voice_bundle_id": str(voice_bundle.id),
         "voice_ai_integration_id": str(integration.id),
         "voice_ai_agent_id": "provider-agent-123",
     }
@@ -22,7 +24,7 @@ def test_create_agent_success(authenticated_client, make_integration):
     assert body["voice_ai_integration_id"] == str(integration.id)
 
 
-def test_create_agent_with_missing_integration_returns_404(authenticated_client):
+def test_create_agent_requires_voice_bundle(authenticated_client):
     payload = {
         "name": "Support Agent",
         "phone_number": "+1234567890",
@@ -30,6 +32,40 @@ def test_create_agent_with_missing_integration_returns_404(authenticated_client)
         "description": "This test support agent handles customer issues and guides users clearly.",
         "call_type": "outbound",
         "call_medium": "phone_call",
+    }
+
+    response = authenticated_client.post("/api/v1/agents", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_create_agent_with_missing_voice_bundle_returns_400(authenticated_client):
+    payload = {
+        "name": "Support Agent",
+        "phone_number": "+1234567890",
+        "language": "en",
+        "description": "This test support agent handles customer issues and guides users clearly.",
+        "call_type": "outbound",
+        "call_medium": "phone_call",
+        "voice_bundle_id": "11111111-1111-1111-1111-111111111111",
+    }
+
+    response = authenticated_client.post("/api/v1/agents", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Active voice bundle not found"
+
+
+def test_create_agent_with_missing_integration_returns_404(authenticated_client, make_voice_bundle):
+    voice_bundle = make_voice_bundle()
+    payload = {
+        "name": "Support Agent",
+        "phone_number": "+1234567890",
+        "language": "en",
+        "description": "This test support agent handles customer issues and guides users clearly.",
+        "call_type": "outbound",
+        "call_medium": "phone_call",
+        "voice_bundle_id": str(voice_bundle.id),
         "voice_ai_integration_id": "11111111-1111-1111-1111-111111111111",
         "voice_ai_agent_id": "provider-agent-123",
     }
@@ -76,12 +112,13 @@ def _agent_payload(**overrides):
     return payload
 
 
-def test_create_agent_duplicate_phone_returns_409(authenticated_client, make_agent):
+def test_create_agent_duplicate_phone_returns_409(authenticated_client, make_agent, make_voice_bundle):
     make_agent(name="Existing Agent", phone_number="+19998887777")
+    voice_bundle = make_voice_bundle()
 
     response = authenticated_client.post(
         "/api/v1/agents",
-        json=_agent_payload(phone_number="+19998887777"),
+        json=_agent_payload(phone_number="+19998887777", voice_bundle_id=str(voice_bundle.id)),
     )
 
     assert response.status_code == 409

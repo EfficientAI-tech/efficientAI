@@ -7,25 +7,15 @@ def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provide
     llm_service_module = import_module("app.services.ai.llm_service")
     make_ai_provider(provider="openai")
 
-    llm_response = {
-        "sections": [
-            {"key": "purpose", "title": "Purpose", "content": "Handle support calls."},
-            {"key": "behavior", "title": "Behavior", "content": "Greet and assist."},
-            {
-                "key": "expected_interactions",
-                "title": "Expected Interactions",
-                "content": "Answer FAQs.",
-            },
-            {"key": "personality_traits", "title": "Personality Traits", "content": "Professional."},
-            {"key": "constraints", "title": "Constraints", "content": "No medical advice."},
-        ]
-    }
-    import json
+    llm_response = (
+        "You are a caller interacting with a support agent. "
+        "Introduce yourself naturally and ask questions about your issue."
+    )
 
     monkeypatch.setattr(
         llm_service_module.llm_service,
         "generate_response",
-        lambda **_kwargs: {"text": json.dumps(llm_response)},
+        lambda **_kwargs: {"text": llm_response},
     )
 
     response = authenticated_client.post(
@@ -39,10 +29,9 @@ def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provide
     )
     assert response.status_code == 200
     body = response.json()
-    assert len(body["sections"]) == 5
-    assert body["sections"][0]["key"] == "purpose"
-    assert "## Purpose" in body["test_agent_prompt"]
-    assert "Handle support calls." in body["test_agent_prompt"]
+    assert body["sections"] == []
+    assert body["test_agent_prompt"] == llm_response
+    assert "caller interacting with a support agent" in body["test_agent_prompt"]
     assert body["provider"] == "openai"
 
 
@@ -88,19 +77,10 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
     llm_service_module = import_module("app.services.ai.llm_service")
     make_ai_provider(provider="openai")
 
-    prompt_json = {
-        "sections": [
-            {"key": "purpose", "title": "Purpose", "content": "Book appointments."},
-            {"key": "behavior", "title": "Behavior", "content": "Collect details."},
-            {
-                "key": "expected_interactions",
-                "title": "Expected Interactions",
-                "content": "Schedule visits.",
-            },
-            {"key": "personality_traits", "title": "Personality Traits", "content": "Friendly."},
-            {"key": "constraints", "title": "Constraints", "content": "Verify identity."},
-        ]
-    }
+    prompt_text = (
+        "## Role\nYou are a patient calling to book an appointment.\n\n"
+        "Behave naturally and provide details when asked."
+    )
     scenario_json = [
         {
             "name": "Book appointment",
@@ -115,7 +95,7 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
     def fake_generate(**_kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            return {"text": json.dumps(prompt_json)}
+            return {"text": prompt_text}
         return {"text": json.dumps(scenario_json)}
 
     monkeypatch.setattr(llm_service_module.llm_service, "generate_response", fake_generate)
@@ -130,7 +110,8 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
     )
     assert response.status_code == 200
     body = response.json()
-    assert len(body["sections"]) == 5
+    assert body["sections"] == []
+    assert "book an appointment" in body["test_agent_prompt"]
     assert len(body["scenarios"]) == 1
     assert call_count["n"] == 2
 

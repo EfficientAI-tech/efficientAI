@@ -183,7 +183,7 @@ class AgentCreate(BaseModel):
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     telephony_phone_number_id: Optional[UUID] = None
-    voice_bundle_id: Optional[UUID] = None
+    voice_bundle_id: UUID = Field(..., description="Required voice bundle for test agent execution")
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
@@ -298,7 +298,7 @@ class GeneratedScenarioDraftResponse(BaseModel):
 
 
 class GenerateTestPromptRequest(BaseModel):
-    """Stage 1: map production prompt into sectioned test agent prompt."""
+    """Stage 1: generate foundational test agent prompt from production prompt."""
     production_prompt: str = Field(..., min_length=1)
     agent_name: str = Field(..., min_length=1, max_length=255)
     language: Optional[str] = None

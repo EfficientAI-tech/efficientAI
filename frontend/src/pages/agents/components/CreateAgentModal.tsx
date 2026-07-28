@@ -1,7 +1,7 @@
 import { useState, useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
+import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneIncoming, Save } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
@@ -12,10 +12,7 @@ import { resolveLLMModelsForCredential, formatGatewayCredentialLabel } from '../
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { extractPhoneConflictDetail, formatAgentPhoneConflictMessage } from './agentPhoneValidation'
 import {
-  assembleTestAgentPrompt,
-  emptyPromptSections,
   type ScenarioDraftItem,
-  type TestPromptSectionDraft,
 } from './agentTestSetupConstants'
 
 interface FormData {
@@ -48,7 +45,7 @@ interface PromptPartial {
 const CREATE_STEPS = [
   { id: 1, title: 'Basics', description: 'Name, call settings, and telephony' },
   { id: 2, title: 'Prompt', description: 'Describe what this agent does' },
-  { id: 3, title: 'Voice setup', description: 'Optional integrations' },
+  { id: 3, title: 'Voice setup', description: 'Voice bundle and optional integrations' },
 ] as const
 
 type CreateStep = (typeof CREATE_STEPS)[number]['id']
@@ -74,13 +71,17 @@ export default function CreateAgentModal({
   const [aiCredentialId, setAiCredentialId] = useState('')
   const [aiModel, setAiModel] = useState('')
   const [showUseSavedModal, setShowUseSavedModal] = useState(false)
+  const [showSavePromptModal, setShowSavePromptModal] = useState(false)
+  const [savePromptName, setSavePromptName] = useState('')
+  const [savePromptDescription, setSavePromptDescription] = useState('')
+  const [savePromptTags, setSavePromptTags] = useState('agents, system-prompt')
+  const [savePromptContent, setSavePromptContent] = useState('')
   const [savedPromptSearch, setSavedPromptSearch] = useState('')
   const [selectedSavedPromptId, setSelectedSavedPromptId] = useState('')
   const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
   const [currentStep, setCurrentStep] = useState<CreateStep>(1)
   const [promptInputMode, setPromptInputMode] = useState<'production' | 'manual'>('production')
   const [productionPrompt, setProductionPrompt] = useState('')
-  const [promptSections, setPromptSections] = useState<TestPromptSectionDraft[]>(emptyPromptSections())
   const [scenarioDrafts, setScenarioDrafts] = useState<ScenarioDraftItem[]>([])
   const [scenarioCount, setScenarioCount] = useState(5)
   const [setupAdditionalContext, setSetupAdditionalContext] = useState('')
@@ -194,20 +195,19 @@ export default function CreateAgentModal({
     ...(aiModel ? { model: aiModel } : {}),
   })
 
-  const syncDescriptionFromSections = (sections: TestPromptSectionDraft[]) => {
-    const assembled = assembleTestAgentPrompt(sections)
-    setFormData((prev) => ({ ...prev, description: assembled }))
-    return assembled
-  }
-
-  const updatePromptSection = (key: TestPromptSectionDraft['key'], content: string) => {
-    setPromptSections((prev) => {
-      const next = prev.map((section) =>
-        section.key === key ? { ...section, content } : section,
-      )
-      syncDescriptionFromSections(next)
-      return next
-    })
+  const openSavePromptModal = () => {
+    const trimmedContent = (formData.description || '').trim()
+    if (!trimmedContent) {
+      showToast('No test agent prompt available to save', 'error')
+      return
+    }
+    setSavePromptContent(trimmedContent)
+    setSavePromptName(`${formData.name.trim() || 'Agent'} Test Agent Prompt`)
+    setSavePromptDescription(
+      formData.name.trim() ? `Saved from create agent: ${formData.name.trim()}` : '',
+    )
+    setSavePromptTags('agents, system-prompt')
+    setShowSavePromptModal(true)
   }
 
   const generateTestPromptMutation = useMutation({
@@ -228,12 +228,6 @@ export default function CreateAgentModal({
       })
     },
     onSuccess: (data) => {
-      const sections = data.sections.map((section) => ({
-        key: section.key as TestPromptSectionDraft['key'],
-        title: section.title,
-        content: section.content,
-      }))
-      setPromptSections(sections)
       setFormData((prev) => ({ ...prev, description: data.test_agent_prompt }))
       setDescriptionEditorMode('preview')
       showToast('Test agent prompt generated from production prompt', 'success')
@@ -314,6 +308,43 @@ export default function CreateAgentModal({
     },
   })
 
+  const savePromptPartialMutation = useMutation({
+    mutationFn: (data: { name: string; description?: string; content: string; tags?: string[] }) =>
+      apiClient.createPromptPartial(data),
+    onSuccess: () => {
+      showToast('Test agent prompt saved to Prompt Partials', 'success')
+      setShowSavePromptModal(false)
+      setSavePromptName('')
+      setSavePromptDescription('')
+      setSavePromptTags('agents, system-prompt')
+      setSavePromptContent('')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to save prompt partial', 'error')
+    },
+  })
+
+  const handleSavePromptPartial = () => {
+    if (!savePromptName.trim()) {
+      showToast('Prompt name is required', 'error')
+      return
+    }
+    if (!savePromptContent.trim()) {
+      showToast('Prompt content is required', 'error')
+      return
+    }
+    const tags = savePromptTags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+    savePromptPartialMutation.mutate({
+      name: savePromptName.trim(),
+      description: savePromptDescription.trim() || undefined,
+      content: savePromptContent.trim(),
+      tags: tags.length > 0 ? tags : undefined,
+    })
+  }
+
   const createMutation = useMutation({
     mutationFn: async (data: FormData) => {
       const payload: any = {
@@ -331,9 +362,7 @@ export default function CreateAgentModal({
         payload.telephony_phone_number_id = data.telephony_phone_number_id
       }
 
-      if (data.voice_bundle_id && data.voice_bundle_id.trim() !== '') {
-        payload.voice_bundle_id = data.voice_bundle_id.trim()
-      }
+      payload.voice_bundle_id = data.voice_bundle_id.trim()
 
       if (data.voice_ai_integration_id && data.voice_ai_integration_id.trim() !== '') {
         payload.voice_ai_integration_id = data.voice_ai_integration_id.trim()
@@ -409,12 +438,16 @@ export default function CreateAgentModal({
     setAiModel('')
     setPhoneNumberInputMode('provider')
     setShowUseSavedModal(false)
+    setShowSavePromptModal(false)
+    setSavePromptName('')
+    setSavePromptDescription('')
+    setSavePromptTags('agents, system-prompt')
+    setSavePromptContent('')
     setSavedPromptSearch('')
     setSelectedSavedPromptId('')
     setCurrentStep(1)
     setPromptInputMode('production')
     setProductionPrompt('')
-    setPromptSections(emptyPromptSections())
     setScenarioDrafts([])
     setScenarioCount(5)
     setSetupAdditionalContext('')
@@ -460,6 +493,10 @@ export default function CreateAgentModal({
   }
 
   const validateStep3 = (): boolean => {
+    if (!formData.voice_bundle_id?.trim()) {
+      showToast('Voice bundle is required.', 'error')
+      return false
+    }
     if (formData.voice_ai_integration_id && !formData.voice_ai_agent_id?.trim()) {
       showToast('Agent ID is required when Integration Provider is selected', 'error')
       return false
@@ -835,7 +872,7 @@ export default function CreateAgentModal({
               </button>
             </div>
 
-            {promptInputMode === 'production' ? (
+            {promptInputMode === 'production' && (
               <>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -942,63 +979,6 @@ export default function CreateAgentModal({
                   </div>
                 </div>
 
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-gray-700">Test Agent Prompt Sections</label>
-                    <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setDescriptionEditorMode('write')}
-                        className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                          descriptionEditorMode === 'write'
-                            ? 'bg-white text-gray-900 shadow-sm'
-                            : 'text-gray-500 hover:text-gray-700'
-                        }`}
-                      >
-                        <Code className="h-3 w-3" />
-                        Edit sections
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDescriptionEditorMode('preview')}
-                        className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                          descriptionEditorMode === 'preview'
-                            ? 'bg-white text-gray-900 shadow-sm'
-                            : 'text-gray-500 hover:text-gray-700'
-                        }`}
-                      >
-                        <Eye className="h-3 w-3" />
-                        Preview
-                      </button>
-                    </div>
-                  </div>
-
-                  {descriptionEditorMode === 'write' ? (
-                    <div className="space-y-3 max-h-[320px] overflow-y-auto pr-1">
-                      {promptSections.map((section) => (
-                        <div key={section.key}>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1">{section.title}</label>
-                          <textarea
-                            value={section.content}
-                            onChange={(e) => updatePromptSection(section.key, e.target.value)}
-                            rows={3}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono"
-                            placeholder={`Content for ${section.title}...`}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="min-h-[240px] max-h-[320px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
-                      {formData.description ? (
-                        <ReactMarkdown>{formData.description}</ReactMarkdown>
-                      ) : (
-                        <p className="text-gray-400 italic">Generate a test prompt to preview...</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
                 {scenarioDrafts.length > 0 && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1053,70 +1033,10 @@ export default function CreateAgentModal({
                   </div>
                 )}
               </>
-            ) : (
-              <>
-          {/* Description with AI Generate */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">Test Agent Prompt *</label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAIGeneratePanel(!showAIGeneratePanel)}
-                  disabled={generateDescriptionMutation.isPending}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                    showAIGeneratePanel
-                      ? 'bg-amber-100 text-amber-800 border-amber-300'
-                      : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                  }`}
-                >
-                  {generateDescriptionMutation.isPending ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-3 w-3" />
-                  )}
-                  {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowUseSavedModal(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-primary-300 bg-primary-50 text-primary-700 hover:bg-primary-100"
-                >
-                  <FileText className="h-3 w-3" />
-                  Use Saved
-                </button>
-                <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setDescriptionEditorMode('write')}
-                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                      descriptionEditorMode === 'write'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    <Code className="h-3 w-3" />
-                    Write
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDescriptionEditorMode('preview')}
-                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                      descriptionEditorMode === 'preview'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    <Eye className="h-3 w-3" />
-                    Preview
-                  </button>
-                </div>
-              </div>
-            </div>
+            )}
 
-            {/* AI Generate Panel */}
-            {showAIGeneratePanel && (
-              <div className="mb-2 p-3 bg-amber-50 rounded-lg border border-amber-200">
+            {promptInputMode === 'manual' && showAIGeneratePanel && (
+              <div className="p-3 bg-amber-50 rounded-lg border border-amber-200">
                 <div className="flex items-center gap-2 mb-2">
                   <Sparkles className="h-4 w-4 text-amber-600" />
                   <span className="text-sm font-medium text-amber-900">Generate Description with AI</span>
@@ -1246,36 +1166,100 @@ export default function CreateAgentModal({
               </div>
             )}
 
-            {/* Editor / Preview */}
-            {descriptionEditorMode === 'write' ? (
-              <textarea
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full min-h-[420px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
-                rows={18}
-                placeholder="Describe the agent's purpose, behavior, and expected interactions... Markdown is supported (at least 10 words)"
-              />
-            ) : (
-              <div className="min-h-[420px] max-h-[560px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
-                {formData.description ? (
-                  <ReactMarkdown>{formData.description}</ReactMarkdown>
-                ) : (
-                  <p className="text-gray-400 italic">Nothing to preview yet...</p>
-                )}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">Test Agent Prompt *</label>
+                <div className="flex items-center gap-2">
+                  {promptInputMode === 'manual' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAIGeneratePanel(!showAIGeneratePanel)}
+                      disabled={generateDescriptionMutation.isPending}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
+                        showAIGeneratePanel
+                          ? 'bg-amber-100 text-amber-800 border-amber-300'
+                          : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      {generateDescriptionMutation.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3 w-3" />
+                      )}
+                      {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowUseSavedModal(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-primary-300 bg-primary-50 text-primary-700 hover:bg-primary-100"
+                  >
+                    <FileText className="h-3 w-3" />
+                    Use Saved
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openSavePromptModal}
+                    disabled={!formData.description?.trim()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    <Save className="h-3 w-3" />
+                    Save Prompt
+                  </button>
+                  <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setDescriptionEditorMode('write')}
+                      className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                        descriptionEditorMode === 'write'
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      <Code className="h-3 w-3" />
+                      Write
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDescriptionEditorMode('preview')}
+                      className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                        descriptionEditorMode === 'preview'
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      <Eye className="h-3 w-3" />
+                      Preview
+                    </button>
+                  </div>
+                </div>
               </div>
-            )}
-            <p className={`mt-1 text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
-              {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
-            </p>
-          </div>
-              </>
-            )}
 
-            {promptInputMode === 'production' && (
-              <p className={`text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
-                {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum in assembled test prompt
+              {descriptionEditorMode === 'write' ? (
+                <textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  className="w-full min-h-[320px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
+                  rows={14}
+                  placeholder={
+                    promptInputMode === 'production'
+                      ? 'Generate a test prompt from your production prompt, or paste/edit manually...'
+                      : 'Describe the agent\'s purpose, behavior, and expected interactions... Markdown is supported (at least 10 words)'
+                  }
+                />
+              ) : (
+                <div className="min-h-[320px] max-h-[560px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
+                  {formData.description ? (
+                    <ReactMarkdown>{formData.description}</ReactMarkdown>
+                  ) : (
+                    <p className="text-gray-400 italic">Nothing to preview yet...</p>
+                  )}
+                </div>
+              )}
+              <p className={`mt-1 text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
+                {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
               </p>
-            )}
+            </div>
           </div>
             </>
           )}
@@ -1283,7 +1267,7 @@ export default function CreateAgentModal({
           {currentStep === 3 && (
             <>
           <p className="text-sm text-gray-600">
-            Voice configuration is optional. Skip this step if you have not integrated a platform yet — you can add it later from the agent detail page.
+            Select a voice bundle to power the internal test agent path. Voice AI Agent integration is optional if you also want to test against an external provider.
           </p>
 
           {/* Voice Configuration */}
@@ -1291,9 +1275,9 @@ export default function CreateAgentModal({
             {/* Test Voice AI Agents */}
             <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
               <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Configure your test agent</h3>
-              <p className="text-sm text-gray-600 mb-4 flex-grow">Optional — for simulated test caller in evaluator runs and playground</p>
+              <p className="text-sm text-gray-600 mb-4 flex-grow">Required — powers simulated test caller runs in evaluator and playground</p>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle *</label>
                 <select
                   value={formData.voice_bundle_id}
                   onChange={(e) => setFormData({ ...formData, voice_bundle_id: e.target.value })}
@@ -1493,6 +1477,82 @@ export default function CreateAgentModal({
                 disabled={!selectedSavedPromptId}
               >
                 Use Selected Prompt
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSavePromptModal && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-gray-900/55 backdrop-blur-sm">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Save System Prompt</h3>
+              <button
+                onClick={() => setShowSavePromptModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close save prompt modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Name</label>
+                <input
+                  type="text"
+                  value={savePromptName}
+                  onChange={(e) => setSavePromptName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Prompt partial name"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  Description <span className="text-gray-400">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={savePromptDescription}
+                  onChange={(e) => setSavePromptDescription(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Brief description"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  Tags <span className="text-gray-400">(comma-separated, optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={savePromptTags}
+                  onChange={(e) => setSavePromptTags(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="agents, system-prompt"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Content</label>
+                <textarea
+                  value={savePromptContent}
+                  onChange={(e) => setSavePromptContent(e.target.value)}
+                  rows={8}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+              <Button type="button" variant="outline" onClick={() => setShowSavePromptModal(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={handleSavePromptPartial}
+                isLoading={savePromptPartialMutation.isPending}
+                leftIcon={<Save className="h-4 w-4" />}
+              >
+                Save Prompt
               </Button>
             </div>
           </div>

@@ -737,12 +737,11 @@ async def run_voice_bundle_fastapi(
 
         if use_aligned_recorders:
             from app.services.voice_agent.audio_recorder import get_audio_recorder_class
+            from app.services.voice_agent.telephony_recording_paths import telephony_recording_temp_path
 
             AudioRecorder = get_audio_recorder_class()
-            user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
-            os.close(user_audio_fd)
-            bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
-            os.close(bot_audio_fd)
+            user_audio_path = telephony_recording_temp_path(suffix=".wav")
+            bot_audio_path = telephony_recording_temp_path(suffix=".wav")
             user_recorder = AudioRecorder(
                 user_audio_path,
                 recording_start_time,
@@ -968,8 +967,11 @@ async def run_voice_bundle_fastapi(
                             duration=duration_result,
                         )
                         logger.info(
-                            "Queued finalize_telephony_recording for call_short_id={}",
+                            "Queued finalize_telephony_recording for call_short_id={} "
+                            "user_audio={} bot_audio={}",
                             call_short_id,
+                            user_audio_path,
+                            bot_audio_path,
                         )
                     except Exception as celery_err:
                         logger.warning(

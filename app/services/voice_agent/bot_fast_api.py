@@ -186,11 +186,16 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
 
         recorder_sample_rate = 8000 if telephony_mode else 24000
 
-        # Create temporary files for recording
-        user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
-        os.close(user_audio_fd)
-        bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
-        os.close(bot_audio_fd)
+        if telephony_mode:
+            from app.services.voice_agent.telephony_recording_paths import telephony_recording_temp_path
+
+            user_audio_path = telephony_recording_temp_path(suffix=".wav")
+            bot_audio_path = telephony_recording_temp_path(suffix=".wav")
+        else:
+            user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
+            os.close(user_audio_fd)
+            bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
+            os.close(bot_audio_fd)
         
         # Use a common start time for synchronization
         start_time = time.time()

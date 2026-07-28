@@ -31,17 +31,12 @@ Use **Create Test Agent** to add a new evaluation configuration. Each test agent
 
 On **Step 2 — Prompt**, choose **From production prompt** and paste your live production system prompt. EfficientAI runs a two-stage AI pipeline:
 
-1. **Generate test prompt** — maps the production prompt into five canonical sections stored in `description`:
-   - Purpose
-   - Behavior
-   - Expected Interactions
-   - Personality Traits
-   - Constraints
-2. **Generate scenarios** — creates test scenario drafts from the assembled test agent prompt (not the raw production text).
+1. **Generate test prompt** — produces a foundational complementary caller prompt stored in `description`. The prompt defines general caller behavior and leaves persona- and scenario-specific details to be injected later at evaluation time.
+2. **Generate scenarios** — creates test scenario drafts from the test agent prompt (not the raw production text).
 
-Review and edit each section and scenario draft before creating the agent. Selected scenarios are saved automatically with `agent_id` linked.
+Review and edit the generated prompt and scenario drafts before creating the agent. Selected scenarios are saved automatically with `agent_id` linked.
 
-Choose **Write manually** to author the test agent prompt directly or use the existing brief-to-description **AI Generate** flow.
+Use **Use Saved** to import a prompt partial, or **Save Prompt** to store the current test agent prompt to your partials library. Choose **Write manually** to author the test agent prompt directly or use the brief-to-description **AI Generate** flow.
 
 ## Execution paths
 
@@ -61,7 +56,7 @@ If both are configured, you can compare outcomes across both paths from Playgrou
 | `call_type` | Enum | `inbound` or `outbound` behavior context. |
 | `call_medium` | Enum | `phone_call` or `web_call`. |
 | `phone_number` | String | Required when `call_medium = phone_call`. |
-| `voice_bundle_id` | UUID | Internal test stack for voice-bundle testing. |
+| `voice_bundle_id` | UUID | **Required on create.** Internal test stack for voice-bundle testing. |
 | `voice_ai_integration_id` | UUID | External provider integration reference. |
 | `voice_ai_agent_id` | String | External provider agent identifier. |
 | `silence_hangup_secs` | Integer | End live voice sessions after this many seconds without speech from either party (default `15`; `0` disables). |

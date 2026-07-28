@@ -7,8 +7,19 @@ from app.services.testing.agent_test_setup_generation import (
     CANONICAL_SECTION_KEYS,
     _normalize_scenario_drafts,
     _normalize_sections,
+    _strip_llm_text_wrapper,
     assemble_test_agent_prompt,
 )
+
+
+def test_strip_llm_text_wrapper_removes_markdown_fences():
+    wrapped = "```markdown\nYou are a caller.\n```"
+    assert _strip_llm_text_wrapper(wrapped) == "You are a caller."
+
+
+def test_strip_llm_text_wrapper_preserves_plain_text():
+    plain = "You are a caller interacting with a support agent."
+    assert _strip_llm_text_wrapper(plain) == plain
 
 
 def test_assemble_test_agent_prompt_orders_canonical_sections():
