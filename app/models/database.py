@@ -506,6 +506,13 @@ class Persona(Base):
     tts_voice_id = Column(String(255), nullable=True)
     tts_voice_name = Column(String(255), nullable=True)
     is_custom = Column(Boolean, default=False)
+    description = Column(Text, nullable=True)
+    tts_config = Column(JSON, nullable=True)
+    llm_temperature = Column(Float, nullable=True)
+    llm_max_tokens = Column(Integer, nullable=True)
+    response_delay_ms = Column(Integer, nullable=True)
+    max_turns = Column(Integer, nullable=True)
+    allow_interruptions = Column(Boolean, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

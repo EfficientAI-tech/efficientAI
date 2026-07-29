@@ -24,6 +24,31 @@ def test_create_agent_success(authenticated_client, make_integration, make_voice
     assert body["voice_ai_integration_id"] == str(integration.id)
 
 
+def test_create_agent_with_provider_prompt(authenticated_client, make_voice_bundle):
+    voice_bundle = make_voice_bundle()
+    production_prompt = (
+        "You are a helpful customer support agent that handles billing questions "
+        "and order status requests professionally."
+    )
+    payload = {
+        "name": "Telephony Agent",
+        "phone_number": "+1234567890",
+        "language": "en",
+        "description": "This test support agent handles customer issues and guides users clearly.",
+        "call_type": "outbound",
+        "call_medium": "phone_call",
+        "voice_bundle_id": str(voice_bundle.id),
+        "provider_prompt": production_prompt,
+    }
+
+    response = authenticated_client.post("/api/v1/agents", json=payload)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["provider_prompt"] == production_prompt
+    assert body["voice_ai_integration_id"] is None
+
+
 def test_create_agent_requires_voice_bundle(authenticated_client):
     payload = {
         "name": "Support Agent",

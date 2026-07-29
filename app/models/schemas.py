@@ -187,6 +187,7 @@ class AgentCreate(BaseModel):
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
+    provider_prompt: Optional[str] = None
     silence_hangup_secs: int = Field(
         default=15,
         ge=0,
@@ -243,6 +244,7 @@ class AgentUpdate(BaseModel):
     voice_bundle_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
+    provider_prompt: Optional[str] = None
     prompt_variables: Optional[Dict[str, str]] = None
     silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
 
@@ -267,6 +269,15 @@ class AgentUpdate(BaseModel):
             # This will be handled in the route
             pass
         return self
+
+
+class PreviewIntegrationAgentPromptRequest(BaseModel):
+    """Fetch a provider agent prompt before an EfficientAI agent exists."""
+    voice_ai_agent_id: str = Field(..., min_length=1)
+
+
+class PreviewIntegrationAgentPromptResponse(BaseModel):
+    provider_prompt: str
 
 
 class AgentPhoneAssignmentConflict(BaseModel):
@@ -449,6 +460,20 @@ class PersonaCreate(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: bool = False
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0, le=8192)
+    response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
+    max_turns: Optional[int] = Field(None, ge=1, le=100)
+    allow_interruptions: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_tts_config(self):
+        from app.services.personas.persona_tts_config import validate_persona_tts_config
+
+        validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
 
 
 class PersonaUpdate(BaseModel):
@@ -459,6 +484,21 @@ class PersonaUpdate(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: Optional[bool] = None
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0, le=8192)
+    response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
+    max_turns: Optional[int] = Field(None, ge=1, le=100)
+    allow_interruptions: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_tts_config(self):
+        from app.services.personas.persona_tts_config import validate_persona_tts_config
+
+        if self.tts_config is not None:
+            validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
 
 
 class PersonaResponse(BaseModel):
@@ -470,6 +510,13 @@ class PersonaResponse(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: bool = False
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
+    response_delay_ms: Optional[int] = None
+    max_turns: Optional[int] = None
+    allow_interruptions: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
 
@@ -490,6 +537,34 @@ class PersonaResponse(BaseModel):
 class PersonaCloneRequest(BaseModel):
     """Schema for cloning a persona"""
     name: Optional[str] = None
+
+
+class AgentPromptSourcesResponse(BaseModel):
+    """Prompt texts from an agent that can seed a persona description."""
+    agent_id: UUID
+    agent_name: str
+    test_agent_prompt: str
+    agent_prompt: str
+
+
+class GeneratePersonaPromptRequest(BaseModel):
+    """Generate a persona caller prompt from an agent prompt via LLM."""
+    agent_id: UUID
+    source: str = Field(default="auto", pattern="^(test_agent|agent|auto)$")
+    persona_name: Optional[str] = Field(None, max_length=255)
+    persona_gender: Optional[str] = None
+    additional_context: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+
+
+class GeneratePersonaPromptResponse(BaseModel):
+    persona_prompt: str
+    source_used: str
+    provider: str
+    model: str
 
 
 # Scenario Schemas

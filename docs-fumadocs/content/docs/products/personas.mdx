@@ -60,4 +60,17 @@ Persona voice mapping enables:
 | `tts_voice_id` | Provider-specific voice identifier. |
 | `tts_voice_name` | Human-readable voice name. |
 | `is_custom` | Whether the selected voice is from custom catalog. |
+| `description` | Persona prompt appended to the test caller system prompt during synthetic calls. |
+| `tts_config` | Provider-specific TTS tuning (speed, stability, pitch, etc.). |
+| `llm_temperature` | Caller LLM creativity during simulations. |
+| `llm_max_tokens` | Max tokens per caller reply (verbosity cap). |
+| `response_delay_ms` | Patience — delay before the caller responds. |
+| `max_turns` | Conversation length before the caller wraps up. |
+| `allow_interruptions` | Whether the caller may speak while the agent is talking. |
+
+## Persona prompt
+
+Use **Persona prompt** (`description`) to define caller traits, tone, and speaking style. During evaluator runs this text is merged into the test caller LLM prompt under the `PERSONA` section.
+
+Provider-specific **TTS settings** control how the selected voice sounds. **Caller behavior** settings control how the simulated caller acts (creativity, verbosity, patience, interruptions).
 

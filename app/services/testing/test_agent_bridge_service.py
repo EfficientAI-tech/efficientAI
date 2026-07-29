@@ -26,6 +26,7 @@ from app.services.storage.s3_service import s3_service
 from app.services.testing.test_agent_simulation_prompt import (
     build_persona_description_for_bridge,
     build_test_agent_system_prompt,
+    resolve_persona_max_turns,
     compose_test_agent_simulation_prompt,
     scenario_goal_from_required_info,
 )
@@ -601,12 +602,13 @@ class TestAgentBridgeService:
                     first_message = scenario.required_info.get("first_message", first_message)
 
                 persona_description = build_persona_description_for_bridge(persona)
+                effective_max_turns = resolve_persona_max_turns(persona)
                 simulation_prompt = compose_test_agent_simulation_prompt(agent, scenario)
                 caller_system_prompt = build_test_agent_system_prompt(
                     agent,
                     persona,
                     scenario,
-                    max_turns=20,
+                    max_turns=effective_max_turns,
                     persona_description=persona_description,
                 )
 
@@ -621,12 +623,21 @@ class TestAgentBridgeService:
                     scenario_goal=scenario_goal,
                     first_message=first_message,
                     llm_api_key=llm_api_key,
+                    llm_temperature=getattr(persona, "llm_temperature", None),
+                    llm_max_tokens=getattr(persona, "llm_max_tokens", None),
                     tts_api_key=tts_api_key,
                     tts_provider=tts_provider_str,
                     tts_voice_id=tts_voice_id,
                     tts_model=tts_model,
+                    tts_config=getattr(persona, "tts_config", None),
                     sample_rate=sample_rate,
-                    max_turns=20,
+                    max_turns=effective_max_turns,
+                    response_delay_ms=(
+                        persona.response_delay_ms
+                        if getattr(persona, "response_delay_ms", None) is not None
+                        else 500
+                    ),
+                    allow_interruptions=bool(getattr(persona, "allow_interruptions", False)),
                 )
 
                 test_agent = TestAgentProcessor(test_agent_config)

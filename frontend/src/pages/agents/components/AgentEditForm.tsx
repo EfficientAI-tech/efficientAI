@@ -35,6 +35,7 @@ interface FormData {
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
+  provider_prompt: string
 }
 
 interface AgentEditFormProps {
@@ -71,6 +72,7 @@ export default function AgentEditForm({
 }: AgentEditFormProps) {
   const navigate = useNavigate()
   const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
+  const [providerPromptEditorMode, setProviderPromptEditorMode] = useState<'write' | 'preview'>('write')
   const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
   const [includeLinkedScenarios, setIncludeLinkedScenarios] = useState(true)
   const [aiDescription, setAiDescription] = useState('')
@@ -209,6 +211,11 @@ export default function AgentEditForm({
   const linkedVoiceBundle = formData.voice_bundle_id
     ? voiceBundles.find((vb) => vb.id === formData.voice_bundle_id)
     : undefined
+
+  const hasPlatformLink = Boolean(formData.voice_ai_integration_id || formData.voice_ai_agent_id)
+
+  const productionPromptProse =
+    'prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700'
 
   return (
     <form onSubmit={handleFormSubmit}>
@@ -816,7 +823,7 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'voice_ai_agent' && (
+      {activeTab === 'voice_ai_agent' && hasPlatformLink && (
         <div className="max-w-2xl space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
@@ -865,6 +872,59 @@ export default function AgentEditForm({
               placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
             />
           </div>
+        </div>
+      )}
+
+      {activeTab === 'voice_ai_agent' && !hasPlatformLink && (
+        <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+          <div className="flex items-center justify-between mb-3">
+            <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setProviderPromptEditorMode('write')}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  providerPromptEditorMode === 'write'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Code className="h-3 w-3" />
+                Write
+              </button>
+              <button
+                type="button"
+                onClick={() => setProviderPromptEditorMode('preview')}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  providerPromptEditorMode === 'preview'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Eye className="h-3 w-3" />
+                Preview
+              </button>
+            </div>
+          </div>
+          {providerPromptEditorMode === 'write' ? (
+            <textarea
+              value={formData.provider_prompt}
+              onChange={(e) => onChange({ ...formData, provider_prompt: e.target.value })}
+              className="w-full min-h-[380px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
+              rows={16}
+              placeholder="Paste or edit the production system prompt…"
+            />
+          ) : (
+            <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 bg-white">
+              {formData.provider_prompt?.trim() ? (
+                <div className={productionPromptProse}>
+                  <ReactMarkdown>{formData.provider_prompt}</ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-gray-400 italic">Nothing to preview yet…</p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </form>

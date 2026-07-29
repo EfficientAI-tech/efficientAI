@@ -195,7 +195,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                 )}
                 <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-xl p-3 bg-gray-50/30">
                   {filteredPersonas.map((p: any) => (
-                    <label key={p.id} className={`flex items-center gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
+                    <label key={p.id} className={`flex items-start gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
                       selectedPersonaId === p.id ? 'bg-primary-50 border-primary-200' : 'border-transparent hover:bg-white hover:border-gray-200'
                     }`}>
                       <input
@@ -203,8 +203,14 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                         name="persona"
                         checked={selectedPersonaId === p.id}
                         onChange={() => setSelectedPersonaId(p.id)}
+                        className="mt-1"
                       />
-                      <span className="text-sm">{p.name}</span>
+                      <div className="min-w-0">
+                        <span className="text-sm font-medium">{p.name}</span>
+                        {p.description?.trim() ? (
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{p.description}</p>
+                        ) : null}
+                      </div>
                     </label>
                   ))}
                   {filteredPersonas.length === 0 && (
@@ -262,6 +268,11 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
               <div className="p-5 bg-gray-50 rounded-xl border border-gray-100 text-sm space-y-3">
                 <p><span className="font-medium">Agent:</span> {selectedAgentObj?.name || '—'}</p>
                 <p><span className="font-medium">Persona:</span> {personas.find((p: any) => p.id === selectedPersonaId)?.name || '—'}</p>
+                {personas.find((p: any) => p.id === selectedPersonaId)?.description?.trim() ? (
+                  <p className="text-gray-600 text-xs pl-4 border-l-2 border-gray-200">
+                    {personas.find((p: any) => p.id === selectedPersonaId)?.description}
+                  </p>
+                ) : null}
                 <p><span className="font-medium">Scenarios:</span> {selectedScenarioIds.length} combination{selectedScenarioIds.length !== 1 ? 's' : ''}</p>
                 <ul className="list-disc list-inside text-gray-600 ml-2">
                   {selectedScenarioIds.map((id) => (

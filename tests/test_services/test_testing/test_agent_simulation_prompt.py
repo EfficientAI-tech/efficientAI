@@ -11,6 +11,8 @@ from app.services.testing.test_agent_simulation_prompt import (
     get_agent_base_prompt,
     merge_generated_description_with_scenario_appendix,
     build_test_agent_system_prompt,
+    build_persona_description_for_bridge,
+    resolve_persona_max_turns,
     scenario_reference_token,
 )
 
@@ -102,3 +104,19 @@ def test_scenario_reference_token_uses_uuid():
 
 def test_format_scenarios_reference_appendix_empty():
     assert format_scenarios_reference_appendix([]) == ""
+
+
+def test_build_persona_description_prefers_stored_description():
+    persona = _persona(description="An impatient billing caller")
+    assert build_persona_description_for_bridge(persona) == "An impatient billing caller"
+
+
+def test_resolve_persona_max_turns_uses_persona_value():
+    persona = _persona(max_turns=8)
+    assert resolve_persona_max_turns(persona) == 8
+    assert resolve_persona_max_turns(_persona()) == 20
+
+
+def test_build_test_agent_system_prompt_uses_persona_max_turns():
+    prompt = build_test_agent_system_prompt(_agent(), _persona(max_turns=3), _scenario())
+    assert "After 3 exchanges" in prompt

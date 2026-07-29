@@ -41,6 +41,7 @@ interface FormData {
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
+  provider_prompt: string
 }
 
 interface AgentWorkspaceDetailProps {
@@ -98,6 +99,7 @@ export default function AgentWorkspaceDetail({
     voice_bundle_id: '',
     voice_ai_integration_id: '',
     voice_ai_agent_id: '',
+    provider_prompt: '',
   })
 
   useEffect(() => {
@@ -146,6 +148,7 @@ export default function AgentWorkspaceDetail({
         voice_bundle_id: agent.voice_bundle_id || '',
         voice_ai_integration_id: agent.voice_ai_integration_id || '',
         voice_ai_agent_id: agent.voice_ai_agent_id || '',
+        provider_prompt: agent.provider_prompt || '',
       })
     }
   }, [agent])
@@ -173,6 +176,7 @@ export default function AgentWorkspaceDetail({
       payload.voice_bundle_id = data.voice_bundle_id?.trim() || null
       payload.voice_ai_integration_id = data.voice_ai_integration_id?.trim() || null
       payload.voice_ai_agent_id = data.voice_ai_agent_id?.trim() || null
+      payload.provider_prompt = data.provider_prompt?.trim() || null
 
       return apiClient.updateAgent(agentRouteId!, payload)
     },
@@ -283,6 +287,7 @@ export default function AgentWorkspaceDetail({
         voice_bundle_id: agent.voice_bundle_id || '',
         voice_ai_integration_id: agent.voice_ai_integration_id || '',
         voice_ai_agent_id: agent.voice_ai_agent_id || '',
+        provider_prompt: agent.provider_prompt || '',
       })
     }
     setIsEditMode(false)

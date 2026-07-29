@@ -110,9 +110,10 @@ export default function AgentInfoView({
     : undefined
 
   const voiceIntegration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
+  const hasPlatformLink = Boolean(agent.voice_ai_integration_id && agent.voice_ai_agent_id)
   const providerLabel = voiceIntegration?.platform
     ? getIntegrationPlatformLabel(voiceIntegration.platform as IntegrationPlatform)
-    : 'Provider'
+    : 'Production'
 
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
 
@@ -273,25 +274,11 @@ export default function AgentInfoView({
 
         {testAgentSubTab === 'configuration' && (
           <>
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
-                <p className="text-sm text-gray-500 mt-0.5">
-                  Voice stack for EfficientAI test caller, evaluator runs, and playground.
-                </p>
-              </div>
-              {onTalk && (
-                <Button
-                  type="button"
-                  variant="primary"
-                  onClick={() => onTalk('test_agent')}
-                  disabled={!canTalk}
-                  leftIcon={<Phone className="h-4 w-4" />}
-                  title={canTalk ? 'Talk to test agent' : 'Configure a voice bundle first'}
-                >
-                  Talk
-                </Button>
-              )}
+            <div>
+              <h3 className="text-base font-semibold text-gray-900">Test Agent Configuration</h3>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Voice stack for EfficientAI test caller, evaluator runs, and playground.
+              </p>
             </div>
 
             <VoiceBundleDetailCard
@@ -313,7 +300,21 @@ export default function AgentInfoView({
                   System prompt used for internal test-agent behavior and evaluation context.
                 </p>
               </div>
-              <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
+              <div className="flex items-center gap-2">
+                {onTalk && (
+                  <Button
+                    type="button"
+                    variant="primary"
+                    onClick={() => onTalk('test_agent')}
+                    disabled={!canTalk}
+                    leftIcon={<Phone className="h-4 w-4" />}
+                    title={canTalk ? 'Talk to test agent' : 'Configure a voice bundle first'}
+                  >
+                    Talk
+                  </Button>
+                )}
+                <PromptViewToggle view={testPromptView} onChange={setTestPromptView} />
+              </div>
             </div>
 
             {testPromptView === 'text' ? (
@@ -344,63 +345,61 @@ export default function AgentInfoView({
     )
   }
 
-  const canTalk = !!(agent.voice_ai_integration_id && agent.voice_ai_agent_id)
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-gray-900">Voice AI Agent</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            External voice platform agent (Retell, Vapi, ElevenLabs, Smallest).
+            {hasPlatformLink
+              ? 'External voice platform agent (Retell, Vapi, ElevenLabs, Smallest).'
+              : 'Production prompt used to evaluate and generate the test agent.'}
           </p>
         </div>
-        {onTalk && (
+        {onTalk && hasPlatformLink && (
           <Button
             type="button"
             variant="primary"
             onClick={() => onTalk('voice_ai_agent')}
-            disabled={!canTalk}
             leftIcon={<Phone className="h-4 w-4" />}
-            title={canTalk ? 'Talk to voice AI agent' : 'Configure integration and agent ID first'}
+            title="Talk to voice AI agent"
           >
             Talk
           </Button>
         )}
       </div>
 
+      {hasPlatformLink && (
       <div className="border border-blue-200 rounded-lg p-5 bg-blue-50">
         <h4 className="text-base font-semibold text-gray-900 border-b border-blue-200 pb-2 mb-4">
           Integration
         </h4>
-        {agent.voice_ai_integration_id && agent.voice_ai_agent_id ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              {voiceIntegration?.platform && (() => {
-                const platform = voiceIntegration.platform as IntegrationPlatform
-                const logo = getIntegrationPlatformLogo(platform)
-                const label = getIntegrationPlatformLabel(platform)
-                return (
-                  <>
-                    {logo ? <img src={logo} alt={label} className="h-6 w-6 object-contain" /> : null}
-                    <span className="text-sm font-medium text-gray-900">{label}</span>
-                    {voiceIntegration.name && (
-                      <span className="text-sm text-gray-500">({voiceIntegration.name})</span>
-                    )}
-                  </>
-                )
-              })()}
-            </div>
-            <div>
-              <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Provider Agent ID</dt>
-              <dd className="text-xs font-mono font-semibold text-primary-600 select-all break-all bg-white/60 px-2.5 py-1.5 rounded border border-gray-200 inline-block">
-                {agent.voice_ai_agent_id}
-              </dd>
-            </div>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            {voiceIntegration?.platform && (() => {
+              const platform = voiceIntegration.platform as IntegrationPlatform
+              const logo = getIntegrationPlatformLogo(platform)
+              const label = getIntegrationPlatformLabel(platform)
+              return (
+                <>
+                  {logo ? <img src={logo} alt={label} className="h-6 w-6 object-contain" /> : null}
+                  <span className="text-sm font-medium text-gray-900">{label}</span>
+                  {voiceIntegration.name && (
+                    <span className="text-sm text-gray-500">({voiceIntegration.name})</span>
+                  )}
+                </>
+              )
+            })()}
           </div>
-        ) : (
-          <p className="text-sm text-gray-400 italic">Not configured. Switch to edit mode to link a provider.</p>
-        )}
+          <div>
+            <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Provider Agent ID</dt>
+            <dd className="text-xs font-mono font-semibold text-primary-600 select-all break-all bg-white/60 px-2.5 py-1.5 rounded border border-gray-200 inline-block">
+              {agent.voice_ai_agent_id}
+            </dd>
+          </div>
+        </div>
       </div>
+      )}
 
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -436,12 +435,14 @@ export default function AgentInfoView({
                 <div className={PROSE}>
                   <ReactMarkdown>{providerPromptText}</ReactMarkdown>
                 </div>
-              ) : agent.voice_ai_integration_id && agent.voice_ai_agent_id ? (
+              ) : hasPlatformLink ? (
                 <p className="text-sm text-gray-500 italic">
                   No {providerLabel.toLowerCase()} prompt synced yet. Click Sync Now to fetch it.
                 </p>
               ) : (
-                <p className="text-sm text-gray-400 italic">Link a voice AI provider to see the live prompt here.</p>
+                <p className="text-sm text-gray-400 italic">
+                  No production prompt saved yet. Add one when creating or editing the agent.
+                </p>
               )}
             </div>
           </div>

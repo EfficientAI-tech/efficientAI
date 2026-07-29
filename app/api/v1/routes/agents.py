@@ -536,6 +536,7 @@ async def create_agent(
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
         voice_ai_agent_id=agent.voice_ai_agent_id,
+        provider_prompt=agent.provider_prompt,
         silence_hangup_secs=agent.silence_hangup_secs,
     )
     db.add(db_agent)
@@ -547,7 +548,8 @@ async def create_agent(
     sync_agent_telephony_number_link(db, db_agent)
     db.refresh(db_agent)
 
-    if agent.voice_ai_integration_id and agent.voice_ai_agent_id:
+    has_provider_prompt = isinstance(agent.provider_prompt, str) and bool(agent.provider_prompt.strip())
+    if agent.voice_ai_integration_id and agent.voice_ai_agent_id and not has_provider_prompt:
         try:
             from app.services.voice_providers.prompt_sync import sync_provider_prompt
             integration = db.query(Integration).filter(Integration.id == agent.voice_ai_integration_id).first()
@@ -797,7 +799,8 @@ async def update_agent(
 
     if "voice_ai_agent_id" in update_data or "voice_ai_integration_id" in update_data:
         integration_id = db_agent.voice_ai_integration_id
-        if integration_id and db_agent.voice_ai_agent_id:
+        provider_prompt_updated = "provider_prompt" in update_data
+        if integration_id and db_agent.voice_ai_agent_id and not provider_prompt_updated:
             try:
                 from app.services.voice_providers.prompt_sync import sync_provider_prompt
                 integration = db.query(Integration).filter(Integration.id == integration_id).first()

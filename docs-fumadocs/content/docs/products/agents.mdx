@@ -25,18 +25,18 @@ Use the **agent list on the left** (public Agent ID + name) to switch between te
 
 ![Creating an agent](/screenshots/creating-agents.png)
 
-Use **Create Test Agent** to add a new evaluation configuration. Each test agent gets a name, call settings, and a prompt that describes how the agent should behave during simulated or provider-backed test calls.
+Use **Create Test Agent** to add a new evaluation configuration. Choose one of two paths:
 
-### Generate from production prompt (recommended)
+- **Telephony** — phone-based agent with telephony number, inbound/outbound direction, and silence hangup settings. Paste a production prompt, generate the complementary test agent prompt, then select a voice bundle.
+- **Existing Platform Integration** — connect VAPI, Retell, ElevenLabs, or Smallest with integration credentials and an external Agent ID, select a voice bundle, then import the production prompt and generate the test agent prompt.
 
-On **Step 2 — Prompt**, choose **From production prompt** and paste your live production system prompt. EfficientAI runs a two-stage AI pipeline:
+The **production prompt** is stored in `provider_prompt` and shown on the **Voice AI Agent** tab. The generated **test agent prompt** is stored in `description` and shown on the **Test Agent** tab.
 
-1. **Generate test prompt** — produces a foundational complementary caller prompt stored in `description`. The prompt defines general caller behavior and leaves persona- and scenario-specific details to be injected later at evaluation time.
-2. **Generate scenarios** — creates test scenario drafts from the test agent prompt (not the raw production text).
+### Generate test prompt from production prompt
 
-Review and edit the generated prompt and scenario drafts before creating the agent. Selected scenarios are saved automatically with `agent_id` linked.
+On the prompts step, paste (Telephony) or import (Platform) your production system prompt, then click **Generate test prompt**. EfficientAI produces a complementary caller prompt stored in `description`. Review and edit before creating the agent.
 
-Use **Use Saved** to import a prompt partial, or **Save Prompt** to store the current test agent prompt to your partials library. Choose **Write manually** to author the test agent prompt directly or use the brief-to-description **AI Generate** flow.
+Use **Use Saved**, **Save Prompt**, manual authoring, and **AI Generate** when editing an existing agent in the detail view.
 
 ## Execution paths
 
@@ -77,7 +77,7 @@ Each test agent can carry two prompt surfaces:
 - **Test Agent Prompt (`description`)**  
   The EfficientAI test-agent prompt — used for internal test-agent behavior, scenario generation, and evaluation context.
 - **Provider Prompt (`provider_prompt`)**  
-  Prompt fetched from the linked external voice provider, when you are evaluating a provider-hosted agent.
+  Production prompt — pasted during Telephony create, imported from a linked external provider, or synced via **Sync Now**.
 
 ### Provider prompt sync
 

@@ -27,6 +27,16 @@ def test_dispatch_fair_eval_rows_routes_to_evaluations_queue():
     assert routes["dispatch_fair_eval_rows"]["queue"] == "evaluations"
 
 
+def test_generate_agent_flowchart_routes_to_celery_queue():
+    routes = celery_app.conf.task_routes
+    assert routes["generate_agent_flowchart"]["queue"] == "celery"
+
+
+def test_map_agent_flowchart_prompt_sections_routes_to_celery_queue():
+    routes = celery_app.conf.task_routes
+    assert routes["map_agent_flowchart_prompt_sections"]["queue"] == "celery"
+
+
 def test_manual_transcribe_default_route_routes_to_diarization_queue():
     routes = celery_app.conf.task_routes
     assert routes["transcribe_call_import_row"]["queue"] == "diarization"

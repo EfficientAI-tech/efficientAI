@@ -236,6 +236,7 @@ interface EvaluatorResultDetail {
     tts_voice_id?: string | null
     tts_voice_name?: string | null
     is_custom?: boolean
+    description?: string | null
   }
   scenario?: {
     id: string
@@ -883,6 +884,9 @@ export default function EvaluatorResultDetailPage({
                   <p className="text-xs text-gray-500">
                     {resultData.persona.tts_provider || '--'} &middot; {resultData.persona.tts_voice_name || '--'} &middot; {resultData.persona.gender}
                   </p>
+                  {resultData.persona.description?.trim() ? (
+                    <p className="text-xs text-gray-600 mt-1 line-clamp-3">{resultData.persona.description}</p>
+                  ) : null}
                 </div>
               )}
               {resultData.evaluator && (

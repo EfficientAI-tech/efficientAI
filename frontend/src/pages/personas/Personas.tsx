@@ -19,36 +19,21 @@ import { useToast } from '../../hooks/useToast'
 import Button from '../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../components/shared/ProviderLogo'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
-
-interface Persona {
-  id: string
-  name: string
-  gender: string
-  tts_provider?: string | null
-  tts_voice_id?: string | null
-  tts_voice_name?: string | null
-  is_custom?: boolean
-  created_at: string
-  updated_at: string
-  created_by?: string | null
-}
-
-interface VoiceOption {
-  id: string
-  name: string
-  gender: string
-  is_custom: boolean
-  custom_voice_id?: string
-  description?: string | null
-}
-
-interface ProviderOption {
-  id: string
-  name: string
-  voices: VoiceOption[]
-}
-
-const genders = ['male', 'female', 'neutral']
+import PersonaTtsParamsPanel from './PersonaTtsParamsPanel'
+import PersonaBehaviorPanel from './PersonaBehaviorPanel'
+import PersonaTile from './PersonaTile'
+import PersonaPromptPanel from './PersonaPromptPanel'
+import PersonaVoiceFields from './PersonaVoiceFields'
+import {
+  emptyPersonaFormData,
+  personaPayload,
+  personaUpdatePayload,
+  type Persona,
+  type PersonaFormData,
+  type ProviderOption,
+  PERSONA_TILE_TABS,
+  type PersonaTileTab,
+} from './personaTypes'
 
 export default function Personas() {
   const queryClient = useQueryClient()
@@ -59,24 +44,18 @@ export default function Personas() {
 
   // Modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [showEditModal, setShowEditModal] = useState(false)
+  const [createTab, setCreateTab] = useState<PersonaTileTab>('prompt')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showCustomVoiceModal, setShowCustomVoiceModal] = useState(false)
   const [showEditCustomVoiceModal, setShowEditCustomVoiceModal] = useState(false)
   const [deleteCustomVoiceConfirm, setDeleteCustomVoiceConfirm] = useState<{ id: string; name: string } | null>(null)
   const [editingCustomVoice, setEditingCustomVoice] = useState<any>(null)
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null)
+  const [savingPersonaId, setSavingPersonaId] = useState<string | null>(null)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
 
-  // Persona form
-  const [formData, setFormData] = useState({
-    name: '',
-    gender: 'neutral',
-    tts_provider: '',
-    tts_voice_id: '',
-    tts_voice_name: '',
-    is_custom: false,
-  })
+  // Persona form (create modal only)
+  const [formData, setFormData] = useState<PersonaFormData>(emptyPersonaFormData())
 
   // Custom voice form
   const [customVoiceForm, setCustomVoiceForm] = useState({
@@ -86,9 +65,6 @@ export default function Personas() {
     gender: '',
     description: '',
   })
-
-  // Gender filter in voice selector
-  const [voiceGenderFilter, setVoiceGenderFilter] = useState<string>('all')
 
   const renderModal = (content: ReactNode) => {
     if (typeof document === 'undefined') return null
@@ -121,29 +97,11 @@ export default function Personas() {
     [voiceOptionsData],
   )
 
-  const selectedProviderVoices = useMemo(() => {
-    if (!formData.tts_provider) return []
-    const provider = providers.find((p) => p.id === formData.tts_provider)
-    if (!provider) return []
-    if (voiceGenderFilter === 'all') return provider.voices
-    return provider.voices.filter(
-      (v) => v.gender.toLowerCase() === voiceGenderFilter,
-    )
-  }, [providers, formData.tts_provider, voiceGenderFilter])
-
   const userPersonas = useMemo(() => personas as Persona[], [personas])
 
   // Mutations
   const createMutation = useMutation({
-    mutationFn: (data: typeof formData) =>
-      apiClient.createPersona({
-        name: data.name,
-        gender: data.gender,
-        tts_provider: data.tts_provider || undefined,
-        tts_voice_id: data.tts_voice_id || undefined,
-        tts_voice_name: data.tts_voice_name || undefined,
-        is_custom: data.is_custom,
-      }),
+    mutationFn: (data: PersonaFormData) => apiClient.createPersona(personaPayload(data)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personas'] })
       showToast('Persona created successfully!', 'success')
@@ -155,17 +113,20 @@ export default function Personas() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Partial<typeof formData> }) =>
-      apiClient.updatePersona(id, data),
+    mutationFn: ({ id, payload }: { id: string; payload: ReturnType<typeof personaUpdatePayload> }) =>
+      apiClient.updatePersona(id, payload),
+    onMutate: ({ id }) => {
+      setSavingPersonaId(id)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personas'] })
-      setShowEditModal(false)
-      setSelectedPersona(null)
-      resetForm()
-      showToast('Persona updated successfully!', 'success')
+      showToast('Persona saved', 'success')
     },
     onError: (error: any) => {
-      showToast(`Failed to update persona: ${error.response?.data?.detail || error.message}`, 'error')
+      showToast(`Failed to save persona: ${error.response?.data?.detail || error.message}`, 'error')
+    },
+    onSettled: () => {
+      setSavingPersonaId(null)
     },
   })
 
@@ -243,15 +204,8 @@ export default function Personas() {
   })
 
   const resetForm = () => {
-    setFormData({
-      name: '',
-      gender: 'neutral',
-      tts_provider: '',
-      tts_voice_id: '',
-      tts_voice_name: '',
-      is_custom: false,
-    })
-    setVoiceGenderFilter('all')
+    setFormData(emptyPersonaFormData())
+    setCreateTab('prompt')
   }
 
   const resetCustomVoiceForm = () => {
@@ -293,41 +247,17 @@ export default function Personas() {
   const handleCloseCreateModal = () => {
     setShowCreateModal(false)
     resetForm()
-    setSelectedPersona(null)
   }
 
-  const openEditModal = (persona: Persona) => {
-    setSelectedPersona(persona)
-    setFormData({
-      name: persona.name,
-      gender: persona.gender,
-      tts_provider: persona.tts_provider || '',
-      tts_voice_id: persona.tts_voice_id || '',
-      tts_voice_name: persona.tts_voice_name || '',
-      is_custom: persona.is_custom || false,
-    })
-    setShowEditModal(true)
-  }
-
-  const handleVoiceSelect = (voice: VoiceOption) => {
-    setFormData((prev) => ({
-      ...prev,
-      tts_voice_id: voice.id,
-      tts_voice_name: voice.name,
-      gender: voice.gender.toLowerCase(),
-      is_custom: voice.is_custom,
-    }))
+  const handleSavePersonaTile = (id: string, data: PersonaFormData) => {
+    const existing = userPersonas.find((p) => p.id === id)
+    const lockProvider = Boolean(existing?.tts_provider)
+    updateMutation.mutate({ id, payload: personaUpdatePayload(data, lockProvider) })
   }
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
     createMutation.mutate(formData)
-  }
-
-  const handleUpdate = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedPersona) return
-    updateMutation.mutate({ id: selectedPersona.id, data: formData })
   }
 
   const handleDelete = (persona: Persona) => {
@@ -347,133 +277,61 @@ export default function Personas() {
     createCustomVoiceMutation.mutate(customVoiceForm)
   }
 
-  // -- Voice selection form fields (shared between create and edit modals) --
-  const renderVoiceFields = () => (
-    <>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          TTS Provider
-        </label>
-        <div className="grid grid-cols-2 gap-2">
-          {providers.map((p) => {
-            const isSelected = formData.tts_provider === p.id
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => {
-                  setFormData((prev) => ({
-                    ...prev,
-                    tts_provider: prev.tts_provider === p.id ? '' : p.id,
-                    tts_voice_id: prev.tts_provider === p.id ? '' : prev.tts_voice_id,
-                    tts_voice_name: prev.tts_provider === p.id ? '' : prev.tts_voice_name,
-                  }))
-                  setVoiceGenderFilter('all')
-                }}
-                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-all ${
-                  isSelected
-                    ? 'border-primary-400 bg-primary-50 ring-1 ring-primary-200'
-                    : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                <ProviderLogo provider={p.id} size="sm" />
-                <div className="min-w-0 flex-1">
-                  <span className={`text-sm font-medium block truncate ${isSelected ? 'text-primary-700' : 'text-gray-700'}`}>
-                    {p.name}
-                  </span>
-                  <span className="text-[11px] text-gray-400">{p.voices.length} voices</span>
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      {formData.tts_provider && (
-        <>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Filter by Gender
-            </label>
-            <div className="flex gap-2">
-              {['all', 'male', 'female'].map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  onClick={() => setVoiceGenderFilter(g)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                    voiceGenderFilter === g
-                      ? 'bg-primary-100 border-primary-300 text-primary-700'
-                      : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {g === 'all' ? 'All' : g.charAt(0).toUpperCase() + g.slice(1)}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Voice ({selectedProviderVoices.length} available)
-            </label>
-            <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
-              {selectedProviderVoices.length === 0 ? (
-                <div className="p-4 text-center text-sm text-gray-500">
-                  No voices match the current filter
-                </div>
-              ) : (
-                selectedProviderVoices.map((voice) => (
-                  <button
-                    key={voice.id}
-                    type="button"
-                    onClick={() => handleVoiceSelect(voice)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-gray-50 transition-colors ${
-                      formData.tts_voice_id === voice.id
-                        ? 'bg-primary-50 border-l-2 border-primary-500'
-                        : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Mic className="h-3.5 w-3.5 text-gray-400" />
-                      <span className="text-sm font-medium text-gray-900">{voice.name}</span>
-                      {voice.is_custom && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 rounded">
-                          Custom
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-xs text-gray-500 capitalize">{voice.gender}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </>
-      )}
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Gender
-        </label>
-        <div className="relative">
-          <select
-            value={formData.gender}
-            onChange={(e) => setFormData({ ...formData, gender: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white pr-8"
-          >
-            {genders.map((g) => (
-              <option key={g} value={g}>
-                {g.charAt(0).toUpperCase() + g.slice(1)}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-        </div>
-        <p className="text-xs text-gray-500 mt-1">Auto-set when you pick a voice, but can be overridden.</p>
-      </div>
-    </>
-  )
+  const renderCreateTabContent = () => {
+    if (createTab === 'prompt') {
+      return (
+        <PersonaPromptPanel
+          value={formData.description}
+          onChange={(description) => setFormData((prev) => ({ ...prev, description }))}
+          personaName={formData.name}
+          personaGender={formData.gender}
+        />
+      )
+    }
+    if (createTab === 'voice') {
+      return (
+        <PersonaVoiceFields
+          draft={formData}
+          onChange={setFormData}
+          providers={providers}
+          lockProvider={false}
+          size="md"
+        />
+      )
+    }
+    if (createTab === 'tts') {
+      return (
+        <PersonaTtsParamsPanel
+          provider={formData.tts_provider}
+          value={formData.tts_config}
+          onChange={(tts_config) => setFormData((prev) => ({ ...prev, tts_config }))}
+          embedded
+        />
+      )
+    }
+    return (
+      <PersonaBehaviorPanel
+        value={{
+          llm_temperature: formData.llm_temperature,
+          llm_max_tokens: formData.llm_max_tokens,
+          response_delay_ms: formData.response_delay_ms,
+          max_turns: formData.max_turns,
+          allow_interruptions: formData.allow_interruptions,
+        }}
+        onChange={(behavior) =>
+          setFormData((prev) => ({
+            ...prev,
+            llm_temperature: behavior.llm_temperature ?? null,
+            llm_max_tokens: behavior.llm_max_tokens ?? null,
+            response_delay_ms: behavior.response_delay_ms ?? null,
+            max_turns: behavior.max_turns ?? null,
+            allow_interruptions: behavior.allow_interruptions ?? null,
+          }))
+        }
+        embedded
+      />
+    )
+  }
 
   // -- Loading / Error states --
   if (isLoading) {
@@ -511,7 +369,7 @@ export default function Personas() {
           <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
             <p className="text-gray-600 mt-1">
-              Create and manage voice personas for testing voice AI agents
+              Configure test caller personas — each tile has tabs for prompt, voice, TTS, and behavior
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -591,77 +449,17 @@ export default function Personas() {
                 </Button>
               </div>
             ) : (
-              <div className="bg-white shadow rounded-lg overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Name
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Provider
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Voice
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Gender
-                        </th>
-                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {userPersonas.map((persona) => {
-                        const providerInfo = persona.tts_provider ? getProviderInfo(persona.tts_provider) : null
-                        return (
-                          <tr key={persona.id} className="hover:bg-gray-50">
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span className="text-sm font-medium text-gray-900">{persona.name}</span>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              {persona.tts_provider ? (
-                                <div className="flex items-center gap-2">
-                                  <ProviderLogo provider={persona.tts_provider} size="sm" />
-                                  <span className="text-sm text-gray-700">{providerInfo?.label || persona.tts_provider}</span>
-                                </div>
-                              ) : (
-                                <span className="text-xs text-gray-400">--</span>
-                              )}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-sm text-gray-900">{persona.tts_voice_name || '--'}</span>
-                                {persona.is_custom && (
-                                  <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 rounded">
-                                    Custom
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 capitalize">
-                                {persona.gender}
-                              </span>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                              <div className="flex items-center justify-end gap-2">
-                                <Button variant="ghost" size="sm" onClick={() => openEditModal(persona)} leftIcon={<Edit className="h-4 w-4" />} title="Edit">
-                                  Edit
-                                </Button>
-                                <Button variant="ghost" size="sm" onClick={() => handleDelete(persona)} isLoading={deleteMutation.isPending} leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined} title="Delete" className="text-red-600 hover:text-red-700 hover:bg-red-50">
-                                  Delete
-                                </Button>
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                {userPersonas.map((persona) => (
+                  <PersonaTile
+                    key={persona.id}
+                    persona={persona}
+                    providers={providers}
+                    onSave={handleSavePersonaTile}
+                    onDelete={handleDelete}
+                    isSaving={savingPersonaId === persona.id && updateMutation.isPending}
+                  />
+                ))}
               </div>
             )}
           </>
@@ -757,15 +555,15 @@ export default function Personas() {
         {/* ===================== CREATE PERSONA MODAL ===================== */}
         {showCreateModal && renderModal(
           <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Create Persona</h3>
                 <button onClick={handleCloseCreateModal} className="text-gray-400 hover:text-gray-600">
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <form onSubmit={handleCreate} className="p-6 overflow-y-auto flex-1 space-y-4">
-                <div>
+              <form onSubmit={handleCreate} className="flex flex-col flex-1 min-h-0">
+                <div className="px-6 pt-4">
                   <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
                   <input
                     type="text"
@@ -776,48 +574,33 @@ export default function Personas() {
                     placeholder="e.g. Friendly Customer"
                   />
                 </div>
-                {renderVoiceFields()}
-                <div className="flex gap-3 pt-4">
+                <div className="px-6 pt-4 border-b border-gray-100">
+                  <nav className="flex gap-1 overflow-x-auto" aria-label="Create persona sections">
+                    {PERSONA_TILE_TABS.map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setCreateTab(tab.id)}
+                        className={`whitespace-nowrap px-3 py-2 text-xs font-medium rounded-t-lg border-b-2 transition-colors ${
+                          createTab === tab.id
+                            ? 'border-primary-500 text-primary-700 bg-primary-50/60'
+                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </nav>
+                </div>
+                <div className="p-6 overflow-y-auto flex-1 space-y-4 min-h-[280px]">
+                  {renderCreateTabContent()}
+                </div>
+                <div className="px-6 pb-6 flex gap-3">
                   <Button type="button" variant="outline" onClick={handleCloseCreateModal} className="flex-1">
                     Cancel
                   </Button>
                   <Button type="submit" variant="primary" isLoading={createMutation.isPending} className="flex-1">
                     Create
-                  </Button>
-                </div>
-              </form>
-            </div>
-          </div>,
-        )}
-
-        {/* ===================== EDIT PERSONA MODAL ===================== */}
-        {showEditModal && selectedPersona && renderModal(
-          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
-              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <h3 className="text-lg font-semibold">Edit Persona</h3>
-                <button onClick={() => { setShowEditModal(false); setSelectedPersona(null); resetForm() }} className="text-gray-400 hover:text-gray-600">
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              <form onSubmit={handleUpdate} className="p-6 overflow-y-auto flex-1 space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  />
-                </div>
-                {renderVoiceFields()}
-                <div className="flex gap-3 pt-4">
-                  <Button type="button" variant="outline" onClick={() => { setShowEditModal(false); setSelectedPersona(null); resetForm() }} className="flex-1">
-                    Cancel
-                  </Button>
-                  <Button type="submit" variant="primary" isLoading={updateMutation.isPending} className="flex-1">
-                    Update
                   </Button>
                 </div>
               </form>

@@ -713,7 +713,6 @@ async def generate_prompt_partial_flowchart(
             "provider": data.provider,
             "model": data.model,
         },
-        queue="imports",
     )
     db.refresh(partial)
     return _agent_flowchart_response(partial)
@@ -844,7 +843,6 @@ async def map_prompt_partial_flowchart_nodes(
             "provider": data.provider,
             "model": data.model,
         },
-        queue="imports",
     )
     db.refresh(partial)
     return _agent_flowchart_response(partial)

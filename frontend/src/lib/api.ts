@@ -892,6 +892,8 @@ class ApiClient {
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string
+    provider_prompt?: string | null
+    silence_hangup_secs?: number
   }): Promise<any> {
     const response = await this.client.post('/api/v1/agents', data)
     return response.data
@@ -937,6 +939,7 @@ class ApiClient {
     ai_provider_id?: string
     voice_ai_integration_id?: string | null
     voice_ai_agent_id?: string | null
+    provider_prompt?: string | null
     prompt_variables?: Record<string, string>
   }): Promise<TestAgent> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
@@ -1030,6 +1033,13 @@ class ApiClient {
     tts_voice_id?: string
     tts_voice_name?: string
     is_custom?: boolean
+    description?: string
+    tts_config?: Record<string, unknown>
+    llm_temperature?: number
+    llm_max_tokens?: number
+    response_delay_ms?: number
+    max_turns?: number
+    allow_interruptions?: boolean
   }): Promise<any> {
     const response = await this.client.post('/api/v1/personas', data)
     return response.data
@@ -1054,6 +1064,36 @@ class ApiClient {
 
   async seedDemoData(): Promise<any> {
     const response = await this.client.post('/api/v1/personas/seed-data')
+    return response.data
+  }
+
+  async getPersonaAgentPromptSources(agentId: string): Promise<{
+    agent_id: string
+    agent_name: string
+    test_agent_prompt: string
+    agent_prompt: string
+  }> {
+    const response = await this.client.get(`/api/v1/personas/agent-prompt-sources/${agentId}`)
+    return response.data
+  }
+
+  async generatePersonaPrompt(data: {
+    agent_id: string
+    source?: 'test_agent' | 'agent' | 'auto'
+    persona_name?: string
+    persona_gender?: string
+    additional_context?: string
+    provider?: string
+    model?: string
+    credential_id?: string
+    llm_config?: LLMGenerationConfig | null
+  }): Promise<{
+    persona_prompt: string
+    source_used: string
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/personas/generate-prompt', data)
     return response.data
   }
 
@@ -1350,6 +1390,17 @@ class ApiClient {
 
   async getIntegration(integrationId: string): Promise<Integration> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}`)
+    return response.data
+  }
+
+  async previewIntegrationAgentPrompt(
+    integrationId: string,
+    voiceAiAgentId: string,
+  ): Promise<{ provider_prompt: string }> {
+    const response = await this.client.post(
+      `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
+      { voice_ai_agent_id: voiceAiAgentId },
+    )
     return response.data
   }
 

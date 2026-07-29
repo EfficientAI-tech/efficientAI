@@ -115,6 +115,9 @@ def format_persona_block(persona: Persona, persona_description: Optional[str] = 
 
 def build_persona_description_for_bridge(persona: Persona) -> str:
     """Build bridge-style persona description string (traits summary)."""
+    stored = (getattr(persona, "description", None) or "").strip()
+    if stored:
+        return stored
     traits: list[str] = []
     if getattr(persona, "gender", None):
         gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
@@ -129,17 +132,26 @@ def build_persona_description_for_bridge(persona: Persona) -> str:
     return description
 
 
+def resolve_persona_max_turns(persona: Persona, default: int = 20) -> int:
+    """Effective max turns from persona or default."""
+    value = getattr(persona, "max_turns", None)
+    if value is not None and int(value) >= 1:
+        return int(value)
+    return default
+
+
 def build_test_agent_system_prompt(
     agent: Agent,
     persona: Persona,
     scenario: Scenario,
     *,
-    max_turns: int = 20,
+    max_turns: Optional[int] = None,
     agent_name: Optional[str] = None,
     persona_description: Optional[str] = None,
 ) -> str:
     """Full caller LLM system prompt: simulation core + persona + instructions."""
     under_test_name = (agent_name or agent.name or "Voice AI Agent").strip()
+    effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
     simulation = compose_test_agent_simulation_prompt(agent, scenario)
     persona_block = format_persona_block(
         persona,
@@ -165,7 +177,7 @@ INSTRUCTIONS:
 9. Respond ONLY with what you would say - no stage directions or descriptions
 
 You are calling: {under_test_name}
-After {max_turns} exchanges, wrap up the conversation politely."""
+After {effective_max_turns} exchanges, wrap up the conversation politely."""
 
 
 def format_scenarios_reference_appendix(scenarios: Sequence[Scenario]) -> str:
@@ -251,7 +263,7 @@ def build_test_agent_system_prompt_for_evaluator(
     db: Session,
     evaluator: Evaluator,
     *,
-    max_turns: int = 20,
+    max_turns: Optional[int] = None,
 ) -> str:
     """Build caller system prompt for an evaluator row (web or phone simulator paths)."""
     agent = db.query(Agent).filter(Agent.id == evaluator.agent_id).first()
@@ -259,11 +271,12 @@ def build_test_agent_system_prompt_for_evaluator(
     scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
     if not agent or not persona or not scenario:
         raise ValueError("Evaluator is missing agent, persona, or scenario")
+    effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
     persona_description = build_persona_description_for_bridge(persona)
     return build_test_agent_system_prompt(
         agent,
         persona,
         scenario,
-        max_turns=max_turns,
+        max_turns=effective_max_turns,
         persona_description=persona_description,
     )
