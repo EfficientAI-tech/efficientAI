@@ -19,11 +19,9 @@ import { useToast } from '../../hooks/useToast'
 import Button from '../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../components/shared/ProviderLogo'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
-import PersonaTtsParamsPanel from './PersonaTtsParamsPanel'
-import PersonaBehaviorPanel from './PersonaBehaviorPanel'
 import PersonaTile from './PersonaTile'
-import PersonaPromptPanel from './PersonaPromptPanel'
-import PersonaVoiceFields from './PersonaVoiceFields'
+import PersonaEditModal from './PersonaEditModal'
+import PersonaTabContent from './PersonaTabContent'
 import {
   emptyPersonaFormData,
   personaPayload,
@@ -51,6 +49,7 @@ export default function Personas() {
   const [deleteCustomVoiceConfirm, setDeleteCustomVoiceConfirm] = useState<{ id: string; name: string } | null>(null)
   const [editingCustomVoice, setEditingCustomVoice] = useState<any>(null)
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null)
+  const [editingPersona, setEditingPersona] = useState<Persona | null>(null)
   const [savingPersonaId, setSavingPersonaId] = useState<string | null>(null)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
 
@@ -121,6 +120,7 @@ export default function Personas() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personas'] })
       showToast('Persona saved', 'success')
+      setEditingPersona(null)
     },
     onError: (error: any) => {
       showToast(`Failed to save persona: ${error.response?.data?.detail || error.message}`, 'error')
@@ -277,61 +277,16 @@ export default function Personas() {
     createCustomVoiceMutation.mutate(customVoiceForm)
   }
 
-  const renderCreateTabContent = () => {
-    if (createTab === 'prompt') {
-      return (
-        <PersonaPromptPanel
-          value={formData.description}
-          onChange={(description) => setFormData((prev) => ({ ...prev, description }))}
-          personaName={formData.name}
-          personaGender={formData.gender}
-        />
-      )
-    }
-    if (createTab === 'voice') {
-      return (
-        <PersonaVoiceFields
-          draft={formData}
-          onChange={setFormData}
-          providers={providers}
-          lockProvider={false}
-          size="md"
-        />
-      )
-    }
-    if (createTab === 'tts') {
-      return (
-        <PersonaTtsParamsPanel
-          provider={formData.tts_provider}
-          value={formData.tts_config}
-          onChange={(tts_config) => setFormData((prev) => ({ ...prev, tts_config }))}
-          embedded
-        />
-      )
-    }
-    return (
-      <PersonaBehaviorPanel
-        value={{
-          llm_temperature: formData.llm_temperature,
-          llm_max_tokens: formData.llm_max_tokens,
-          response_delay_ms: formData.response_delay_ms,
-          max_turns: formData.max_turns,
-          allow_interruptions: formData.allow_interruptions,
-        }}
-        onChange={(behavior) =>
-          setFormData((prev) => ({
-            ...prev,
-            llm_temperature: behavior.llm_temperature ?? null,
-            llm_max_tokens: behavior.llm_max_tokens ?? null,
-            response_delay_ms: behavior.response_delay_ms ?? null,
-            max_turns: behavior.max_turns ?? null,
-            allow_interruptions: behavior.allow_interruptions ?? null,
-          }))
-        }
-        embedded
-      />
-    )
-  }
+  const renderCreateTabContent = () => (
+    <PersonaTabContent
+      tab={createTab}
+      draft={formData}
+      onChange={setFormData}
+      providers={providers}
+      lockProvider={false}
+      voiceFieldSize="md"
+    />
+  )
 
   // -- Loading / Error states --
   if (isLoading) {
@@ -369,7 +324,7 @@ export default function Personas() {
           <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
             <p className="text-gray-600 mt-1">
-              Configure test caller personas — each tile has tabs for prompt, voice, TTS, and behavior
+              Configure test caller personas — click a card to edit prompt, voice, TTS, and behavior
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -449,15 +404,13 @@ export default function Personas() {
                 </Button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 {userPersonas.map((persona) => (
                   <PersonaTile
                     key={persona.id}
                     persona={persona}
-                    providers={providers}
-                    onSave={handleSavePersonaTile}
+                    onClick={setEditingPersona}
                     onDelete={handleDelete}
-                    isSaving={savingPersonaId === persona.id && updateMutation.isPending}
                   />
                 ))}
               </div>
@@ -550,6 +503,17 @@ export default function Personas() {
               </div>
             )}
           </>
+        )}
+
+        {/* ===================== EDIT PERSONA MODAL ===================== */}
+        {editingPersona && renderModal(
+          <PersonaEditModal
+            persona={editingPersona}
+            providers={providers}
+            isSaving={savingPersonaId === editingPersona.id && updateMutation.isPending}
+            onSave={handleSavePersonaTile}
+            onClose={() => setEditingPersona(null)}
+          />,
         )}
 
         {/* ===================== CREATE PERSONA MODAL ===================== */}
