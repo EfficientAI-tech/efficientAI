@@ -74,6 +74,14 @@ def test_needs_import_false_when_failed():
     assert _needs_import_for_eval(row) is False
 
 
+def test_needs_import_for_production_source_still_fetches_recording():
+    """Production transcript runs skip diarisation but still import recordings
+    when a recording_url is present (same as diarised runs)."""
+    row = _source_row()
+    evaluation = _evaluation(transcript_source="production")
+    assert _needs_import_for_eval(row) is True
+
+
 def test_needs_transcribe_after_recording_ready():
     evaluation = _evaluation()
     row = _source_row(

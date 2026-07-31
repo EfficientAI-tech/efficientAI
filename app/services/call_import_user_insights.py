@@ -143,9 +143,12 @@ def _pick_transcript(
     evaluation: CallImportEvaluation,
     source_row: CallImportRow,
 ) -> str:
-    del evaluation
-    diarised = (source_row.diarised_transcript or "").strip()
-    return diarised[:ROW_TRANSCRIPT_CHAR_CAP]
+    source = (evaluation.transcript_source or "diarised").strip().lower()
+    if source == "production":
+        text = (source_row.transcript or "").strip()
+    else:
+        text = (source_row.diarised_transcript or "").strip()
+    return text[:ROW_TRANSCRIPT_CHAR_CAP]
 
 
 def _metric_name_map(metrics: Sequence[Metric]) -> Dict[str, str]:

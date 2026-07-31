@@ -114,6 +114,12 @@ def materialize_mapped_call_import_evaluation_task(
     block the Run Evaluation request.
     """
     del self
+    logger.info(
+        "materialize_mapped_call_import_evaluation starting "
+        "(call_import={} evaluation={})",
+        call_import_id,
+        evaluation_id,
+    )
     db = SessionLocal()
     eval_uuid = UUID(evaluation_id)
     try:
@@ -123,6 +129,14 @@ def materialize_mapped_call_import_evaluation_task(
             UUID(organization_id),
             UUID(workspace_id),
             schedule_import_dispatch=False,
+        )
+        logger.info(
+            "materialize_mapped_call_import_evaluation materialization finished "
+            "(call_import={} evaluation={} status={} total_rows={})",
+            call_import_id,
+            evaluation_id,
+            mat_result.get("status"),
+            mat_result.get("total_rows"),
         )
         status = mat_result.get("status")
         if status == "failed":

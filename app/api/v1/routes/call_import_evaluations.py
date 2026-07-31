@@ -242,17 +242,29 @@ def _evaluated_transcript_source_label(
     evaluation: CallImportEvaluation,
     source_row: CallImportRow,
 ) -> str:
-    """Label whether this row had a diarised transcript for scoring."""
-    del evaluation
-    if not (source_row.diarised_transcript or "").strip():
-        return ""
+    """Label which transcript source this evaluation run scored against."""
+    del source_row
+    source = (evaluation.transcript_source or "diarised").strip().lower()
+    if source == "production":
+        return "Production"
     return "Diarised"
 
 
-def _pick_evaluation_row_transcript(source_row: Optional[CallImportRow]) -> Optional[str]:
-    """Transcript shown in evaluation row detail — diarised when present."""
+def _pick_evaluation_row_transcript(
+    source_row: Optional[CallImportRow],
+    evaluation: Optional[CallImportEvaluation] = None,
+) -> Optional[str]:
+    """Transcript shown in evaluation row detail for the run's source."""
     if source_row is None:
         return None
+    source = (
+        (evaluation.transcript_source or "diarised").strip().lower()
+        if evaluation is not None
+        else "diarised"
+    )
+    if source == "production":
+        raw = (source_row.transcript or "").strip()
+        return raw or None
     diarised = (source_row.diarised_transcript or "").strip()
     if diarised:
         return diarised
@@ -263,6 +275,7 @@ def _pick_evaluation_row_transcript(source_row: Optional[CallImportRow]) -> Opti
 def _to_evaluation_row_response(
     eval_row_obj: CallImportEvaluationRow,
     source_row: Optional[CallImportRow],
+    evaluation: Optional[CallImportEvaluation] = None,
 ) -> CallImportEvaluationRowResponse:
     """Serialize one evaluation row plus joined source-row metadata."""
     return CallImportEvaluationRowResponse(
@@ -271,7 +284,7 @@ def _to_evaluation_row_response(
         call_import_row_id=eval_row_obj.call_import_row_id,
         row_index=source_row.row_index if source_row else None,
         conversation_id=source_row.conversation_id if source_row else None,
-        transcript=_pick_evaluation_row_transcript(source_row),
+        transcript=_pick_evaluation_row_transcript(source_row, evaluation),
         raw_columns=source_row.raw_columns if source_row else None,
         recording_url=source_row.recording_url if source_row else None,
         recording_date=source_row.recording_date if source_row else None,
@@ -811,125 +824,127 @@ async def create_call_import_evaluation(
                     metric_overrides_payload[leaf_id] = override_dict
 
     # ----- Validate auto-transcribe settings -----
-    # Every evaluation run scores the diarised transcript and
-    # auto-diarises rows that don't already have one, so STT
-    # provider+model are mandatory on every request (the
-    # ``auto_transcribe`` flag is preserved on the schema for API
-    # compatibility but is effectively always true at this point).
-    # ``transcribe_mode`` controls whether STT is required: the
-    # ``llm_only`` path skips STT entirely and feeds audio directly to
-    # the diariser LLM, so STT fields must be absent. The ``stt_llm``
-    # path (default) keeps the original behaviour.
-    transcribe_mode_norm = (payload.transcribe_mode or "stt_llm").strip().lower()
-    if transcribe_mode_norm not in {"stt_llm", "llm_only"}:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unknown transcribe_mode '{payload.transcribe_mode}'. "
-                "Expected 'stt_llm' or 'llm_only'."
-            ),
-        )
+    # Diarised runs auto-diarise rows missing a diarised transcript and
+    # require STT + diariser LLM config. Production runs score the CSV
+    # transcript directly and skip diarisation entirely.
+    use_diarised = payload.transcript_sources[0] == "diarised"
+    auto_transcribe = use_diarised
 
-    auto_transcribe = True
+    transcribe_mode_norm: Optional[str] = None
     stt_provider_norm: Optional[str] = None
     stt_model_norm: Optional[str] = None
-    if transcribe_mode_norm == "stt_llm":
-        if not payload.stt_provider:
+    diarisation_llm_provider_norm: Optional[str] = None
+    diarisation_llm_model_norm: Optional[str] = None
+    diarisation_prompt_norm: Optional[str] = None
+
+    if use_diarised:
+        transcribe_mode_norm = (payload.transcribe_mode or "stt_llm").strip().lower()
+        if transcribe_mode_norm not in {"stt_llm", "llm_only"}:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "stt_provider is required when "
-                    "transcribe_mode='stt_llm': every evaluation run "
-                    "auto-diarises rows that are missing a diarised "
-                    "transcript."
+                    f"Unknown transcribe_mode '{payload.transcribe_mode}'. "
+                    "Expected 'stt_llm' or 'llm_only'."
                 ),
             )
-        if not payload.stt_model:
+
+        if transcribe_mode_norm == "stt_llm":
+            if not payload.stt_provider:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "stt_provider is required when "
+                        "transcribe_mode='stt_llm': every evaluation run "
+                        "auto-diarises rows that are missing a diarised "
+                        "transcript."
+                    ),
+                )
+            if not payload.stt_model:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "stt_model is required when transcribe_mode='stt_llm'."
+                    ),
+                )
+            try:
+                stt_provider_norm = ModelProvider(
+                    payload.stt_provider.lower()
+                ).value
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown STT provider '{payload.stt_provider}'.",
+                )
+            stt_model_norm = payload.stt_model.strip() or None
+            if not stt_model_norm:
+                raise HTTPException(
+                    status_code=400, detail="stt_model cannot be empty."
+                )
+        else:
+            # llm_only — explicitly reject lingering STT inputs so the
+            # contract is unambiguous (the worker would ignore them but
+            # silent acceptance hides accidental misconfiguration).
+            if (payload.stt_provider or "").strip() or (
+                payload.stt_model or ""
+            ).strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "stt_provider / stt_model must be omitted when "
+                        "transcribe_mode='llm_only'; the LLM consumes the "
+                        "audio directly."
+                    ),
+                )
+
+        # --- Validate LLM diariser settings -----
+        if not payload.diarization_llm_provider:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "stt_model is required when transcribe_mode='stt_llm'."
+                    "diarization_llm_provider is required: every evaluation "
+                    "run diarises STT output with an LLM."
+                ),
+            )
+        if not payload.diarization_llm_model:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "diarization_llm_model is required: every evaluation "
+                    "run diarises STT output with an LLM."
                 ),
             )
         try:
-            stt_provider_norm = ModelProvider(
-                payload.stt_provider.lower()
+            diarisation_llm_provider_norm = ModelProvider(
+                payload.diarization_llm_provider.lower()
             ).value
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unknown STT provider '{payload.stt_provider}'.",
-            )
-        stt_model_norm = payload.stt_model.strip() or None
-        if not stt_model_norm:
-            raise HTTPException(
-                status_code=400, detail="stt_model cannot be empty."
-            )
-    else:
-        # llm_only — explicitly reject lingering STT inputs so the
-        # contract is unambiguous (the worker would ignore them but
-        # silent acceptance hides accidental misconfiguration).
-        if (payload.stt_provider or "").strip() or (
-            payload.stt_model or ""
-        ).strip():
-            raise HTTPException(
-                status_code=400,
                 detail=(
-                    "stt_provider / stt_model must be omitted when "
-                    "transcribe_mode='llm_only'; the LLM consumes the "
-                    "audio directly."
+                    f"Unknown diarisation LLM provider "
+                    f"'{payload.diarization_llm_provider}'."
                 ),
             )
+        diarisation_llm_model_norm = (
+            payload.diarization_llm_model.strip() or None
+        )
+        if not diarisation_llm_model_norm:
+            raise HTTPException(
+                status_code=400,
+                detail="diarization_llm_model cannot be empty.",
+            )
+        diarisation_prompt_norm = (
+            payload.diarization_prompt.strip()
+            if isinstance(payload.diarization_prompt, str)
+            else None
+        ) or None
 
-    # --- Validate LLM diariser settings -----
-    # The post-STT diariser is mandatory now that pyannote is no longer
-    # in the loop. We reject the request up-front (instead of letting
-    # individual rows fail at task time) so the operator gets a clean
-    # 400 in the modal.
-    if not payload.diarization_llm_provider:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "diarization_llm_provider is required: every evaluation "
-                "run diarises STT output with an LLM."
-            ),
-        )
-    if not payload.diarization_llm_model:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "diarization_llm_model is required: every evaluation "
-                "run diarises STT output with an LLM."
-            ),
-        )
-    try:
-        diarisation_llm_provider_norm: Optional[str] = ModelProvider(
-            payload.diarization_llm_provider.lower()
-        ).value
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unknown diarisation LLM provider "
-                f"'{payload.diarization_llm_provider}'."
-            ),
-        )
-    diarisation_llm_model_norm: Optional[str] = (
-        payload.diarization_llm_model.strip() or None
+    from app.models.enums import CallImportParameterType, CallImportStatus
+    from app.services.call_imports.bulk_ops import (
+        count_all_source_rows,
+        count_completed_source_rows,
+        count_source_rows_with_production_transcript,
     )
-    if not diarisation_llm_model_norm:
-        raise HTTPException(
-            status_code=400,
-            detail="diarization_llm_model cannot be empty.",
-        )
-    diarisation_prompt_norm: Optional[str] = (
-        payload.diarization_prompt.strip()
-        if isinstance(payload.diarization_prompt, str)
-        else None
-    ) or None
-
-    from app.models.enums import CallImportStatus
-    from app.services.call_imports.bulk_ops import count_completed_source_rows
 
     starting_from_mapped = False
     if call_import.status == CallImportStatus.MAPPED:
@@ -958,6 +973,21 @@ async def create_call_import_evaluation(
             db, organization_id, workspace_id, call_import.schema_id
         )
         parameters = list(schema.parameters)
+        if not use_diarised:
+            transcript_mapped = any(
+                param.type == CallImportParameterType.TRANSCRIPT
+                and (call_import.parameter_mapping or {}).get(param.name)
+                for param in parameters
+            )
+            if not transcript_mapped:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "No transcript column is mapped in this batch. "
+                        "Map a schema transcript parameter to a CSV column, "
+                        "or choose 'Diarize then evaluate'."
+                    ),
+                )
         if payload.telephony_integration_id is not None:
             integration = _resolve_telephony_integration(
                 db,
@@ -989,14 +1019,31 @@ async def create_call_import_evaluation(
         db.refresh(call_import)
         starting_from_mapped = True
 
-    total_row_count = count_completed_source_rows(db, call_import.id)
+    if use_diarised:
+        total_row_count = count_completed_source_rows(db, call_import.id)
+    else:
+        # Production runs score CSV text — rows need not wait for
+        # recording fetch to finish before they are evaluable.
+        total_row_count = count_source_rows_with_production_transcript(
+            db, call_import.id
+        )
 
-    # Every evaluation run scores the diarised transcript. The
-    # ``transcript_sources`` field on the schema has already been
-    # normalized to ``['diarised']`` by the validator; we still iterate
-    # the list below so the loop machinery stays generic in case future
-    # sources are reintroduced.
-    requested_sources: List[str] = ["diarised"]
+    requested_sources: List[str] = list(payload.transcript_sources)
+
+    if (
+        not use_diarised
+        and not starting_from_mapped
+        and count_all_source_rows(db, call_import.id) > 0
+        and total_row_count == 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "No rows have a production transcript. "
+                "Choose 'Diarize then evaluate' or import rows with "
+                "a transcript column."
+            ),
+        )
 
     base_name = _normalize_name(payload.name)
 
@@ -1036,7 +1083,7 @@ async def create_call_import_evaluation(
             diarisation_llm_provider=diarisation_llm_provider_norm,
             diarisation_llm_model=diarisation_llm_model_norm,
             diarisation_llm_credential_id=(
-                payload.diarization_llm_credential_id
+                payload.diarization_llm_credential_id if auto_transcribe else None
             ),
             diarisation_prompt=diarisation_prompt_norm,
             transcribe_mode=transcribe_mode_norm,
@@ -1658,9 +1705,9 @@ async def list_call_import_evaluation_rows(
         total = query.count()
         rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
-    # Row detail shows the diarised transcript that normal metrics score.
+    # Row detail shows the transcript for this run's chosen source.
     items: List[CallImportEvaluationRowResponse] = [
-        _to_evaluation_row_response(eval_row_obj, source_row)
+        _to_evaluation_row_response(eval_row_obj, source_row, eval_row)
         for eval_row_obj, source_row in rows
     ]
 
@@ -3981,7 +4028,7 @@ async def cancel_call_import_evaluation_row(
                 _rollup_evaluation_status(evaluation, db)
                 db.commit()
                 row_db.refresh(eval_row)
-                return _to_evaluation_row_response(eval_row, source_row)
+                return _to_evaluation_row_response(eval_row, source_row, evaluation)
         except LookupError as exc:
             raise HTTPException(
                 status_code=404, detail="Evaluation row not found in this run"
@@ -4012,7 +4059,7 @@ async def cancel_call_import_evaluation_row(
         .first()
     )
 
-    return _to_evaluation_row_response(eval_row, source_row)
+    return _to_evaluation_row_response(eval_row, source_row, evaluation)
 
 
 @router.delete(
@@ -8808,11 +8855,11 @@ async def retry_call_import_evaluation_row(
             source_row,
             _shard_id,
         ):
-            return _to_evaluation_row_response(eval_row, source_row)
+            return _to_evaluation_row_response(eval_row, source_row, evaluation)
 
     db.refresh(eval_row)
     source_row = targets[0][1]
-    return _to_evaluation_row_response(eval_row, source_row)
+    return _to_evaluation_row_response(eval_row, source_row, evaluation)
 
 
 from app.core.auth.capabilities import EVALS_RUN, EVALS_VIEW, REPORTS_GENERATE

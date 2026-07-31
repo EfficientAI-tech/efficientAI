@@ -3000,11 +3000,10 @@ class CallImportEvaluationCreate(BaseModel):
         min_length=1,
         max_length=1,
         description=(
-            "Which transcript to score against. Only ``diarised`` is "
-            "supported — every evaluation run scores the diarised "
-            "transcript. Pass ``['diarised']`` explicitly or omit the "
-            "field to take the default; any other value (including the "
-            "legacy ``'production'`` source) is rejected with a 400."
+            "Which transcript to score against. ``'diarised'`` (default) "
+            "auto-diarises rows missing a diarised transcript then scores "
+            "``diarised_transcript``. ``'production'`` scores the CSV "
+            "``transcript`` column directly and skips diarisation."
         ),
     )
 
@@ -3013,20 +3012,16 @@ class CallImportEvaluationCreate(BaseModel):
     def _validate_transcript_sources(
         cls, value: List[str]
     ) -> List["CallImportEvaluationTranscriptSource"]:
-        # The Field min_length/max_length constraints catch empty +
-        # over-long payloads; this validator's job is to reject any
-        # non-diarised source value and normalize the result to
-        # ``['diarised']`` for downstream code.
-        invalid = [src for src in value if src != "diarised"]
+        allowed = {"production", "diarised"}
+        invalid = [src for src in value if src not in allowed]
         if invalid:
             raise ValueError(
-                "Only the 'diarised' transcript source is supported "
+                "transcript_sources must be ['production'] or ['diarised'] "
                 "(received: "
                 + ", ".join(repr(src) for src in invalid)
-                + "). Remove 'production' from transcript_sources or "
-                "omit the field to use the default."
+                + ")."
             )
-        return ["diarised"]
+        return value  # type: ignore[return-value]
     # --- Run-level LLM config ---
     llm_provider: Optional[str] = Field(
         default=None,
