@@ -80,7 +80,7 @@ export default function EvaluatorPhoneOutboundForm({
             value=""
             onChange={(e) => e.target.value && setToNumber(e.target.value)}
           >
-            <option value="">Saved dial targets…</option>
+            <option value="">Contacts…</option>
             {dialTargets.map((t: any) => (
               <option key={t.id} value={t.phone_number}>{t.label || t.phone_number}</option>
             ))}

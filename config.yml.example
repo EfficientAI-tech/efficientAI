@@ -229,6 +229,18 @@ judge_alignment:
 #     - "+918011223345"
 #   outbound_pool_max_concurrent_per_org: 5
 
+# Provider-agnostic platform outbound caller-ID pool (preferred). Each entry can be a
+# plain E.164 string (defaults to provider vobiz) or an object with number + provider.
+# Legacy vobiz.outbound_pool / plivo.outbound_pool / exotel.outbound_pool are merged in.
+# telephony:
+#   outbound_pool:
+#     - number: "+918011223344"
+#       provider: vobiz
+#     - number: "+918011223345"
+#       provider: plivo
+#     - "+918011223346"   # shorthand, treated as vobiz
+#   outbound_pool_max_concurrent_per_org: 5
+
 # Flexprice usage-based billing (optional). When disabled or api_key is unset,
 # no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
 # true and provide FLEXPRICE_API_KEY (env var overrides api_key below).

@@ -280,7 +280,7 @@ export interface TelephonyPhoneNumberResponse {
   created_at: string
 }
 
-export interface VobizAvailableNumber {
+export interface TelephonyAvailableNumber {
   e164: string
   provider_number_id?: string | null
   country?: string | null
@@ -292,7 +292,7 @@ export interface VobizAvailableNumber {
   imported_number_id?: string | null
 }
 
-export interface VobizImportNumberResult {
+export interface TelephonyImportNumberResult {
   number: string
   success: boolean
   message: string
@@ -302,16 +302,34 @@ export interface VobizImportNumberResult {
   application_id?: string | null
 }
 
-export interface VobizImportNumbersResponse {
-  results: VobizImportNumberResult[]
+export interface TelephonyImportNumbersResponse {
+  provider: string
+  results: TelephonyImportNumberResult[]
   answer_url: string
 }
 
-export interface VobizOutboundPoolResponse {
-  numbers: string[]
+/** @deprecated Use TelephonyAvailableNumber */
+export type VobizAvailableNumber = TelephonyAvailableNumber
+
+/** @deprecated Use TelephonyImportNumbersResponse */
+export type VobizImportNumbersResponse = TelephonyImportNumbersResponse
+
+/** @deprecated Use TelephonyImportNumberResult */
+export type VobizImportNumberResult = TelephonyImportNumberResult
+
+export interface PlatformOutboundPoolNumber {
+  phone_number: string
+  provider: string
+}
+
+export interface PlatformOutboundPoolResponse {
+  numbers: PlatformOutboundPoolNumber[]
   max_concurrent_per_org: number
   shared_across_orgs: boolean
 }
+
+/** @deprecated Use PlatformOutboundPoolResponse */
+export type VobizOutboundPoolResponse = PlatformOutboundPoolResponse
 
 export interface VobizOutboundCallRequest {
   to_number: string
@@ -1474,26 +1492,57 @@ class ApiClient {
     return response.data
   }
 
-  async listVobizAvailableNumbers(): Promise<VobizAvailableNumber[]> {
-    const response = await this.client.get('/api/v1/telephony/vobiz/numbers/available')
-    return response.data
-  }
-
-  async importVobizNumbers(numbers: string[], agentId?: string): Promise<VobizImportNumbersResponse> {
-    const response = await this.client.post('/api/v1/telephony/vobiz/numbers/import', {
-      numbers,
-      agent_id: agentId || undefined,
+  async listAvailableTelephonyNumbers(
+    provider: string,
+    credentialId?: string,
+  ): Promise<TelephonyAvailableNumber[]> {
+    const response = await this.client.get('/api/v1/telephony/numbers/available', {
+      params: {
+        provider,
+        ...(credentialId ? { credential_id: credentialId } : {}),
+      },
     })
     return response.data
   }
 
-  async deleteImportedVobizNumber(numberId: string): Promise<void> {
-    await this.client.delete(`/api/v1/telephony/vobiz/numbers/${numberId}`)
+  async importTelephonyNumbers(
+    provider: string,
+    numbers: string[],
+    agentId?: string,
+    credentialId?: string,
+  ): Promise<TelephonyImportNumbersResponse> {
+    const response = await this.client.post('/api/v1/telephony/numbers/import', {
+      provider,
+      numbers,
+      agent_id: agentId || undefined,
+      credential_id: credentialId || undefined,
+    })
+    return response.data
   }
 
-  async listVobizOutboundPool(): Promise<VobizOutboundPoolResponse> {
-    const response = await this.client.get('/api/v1/telephony/vobiz/outbound-pool')
+  async listVobizAvailableNumbers(): Promise<TelephonyAvailableNumber[]> {
+    return this.listAvailableTelephonyNumbers('vobiz')
+  }
+
+  async importVobizNumbers(numbers: string[], agentId?: string): Promise<TelephonyImportNumbersResponse> {
+    return this.importTelephonyNumbers('vobiz', numbers, agentId)
+  }
+
+  async deleteTelephonyNumber(numberId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/numbers/${numberId}`)
+  }
+
+  async deleteImportedVobizNumber(numberId: string): Promise<void> {
+    await this.deleteTelephonyNumber(numberId)
+  }
+
+  async listTelephonyOutboundPool(): Promise<PlatformOutboundPoolResponse> {
+    const response = await this.client.get('/api/v1/telephony/outbound-pool')
     return response.data
+  }
+
+  async listVobizOutboundPool(): Promise<PlatformOutboundPoolResponse> {
+    return this.listTelephonyOutboundPool()
   }
 
   async listTelephonyDialTargets(): Promise<TelephonyDialTargetResponse[]> {

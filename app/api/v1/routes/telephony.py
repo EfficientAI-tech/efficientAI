@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id
@@ -26,10 +27,67 @@ from app.models.schemas import (
     TelephonyVerifyStartResponse,
 )
 from app.services.telephony.telephony_service import telephony_service
+from app.services.telephony.number_import_service import import_numbers, list_available_numbers
 from app.services.telephony.plivo_client import normalize_e164
 from app.services.telephony.webhook_auth import verify_plivo_webhook
+from app.services.telephony.platform_outbound_pool import outbound_pool_api_payload
 
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
+
+
+class TelephonyAvailableNumberResponse(BaseModel):
+    e164: str
+    provider_number_id: Optional[str] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    capabilities: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
+    application_id: Optional[str] = None
+    already_imported: bool = False
+    imported_number_id: Optional[str] = None
+
+
+class TelephonyImportNumbersRequest(BaseModel):
+    provider: str
+    numbers: List[str]
+    agent_id: Optional[UUID] = None
+    credential_id: Optional[UUID] = None
+
+
+class TelephonyImportNumberResult(BaseModel):
+    number: str
+    success: bool
+    message: str
+    answer_url: str
+    webhook_configured: Optional[bool] = None
+    imported_number_id: Optional[str] = None
+    application_id: Optional[str] = None
+
+
+class TelephonyImportNumbersResponse(BaseModel):
+    provider: str
+    results: List[TelephonyImportNumberResult]
+    answer_url: str
+
+
+class PlatformOutboundPoolNumberResponse(BaseModel):
+    phone_number: str
+    provider: str
+
+
+class PlatformOutboundPoolResponse(BaseModel):
+    numbers: List[PlatformOutboundPoolNumberResponse]
+    max_concurrent_per_org: int
+    shared_across_orgs: bool = True
+
+
+@router.get("/outbound-pool", response_model=PlatformOutboundPoolResponse)
+async def get_platform_outbound_pool(
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+):
+    del organization_id, api_key
+    return PlatformOutboundPoolResponse(**outbound_pool_api_payload())
 
 
 @router.post("/config", response_model=TelephonyIntegrationResponse, status_code=status.HTTP_201_CREATED)
@@ -166,6 +224,74 @@ async def list_telephony_numbers(
 ):
     del api_key
     return telephony_service.list_numbers_enriched(organization_id, db, provider=provider)
+
+
+@router.delete("/numbers/{number_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_telephony_number(
+    number_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Remove an org-owned phone number from inventory and unlink agents."""
+    del api_key
+    try:
+        telephony_service.remove_org_phone_number(organization_id, number_id, db)
+    except ValueError as e:
+        message = str(e)
+        if message == "Phone number not found":
+            raise HTTPException(status_code=404, detail=message) from e
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if "active number-masking sessions" in message
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=message) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/numbers/available", response_model=List[TelephonyAvailableNumberResponse])
+async def list_available_telephony_numbers(
+    provider: str,
+    credential_id: Optional[UUID] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """List remote numbers on a telephony provider account with org import status."""
+    del api_key
+    try:
+        return list_available_numbers(
+            db,
+            organization_id,
+            provider,
+            credential_id=credential_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/numbers/import", response_model=TelephonyImportNumbersResponse)
+async def import_telephony_numbers(
+    payload: TelephonyImportNumbersRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Import selected numbers from a telephony provider into org inventory."""
+    del api_key
+    try:
+        result = import_numbers(
+            db,
+            organization_id,
+            payload.provider,
+            numbers=payload.numbers,
+            agent_id=payload.agent_id,
+            credential_id=payload.credential_id,
+        )
+        return TelephonyImportNumbersResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/dial-targets", response_model=List[TelephonyDialTargetResponse])

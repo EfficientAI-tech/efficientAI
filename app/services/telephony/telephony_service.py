@@ -405,6 +405,63 @@ class TelephonyService:
             )
         return enriched
 
+    def remove_org_phone_number(self, org_id: UUID, number_id: UUID, db: Session) -> None:
+        """Permanently remove an org-owned phone number and unlink dependent agents."""
+        row = (
+            db.query(TelephonyPhoneNumber)
+            .filter(
+                TelephonyPhoneNumber.id == number_id,
+                TelephonyPhoneNumber.organization_id == org_id,
+            )
+            .first()
+        )
+        if not row:
+            raise ValueError("Phone number not found")
+
+        if row.source == "platform_pool":
+            raise ValueError("Platform pool numbers cannot be removed from org inventory")
+
+        active_masking = (
+            db.query(TelephonyMaskedSession)
+            .filter(
+                TelephonyMaskedSession.masked_number_id == number_id,
+                TelephonyMaskedSession.status == "active",
+            )
+            .count()
+        )
+        if active_masking:
+            raise ValueError(
+                "Cannot remove phone number while active number-masking sessions "
+                "reference it. End those sessions first."
+            )
+
+        db.query(TelephonyMaskedSession).filter(
+            TelephonyMaskedSession.masked_number_id == number_id,
+        ).delete(synchronize_session=False)
+
+        linked_agents = (
+            db.query(Agent)
+            .filter(
+                Agent.organization_id == org_id,
+                Agent.telephony_phone_number_id == number_id,
+            )
+            .all()
+        )
+        for agent in linked_agents:
+            agent.telephony_phone_number_id = None
+            agent.phone_number = None
+
+        if row.agent_id:
+            agent = db.query(Agent).filter(Agent.id == row.agent_id).first()
+            if agent:
+                if agent.telephony_phone_number_id == row.id:
+                    agent.telephony_phone_number_id = None
+                agent.phone_number = None
+
+        row.agent_id = None
+        db.delete(row)
+        db.commit()
+
     def initiate_outbound_call(
         self, org_id: UUID, from_number: str, to_number: str, agent_id: Optional[UUID], db: Session
     ) -> Dict[str, Any]:

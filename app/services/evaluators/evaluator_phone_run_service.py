@@ -31,7 +31,7 @@ def initiate_phone_evaluator_call(
     from app.models.database import CallRecording, CallRecordingSource, EvaluatorResult, EvaluatorResultStatus
     from app.models.enums import CallRecordingStatus
     from app.config import settings
-    from app.services.telephony.vobiz_outbound_pool import resolve_outbound_from_number
+    from app.services.telephony.vobiz_outbound_pool import release_pool_slot, resolve_outbound_from_number
     from app.services.telephony.vobiz_session import create_call_session
     from app.services.telephony.vobiz_agent_context import vobiz_webhook_base_url
     from app.workers.tasks.initiate_vobiz_outbound import initiate_vobiz_outbound_call_task
@@ -57,13 +57,24 @@ def initiate_phone_evaluator_call(
     db.refresh(evaluator_result)
 
     try:
-        from_number_resolved, used_pool = resolve_outbound_from_number(
+        from_number_resolved, used_pool, provider = resolve_outbound_from_number(
             db,
             organization_id,
             explicit_from_number=from_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if provider != "vobiz":
+        if used_pool:
+            release_pool_slot(organization_id)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Phone evaluator outbound requires a Vobiz caller ID; "
+                f"resolved provider is {provider}."
+            ),
+        )
 
     to_number_norm = normalize_e164(to_number)
     persona_id = evaluator.persona_id

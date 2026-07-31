@@ -830,10 +830,15 @@ export default function Integrations() {
             {hasTelephony && (
               <div>
                 <div className="px-6 py-3 bg-green-50 border-b border-green-100">
-                  <div className="flex items-center gap-2">
-                    <Phone className="h-4 w-4 text-green-600" />
-                    <h3 className="text-sm font-semibold text-green-900">Telephony Providers</h3>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{allTelephonyConfigs.length}</span>
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2">
+                      <Phone className="h-4 w-4 text-green-600" />
+                      <h3 className="text-sm font-semibold text-green-900">Telephony Providers</h3>
+                      <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{allTelephonyConfigs.length}</span>
+                    </div>
+                    <p className="text-xs text-green-800">
+                      Phone numbers are managed on the Telephony Numbers page.
+                    </p>
                   </div>
                 </div>
                 <div className="divide-y divide-gray-200">

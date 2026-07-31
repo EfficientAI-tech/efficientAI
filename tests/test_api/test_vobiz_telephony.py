@@ -7,8 +7,18 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.database import CallRecording, CallRecordingSource, Organization, TelephonyIntegration, TelephonyPhoneNumber, Workspace
+from app.models.database import (
+    Agent,
+    CallRecording,
+    CallRecordingSource,
+    Organization,
+    TelephonyIntegration,
+    TelephonyMaskedSession,
+    TelephonyPhoneNumber,
+    Workspace,
+)
 from app.models.enums import CallRecordingStatus, TelephonyProvider
+from app.services.telephony.telephony_service import telephony_service
 from app.services.telephony.vobiz_session import create_call_session
 
 
@@ -280,20 +290,60 @@ def test_list_vobiz_available_numbers(mock_list, client, org_id, seed_org):
     assert data[0]["already_imported"] is False
 
 
-@patch("app.api.v1.routes.vobiz_telephony.configured_outbound_pool")
-def test_get_vobiz_outbound_pool(mock_pool, client, org_id, seed_org, monkeypatch):
-    mock_pool.return_value = ["+918071579610", "+919876543210"]
-    monkeypatch.setattr(
-        "app.api.v1.routes.vobiz_telephony.settings.VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG",
-        5,
-    )
+@patch("app.api.v1.routes.vobiz_telephony.outbound_pool_api_payload")
+def test_get_vobiz_outbound_pool(mock_payload, client, org_id, seed_org):
+    mock_payload.return_value = {
+        "numbers": [
+            {"phone_number": "+918071579610", "provider": "vobiz"},
+            {"phone_number": "+919876543210", "provider": "plivo"},
+        ],
+        "max_concurrent_per_org": 5,
+        "shared_across_orgs": True,
+    }
 
     response = client.get("/api/v1/telephony/vobiz/outbound-pool")
     assert response.status_code == 200
     body = response.json()
-    assert body["numbers"] == ["+918071579610", "+919876543210"]
+    assert body["numbers"] == [
+        {"phone_number": "+918071579610", "provider": "vobiz"},
+        {"phone_number": "+919876543210", "provider": "plivo"},
+    ]
     assert body["max_concurrent_per_org"] == 5
     assert body["shared_across_orgs"] is True
+
+
+def test_get_telephony_outbound_pool(client, org_id, seed_org, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.telephony.platform_outbound_pool.settings.TELEPHONY_OUTBOUND_POOL",
+        [
+            {"number": "+918011223344", "provider": "exotel"},
+            "+918011223345",
+        ],
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.platform_outbound_pool.settings.VOBIZ_OUTBOUND_POOL",
+        [],
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.platform_outbound_pool.settings.VOBIZ_FROM_NUMBER",
+        "",
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.platform_outbound_pool.settings.PLIVO_OUTBOUND_POOL",
+        [],
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.platform_outbound_pool.settings.EXOTEL_OUTBOUND_POOL",
+        [],
+    )
+
+    response = client.get("/api/v1/telephony/outbound-pool")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["numbers"] == [
+        {"phone_number": "+918011223344", "provider": "exotel"},
+        {"phone_number": "+918011223345", "provider": "vobiz"},
+    ]
 
 
 @patch("app.api.v1.routes.vobiz_telephony.import_vobiz_numbers")
@@ -320,6 +370,92 @@ def test_import_vobiz_numbers_route(mock_import, client, org_id, seed_org):
     body = response.json()
     assert body["results"][0]["success"] is True
     assert "answer_url" in body
+
+
+def test_list_telephony_numbers_includes_provider(client, db_session, org_id, seed_org):
+    _, number = _seed_vobiz_phone(db_session, org_id)
+
+    response = client.get("/api/v1/telephony/numbers")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["id"] == str(number.id)
+    assert data[0]["provider"] == "vobiz"
+    assert data[0]["inbound_enabled"] is True
+    assert data[0]["outbound_enabled"] is True
+    assert data[0]["source"] == "imported"
+
+
+def test_delete_telephony_number_via_generic_route(client, db_session, org_id, seed_org):
+    _, number = _seed_vobiz_phone(db_session, org_id)
+
+    response = client.delete(f"/api/v1/telephony/numbers/{number.id}")
+    assert response.status_code == 204
+
+    db_session.expire_all()
+    assert (
+        db_session.query(TelephonyPhoneNumber)
+        .filter(TelephonyPhoneNumber.id == number.id)
+        .first()
+        is None
+    )
+
+
+def test_delete_telephony_number_unlinks_agent(
+    client, db_session, org_id, seed_org, make_agent
+):
+    _, number = _seed_vobiz_phone(db_session, org_id, phone_number="+919111111111")
+    agent = make_agent(phone_number=number.phone_number)
+    agent.telephony_phone_number_id = number.id
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/telephony/numbers/{number.id}")
+    assert response.status_code == 204
+
+    db_session.expire_all()
+    refreshed = db_session.query(Agent).filter(Agent.id == agent.id).first()
+    assert refreshed.telephony_phone_number_id is None
+    assert refreshed.phone_number is None
+
+
+def test_delete_telephony_number_blocked_by_active_masking(client, db_session, org_id, seed_org):
+    integration, number = _seed_vobiz_phone(db_session, org_id, phone_number="+919222222222")
+    db_session.add(
+        TelephonyMaskedSession(
+            id=uuid4(),
+            organization_id=org_id,
+            telephony_integration_id=integration.id,
+            masked_number_id=number.id,
+            masked_number=number.phone_number,
+            party_a_number="+911111111111",
+            party_b_number="+912222222222",
+            status="active",
+        )
+    )
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/telephony/numbers/{number.id}")
+    assert response.status_code == 409
+    assert "active number-masking sessions" in response.json()["detail"]
+
+
+def test_remove_org_phone_number_releases_global_inbound_lock(db_session, org_id, seed_org):
+    _, number = _seed_vobiz_phone(db_session, org_id, phone_number="+919333333333")
+
+    conflict_query = (
+        db_session.query(TelephonyPhoneNumber)
+        .filter(
+            TelephonyPhoneNumber.phone_number == "+919333333333",
+            TelephonyPhoneNumber.inbound_enabled.is_(True),
+            TelephonyPhoneNumber.source != "platform_pool",
+        )
+    )
+    assert conflict_query.count() == 1
+
+    telephony_service.remove_org_phone_number(org_id, number.id, db_session)
+
+    db_session.expire_all()
+    assert conflict_query.count() == 0
 
 
 def test_delete_imported_vobiz_number_removes_row(client, db_session, org_id, seed_org):
@@ -457,7 +593,7 @@ def test_create_vobiz_outbound_call_stamps_workspace_id(
 ):
     agent = make_agent()
     mock_base_url.return_value = "https://public.example.com"
-    mock_resolve_from.return_value = ("+919876543210", False)
+    mock_resolve_from.return_value = ("+919876543210", False, "vobiz")
     mock_build_client.return_value = (MagicMock(), None)
     mock_outbound_task.delay.return_value = None
 
@@ -512,7 +648,7 @@ def test_create_vobiz_outbound_call_stores_persona_scenario_in_session(
     persona = make_persona()
     scenario = make_scenario()
     mock_base_url.return_value = "https://public.example.com"
-    mock_resolve_from.return_value = ("+919876543210", False)
+    mock_resolve_from.return_value = ("+919876543210", False, "vobiz")
     mock_build_client.return_value = (MagicMock(), None)
     mock_outbound_task.delay.return_value = None
 
@@ -557,7 +693,7 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
     evaluator = make_evaluator(agent_id=agent.id, persona_id=persona.id, scenario_id=scenario.id)
 
     mock_base_url.return_value = "https://public.example.com"
-    mock_resolve_from.return_value = ("+919876543210", False)
+    mock_resolve_from.return_value = ("+919876543210", False, "vobiz")
     mock_build_client.return_value = (MagicMock(), None)
     mock_outbound_task.delay.return_value = None
 
@@ -575,3 +711,48 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
     assert session.persona_id == str(persona.id)
     assert session.scenario_id == str(scenario.id)
     assert session.evaluator_id == str(evaluator.id)
+
+
+@patch("app.api.v1.routes.telephony.list_available_numbers")
+def test_list_available_telephony_numbers_route(mock_list, client, org_id, seed_org):
+    mock_list.return_value = [
+        {
+            "e164": "+14155550100",
+            "already_imported": False,
+            "country": "US",
+        }
+    ]
+
+    response = client.get(
+        "/api/v1/telephony/numbers/available",
+        params={"provider": "plivo"},
+    )
+    assert response.status_code == 200
+    assert response.json()[0]["e164"] == "+14155550100"
+
+
+@patch("app.api.v1.routes.telephony.import_numbers")
+def test_import_telephony_numbers_route(mock_import, client, org_id, seed_org):
+    mock_import.return_value = {
+        "provider": "plivo",
+        "answer_url": "https://public.example.com/api/v1/telephony/webhooks/answer",
+        "results": [
+            {
+                "number": "+14155550100",
+                "success": True,
+                "message": "Created Plivo application",
+                "answer_url": "https://public.example.com/api/v1/telephony/webhooks/answer",
+                "webhook_configured": True,
+                "imported_number_id": str(uuid4()),
+            }
+        ],
+    }
+
+    response = client.post(
+        "/api/v1/telephony/numbers/import",
+        json={"provider": "plivo", "numbers": ["+14155550100"]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "plivo"
+    assert body["results"][0]["success"] is True

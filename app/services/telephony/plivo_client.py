@@ -126,6 +126,58 @@ class PlivoClient:
             logger.exception("Failed to list Plivo numbers")
             raise ValueError(f"Failed to list Plivo numbers: {str(e)}")
 
+    def set_number_answer_url(
+        self,
+        number: str,
+        answer_url: str,
+        *,
+        hangup_url: Optional[str] = None,
+        existing_application_id: Optional[str] = None,
+        app_name: Optional[str] = None,
+    ) -> tuple[bool, str, Optional[str]]:
+        """Point inbound calls for a number at our answer webhook."""
+        e164 = normalize_e164(number)
+        plivo_number = e164.lstrip("+")
+        hangup = hangup_url or answer_url
+        app_id = existing_application_id
+
+        if app_id:
+            try:
+                self.client.applications.update(
+                    app_id,
+                    answer_url=answer_url,
+                    answer_method="POST",
+                    hangup_url=hangup,
+                    hangup_method="POST",
+                )
+                self.client.numbers.update(plivo_number, app_id=app_id)
+                return True, "Updated existing Plivo application", app_id
+            except Exception as exc:
+                logger.warning(
+                    "Plivo update/attach for existing app {} failed: {}; creating new app",
+                    app_id,
+                    exc,
+                )
+                app_id = None
+
+        try:
+            created = self.client.applications.create(
+                app_name=app_name or "efficientai",
+                answer_url=answer_url,
+                answer_method="POST",
+                hangup_url=hangup,
+                hangup_method="POST",
+            )
+            created_dict = self._to_dict(created)
+            app_id = created_dict.get("app_id") or created_dict.get("application_id")
+            if not app_id:
+                return False, "Plivo application created but app_id missing", None
+            self.client.numbers.update(plivo_number, app_id=app_id)
+            return True, "Created Plivo application and attached number", app_id
+        except Exception as e:
+            logger.exception("Failed to configure Plivo number webhook")
+            return False, f"Failed to configure Plivo webhook: {str(e)}", app_id
+
     def create_outbound_call(
         self,
         from_: str,

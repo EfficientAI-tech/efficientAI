@@ -2674,7 +2674,12 @@ class TelephonyPhoneNumberResponse(BaseModel):
     number_type: Optional[str]
     capabilities: Optional[Dict[str, Any]]
     is_masking_pool: bool
+    inbound_enabled: Optional[bool] = None
+    outbound_enabled: Optional[bool] = None
+    source: Optional[str] = None
     agent_id: Optional[UUID]
+    linked_agent_name: Optional[str] = None
+    provider: Optional[str] = None
     is_active: bool
     created_at: datetime
 

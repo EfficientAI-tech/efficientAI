@@ -192,6 +192,12 @@ class Settings(BaseSettings):
     VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: int = 5
     VOBIZ_DEFAULT_COUNTRY_CODE: str = "91"
 
+    # Provider-agnostic platform outbound pool (preferred over vobiz.outbound_pool).
+    TELEPHONY_OUTBOUND_POOL: List[Any] = []
+    TELEPHONY_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: Optional[int] = None
+    PLIVO_OUTBOUND_POOL: List[str] = []
+    EXOTEL_OUTBOUND_POOL: List[str] = []
+
     # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
     RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
         "exotel.com",
@@ -739,6 +745,13 @@ def load_config_from_file(config_path: str) -> None:
             settings.PLIVO_VERIFY_APP_UUID = plivo_cfg["verify_app_uuid"]
         if plivo_cfg.get("webhook_base_url"):
             settings.PLIVO_WEBHOOK_BASE_URL = plivo_cfg["webhook_base_url"]
+        if plivo_cfg.get("outbound_pool"):
+            settings.PLIVO_OUTBOUND_POOL = list(plivo_cfg["outbound_pool"])
+
+    if "exotel" in config_data:
+        exotel_cfg = config_data["exotel"]
+        if exotel_cfg.get("outbound_pool"):
+            settings.EXOTEL_OUTBOUND_POOL = list(exotel_cfg["outbound_pool"])
 
     if "vobiz" in config_data:
         vobiz_cfg = config_data["vobiz"]
@@ -768,6 +781,15 @@ def load_config_from_file(config_path: str) -> None:
             )
         if vobiz_cfg.get("default_country_code"):
             settings.VOBIZ_DEFAULT_COUNTRY_CODE = str(vobiz_cfg["default_country_code"]).lstrip("+")
+
+    if "telephony" in config_data:
+        telephony_cfg = config_data["telephony"]
+        if telephony_cfg.get("outbound_pool"):
+            settings.TELEPHONY_OUTBOUND_POOL = list(telephony_cfg["outbound_pool"])
+        if telephony_cfg.get("outbound_pool_max_concurrent_per_org") is not None:
+            settings.TELEPHONY_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG = int(
+                telephony_cfg["outbound_pool_max_concurrent_per_org"]
+            )
 
     if "judge_alignment" in config_data:
         ja_cfg = config_data["judge_alignment"]

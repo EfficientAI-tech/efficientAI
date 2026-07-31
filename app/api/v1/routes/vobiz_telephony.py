@@ -41,7 +41,7 @@ from app.services.telephony.vobiz_number_service import (
 )
 from app.services.telephony.webhook_auth import verify_vobiz_webhook
 from app.services.telephony.vobiz_outbound_pool import (
-    configured_outbound_pool,
+    outbound_pool_api_payload,
     release_pool_slot,
     resolve_outbound_from_number,
 )
@@ -107,12 +107,18 @@ class VobizImportNumberResult(BaseModel):
 
 
 class VobizImportNumbersResponse(BaseModel):
+    provider: str = "vobiz"
     results: List[VobizImportNumberResult]
     answer_url: str
 
 
+class VobizOutboundPoolNumberResponse(BaseModel):
+    phone_number: str
+    provider: str
+
+
 class VobizOutboundPoolResponse(BaseModel):
-    numbers: List[str]
+    numbers: List[VobizOutboundPoolNumberResponse]
     max_concurrent_per_org: int
     shared_across_orgs: bool = True
 
@@ -208,7 +214,15 @@ async def delete_imported_vobiz_number(
     try:
         deactivate_imported_number(db, organization_id, number_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+        message = str(e)
+        if message == "Imported number not found":
+            raise HTTPException(status_code=404, detail=message) from e
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if "active number-masking sessions" in message
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=message) from e
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -218,11 +232,7 @@ async def get_vobiz_outbound_pool(
     api_key: str = Depends(get_api_key),
 ):
     del organization_id, api_key
-    return VobizOutboundPoolResponse(
-        numbers=configured_outbound_pool(),
-        max_concurrent_per_org=max(int(settings.VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG or 5), 1),
-        shared_across_orgs=True,
-    )
+    return VobizOutboundPoolResponse(**outbound_pool_api_payload())
 
 
 @router.post("/calls/outbound", response_model=VobizOutboundCallResponse)
@@ -268,13 +278,25 @@ async def create_vobiz_outbound_call(
         scenario_id = scenario_id or evaluator.scenario_id
 
     try:
-        from_number, used_pool = resolve_outbound_from_number(
+        from_number, used_pool, provider = resolve_outbound_from_number(
             db,
             organization_id,
             explicit_from_number=payload.from_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if provider != "vobiz":
+        if used_pool:
+            release_pool_slot(organization_id)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Outbound via the Vobiz API requires a Vobiz caller ID; "
+                f"resolved provider is {provider}. Use org-owned numbers or "
+                f"configure Vobiz entries in telephony.outbound_pool."
+            ),
+        )
 
     to_number = normalize_e164(payload.to_number)
 
