@@ -534,6 +534,11 @@
     "featured_rank": 7,
     "highlights": ["GA stable", "1M context", "Agentic coding"]
   },
+  "gemini-3.5-flash-lite": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini 3.5 Flash Lite \u2014 fastest, lowest-cost 3.5 model for high-throughput extraction, classification, and subagent workflows"
+  },
   "gemini-3.1-flash-lite": {
     "provider": "google",
     "model_type": "llm",

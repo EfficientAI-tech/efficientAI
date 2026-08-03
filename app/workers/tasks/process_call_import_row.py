@@ -548,6 +548,7 @@ def process_call_import_row_task(
         if run_eval_row_id:
             from app.models.database import CallImportEvaluation, CallImportEvaluationRow
             from app.workers.concurrency.eval_dispatch import (
+                _needs_transcribe_for_eval,
                 enqueue_eval_chain_transcribe_after_import,
             )
 
@@ -568,7 +569,11 @@ def process_call_import_row_task(
                     .filter(CallImportEvaluation.id == eval_row.evaluation_id)
                     .first()
                 )
-                if evaluation is not None:
+                if evaluation is not None and _needs_transcribe_for_eval(
+                    evaluation,
+                    row,
+                    transcribe_overwrite=False,
+                ):
                     enqueue_eval_chain_transcribe_after_import(
                         db,
                         evaluation=evaluation,
@@ -594,58 +599,60 @@ def process_call_import_row_task(
     finally:
         if row_db is not None:
             close_row_sessions(row_db, catalog_db if catalog_db is not row_db else None)
-        from app.workers.concurrency.limits import slot_registered_for_task
+        if run_eval_row_id:
+            if not eval_chain_chained_transcribe:
+                from app.db_sharding.row_ops import (
+                    close_row_sessions as close_eval_sessions,
+                    locate_call_import_evaluation_row,
+                )
+                from app.workers.concurrency.eval_dispatch import (
+                    _fail_eval_row_for_import,
+                    recover_eval_row_for_eval_chain,
+                    source_row_import_blocks_eval,
+                )
 
-        if slot_registered_for_task(slot_task_id):
-            if run_eval_row_id:
-                if not eval_chain_chained_transcribe:
-                    from app.db_sharding.row_ops import (
-                        close_row_sessions as close_eval_sessions,
-                        locate_call_import_evaluation_row,
-                    )
-                    from app.workers.concurrency.eval_dispatch import (
-                        _fail_eval_row_for_import,
-                        recover_eval_row_for_eval_chain,
-                        source_row_import_blocks_eval,
-                    )
-
-                    try:
-                        cleanup_row_db, cleanup_catalog_db, eval_row, source_row, _ = (
-                            locate_call_import_evaluation_row(
-                                UUID(run_eval_row_id)
-                            )
+                try:
+                    cleanup_row_db, cleanup_catalog_db, eval_row, source_row, _ = (
+                        locate_call_import_evaluation_row(
+                            UUID(run_eval_row_id)
                         )
-                    except LookupError:
-                        pass
-                    else:
-                        try:
-                            if source_row_import_blocks_eval(source_row):
-                                if eval_row.status == "pending":
-                                    _fail_eval_row_for_import(
-                                        cleanup_row_db, eval_row, source_row
-                                    )
-                            else:
-                                recover_eval_row_for_eval_chain(eval_row)
-                                if eval_row.status == "pending":
-                                    from app.db_sharding.row_ops import (
-                                        commit_shard_row_session,
-                                    )
+                    )
+                except LookupError:
+                    pass
+                else:
+                    try:
+                        if source_row_import_blocks_eval(source_row):
+                            if eval_row.status == "pending":
+                                _fail_eval_row_for_import(
+                                    cleanup_row_db, eval_row, source_row
+                                )
+                        else:
+                            recover_eval_row_for_eval_chain(eval_row)
+                            if eval_row.status == "pending":
+                                from app.db_sharding.row_ops import (
+                                    commit_shard_row_session,
+                                )
 
-                                    eval_row.celery_task_id = None
-                                    source_row.celery_task_id = None
-                                    commit_shard_row_session(cleanup_row_db)
-                        finally:
-                            close_eval_sessions(
-                                cleanup_row_db, cleanup_catalog_db
-                            )
+                                eval_row.celery_task_id = None
+                                source_row.celery_task_id = None
+                                commit_shard_row_session(cleanup_row_db)
+                    finally:
+                        close_eval_sessions(
+                            cleanup_row_db, cleanup_catalog_db
+                        )
 
                 from app.workers.concurrency.fair_dispatch import (
                     finish_eval_work_and_redispatch,
                 )
 
-                if not eval_chain_chained_transcribe:
-                    finish_eval_work_and_redispatch(slot_task_id)
-            else:
+                # Redispatch after local cleanup when import did not chain
+                # transcription — the transcribe worker releases the slot and
+                # schedules fair dispatch when chained transcribe was enqueued.
+                finish_eval_work_and_redispatch(slot_task_id)
+        else:
+            from app.workers.concurrency.limits import slot_registered_for_task
+
+            if slot_registered_for_task(slot_task_id):
                 from app.workers.concurrency.fair_import_dispatch import (
                     finish_import_work_and_redispatch,
                 )

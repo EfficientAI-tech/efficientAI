@@ -332,12 +332,10 @@ def test_create_evaluation_rejects_foreign_metric(
     assert "do not exist" in response.json()["detail"].lower()
 
 
-def test_create_evaluation_rejects_production_transcript_source(
+def test_create_evaluation_accepts_production_transcript_source(
     authenticated_client, db_session, org_id, seed_org
 ):
-    """The legacy ``production`` transcript source is no longer accepted.
-    Any request that includes it must 4xx so callers move to the new
-    diarised-only flow instead of silently producing a different run."""
+    """Production transcript runs skip diarisation config requirements."""
     metric = _make_metric(db_session, org_id)
     call_import, _rows = _make_call_import(db_session, org_id, rows=1)
 
@@ -346,14 +344,14 @@ def test_create_evaluation_rejects_production_transcript_source(
         json=_eval_body(
             [metric.id],
             transcript_sources=["production"],
+            auto_transcribe=False,
         ),
     )
-    # Pydantic's field_validator surfaces a 422 for invalid request
-    # bodies (the schema validator runs before the route handler).
-    assert response.status_code == 422
-    detail = response.json()["detail"]
-    body_text = str(detail).lower()
-    assert "diarised" in body_text or "production" in body_text
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["transcript_source"] == "production"
+    assert body["stt_provider"] is None
+    assert body.get("diarisation_llm_provider") is None
 
 
 def test_create_evaluation_defaults_to_diarised_source(

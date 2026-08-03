@@ -352,6 +352,12 @@ def _dispatch_batch_for_workspace(
         for eval_row, source_row, evaluation in pending:
             restricted_metric_ids = get_row_restricted_metrics(eval_row.id)
             transcribe_overwrite = evaluation_transcribe_overwrite(evaluation.id)
+            eval_auto_transcribe = (
+                (getattr(evaluation, "transcript_source", None) or "diarised")
+                .strip()
+                .lower()
+                != "production"
+            )
             outcome = _try_dispatch_single_row(
                 db=db,
                 evaluation=evaluation,
@@ -359,7 +365,7 @@ def _dispatch_batch_for_workspace(
                 source_row=source_row,
                 restricted_metric_ids=restricted_metric_ids,
                 transcribe_overwrite=transcribe_overwrite,
-                auto_transcribe=True,
+                auto_transcribe=eval_auto_transcribe,
                 call_import=call_import,
                 shard_cache=shard_cache,
             )

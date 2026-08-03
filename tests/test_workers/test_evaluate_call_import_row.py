@@ -189,6 +189,9 @@ def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
     monkeypatch.setattr("app.database.SessionLocal", session_factory)
     _patch_row_location(monkeypatch, db_session)
 
+    # API tests may register a lightweight stub in ``sys.modules`` to
+    # break import cycles; drop it so worker tests load the real task.
+    sys.modules.pop("app.workers.tasks.evaluate_call_import_row", None)
     task_module = importlib.import_module("app.workers.tasks.evaluate_call_import_row")
     monkeypatch.setattr(task_module, "SessionLocal", session_factory)
 
@@ -291,6 +294,7 @@ def test_evaluate_call_import_row_marks_failed_on_empty_transcript(
     db_session, monkeypatch
 ):
     _, _ci, _metrics, source_rows, evaluation, eval_rows = _seed(db_session)
+    evaluation.transcript_source = "diarised"
     source_rows[0].transcript = "   "
     source_rows[0].diarised_transcript = None
     db_session.commit()
@@ -397,6 +401,70 @@ def test_evaluate_call_import_row_reads_diarised_when_source_is_diarised(
 
     assert result["status"] == "completed"
     assert captured["transcription"] == "DIARISED ONLY VALUE"
+
+
+def test_evaluate_call_import_row_reads_production_when_source_is_production(
+    db_session, monkeypatch
+):
+    """When the parent evaluation's ``transcript_source = 'production'`` the
+    worker must hand the CSV production transcript to the LLM helper."""
+    _, _ci, _metrics, source_rows, evaluation, eval_rows = _seed(db_session)
+    source_rows[0].transcript = "PRODUCTION ONLY VALUE"
+    source_rows[0].diarised_transcript = "DIARISED VALUE"
+    evaluation.transcript_source = "production"
+    db_session.commit()
+
+    captured: dict = {}
+
+    def _capture(*_args, **kwargs):
+        captured["transcription"] = kwargs.get("transcription")
+        llm_metrics = kwargs["llm_metrics"]
+        return (
+            {
+                str(m.id): {
+                    "value": 5,
+                    "type": "rating",
+                    "metric_name": m.name,
+                }
+                for m in llm_metrics
+            },
+            0.1,
+        )
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_capture
+    )
+    result = task_module.evaluate_call_import_row_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "completed"
+    assert captured["transcription"] == "PRODUCTION ONLY VALUE"
+
+
+def test_evaluate_call_import_row_fails_when_production_transcript_missing(
+    db_session, monkeypatch
+):
+    """A production-source evaluation must fail rows whose ``transcript``
+    is empty (with a clear error message)."""
+    _, _ci, _metrics, source_rows, evaluation, eval_rows = _seed(db_session)
+    source_rows[0].transcript = None
+    source_rows[0].diarised_transcript = "diarised has text"
+    evaluation.transcript_source = "production"
+    db_session.commit()
+
+    task_module = _patch_dependencies(monkeypatch, db_session)
+    result = task_module.evaluate_call_import_row_task.run(
+        str(eval_rows[0].id)
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "missing_transcript"
+
+    db_session.refresh(eval_rows[0])
+    err = (eval_rows[0].error_message or "").lower()
+    assert "production" in err
+    assert "transcript" in err
 
 
 def test_evaluate_call_import_row_fails_when_diarised_transcript_missing(

@@ -1979,9 +1979,9 @@ class ApiClient {
       metric_ids: string[]
       name?: string | null
       /**
-       * Which transcript(s) to score against. Passing both values triggers
-       * two evaluation runs (one per source). Defaults server-side to
-       * `['production']` for backwards compatibility.
+       * Which transcript to score against. ``'diarised'`` (default)
+       * auto-diarizes then scores; ``'production'`` scores the CSV
+       * transcript directly.
        */
       transcript_sources?: Array<'production' | 'diarised'>
       /** Run-level LLM provider key. Leave undefined for legacy default. */
