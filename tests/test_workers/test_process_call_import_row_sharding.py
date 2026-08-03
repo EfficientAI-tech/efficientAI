@@ -302,6 +302,94 @@ def test_eval_chain_cleanup_clears_stale_task_ids_and_redispatches(
     finish_mock.assert_called_once_with("slot-task-abc")
 
 
+def test_production_eval_chain_cleanup_runs_when_eval_slot_expired(
+    db_session, monkeypatch
+):
+    """Production eval imports must clear stale task ids and redispatch even
+    after the reserved eval slot TTL expires mid-flight."""
+    org, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    row.transcript = "Agent: hello\nUser: hi"
+    db_session.commit()
+    evaluation, eval_row = _seed_eval_chain(
+        db_session,
+        org=org,
+        call_import=call_import,
+        row=row,
+        transcript_source="production",
+    )
+    row.celery_task_id = "stale-import-task"
+    eval_row.celery_task_id = "stale-eval-task"
+    db_session.commit()
+
+    fake_client = _FakeExotelClient(audio=b"hello-audio", content_type="audio/mpeg")
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+
+    finish_mock = MagicMock()
+    monkeypatch.setattr(task_module, "_rollup_parent_status", lambda _db, _ci: None)
+
+    def fake_locate_call_import_evaluation_row(_eval_row_id):
+        refreshed_eval_row = (
+            db_session.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.id == eval_row.id)
+            .one()
+        )
+        refreshed_source = (
+            db_session.query(CallImportRow)
+            .filter(CallImportRow.id == row.id)
+            .one()
+        )
+        return db_session, db_session, refreshed_eval_row, refreshed_source, "legacy"
+
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.locate_call_import_evaluation_row",
+        fake_locate_call_import_evaluation_row,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.commit_shard_row_session",
+        lambda session: session.commit(),
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.close_row_sessions",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits.slot_registered_for_task",
+        lambda _task_id: False,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        finish_mock,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops.is_sharding_enabled",
+        lambda: False,
+    )
+
+    result = task_module.process_call_import_row_task.run(
+        str(row.id),
+        _eval_slot_task_id="expired-slot-task",
+        run_eval_row_id=str(eval_row.id),
+    )
+
+    assert result["status"] == "completed"
+    eval_row_fresh = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.id == eval_row.id)
+        .one()
+    )
+    row_fresh = db_session.query(CallImportRow).filter(CallImportRow.id == row.id).one()
+    assert eval_row_fresh.celery_task_id is None
+    assert row_fresh.celery_task_id is None
+    assert row_fresh.status == CallImportRowStatus.COMPLETED
+    finish_mock.assert_called_once_with("expired-slot-task")
+
+
 def test_try_dispatch_single_row_skips_when_bulk_operation_active(
     db_session, monkeypatch
 ):

@@ -1,15 +1,26 @@
 """Tests for unified pipeline helpers in call_import bulk_ops."""
 
+import sys
+import types
 from uuid import uuid4
 
-from app.models.database import CallImport, CallImportRow, Organization, Workspace
+from app.models.database import (
+    CallImport,
+    CallImportEvaluation,
+    CallImportEvaluationRow,
+    CallImportRow,
+    Organization,
+    Workspace,
+)
 from app.models.enums import CallImportRowStatus, CallImportStatus
 from app.models.schemas import CallImportTranscribeRequest
 from app.services.call_imports.bulk_ops import (
     _all_source_row_ids,
+    _source_row_ids_for_evaluation,
     count_all_source_rows,
     execute_bulk_diarization,
     execute_call_import_materialization,
+    materialize_and_enqueue_evaluation,
 )
 
 
@@ -204,3 +215,169 @@ def test_bulk_diarization_stores_redis_params_before_pending_commit(
     db_session.refresh(row)
     assert row.diarised_transcript_status == "pending"
     assert row.celery_task_id is None
+
+
+def test_source_row_ids_for_production_evaluation_omit_empty_transcripts(
+    db_session,
+):
+    org = Organization(id=uuid4(), name="Prod Mat Org")
+    ws = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add_all([org, ws])
+    db_session.flush()
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=ws.id,
+        status=CallImportStatus.COMPLETED,
+        total_rows=3,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+
+    with_transcript = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        row_index=0,
+        conversation_id="with-text",
+        transcript="Agent: hello",
+        status=CallImportRowStatus.COMPLETED,
+    )
+    whitespace_only = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        row_index=1,
+        conversation_id="blank-text",
+        transcript="   ",
+        status=CallImportRowStatus.COMPLETED,
+    )
+    no_transcript = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        row_index=2,
+        conversation_id="missing-text",
+        transcript=None,
+        status=CallImportRowStatus.PENDING,
+        recording_url="https://example.com/audio.mp3",
+    )
+    db_session.add_all([with_transcript, whitespace_only, no_transcript])
+    db_session.flush()
+
+    production_eval = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        workspace_id=ws.id,
+        selected_metric_ids=[],
+        status="pending",
+        total_rows=1,
+        transcript_source="production",
+    )
+    diarised_eval = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        workspace_id=ws.id,
+        selected_metric_ids=[],
+        status="pending",
+        total_rows=3,
+        transcript_source="diarised",
+    )
+
+    production_ids = _source_row_ids_for_evaluation(db_session, production_eval)
+    diarised_ids = _source_row_ids_for_evaluation(db_session, diarised_eval)
+
+    assert production_ids == [with_transcript.id]
+    assert set(diarised_ids) == {
+        with_transcript.id,
+        whitespace_only.id,
+        no_transcript.id,
+    }
+
+
+def test_materialize_production_evaluation_only_creates_transcript_rows(
+    monkeypatch,
+    db_session,
+):
+    org = Organization(id=uuid4(), name="Prod Enqueue Org")
+    ws = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add_all([org, ws])
+    db_session.flush()
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=ws.id,
+        status=CallImportStatus.COMPLETED,
+        total_rows=2,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+
+    row_with_text = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        row_index=0,
+        conversation_id="with-text",
+        transcript="Customer: hi",
+        status=CallImportRowStatus.COMPLETED,
+    )
+    row_without_text = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        row_index=1,
+        conversation_id="without-text",
+        transcript="",
+        status=CallImportRowStatus.COMPLETED,
+    )
+    db_session.add_all([row_with_text, row_without_text])
+    db_session.flush()
+
+    evaluation = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org.id,
+        workspace_id=ws.id,
+        selected_metric_ids=[],
+        status="pending",
+        total_rows=1,
+        transcript_source="production",
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "app.api.v1.routes.call_import_evaluations",
+        types.SimpleNamespace(
+            _enqueue_eval_rows_with_optional_transcribe=lambda *_a, **_kw: None,
+        ),
+    )
+
+    materialize_and_enqueue_evaluation(db_session, evaluation.id)
+
+    db_session.refresh(evaluation)
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+        .all()
+    )
+
+    assert evaluation.total_rows == 1
+    assert len(eval_rows) == 1
+    assert eval_rows[0].call_import_row_id == row_with_text.id

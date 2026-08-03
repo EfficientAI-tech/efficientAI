@@ -246,6 +246,28 @@ def _all_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
     ]
 
 
+def _source_row_ids_with_production_transcript(
+    db: Session, call_import_id: UUID
+) -> List[UUID]:
+    from app.db_sharding.scatter_gather import (
+        list_source_row_ids_with_production_transcript,
+    )
+
+    return list_source_row_ids_with_production_transcript(db, call_import_id)
+
+
+def _source_row_ids_for_evaluation(
+    db: Session, evaluation: CallImportEvaluation
+) -> List[UUID]:
+    """Row ids to materialize for this evaluation's transcript source."""
+    source = (evaluation.transcript_source or "diarised").strip().lower()
+    if source == "production":
+        return _source_row_ids_with_production_transcript(
+            db, evaluation.call_import_id
+        )
+    return _all_source_row_ids(db, evaluation.call_import_id)
+
+
 def bulk_insert_evaluation_rows(
     db: Session,
     call_import_id: UUID,
@@ -315,7 +337,7 @@ def materialize_and_enqueue_evaluation(
         )
         return
 
-    source_row_ids = _all_source_row_ids(db, evaluation.call_import_id)
+    source_row_ids = _source_row_ids_for_evaluation(db, evaluation)
     evaluation.total_rows = len(source_row_ids)
 
     if not source_row_ids:

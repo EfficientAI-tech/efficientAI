@@ -834,6 +834,56 @@ def count_call_import_rows_with_production_transcript(
     return total
 
 
+def list_source_row_ids_with_production_transcript(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> List[UUID]:
+    """Import row ids with a non-empty production transcript, ordered by row_index."""
+    transcript_filters = _non_empty_production_transcript_filter()
+
+    if not is_sharding_enabled():
+        rows = (
+            catalog_db.query(CallImportRow.id)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                *transcript_filters,
+            )
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+        return [row_id for (row_id,) in rows if row_id is not None]
+
+    merged: List[CallImportRow] = []
+
+    def load_shard(db: Session, _shard_id: str) -> List[CallImportRow]:
+        return (
+            db.query(CallImportRow)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                *transcript_filters,
+            )
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+
+    shard_ids = shard_ids_for_import(catalog_db, call_import_id)
+    for part in scatter_gather_on_shards(shard_ids, load_shard):
+        merged.extend(part)
+    merged = merge_rows_by_index(merged)
+    if not merged:
+        rows = (
+            catalog_db.query(CallImportRow.id)
+            .filter(
+                CallImportRow.call_import_id == call_import_id,
+                *transcript_filters,
+            )
+            .order_by(CallImportRow.row_index.asc())
+            .all()
+        )
+        return [row_id for (row_id,) in rows if row_id is not None]
+    return [row.id for row in merged if row.id is not None]
+
+
 def count_completed_call_import_rows(
     catalog_db: Session,
     call_import_id: UUID,
