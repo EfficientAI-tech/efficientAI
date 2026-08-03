@@ -242,11 +242,14 @@ def _evaluated_transcript_source_label(
     evaluation: CallImportEvaluation,
     source_row: CallImportRow,
 ) -> str:
-    """Label which transcript source this evaluation run scored against."""
-    del source_row
+    """Label which transcript source this row was scored against."""
     source = (evaluation.transcript_source or "diarised").strip().lower()
     if source == "production":
+        if not (source_row.transcript or "").strip():
+            return ""
         return "Production"
+    if not (source_row.diarised_transcript or "").strip():
+        return ""
     return "Diarised"
 
 

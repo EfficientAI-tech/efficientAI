@@ -294,6 +294,7 @@ def test_evaluate_call_import_row_marks_failed_on_empty_transcript(
     db_session, monkeypatch
 ):
     _, _ci, _metrics, source_rows, evaluation, eval_rows = _seed(db_session)
+    evaluation.transcript_source = "diarised"
     source_rows[0].transcript = "   "
     source_rows[0].diarised_transcript = None
     db_session.commit()

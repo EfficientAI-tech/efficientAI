@@ -860,7 +860,7 @@ def test_pdf_report_internal_html_uses_compact_metric_layout(
     assert 'class="metric metric-compact"' in html
     assert 'class="meaning metric-compact-meaning"' in html
     assert 'class="metric-sparkline"' in html
-    assert 'class="audit-summary-section"' in html
+    assert 'class="audit-summary-section report-section"' in html
     assert 'class="report-body internal-report"' in html
     assert 'margin: 10px 0 0' in html
     assert '.audit-stat-strip:last-child { margin-bottom: 10px; }' in html
