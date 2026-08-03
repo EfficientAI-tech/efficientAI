@@ -64,6 +64,13 @@ def _needs_transcribe_for_eval(
     transcribe_overwrite: bool,
     auto_transcribe: bool = True,
 ) -> bool:
+    if (
+        (getattr(evaluation, "transcript_source", None) or "")
+        .strip()
+        .lower()
+        == "production"
+    ):
+        return False
     if not auto_transcribe:
         return False
     transcribe_mode = (
@@ -212,6 +219,13 @@ def enqueue_eval_chain_transcribe_after_import(
     transcribe_overwrite: bool = False,
 ) -> bool:
     """Directly chain diarisation after a successful eval-chain recording fetch."""
+    if not _needs_transcribe_for_eval(
+        evaluation,
+        source_row,
+        transcribe_overwrite=transcribe_overwrite,
+    ):
+        return False
+
     from app.db_sharding.row_ops import shard_row_write_context
 
     recover_eval_row_for_eval_chain(eval_row)

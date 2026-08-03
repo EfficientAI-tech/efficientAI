@@ -548,6 +548,7 @@ def process_call_import_row_task(
         if run_eval_row_id:
             from app.models.database import CallImportEvaluation, CallImportEvaluationRow
             from app.workers.concurrency.eval_dispatch import (
+                _needs_transcribe_for_eval,
                 enqueue_eval_chain_transcribe_after_import,
             )
 
@@ -568,7 +569,11 @@ def process_call_import_row_task(
                     .filter(CallImportEvaluation.id == eval_row.evaluation_id)
                     .first()
                 )
-                if evaluation is not None:
+                if evaluation is not None and _needs_transcribe_for_eval(
+                    evaluation,
+                    row,
+                    transcribe_overwrite=False,
+                ):
                     enqueue_eval_chain_transcribe_after_import(
                         db,
                         evaluation=evaluation,

@@ -199,6 +199,16 @@ def count_completed_source_rows(db: Session, call_import_id: UUID) -> int:
     return count_completed_call_import_rows(db, call_import_id)
 
 
+def count_source_rows_with_production_transcript(
+    db: Session, call_import_id: UUID
+) -> int:
+    from app.db_sharding.scatter_gather import (
+        count_call_import_rows_with_production_transcript,
+    )
+
+    return count_call_import_rows_with_production_transcript(db, call_import_id)
+
+
 def _completed_source_row_ids(db: Session, call_import_id: UUID) -> List[UUID]:
     from app.db_sharding.scatter_gather import list_completed_source_row_ids_ordered
 
@@ -670,7 +680,19 @@ def execute_call_import_materialization(
         return {"total_rows": 0, "status": "failed"}
 
     try:
+        logger.info(
+            "execute_call_import_materialization downloading staged source "
+            "(call_import={} key={})",
+            call_import_id,
+            call_import.source_s3_key,
+        )
         file_bytes = s3_service.download_file_by_key(call_import.source_s3_key)
+        logger.info(
+            "execute_call_import_materialization downloaded {} bytes "
+            "(call_import={})",
+            len(file_bytes),
+            call_import_id,
+        )
     except StorageError as exc:
         call_import.status = CallImportStatus.FAILED
         call_import.error_message = f"Could not read staged source file from S3: {exc}"

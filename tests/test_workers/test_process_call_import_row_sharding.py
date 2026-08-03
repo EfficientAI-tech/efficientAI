@@ -18,7 +18,7 @@ from tests.test_workers.test_process_call_import_row import (
 )
 
 
-def _seed_eval_chain(db_session, *, org, call_import, row):
+def _seed_eval_chain(db_session, *, org, call_import, row, transcript_source="diarised"):
     evaluation = CallImportEvaluation(
         id=uuid4(),
         call_import_id=call_import.id,
@@ -28,6 +28,11 @@ def _seed_eval_chain(db_session, *, org, call_import, row):
         selected_metric_ids=[],
         status="running",
         total_rows=1,
+        transcript_source=transcript_source,
+        stt_provider="google" if transcript_source == "diarised" else None,
+        stt_model="chirp" if transcript_source == "diarised" else None,
+        diarisation_llm_provider="openai" if transcript_source == "diarised" else None,
+        diarisation_llm_model="gpt-4o" if transcript_source == "diarised" else None,
     )
     db_session.add(evaluation)
     eval_row = CallImportEvaluationRow(
@@ -121,6 +126,69 @@ def test_eval_chain_loads_evaluation_from_catalog_session(
     assert chain_calls[0]["eval_row_id"] == eval_row.id
     assert chain_calls[0]["slot_task_id"] == "slot-task-abc"
     assert chain_calls[0]["shard_db"] is db_session
+
+
+def test_production_eval_chain_skips_transcribe_and_redispatches(
+    db_session, monkeypatch
+):
+    """Production-transcript evals should import recordings then evaluate, not diarise."""
+    org, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    row.transcript = "Agent: hello\nUser: hi"
+    db_session.commit()
+    evaluation, eval_row = _seed_eval_chain(
+        db_session,
+        org=org,
+        call_import=call_import,
+        row=row,
+        transcript_source="production",
+    )
+
+    fake_client = _FakeExotelClient(audio=b"hello-audio", content_type="audio/mpeg")
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+
+    chain_called = {"value": False}
+    finish_mock = MagicMock()
+
+    def fake_enqueue(*args, **kwargs):
+        chain_called["value"] = True
+        return True
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.eval_dispatch.enqueue_eval_chain_transcribe_after_import",
+        fake_enqueue,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.limits.slot_registered_for_task",
+        lambda _task_id: True,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.fair_dispatch.finish_eval_work_and_redispatch",
+        finish_mock,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.services.call_imports.bulk_ops.is_sharding_enabled",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "app.workers.tasks.process_call_import_row._rollup_parent_status",
+        lambda _db, _call_import: None,
+    )
+
+    result = task_module.process_call_import_row_task.run(
+        str(row.id),
+        _eval_slot_task_id="slot-task-prod",
+        run_eval_row_id=str(eval_row.id),
+    )
+
+    assert result["status"] == "completed"
+    assert chain_called["value"] is False
+    finish_mock.assert_called_once_with("slot-task-prod")
 
 
 def test_eval_chain_cleanup_clears_stale_task_ids_and_redispatches(
