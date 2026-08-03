@@ -183,10 +183,17 @@ class AgentCreate(BaseModel):
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     telephony_phone_number_id: Optional[UUID] = None
-    voice_bundle_id: Optional[UUID] = None
+    voice_bundle_id: UUID = Field(..., description="Required voice bundle for test agent execution")
     ai_provider_id: Optional[UUID] = None
-    voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
-    voice_ai_agent_id: str = Field(..., min_length=1, description="Voice AI agent ID is required")
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
+    provider_prompt: Optional[str] = None
+    silence_hangup_secs: int = Field(
+        default=15,
+        ge=0,
+        le=600,
+        description="End live calls after this many seconds of silence (0 disables)",
+    )
 
     @field_validator('description')
     @classmethod
@@ -237,6 +244,9 @@ class AgentUpdate(BaseModel):
     voice_bundle_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
+    provider_prompt: Optional[str] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
 
     @model_validator(mode='after')
     def validate_voice_config(self):
@@ -472,6 +482,20 @@ class PersonaCreate(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: bool = False
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0, le=8192)
+    response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
+    max_turns: Optional[int] = Field(None, ge=1, le=100)
+    allow_interruptions: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_tts_config(self):
+        from app.services.personas.persona_tts_config import validate_persona_tts_config
+
+        validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
 
 
 class PersonaUpdate(BaseModel):
@@ -482,6 +506,21 @@ class PersonaUpdate(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: Optional[bool] = None
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0, le=8192)
+    response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
+    max_turns: Optional[int] = Field(None, ge=1, le=100)
+    allow_interruptions: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_tts_config(self):
+        from app.services.personas.persona_tts_config import validate_persona_tts_config
+
+        if self.tts_config is not None:
+            validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
 
 
 class PersonaResponse(BaseModel):
@@ -493,6 +532,13 @@ class PersonaResponse(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: bool = False
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
+    response_delay_ms: Optional[int] = None
+    max_turns: Optional[int] = None
+    allow_interruptions: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
 
@@ -931,10 +977,22 @@ class AIProviderCreate(BaseModel):
             "If omitted and no default exists yet, this row becomes the default."
         ),
     )
+    endpoint_url: Optional[str] = Field(
+        None,
+        description="Provider endpoint URL (required for Azure OpenAI).",
+    )
 
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         trimmed = v.strip()
@@ -1000,6 +1058,7 @@ class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
     api_key: Optional[str] = Field(None, min_length=1)
     name: Optional[str] = None
+    endpoint_url: Optional[str] = None
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -1075,6 +1134,7 @@ class AIProviderResponse(BaseModel):
     provider: ModelProvider
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
+    endpoint_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
@@ -2368,7 +2428,14 @@ class CronJobCreate(BaseModel):
     cron_expression: str = Field(..., min_length=1, max_length=100, description="Cron expression (e.g., '0 9 * * 1-5')")
     timezone: str = Field(default="UTC", max_length=100, description="Timezone for the cron schedule")
     max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
-    evaluator_ids: List[UUID] = Field(..., min_length=1, description="List of evaluator IDs to trigger")
+    evaluator_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Evaluator IDs to trigger (expanded with evaluator_suite_ids when both are set).",
+    )
+    evaluator_suite_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Evaluator suite IDs whose combinations are expanded into evaluator_ids.",
+    )
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -2388,6 +2455,7 @@ class CronJobUpdate(BaseModel):
     timezone: Optional[str] = Field(None, max_length=100)
     max_runs: Optional[int] = Field(None, ge=1, le=1000)
     evaluator_ids: Optional[List[UUID]] = None
+    evaluator_suite_ids: Optional[List[UUID]] = None
     status: Optional[CronJobStatus] = None
 
 
