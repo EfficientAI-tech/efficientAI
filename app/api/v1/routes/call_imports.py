@@ -2975,46 +2975,6 @@ async def delete_call_import(
     )
 
 
-def _locate_call_import_row_or_404(
-    catalog_db: Session,
-    *,
-    call_import_id: UUID,
-    row_id: UUID,
-    organization_id: UUID,
-) -> Tuple[Session, CallImportRow, Optional[Session]]:
-    """Find a call import row on the correct DB session for mutation.
-
-    When sharding is enabled rows live on shard databases; ``get_db`` only
-    opens the catalog. Returns ``(row_db, row, extra_catalog_to_close)``
-    where ``extra_catalog_to_close`` is the catalog session opened by
-    :func:`locate_call_import_row` (distinct from the route's catalog
-    session) and must be closed via :func:`close_row_sessions`.
-    """
-    from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
-
-    try:
-        row_db, located_catalog, row, _shard_id = locate_call_import_row(row_id)
-    except LookupError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Call import row not found",
-        ) from None
-    if (
-        row.call_import_id != call_import_id
-        or row.organization_id != organization_id
-    ):
-        close_row_sessions(
-            row_db,
-            located_catalog if located_catalog is not row_db else None,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Call import row not found",
-        )
-    extra_catalog = located_catalog if located_catalog is not row_db else None
-    return row_db, row, extra_catalog
-
-
 @router.delete(
     "/{call_import_id}/rows/{row_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -3049,35 +3009,38 @@ async def delete_call_import_row(
             detail="Call import not found",
         )
 
-    from app.db_sharding.row_ops import close_row_sessions
-
-    row_db, row, extra_catalog = _locate_call_import_row_or_404(
-        db,
-        call_import_id=call_import.id,
-        row_id=row_id,
-        organization_id=organization_id,
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import.id,
+        )
+        .first()
     )
-    try:
-        _revoke_pending_tasks([row])
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
+        )
 
-        if row.recording_s3_key and s3_service.is_enabled():
-            try:
-                s3_service.delete_file_by_key(row.recording_s3_key)
-            except Exception as exc:  # noqa: BLE001 — best-effort, DB is source of truth
-                logger.warning(
-                    "Failed to delete S3 object {} for row {}: {}",
-                    row.recording_s3_key,
-                    row.id,
-                    exc,
-                )
+    _revoke_pending_tasks([row])
 
-        row_db.delete(row)
-        row_db.commit()
+    if row.recording_s3_key and s3_service.is_enabled():
+        try:
+            s3_service.delete_file_by_key(row.recording_s3_key)
+        except Exception as exc:  # noqa: BLE001 — best-effort, DB is source of truth
+            logger.warning(
+                "Failed to delete S3 object {} for row {}: {}",
+                row.recording_s3_key,
+                row.id,
+                exc,
+            )
 
-        _recompute_call_import_counters(db, call_import)
-        db.commit()
-    finally:
-        close_row_sessions(row_db, extra_catalog)
+    db.delete(row)
+    db.flush()
+
+    _recompute_call_import_counters(db, call_import)
+    db.commit()
 
     logger.info(
         "Deleted call_import_row {} (call_import={}, org={})",
@@ -3566,21 +3529,24 @@ async def cancel_call_import_row_diarisation(
             detail="Call import not found",
         )
 
-    from app.db_sharding.row_ops import close_row_sessions
-
-    row_db, row, extra_catalog = _locate_call_import_row_or_404(
-        db,
-        call_import_id=call_import_id,
-        row_id=row_id,
-        organization_id=organization_id,
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import_id,
+        )
+        .first()
     )
-    try:
-        _apply_diarisation_cancel([row])
-        row_db.commit()
-        row_db.refresh(row)
-        return CallImportRowResponse.model_validate(row)
-    finally:
-        close_row_sessions(row_db, extra_catalog)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
+        )
+
+    _apply_diarisation_cancel([row])
+    db.commit()
+    db.refresh(row)
+    return CallImportRowResponse.model_validate(row)
 
 
 @router.post(
@@ -3736,40 +3702,43 @@ async def toggle_call_import_row_speaker_swap(
             detail="Call import not found",
         )
 
-    from app.db_sharding.row_ops import close_row_sessions
-
-    row_db, row, extra_catalog = _locate_call_import_row_or_404(
-        db,
-        call_import_id=call_import_id,
-        row_id=row_id,
-        organization_id=organization_id,
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.organization_id == organization_id,
+        )
+        .first()
     )
-    try:
-        segments = (
-            row.diarised_segments if isinstance(row.diarised_segments, list) else None
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
         )
-        if not segments:
-            # Without structured turns the swap toggle would have nothing to
-            # re-render — surface a clear error rather than silently
-            # flipping a flag the UI never read.
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "This row has no structured diarised segments to swap. "
-                    "Re-run diarisation to generate per-speaker turns first."
-                ),
-            )
 
-        new_swap = not bool(row.diarised_speaker_swap)
-        row.diarised_speaker_swap = new_swap
-        row.diarised_transcript = (
-            _render_diarised_segments_text(segments, swap=new_swap) or None
+    segments = row.diarised_segments if isinstance(row.diarised_segments, list) else None
+    if not segments:
+        # Without structured turns the swap toggle would have nothing to
+        # re-render — surface a clear error rather than silently
+        # flipping a flag the UI never read.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This row has no structured diarised segments to swap. "
+                "Re-run diarisation to generate per-speaker turns first."
+            ),
         )
-        row_db.commit()
-        row_db.refresh(row)
-        return CallImportRowResponse.model_validate(row)
-    finally:
-        close_row_sessions(row_db, extra_catalog)
+
+    new_swap = not bool(row.diarised_speaker_swap)
+    row.diarised_speaker_swap = new_swap
+    row.diarised_transcript = (
+        _render_diarised_segments_text(segments, swap=new_swap) or None
+    )
+    db.commit()
+    db.refresh(row)
+
+    return CallImportRowResponse.model_validate(row)
 
 
 # ---------------------------------------------------------------------------

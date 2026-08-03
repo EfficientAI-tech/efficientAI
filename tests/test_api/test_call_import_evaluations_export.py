@@ -260,8 +260,7 @@ def test_export_emits_rationale_column_for_capture_rationale_metric(
     assert rows[0]["Production Transcript"] == "hello world"
     # No diarisation has run on this fixture row.
     assert rows[0]["Diarised Transcript"] == ""
-    # Default evaluation transcript_source is production and this row has a CSV transcript.
-    assert rows[0]["Evaluated Transcript Source"] == "Production"
+    assert rows[0]["Evaluated Transcript Source"] == ""
 
 
 def test_export_omits_rationale_column_when_capture_rationale_false(

@@ -1373,7 +1373,7 @@ class CallImportEvaluationPdfReportService:
         if not metrics_body and not discovered_section:
             metrics_body = "<p class='empty-bars'>No cluster groups in this run.</p>"
         return f"""
-            <section class="failure-diagnostics report-section">
+            <section class="failure-diagnostics">
               <div class="failure-diagnostics-intro">
                 <h2>04 Failure Diagnostics</h2>
                 <p class="method">Per-metric clustering of flagged calls with engineering gap labels (LOGIC_GAP, UNDERSPEC, EXISTS_NO_TRIGGER, MISSING) and Level-2 sub-categories.</p>
@@ -1485,7 +1485,7 @@ class CallImportEvaluationPdfReportService:
                 """
             )
         return f"""
-            <section class="prompt-improvements report-section">
+            <section class="prompt-improvements">
               <div class="failure-diagnostics-intro">
                 <h2>05 Prompt Improvement Recommendations</h2>
                 <p class="method">Top {_PDF_PROMPT_IMPROVEMENTS_MAX} recommended prompt changes for <strong>{html.escape(agent_name)}</strong>, aligned with the Visualizations → Prompt / Agent Improvements view.</p>
@@ -2005,7 +2005,7 @@ class CallImportEvaluationPdfReportService:
                     """
                 )
             quality_panel_markup = f"""
-            <section class="report-section quality-panel-section">
+            <section>
               <h2>02 Quality Metric Panel</h2>
               {''.join(quality_groups_markup)}
             </section>
@@ -2104,7 +2104,7 @@ class CallImportEvaluationPdfReportService:
                 else "User insights are identified by analyzing patterns across LLM rationales and diarized transcripts from the evaluation run."
             )
             business_section = f"""
-            <section class="report-section user-insights-section">
+            <section>
               <!-- 03 User Insights -->
               <h2>03 User Insights</h2>
               <p class="method">{intro}</p>
@@ -2137,7 +2137,7 @@ class CallImportEvaluationPdfReportService:
             )
             if notes:
                 design_notes_section = f"""
-                <section class="report-section design-notes-section">
+                <section>
                   <h2>05 User Experience Design Notes</h2>
                   <ol class="design-notes">{notes}</ol>
                 </section>
@@ -2168,11 +2168,6 @@ class CallImportEvaluationPdfReportService:
             f'<div class="repeat-page-header"><img src="{internal_logo_uri}" alt="Internal brand" class="repeat-page-logo" /></div>'
             if internal_logo_uri
             else ""
-        )
-        report_body_class = (
-            "report-body internal-report"
-            if is_internal
-            else "report-body external-report"
         )
 
         return f"""
@@ -2208,20 +2203,17 @@ class CallImportEvaluationPdfReportService:
             .eyebrow .muted {{ color: #7a756d; }}
             h1 {{ font-size: 28px; font-weight: 800; margin: 4px 0; letter-spacing: .1px; }}
             .subtitle {{ font-size: 13px; color: #666; margin-bottom: 10px; }}
-            h2 {{ font-size: 16px; margin: 8px 0 6px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; break-after: avoid; page-break-after: avoid; }}
-            h3 {{ font-size: 13px; margin: 0; break-after: avoid; page-break-after: avoid; }}
-            .report-body section {{ margin: 0 0 10px; padding: 0; }}
-            .report-body section > .method:first-of-type {{ margin-top: 0; margin-bottom: 6px; }}
-            .metric-group {{ margin-bottom: 8px; break-inside: auto; page-break-inside: auto; }}
+            h2 {{ font-size: 16px; margin: 16px 0 8px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; }}
+            h3 {{ font-size: 13px; margin: 0; }}
             .meta {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }}
             .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }}
-            .metric-group-title {{ font-size: 13px; margin: 8px 0 6px; color: #374151; text-transform: uppercase; letter-spacing: .08em; break-after: avoid; page-break-after: avoid; }}
+            .metric-group-title {{ font-size: 13px; margin: 12px 0 8px; color: #374151; text-transform: uppercase; letter-spacing: .08em; }}
             .box {{ border: 1px solid #d9dee8; padding: 7px 8px; border-radius: 6px; background: #f7f9fc; }}
             .box strong {{ display: block; font-size: 13px; color: #111827; }}
             .box span {{ color: #667085; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }}
-            .metric {{ break-inside: avoid; page-break-inside: avoid; border: 1px solid #d9dee8; border-radius: 2px; padding: 10px; margin-bottom: 8px; background: #fff; }}
-            .metric-compact-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 6px; break-inside: auto; page-break-inside: auto; }}
-            .metric-compact {{ padding: 9px 10px 8px; margin-bottom: 0; min-height: 0; break-inside: avoid; page-break-inside: avoid; }}
+            .metric {{ break-inside: avoid; border: 1px solid #d9dee8; border-radius: 2px; padding: 10px; margin-bottom: 10px; background: #fff; }}
+            .metric-compact-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 8px; }}
+            .metric-compact {{ padding: 9px 10px 8px; margin-bottom: 0; min-height: 148px; }}
             .metric-compact-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px; }}
             .metric-compact-head .metric-title {{ font-size: 9px; letter-spacing: .08em; color: #667085; font-weight: 800; }}
             .metric-compact-status {{ width: 7px; height: 7px; border-radius: 50%; background: #16a34a; margin-top: 2px; flex-shrink: 0; }}
@@ -2291,16 +2283,16 @@ class CallImportEvaluationPdfReportService:
             .dist-fill {{ height: 100%; background: #c7725e; }}
             .dist-value {{ text-align: right; font-size: 10px; font-weight: 800; color: #111827; }}
             .empty-bars {{ color: #667085; font-size: 10px; font-style: italic; }}
-            .insight-block {{ break-inside: auto; page-break-inside: auto; margin: 8px 0 10px; }}
-            .insight-heading {{ margin-bottom: 6px; break-after: avoid; page-break-after: avoid; }}
+            .insight-block {{ break-inside: avoid; margin: 14px 0 18px; }}
+            .insight-heading {{ margin-bottom: 8px; }}
             .insight-heading h3 {{ margin: 0; }}
-            .insight-body {{ display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 10px; align-items: start; break-inside: auto; page-break-inside: auto; }}
-            .insight-table-col {{ min-width: 0; break-inside: auto; page-break-inside: auto; }}
-            .insight-sidecol {{ display: grid; gap: 8px; min-width: 0; }}
-            .insight-overview-box {{ break-inside: auto; page-break-inside: auto; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #e7ddd1; border-radius: 8px; background: #faf7f2; }}
+            .insight-body {{ display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 14px; align-items: start; }}
+            .insight-table-col {{ min-width: 0; }}
+            .insight-sidecol {{ display: grid; gap: 10px; min-width: 0; }}
+            .insight-overview-box {{ break-inside: avoid; margin: 0 0 16px; padding: 12px 14px; border: 1px solid #e7ddd1; border-radius: 8px; background: #faf7f2; }}
             .insight-overview-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #7a756d; font-weight: 800; margin-bottom: 6px; }}
             .insight-overview-box p {{ margin: 0; color: #374151; line-height: 1.5; }}
-            .insight-callout {{ break-inside: avoid; page-break-inside: avoid; border: 1px solid #eadfce; border-radius: 8px; padding: 10px 12px; }}
+            .insight-callout {{ border: 1px solid #eadfce; border-radius: 8px; padding: 10px 12px; }}
             .insight-observation-box {{ background: #fdf3f0; border-color: #f0d4cb; }}
             .insight-evidence-box {{ background: #faf6ef; border-color: #eadfce; }}
             .insight-callout-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #b85f4b; font-weight: 800; margin-bottom: 6px; }}
@@ -2310,7 +2302,7 @@ class CallImportEvaluationPdfReportService:
             .insight-table td:nth-child(2), .insight-table td:nth-child(4) {{ white-space: nowrap; font-weight: 800; }}
             .insight-track {{ height: 9px; background: #e8edff; border: 1px solid #cfd8ff; min-width: 120px; }}
             .insight-fill {{ height: 100%; background: #4f46e5; }}
-            .failure-diagnostics {{ margin-top: 0; max-width: 100%; break-inside: auto; page-break-inside: auto; }}
+            .failure-diagnostics {{ margin-top: 4px; max-width: 100%; }}
             .failure-diagnostics-intro {{ break-inside: auto; margin-bottom: 6px; max-width: 100%; }}
             .failure-diagnostics-intro h2 {{ margin-bottom: 4px; }}
             .failure-diagnostics .method {{ margin: 0 0 6px; }}
@@ -2484,29 +2476,27 @@ class CallImportEvaluationPdfReportService:
             .design-notes {{ margin: 8px 0 0; padding-left: 18px; }}
             .design-notes li {{ margin-bottom: 8px; line-height: 1.5; }}
             .gap-badge {{ display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .04em; color: #b42318; text-transform: uppercase; }}
-            table {{ width: 100%; border-collapse: collapse; margin-top: 6px; break-inside: auto; page-break-inside: auto; }}
-            thead {{ display: table-header-group; }}
-            tr {{ break-inside: avoid; page-break-inside: avoid; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
             th, td {{ text-align: left; border-bottom: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }}
             th {{ background: #111827; color: #fff; font-size: 10px; text-transform: uppercase; }}
             .method {{ color: #475467; line-height: 1.5; }}
             .audit-summary p {{ margin: 0 0 7px; }}
             .audit-summary ul {{ margin: 7px 0 10px; padding-left: 16px; }}
             .audit-summary li {{ margin-bottom: 5px; }}
-            .audit-summary-section {{ margin-bottom: 0; break-after: auto; page-break-after: auto; }}
+            .audit-summary-section {{ margin-bottom: 0; break-after: avoid; page-break-after: avoid; }}
             .audit-summary-section + section {{ margin-top: 0; }}
-            .audit-summary-section + section h2 {{ margin-top: 8px; }}
-            .audit-stat-strip {{ display: flex; gap: 0; margin: 10px 0 0; border-top: 1px solid #111827; break-after: auto; page-break-after: auto; }}
-            .audit-stat-strip:last-child {{ margin-bottom: 10px; }}
+            .audit-summary-section + section h2 {{ margin-top: 12px; }}
+            .audit-stat-strip {{ display: flex; gap: 0; margin: 14px 0 0; border-top: 1px solid #111827; break-after: avoid; page-break-after: avoid; }}
+            .audit-stat-strip:last-child {{ margin-bottom: 18px; }}
             .audit-stat-card {{ flex: 1; min-width: 0; padding: 10px 12px 12px 0; }}
             .audit-stat-card + .audit-stat-card {{ border-left: 1px solid #d1d5db; padding-left: 12px; }}
             .audit-stat-rule {{ display: none; }}
             .audit-stat-label {{ font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }}
             .audit-stat-value {{ font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #111827; line-height: 1; }}
-            .audit-delta-panel {{ break-inside: auto; page-break-inside: auto; margin: 6px 0 8px; padding-top: 6px; border-top: 1px solid #e5e7eb; }}
-            .audit-delta-title {{ font-size: 13px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; color: #111827; margin-bottom: 6px; break-after: avoid; page-break-after: avoid; }}
-            .audit-delta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; break-inside: auto; page-break-inside: auto; }}
-            .audit-delta-card {{ break-inside: avoid; page-break-inside: avoid; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 0; }}
+            .audit-delta-panel {{ break-inside: auto; page-break-inside: auto; margin: 8px 0 12px; padding-top: 8px; border-top: 1px solid #e5e7eb; }}
+            .audit-delta-title {{ font-size: 13px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; color: #111827; margin-bottom: 8px; }}
+            .audit-delta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
+            .audit-delta-card {{ break-inside: auto; page-break-inside: auto; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 96px; }}
             .audit-delta-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px; }}
             .audit-delta-head-main {{ min-width: 0; }}
             .audit-delta-head span {{ display: block; color: #111827; font-size: 9px; font-weight: 900; letter-spacing: .06em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }}
@@ -2519,17 +2509,12 @@ class CallImportEvaluationPdfReportService:
             .audit-delta-chart .metric-sparkline {{ width: 100%; max-width: 100%; }}
             .audit-delta-empty {{ height: 50px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }}
             .audit-delta-reason {{ margin: 6px 0 0; padding-top: 5px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 10px; font-weight: 600; line-height: 1.45; }}
-            .report-footer {{ margin-top: 14px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; break-inside: avoid; page-break-inside: avoid; }}
+            .report-footer {{ margin-top: 24px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; }}
             .footer-left, .footer-right {{ display: flex; flex-direction: column; gap: 3px; }}
             .footer-right {{ text-align: right; }}
             .brand-title {{ color: #111827; font-weight: 800; font-size: 11px; letter-spacing: .2px; }}
             .brand-link {{ color: #d16532; font-weight: 700; text-decoration: none; }}
-            .internal-report .insight-block {{ margin: 6px 0 8px; }}
-            .internal-report .failure-diagnostics-intro h2,
-            .internal-report .prompt-improvements > h2 {{
-              margin-top: 8px;
-            }}
-            .prompt-improvements {{ margin-top: 0; max-width: 100%; break-inside: auto; page-break-inside: auto; }}
+            .prompt-improvements {{ margin-top: 4px; max-width: 100%; }}
             .prompt-improvement-card {{
               margin: 0 0 10px;
               padding: 8px 10px;
@@ -2642,7 +2627,7 @@ class CallImportEvaluationPdfReportService:
             }}
           </style>
         </head>
-        <body class="{report_body_class}">
+        <body>
           {repeat_header_markup}
           <header>
             {brand_header_markup}
@@ -2659,7 +2644,7 @@ class CallImportEvaluationPdfReportService:
             </div>
           </header>
           {f'''
-          <section class="audit-summary-section report-section">
+          <section class="audit-summary-section">
             <h2>01 Audit Summary</h2>
             <div class="audit-summary method">{audit_summary_markup}</div>
             {top_metric_strip_markup}
@@ -2672,7 +2657,8 @@ class CallImportEvaluationPdfReportService:
           {prompt_improvements_section}
           {design_notes_section}
           {f'''
-          <section class="report-section methodology-section">
+          <section>
+            <h2>Methodology</h2>
             <p class="method">This report is generated from completed Call Import evaluation results. Metrics are derived from the saved evaluation outputs and the transcript source configured for the run.{html.escape(weekly_methodology)}</p>
           </section>
           ''' if show_methodology else ''}

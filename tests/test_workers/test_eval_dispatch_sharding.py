@@ -10,7 +10,7 @@ from app.models.database import (
 )
 
 
-def _make_eval_bundle(*, transcript_source: str = "diarised"):
+def _make_eval_bundle():
     evaluation = CallImportEvaluation(
         id=uuid4(),
         call_import_id=uuid4(),
@@ -19,11 +19,8 @@ def _make_eval_bundle(*, transcript_source: str = "diarised"):
         name="Eval",
         selected_metric_ids=[],
         status="running",
-        transcript_source=transcript_source,
         stt_provider="google",
         stt_model="chirp",
-        diarisation_llm_provider="openai",
-        diarisation_llm_model="gpt-4o",
     )
     source_row = CallImportRow(
         id=uuid4(),
@@ -74,31 +71,6 @@ def test_enqueue_eval_chain_uses_shard_write_context(mock_context, mock_build_as
     db.commit.assert_called_once()
     assert eval_row.celery_task_id == "transcribe-task-id"
     assert source_row.celery_task_id == "slot-task-id"
-
-
-@patch("app.workers.concurrency.eval_dispatch.build_eval_chain_transcribe_apply_async")
-@patch("app.db_sharding.row_ops.shard_row_write_context")
-def test_enqueue_eval_chain_skips_transcribe_for_production_source(
-    mock_context, mock_build_async
-):
-    from app.workers.concurrency.eval_dispatch import (
-        enqueue_eval_chain_transcribe_after_import,
-    )
-
-    evaluation, eval_row, source_row = _make_eval_bundle(transcript_source="production")
-    db = MagicMock()
-
-    result = enqueue_eval_chain_transcribe_after_import(
-        db,
-        evaluation=evaluation,
-        eval_row=eval_row,
-        source_row=source_row,
-        slot_task_id="slot-task-id",
-    )
-
-    assert result is False
-    mock_context.assert_not_called()
-    mock_build_async.assert_not_called()
 
 
 @patch("app.workers.concurrency.eval_dispatch.acquire_eval_slot", return_value=True)

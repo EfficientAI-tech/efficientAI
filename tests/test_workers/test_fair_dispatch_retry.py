@@ -167,31 +167,3 @@ def test_needs_transcribe_skips_when_diarised_transcript_exists(db_session):
         source_row,
         transcribe_overwrite=False,
     )
-
-
-def test_needs_transcribe_skips_for_production_source():
-    """Production-source evaluations must never auto-diarise."""
-    from types import SimpleNamespace
-
-    from app.workers.concurrency.eval_dispatch import _needs_transcribe_for_eval
-
-    evaluation = SimpleNamespace(
-        transcript_source="production",
-        stt_provider="openai",
-        stt_model="whisper-1",
-        diarisation_llm_provider="openai",
-        diarisation_llm_model="gpt-4o-mini",
-        transcribe_mode="stt_llm",
-    )
-    source_row = SimpleNamespace(
-        recording_s3_key="s3://bucket/1.wav",
-        diarised_transcript="",
-        diarised_transcript_status="idle",
-        celery_task_id=None,
-    )
-
-    assert not _needs_transcribe_for_eval(
-        evaluation,
-        source_row,
-        transcribe_overwrite=False,
-    )

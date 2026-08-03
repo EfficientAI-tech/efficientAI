@@ -377,15 +377,8 @@ def evaluate_call_import_row_task(
 
             production_transcript = (source_row.transcript or "").strip()
             diarised_transcript = (source_row.diarised_transcript or "").strip()
-            eval_source = (
-                (evaluation.transcript_source or "diarised").strip().lower()
-            )
-            if eval_source == "production":
-                transcript = production_transcript
-                missing_label = "production"
-            else:
-                transcript = diarised_transcript
-                missing_label = "diarised"
+            transcript = diarised_transcript
+            missing_label = "diarised"
             recording_s3_key = (source_row.recording_s3_key or "").strip() or None
             has_audio = recording_s3_key is not None
 

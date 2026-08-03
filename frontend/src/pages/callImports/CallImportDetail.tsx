@@ -40,7 +40,6 @@ import {
   Loader2,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import { copyTextToClipboard } from '../../lib/clipboard'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useToast } from '../../hooks/useToast'
 import { formatDiarisationError } from '../../lib/diarisationErrors'
@@ -313,47 +312,62 @@ export default function CallImportDetail() {
   // exact button that was clicked without affecting the rest of the
   // table. Auto-clears after 1.5s via a setTimeout inside the handler.
   const [copiedRowId, setCopiedRowId] = useState<string | null>(null)
-  const [copiedTranscriptField, setCopiedTranscriptField] = useState<{
-    rowId: string
-    field: 'production' | 'diarised'
-  } | null>(null)
-
   const handleCopyConversationId = (
     row: CallImportRow,
     event: React.MouseEvent,
   ) => {
+    // Stop the synthetic click from bubbling up to the expand button
+    // that wraps the row header — otherwise copying would also toggle
+    // the row open/closed.
     event.preventDefault()
     event.stopPropagation()
     const text = row.conversation_id || ''
     if (!text) return
-    copyTextToClipboard(text, () => {
+    const finalize = () => {
       setCopiedRowId(row.id)
       window.setTimeout(() => {
-        setCopiedRowId((current) => (current === row.id ? null : current))
+        // Only clear if THIS row is still the active one — a quick
+        // double-click on two different rows shouldn't prematurely
+        // wipe the badge on the second.
+        setCopiedRowId((prev) => (prev === row.id ? null : prev))
       }, 1500)
-    })
-  }
-
-  const handleCopyTranscript = (
-    row: CallImportRow,
-    field: 'production' | 'diarised',
-    event: React.MouseEvent,
-  ) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const text =
-      field === 'production'
-        ? row.transcript || ''
-        : row.diarised_transcript || ''
-    if (!text) return
-    copyTextToClipboard(text, () => {
-      setCopiedTranscriptField({ rowId: row.id, field })
-      window.setTimeout(() => {
-        setCopiedTranscriptField((current) =>
-          current?.rowId === row.id && current?.field === field ? null : current,
-        )
-      }, 1500)
-    })
+    }
+    // ``navigator.clipboard`` is async + requires a secure context.
+    // Fall back to the legacy ``execCommand`` path so localhost-over-
+    // http (e.g. ``http://10.x.x.x:5173`` LAN dev) still works.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(finalize).catch(() => {
+        // Best-effort fallback if the async API rejects (permission /
+        // not focused / unsupported MIME, …).
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = text
+          ta.style.position = 'fixed'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+          finalize()
+        } catch {
+          // Swallow — user can still drag-select the visible text.
+        }
+      })
+    } else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        finalize()
+      } catch {
+        // Swallow — drag-select still works.
+      }
+    }
   }
   // Row search: debounce keystrokes so we don't refire the rows fetch on
   // every character — the backend filters by conversation_id ILIKE %q%
@@ -456,9 +470,6 @@ export default function CallImportDetail() {
   const [evalTranscribeMode, setEvalTranscribeMode] = useState<
     'stt_llm' | 'llm_only'
   >('llm_only')
-  const [evalTranscriptSource, setEvalTranscriptSource] = useState<
-    'production' | 'diarised'
-  >('diarised')
   const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
@@ -2613,29 +2624,6 @@ export default function CallImportDetail() {
                                   </span>
                                 )}
                               </div>
-                              {row.transcript && (
-                                <button
-                                  type="button"
-                                  onClick={(e) =>
-                                    handleCopyTranscript(row, 'production', e)
-                                  }
-                                  className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-600 hover:text-gray-900"
-                                  title="Copy production transcript"
-                                >
-                                  {copiedTranscriptField?.rowId === row.id &&
-                                  copiedTranscriptField?.field === 'production' ? (
-                                    <>
-                                      <Check className="h-3 w-3 text-green-600" />
-                                      Copied
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Copy className="h-3 w-3" />
-                                      Copy
-                                    </>
-                                  )}
-                                </button>
-                              )}
                             </header>
                             <div className="p-3">
                               {row.transcript ? (
@@ -2698,29 +2686,6 @@ export default function CallImportDetail() {
                                 )}
                               </div>
                               <div className="flex items-center gap-3">
-                                {row.diarised_transcript && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) =>
-                                      handleCopyTranscript(row, 'diarised', e)
-                                    }
-                                    className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-700 hover:text-purple-900"
-                                    title="Copy diarised transcript"
-                                  >
-                                    {copiedTranscriptField?.rowId === row.id &&
-                                    copiedTranscriptField?.field === 'diarised' ? (
-                                      <>
-                                        <Check className="h-3 w-3 text-green-600" />
-                                        Copied
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy className="h-3 w-3" />
-                                        Copy
-                                      </>
-                                    )}
-                                  </button>
-                                )}
                                 {Array.isArray(row.diarised_segments) &&
                                   row.diarised_segments.length > 0 && (
                                     <button
@@ -4477,63 +4442,14 @@ export default function CallImportDetail() {
                           )
                         })()}
 
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-3">
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              Transcript for evaluation
-                            </p>
-                            <p className="text-[11px] text-gray-500 mt-0.5">
-                              Choose whether to score the CSV production
-                              transcript or diarize first, then score the
-                              diarized output.
-                            </p>
-                          </div>
-                          <div
-                            role="tablist"
-                            aria-label="Evaluation transcript source"
-                            className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
-                          >
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-pressed={evalTranscriptSource === 'diarised'}
-                              onClick={() => setEvalTranscriptSource('diarised')}
-                              className={`px-3 py-1.5 text-[11px] font-medium rounded-md transition ${
-                                evalTranscriptSource === 'diarised'
-                                  ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                  : 'text-gray-600 hover:text-gray-900'
-                              }`}
-                            >
-                              Diarize then evaluate
-                            </button>
-                            <button
-                              type="button"
-                              role="tab"
-                              aria-pressed={evalTranscriptSource === 'production'}
-                              onClick={() =>
-                                setEvalTranscriptSource('production')
-                              }
-                              className={`px-3 py-1.5 text-[11px] font-medium rounded-md transition ${
-                                evalTranscriptSource === 'production'
-                                  ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                  : 'text-gray-600 hover:text-gray-900'
-                              }`}
-                            >
-                              Use production transcript
-                            </button>
-                          </div>
-                          {evalTranscriptSource === 'production' ? (
-                            <p className="text-[11px] text-gray-500">
-                              Skips diarization and scores the transcript
-                              imported from your CSV. Recordings are still
-                              fetched from Exotel/Plivo when a recording URL
-                              is mapped (needed for audio metrics).
-                            </p>
-                          ) : null}
-                        </div>
-
-                        {evalTranscriptSource === 'diarised' &&
-                        (() => {
+                        {/* Diarisation is now mandatory for every eval
+                            run — the checkbox is shown as always-on
+                            (matching the spec) so the user knows the
+                            STT picker below is required. The legacy
+                            "Production vs Diarised" transcript-source
+                            selector has been removed: runs always
+                            score the diarised transcript. */}
+                        {(() => {
                           // In ``llm_only`` mode there is no STT —
                           // the diariser LLM consumes the audio
                           // directly. We adapt the "is the auto-
@@ -4586,8 +4502,8 @@ export default function CallImportDetail() {
                                   </span>
                                   <span className="block text-[11px] text-gray-500">
                                     {evalTranscribeMode === 'stt_llm'
-                                      ? "Rows that don't already have a diarised transcript are diarised first via the STT provider you pick below."
-                                      : "Rows that don't already have a diarised transcript are diarised by feeding the audio directly to the multimodal LLM you pick below. Calls longer than about 8 minutes need enough output headroom—if results look cut off, use STT + LLM diariser instead."}
+                                      ? "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised first via the STT provider you pick below."
+                                      : "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised by feeding the audio directly to the multimodal LLM you pick below. Calls longer than about 8 minutes need enough output headroom—if results look cut off, use STT + LLM diariser instead."}
                                   </span>
                                 </span>
                               </label>
@@ -4816,26 +4732,27 @@ export default function CallImportDetail() {
                       } else if (selectedMetricIds.length === 0) {
                         disabledReasons.push('Select at least one metric to score.')
                       }
-                      // STT and diariser are only required when diarising.
-                      if (evalTranscriptSource === 'diarised') {
-                        if (evalTranscribeMode === 'stt_llm') {
-                          if (!evalSTT.provider) {
-                            disabledReasons.push(
-                              'Pick an STT provider (auto-diarisation is required).',
-                            )
-                          } else if (!evalSTT.model) {
-                            disabledReasons.push(
-                              'Pick an STT model for the selected provider.',
-                            )
-                          }
-                        }
-                        if (!isLLMSelectionComplete(evalDiariserLLM, aiProviders)) {
+                      // STT is only required in the legacy two-stage
+                      // mode. ``llm_only`` mode feeds the audio
+                      // straight to the diariser LLM, so the STT
+                      // checks are gated on the active mode.
+                      if (evalTranscribeMode === 'stt_llm') {
+                        if (!evalSTT.provider) {
                           disabledReasons.push(
-                            evalTranscribeMode === 'llm_only'
-                              ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
-                              : 'Pick a diariser LLM provider and model (or a Custom gateway credential).',
+                            'Pick an STT provider (auto-diarisation is required).',
+                          )
+                        } else if (!evalSTT.model) {
+                          disabledReasons.push(
+                            'Pick an STT model for the selected provider.',
                           )
                         }
+                      }
+                      if (!isLLMSelectionComplete(evalDiariserLLM, aiProviders)) {
+                        disabledReasons.push(
+                          evalTranscribeMode === 'llm_only'
+                            ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
+                            : 'Pick a diariser LLM provider and model (or a Custom gateway credential).',
+                        )
                       }
                       if (
                         aiProviders.length > 0 &&
@@ -4924,7 +4841,9 @@ export default function CallImportDetail() {
                           runEvaluationMutation.mutate({
                             metric_ids: selectedMetricIds,
                             name: runDraftName.trim() || null,
-                            transcript_sources: [evalTranscriptSource],
+                            // Diarised is the only supported source
+                            // now; the backend rejects anything else.
+                            transcript_sources: ['diarised'],
                             llm_provider: runLLMComplete
                               ? runLLM.provider || null
                               : null,
@@ -4942,40 +4861,41 @@ export default function CallImportDetail() {
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,
-                            auto_transcribe: evalTranscriptSource === 'diarised',
-                            ...(evalTranscriptSource === 'diarised'
-                              ? {
-                                  transcribe_overwrite: transcribeOverwrite,
-                                  transcribe_mode: evalTranscribeMode,
-                                  stt_provider:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTT.provider
-                                      : null,
-                                  stt_model:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTT.model
-                                      : null,
-                                  stt_credential_id:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTT.credential_id || null
-                                      : null,
-                                  stt_language:
-                                    evalTranscribeMode === 'stt_llm'
-                                      ? evalSTTLanguage.trim() || null
-                                      : null,
-                                  diarization_llm_provider:
-                                    evalDiariserLLM.provider,
-                                  diarization_llm_model:
-                                    resolveLLMModelForSubmit(
-                                      evalDiariserLLM,
-                                      aiProviders,
-                                    ) ?? evalDiariserLLM.model,
-                                  diarization_llm_credential_id:
-                                    evalDiariserLLM.credential_id || null,
-                                  diarization_prompt:
-                                    evalDiarisationPrompt.trim() || null,
-                                }
-                              : {}),
+                            // Auto-diarise is always on; ``transcribe_mode``
+                            // decides whether the STT step actually runs
+                            // (and therefore whether the STT fields are
+                            // sent or nulled out for the backend's
+                            // validator).
+                            auto_transcribe: true,
+                            transcribe_overwrite: transcribeOverwrite,
+                            transcribe_mode: evalTranscribeMode,
+                            stt_provider:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.provider
+                                : null,
+                            stt_model:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.model
+                                : null,
+                            stt_credential_id:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.credential_id || null
+                                : null,
+                            stt_language:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTTLanguage.trim() || null
+                                : null,
+                            diarization_llm_provider:
+                              evalDiariserLLM.provider,
+                            diarization_llm_model:
+                              resolveLLMModelForSubmit(
+                                evalDiariserLLM,
+                                aiProviders,
+                              ) ?? evalDiariserLLM.model,
+                            diarization_llm_credential_id:
+                              evalDiariserLLM.credential_id || null,
+                            diarization_prompt:
+                              evalDiarisationPrompt.trim() || null,
                             discover_new_metrics: false,
                             ...(data.status === 'mapped'
                               ? (() => {

@@ -8,8 +8,6 @@ import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { useToast } from '../../hooks/useToast'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import {
-  Copy,
-  ClipboardPaste,
   Edit,
   Trash2,
   X,
@@ -26,13 +24,6 @@ import {
   Layers,
   AlertTriangle,
 } from 'lucide-react'
-import { copyTextToClipboard, readTextFromClipboard } from '../../lib/clipboard'
-import {
-  categoryFormFromMetricClipboard,
-  parseMetricClipboardPayload,
-  serializeMetricToClipboard,
-  singleFormFromMetricClipboard,
-} from './metricClipboardUtils'
 import {
   categoryChildrenFromPartial,
   createCategoryChildrenFromPartial,
@@ -205,7 +196,6 @@ export default function MetricsManagement() {
     description: string
     surfaces: MetricSurface[]
     capture_rationale: boolean
-    selection_mode: 'single_choice' | 'multi_label'
     // CREATE-time visibility scope (same semantics as ``formData.scope``).
     // Inherited by every child of the new category.
     scope: 'workspace' | 'organization'
@@ -220,7 +210,6 @@ export default function MetricsManagement() {
     description: '',
     surfaces: ['agent'],
     capture_rationale: false,
-    selection_mode: 'single_choice',
     scope: 'workspace',
     children: [
       { local_id: 'c1', name: '', description: '', example: '' },
@@ -255,7 +244,6 @@ export default function MetricsManagement() {
   const [pendingDeleteMetric, setPendingDeleteMetric] = useState<Metric | null>(
     null,
   )
-  const [pasteMetricError, setPasteMetricError] = useState<string | null>(null)
   // ---------------------------------------------------------------------------
   // Edit-category form — only used when editing an existing PARENT
   // (``selection_mode`` set, no ``parent_metric_id``). Reuses the
@@ -901,7 +889,6 @@ export default function MetricsManagement() {
       description: '',
       surfaces: ['agent'],
       capture_rationale: false,
-      selection_mode: 'single_choice',
       scope: 'workspace',
       children: [
         { local_id: 'c1', name: '', description: '', example: '' },
@@ -1076,45 +1063,6 @@ export default function MetricsManagement() {
   const handleManage = (metric: Metric) => {
     setManageMetric(metric)
     setPendingDeleteMetric(null)
-  }
-
-  const handleCopyMetric = (metric: Metric) => {
-    if (metric.parent_metric_id) {
-      showToast('Copy the parent category metric to include all labels.', 'error')
-      return
-    }
-    const payload = serializeMetricToClipboard(metric)
-    copyTextToClipboard(JSON.stringify(payload, null, 2), () => {
-      showToast('Metric copied to clipboard', 'success')
-    })
-  }
-
-  const handlePasteMetric = async () => {
-    setPasteMetricError(null)
-    try {
-      const text = await readTextFromClipboard()
-      const payload = parseMetricClipboardPayload(text)
-      const targetScope = 'workspace' as const
-      setEditingMetric(null)
-      setIsEditingCategory(false)
-      setIsCustomMetricMode(true)
-      if (payload.kind === 'category') {
-        setCreateMode('category')
-        setCategoryForm(categoryFormFromMetricClipboard(payload, targetScope))
-        resetForm()
-      } else {
-        setCreateMode('single')
-        setFormData(singleFormFromMetricClipboard(payload, targetScope))
-        resetCategoryForm()
-      }
-      setShowCreateModal(true)
-      showToast('Metric pasted — review scope and save', 'success')
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Could not paste metric from clipboard'
-      setPasteMetricError(message)
-      showToast(message, 'error')
-    }
   }
 
   const handleEdit = (metric: Metric) => {
@@ -1309,7 +1257,6 @@ export default function MetricsManagement() {
     setEditingMetric(null)
     setIsEditingCategory(false)
     setCreateMode('single')
-    setPasteMetricError(null)
     resetForm()
     resetAIForm()
     resetCategoryForm()
@@ -1856,32 +1803,13 @@ export default function MetricsManagement() {
                         ? 'Create Custom Metric'
                         : 'Create Metric'}
                 </h2>
-                <div className="flex items-center gap-2">
-                  {!editingMetric && (
-                    <button
-                      type="button"
-                      onClick={() => void handlePasteMetric()}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                      title="Paste a metric from the clipboard"
-                    >
-                      <ClipboardPaste className="h-3.5 w-3.5" />
-                      Paste
-                    </button>
-                  )}
-                  <button
-                    onClick={closeModal}
-                    className="text-gray-400 hover:text-gray-500"
-                  >
-                    <X className="h-6 w-6" />
-                  </button>
-                </div>
+                <button
+                  onClick={closeModal}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-6 w-6" />
+                </button>
               </div>
-
-              {pasteMetricError && !editingMetric && (
-                <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                  {pasteMetricError}
-                </div>
-              )}
 
               {/* Mode switcher: lets the user pick between the single
                   metric and the parent category flow without leaving
@@ -2789,9 +2717,8 @@ export default function MetricsManagement() {
                           name: categoryForm.name.trim(),
                           description:
                             categoryForm.description.trim() || null,
-                          // Preserve pasted selection_mode; default flow
-                          // remains single_choice.
-                          selection_mode: categoryForm.selection_mode,
+                          // Always single_choice for the new flow.
+                          selection_mode: 'single_choice',
                           allow_discovery: false,
                           capture_rationale: categoryForm.capture_rationale,
                           supported_surfaces: categoryForm.surfaces,
@@ -3244,15 +3171,6 @@ export default function MetricsManagement() {
                     >
                       {m.enabled ? 'Disable' : 'Enable'}
                     </Button>
-                    {!isChild && (
-                      <Button
-                        variant="outline"
-                        leftIcon={<Copy className="w-4 h-4" />}
-                        onClick={() => handleCopyMetric(m)}
-                      >
-                        Copy metric
-                      </Button>
-                    )}
                     {canDelete ? (
                       <Button
                         variant="outline"

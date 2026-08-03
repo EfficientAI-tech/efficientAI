@@ -477,15 +477,22 @@ def test_create_evaluation_payload_defaults_transcript_sources_to_diarised():
     assert payload.transcript_sources == ["diarised"]
 
 
-def test_create_evaluation_payload_accepts_production_transcript_source():
-    """``production`` is a valid single-element transcript source."""
+def test_create_evaluation_payload_rejects_production_transcript_source():
+    """The legacy ``production`` transcript source is no longer accepted
+    — the schema-level validator must reject it with a clear message so
+    the route handler never even sees it."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
     from app.models.schemas import CallImportEvaluationCreate
 
-    payload = CallImportEvaluationCreate(
-        metric_ids=[uuid4()],
-        transcript_sources=["production"],
-    )
-    assert payload.transcript_sources == ["production"]
+    with _pytest.raises(ValidationError) as exc:
+        CallImportEvaluationCreate(
+            metric_ids=[uuid4()],
+            transcript_sources=["production"],
+        )
+    msg = str(exc.value)
+    assert "diarised" in msg.lower() or "production" in msg.lower()
 
 
 def test_create_evaluation_payload_accepts_explicit_diarised_source():
