@@ -645,8 +645,9 @@ def process_call_import_row_task(
                     finish_eval_work_and_redispatch,
                 )
 
-                # Always redispatch after eval-chain import cleanup — even when
-                # the reserved slot TTL expired mid-flight (release is a no-op).
+                # Redispatch after local cleanup when import did not chain
+                # transcription — the transcribe worker releases the slot and
+                # schedules fair dispatch when chained transcribe was enqueued.
                 finish_eval_work_and_redispatch(slot_task_id)
         else:
             from app.workers.concurrency.limits import slot_registered_for_task
