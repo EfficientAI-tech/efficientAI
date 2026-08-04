@@ -94,6 +94,7 @@ async def create_integration(
 
     requested_default = bool(integration_data.is_default)
     will_be_default = requested_default or existing_default is None
+    insert_as_default = will_be_default and existing_default is None
 
     integration = Integration(
         organization_id=organization_id,
@@ -102,7 +103,7 @@ async def create_integration(
         api_key=encrypted_api_key,
         public_key=integration_data.public_key,
         is_active=True,
-        is_default=will_be_default,
+        is_default=insert_as_default,
         routing_mode=integration_data.routing_mode.value,
         last_tested_at=datetime.now(timezone.utc) if user_details is not None else None,
     )
@@ -119,6 +120,7 @@ async def create_integration(
             provider_field="platform",
             provider_value=platform_value,
         )
+        integration.is_default = True
 
     db.commit()
     db.refresh(integration)

@@ -166,6 +166,10 @@ async def create_aiprovider(
 
     requested_default = bool(aiprovider.is_default)
     will_be_default = requested_default or existing_default is None
+    # Postgres partial unique index allows only one default per (org, provider).
+    # When promoting over an existing default, insert as non-default first,
+    # clear the old default, then flip this row (see set-default route).
+    insert_as_default = will_be_default and existing_default is None
 
     encrypted_api_key = _encrypt_provider_api_key(
         aiprovider.api_key,
@@ -178,7 +182,7 @@ async def create_aiprovider(
         api_key=encrypted_api_key,
         name=aiprovider.name,
         endpoint_url=aiprovider.endpoint_url,
-        is_default=will_be_default,
+        is_default=insert_as_default,
         routing_mode=aiprovider.routing_mode.value,
         gateway_model=aiprovider.gateway_model,
         gateway_interface=gateway_interface_value,
@@ -207,6 +211,7 @@ async def create_aiprovider(
             provider_field="provider",
             provider_value=provider_value,
         )
+        db_aiprovider.is_default = True
 
     db.commit()
     db.refresh(db_aiprovider)
