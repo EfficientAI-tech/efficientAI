@@ -10,7 +10,8 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -130,39 +131,101 @@ def api_key():
     return "test_api_key_123"
 
 
+def _xdist_worker_id(worker_id: str) -> str | None:
+    """Return the xdist worker suffix (``gw0``), or None for serial runs."""
+    if worker_id in ("master", "main"):
+        return None
+    return worker_id
+
+
+def _worker_database_url(base_url: str, worker_id: str) -> str:
+    """Give each xdist worker its own Postgres database to avoid DDL races."""
+    suffix = _xdist_worker_id(worker_id)
+    if suffix is None:
+        return base_url
+    parsed = make_url(base_url)
+    db_name = parsed.database or "efficientai_test"
+    return parsed.set(database=f"{db_name}_{suffix}").render_as_string(
+        hide_password=False
+    )
+
+
+def _ensure_postgres_database(admin_url: str, database_name: str) -> None:
+    """Create ``database_name`` if missing (connects via the admin database)."""
+    admin = make_url(admin_url).set(database="postgres")
+    bootstrap = create_engine(admin, isolation_level="AUTOCOMMIT")
+    try:
+        with bootstrap.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": database_name},
+            ).scalar()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{database_name}"'))
+    finally:
+        bootstrap.dispose()
+
+
+def _postgres_engine_kwargs(*, parallel: bool) -> dict:
+    if parallel:
+        # Many xdist workers × large pools exhaust Postgres connection limits.
+        return {"pool_pre_ping": True, "pool_size": 1, "max_overflow": 2}
+    return {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 10}
+
+
+def _bind_runtime_database_url(database_url: str) -> None:
+    """Keep SessionLocal/db_pool_manager on the same DB as the test engine."""
+    os.environ["TEST_DATABASE_URL"] = database_url
+    os.environ["DATABASE_URL"] = database_url
+    from app.config import settings
+
+    settings.DATABASE_URL = database_url
+
+
 @pytest.fixture(scope="session")
-def test_engine():
+def test_engine(worker_id):
     """
     Database engine used for tests.
     Defaults to in-memory SQLite for local speed, but can use a real database
     when TEST_DATABASE_URL is provided (for CI/Postgres validation).
     Schema is created once per test session and torn down at the end.
+
+    With pytest-xdist, each worker gets its own Postgres database
+    (``…_gw0``, ``…_gw1``, …) so parallel ``create_all()`` calls do not race
+    on shared ENUM types.
     """
     from app.database import Base
 
     import app.models.database  # noqa: F401
 
-    test_database_url = os.getenv("TEST_DATABASE_URL", "").strip()
+    base_database_url = os.getenv("TEST_DATABASE_URL", "").strip()
+    parallel_postgres = bool(base_database_url and _xdist_worker_id(worker_id))
 
-    if test_database_url:
+    if base_database_url:
+        database_url = _worker_database_url(base_database_url, worker_id)
+        parsed = make_url(database_url)
+        if parsed.drivername.startswith("postgresql"):
+            _ensure_postgres_database(base_database_url, parsed.database)
+        _bind_runtime_database_url(database_url)
         engine = create_engine(
-            test_database_url,
-            pool_pre_ping=True,
-            pool_size=10,
-            max_overflow=20,
+            database_url,
+            **_postgres_engine_kwargs(parallel=parallel_postgres),
         )
+        drop_schema_on_teardown = not parallel_postgres
     else:
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
+        drop_schema_on_teardown = True
 
     Base.metadata.create_all(bind=engine)
     try:
         yield engine
     finally:
-        Base.metadata.drop_all(bind=engine)
+        if drop_schema_on_teardown:
+            Base.metadata.drop_all(bind=engine)
         engine.dispose()
 
 
