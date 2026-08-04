@@ -279,11 +279,42 @@ def _load_task_module():
     return module
 
 
+def _ensure_real_telephony_service():
+    """Return the real TelephonyService singleton (reload if a prior test stubbed the module)."""
+    import importlib
+
+    from app.services.telephony.telephony_service import TelephonyService
+
+    module_name = "app.services.telephony.telephony_service"
+    module = sys.modules.get(module_name)
+    service = getattr(module, "telephony_service", None) if module is not None else None
+    if not isinstance(module, types.ModuleType) or not isinstance(service, TelephonyService):
+        sys.modules.pop(module_name, None)
+        module = importlib.import_module(module_name)
+        service = module.telephony_service
+    return service
+
+
+def _ensure_real_storage_modules():
+    """Force-load real storage modules (prior tests may have polluted sys.modules)."""
+    import importlib
+
+    for module_name in (
+        "app.services.storage.blob_storage_service",
+        "app.services.storage.s3_service",
+    ):
+        sys.modules.pop(module_name, None)
+        importlib.import_module(module_name)
+
+
 def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
     """Wire up row lookup + the lazily-imported services the task uses."""
     from uuid import UUID
 
     from app.models.database import CallImportEvaluationRow, CallImportRow
+
+    _ensure_real_telephony_service()
+    _ensure_real_storage_modules()
 
     task_module = _load_task_module()
     session_factory = lambda: _NonClosingSession(db_session)
@@ -335,29 +366,29 @@ def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
         lambda: False,
     )
 
-    # Telephony service: return our fake client regardless of provider.
-    fake_telephony_module = sys.modules.get("app.services.telephony.telephony_service")
-    if fake_telephony_module is None:
-        fake_telephony_module = types.ModuleType("app.services.telephony.telephony_service")
-        monkeypatch.setitem(
-            sys.modules, "app.services.telephony.telephony_service", fake_telephony_module
-        )
+    # Telephony: stub only provider client creation; delegate DB helpers to the real service.
+    real_telephony = _ensure_real_telephony_service()
 
-    class _FakeTelephonyService:
-        def __init__(self, client):
-            self._client = client
-
+    class _TelephonyClientStub:
         def get_provider_client(self, *_args, **_kwargs):
-            return self._client
+            return fake_client
 
-    fake_telephony_module.telephony_service = _FakeTelephonyService(fake_client)
+        def __getattr__(self, name):
+            return getattr(real_telephony, name)
 
-    # Storage service: provide a fake whose state we can inspect.
-    fake_s3_module = sys.modules.get("app.services.storage.s3_service")
-    if fake_s3_module is None:
-        fake_s3_module = types.ModuleType("app.services.storage.s3_service")
-        monkeypatch.setitem(sys.modules, "app.services.storage.s3_service", fake_s3_module)
-    fake_s3_module.s3_service = fake_s3
+    monkeypatch.setattr(
+        sys.modules["app.services.telephony.telephony_service"],
+        "telephony_service",
+        _TelephonyClientStub(),
+    )
+
+    # Storage: patch both the lazy alias and its backing singleton.
+    import importlib
+
+    blob_module = importlib.import_module("app.services.storage.blob_storage_service")
+    s3_module = importlib.import_module("app.services.storage.s3_service")
+    monkeypatch.setattr(blob_module, "blob_storage_service", fake_s3)
+    monkeypatch.setattr(s3_module, "s3_service", fake_s3, raising=False)
 
     return task_module
 
