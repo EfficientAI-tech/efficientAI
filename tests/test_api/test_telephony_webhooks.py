@@ -89,7 +89,7 @@ def test_answer_webhook_rejects_invalid_signature(
 ):
     _seed_plivo_phone(db_session, org_id)
     monkeypatch.setattr(
-        "plivo.utils.validate_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: False,
     )
 
@@ -108,7 +108,7 @@ def test_answer_webhook_accepts_valid_signature(
 ):
     _seed_plivo_phone(db_session, org_id)
     monkeypatch.setattr(
-        "plivo.utils.validate_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: True,
     )
 
@@ -138,7 +138,7 @@ def test_events_webhook_accepts_valid_signature(
 ):
     recording = _seed_call_recording(db_session, org_id, call_uuid="known-call")
     monkeypatch.setattr(
-        "plivo.utils.validate_signature",
+        "app.services.telephony.webhook_auth.validate_plivo_compatible_webhook_signature",
         lambda *_args, **_kwargs: True,
     )
 
@@ -150,3 +150,53 @@ def test_events_webhook_accepts_valid_signature(
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_delete_telephony_config_unlinks_phone_numbers(client, db_session, org_id, seed_org):
+    integration, number = _seed_plivo_phone(db_session, org_id)
+
+    response = client.delete(f"/api/v1/telephony/config/{integration.id}")
+
+    assert response.status_code == 204
+
+    db_session.expire_all()
+    deleted_integration = (
+        db_session.query(TelephonyIntegration)
+        .filter(TelephonyIntegration.id == integration.id)
+        .first()
+    )
+    assert deleted_integration is None
+
+    refreshed_number = (
+        db_session.query(TelephonyPhoneNumber)
+        .filter(TelephonyPhoneNumber.id == number.id)
+        .first()
+    )
+    assert refreshed_number is not None
+    assert refreshed_number.is_active is True
+    assert refreshed_number.telephony_integration_id is None
+
+
+def test_delete_telephony_config_unlinks_phone_numbers(client, db_session, org_id, seed_org):
+    integration, number = _seed_plivo_phone(db_session, org_id)
+
+    response = client.delete(f"/api/v1/telephony/config/{integration.id}")
+
+    assert response.status_code == 204
+
+    db_session.expire_all()
+    deleted_integration = (
+        db_session.query(TelephonyIntegration)
+        .filter(TelephonyIntegration.id == integration.id)
+        .first()
+    )
+    assert deleted_integration is None
+
+    refreshed_number = (
+        db_session.query(TelephonyPhoneNumber)
+        .filter(TelephonyPhoneNumber.id == number.id)
+        .first()
+    )
+    assert refreshed_number is not None
+    assert refreshed_number.is_active is True
+    assert refreshed_number.telephony_integration_id is None

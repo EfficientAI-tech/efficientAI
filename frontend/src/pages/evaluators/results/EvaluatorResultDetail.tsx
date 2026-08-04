@@ -8,7 +8,11 @@ import Button from '../../../components/Button'
 import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
+import VobizCallDetails from '../../../components/call-recordings/VobizCallDetails'
 import { useToast } from '../../../hooks/useToast'
+import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
+import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
+import ResultsHierarchyNav from './ResultsHierarchyNav'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -26,6 +30,17 @@ function isLegacyCategoryLabelMetric(metric: {
   if ((metric.type || '').toLowerCase() !== 'boolean') return false
   const name = (metric.metric_name || '').trim().toLowerCase()
   return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
+}
+
+function getVobizPhoneNumbers(callData: any): { from: string | null; to: string | null } {
+  return {
+    from: callData?.from_phone_number || callData?.from_number || callData?.From || null,
+    to: callData?.to_phone_number || callData?.to_number || callData?.To || null,
+  }
+}
+
+function getResultAudioS3Key(result: any): string | null {
+  return result?.audio_s3_key || result?.call_data?.recording_s3_key || null
 }
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -186,6 +201,9 @@ interface EvaluatorResultDetail {
   result_id: string
   name: string
   evaluator_id: string | null
+  agent_id?: string | null
+  scenario_id?: string | null
+  suite_id?: string | null
   timestamp: string
   duration_seconds: number | null
   status: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'fetching_details'
@@ -197,7 +215,7 @@ interface EvaluatorResultDetail {
     start: number
     end: number
   }> | null
-  metric_scores: Record<string, { value: any; type: string; metric_name: string; parent_metric_id?: string | null }> | null
+  metric_scores: Record<string, { value: any; type: string; metric_name: string; parent_metric_id?: string | null; rationale?: string | null }> | null
   error_message: string | null
   call_event?: string | null
   provider_call_id?: string | null
@@ -218,6 +236,7 @@ interface EvaluatorResultDetail {
     tts_voice_id?: string | null
     tts_voice_name?: string | null
     is_custom?: boolean
+    description?: string | null
   }
   scenario?: {
     id: string
@@ -229,6 +248,7 @@ interface EvaluatorResultDetail {
     id: string
     evaluator_id: string
     name: string
+    suite_id?: string | null
   }
 }
 
@@ -315,8 +335,20 @@ function EvaluationStepper({ status }: { status: string }) {
   )
 }
 
-export default function EvaluatorResultDetailPage() {
-  const { id } = useParams<{ id: string }>()
+type EvaluatorResultDetailPageProps = {
+  /** When embedded in agent workspace, pass result id explicitly. */
+  resultIdOverride?: string
+  embedded?: boolean
+  onEmbeddedBack?: () => void
+}
+
+export default function EvaluatorResultDetailPage({
+  resultIdOverride,
+  embedded = false,
+  onEmbeddedBack,
+}: EvaluatorResultDetailPageProps = {}) {
+  const { id: routeId } = useParams<{ id: string }>()
+  const id = resultIdOverride ?? routeId
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const location = window.location.pathname
@@ -360,6 +392,40 @@ export default function EvaluatorResultDetailPage() {
     return ids
   }, [metrics])
 
+  const hierarchyCrumbs = useMemo(() => {
+    if (embedded || isFromPlayground || !result) return null
+    const resultData = result as EvaluatorResultDetail
+    const agentId = resultData.agent_id ?? resultData.agent?.id
+    const suiteId = resultData.suite_id ?? resultData.evaluator?.suite_id
+    const scenarioId = resultData.scenario_id ?? resultData.scenario?.id
+    const crumbs: { label: string; to?: string }[] = [{ label: 'Evaluation Results', to: '/results' }]
+    const workspaceUrl = (suite?: string, scenario?: string) => {
+      if (!agentId) return '/results'
+      const params = new URLSearchParams()
+      if (suite) params.set('suite', suite)
+      if (scenario) params.set('scenario', scenario)
+      const qs = params.toString()
+      return `/results/agents/${agentId}${qs ? `?${qs}` : ''}`
+    }
+    if (agentId && resultData.agent?.name) {
+      crumbs.push({ label: resultData.agent.name, to: workspaceUrl() })
+    }
+    if (agentId && suiteId) {
+      crumbs.push({
+        label: resultData.evaluator?.name || 'Suite',
+        to: workspaceUrl(String(suiteId)),
+      })
+    }
+    if (agentId && suiteId && scenarioId) {
+      crumbs.push({
+        label: resultData.scenario?.name || 'Scenario',
+        to: workspaceUrl(String(suiteId), String(scenarioId)),
+      })
+    }
+    crumbs.push({ label: resultData.result_id })
+    return crumbs
+  }, [result, isFromPlayground])
+
   const shouldHideMetricScore = (
     metricId: string,
     metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
@@ -371,14 +437,10 @@ export default function EvaluatorResultDetailPage() {
     )
   }
 
-  const { data: presignedUrl } = useQuery({
-    queryKey: ['audio-presigned-url', result?.audio_s3_key],
-    queryFn: () => {
-      if (!result?.audio_s3_key) return null
-      return apiClient.getAudioPresignedUrl(result.audio_s3_key)
-    },
-    enabled: !!result?.audio_s3_key,
-  })
+  const audioS3Key = getResultAudioS3Key(result)
+  const observabilityCallShortId = result?.call_data?.call_short_id as string | undefined
+
+  const { data: presignedUrl } = useRecordingPresignedUrl(audioS3Key)
 
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
@@ -404,6 +466,12 @@ export default function EvaluatorResultDetailPage() {
   }, [result?.status, reEvalInProgress])
 
   useEffect(() => {
+    if (result?.status === 'completed') {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+    }
+  }, [result?.status, queryClient])
+
+  useEffect(() => {
     const providerRecordingUrl = result?.call_data?.recording_url
     if (providerRecordingUrl) {
       setAudioUrl(providerRecordingUrl)
@@ -411,8 +479,31 @@ export default function EvaluatorResultDetailPage() {
     }
     if (presignedUrl?.url) {
       setAudioUrl(presignedUrl.url)
+      return
     }
-  }, [presignedUrl, result?.call_data])
+    setAudioUrl(null)
+  }, [presignedUrl, result?.call_data?.recording_url])
+
+  useEffect(() => {
+    const callShortId = observabilityCallShortId
+    const hasS3Recording = !!audioS3Key
+    if (!callShortId || !hasS3Recording || result?.call_data?.recording_url) {
+      return
+    }
+
+    let cancelled = false
+    apiClient.getObservabilityCallAudioUrl(callShortId)
+      .then((url) => {
+        if (!cancelled) setAudioUrl(url)
+      })
+      .catch(() => {
+        if (!cancelled && presignedUrl?.url) setAudioUrl(presignedUrl.url)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [observabilityCallShortId, audioS3Key, result?.call_data?.recording_url, presignedUrl?.url])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -469,6 +560,18 @@ export default function EvaluatorResultDetailPage() {
     if (result?.call_data?.duration_ms) {
       return result.call_data.duration_ms / 1000
     }
+    if (typeof result?.call_data?.duration_seconds === 'number' && result.call_data.duration_seconds > 0) {
+      return result.call_data.duration_seconds
+    }
+    const started = result?.call_data?.startedAt || result?.call_data?.started_at
+    const ended = result?.call_data?.endedAt || result?.call_data?.ended_at
+    if (started && ended) {
+      const startMs = new Date(started).getTime()
+      const endMs = new Date(ended).getTime()
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs) {
+        return (endMs - startMs) / 1000
+      }
+    }
     if (audioDuration && audioDuration > 0) {
       return audioDuration
     }
@@ -506,6 +609,15 @@ export default function EvaluatorResultDetailPage() {
     if (value === null || value === undefined) return <span className="text-gray-300">--</span>
     
     const normalizedType = type?.toLowerCase()
+
+    if (normalizedType === 'category') {
+      if (value === '') return <span className="text-gray-300">--</span>
+      return (
+        <span className="inline-flex max-w-full items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 text-sm font-semibold whitespace-normal break-words leading-snug">
+          {String(value)}
+        </span>
+      )
+    }
     
     if (metricName === 'Emotion Category') {
       const emotion = String(value).toLowerCase()
@@ -604,9 +716,19 @@ export default function EvaluatorResultDetailPage() {
     return <span className="block max-w-full text-base font-semibold leading-snug text-gray-900 whitespace-normal break-words">{String(value)}</span>
   }
 
+  const renderMetricRationale = (metric: { rationale?: string | null }) => {
+    const rationale = typeof metric.rationale === 'string' ? metric.rationale.trim() : ''
+    if (!rationale) return null
+    return (
+      <p className="mt-2 text-xs text-gray-600 leading-relaxed border-t border-gray-100 pt-2">
+        {rationale}
+      </p>
+    )
+  }
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
+      <div className={embedded ? 'flex items-center justify-center py-16' : 'flex items-center justify-center min-h-[60vh]'}>
         <div className="text-center">
           <Loader className="w-8 h-8 text-indigo-500 animate-spin mx-auto" />
           <p className="text-sm text-gray-500 mt-3">Loading evaluation details...</p>
@@ -623,9 +745,14 @@ export default function EvaluatorResultDetailPage() {
           <p className="text-sm font-medium text-rose-800">
             {error?.message || 'Result not found'}
           </p>
-          <Button onClick={() => navigate('/results')} variant="ghost" size="sm" className="mt-4">
+          <Button
+            onClick={() => (embedded && onEmbeddedBack ? onEmbeddedBack() : navigate('/results'))}
+            variant="ghost"
+            size="sm"
+            className="mt-4"
+          >
             <ArrowLeft className="w-4 h-4 mr-1.5" />
-            Back to Results
+            {embedded ? 'Back' : 'Back to Results'}
           </Button>
         </div>
       </div>
@@ -633,20 +760,48 @@ export default function EvaluatorResultDetailPage() {
   }
 
   const resultData = result as EvaluatorResultDetail
-  const statusConfig = getStatusConfig(resultData.status)
+  const displayStatus = displayEvaluatorResultStatus(resultData)
+  const statusConfig = getStatusConfig(displayStatus)
+  const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
+  const hasCallMediaOrTranscript = Boolean(
+    audioS3Key ||
+    resultData.call_data?.recording_url ||
+    resultData.transcription ||
+    resultData.speaker_segments?.length ||
+    (Array.isArray(resultData.call_data?.messages) && resultData.call_data.messages.length > 0)
+  )
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div
+      className={
+        embedded
+          ? 'max-w-none'
+          : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'
+      }
+    >
       {/* Header */}
       <div className="mb-6">
-        <Button
-          variant="outline"
-          onClick={() => navigate(isFromPlayground ? '/playground' : '/results')}
-          leftIcon={<ArrowLeft className="h-4 w-4" />}
-          className="mb-4"
-        >
-          Back to {isFromPlayground ? 'Playground' : 'Results'}
-        </Button>
+        {embedded && onEmbeddedBack ? (
+          <Button
+            variant="outline"
+            onClick={onEmbeddedBack}
+            leftIcon={<ArrowLeft className="h-4 w-4" />}
+            className="mb-4"
+          >
+            Back to runs
+          </Button>
+        ) : hierarchyCrumbs ? (
+          <ResultsHierarchyNav crumbs={hierarchyCrumbs} />
+        ) : (
+          <Button
+            variant="outline"
+            onClick={() => navigate(isFromPlayground ? '/playground' : '/results')}
+            leftIcon={<ArrowLeft className="h-4 w-4" />}
+            className="mb-4"
+          >
+            Back to {isFromPlayground ? 'Playground' : 'Results'}
+          </Button>
+        )}
         
         <div className="bg-white shadow rounded-lg p-6">
           <div className="flex items-center justify-between">
@@ -729,6 +884,9 @@ export default function EvaluatorResultDetailPage() {
                   <p className="text-xs text-gray-500">
                     {resultData.persona.tts_provider || '--'} &middot; {resultData.persona.tts_voice_name || '--'} &middot; {resultData.persona.gender}
                   </p>
+                  {resultData.persona.description?.trim() ? (
+                    <p className="text-xs text-gray-600 mt-1 line-clamp-3">{resultData.persona.description}</p>
+                  ) : null}
                 </div>
               )}
               {resultData.evaluator && (
@@ -780,12 +938,12 @@ export default function EvaluatorResultDetailPage() {
         
         <div>
           {/* Stepper progress (re-evaluate or initial evaluation) */}
-          {!reEvalInProgress && resultData.status === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
-           : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(resultData.status) ? (
+          {!reEvalInProgress && displayStatus === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
+           : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
             <EvaluationStepper status={
               reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
                 ? 'queued'
-                : resultData.status
+                : displayStatus
             } />
           ) : null}
 
@@ -853,6 +1011,7 @@ export default function EvaluatorResultDetailPage() {
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                            {renderMetricRationale(metric)}
                           </div>
                         ))}
                       </div>
@@ -875,6 +1034,7 @@ export default function EvaluatorResultDetailPage() {
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                            {renderMetricRationale(metric)}
                           </div>
                         ))}
                       </div>
@@ -897,6 +1057,7 @@ export default function EvaluatorResultDetailPage() {
                               <MetricTooltip metricName={metric.metric_name || metricId} />
                             </div>
                             <div>{formatMetricValue(metric.value, metric.type, metric.metric_name)}</div>
+                            {renderMetricRationale(metric)}
                           </div>
                         ))}
                       </div>
@@ -916,7 +1077,7 @@ export default function EvaluatorResultDetailPage() {
       </div>
 
       {/* Provider-specific call details (Call Analysis, Cost, Latency, System Details) */}
-      {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.call_id?.startsWith('call_')) && (
+      {resultData.call_data && (resultData.provider_platform === 'retell' || (resultData.call_data.call_id?.startsWith('call_') && resultData.provider_platform !== 'vobiz')) && (
         <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
@@ -964,8 +1125,24 @@ export default function EvaluatorResultDetailPage() {
         </div>
       )}
 
+      {resultData.call_data && resultData.provider_platform === 'vobiz' && (
+        <div className="mb-6 bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+            <Phone className="w-5 h-5 mr-2" />
+            Provider Call Details
+            <span className="ml-2 px-2 py-0.5 text-xs bg-teal-100 text-teal-800 rounded-full">vobiz</span>
+            {(resultData.provider_call_id || resultData.call_data.call_ref) && (
+              <span className="ml-2 text-xs text-gray-500 font-mono">
+                {resultData.provider_call_id || resultData.call_data.call_ref}
+              </span>
+            )}
+          </h2>
+          <VobizCallDetails callData={resultData.call_data} />
+        </div>
+      )}
+
       {/* Unified Transcript & Call Details Section */}
-      {(resultData.audio_s3_key || resultData.transcription || resultData.speaker_segments) ? (
+      {hasCallMediaOrTranscript ? (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           {/* Tab Navigation */}
           <div className="px-6 border-b border-gray-100 flex items-center gap-0">
@@ -1124,20 +1301,27 @@ export default function EvaluatorResultDetailPage() {
                       )}
 
                       {/* Call metadata from call_data (live calls, provider calls) */}
-                      {(resultData.call_data?.from_phone_number || resultData.call_data?.to_phone_number) && (
+                      {(resultData.call_data?.from_phone_number ||
+                        resultData.call_data?.to_phone_number ||
+                        vobizPhoneNumbers.from ||
+                        vobizPhoneNumbers.to) && (
                         <div className="p-3 bg-white rounded-lg border border-gray-100">
                           <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Phone Numbers</p>
                           <div className="space-y-2 mt-1.5">
-                            {resultData.call_data.from_phone_number && (
+                            {(resultData.call_data.from_phone_number || vobizPhoneNumbers.from) && (
                               <div className="flex items-center gap-2">
                                 <PhoneOutgoing className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-sm text-gray-700 font-mono">{resultData.call_data.from_phone_number}</span>
+                                <span className="text-sm text-gray-700 font-mono">
+                                  {resultData.call_data.from_phone_number || vobizPhoneNumbers.from}
+                                </span>
                               </div>
                             )}
-                            {resultData.call_data.to_phone_number && (
+                            {(resultData.call_data.to_phone_number || vobizPhoneNumbers.to) && (
                               <div className="flex items-center gap-2">
                                 <PhoneIncoming className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-sm text-gray-700 font-mono">{resultData.call_data.to_phone_number}</span>
+                                <span className="text-sm text-gray-700 font-mono">
+                                  {resultData.call_data.to_phone_number || vobizPhoneNumbers.to}
+                                </span>
                               </div>
                             )}
                           </div>
@@ -1170,18 +1354,31 @@ export default function EvaluatorResultDetailPage() {
                         </div>
                       )}
 
-                      {resultData.call_data?.recording_url && (
+                      {(resultData.call_data?.recording_url || audioS3Key) && (
                         <div className="p-3 bg-white rounded-lg border border-gray-100">
                           <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Recording</p>
-                          <a
-                            href={resultData.call_data.recording_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 mt-1"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                            Open Recording
-                          </a>
+                          {resultData.call_data?.recording_url ? (
+                            <a
+                              href={resultData.call_data.recording_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-800"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              Open provider recording
+                            </a>
+                          ) : (
+                            <p className="text-sm text-gray-600">Recording available in player above</p>
+                          )}
+                          {resultData.call_data?.call_short_id && (
+                            <a
+                              href={`/observability/calls/${resultData.call_data.call_short_id}`}
+                              className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              View in Observability
+                            </a>
+                          )}
                         </div>
                       )}
                     </div>

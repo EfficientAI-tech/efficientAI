@@ -12,8 +12,9 @@ import ReactMarkdown from 'react-markdown'
 import { Mic, MicOff, Loader, MessageSquare, AlertTriangle } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import Button from './Button'
+import VoiceOrb, { VoiceOrbSpeaker } from './VoiceOrb'
 import { useAgentStore } from '../store/agentStore'
-import { apiClient } from '../lib/api'
+import { apiClient, apiBaseUrl } from '../lib/api'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -22,11 +23,14 @@ interface VoiceAgentProps {
   customEndpoint?: string
   customEndpointLabel?: string
   onSessionSaved?: () => void
+  compact?: boolean
+  sidebarLayout?: boolean
+  agentDisplayName?: string
 }
 
 type TranscriptEntry = { role: 'user' | 'agent'; content: string; timestamp: string }
 
-export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpoint, customEndpointLabel, onSessionSaved }: VoiceAgentProps) {
+export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpoint, customEndpointLabel, onSessionSaved, compact = false, sidebarLayout = false, agentDisplayName }: VoiceAgentProps) {
   const { selectedAgent } = useAgentStore()
   
   // Use agentId prop if provided, otherwise fall back to selectedAgent from store
@@ -43,6 +47,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
   const [isSavingSession, setIsSavingSession] = useState(false)
   const [savedCallShortId, setSavedCallShortId] = useState<string | null>(null)
   const [isEvaluatingSavedSession, setIsEvaluatingSavedSession] = useState(false)
+  const [activeSpeaker, setActiveSpeaker] = useState<VoiceOrbSpeaker>(null)
   const formatErrorMessage = (rawError: any) => {
     if (!rawError) return 'Unknown error'
     if (typeof rawError === 'string') return rawError
@@ -355,6 +360,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
             updateStatus('Disconnected')
             setIsConnected(false)
             setIsConnecting(false)
+            setActiveSpeaker(null)
             setSessionEndedAt(new Date().toISOString())
             stopRecording()
             log('Client disconnected', 'system')
@@ -373,6 +379,10 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
             log(`Bot: ${data.text}`, 'bot')
             appendTranscript({ role: 'agent', content: data.text, timestamp: new Date().toISOString() })
           },
+          onUserStartedSpeaking: () => setActiveSpeaker('user'),
+          onUserStoppedSpeaking: () => setActiveSpeaker((prev) => (prev === 'user' ? null : prev)),
+          onBotStartedSpeaking: () => setActiveSpeaker('agent'),
+          onBotStoppedSpeaking: () => setActiveSpeaker((prev) => (prev === 'agent' ? null : prev)),
           onMessageError: (error: any) => {
             console.error('Message error:', error)
             const errorMessage = formatErrorMessage(error)
@@ -400,7 +410,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
 
       // Use startBotAndConnect exactly like the Pipecat example
       // This handles RTVI protocol handshake automatically
-      let endpointUrl = customEndpoint || `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/voice-agent/connect`
+      let endpointUrl = customEndpoint || `${apiBaseUrl}/api/v1/voice-agent/connect`
 
       // Append agent_id, persona_id and scenario_id if present
       const params = new URLSearchParams()
@@ -450,6 +460,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
       updateStatus('Error')
       setIsConnecting(false)
       setIsConnected(false)
+      setActiveSpeaker(null)
 
       // Clean up if there's an error
       if (pcClientRef.current) {
@@ -487,6 +498,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
 
         updateStatus('Disconnected')
         setIsConnected(false)
+        setActiveSpeaker(null)
         setSessionEndedAt(new Date().toISOString())
         log('Disconnected successfully', 'system')
       } catch (error: any) {
@@ -504,8 +516,89 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
   }
 
   // Get agent name for display - use selectedAgent if available, otherwise use generic
-  const agentName = selectedAgent?.name || 'Voice Agent'
+  const agentName = agentDisplayName || selectedAgent?.name || 'Voice Agent'
   const agentDescription = selectedAgent?.description || 'Interact with a real-time voice AI agent'
+
+  if (compact) {
+    const transcriptPanel = (
+      <div className={`${sidebarLayout ? 'flex-1 min-h-0' : 'max-h-48'} overflow-y-auto space-y-2 ${sidebarLayout ? 'pb-2' : 'border-t border-gray-200 pt-3'}`}>
+        {transcriptEntries.length === 0 ? (
+          <p className="text-xs text-gray-400 text-center py-4">
+            {isConnected ? 'Listening… transcript will appear here.' : 'Start a call to see the conversation.'}
+          </p>
+        ) : (
+          transcriptEntries.map((entry, idx) => (
+            <div
+              key={idx}
+              className={`text-xs rounded-lg px-2 py-1.5 ${
+                entry.role === 'user' ? 'bg-blue-50 text-blue-900 ml-2' : 'bg-gray-100 text-gray-800 mr-2'
+              }`}
+            >
+              <span className="font-semibold opacity-60">{entry.role === 'user' ? 'You' : 'Agent'}: </span>
+              {entry.content}
+            </div>
+          ))
+        )}
+      </div>
+    )
+
+    const controlsPanel = (
+      <div className={`flex flex-col items-center ${sidebarLayout ? 'shrink-0 py-4 border-t border-gray-200 bg-gray-50' : 'py-6'}`}>
+        <VoiceOrb
+          variant="green"
+          size={sidebarLayout ? 'sm' : 'md'}
+          connected={isConnected}
+          connecting={isConnecting}
+          activeSpeaker={activeSpeaker}
+          className={sidebarLayout ? 'mb-3' : 'mb-5'}
+        />
+        <p className="text-sm font-medium text-gray-900 mb-0.5">{agentName}</p>
+        <p className="text-xs text-gray-500 mb-3">
+          {activeSpeaker === 'user'
+            ? 'You are speaking…'
+            : activeSpeaker === 'agent'
+              ? 'Agent is speaking…'
+              : isConnected
+                ? 'Connected'
+                : status}
+        </p>
+        {!isConnected ? (
+          <Button
+            onClick={connect}
+            isLoading={isConnecting}
+            leftIcon={isConnecting ? <Loader className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
+            disabled={isConnecting}
+          >
+            Start call
+          </Button>
+        ) : (
+          <Button onClick={disconnect} variant="danger" leftIcon={<MicOff className="h-4 w-4" />}>
+            End call
+          </Button>
+        )}
+      </div>
+    )
+
+    return (
+      <div className={`flex flex-col ${sidebarLayout ? 'h-full min-h-0' : 'min-h-[420px]'}`}>
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-3 text-sm text-red-800 shrink-0">{error}</div>
+        )}
+        {sidebarLayout ? (
+          <>
+            <div className="px-1 pt-1 pb-2 text-xs font-medium text-gray-500 uppercase tracking-wide shrink-0">Transcript</div>
+            {transcriptPanel}
+            {controlsPanel}
+          </>
+        ) : (
+          <>
+            {controlsPanel}
+            {transcriptEntries.length > 0 && transcriptPanel}
+          </>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">

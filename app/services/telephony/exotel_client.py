@@ -7,7 +7,7 @@ so the dependency surface stays small and the client is easy to mock in tests.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from loguru import logger
@@ -117,6 +117,63 @@ class ExotelClient:
         except (ExotelAuthError, httpx.HTTPError) as e:
             logger.exception("Exotel test_connection failed")
             raise ValueError(f"Failed to connect to Exotel: {str(e)}")
+
+    def list_incoming_phone_numbers(self) -> List[Dict[str, Any]]:
+        """List incoming phone numbers (ExoPhones) on the account."""
+        url = f"{self._api_base}/v1/Accounts/{self._account_sid}/IncomingPhoneNumbers.json"
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                resp = client.get(url, auth=self._auth)
+            if resp.status_code in (401, 403):
+                raise ExotelAuthError(
+                    f"Exotel auth failed listing numbers (HTTP {resp.status_code}): {resp.text[:200]}"
+                )
+            if resp.status_code >= 400:
+                raise ValueError(
+                    f"Exotel list numbers failed (HTTP {resp.status_code}): {resp.text[:200]}"
+                )
+            payload = resp.json()
+            items = payload.get("IncomingPhoneNumbers") if isinstance(payload, dict) else None
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+            return []
+        except (ExotelAuthError, ValueError):
+            raise
+        except httpx.HTTPError as e:
+            logger.exception("Exotel list_incoming_phone_numbers failed")
+            raise ValueError(f"Failed to list Exotel numbers: {str(e)}") from e
+
+    def set_number_voice_url(
+        self,
+        incoming_phone_number_sid: str,
+        voice_url: str,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Update the VoiceUrl for an Exotel incoming phone number."""
+        if not incoming_phone_number_sid:
+            return False, "Missing Exotel incoming-number SID", None
+        endpoint = (
+            f"{self._api_base}/v1/Accounts/{self._account_sid}/"
+            f"IncomingPhoneNumbers/{incoming_phone_number_sid}.json"
+        )
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                resp = client.post(
+                    endpoint,
+                    auth=self._auth,
+                    data={"VoiceUrl": voice_url, "VoiceMethod": "POST"},
+                )
+            if resp.status_code in (401, 403):
+                return False, f"Exotel auth failed updating VoiceUrl (HTTP {resp.status_code})", None
+            if resp.status_code >= 400:
+                return (
+                    False,
+                    f"Exotel VoiceUrl update failed (HTTP {resp.status_code}): {resp.text[:200]}",
+                    None,
+                )
+            return True, "Updated Exotel VoiceUrl", incoming_phone_number_sid
+        except httpx.HTTPError as e:
+            logger.exception("Failed to update Exotel VoiceUrl")
+            return False, f"Failed to update Exotel VoiceUrl: {str(e)}", None
 
     def get_call_recording_url(self, call_sid: str) -> str:
         """Resolve the recording URL for a call via Exotel's Calls API.

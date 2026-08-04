@@ -18,6 +18,8 @@ For large batches (10k+ rows), call-import row data can be spread across multipl
 
 Enable sharding in `config.yml` under `database.sharding`. See `config.yml.example` and `config.docker.sharding.example.yml` for profiles.
 
+**Live telephony / evaluator results** use a separate payload sharding path (`evaluator_result_payloads`, `call_recording_payloads`) keyed by workspace — see [`docs/live-call-storage.md`](../../../../docs/live-call-storage.md) in the repo.
+
 ## Operations
 
 ### Connection pools

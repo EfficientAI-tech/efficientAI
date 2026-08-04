@@ -232,6 +232,15 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
       { key: 'sip_domain', label: 'API Host (optional)', required: false, type: 'text' },
     ],
   },
+  [TelephonyProvider.VOBIZ]: {
+    label: 'Vobiz',
+    logo: '/vobiz.png',
+    description: 'Import your Vobiz DIDs for inbound routing and outbound caller ID',
+    fields: [
+      { key: 'auth_id', label: 'Auth ID', required: true, type: 'password' },
+      { key: 'auth_token', label: 'Auth Token', required: true, type: 'password' },
+    ],
+  },
 }
 
 export const getTelephonyProviderLabel = (provider: TelephonyProvider): string =>

@@ -74,6 +74,14 @@ logs/
 .coverage
 htmlcov/
 .tox/
+.agent_pip_target/
+
+# Local debugging / schema extraction artifacts (not part of the repo)
+/_schema*.txt
+/_schemas_*.py
+/extract_lines.txt
+/merge-tree-schemas.txt
+/tests/_conftest_client_fixture_original.py
 
 # OS
 .DS_Store

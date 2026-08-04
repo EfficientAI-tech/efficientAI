@@ -12,6 +12,8 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
+from app.services.evaluators.evaluator_helpers import generate_unique_evaluator_id, is_custom_evaluator, validate_metric_ids
+from app.services.evaluators.evaluator_run_service import queue_evaluator_runs
 from app.services.billing.flexprice_service import record_evaluator_run_requested
 from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle, Metric
 from app.models.schemas import (
@@ -25,20 +27,6 @@ from app.models.schemas import (
 )
 
 router = APIRouter(prefix="/evaluators", tags=["evaluators"])
-
-
-def generate_unique_evaluator_id(db: Session) -> str:
-    """Generate a unique 6-digit evaluator ID."""
-    max_attempts = 100
-    for _ in range(max_attempts):
-        evaluator_id = f"{random.randint(100000, 999999)}"
-        existing = db.query(Evaluator).filter(Evaluator.evaluator_id == evaluator_id).first()
-        if not existing:
-            return evaluator_id
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Failed to generate unique evaluator ID"
-    )
 
 
 class FormatPromptRequest(BaseModel):
@@ -113,107 +101,69 @@ def create_evaluator(
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Create an evaluator stamped with the active workspace.
+    """Create a single standard evaluator (legacy). Use POST /evaluator-suites for new setups."""
+    if bool(evaluator_data.custom_prompt) or (
+        evaluator_data.metric_ids and not evaluator_data.agent_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Custom evaluators are no longer supported. Create an evaluator suite instead.",
+        )
 
-    Standard evaluators (agent + persona + scenario) require all three
-    referenced resources to live in the *same* workspace as the caller.
-    """
-    is_custom = bool(evaluator_data.custom_prompt) or bool(evaluator_data.metric_ids)
+    if not evaluator_data.agent_id or not evaluator_data.persona_id or not evaluator_data.scenario_id:
+        raise HTTPException(
+            status_code=400,
+            detail="agent_id, persona_id, and scenario_id are required",
+        )
 
-    validated_metric_ids: list[str] = []
+    validated_metric_ids = validate_metric_ids(
+        db, organization_id, evaluator_data.metric_ids
+    ) if evaluator_data.metric_ids else None
 
-    if is_custom:
-        if not evaluator_data.name:
-            raise HTTPException(status_code=400, detail="Name is required for custom evaluators")
-        # New metric-driven custom evaluators must select at least one metric.
-        # Legacy clients that only send ``custom_prompt`` keep working.
-        if evaluator_data.metric_ids is not None:
-            if not evaluator_data.metric_ids:
+    agent = db.query(Agent).filter(
+        and_(
+            Agent.id == evaluator_data.agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        )
+    ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    persona = db.query(Persona).filter(
+        and_(
+            Persona.id == evaluator_data.persona_id,
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
+        )
+    ).first()
+    if not persona:
+        raise HTTPException(status_code=404, detail="Persona not found")
+
+    scenario = db.query(Scenario).filter(
+        and_(
+            Scenario.id == evaluator_data.scenario_id,
+            Scenario.organization_id == organization_id,
+            Scenario.workspace_id == workspace_id,
+        )
+    ).first()
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    if agent.voice_bundle_id and persona.tts_provider:
+        voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+        if voice_bundle and voice_bundle.tts_provider:
+            vb_provider = (voice_bundle.tts_provider.value if hasattr(voice_bundle.tts_provider, "value") else str(voice_bundle.tts_provider)).lower()
+            persona_provider = persona.tts_provider.lower()
+            if vb_provider != persona_provider:
                 raise HTTPException(
                     status_code=400,
-                    detail="Select at least one metric for the custom evaluator",
-                )
-            metric_uuids = list({m for m in evaluator_data.metric_ids})
-            metrics = db.query(Metric).filter(
-                and_(
-                    Metric.id.in_(metric_uuids),
-                    Metric.organization_id == organization_id,
-                )
-            ).all()
-            if len(metrics) != len(metric_uuids):
-                raise HTTPException(
-                    status_code=404,
-                    detail="One or more selected metrics were not found in this organization",
-                )
-            for m in metrics:
-                if not m.enabled:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Metric '{m.name}' is disabled. Enable it before selecting it.",
+                    detail=(
+                        f"Persona '{persona.name}' uses TTS provider '{persona.tts_provider}' "
+                        f"but agent '{agent.name}' voice bundle uses '{voice_bundle.tts_provider}'. "
+                        f"The persona's TTS provider must match the agent's voice bundle TTS provider."
                     )
-                surfaces = m.enabled_surfaces or []
-                if surfaces and "agent" not in surfaces:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Metric '{m.name}' is not enabled for the agent surface.",
-                    )
-            validated_metric_ids = [str(mid) for mid in metric_uuids]
-        elif not evaluator_data.custom_prompt:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide metric_ids (or a custom_prompt) for custom evaluators",
-            )
-    else:
-        if not evaluator_data.agent_id or not evaluator_data.persona_id or not evaluator_data.scenario_id:
-            raise HTTPException(
-                status_code=400,
-                detail="agent_id, persona_id, and scenario_id are required for standard evaluators"
-            )
-        
-        agent = db.query(Agent).filter(
-            and_(
-                Agent.id == evaluator_data.agent_id,
-                Agent.organization_id == organization_id,
-                Agent.workspace_id == workspace_id,
-            )
-        ).first()
-        if not agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        persona = db.query(Persona).filter(
-            and_(
-                Persona.id == evaluator_data.persona_id,
-                Persona.organization_id == organization_id,
-                Persona.workspace_id == workspace_id,
-            )
-        ).first()
-        if not persona:
-            raise HTTPException(status_code=404, detail="Persona not found")
-
-        scenario = db.query(Scenario).filter(
-            and_(
-                Scenario.id == evaluator_data.scenario_id,
-                Scenario.organization_id == organization_id,
-                Scenario.workspace_id == workspace_id,
-            )
-        ).first()
-        if not scenario:
-            raise HTTPException(status_code=404, detail="Scenario not found")
-
-        if agent.voice_bundle_id and persona.tts_provider:
-            voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
-            if voice_bundle and voice_bundle.tts_provider:
-                vb_provider = (voice_bundle.tts_provider.value if hasattr(voice_bundle.tts_provider, "value") else str(voice_bundle.tts_provider)).lower()
-                persona_provider = persona.tts_provider.lower()
-                if vb_provider != persona_provider:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"Persona '{persona.name}' uses TTS provider '{persona.tts_provider}' "
-                            f"but agent '{agent.name}' voice bundle uses '{voice_bundle.tts_provider}'. "
-                            f"The persona's TTS provider must match the agent's voice bundle TTS provider."
-                        )
-                    )
+                )
 
     evaluator_id = generate_unique_evaluator_id(db)
 
@@ -222,11 +172,10 @@ def create_evaluator(
         organization_id=organization_id,
         workspace_id=workspace_id,
         name=evaluator_data.name,
-        agent_id=evaluator_data.agent_id if not is_custom else None,
-        persona_id=evaluator_data.persona_id if not is_custom else None,
-        scenario_id=evaluator_data.scenario_id if not is_custom else None,
-        custom_prompt=evaluator_data.custom_prompt if is_custom else None,
-        metric_ids=validated_metric_ids if (is_custom and validated_metric_ids) else None,
+        agent_id=evaluator_data.agent_id,
+        persona_id=evaluator_data.persona_id,
+        scenario_id=evaluator_data.scenario_id,
+        metric_ids=validated_metric_ids,
         llm_provider=evaluator_data.llm_provider.value if evaluator_data.llm_provider else None,
         llm_model=evaluator_data.llm_model,
         llm_config=evaluator_data.llm_config,
@@ -239,7 +188,7 @@ def create_evaluator(
     return evaluator
 
 
-@router.post("/bulk", response_model=List[EvaluatorResponse], status_code=201)
+@router.post("/bulk", response_model=List[EvaluatorResponse], status_code=201, deprecated=True)
 def create_evaluators_bulk(
     bulk_data: EvaluatorBulkCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -554,103 +503,13 @@ def run_evaluators(
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Run multiple evaluators in the active workspace in parallel using Celery workers.
-
-    The same evaluator ID can appear multiple times in the request to run
-    the same evaluator multiple times in parallel.
-    """
-    from app.workers.celery_app import run_evaluator_task
-    
+    """Run multiple evaluators in the active workspace in parallel using Celery workers."""
     if not request.evaluator_ids:
         raise HTTPException(status_code=400, detail="No evaluator IDs provided")
-    
-    task_ids = []
-    evaluator_results = []
-    
-    # Get unique evaluator IDs for validation
-    unique_evaluator_ids = list(set(request.evaluator_ids))
-    
-    # Validate all unique evaluators exist and belong to organization + workspace
-    evaluators = db.query(Evaluator).filter(
-        and_(
-            Evaluator.id.in_(unique_evaluator_ids),
-            Evaluator.organization_id == organization_id,
-            Evaluator.workspace_id == workspace_id,
-        )
-    ).all()
-    
-    if len(evaluators) != len(unique_evaluator_ids):
-        raise HTTPException(
-            status_code=404,
-            detail=f"One or more evaluators not found. Found {len(evaluators)} of {len(unique_evaluator_ids)} unique evaluators"
-        )
-    
-    # Create a lookup map for quick access
-    evaluator_map = {str(e.id): e for e in evaluators}
-    
-    # Create Celery tasks for each evaluator ID in the request (including duplicates)
-    for evaluator_id in request.evaluator_ids:
-        evaluator = evaluator_map.get(str(evaluator_id))
-        if not evaluator:
-            continue
-            
-        try:
-            is_custom = bool(evaluator.custom_prompt) or bool(evaluator.metric_ids) or evaluator.agent_id is None
-            if is_custom:
-                scenario_name = evaluator.name or "Custom Evaluation"
-            else:
-                scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
-                scenario_name = scenario.name if scenario else "Unknown Scenario"
-            
-            # Generate unique 6-digit result ID
-            max_attempts = 100
-            result_id = None
-            for _ in range(max_attempts):
-                candidate_id = f"{random.randint(100000, 999999)}"
-                existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
-                if not existing:
-                    result_id = candidate_id
-                    break
-            
-            if not result_id:
-                raise HTTPException(status_code=500, detail="Failed to generate unique result ID")
-            
-            # Create placeholder result
-            evaluator_result = EvaluatorResult(
-                result_id=result_id,
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                evaluator_id=evaluator.id,
-                agent_id=evaluator.agent_id,
-                persona_id=evaluator.persona_id,
-                scenario_id=evaluator.scenario_id,
-                name=scenario_name,
-                status=EvaluatorResultStatus.QUEUED.value,
-                audio_s3_key=None,  # Will be set by task
-            )
-            db.add(evaluator_result)
-            db.commit()
-            db.refresh(evaluator_result)
-            
-            # Trigger Celery task
-            task = run_evaluator_task.delay(str(evaluator.id), str(evaluator_result.id))
-            task_ids.append(task.id)
-            
-            # Update result with task ID
-            evaluator_result.celery_task_id = task.id
-            db.commit()
-            
-            # Convert to response model
-            evaluator_results.append(EvaluatorResultResponse.model_validate(evaluator_result))
-            
-        except Exception as e:
-            # Use repr(e) to escape curly braces that could break loguru formatting
-            logger.error(f"Error creating task for evaluator {evaluator.id}: {repr(e)}", exc_info=True)
-            # Continue with other evaluators even if one fails
-            continue
-    
-    if not task_ids:
-        raise HTTPException(status_code=500, detail="Failed to create any tasks")
+
+    task_ids, evaluator_results = queue_evaluator_runs(
+        db, organization_id, workspace_id, request.evaluator_ids
+    )
 
     background_tasks.add_task(
         record_evaluator_run_requested,
@@ -662,7 +521,7 @@ def run_evaluators(
 
     return RunEvaluatorsResponse(
         task_ids=task_ids,
-        evaluator_results=evaluator_results
+        evaluator_results=evaluator_results,
     )
 
 

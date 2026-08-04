@@ -78,10 +78,11 @@ export default function Observability() {
   const [trendsChartType, setTrendsChartType] = useState<ChartType>('area')
   const [averagesChartType, setAveragesChartType] = useState<ChartType>('bar')
 
-  const { data: results = [], isLoading: loadingResults } = useQuery({
+  const { data: listResponse, isLoading: loadingResults } = useQuery({
     queryKey: ['evaluator-results'],
-    queryFn: () => apiClient.listEvaluatorResults(),
+    queryFn: () => apiClient.listEvaluatorResults({ limit: 500 }),
   })
+  const results = listResponse?.items ?? []
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics'],

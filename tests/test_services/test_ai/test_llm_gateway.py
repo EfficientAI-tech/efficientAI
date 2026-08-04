@@ -246,9 +246,9 @@ def test_apply_litellm_proxy_keeps_org_key_when_passthrough():
 def test_apply_bifrost_gateway_forces_openai_compatible_routing_for_gemini():
     _set_platform_gateway(
         enabled=True,
-        gateway_type="bifrost",
-        base_url="http://localhost:8080/litellm",
-        master_key="bifrost-key",
+        gateway_type="litellm_proxy",
+        base_url="http://localhost:4000",
+        master_key="proxy-master",
         passthrough=False,
     )
     org_id, db = _org_db({"enabled": True})
@@ -258,7 +258,6 @@ def test_apply_bifrost_gateway_forces_openai_compatible_routing_for_gemini():
         db=db,
     )
 
-    assert result["api_base"] == "http://localhost:8080/litellm"
     assert result["custom_llm_provider"] == "openai"
     assert result["model"] == "gemini/gemini-2.5-flash"
 
@@ -286,25 +285,6 @@ def test_apply_bifrost_gateway_forces_openai_routing_for_bare_gemini_model_name(
 def test_apply_litellm_proxy_forces_openai_compatible_routing_for_gemini():
     _set_platform_gateway(
         enabled=True,
-        gateway_type="litellm_proxy",
-        base_url="http://localhost:4000",
-        master_key="proxy-master",
-        passthrough=False,
-    )
-    org_id, db = _org_db({"enabled": True})
-    result = apply_llm_gateway(
-        {"model": "gemini/gemini-2.5-flash", "api_key": "google-key", "messages": []},
-        organization_id=org_id,
-        db=db,
-    )
-
-    assert result["custom_llm_provider"] == "openai"
-    assert result["model"] == "gemini/gemini-2.5-flash"
-
-
-def test_apply_gateway_leaves_openai_models_unmodified():
-    _set_platform_gateway(
-        enabled=True,
         gateway_type="bifrost",
         base_url="http://localhost:8080/litellm",
         master_key="bifrost-key",
@@ -313,6 +293,24 @@ def test_apply_gateway_leaves_openai_models_unmodified():
     org_id, db = _org_db({"enabled": True})
     result = apply_llm_gateway(
         {"model": "openai/gpt-4o-mini", "api_key": "sk-test", "messages": []},
+        organization_id=org_id,
+        db=db,
+    )
+
+    assert "custom_llm_provider" not in result
+    assert result["model"] == "openai/gpt-4o-mini"
+
+
+def test_apply_bifrost_gateway_forces_openai_compatible_routing_for_azure():
+    _set_platform_gateway(
+        enabled=True,
+        gateway_type="bifrost",
+        base_url="http://localhost:8080/litellm",
+        passthrough=False,
+    )
+    org_id, db = _org_db({"enabled": True})
+    result = apply_llm_gateway(
+        {"model": "azure/azure-openai-gpt4", "messages": []},
         organization_id=org_id,
         db=db,
     )

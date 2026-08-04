@@ -13,7 +13,8 @@ from loguru import logger
 from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import Integration, IntegrationPlatform, Agent
 from app.models.schemas import (
-    IntegrationCreate, IntegrationUpdate, IntegrationResponse
+    IntegrationCreate, IntegrationUpdate, IntegrationResponse,
+    PreviewIntegrationAgentPromptRequest, PreviewIntegrationAgentPromptResponse,
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
@@ -93,6 +94,7 @@ async def create_integration(
 
     requested_default = bool(integration_data.is_default)
     will_be_default = requested_default or existing_default is None
+    insert_as_default = will_be_default and existing_default is None
 
     integration = Integration(
         organization_id=organization_id,
@@ -101,7 +103,7 @@ async def create_integration(
         api_key=encrypted_api_key,
         public_key=integration_data.public_key,
         is_active=True,
-        is_default=will_be_default,
+        is_default=insert_as_default,
         routing_mode=integration_data.routing_mode.value,
         last_tested_at=datetime.now(timezone.utc) if user_details is not None else None,
     )
@@ -118,6 +120,7 @@ async def create_integration(
             provider_field="platform",
             provider_value=platform_value,
         )
+        integration.is_default = True
 
     db.commit()
     db.refresh(integration)
@@ -413,3 +416,58 @@ async def get_integration_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to decrypt API key: {str(e)}"
         )
+
+
+@router.post(
+    "/{integration_id}/preview-agent-prompt",
+    response_model=PreviewIntegrationAgentPromptResponse,
+    operation_id="previewIntegrationAgentPrompt",
+)
+async def preview_integration_agent_prompt(
+    integration_id: UUID,
+    body: PreviewIntegrationAgentPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Fetch a provider agent prompt before an EfficientAI agent exists."""
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.organization_id == organization_id,
+        Integration.is_active == True,
+    ).first()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found or inactive")
+
+    if integration.platform not in [
+        IntegrationPlatform.RETELL,
+        IntegrationPlatform.VAPI,
+        IntegrationPlatform.ELEVENLABS,
+        IntegrationPlatform.SMALLEST,
+    ]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Integration platform {integration.platform.value} is not supported for prompt preview. "
+                "Only Retell, Vapi, ElevenLabs, and Smallest are supported."
+            ),
+        )
+
+    try:
+        from app.services.voice_providers.prompt_sync import fetch_provider_prompt
+
+        prompt = fetch_provider_prompt(integration, body.voice_ai_agent_id)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch prompt from provider: {str(e)}",
+        )
+
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Provider returned no prompt. Verify the external agent has a system prompt configured.",
+        )
+
+    return PreviewIntegrationAgentPromptResponse(provider_prompt=prompt)

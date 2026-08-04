@@ -6,6 +6,13 @@ const WORKSPACE_DETAIL_REDIRECTS: Array<{ pattern: RegExp; parent: string }> = [
   { pattern: /^\/call-imports\/[^/]+\/evaluations\/[^/]+$/, parent: '/call-imports' },
   { pattern: /^\/call-imports\/[^/]+$/, parent: '/call-imports' },
   { pattern: /^\/evaluations\/[^/]+$/, parent: '/evaluations' },
+  {
+    pattern: /^\/results\/agents\/[^/]+\/suites\/[^/]+\/scenarios\/[^/]+$/,
+    parent: '/results',
+  },
+  { pattern: /^\/results\/agents\/[^/]+\/suites\/[^/]+$/, parent: '/results' },
+  { pattern: /^\/results\/agents\/[^/]+$/, parent: '/results' },
+  { pattern: /^\/results\/unassigned$/, parent: '/results' },
   { pattern: /^\/results\/[^/]+$/, parent: '/results' },
   { pattern: /^\/evaluate-test-agents\/[^/]+$/, parent: '/evaluate-test-agents' },
   { pattern: /^\/agents\/[^/]+$/, parent: '/agents' },

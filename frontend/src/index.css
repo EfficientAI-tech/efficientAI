@@ -60,6 +60,48 @@
   100% { transform: translateX(100%); width: 60%; }
 }
 
+@keyframes voiceOrbBreathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+@keyframes voiceOrbSpeakUser {
+  0%, 100% { transform: scale(1); }
+  35% { transform: scale(1.14); }
+  65% { transform: scale(0.96); }
+}
+
+@keyframes voiceOrbSpeakAgent {
+  0%, 100% { transform: scale(1); }
+  40% { transform: scale(1.16); }
+  70% { transform: scale(0.94); }
+}
+
+@keyframes voiceOrbRing {
+  0% { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(1.75); opacity: 0; }
+}
+
+.voice-orb-breathe {
+  animation: voiceOrbBreathe 3s ease-in-out infinite;
+}
+
+.voice-orb-speak-user {
+  animation: voiceOrbSpeakUser 0.85s ease-in-out infinite;
+}
+
+.voice-orb-speak-agent {
+  animation: voiceOrbSpeakAgent 0.75s ease-in-out infinite;
+}
+
+.voice-orb-ring {
+  animation: voiceOrbRing 1.4s ease-out infinite;
+}
+
+.voice-orb-ring-delay {
+  animation-delay: 0.45s;
+}
+
 /* Markdown prose styles — fallback & enhancements for rendered markdown content */
 @layer components {
   .prose h1 {

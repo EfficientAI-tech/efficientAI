@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import { apiClient } from '../../lib/api'
@@ -18,7 +18,10 @@ import {
 import { hasGatewayLLMCredential, providerHasLLMModels } from '../../lib/llmModelOptions'
 
 export default function VoiceBundles() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const autoEditOpenedRef = useRef<string | null>(null)
+  const pendingEditFetchRef = useRef<string | null>(null)
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -40,6 +43,7 @@ export default function VoiceBundles() {
     tts_provider: ModelProvider.OPENAI,
     tts_model: 'gpt-4o-mini-tts',
     tts_voice: '',
+    tts_config: { sample_rate_hz: 8000 },
     tts_credential_id: null,
     s2s_provider: null,
     s2s_model: null,
@@ -51,27 +55,31 @@ export default function VoiceBundles() {
     return createPortal(content, document.body)
   }
 
-  const { data: voicebundles = [], isLoading } = useQuery({
+  const editId = searchParams.get('edit')
+
+  const { data: voicebundles = [], isLoading: voiceBundlesLoading } = useQuery({
     queryKey: ['voicebundles'],
     queryFn: () => apiClient.listVoiceBundles(),
   })
 
-  const { data: aiproviders = [] } = useQuery({
+  const { data: aiproviders = [], isLoading: aiProvidersLoading } = useQuery({
     queryKey: ['aiproviders'],
     queryFn: () => apiClient.listAIProviders(),
   })
 
-  const { data: integrations = [] } = useQuery({
+  const { data: integrations = [], isLoading: integrationsLoading } = useQuery({
     queryKey: ['integrations'],
     queryFn: () => apiClient.listIntegrations(),
   })
 
+  const providersLoading = aiProvidersLoading || integrationsLoading
+
   // Fetch model configurations for all providers
-  const { data: modelConfigs = {} } = useQuery({
+  const { data: modelConfigs = {}, isSuccess: modelConfigsReady } = useQuery({
     queryKey: ['model-configs'],
     queryFn: async () => {
       const providers = Object.values(ModelProvider)
-      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }> = {}
+      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates: number[] }> = {}
 
       for (const provider of providers) {
         try {
@@ -83,10 +91,11 @@ export default function VoiceBundles() {
             tts: options.tts || [],
             s2s: options.s2s || [],
             tts_voices: options.tts_voices || {},
+            tts_sample_rates: options.tts_sample_rates || [],
           }
         } catch (error) {
           // If provider not found in config, use empty arrays
-          configs[provider] = { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
+          configs[provider] = { stt: [], llm: [], tts: [], s2s: [], tts_voices: {}, tts_sample_rates: [] }
         }
       }
       return configs
@@ -211,8 +220,8 @@ export default function VoiceBundles() {
   )
 
   // Helper function to get model options for a provider
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
+  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates: number[] } => {
+    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [], tts_voices: {}, tts_sample_rates: [] }
   }
 
   const getConfiguredProvidersForType = (type: 'stt' | 'llm' | 'tts' | 's2s'): ModelProvider[] =>
@@ -253,10 +262,20 @@ export default function VoiceBundles() {
       apiClient.updateVoiceBundle(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['voicebundles'] })
+      showToast('VoiceBundle updated successfully!', 'success')
       setShowEditModal(false)
       setSelectedBundle(null)
       resetForm()
-      showToast('VoiceBundle updated successfully!', 'success')
+      autoEditOpenedRef.current = null
+      const returnTo = searchParams.get('return')
+      const next = new URLSearchParams(searchParams)
+      next.delete('edit')
+      next.delete('return')
+      if (returnTo) {
+        navigate(returnTo)
+      } else if (next.toString() !== searchParams.toString()) {
+        setSearchParams(next, { replace: true })
+      }
     },
     onError: (error: any) => {
       showToast(`Failed to update VoiceBundle: ${error.response?.data?.detail || error.message}`, 'error')
@@ -322,6 +341,7 @@ export default function VoiceBundles() {
       tts_provider: defaultTtsProvider,
       tts_model: defaultTtsModel,
       tts_voice: '',
+      tts_config: { sample_rate_hz: 8000 },
       tts_credential_id: null,
       s2s_provider: null,
       s2s_model: null,
@@ -350,6 +370,9 @@ export default function VoiceBundles() {
       tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider, 'tts') : null,
       tts_model: bundle.tts_model || null,
       tts_voice: bundle.tts_voice || '',
+      tts_config: bundle.tts_config?.sample_rate_hz
+        ? { sample_rate_hz: Number(bundle.tts_config.sample_rate_hz) }
+        : { sample_rate_hz: 8000 },
       tts_credential_id: bundle.tts_credential_id || null,
       s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider, 's2s') : null,
       s2s_model: bundle.s2s_model || null,
@@ -357,6 +380,63 @@ export default function VoiceBundles() {
     })
     setShowEditModal(true)
   }
+
+  const closeEditModal = () => {
+    setShowEditModal(false)
+    setSelectedBundle(null)
+    resetForm()
+    autoEditOpenedRef.current = null
+    pendingEditFetchRef.current = null
+    const returnTo = searchParams.get('return')
+    const next = new URLSearchParams(searchParams)
+    next.delete('edit')
+    next.delete('return')
+    if (returnTo) {
+      navigate(returnTo)
+    } else if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true })
+    }
+  }
+
+  useEffect(() => {
+    if (!editId) {
+      autoEditOpenedRef.current = null
+      pendingEditFetchRef.current = null
+      return
+    }
+
+    if (voiceBundlesLoading || providersLoading || !modelConfigsReady) return
+    if (configuredProviders.length === 0) return
+    if (autoEditOpenedRef.current === editId) return
+
+    const fromList = voicebundles.find((b: VoiceBundle) => b.id === editId)
+    if (fromList) {
+      autoEditOpenedRef.current = editId
+      openEditModal(fromList)
+      return
+    }
+
+    if (pendingEditFetchRef.current === editId) return
+    pendingEditFetchRef.current = editId
+
+    let cancelled = false
+    void apiClient
+      .getVoiceBundle(editId)
+      .then((bundle) => {
+        if (cancelled || searchParams.get('edit') !== editId) return
+        autoEditOpenedRef.current = editId
+        openEditModal(bundle as VoiceBundle)
+      })
+      .catch(() => {
+        pendingEditFetchRef.current = null
+        showToast('Voice bundle not found', 'error')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- open once per ?edit= id when prerequisites load
+  }, [editId, voicebundles, voiceBundlesLoading, providersLoading, modelConfigsReady, configuredProviders.length])
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
@@ -400,22 +480,171 @@ export default function VoiceBundles() {
       } else if (type === 'tts') {
         const firstModel = models[0]
         const voices = options.tts_voices?.[firstModel] || []
-        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '', tts_credential_id: null })
+        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '', tts_credential_id: null, tts_config: { sample_rate_hz: 8000 } })
       } else if (type === 's2s') {
         setFormData({ ...formData, s2s_provider: provider, s2s_model: models[0], s2s_credential_id: null })
       }
     }
   }
 
-  if (isLoading) {
+  const pageLoading =
+    voiceBundlesLoading ||
+    providersLoading ||
+    (Boolean(editId) && !modelConfigsReady)
+
+  const voiceBundleModals = (
+    <>
+      {showCreateModal && renderModal(
+        <VoiceBundleModal
+          title="Create VoiceBundle"
+          formData={formData}
+          setFormData={setFormData}
+          onSubmit={handleCreate}
+          onClose={() => {
+            setShowCreateModal(false)
+            resetForm()
+          }}
+          isLoading={createMutation.isPending}
+          updateModelOptions={updateModelOptions}
+          configuredProviders={configuredProviders}
+          getModelOptions={getModelOptions}
+          modelConfigs={modelConfigs}
+          aiProviders={aiproviders}
+          renderCredentialPicker={renderCredentialPicker}
+        />
+      )}
+
+      {showEditModal && selectedBundle && renderModal(
+        <VoiceBundleModal
+          title="Edit VoiceBundle"
+          formData={formData}
+          setFormData={setFormData}
+          onSubmit={handleUpdate}
+          onClose={closeEditModal}
+          isLoading={updateMutation.isPending}
+          updateModelOptions={updateModelOptions}
+          configuredProviders={configuredProviders}
+          getModelOptions={getModelOptions}
+          modelConfigs={modelConfigs}
+          aiProviders={aiproviders}
+          renderCredentialPicker={renderCredentialPicker}
+        />
+      )}
+
+      {showDeleteModal && selectedBundle && renderModal(
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
+          setShowDeleteModal(false)
+          setSelectedBundle(null)
+          setDeleteDependencies(null)
+        }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Delete VoiceBundle</h3>
+              <button
+                onClick={() => {
+                  setShowDeleteModal(false)
+                  setSelectedBundle(null)
+                  setDeleteDependencies(null)
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              {deleteDependencies && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-amber-800 mb-2">
+                        This VoiceBundle has dependent records
+                      </p>
+                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                        {deleteDependencies.agents && (
+                          <li>{deleteDependencies.agents} agent{deleteDependencies.agents !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
+                        )}
+                        {deleteDependencies.test_conversations && (
+                          <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
+                        )}
+                      </ul>
+                      <p className="text-xs text-amber-700">
+                        Force deleting will remove the VoiceBundle and unlink all dependent records.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                    <Trash2 className="h-6 w-6 text-red-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">
+                    Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedBundle.name}"</span>?
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    This action cannot be undone. The VoiceBundle will be permanently deleted.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteModal(false)
+                    setSelectedBundle(null)
+                    setDeleteDependencies(null)
+                  }}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                {deleteDependencies ? (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDelete(true)}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Force Delete All
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDelete()}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Delete
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+
+  if (pageLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader className="h-8 w-8 animate-spin text-primary-600" />
-      </div>
+      <>
+        <ToastContainer />
+        <div className="flex items-center justify-center h-64">
+          <Loader className="h-8 w-8 animate-spin text-primary-600" />
+        </div>
+        {voiceBundleModals}
+      </>
     )
   }
 
-  // Show message if no providers configured
+  // Show message if no providers configured (after provider queries finish)
   if (configuredProviders.length === 0) {
     return (
       <div className="space-y-6">
@@ -438,6 +667,7 @@ export default function VoiceBundles() {
             </div>
           </div>
         </div>
+        {voiceBundleModals}
       </div>
     )
   }
@@ -605,6 +835,12 @@ export default function VoiceBundles() {
                                 <span>Voice: {bundle.tts_voice}</span>
                               </>
                             )}
+                            {bundle.tts_config?.sample_rate_hz && (
+                              <>
+                                <span className="text-gray-500"> • </span>
+                                <span>{Number(bundle.tts_config.sample_rate_hz) / 1000} kHz</span>
+                              </>
+                            )}
                           </div>
                         ) : (
                           <span className="text-gray-500">Not configured</span>
@@ -641,148 +877,7 @@ export default function VoiceBundles() {
         </div>
       )}
 
-      {/* Create Modal */}
-      {showCreateModal && renderModal(
-        <VoiceBundleModal
-          title="Create VoiceBundle"
-          formData={formData}
-          setFormData={setFormData}
-          onSubmit={handleCreate}
-          onClose={() => {
-            setShowCreateModal(false)
-            resetForm()
-          }}
-          isLoading={createMutation.isPending}
-          updateModelOptions={updateModelOptions}
-          configuredProviders={configuredProviders}
-          getModelOptions={getModelOptions}
-          modelConfigs={modelConfigs}
-          aiProviders={aiproviders}
-          renderCredentialPicker={renderCredentialPicker}
-        />
-      )}
-
-      {/* Edit Modal */}
-      {showEditModal && selectedBundle && renderModal(
-        <VoiceBundleModal
-          title="Edit VoiceBundle"
-          formData={formData}
-          setFormData={setFormData}
-          onSubmit={handleUpdate}
-          onClose={() => {
-            setShowEditModal(false)
-            setSelectedBundle(null)
-            resetForm()
-          }}
-          isLoading={updateMutation.isPending}
-          updateModelOptions={updateModelOptions}
-          configuredProviders={configuredProviders}
-          getModelOptions={getModelOptions}
-          modelConfigs={modelConfigs}
-          aiProviders={aiproviders}
-          renderCredentialPicker={renderCredentialPicker}
-        />
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {showDeleteModal && selectedBundle && renderModal(
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
-          setShowDeleteModal(false)
-          setSelectedBundle(null)
-          setDeleteDependencies(null)
-        }}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Delete VoiceBundle</h3>
-              <button
-                onClick={() => {
-                  setShowDeleteModal(false)
-                  setSelectedBundle(null)
-                  setDeleteDependencies(null)
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              {deleteDependencies && (
-                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-amber-800 mb-2">
-                        This VoiceBundle has dependent records
-                      </p>
-                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
-                        {deleteDependencies.agents && (
-                          <li>{deleteDependencies.agents} agent{deleteDependencies.agents !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
-                        )}
-                        {deleteDependencies.test_conversations && (
-                          <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
-                        )}
-                      </ul>
-                      <p className="text-xs text-amber-700">
-                        Force deleting will remove the VoiceBundle and unlink all dependent records.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-start gap-4 mb-6">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-                    <Trash2 className="h-6 w-6 text-red-600" />
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedBundle.name}"</span>?
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    This action cannot be undone. The VoiceBundle will be permanently deleted.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowDeleteModal(false)
-                    setSelectedBundle(null)
-                    setDeleteDependencies(null)
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                {deleteDependencies ? (
-                  <Button
-                    variant="danger"
-                    onClick={() => confirmDelete(true)}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Force Delete All
-                  </Button>
-                ) : (
-                  <Button
-                    variant="danger"
-                    onClick={() => confirmDelete()}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Delete
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {voiceBundleModals}
     </div>
   )
 }
@@ -809,7 +904,7 @@ function VoiceBundleModal({
   isLoading: boolean
   updateModelOptions: (type: 'stt' | 'llm' | 'tts' | 's2s', provider: ModelProvider) => void
   configuredProviders: ModelProvider[]
-  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }
+  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates: number[] }
   modelConfigs: Record<string, any>
   aiProviders: AIProvider[]
   renderCredentialPicker: (
@@ -1335,6 +1430,43 @@ function VoiceBundleModal({
                     )
                   })()}
                 </div>
+                {(() => {
+                  const rates = formData.tts_provider
+                    ? getModelOptions(formData.tts_provider).tts_sample_rates
+                    : []
+                  if (rates.length === 0) {
+                    return (
+                      <p className="text-sm text-gray-500 md:col-span-2">
+                        This TTS provider does not expose configurable output sample rate in EfficientAI.
+                      </p>
+                    )
+                  }
+                  const currentHz = formData.tts_config?.sample_rate_hz ?? 8000
+                  return (
+                    <div>
+                      <label htmlFor="tts_sample_rate_hz" className="block text-sm font-medium text-gray-700 mb-1">
+                        Output frequency
+                      </label>
+                      <select
+                        id="tts_sample_rate_hz"
+                        value={currentHz}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            tts_config: { ...formData.tts_config, sample_rate_hz: Number(e.target.value) },
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        {rates.map((hz) => (
+                          <option key={hz} value={hz}>
+                            {hz / 1000} kHz
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )
+                })()}
                 {renderCredentialPicker(
                   'tts',
                   formData.tts_provider,

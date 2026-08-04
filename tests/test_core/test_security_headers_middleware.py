@@ -91,11 +91,12 @@ def test_asset_routes_use_long_cache(security_client):
 )
 def test_built_frontend_assets_use_long_cache():
     """Integration check when frontend/dist exists locally."""
-    from app.main import create_app
-
-    app = create_app()
     assets_dir = Path(settings.FRONTEND_DIR) / "assets"
     asset_file = next(assets_dir.iterdir())
+
+    app = FastAPI()
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     with TestClient(app) as client:
         response = client.get(f"/assets/{asset_file.name}")

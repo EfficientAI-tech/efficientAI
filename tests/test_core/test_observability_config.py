@@ -1,7 +1,8 @@
 from app.config import Settings, load_config_from_file, settings
 
 
-def test_observability_defaults_to_disabled():
+def test_observability_defaults_to_disabled(monkeypatch):
+    monkeypatch.setenv("ALLOWED_AUDIO_FORMATS", '["wav","mp3","flac","m4a"]')
     isolated = Settings(_env_file=None)
 
     assert isolated.OBSERVABILITY_ENABLED is False

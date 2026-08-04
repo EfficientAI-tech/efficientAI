@@ -3,9 +3,9 @@
 import json
 import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Annotated, Any, Dict, List, Optional, Union
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    # api = CRUD + quick webhooks only; media = live voice WebSockets only; all = single-process dev
+    SERVICE_MODE: str = "api"
+    MEDIA_WS_BASE_URL: str = ""
+    MEDIA_PORT: int = 8001
 
     # Database
     DATABASE_URL: Optional[str] = None
@@ -47,7 +51,7 @@ class Settings(BaseSettings):
     # File Storage
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_MB: int = 500
-    ALLOWED_AUDIO_FORMATS: List[str] = ["wav", "mp3", "flac", "m4a"]
+    ALLOWED_AUDIO_FORMATS: Annotated[List[str], NoDecode] = ["wav", "mp3", "flac", "m4a"]
     BLOB_STORAGE_PROVIDER: str = "s3"  # "s3", "gcs", or "azure"
 
     # S3 Configuration
@@ -174,13 +178,38 @@ class Settings(BaseSettings):
     PLIVO_VERIFY_APP_UUID: str = ""
     PLIVO_WEBHOOK_BASE_URL: str = ""
 
+    # Vobiz Telephony (platform-level, optional)
+    VOBIZ_AUTH_ID: str = ""
+    VOBIZ_AUTH_TOKEN: str = ""
+    VOBIZ_API_BASE: str = "https://api.vobiz.ai"
+    VOBIZ_MEDIA_BASE: str = "https://media.vobiz.ai"
+    VOBIZ_WEBHOOK_BASE_URL: str = ""
+    VOBIZ_WEBHOOK_VERIFY: bool = True
+    # When False (default), answer XML omits Vobiz <Record>; use pipeline WAV merge only.
+    VOBIZ_CARRIER_SESSION_RECORDING: bool = False
+    VOBIZ_FROM_NUMBER: str = ""
+    VOBIZ_OUTBOUND_POOL: List[str] = []
+    VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: int = 5
+    VOBIZ_DEFAULT_COUNTRY_CODE: str = "91"
+
+    # Provider-agnostic platform outbound pool (preferred over vobiz.outbound_pool).
+    TELEPHONY_OUTBOUND_POOL: List[Any] = []
+    TELEPHONY_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG: Optional[int] = None
+    PLIVO_OUTBOUND_POOL: List[str] = []
+    EXOTEL_OUTBOUND_POOL: List[str] = []
+
     # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
     RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
         "exotel.com",
         "plivo.com",
+        "vobiz.ai",
         "amazonaws.com",
         "cloudfront.net",
     ]
+
+    # Live telephony pipeline recording merge (dual-track → natural mono)
+    TELEPHONY_BOT_PLAYBACK_DELAY_MS: int = 400
+    TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT: float = 0.35
 
     # Judge Alignment (AlignEval-style hybrid integration).
     # Operator-only knobs. Per-org thresholds and judge model selection
@@ -372,6 +401,15 @@ def validate_auth_configuration() -> None:
         raise RuntimeError(
             f"external_oidc is enabled but required settings are missing: {', '.join(missing)}"
         )
+
+
+def apply_service_mode(mode: str) -> None:
+    """Sync SERVICE_MODE on the module-level settings singleton and os.environ."""
+    import os
+
+    normalized = (mode or "api").strip().lower()
+    os.environ["SERVICE_MODE"] = normalized
+    settings.SERVICE_MODE = normalized
 
 
 def load_config_from_file(config_path: str) -> None:
@@ -707,6 +745,51 @@ def load_config_from_file(config_path: str) -> None:
             settings.PLIVO_VERIFY_APP_UUID = plivo_cfg["verify_app_uuid"]
         if plivo_cfg.get("webhook_base_url"):
             settings.PLIVO_WEBHOOK_BASE_URL = plivo_cfg["webhook_base_url"]
+        if plivo_cfg.get("outbound_pool"):
+            settings.PLIVO_OUTBOUND_POOL = list(plivo_cfg["outbound_pool"])
+
+    if "exotel" in config_data:
+        exotel_cfg = config_data["exotel"]
+        if exotel_cfg.get("outbound_pool"):
+            settings.EXOTEL_OUTBOUND_POOL = list(exotel_cfg["outbound_pool"])
+
+    if "vobiz" in config_data:
+        vobiz_cfg = config_data["vobiz"]
+        if vobiz_cfg.get("auth_id"):
+            settings.VOBIZ_AUTH_ID = vobiz_cfg["auth_id"]
+        if vobiz_cfg.get("auth_token"):
+            settings.VOBIZ_AUTH_TOKEN = vobiz_cfg["auth_token"]
+        if vobiz_cfg.get("api_base"):
+            settings.VOBIZ_API_BASE = vobiz_cfg["api_base"]
+        if vobiz_cfg.get("media_base"):
+            settings.VOBIZ_MEDIA_BASE = vobiz_cfg["media_base"]
+        if vobiz_cfg.get("webhook_base_url"):
+            settings.VOBIZ_WEBHOOK_BASE_URL = vobiz_cfg["webhook_base_url"]
+        if "webhook_verify" in vobiz_cfg:
+            settings.VOBIZ_WEBHOOK_VERIFY = bool(vobiz_cfg["webhook_verify"])
+        if "carrier_session_recording" in vobiz_cfg:
+            settings.VOBIZ_CARRIER_SESSION_RECORDING = bool(vobiz_cfg["carrier_session_recording"])
+        if vobiz_cfg.get("media_ws_base_url"):
+            settings.MEDIA_WS_BASE_URL = vobiz_cfg["media_ws_base_url"]
+        if vobiz_cfg.get("from_number"):
+            settings.VOBIZ_FROM_NUMBER = vobiz_cfg["from_number"]
+        if vobiz_cfg.get("outbound_pool"):
+            settings.VOBIZ_OUTBOUND_POOL = list(vobiz_cfg["outbound_pool"])
+        if vobiz_cfg.get("outbound_pool_max_concurrent_per_org") is not None:
+            settings.VOBIZ_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG = int(
+                vobiz_cfg["outbound_pool_max_concurrent_per_org"]
+            )
+        if vobiz_cfg.get("default_country_code"):
+            settings.VOBIZ_DEFAULT_COUNTRY_CODE = str(vobiz_cfg["default_country_code"]).lstrip("+")
+
+    if "telephony" in config_data:
+        telephony_cfg = config_data["telephony"]
+        if telephony_cfg.get("outbound_pool"):
+            settings.TELEPHONY_OUTBOUND_POOL = list(telephony_cfg["outbound_pool"])
+        if telephony_cfg.get("outbound_pool_max_concurrent_per_org") is not None:
+            settings.TELEPHONY_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG = int(
+                telephony_cfg["outbound_pool_max_concurrent_per_org"]
+            )
 
     if "judge_alignment" in config_data:
         ja_cfg = config_data["judge_alignment"]

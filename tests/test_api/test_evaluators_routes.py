@@ -1,9 +1,22 @@
 """API tests for evaluator routes."""
 
+import importlib
+import types
+
 
 class _FakeTaskResult:
     def __init__(self, task_id):
         self.id = task_id
+
+
+def _patch_run_evaluator_task_delay(monkeypatch, delay_fn):
+    """Patch Celery dispatch where ``queue_evaluator_runs`` lazy-imports it."""
+    celery_app_module = importlib.import_module("app.workers.celery_app")
+    monkeypatch.setattr(
+        celery_app_module,
+        "run_evaluator_task",
+        types.SimpleNamespace(delay=delay_fn),
+    )
 
 
 def test_create_evaluator_success(
@@ -43,8 +56,6 @@ def test_list_and_get_evaluator(authenticated_client, make_evaluator):
 def test_run_evaluators_returns_task_ids(
     authenticated_client, monkeypatch, make_evaluator
 ):
-    from app.workers import celery_app
-
     evaluator = make_evaluator()
     counter = {"i": 0}
 
@@ -52,7 +63,7 @@ def test_run_evaluators_returns_task_ids(
         counter["i"] += 1
         return _FakeTaskResult(f"task-{counter['i']}")
 
-    monkeypatch.setattr(celery_app.run_evaluator_task, "delay", _fake_delay)
+    _patch_run_evaluator_task_delay(monkeypatch, _fake_delay)
 
     payload = {"evaluator_ids": [str(evaluator.id), str(evaluator.id)]}
     response = authenticated_client.post("/api/v1/evaluators/run", json=payload)
@@ -66,8 +77,6 @@ def test_run_evaluators_returns_task_ids(
 def test_run_evaluators_bills_only_successfully_queued_tasks(
     authenticated_client, monkeypatch, make_evaluator
 ):
-    from app.workers import celery_app
-
     evaluator = make_evaluator()
     counter = {"i": 0}
     billed = []
@@ -81,7 +90,7 @@ def test_run_evaluators_bills_only_successfully_queued_tasks(
     def _capture_billing(*_args, **kwargs):
         billed.append(kwargs)
 
-    monkeypatch.setattr(celery_app.run_evaluator_task, "delay", _fake_delay)
+    _patch_run_evaluator_task_delay(monkeypatch, _fake_delay)
     monkeypatch.setattr(
         "app.api.v1.routes.evaluators.record_evaluator_run_requested",
         _capture_billing,

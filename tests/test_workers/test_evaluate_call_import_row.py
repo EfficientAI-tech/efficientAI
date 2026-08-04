@@ -137,6 +137,9 @@ def _bound_celery_self():
 
 def _ensure_bound_task_run(task):
     """API tests stub Celery with ``fn.run = fn``; restore bind=True calling."""
+    if getattr(task.run, "_bound_for_tests", False):
+        return task
+
     underlying = task.run
 
     def _run(*args, **kwargs):
@@ -147,6 +150,7 @@ def _ensure_bound_task_run(task):
                 raise
             return underlying(_bound_celery_self(), *args, **kwargs)
 
+    _run._bound_for_tests = True
     task.run = _run
     return task
 
@@ -181,6 +185,16 @@ def _patch_row_location(monkeypatch, db_session):
     )
 
 
+def _load_real_task_module(module_name: str, *, real_attr: str):
+    """Import a worker task module, evicting API-test stubs only."""
+    import importlib
+
+    existing = sys.modules.get(module_name)
+    if existing is not None and not hasattr(existing, real_attr):
+        sys.modules.pop(module_name, None)
+    return importlib.import_module(module_name)
+
+
 def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
     """Stub SessionLocal and the LLM helper inside the eval task module."""
     import importlib
@@ -188,12 +202,6 @@ def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
     session_factory = lambda: _NonClosingSession(db_session)
     monkeypatch.setattr("app.database.SessionLocal", session_factory)
     _patch_row_location(monkeypatch, db_session)
-
-    # API tests may register a lightweight stub in ``sys.modules`` to
-    # break import cycles; drop it so worker tests load the real task.
-    sys.modules.pop("app.workers.tasks.evaluate_call_import_row", None)
-    task_module = importlib.import_module("app.workers.tasks.evaluate_call_import_row")
-    monkeypatch.setattr(task_module, "SessionLocal", session_factory)
 
     def _default_eval(*_args, **_kwargs):
         metrics = _kwargs.get("llm_metrics") or (_args[1] if len(_args) > 1 else [])
@@ -207,11 +215,22 @@ def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
         }
         return scores, 0.42
 
-    monkeypatch.setattr(
-        task_module,
-        "evaluate_with_llm",
-        evaluate_with_llm or _default_eval,
+    llm_eval = evaluate_with_llm or _default_eval
+
+    # Patch the helper module first so any fresh import binds the stub.
+    llm_eval_module = importlib.import_module(
+        "app.workers.tasks.helpers.llm_evaluation"
     )
+    monkeypatch.setattr(llm_eval_module, "evaluate_with_llm", llm_eval)
+
+    # Do not pop/reimport on every test: Celery registers tasks by name and
+    # a reload leaves ``task.run`` executing stale module globals.
+    task_module = _load_real_task_module(
+        "app.workers.tasks.evaluate_call_import_row",
+        real_attr="_run_llm_scoring",
+    )
+    monkeypatch.setattr(task_module, "SessionLocal", session_factory)
+    monkeypatch.setattr(task_module, "evaluate_with_llm", llm_eval)
     _ensure_bound_task_run(task_module.evaluate_call_import_row_task)
 
     return task_module
@@ -221,13 +240,9 @@ def _patch_audio_task(monkeypatch, db_session):
     import importlib
 
     _patch_row_location(monkeypatch, db_session)
-    for mod_name in (
+    audio_module = _load_real_task_module(
         "app.workers.tasks.evaluate_call_import_row_audio",
-        "app.workers.tasks.evaluate_call_import_row",
-    ):
-        sys.modules.pop(mod_name, None)
-    audio_module = importlib.import_module(
-        "app.workers.tasks.evaluate_call_import_row_audio"
+        real_attr="evaluate_call_import_row_audio_task",
     )
     _ensure_bound_task_run(audio_module.evaluate_call_import_row_audio_task)
     return audio_module

@@ -11,7 +11,7 @@ import pytz
 
 from app.database import get_db
 from app.dependencies import get_organization_id
-from app.models.database import CronJob, Evaluator
+from app.models.database import CronJob, Evaluator, EvaluatorSuite
 from app.models.enums import CronJobStatus
 from app.models.schemas import (
     CronJobCreate,
@@ -20,6 +20,42 @@ from app.models.schemas import (
 )
 
 router = APIRouter(prefix="/cron-jobs", tags=["cron-jobs"])
+
+
+def _expand_evaluator_ids_for_cron(
+    db: Session,
+    organization_id: UUID,
+    evaluator_ids: Optional[List[UUID]],
+    evaluator_suite_ids: Optional[List[UUID]],
+) -> List[UUID]:
+    resolved: List[UUID] = list(evaluator_ids or [])
+    if evaluator_suite_ids:
+        from app.services.evaluators.evaluator_helpers import expand_suite_runs, load_suite_combinations
+
+        for suite_id in evaluator_suite_ids:
+            suite = db.query(EvaluatorSuite).filter(
+                and_(
+                    EvaluatorSuite.id == suite_id,
+                    EvaluatorSuite.organization_id == organization_id,
+                )
+            ).first()
+            if not suite:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Evaluator suite not found: {suite_id}",
+                )
+            combinations = load_suite_combinations(
+                db, suite.id, suite.organization_id, suite.workspace_id
+            )
+            combo_ids = [c.id for c in combinations]
+            runs = suite.default_runs_per_combination or 1
+            resolved.extend(expand_suite_runs(combo_ids, runs))
+    if not resolved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide evaluator_ids and/or evaluator_suite_ids",
+        )
+    return resolved
 
 
 def calculate_next_run(cron_expression: str, timezone: str) -> Optional[datetime]:
@@ -78,8 +114,14 @@ def create_cron_job(
             detail=f"Invalid timezone: {cron_job_data.timezone}"
         )
 
-    # Validate that all evaluator IDs exist
-    for evaluator_id in cron_job_data.evaluator_ids:
+    resolved_evaluator_ids = _expand_evaluator_ids_for_cron(
+        db,
+        organization_id,
+        cron_job_data.evaluator_ids,
+        cron_job_data.evaluator_suite_ids,
+    )
+
+    for evaluator_id in resolved_evaluator_ids:
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.id == evaluator_id,
@@ -102,7 +144,7 @@ def create_cron_job(
         timezone=cron_job_data.timezone,
         max_runs=cron_job_data.max_runs,
         current_runs=0,
-        evaluator_ids=[str(eid) for eid in cron_job_data.evaluator_ids],
+        evaluator_ids=[str(eid) for eid in resolved_evaluator_ids],
         status=CronJobStatus.ACTIVE.value,
         next_run_at=next_run,
     )
@@ -213,9 +255,14 @@ def update_cron_job(
     if cron_job_data.max_runs is not None:
         cron_job.max_runs = cron_job_data.max_runs
 
-    if cron_job_data.evaluator_ids is not None:
-        # Validate that all evaluator IDs exist
-        for evaluator_id in cron_job_data.evaluator_ids:
+    if cron_job_data.evaluator_ids is not None or cron_job_data.evaluator_suite_ids is not None:
+        resolved_evaluator_ids = _expand_evaluator_ids_for_cron(
+            db,
+            organization_id,
+            cron_job_data.evaluator_ids,
+            cron_job_data.evaluator_suite_ids,
+        )
+        for evaluator_id in resolved_evaluator_ids:
             evaluator = db.query(Evaluator).filter(
                 and_(
                     Evaluator.id == evaluator_id,
@@ -227,7 +274,7 @@ def update_cron_job(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Evaluator not found: {evaluator_id}"
                 )
-        cron_job.evaluator_ids = [str(eid) for eid in cron_job_data.evaluator_ids]
+        cron_job.evaluator_ids = [str(eid) for eid in resolved_evaluator_ids]
 
     if cron_job_data.status is not None:
         cron_job.status = cron_job_data.status.value

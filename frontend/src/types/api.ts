@@ -111,6 +111,101 @@ export interface BatchEvaluationResult {
   individual_results: EvaluationResult[]
 }
 
+/** Voice agent evaluator run (evaluator_results table). */
+export type EvaluatorResultStatus =
+  | 'queued'
+  | 'call_initiating'
+  | 'call_connecting'
+  | 'call_in_progress'
+  | 'call_ended'
+  | 'transcribing'
+  | 'evaluating'
+  | 'fetching_details'
+  | 'completed'
+  | 'failed'
+
+export interface EvaluatorResultMetricScore {
+  value: unknown
+  type: string
+  metric_name: string
+  parent_metric_id?: string | null
+}
+
+export interface EvaluatorResultRow {
+  id: string
+  result_id: string
+  name: string | null
+  evaluator_id: string | null
+  agent_id?: string | null
+  persona_id?: string | null
+  scenario_id?: string | null
+  suite_id?: string | null
+  timestamp: string
+  duration_seconds: number | null
+  status: EvaluatorResultStatus
+  metric_scores: Record<string, EvaluatorResultMetricScore> | null
+  error_message: string | null
+  agent?: { id: string; name: string } | null
+  scenario?: { id: string; name: string } | null
+}
+
+export interface EvaluatorResultListResponse {
+  items: EvaluatorResultRow[]
+  total: number
+}
+
+export interface EvaluatorResultCounts {
+  total: number
+  completed: number
+  failed: number
+  in_progress: number
+  last_run_at?: string | null
+}
+
+export interface EvaluatorResultsScenarioSummary {
+  scenario_id: string
+  scenario_name: string
+  counts: EvaluatorResultCounts
+}
+
+export interface EvaluatorResultsSuiteSummary {
+  suite_id: string
+  suite_name?: string | null
+  agent_id: string
+  persona_id?: string | null
+  counts: EvaluatorResultCounts
+  scenarios?: EvaluatorResultsScenarioSummary[] | null
+}
+
+export interface EvaluatorResultsAgentSummary {
+  agent_id: string
+  agent_name: string
+  counts: EvaluatorResultCounts
+  suites?: EvaluatorResultsSuiteSummary[] | null
+}
+
+export interface EvaluatorResultsOverviewResponse {
+  workspace_counts: EvaluatorResultCounts
+  agents: EvaluatorResultsAgentSummary[]
+  unassigned: {
+    counts: EvaluatorResultCounts
+    recent_result_ids: string[]
+  }
+}
+
+export interface ListEvaluatorResultsParams {
+  skip?: number
+  limit?: number
+  evaluatorId?: string
+  agentId?: string
+  suiteId?: string
+  scenarioId?: string
+  status?: 'completed' | 'failed' | 'in_progress'
+  unassignedOnly?: boolean
+  playground?: boolean
+  testAgentsOnly?: boolean
+}
+
 export interface APIKey {
   id: string
   key: string
@@ -230,6 +325,7 @@ export enum IntegrationPlatform {
 export enum TelephonyProvider {
   PLIVO = 'plivo',
   EXOTEL = 'exotel',
+  VOBIZ = 'vobiz',
 }
 
 export type CredentialRoutingMode = 'inherit' | 'gateway' | 'direct'
@@ -298,6 +394,7 @@ export interface AIProvider {
   provider: ModelProvider
   api_key?: string | null
   name?: string | null
+  endpoint_url?: string | null
   is_active: boolean
   /** True if this row is the default credential for (org, provider). */
   is_default?: boolean
@@ -322,6 +419,7 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key?: string | null
   name?: string | null
+  endpoint_url?: string | null
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
   gateway_interface?: GatewayInterfaceMode
@@ -337,6 +435,7 @@ export interface AIProviderCreate {
 export interface AIProviderUpdate {
   api_key?: string | null
   name?: string | null
+  endpoint_url?: string | null
   is_active?: boolean
   routing_mode?: CredentialRoutingMode
   gateway_model?: string | null
@@ -414,6 +513,18 @@ export interface VoiceBundleCreate {
 }
 
 // Test Agent Types
+export interface AgentPhoneAssignmentConflict {
+  agent_id: string
+  agent_name: string
+  phone_number: string
+}
+
+export interface AgentPhoneAssignmentCheckResponse {
+  available: boolean
+  phone_number?: string | null
+  conflict?: AgentPhoneAssignmentConflict | null
+}
+
 export interface TestAgent {
   id: string
   agent_id?: string | null
@@ -422,11 +533,15 @@ export interface TestAgent {
   telephony_phone_number_id?: string | null
   language: string
   description: string | null
+  prompt_variables?: Record<string, string> | null
+  silence_hangup_secs?: number
   call_type: string
   call_medium: string
   voice_bundle_id?: string | null
   voice_ai_integration_id?: string | null
   voice_ai_agent_id?: string | null
+  provider_prompt?: string | null
+  provider_prompt_synced_at?: string | null
   created_at: string
   updated_at: string
 }
@@ -1812,6 +1927,17 @@ export interface CallImportEvaluationAggregateResponse {
   failure_policies_source?: 'inferred' | 'user' | null
 }
 
+export interface EvaluatorResultsAggregateResponse {
+  scope: string
+  suite_id?: string | null
+  agent_id?: string | null
+  scenario_id?: string | null
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  metrics: CallImportMetricAggregate[]
+}
+
 export interface CallImportInsightsRunPoint {
   evaluation_id: string
   name: string | null
@@ -1959,4 +2085,48 @@ export interface DiscoveredMetric {
 export interface DiscoveredMetricsResponse {
   evaluation_id: string
   items: DiscoveredMetric[]
+}
+
+export interface ObservabilityCallAgent {
+  id: string
+  agent_id?: string | null
+  name: string
+}
+
+export interface ObservabilityCallData {
+  startedAt?: string
+  started_at?: string
+  endedAt?: string
+  ended_at?: string
+  from_phone_number?: string
+  to_phone_number?: string
+  endedReason?: string
+  recording_s3_key?: string
+  recording_url?: string
+  duration_seconds?: number
+  agent_name?: string
+  _agent_ref?: string | number
+  direction?: string
+  messages?: Array<{ role: string; content: string; start_time?: number; end_time?: number }>
+  live_transcript?: Array<{ role: string; content: string; timestamp?: string; start_time?: number }>
+  metadata?: Record<string, unknown>
+  call_short_id?: string
+}
+
+export interface ObservabilityCall {
+  id: string
+  call_short_id: string
+  status?: string | null
+  call_event?: string | null
+  is_live?: boolean
+  direction?: string | null
+  source?: string | null
+  provider_platform?: string | null
+  provider_call_id?: string | null
+  agent_id?: string | null
+  agent?: ObservabilityCallAgent | null
+  created_at?: string | null
+  updated_at?: string | null
+  call_data?: ObservabilityCallData | null
+  live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
 }

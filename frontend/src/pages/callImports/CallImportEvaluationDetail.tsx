@@ -64,6 +64,7 @@ import {
   resolveLLMModelForSubmit,
 } from '../../lib/llmModelOptions'
 import { useToast } from '../../hooks/useToast'
+import { useRecordingPresignedUrl } from '../../hooks/useRecordingPresignedUrl'
 import type {
   CallImportEvaluation,
   CallImportEvaluationBulkActionResponse,
@@ -5410,12 +5411,7 @@ function RowDetailPanel({
     data: presignedRecording,
     isLoading: presignedLoading,
     isError: presignedError,
-  } = useQuery({
-    queryKey: ['call-import-row-recording-presign', recordingS3Key],
-    queryFn: () => apiClient.getS3PresignedUrl(recordingS3Key!),
-    enabled: !!recordingS3Key,
-    staleTime: 60 * 1000,
-  })
+  } = useRecordingPresignedUrl(recordingS3Key)
 
   if (!row) return null
 

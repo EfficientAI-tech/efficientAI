@@ -232,18 +232,33 @@ def make_scenario(db_session, org_id, seed_org, default_workspace):
 
 
 @pytest.fixture
-def make_evaluator(db_session, org_id, seed_org, default_workspace):
+def make_evaluator(
+    db_session, org_id, seed_org, default_workspace, make_agent, make_persona, make_scenario
+):
     def _make_evaluator(**overrides):
+        custom_prompt = overrides.get("custom_prompt")
+        agent_id = overrides.get("agent_id")
+        persona_id = overrides.get("persona_id")
+        scenario_id = overrides.get("scenario_id")
+        if custom_prompt is None:
+            if agent_id is None:
+                agent_id = make_agent().id
+            if persona_id is None:
+                persona_id = make_persona().id
+            if scenario_id is None:
+                scenario_id = make_scenario(agent_id=agent_id).id
+
         evaluator = Evaluator(
             id=overrides.get("id", uuid4()),
             evaluator_id=overrides.get("evaluator_id", "654321"),
             organization_id=org_id,
             workspace_id=overrides.get("workspace_id", default_workspace.id),
             name=overrides.get("name", "Evaluator A"),
-            agent_id=overrides.get("agent_id"),
-            persona_id=overrides.get("persona_id"),
-            scenario_id=overrides.get("scenario_id"),
-            custom_prompt=overrides.get("custom_prompt"),
+            suite_id=overrides.get("suite_id"),
+            agent_id=agent_id,
+            persona_id=persona_id,
+            scenario_id=scenario_id,
+            custom_prompt=custom_prompt,
             llm_provider=overrides.get("llm_provider"),
             llm_model=overrides.get("llm_model"),
             tags=overrides.get("tags"),
@@ -332,6 +347,7 @@ def make_ai_provider(db_session, org_id, seed_org):
             provider=overrides.get("provider", "openai"),
             api_key=overrides.get("api_key", "enc-api-key"),
             name=overrides.get("name", "OpenAI Key"),
+            endpoint_url=overrides.get("endpoint_url"),
             is_active=overrides.get("is_active", True),
         )
         db_session.add(provider)

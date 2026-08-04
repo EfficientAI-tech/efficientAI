@@ -64,13 +64,13 @@ export default function AgentPlayground() {
 
 
   // Fetch test voice agent evaluation results (playground results only, excluding Voice AI agent results)
-  const { data: testVoiceAgentResults = [], refetch: refetchTestResults } = useQuery({
+  const { data: testVoiceAgentList, refetch: refetchTestResults } = useQuery({
     queryKey: ['test-voice-agent-results'],
     queryFn: async () => {
-      // Fetch only playground results (evaluator_id is NULL) AND exclude Voice AI agent results (provider_platform is NULL)
       return await apiClient.listEvaluatorResults(undefined, true, true)
     },
   })
+  const testVoiceAgentResults = testVoiceAgentList?.items ?? []
 
   // Fetch call recordings (for Voice AI Agents tab)
   const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({
@@ -142,14 +142,19 @@ export default function AgentPlayground() {
   const isVapiAgent = agentIntegration?.platform === 'vapi'
   const isElevenLabsAgent = agentIntegration?.platform === 'elevenlabs'
   const isSmallestAgent = agentIntegration?.platform === 'smallest'
-  const hasWebCallEnabled = fullAgent?.call_medium === 'web_call'
 
-  const canMakeCall = (isRetellAgent || isVapiAgent || isElevenLabsAgent || isSmallestAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
+  const hasVoiceAIIntegration = Boolean(
+    fullAgent?.voice_ai_integration_id &&
+    fullAgent?.voice_ai_agent_id &&
+    (isRetellAgent || isVapiAgent || isElevenLabsAgent || isSmallestAgent)
+  )
+  // Playground web-call testing via Retell/Vapi/ElevenLabs/Smallest is independent
+  // of the agent's production call_medium (phone_call vs web_call).
+  const canMakeCall = hasVoiceAIIntegration
 
   // Check if agent has Test Agent capabilities (voice bundle with STT/TTS/LLM)
   const hasTestAgent = fullAgent?.voice_bundle_id != null
-  // Check if agent has Voice AI Agent capabilities (Retell/Vapi/ElevenLabs/Smallest integration)
-  const hasVoiceAIAgent = canMakeCall
+  const hasVoiceAIAgent = hasVoiceAIIntegration
 
   // Initialize Clients when modal opens
   useEffect(() => {
@@ -846,10 +851,9 @@ export default function AgentPlayground() {
                 <strong>Selected Agent:</strong> {selectedAgent.name}
               </p>
               <p className="text-sm text-blue-700 mt-2">
-                {!hasWebCallEnabled && 'This agent does not have web calling enabled. '}
-                {!canMakeCall && 'This agent is not correctly configured for web calls. '}
-                {(!fullAgent?.voice_ai_agent_id) && 'Agent ID is missing. '}
-                Please check your configuration.
+                {!hasVoiceAIIntegration && 'Link a Voice AI integration (Retell, Vapi, ElevenLabs, or Smallest) and set the Agent ID. '}
+                {!hasTestAgent && 'Attach a Voice Bundle for Test Agent mode. '}
+                Please check your agent configuration.
               </p>
             </div>
           ) : (

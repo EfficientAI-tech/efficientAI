@@ -35,6 +35,7 @@ from app.models.database import (
 )
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
+from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
 from app.utils.call_recordings import generate_unique_call_short_id
 
 router = APIRouter(prefix="/playground", tags=["playground"])
@@ -977,7 +978,7 @@ async def evaluate_custom_websocket_session(
         evaluator_result.transcription = transcript_text
         evaluator_result.speaker_segments = speaker_segments
         evaluator_result.audio_s3_key = call_data.get("recording_s3_key")
-        evaluator_result.call_data = call_data
+        evaluator_result.call_data = slim_call_data_for_evaluator_result(call_data)
         evaluator_result.duration_seconds = call_data.get("duration_seconds", 0)
         db.commit()
         db.refresh(evaluator_result)
@@ -1002,7 +1003,7 @@ async def evaluate_custom_websocket_session(
             speaker_segments=speaker_segments,
             provider_call_id=call_recording.provider_call_id,
             provider_platform="custom_websocket",
-            call_data=call_data,
+            call_data=slim_call_data_for_evaluator_result(call_data),
         )
         db.add(evaluator_result)
         db.commit()
@@ -1325,9 +1326,12 @@ async def re_evaluate_call_recording(
     if existing_result:
         existing_result.status = EvaluatorResultStatus.QUEUED.value
         existing_result.audio_s3_key = audio_s3_key
-        # Preserve full provider payload on re-evaluation so debug/inspection data
-        # is not reduced to call_analysis-only shape.
-        existing_result.call_data = call_data if isinstance(call_data, dict) else existing_result.call_data
+        # Metadata only; transcript is on existing_result.transcription.
+        existing_result.call_data = (
+            slim_call_data_for_evaluator_result(call_data)
+            if isinstance(call_data, dict)
+            else existing_result.call_data
+        )
         existing_result.transcription = transcript_text or existing_result.transcription
         existing_result.metric_scores = None
         existing_result.error_message = None
@@ -1366,7 +1370,7 @@ async def re_evaluate_call_recording(
             transcription=transcript_text,
             provider_call_id=call_recording.provider_call_id,
             provider_platform=platform,
-            call_data=call_data,
+            call_data=slim_call_data_for_evaluator_result(call_data),
         )
         db.add(evaluator_result)
         db.commit()

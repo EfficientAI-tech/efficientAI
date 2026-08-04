@@ -27,18 +27,30 @@ TTS_ENV_KEYS = {
     "cartesia": "CARTESIA_API_KEY",
     "elevenlabs": "ELEVENLABS_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "sarvam": "SARVAM_API_KEY",
+    "murf": "MURF_API_KEY",
+    "smallest": "SMALLEST_API_KEY",
+    "voicemaker": "VOICEMAKER_API_KEY",
 }
 
 TTS_DEFAULT_VOICES = {
     "cartesia": "a0e99841-438c-4a64-b679-ae501e7d6091",
     "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
     "openai": "alloy",
+    "sarvam": "ritu",
+    "murf": "en-US-natalie",
+    "smallest": "daniel",
+    "voicemaker": "ai3-Jony",
 }
 
 TTS_DEFAULT_MODELS = {
     "cartesia": "sonic-english",
     "elevenlabs": "eleven_multilingual_v2",
     "openai": "gpt-4o-mini-tts",
+    "sarvam": "bulbul:v3",
+    "murf": "GEN2",
+    "smallest": "lightning-v3.1",
+    "voicemaker": "neural",
 }
 
 
@@ -54,16 +66,21 @@ class TestAgentConfig:
     # Context about the voice AI agent being tested
     agent_name: str = "Voice AI Agent"
     agent_description: str = "A voice AI assistant"
+    test_agent_simulation_prompt: Optional[str] = None
+    caller_system_prompt: Optional[str] = None
     
     # LLM config
     llm_model: str = "gpt-4o-mini"
     llm_api_key: Optional[str] = None
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
     
     # TTS config
     tts_provider: str = "cartesia"
     tts_api_key: Optional[str] = None
     tts_voice_id: Optional[str] = None
     tts_model: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
     
     # Audio config
     sample_rate: int = 24000
@@ -71,6 +88,7 @@ class TestAgentConfig:
     # Behavior config
     max_turns: int = 20
     response_delay_ms: int = 500  # Delay before responding (more natural)
+    allow_interruptions: bool = False
 
 
 class TestAgentProcessor:
@@ -114,22 +132,26 @@ class TestAgentProcessor:
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the LLM based on persona/scenario."""
+        if self.config.caller_system_prompt:
+            return self.config.caller_system_prompt
+        simulation = self.config.test_agent_simulation_prompt or (
+            f"Agent under test: {self.config.agent_name}\n\n"
+            f"Agent system prompt:\n{self.config.agent_description}\n\n"
+            f"Active test scenario:\n"
+            f"Description: {self.config.scenario_description}\n"
+            f"Goal: {self.config.scenario_goal}"
+        )
         return f"""You are simulating a caller in a voice conversation. Your role is to test a voice AI agent.
 
-WHO YOU ARE CALLING:
-- Agent Name: {self.config.agent_name}
-- Agent Role: {self.config.agent_description}
+TEST AGENT SIMULATION PROMPT
+{simulation}
 
-YOUR PERSONA (who you are pretending to be):
+PERSONA
 - Name: {self.config.persona_name}
 - Description: {self.config.persona_description}
 
-SCENARIO:
-- Description: {self.config.scenario_description}
-- Goal: {self.config.scenario_goal}
-
 INSTRUCTIONS:
-1. You are CALLING the voice AI agent described above
+1. You are CALLING the voice AI agent described in the test agent simulation prompt
 2. Stay in character as the persona described
 3. Follow the scenario and work toward the goal
 4. Speak naturally as if on a phone call
@@ -139,7 +161,7 @@ INSTRUCTIONS:
 8. If the conversation naturally concludes or you've achieved the goal, say goodbye
 9. Respond ONLY with what you would say - no stage directions or descriptions
 
-Your first message should naturally introduce yourself or state your reason for calling.
+You are calling: {self.config.agent_name}
 After {self.config.max_turns} exchanges, wrap up the conversation politely."""
 
     async def initialize(self):
@@ -233,7 +255,7 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         if not transcript or not transcript.strip():
             return None
         
-        if self.agent_is_talking:
+        if self.agent_is_talking and not self.config.allow_interruptions:
             logger.debug(f"[TestAgent] Agent still talking, queuing transcript: {transcript[:60]}...")
             self._pending_transcript = transcript
             return None
@@ -341,8 +363,8 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             response = await client.chat.completions.create(
                 model=self.config.llm_model,
                 messages=messages,
-                max_tokens=150,
-                temperature=0.7
+                max_tokens=self.config.llm_max_tokens if self.config.llm_max_tokens is not None else 150,
+                temperature=self.config.llm_temperature if self.config.llm_temperature is not None else 0.7,
             )
             
             return response.choices[0].message.content.strip()
@@ -356,18 +378,54 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         provider = self.config.tts_provider.lower()
         try:
             if provider == "elevenlabs":
-                return await self._tts_elevenlabs(text)
+                audio = await self._tts_elevenlabs(text)
             elif provider == "openai":
-                return await self._tts_openai(text)
+                audio = await self._tts_openai(text)
+            elif provider == "sarvam":
+                audio = await self._tts_sarvam(text)
+            elif provider == "voicemaker":
+                audio = await self._tts_voicemaker(text)
+            elif provider == "smallest":
+                audio = await self._tts_smallest(text)
+            elif provider == "murf":
+                audio = await self._tts_murf(text)
             else:
-                return await self._tts_cartesia(text)
+                audio = await self._tts_cartesia(text)
+
+            return audio
         except Exception as e:
             logger.error(f"[TestAgent] TTS ({provider}) error: {e}")
             return None
 
+    def _tts_settings(self) -> Dict[str, Any]:
+        return dict(self.config.tts_config or {})
+
     async def _tts_cartesia(self, text: str) -> Optional[bytes]:
         """Synthesize speech via Cartesia."""
         import httpx
+
+        settings = self._tts_settings()
+        payload: Dict[str, Any] = {
+            "model_id": self.config.tts_model or "sonic-english",
+            "transcript": text,
+            "voice": {"mode": "id", "id": self.config.tts_voice_id},
+            "output_format": {
+                "container": "raw",
+                "encoding": "pcm_s16le",
+                "sample_rate": self.config.sample_rate,
+            },
+        }
+        if settings.get("speed"):
+            payload["speed"] = settings["speed"]
+        gen = settings.get("generation_config")
+        if gen:
+            payload["generation_config"] = gen
+        elif any(k in settings for k in ("generation_config_speed", "generation_config_volume", "generation_config_emotion")):
+            payload["generation_config"] = {
+                k.replace("generation_config_", ""): settings[k]
+                for k in ("generation_config_speed", "generation_config_volume", "generation_config_emotion")
+                if k in settings
+            }
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -377,16 +435,7 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                     "Cartesia-Version": "2024-06-10",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model_id": self.config.tts_model or "sonic-english",
-                    "transcript": text,
-                    "voice": {"mode": "id", "id": self.config.tts_voice_id},
-                    "output_format": {
-                        "container": "raw",
-                        "encoding": "pcm_s16le",
-                        "sample_rate": self.config.sample_rate,
-                    },
-                },
+                json=payload,
                 timeout=30.0,
             )
 
@@ -404,22 +453,34 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
 
         # Request raw PCM directly from ElevenLabs (avoids ffmpeg/pydub dependency)
         pcm_format = f"pcm_{self.config.sample_rate}"
+        settings = self._tts_settings()
+        voice_settings: Dict[str, Any] = {
+            "stability": settings.get("stability", 0.5),
+            "similarity_boost": settings.get("similarity_boost", 0.75),
+        }
+        for key in ("style", "use_speaker_boost", "speed"):
+            if settings.get(key) is not None:
+                voice_settings[key] = settings[key]
+
+        request_json: Dict[str, Any] = {
+            "text": text,
+            "model_id": model_id,
+            "voice_settings": voice_settings,
+        }
+        if settings.get("apply_text_normalization") is not None:
+            request_json["apply_text_normalization"] = settings["apply_text_normalization"]
 
         async with httpx.AsyncClient() as client:
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format={pcm_format}"
+            if settings.get("optimize_streaming_latency") is not None:
+                url += f"&optimize_streaming_latency={int(settings['optimize_streaming_latency'])}"
             response = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format={pcm_format}",
+                url,
                 headers={
                     "xi-api-key": self.config.tts_api_key,
                     "Content-Type": "application/json",
                 },
-                json={
-                    "text": text,
-                    "model_id": model_id,
-                    "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75,
-                    },
-                },
+                json=request_json,
                 timeout=30.0,
             )
 
@@ -435,6 +496,17 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
 
         model = self.config.tts_model or "gpt-4o-mini-tts"
         voice = self.config.tts_voice_id or "alloy"
+        settings = self._tts_settings()
+        payload: Dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "voice": voice,
+            "response_format": "pcm",
+        }
+        if settings.get("speed") is not None:
+            payload["speed"] = settings["speed"]
+        if settings.get("instructions"):
+            payload["instructions"] = settings["instructions"]
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -443,12 +515,7 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                     "Authorization": f"Bearer {self.config.tts_api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "input": text,
-                    "voice": voice,
-                    "response_format": "pcm",
-                },
+                json=payload,
                 timeout=30.0,
             )
 
@@ -478,6 +545,117 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                     logger.warning("[TestAgent] pydub not installed — sending 24kHz audio without resampling")
 
             return response.content
+
+    async def _tts_sarvam(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via Sarvam HTTP API and return raw PCM s16le bytes."""
+        from efficientai.services.sarvam.http_tts import synthesize_sarvam_bytes
+
+        voice = self.config.tts_voice_id or TTS_DEFAULT_VOICES["sarvam"]
+        model = self.config.tts_model or TTS_DEFAULT_MODELS["sarvam"]
+        settings = self._tts_settings()
+        config: Dict[str, Any] = {"sample_rate": self.config.sample_rate}
+        for key in ("pitch", "pace", "loudness", "temperature", "enable_preprocessing"):
+            if settings.get(key) is not None:
+                config[key] = settings[key]
+
+        audio_wav, _ = await asyncio.to_thread(
+            synthesize_sarvam_bytes,
+            text=text,
+            model=model,
+            api_key=self.config.tts_api_key,
+            voice=voice,
+            config=config,
+        )
+
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(io.BytesIO(audio_wav), format="wav")
+            seg = seg.set_frame_rate(self.config.sample_rate).set_channels(1).set_sample_width(2)
+            return seg.raw_data
+        except ImportError:
+            import wave
+            with wave.open(io.BytesIO(audio_wav), "rb") as wf:
+                frames = wf.readframes(wf.getnframes())
+                if wf.getframerate() != self.config.sample_rate:
+                    logger.warning(
+                        f"[TestAgent] Sarvam WAV at {wf.getframerate()}Hz but target is "
+                        f"{self.config.sample_rate}Hz — install pydub for resampling"
+                    )
+                return frames
+
+    async def _tts_voicemaker(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via VoiceMaker HTTP API and return raw PCM s16le bytes."""
+        from efficientai.services.voicemaker.http_tts import synthesize_voicemaker_bytes
+
+        voice = self.config.tts_voice_id or TTS_DEFAULT_VOICES["voicemaker"]
+        model = self.config.tts_model or TTS_DEFAULT_MODELS["voicemaker"]
+        settings = self._tts_settings()
+        config: Dict[str, Any] = {"sample_rate_hz": settings.get("sample_rate_hz", self.config.sample_rate)}
+        if settings.get("output_format"):
+            config["output_format"] = settings["output_format"]
+
+        audio_mp3, _ = await asyncio.to_thread(
+            synthesize_voicemaker_bytes,
+            text=text,
+            model=model,
+            api_key=self.config.tts_api_key,
+            voice=voice,
+            config=config,
+        )
+
+        try:
+            from pydub import AudioSegment
+            seg = AudioSegment.from_file(io.BytesIO(audio_mp3), format="mp3")
+            seg = seg.set_frame_rate(self.config.sample_rate).set_channels(1).set_sample_width(2)
+            return seg.raw_data
+        except ImportError:
+            logger.error("[TestAgent] pydub required to decode VoiceMaker MP3 audio")
+            return None
+
+    async def _tts_smallest(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via Smallest HTTP API."""
+        from efficientai.services.smallest.http_tts import synthesize_smallest_bytes
+
+        voice = self.config.tts_voice_id or TTS_DEFAULT_VOICES["smallest"]
+        model = self.config.tts_model or TTS_DEFAULT_MODELS["smallest"]
+        settings = self._tts_settings()
+        config: Dict[str, Any] = {"sample_rate": self.config.sample_rate}
+        if settings.get("speed") is not None:
+            config["speed"] = settings["speed"]
+        if settings.get("language"):
+            config["language"] = settings["language"]
+
+        audio_bytes, _ = await asyncio.to_thread(
+            synthesize_smallest_bytes,
+            text=text,
+            model=model,
+            api_key=self.config.tts_api_key,
+            voice=voice,
+            config=config,
+        )
+        return audio_bytes
+
+    async def _tts_murf(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via Murf HTTP API."""
+        from efficientai.services.murf.tts import synthesize_murf_stream_bytes
+
+        voice = self.config.tts_voice_id or TTS_DEFAULT_VOICES["murf"]
+        model = self.config.tts_model or TTS_DEFAULT_MODELS["murf"]
+        settings = self._tts_settings()
+        config: Dict[str, Any] = {"sample_rate": self.config.sample_rate}
+        for key in ("speed", "rate", "pitch", "style"):
+            if settings.get(key) is not None:
+                config[key] = settings[key]
+
+        audio_bytes, _ = await asyncio.to_thread(
+            synthesize_murf_stream_bytes,
+            text=text,
+            model=model,
+            api_key=self.config.tts_api_key,
+            voice=voice,
+            config=config,
+        )
+        return audio_bytes
 
     async def stream_audio_chunks(
         self, 

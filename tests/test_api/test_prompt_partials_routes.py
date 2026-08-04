@@ -131,3 +131,91 @@ def test_metric_partial_kind_filter_and_validation(authenticated_client):
         json={"content": "still-not-json"},
     )
     assert bad_update.status_code == 400
+
+
+def test_flowchart_generate_does_not_enqueue_to_imports_queue(authenticated_client, monkeypatch):
+    """Agent flowchart LLM jobs must not override queue to imports (worker-imports)."""
+    from types import SimpleNamespace
+
+    from app.services.imported_agent_constants import AGENT_SYSTEM_PROMPT_TAG_PREFIX
+
+    captured = []
+
+    class _Task:
+        @staticmethod
+        def apply_async(*_args, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(id="fake-flowchart-task")
+
+    import app.workers.tasks.agent_flowchart_jobs as flowchart_jobs
+
+    monkeypatch.setattr(flowchart_jobs, "generate_agent_flowchart_task", _Task())
+
+    create_response = authenticated_client.post(
+        "/api/v1/prompt-partials",
+        json={
+            "name": "Test Agent Prompt",
+            "content": "You are a helpful test agent.",
+            "tags": [f"{AGENT_SYSTEM_PROMPT_TAG_PREFIX}agent-1"],
+        },
+    )
+    assert create_response.status_code == 201
+    partial_id = create_response.json()["id"]
+
+    flowchart_response = authenticated_client.post(
+        f"/api/v1/prompt-partials/{partial_id}/flowchart",
+        json={"regenerate": True},
+    )
+    assert flowchart_response.status_code == 200
+    assert len(captured) == 1
+    assert captured[0].get("queue") != "imports"
+
+
+def test_flowchart_prompt_map_does_not_enqueue_to_imports_queue(
+    authenticated_client, db_session, monkeypatch
+):
+    """Flowchart prompt-section mapping must not override queue to imports."""
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from app.models.database import PromptPartial
+    from app.services.imported_agent_constants import AGENT_SYSTEM_PROMPT_TAG_PREFIX
+
+    captured = []
+
+    class _Task:
+        @staticmethod
+        def apply_async(*_args, **kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(id="fake-map-task")
+
+    import app.workers.tasks.agent_flowchart_jobs as flowchart_jobs
+
+    monkeypatch.setattr(flowchart_jobs, "map_agent_flowchart_prompt_sections_task", _Task())
+
+    create_response = authenticated_client.post(
+        "/api/v1/prompt-partials",
+        json={
+            "name": "Test Agent Prompt Map",
+            "content": "You are a helpful test agent.",
+            "tags": [f"{AGENT_SYSTEM_PROMPT_TAG_PREFIX}agent-2"],
+        },
+    )
+    assert create_response.status_code == 201
+    partial_id = create_response.json()["id"]
+
+    partial = db_session.query(PromptPartial).filter(PromptPartial.id == UUID(partial_id)).one()
+    partial.agent_flowchart = {
+        "nodes": [{"id": "n1", "label": "Start", "node_type": "start"}],
+        "edges": [],
+    }
+    partial.agent_flowchart_status = "completed"
+    db_session.commit()
+
+    map_response = authenticated_client.post(
+        f"/api/v1/prompt-partials/{partial_id}/flowchart/prompt-map",
+        json={},
+    )
+    assert map_response.status_code == 200
+    assert len(captured) == 1
+    assert captured[0].get("queue") != "imports"

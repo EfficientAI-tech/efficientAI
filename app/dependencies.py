@@ -161,9 +161,10 @@ def get_workspace_context(
         return cached
 
     parsed_ws_id: UUID | None = None
-    if x_workspace_id:
+    workspace_ref = x_workspace_id or request.query_params.get("workspace_id")
+    if workspace_ref:
         try:
-            parsed_ws_id = UUID(x_workspace_id)
+            parsed_ws_id = UUID(workspace_ref)
         except (ValueError, TypeError):
             raise HTTPException(
                 status_code=400,

@@ -8,17 +8,42 @@ from typing import List, Optional, Dict, Any
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
-from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario
-from app.workers.celery_app import process_evaluator_result_task
+from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording
 import random
+from datetime import datetime
 from app.models.schemas import (
     EvaluatorResultResponse,
     EvaluatorResultCreate,
     EvaluatorResultCreateManual,
     EvaluatorResultUpdate,
+    EvaluatorResultListResponse,
+    EvaluatorResultsOverviewResponse,
+    EvaluatorResultsAggregateResponse,
+)
+from app.services.evaluators.evaluator_results_query import (
+    build_evaluator_results_query,
+    list_evaluator_results_page,
+)
+from app.services.evaluators.evaluator_results_overview import build_evaluator_results_overview
+from app.services.evaluators.evaluator_results_aggregate import compute_evaluator_results_aggregate
+from app.services.evaluators.evaluator_result_status import (
+    effective_evaluator_result_status,
+    repair_evaluator_result_status_if_needed,
 )
 
 router = APIRouter(prefix="/evaluator-results", tags=["evaluator-results"])
+
+
+def _detach_call_recordings_from_evaluator_results(
+    db: Session,
+    evaluator_result_ids: List[UUID],
+) -> None:
+    """Clear FK references so observability call rows survive result deletion."""
+    if not evaluator_result_ids:
+        return
+    db.query(CallRecording).filter(
+        CallRecording.evaluator_result_id.in_(evaluator_result_ids)
+    ).update({CallRecording.evaluator_result_id: None}, synchronize_session=False)
 
 
 def _derive_speaker_segments_from_call_data(
@@ -151,6 +176,47 @@ def _derive_speaker_segments_from_call_data(
                 speaker = "Speaker 2" if speaker_label.strip().lower() in ("agent", "assistant", "ai", "bot") else "Speaker 1"
                 _append_segment(speaker, text, 0, 0)
 
+    elif platform == "vobiz":
+        from app.services.telephony.call_recording_lifecycle import (
+            live_transcript_to_messages,
+            _timestamp_to_ms,
+        )
+
+        messages = call_data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            live_transcript = call_data.get("live_transcript")
+            if isinstance(live_transcript, list) and live_transcript:
+                messages = live_transcript_to_messages(live_transcript)
+        call_start_ms = _timestamp_to_ms(call_data.get("started_at")) or _timestamp_to_ms(
+            call_data.get("startedAt")
+        )
+        if isinstance(messages, list):
+            for index, msg in enumerate(messages):
+                if not isinstance(msg, dict):
+                    continue
+                role = str(msg.get("role", "")).lower()
+                speaker = "Speaker 1" if role == "user" else "Speaker 2"
+                start_raw = msg.get("start_time", msg.get("secondsFromStart", 0))
+                end_raw = msg.get("end_time", msg.get("endTime"))
+                start = 0.0
+                end = 0.0
+                if isinstance(start_raw, (int, float)):
+                    if start_raw > 1e10 and call_start_ms:
+                        start = max(0.0, (float(start_raw) - float(call_start_ms)) / 1000.0)
+                    else:
+                        start = float(start_raw / 1000.0 if start_raw > 1e10 else start_raw)
+                if isinstance(end_raw, (int, float)):
+                    if end_raw > 1e10 and call_start_ms:
+                        end = max(start, (float(end_raw) - float(call_start_ms)) / 1000.0)
+                    else:
+                        end = float(end_raw / 1000.0 if end_raw > 1e10 else end_raw)
+                elif start:
+                    end = start
+                else:
+                    start = float(index)
+                    end = float(index)
+                _append_segment(speaker, msg.get("content", "") or msg.get("message", ""), start, end)
+
     return segments or None
 
 
@@ -166,11 +232,101 @@ def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str
     return result.speaker_segments
 
 
-@router.get("", response_model=List[EvaluatorResultResponse])
+@router.get("/overview", response_model=EvaluatorResultsOverviewResponse)
+def get_evaluator_results_overview(
+    agent_id: Optional[str] = Query(None, description="When set, return suites for this agent"),
+    suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Workspace rollups for agent → suite → scenario navigation."""
+    agent_uuid: Optional[UUID] = None
+    suite_uuid: Optional[UUID] = None
+    if agent_id:
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid agent_id")
+    if suite_id:
+        try:
+            suite_uuid = UUID(suite_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid suite_id")
+
+    return build_evaluator_results_overview(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=agent_uuid,
+        suite_id=suite_uuid,
+    )
+
+
+@router.get("/aggregate", response_model=EvaluatorResultsAggregateResponse)
+def get_evaluator_results_aggregate(
+    suite_id: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+    scenario_id: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Metric distributions for completed evaluator results in a scope."""
+    suite_uuid: Optional[UUID] = None
+    agent_uuid: Optional[UUID] = None
+    scenario_uuid: Optional[UUID] = None
+    if suite_id:
+        try:
+            suite_uuid = UUID(suite_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid suite_id")
+    if agent_id:
+        try:
+            agent_uuid = UUID(agent_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid agent_id")
+    if scenario_id:
+        try:
+            scenario_uuid = UUID(scenario_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scenario_id")
+
+    try:
+        return compute_evaluator_results_aggregate(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            suite_id=suite_uuid,
+            agent_id=agent_uuid,
+            scenario_id=scenario_uuid,
+            since=since,
+            until=until,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("", response_model=EvaluatorResultListResponse)
 def list_evaluator_results(
     skip: int = 0,
     limit: int = 100,
     evaluator_id: Optional[str] = None,
+    agent_id: Optional[str] = Query(None, description="Filter by associated agent UUID"),
+    suite_id: Optional[str] = Query(None, description="Filter by evaluator suite UUID"),
+    scenario_id: Optional[str] = Query(None, description="Filter by scenario UUID"),
+    status: Optional[str] = Query(
+        None,
+        description="Filter by display status: completed, failed, in_progress",
+    ),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    unassigned_only: Optional[bool] = Query(
+        None,
+        description="When true, only legacy/manual results without a suite",
+    ),
     playground: Optional[bool] = Query(None, description="If true, only return playground test results (evaluator_id is NULL). If false, exclude playground results. If not provided, exclude playground results by default."),
     test_agents_only: Optional[bool] = Query(None, description="If true, only return Test Agent results (no provider_platform). If false, include all playground results."),
     organization_id: UUID = Depends(get_organization_id),
@@ -183,91 +339,33 @@ def list_evaluator_results(
     Use playground=true to get only playground results, or playground=false to explicitly exclude them.
     Use test_agents_only=true to filter out Voice AI Agent results (those with provider_platform set).
     """
-    query = db.query(EvaluatorResult).filter(
-        EvaluatorResult.organization_id == organization_id,
-        EvaluatorResult.workspace_id == workspace_id,
+    try:
+        query = build_evaluator_results_query(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            evaluator_id=evaluator_id,
+            agent_id=agent_id,
+            suite_id=suite_id,
+            scenario_id=scenario_id,
+            status=status,
+            since=since,
+            until=until,
+            playground=playground,
+            test_agents_only=test_agents_only,
+            unassigned_only=unassigned_only,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    items, total = list_evaluator_results_page(
+        db,
+        query,
+        skip=skip,
+        limit=limit,
+        resolve_speaker_segments=_resolve_speaker_segments,
     )
-    
-    # Handle playground filter
-    if playground is True:
-        # Only return playground results (evaluator_id is NULL)
-        query = query.filter(EvaluatorResult.evaluator_id.is_(None))
-        
-        # If test_agents_only is True, exclude Voice AI agent results (those with provider_platform)
-        if test_agents_only is True:
-            query = query.filter(EvaluatorResult.provider_platform.is_(None))
-    elif playground is False:
-        # Explicitly exclude playground results
-        query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
-    else:
-        # Default: exclude playground results (evaluator_id is not NULL)
-        query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
-    
-    if evaluator_id:
-        try:
-            evaluator_uuid = UUID(evaluator_id)
-            query = query.filter(EvaluatorResult.evaluator_id == evaluator_uuid)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid evaluator_id")
-    
-    results = query.order_by(EvaluatorResult.timestamp.desc()).offset(skip).limit(limit).all()
-    
-    # Include agent relations for all results to get voice bundle info
-    from app.models.database import Agent, VoiceBundle
-    from app.models.schemas import AgentResponse
-    
-    response_results = []
-    for result in results:
-        result_dict = {
-            "id": result.id,
-            "result_id": result.result_id,
-            "organization_id": result.organization_id,
-            "evaluator_id": result.evaluator_id,
-            "agent_id": result.agent_id,
-            "persona_id": result.persona_id,
-            "scenario_id": result.scenario_id,
-            "name": result.name,
-            "timestamp": result.timestamp,
-            "duration_seconds": result.duration_seconds,
-            "status": result.status,
-            "audio_s3_key": result.audio_s3_key,
-            "transcription": result.transcription,
-            "speaker_segments": _resolve_speaker_segments(result),
-            "metric_scores": result.metric_scores,
-            "celery_task_id": result.celery_task_id,
-            "error_message": result.error_message,
-            # Call tracking fields (for voice AI integrations like Retell)
-            "call_event": result.call_event,
-            "provider_call_id": result.provider_call_id,
-            "provider_platform": result.provider_platform,
-            "call_data": result.call_data,
-            "created_at": result.created_at,
-            "updated_at": result.updated_at,
-            "created_by": result.created_by,
-        }
-        
-        # Get Agent with voice bundle info
-        agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
-        if agent:
-            agent_data = AgentResponse.model_validate(agent).model_dump()
-            # Include voice bundle info if agent has voice_bundle_id
-            if agent.voice_bundle_id:
-                voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
-                if voice_bundle:
-                    agent_data["voice_bundle"] = {
-                        "id": str(voice_bundle.id),
-                        "name": voice_bundle.name,
-                        "bundle_type": voice_bundle.bundle_type,
-                        "s2s_model": voice_bundle.s2s_model if voice_bundle.bundle_type == "s2s" else None,
-                        "stt_model": voice_bundle.stt_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
-                        "llm_model": voice_bundle.llm_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
-                        "tts_model": voice_bundle.tts_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
-                    }
-            result_dict["agent"] = agent_data
-        
-        response_results.append(EvaluatorResultResponse(**result_dict))
-    
-    return response_results
+    return EvaluatorResultListResponse(items=items, total=total)
 
 
 @router.get("/{id}", response_model=EvaluatorResultResponse)
@@ -302,6 +400,11 @@ def get_evaluator_result(
     
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    from app.services.live_entity_storage import hydrate_evaluator_results
+
+    hydrate_evaluator_results([result])
+    repair_evaluator_result_status_if_needed(db, result)
     
     # Build response
     response_data = {
@@ -315,7 +418,7 @@ def get_evaluator_result(
         "name": result.name,
         "timestamp": result.timestamp,
         "duration_seconds": result.duration_seconds,
-        "status": result.status,
+        "status": effective_evaluator_result_status(result),
         "audio_s3_key": result.audio_s3_key,
         "transcription": result.transcription,
         "speaker_segments": _resolve_speaker_segments(result),
@@ -377,6 +480,7 @@ def get_evaluator_result(
             evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
             if evaluator:
                 response_data["evaluator"] = EvaluatorResponse.model_validate(evaluator)
+                response_data["suite_id"] = evaluator.suite_id
     
     return EvaluatorResultResponse(**response_data)
 
@@ -409,7 +513,8 @@ def delete_evaluator_result(
     
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
-    
+
+    _detach_call_recordings_from_evaluator_results(db, [result.id])
     db.delete(result)
     db.commit()
     return None
@@ -423,8 +528,8 @@ def delete_evaluator_results_bulk(
     db: Session = Depends(get_db),
 ):
     """Delete multiple evaluator results in the active workspace by their IDs."""
-    deleted_count = 0
-    
+    to_delete: List[EvaluatorResult] = []
+
     for result_id in result_ids:
         try:
             result_uuid = UUID(result_id)
@@ -443,11 +548,17 @@ def delete_evaluator_results_bulk(
                     EvaluatorResult.workspace_id == workspace_id,
                 )
             ).first()
-        
+
         if result:
+            to_delete.append(result)
+
+    if to_delete:
+        _detach_call_recordings_from_evaluator_results(
+            db, [row.id for row in to_delete]
+        )
+        for result in to_delete:
             db.delete(result)
-            deleted_count += 1
-    
+
     db.commit()
     return None
 
@@ -566,6 +677,8 @@ def create_evaluator_result_manual(
     
     # Trigger Celery task for transcription and evaluation
     try:
+        from app.workers.celery_app import process_evaluator_result_task
+
         task = process_evaluator_result_task.delay(str(evaluator_result.id))
         evaluator_result.celery_task_id = task.id
         db.commit()
@@ -733,6 +846,8 @@ def re_evaluate_result(
 
     # Dispatch Celery task (it will skip transcription since transcript already exists)
     try:
+        from app.workers.celery_app import process_evaluator_result_task
+
         task = process_evaluator_result_task.delay(str(result.id))
         result.celery_task_id = task.id
         db.commit()

@@ -23,6 +23,14 @@ from app.workers.tasks.helpers.llm_evaluation import (
     evaluate_with_llm,
     handle_llm_evaluation_error,
 )
+from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
+
+
+def _commit_evaluator_result(db, result) -> None:
+    from app.services.live_entity_storage import sync_evaluator_result
+
+    sync_evaluator_result(db, result)
+    db.commit()
 
 
 def _make_json_serializable(obj):
@@ -222,6 +230,64 @@ def _categorize_metrics(enabled_metrics, has_audio):
     return llm_metrics, audio_metrics, skipped_scores
 
 
+def _evaluate_llm_metrics_grouped(
+    *,
+    transcription: str,
+    llm_metrics: list,
+    ai_providers,
+    organization_id,
+    result_id: str,
+    db,
+    evaluator,
+    agent,
+    persona,
+    scenario,
+) -> tuple[dict, float | None]:
+    """Evaluate LLM metrics, grouping categorization children by parent."""
+    from app.workers.tasks.evaluate_call_import_row_core import build_parent_groups
+
+    parents_by_id, children_by_parent, standalone_metrics = build_parent_groups(
+        db, llm_metrics
+    )
+    metric_scores: dict = {}
+    evaluation_time: float | None = None
+
+    def _run_bucket(bucket, parent_metric=None):
+        nonlocal evaluation_time
+        scores, eval_time = evaluate_with_llm(
+            transcription=transcription,
+            llm_metrics=bucket,
+            ai_providers=ai_providers,
+            organization_id=organization_id,
+            result_id=result_id,
+            db=db,
+            evaluator=evaluator,
+            agent=agent,
+            persona=persona,
+            scenario=scenario,
+            parent_metric=parent_metric,
+        )
+        metric_scores.update(scores)
+        if eval_time is not None:
+            evaluation_time = eval_time
+
+    if standalone_metrics:
+        _run_bucket(standalone_metrics, parent_metric=None)
+
+    for parent_id, children in children_by_parent.items():
+        parent_metric = parents_by_id.get(parent_id)
+        if not parent_metric:
+            logger.warning(
+                f"[EvaluatorResult {result_id}] Parent metric {parent_id} not found; "
+                "evaluating children as flat metrics"
+            )
+            _run_bucket(children, parent_metric=None)
+            continue
+        _run_bucket(children, parent_metric=parent_metric)
+
+    return metric_scores, evaluation_time
+
+
 def _normalize_platform(platform: object) -> str:
     """Normalize provider platform enum/string into lowercase string."""
     if not platform:
@@ -361,7 +427,7 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
         return False
 
     result.audio_s3_key = s3_key
-    db.commit()
+    _commit_evaluator_result(db, result)
     db.refresh(result)
     logger.info(
         f"[EvaluatorResult {result.result_id}] Recovered missing audio and stored at {s3_key}"
@@ -438,8 +504,7 @@ def process_evaluator_result_task(self, result_id: str):
             evaluator, agent, persona, scenario = _load_related_entities(db, result)
             is_custom_evaluator = evaluator and (
                 bool(evaluator.custom_prompt)
-                or bool(getattr(evaluator, "metric_ids", None))
-                or (evaluator.agent_id is None)
+                or evaluator.agent_id is None
             )
 
             if not is_custom_evaluator and not agent:
@@ -487,15 +552,21 @@ def process_evaluator_result_task(self, result_id: str):
                 )
             ]
 
-            # Custom evaluators may carry an explicit metric selection. When set,
-            # only score those metrics (children are stored directly by the UI
-            # picker, so no parent expansion is needed here).
+            # Explicit metric selection on the evaluator/suite. Categorization
+            # parents are stored as a single ID and expanded to child labels here.
+            from app.services.evaluators.evaluator_helpers import expand_metric_ids_for_evaluation
+
             selected_metric_ids = {
                 str(mid) for mid in (getattr(evaluator, "metric_ids", None) or [])
             }
             if selected_metric_ids:
+                expanded_ids = expand_metric_ids_for_evaluation(
+                    db,
+                    result.organization_id,
+                    list(selected_metric_ids),
+                ) or set()
                 enabled_metrics = [
-                    m for m in enabled_metrics if str(m.id) in selected_metric_ids
+                    m for m in enabled_metrics if str(m.id) in expanded_ids
                 ]
 
             has_audio = bool(result.audio_s3_key)
@@ -556,7 +627,7 @@ def process_evaluator_result_task(self, result_id: str):
                 db.commit()
 
                 try:
-                    llm_scores, evaluation_time = evaluate_with_llm(
+                    llm_scores, evaluation_time = _evaluate_llm_metrics_grouped(
                         transcription=transcription,
                         llm_metrics=llm_metrics,
                         ai_providers=ai_providers,
@@ -603,23 +674,25 @@ def process_evaluator_result_task(self, result_id: str):
                     if call_analysis:
                         existing_call_data = dict(result.call_data) if isinstance(result.call_data, dict) else {}
                         existing_call_data["call_analysis"] = call_analysis
-                        generated = existing_call_data.get("generated", {})
-                        if not isinstance(generated, dict):
-                            generated = {}
-                        generated["call_analysis"] = call_analysis
-                        existing_call_data["generated"] = generated
-                        result.call_data = existing_call_data
+                        result.call_data = slim_call_data_for_evaluator_result(existing_call_data)
                 except Exception as analysis_err:
                     logger.warning(
                         f"[EvaluatorResult {result.result_id}] Call analysis failed (non-fatal): {analysis_err}"
                     )
 
             # Step 6: Complete
+            from sqlalchemy.orm.attributes import flag_modified
+
             result.metric_scores = _make_json_serializable(metric_scores)
+            flag_modified(result, "metric_scores")
+            if isinstance(result.call_data, dict):
+                result.call_data = slim_call_data_for_evaluator_result(result.call_data)
             if isinstance(result.call_data, (dict, list)):
                 result.call_data = _make_json_serializable(result.call_data)
+                flag_modified(result, "call_data")
             result.status = EvaluatorResultStatus.COMPLETED.value
-            db.commit()
+            result.error_message = None
+            _commit_evaluator_result(db, result)
 
             from app.services.billing.flexprice_service import (
                 record_playground_evaluation_completed,

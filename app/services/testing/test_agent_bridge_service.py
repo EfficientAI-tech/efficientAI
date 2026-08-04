@@ -6,14 +6,30 @@ Bridges test voice AI agent (voice bundle) with configured Voice AI agent via in
 
 import asyncio
 import os
+import time
 from typing import Dict, Any, Optional
 from uuid import UUID
 from loguru import logger
 
-from app.models.database import Agent, Integration, VoiceBundle, EvaluatorResult, EvaluatorResultStatus
+from app.models.database import (
+    Agent,
+    Persona,
+    Scenario,
+    VoiceBundle,
+    Integration,
+    EvaluatorResult,
+    EvaluatorResultStatus,
+)
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
 from app.services.storage.s3_service import s3_service
+from app.services.testing.test_agent_simulation_prompt import (
+    build_persona_description_for_bridge,
+    build_test_agent_system_prompt,
+    resolve_persona_max_turns,
+    compose_test_agent_simulation_prompt,
+    scenario_goal_from_required_info,
+)
 from app.workers.celery_app import process_evaluator_result_task
 
 
@@ -448,6 +464,9 @@ class TestAgentBridgeService:
                     ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
                     ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
                     ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
+                    ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
+                    ModelProvider.MURF: IntegrationPlatform.MURF,
+                    ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
                 }
                 plat = platform_map.get(provider)
                 if plat:
@@ -470,6 +489,10 @@ class TestAgentBridgeService:
                     ModelProvider.ELEVENLABS: "ELEVENLABS_API_KEY",
                     ModelProvider.DEEPGRAM: "DEEPGRAM_API_KEY",
                     ModelProvider.GOOGLE: "GOOGLE_API_KEY",
+                    ModelProvider.SARVAM: "SARVAM_API_KEY",
+                    ModelProvider.MURF: "MURF_API_KEY",
+                    ModelProvider.SMALLEST: "SMALLEST_API_KEY",
+                    ModelProvider.VOICEMAKER: "VOICEMAKER_API_KEY",
                 }
                 env_var = env_map.get(provider)
                 if env_var:
@@ -488,6 +511,11 @@ class TestAgentBridgeService:
                 .first()
             )
 
+            from app.services.voice_agent.resolve_tts_voice import (
+                log_effective_tts_voice,
+                resolve_effective_tts_voice_id,
+            )
+
             tts_voice_id = None
             tts_model = None
             tts_provider_str = None
@@ -495,8 +523,19 @@ class TestAgentBridgeService:
                 raw = getattr(voice_bundle, "tts_provider", None)
                 if raw:
                     tts_provider_str = (raw.value if hasattr(raw, "value") else str(raw)).lower()
-                tts_voice_id = getattr(voice_bundle, "tts_voice", None)
                 tts_model = getattr(voice_bundle, "tts_model", None)
+
+            tts_voice_id = resolve_effective_tts_voice_id(
+                persona=persona,
+                voice_bundle=voice_bundle,
+            )
+            log_effective_tts_voice(
+                logger,
+                path_name="Bridge WebRTC",
+                persona=persona,
+                voice_bundle=voice_bundle,
+                resolved_voice_id=tts_voice_id,
+            )
 
             if not tts_provider_str:
                 raise ValueError(
@@ -508,6 +547,10 @@ class TestAgentBridgeService:
                 "cartesia": ModelProvider.CARTESIA,
                 "elevenlabs": ModelProvider.ELEVENLABS,
                 "openai": ModelProvider.OPENAI,
+                "sarvam": ModelProvider.SARVAM,
+                "murf": ModelProvider.MURF,
+                "smallest": ModelProvider.SMALLEST,
+                "voicemaker": ModelProvider.VOICEMAKER,
             }
             tts_model_provider = tts_provider_enum_map.get(tts_provider_str)
             if not tts_model_provider:
@@ -533,7 +576,15 @@ class TestAgentBridgeService:
             if not llm_api_key:
                 missing_keys.append("OpenAI (LLM) - check AIProvider table or OPENAI_API_KEY env var")
             if not tts_api_key:
-                env_hints = {"cartesia": "CARTESIA_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY", "openai": "OPENAI_API_KEY"}
+                env_hints = {
+                    "cartesia": "CARTESIA_API_KEY",
+                    "elevenlabs": "ELEVENLABS_API_KEY",
+                    "openai": "OPENAI_API_KEY",
+                    "sarvam": "SARVAM_API_KEY",
+                    "murf": "MURF_API_KEY",
+                    "smallest": "SMALLEST_API_KEY",
+                    "voicemaker": "VOICEMAKER_API_KEY",
+                }
                 env_hint = env_hints.get(tts_provider_str, f"{tts_provider_str.upper()}_API_KEY")
                 missing_keys.append(f"{tts_provider_str} (TTS) - check AIProvider/Integration table or {env_hint} env var")
 
@@ -544,46 +595,49 @@ class TestAgentBridgeService:
                 )
                 test_agent = None
             else:
-                # Build test agent config from persona/scenario
-                scenario_goal = "Complete the test call successfully"
+                scenario_goal = scenario_goal_from_required_info(scenario)
                 first_message = f"Hello, this is {persona.name} calling."
 
-                if scenario.required_info:
-                    if isinstance(scenario.required_info, dict):
-                        scenario_goal = scenario.required_info.get("goal", scenario_goal)
-                        first_message = scenario.required_info.get("first_message", first_message)
+                if scenario.required_info and isinstance(scenario.required_info, dict):
+                    first_message = scenario.required_info.get("first_message", first_message)
 
-                persona_traits = []
-                if hasattr(persona, "gender") and persona.gender:
-                    gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
-                    persona_traits.append(f"{gender_val} caller")
-                if hasattr(persona, "tts_voice_name") and persona.tts_voice_name:
-                    persona_traits.append(f"voice: {persona.tts_voice_name}")
-                if hasattr(persona, "tts_provider") and persona.tts_provider:
-                    persona_traits.append(f"provider: {persona.tts_provider}")
-
-                persona_description = f"A caller named {persona.name}"
-                if persona_traits:
-                    persona_description += " (" + ", ".join(persona_traits) + ")"
+                persona_description = build_persona_description_for_bridge(persona)
+                effective_max_turns = resolve_persona_max_turns(persona)
+                simulation_prompt = compose_test_agent_simulation_prompt(agent, scenario)
+                caller_system_prompt = build_test_agent_system_prompt(
+                    agent,
+                    persona,
+                    scenario,
+                    max_turns=effective_max_turns,
+                    persona_description=persona_description,
+                )
 
                 test_agent_config = TestAgentConfig(
-                    # Who we are calling (the voice AI agent)
                     agent_name=agent.name or "Voice AI Agent",
                     agent_description=agent.description or "A voice AI assistant",
-                    # Who we are pretending to be (the test caller)
+                    test_agent_simulation_prompt=simulation_prompt,
+                    caller_system_prompt=caller_system_prompt,
                     persona_name=persona.name,
                     persona_description=persona_description,
-                    # The test scenario
                     scenario_description=getattr(scenario, "description", None) or scenario.name or "Test call scenario",
                     scenario_goal=scenario_goal,
                     first_message=first_message,
                     llm_api_key=llm_api_key,
+                    llm_temperature=getattr(persona, "llm_temperature", None),
+                    llm_max_tokens=getattr(persona, "llm_max_tokens", None),
                     tts_api_key=tts_api_key,
                     tts_provider=tts_provider_str,
                     tts_voice_id=tts_voice_id,
                     tts_model=tts_model,
+                    tts_config=getattr(persona, "tts_config", None),
                     sample_rate=sample_rate,
-                    max_turns=20,
+                    max_turns=effective_max_turns,
+                    response_delay_ms=(
+                        persona.response_delay_ms
+                        if getattr(persona, "response_delay_ms", None) is not None
+                        else 500
+                    ),
+                    allow_interruptions=bool(getattr(persona, "allow_interruptions", False)),
                 )
 
                 test_agent = TestAgentProcessor(test_agent_config)
@@ -593,6 +647,16 @@ class TestAgentBridgeService:
 
             # Step 3: Start recording and connect test agent to Retell
             webrtc_bridge.is_bridging = True
+
+            from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+            agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
+            last_voice_activity = time.monotonic()
+            silence_watch_enabled = test_agent is not None and agent_silence_hangup_secs is not None
+
+            def touch_voice_activity() -> None:
+                nonlocal last_voice_activity
+                last_voice_activity = time.monotonic()
 
             # Start recording
             await webrtc_bridge.start_recording()
@@ -605,6 +669,7 @@ class TestAgentBridgeService:
 
                 async def send_audio_chunks(audio: bytes):
                     """Stream audio to voice provider in real-time chunks."""
+                    touch_voice_activity()
                     await test_agent.stream_audio_chunks(audio, webrtc_bridge.receive_audio_from_test_agent, chunk_duration_ms=chunk_ms)
                     # Tell ElevenLabs bridge that we're done sending real audio
                     # so the background silence stream can resume immediately.
@@ -613,6 +678,7 @@ class TestAgentBridgeService:
 
                 async def on_transcript_received(transcript: str):
                     """When voice agent finishes speaking, process with test agent."""
+                    touch_voice_activity()
                     logger.info(f"[Bridge WebRTC] Received transcript from {provider_platform}: {transcript[:50]}...")
                     audio = await test_agent.process_agent_transcript(transcript)
                     if audio:
@@ -625,6 +691,7 @@ class TestAgentBridgeService:
 
                 async def on_agent_start_talking():
                     """Voice AI agent started speaking -- test agent should wait."""
+                    touch_voice_activity()
                     logger.info(f"[Bridge WebRTC] {provider_platform} agent started speaking")
                     test_agent.agent_is_talking = True
 
@@ -685,6 +752,17 @@ class TestAgentBridgeService:
 
             while webrtc_bridge.is_connected and webrtc_bridge.is_bridging:
                 await asyncio.sleep(1)
+
+                if (
+                    silence_watch_enabled
+                    and agent_silence_hangup_secs is not None
+                    and time.monotonic() - last_voice_activity >= agent_silence_hangup_secs
+                ):
+                    logger.warning(
+                        f"[Bridge WebRTC] No voice activity for {agent_silence_hangup_secs}s — ending call"
+                    )
+                    webrtc_bridge.is_bridging = False
+                    break
 
                 # Check for timeout
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -854,10 +932,6 @@ class TestAgentBridgeService:
                         poll_db.commit()
                         logger.info("[Bridge Poll] Status: FETCHING_DETAILS")
 
-                        # Store FULL call_data from provider
-                        result.call_data = call_metrics
-                        logger.info(f"[Bridge Poll] ✅ Stored call_data with {len(call_metrics)} keys: {list(call_metrics.keys())}")
-
                         # Extract duration (provider-specific)
                         duration_ms = call_metrics.get("duration_ms")
                         duration_seconds = call_metrics.get("duration_seconds")
@@ -887,7 +961,18 @@ class TestAgentBridgeService:
                             logger.warning("[Bridge Poll] ⚠️ No transcript extracted from call_data")
 
                         if speaker_segments:
+                            result.speaker_segments = speaker_segments
                             logger.info(f"[Bridge Poll] ✅ Derived {len(speaker_segments)} speaker segments from call_data")
+
+                        from app.services.evaluators.evaluator_result_call_data import (
+                            slim_call_data_for_evaluator_result,
+                        )
+
+                        result.call_data = slim_call_data_for_evaluator_result(call_metrics)
+                        logger.info(
+                            "[Bridge Poll] ✅ Stored slim call_data ({} keys)",
+                            len(result.call_data),
+                        )
 
                         # Download call audio from provider and upload to S3
                         audio_s3_key = None

@@ -21,7 +21,11 @@ A voice bundle gives you repeatable, controlled test conditions so you can compa
 - **STT + LLM + TTS**
 - **S2S (speech-to-speech)**
 
-For STT + LLM + TTS bundles, you configure provider/model settings per stage and optional parameters like temperature and token limits.
+For STT + LLM + TTS bundles, you configure provider/model settings per stage and optional parameters like temperature, token limits, and **TTS output frequency** (8, 16, or 22 kHz where the provider supports it; default 8 kHz).
+
+## Live call silence timeout
+
+Inbound phone calls and outbound simulation calls automatically end if no voice activity is detected from either party for **15 seconds** after the call connects.
 
 ## When to use voice bundles vs integrations
 

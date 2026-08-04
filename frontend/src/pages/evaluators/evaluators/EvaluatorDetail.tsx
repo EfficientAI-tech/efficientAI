@@ -1,54 +1,42 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import ReactMarkdown from 'react-markdown'
-import { apiClient } from '../../../lib/api'
-import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
+import { motion } from 'framer-motion'
+import { apiClient, EvaluatorSuite, EvaluatorSuiteCombination } from '../../../lib/api'
 import Button from '../../../components/Button'
-import { ArrowLeft, Edit, Save, X, Phone, Globe, Trash2, AlertCircle, Brain, ChevronDown } from 'lucide-react'
+import ConfirmModal from '../../../components/ConfirmModal'
+import {
+  Eye,
+  Plus,
+  Trash2,
+  Loader2,
+  Layers,
+  Brain,
+  BarChart3,
+  User,
+  Bot,
+  FileText,
+} from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
-import { getProviderLabel, getProviderLogo } from '../../../config/providers'
-import LLMAdvancedOptionsPanel from '../../../components/providers/LLMAdvancedOptionsPanel'
-import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
-import { providerHasLLMModels } from '../../../lib/llmModelOptions'
+import { ModelProvider } from '../../../types/api'
+import EvaluatorOutboundCallPanel from '../components/EvaluatorOutboundCallPanel'
+import EvaluatorInboundCallPanel from '../components/EvaluatorInboundCallPanel'
+import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
+import EvaluatorMetricPicker from '../components/EvaluatorMetricPicker'
+import EvaluatorLlmPicker from '../components/EvaluatorLlmPicker'
+import ScenarioViewModal from '../components/ScenarioViewModal'
+import EvaluatorDetailHeader from '../components/EvaluatorDetailHeader'
+import EvaluatorMetricsDisplay from '../components/EvaluatorMetricsDisplay'
+import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS, StatCard } from '../components/evaluatorUi'
+import { normalizeSelectedMetricIds, type MetricRow } from '../components/metricSelectionUtils'
 
-interface Evaluator {
-  id: string
-  evaluator_id: string
-  name?: string | null
-  agent_id?: string | null
-  persona_id?: string | null
-  scenario_id?: string | null
-  custom_prompt?: string | null
-  metric_ids?: string[] | null
-  llm_provider?: string | null
-  llm_model?: string | null
-  llm_config?: LLMGenerationConfig | null
-  tags?: string[]
-  created_at: string
-  updated_at: string
-}
-
-const markdownComponents = {
-  h1: ({ children }: any) => <h1 className="text-xl font-bold text-gray-900 mt-5 mb-2 first:mt-0 border-b border-gray-200 pb-1">{children}</h1>,
-  h2: ({ children }: any) => <h2 className="text-lg font-semibold text-gray-800 mt-4 mb-2 first:mt-0">{children}</h2>,
-  h3: ({ children }: any) => <h3 className="text-base font-semibold text-gray-800 mt-3 mb-1 first:mt-0">{children}</h3>,
-  h4: ({ children }: any) => <h4 className="text-sm font-semibold text-gray-800 mt-2 mb-1 first:mt-0">{children}</h4>,
-  p: ({ children }: any) => <p className="text-sm text-gray-700 mb-2 leading-relaxed">{children}</p>,
-  ul: ({ children }: any) => <ul className="list-disc list-inside text-sm text-gray-700 mb-2 space-y-1 ml-2">{children}</ul>,
-  ol: ({ children }: any) => <ol className="list-decimal list-inside text-sm text-gray-700 mb-2 space-y-1 ml-2">{children}</ol>,
-  li: ({ children }: any) => <li className="text-sm text-gray-700">{children}</li>,
-  strong: ({ children }: any) => <strong className="font-semibold text-gray-900">{children}</strong>,
-  em: ({ children }: any) => <em className="italic text-gray-600">{children}</em>,
-  code: ({ children }: any) => <code className="bg-gray-100 text-pink-600 text-xs px-1.5 py-0.5 rounded font-mono">{children}</code>,
-  pre: ({ children }: any) => <pre className="bg-gray-900 text-gray-100 text-xs p-3 rounded-md overflow-x-auto mb-2 font-mono">{children}</pre>,
-  blockquote: ({ children }: any) => <blockquote className="border-l-4 border-gray-300 pl-3 italic text-gray-600 text-sm my-2">{children}</blockquote>,
-  hr: () => <hr className="my-3 border-gray-200" />,
-  a: ({ children, href }: any) => <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{children}</a>,
-  table: ({ children }: any) => <table className="w-full border-collapse text-sm mb-2">{children}</table>,
-  th: ({ children }: any) => <th className="border border-gray-300 px-2 py-1 bg-gray-50 text-left font-semibold text-gray-800">{children}</th>,
-  td: ({ children }: any) => <td className="border border-gray-300 px-2 py-1 text-gray-700">{children}</td>,
-}
+const DEFAULT_SCENARIO_NAMES = [
+  'Cancel Subscription',
+  'Check Balance',
+  'Technical Support',
+  'Make Complaint',
+  'Product Inquiry',
+]
 
 export default function EvaluatorDetail() {
   const { id } = useParams<{ id: string }>()
@@ -57,1224 +45,440 @@ export default function EvaluatorDetail() {
   const { showToast, ToastContainer } = useToast()
 
   const [isEditing, setIsEditing] = useState(false)
-  const [editData, setEditData] = useState<Evaluator | null>(null)
-  const [editTagInput, setEditTagInput] = useState('')
+  const [editName, setEditName] = useState('')
+  const [editMetricIds, setEditMetricIds] = useState<string[]>([])
+  const [editLlmProvider, setEditLlmProvider] = useState<ModelProvider | null>(null)
+  const [editLlmModel, setEditLlmModel] = useState('')
+  const [scenarioToAdd, setScenarioToAdd] = useState('')
+  const [viewCombination, setViewCombination] = useState<EvaluatorSuiteCombination | null>(null)
+  const [showRunModal, setShowRunModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
-  const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
-  const [showLlmDropdown, setShowLlmDropdown] = useState(false)
-  const llmDropdownRef = useRef<HTMLDivElement>(null)
 
-  const { data: evaluator, isLoading } = useQuery<Evaluator>({
-    queryKey: ['evaluator', id],
-    queryFn: () => apiClient.getEvaluator(id!),
+  const { data: suite, isLoading, error } = useQuery<EvaluatorSuite>({
+    queryKey: ['evaluator-suite', id],
+    queryFn: () => apiClient.getEvaluatorSuite(id!),
     enabled: !!id,
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.agent_call_type === 'inbound' ? 12_000 : false,
+    refetchIntervalInBackground: false,
   })
 
-  const isCustom = !!evaluator && (!!evaluator.custom_prompt || (evaluator.metric_ids?.length ?? 0) > 0 || !evaluator.agent_id)
-  const hasLegacyPrompt = !!evaluator?.custom_prompt
-  const hasMetricSelection = (evaluator?.metric_ids?.length ?? 0) > 0
+  const { data: agent } = useQuery({
+    queryKey: ['agent', suite?.agent_id],
+    queryFn: () => apiClient.getAgent(suite!.agent_id),
+    enabled: !!suite?.agent_id,
+  })
+
+  const { data: scenarios = [] } = useQuery({
+    queryKey: ['scenarios', suite?.agent_id],
+    queryFn: () => apiClient.listScenarios(0, 100, suite!.agent_id),
+    enabled: isEditing && !!suite?.agent_id,
+  })
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', 'agent'],
     queryFn: () => apiClient.listMetrics('agent', true),
-    enabled: isCustom,
+    enabled: !!suite,
   })
-
-  const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
 
   useEffect(() => {
-    if (isEditing && editData) {
-      setSelectedMetricIds(editData.metric_ids || [])
+    if (suite && !isEditing) {
+      setEditName(suite.name || '')
+      const rows = metrics as MetricRow[]
+      setEditMetricIds(
+        suite.metric_ids?.length
+          ? normalizeSelectedMetricIds(suite.metric_ids, rows)
+          : [],
+      )
+      setEditLlmProvider((suite.llm_provider as ModelProvider) || null)
+      setEditLlmModel(suite.llm_model || '')
     }
-  }, [isEditing, editData])
+  }, [suite, isEditing, metrics])
 
-  const toggleMetric = (metricId: string) => {
-    setSelectedMetricIds((prev) =>
-      prev.includes(metricId) ? prev.filter((id) => id !== metricId) : [...prev, metricId],
-    )
+  const invalidateSuite = () => {
+    queryClient.invalidateQueries({ queryKey: ['evaluator-suite', id] })
+    queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
   }
-
-  const toggleParentMetric = (parent: any) => {
-    const childIds: string[] = Array.isArray(parent.children)
-      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
-      : []
-    setSelectedMetricIds((prev) => {
-      const set = new Set(prev)
-      const parentSelected = set.has(parent.id)
-      const someChildren = childIds.some((cid) => set.has(cid))
-      if (parentSelected || someChildren) {
-        set.delete(parent.id)
-        for (const cid of childIds) set.delete(cid)
-      } else {
-        set.add(parent.id)
-        for (const cid of childIds) set.add(cid)
-      }
-      return Array.from(set)
-    })
-  }
-
-  const toggleChildMetric = (parent: any, childId: string) => {
-    const childIds: string[] = Array.isArray(parent.children)
-      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
-      : []
-    setSelectedMetricIds((prev) => {
-      const set = new Set(prev)
-      if (set.has(childId)) {
-        set.delete(childId)
-      } else {
-        set.add(childId)
-      }
-      const allSelected = childIds.length > 0 && childIds.every((cid) => set.has(cid))
-      if (allSelected) {
-        set.add(parent.id)
-      } else {
-        set.delete(parent.id)
-      }
-      return Array.from(set)
-    })
-  }
-
-  const { data: details, isLoading: loadingDetails } = useQuery({
-    queryKey: ['evaluator-details', id],
-    queryFn: async () => {
-      if (!evaluator) return null
-      if (isCustom) {
-        return { agent: null, persona: null, scenario: null, isCustom: true }
-      }
-      const [agent, persona, scenario] = await Promise.all([
-        evaluator.agent_id ? apiClient.getAgent(evaluator.agent_id) : null,
-        evaluator.persona_id ? apiClient.getPersona(evaluator.persona_id) : null,
-        evaluator.scenario_id ? apiClient.getScenario(evaluator.scenario_id) : null,
-      ])
-      return { agent, persona, scenario, isCustom: false }
-    },
-    enabled: !!evaluator,
-  })
-
-  const { data: aiproviders = [] } = useQuery({
-    queryKey: ['aiproviders'],
-    queryFn: () => apiClient.listAIProviders(),
-  })
-
-  const { data: integrations = [] } = useQuery({
-    queryKey: ['integrations'],
-    queryFn: () => apiClient.listIntegrations(),
-  })
-
-  const { data: modelConfigs = {} } = useQuery({
-    queryKey: ['model-configs'],
-    queryFn: async () => {
-      const providers = Object.values(ModelProvider)
-      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> = {}
-      for (const provider of providers) {
-        try {
-          const options = await apiClient.getModelOptions(provider)
-          configs[provider] = { stt: options.stt || [], llm: options.llm || [], tts: options.tts || [], s2s: options.s2s || [] }
-        } catch {
-          configs[provider] = { stt: [], llm: [], tts: [], s2s: [] }
-        }
-      }
-      return configs
-    },
-    staleTime: 5 * 60 * 1000,
-  })
-
-  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
-    const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
-    switch (platformLower) {
-      case 'deepgram': return ModelProvider.DEEPGRAM
-      case 'cartesia': return ModelProvider.CARTESIA
-      case 'elevenlabs': return ModelProvider.ELEVENLABS
-      case 'murf': return ModelProvider.MURF
-      case 'sarvam': return ModelProvider.SARVAM
-      case 'voicemaker': return ModelProvider.VOICEMAKER
-      default: return null
-    }
-  }
-
-  const configuredProviders = Array.from(
-    new Set([
-      ...(aiproviders.filter((p: AIProvider) => p.is_active).map((p: AIProvider) => p.provider as ModelProvider)),
-      ...(integrations.filter((i: Integration) => i.is_active).map((i: Integration) => mapIntegrationToProvider(i.platform)).filter((p): p is ModelProvider => Boolean(p))),
-    ])
-  )
-
-  const llmProviders = configuredProviders.filter((p) =>
-    providerHasLLMModels(
-      p,
-      modelConfigs[p]?.llm ?? [],
-      aiproviders,
-    ),
-  )
-
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
-  }
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (llmDropdownRef.current && !llmDropdownRef.current.contains(event.target as Node)) {
-        setShowLlmDropdown(false)
-      }
-    }
-    if (showLlmDropdown) document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showLlmDropdown])
 
   const updateMutation = useMutation({
-    mutationFn: ({ evalId, data }: { evalId: string; data: any }) => apiClient.updateEvaluator(evalId, data),
+    mutationFn: (data: Parameters<typeof apiClient.updateEvaluatorSuite>[1]) =>
+      apiClient.updateEvaluatorSuite(id!, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['evaluator', id] })
-      queryClient.invalidateQueries({ queryKey: ['evaluator-details', id] })
-      queryClient.invalidateQueries({ queryKey: ['evaluators'] })
+      invalidateSuite()
       setIsEditing(false)
-      setEditData(null)
-      showToast('Evaluator updated successfully!', 'success')
+      showToast('Suite updated', 'success')
     },
-    onError: (error: any) => {
-      showToast(error.response?.data?.detail || 'Failed to update evaluator', 'error')
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to update suite', 'error')
+    },
+  })
+
+  const addScenariosMutation = useMutation({
+    mutationFn: (scenarioIds: string[]) => apiClient.addEvaluatorSuiteScenarios(id!, scenarioIds),
+    onSuccess: () => {
+      invalidateSuite()
+      setScenarioToAdd('')
+      showToast('Scenario added', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to add scenario', 'error')
+    },
+  })
+
+  const removeScenarioMutation = useMutation({
+    mutationFn: (scenarioId: string) => apiClient.removeEvaluatorSuiteScenario(id!, scenarioId),
+    onSuccess: () => {
+      invalidateSuite()
+      showToast('Scenario removed', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to remove scenario', 'error')
     },
   })
 
   const deleteMutation = useMutation({
-    mutationFn: ({ evalId, force }: { evalId: string; force?: boolean }) => apiClient.deleteEvaluator(evalId, force),
+    mutationFn: () => apiClient.deleteEvaluatorSuite(id!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['evaluators'] })
-      showToast('Evaluator deleted successfully!', 'success')
+      queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       navigate('/evaluate-test-agents')
-    },
-    onError: (error: any) => {
-      const status = error.response?.status
-      const detail = error.response?.data?.detail
-      if (status === 409 && detail?.dependencies) {
-        setDeleteDependencies(detail.dependencies)
-        return
-      }
-      const errorMessage = typeof detail === 'string' ? detail : detail?.message || error.message || 'Failed to delete evaluator.'
-      showToast(errorMessage, 'error')
+      showToast('Suite deleted', 'success')
     },
   })
 
-  const startEditing = () => {
-    if (!evaluator) return
-    setEditData({ ...evaluator })
-    setIsEditing(true)
-    setEditTagInput('')
-  }
-
-  const cancelEditing = () => {
-    setIsEditing(false)
-    setEditData(null)
-    setEditTagInput('')
-  }
+  const activateMutation = useMutation({
+    mutationFn: () => apiClient.activateEvaluatorSuite(id!),
+    onSuccess: () => {
+      invalidateSuite()
+      showToast('Active suite updated for this agent', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to activate suite', 'error')
+    },
+  })
 
   const handleSave = () => {
-    if (!editData || !evaluator) return
-    const data: any = { tags: editData.tags || [] }
-    data.name = (editData.name || '').trim()
-    if (isCustom) {
-      if (hasMetricSelection || (!hasLegacyPrompt && selectedMetricIds.length > 0)) {
-        if (selectedMetricIds.length === 0) {
-          showToast('Select at least one metric for the evaluator', 'error')
-          return
-        }
-        data.metric_ids = selectedMetricIds
-      }
-      if (hasLegacyPrompt) {
-        data.custom_prompt = editData.custom_prompt || ''
-      }
-    }
-    if (editData.llm_provider) data.llm_provider = editData.llm_provider
-    if (editData.llm_model) data.llm_model = editData.llm_model
-    if (editData.llm_config !== undefined) data.llm_config = editData.llm_config
-    updateMutation.mutate({ evalId: evaluator.id, data })
+    const rows = metrics as MetricRow[]
+    const normalized = editMetricIds.length > 0
+      ? normalizeSelectedMetricIds(editMetricIds, rows)
+      : []
+    updateMutation.mutate({
+      name: editName.trim() || undefined,
+      metric_ids: normalized.length > 0 ? normalized : null,
+      llm_provider: editLlmProvider,
+      llm_model: editLlmProvider ? editLlmModel : null,
+    })
+  }
+
+  const handleStartEdit = () => {
+    if (!suite) return
+    setEditName(suite.name || '')
+    const rows = metrics as MetricRow[]
+    setEditMetricIds(
+      suite.metric_ids?.length
+        ? normalizeSelectedMetricIds(suite.metric_ids, rows)
+        : [],
+    )
+    setEditLlmProvider((suite.llm_provider as ModelProvider) || null)
+    setEditLlmModel(suite.llm_model || '')
+    setIsEditing(true)
   }
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <div className="text-gray-500">Loading evaluator...</div>
+      <div className="flex items-center justify-center h-64 text-gray-500">
+        <Loader2 className="w-6 h-6 animate-spin mr-2" />
+        Loading suite…
       </div>
     )
   }
 
-  if (!evaluator) {
+  if (error || !suite) {
     return (
       <div className="space-y-6">
-        <Button onClick={() => navigate('/evaluate-test-agents')} variant="outline">
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Evaluators
-        </Button>
-        <div className="text-center py-12 text-gray-500">Evaluator not found.</div>
+        <div className="bg-white rounded-lg shadow p-12 text-center">
+          <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Evaluator suite not found</h3>
+          <p className="text-gray-500 mb-6">This suite may have been deleted or you may not have access.</p>
+          <Button variant="outline" onClick={() => navigate('/evaluate-test-agents')}>
+            Back to evaluators
+          </Button>
+        </div>
       </div>
     )
   }
 
+  const isInbound = suite.agent_call_type === 'inbound'
+  const firstCombo = suite.combinations[0]
+  const existingScenarioIds = new Set(suite.combinations.map((c) => c.scenario_id))
+  const availableScenarios = (scenarios as any[]).filter(
+    (s) => !DEFAULT_SCENARIO_NAMES.includes(s.name) && !existingScenarioIds.has(s.id),
+  )
+
+  const llmLabel = suite.llm_provider
+    ? `${suite.llm_provider}${suite.llm_model ? ` · ${suite.llm_model}` : ''}`
+    : 'Default (OpenAI gpt-4o)'
+
+  const metricRows = metrics as MetricRow[]
+
+  const displayTitle = isEditing
+    ? 'Edit Evaluator Suite'
+    : suite.name || `${suite.agent_name} · ${suite.persona_name}`
+
   return (
-    <>
+    <div className="space-y-6">
       <ToastContainer />
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button
-              onClick={() => navigate('/evaluate-test-agents')}
-              variant="outline"
-            >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              Back to Evaluators
-            </Button>
-            <div>
-              <div className="flex items-center gap-3">
-                <h1 className="text-2xl font-bold text-gray-900 font-mono">
-                  #{evaluator.evaluator_id}
-                </h1>
-                {isCustom && (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
-                    Custom
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            {isEditing ? (
-              <>
-                <Button variant="ghost" onClick={cancelEditing}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={handleSave}
-                  isLoading={updateMutation.isPending}
-                  leftIcon={<Save className="w-4 h-4" />}
-                >
-                  Save Changes
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  variant="primary"
-                  onClick={startEditing}
-                  leftIcon={<Edit className="w-4 h-4" />}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => {
-                    setDeleteDependencies(null)
-                    setShowDeleteModal(true)
-                  }}
-                  leftIcon={<Trash2 className="w-4 h-4" />}
-                >
-                  Delete
-                </Button>
-              </>
-            )}
-          </div>
+      <EvaluatorDetailHeader
+        title={displayTitle}
+        subtitle={!isEditing ? `${suite.combination_count} scenario combination${suite.combination_count !== 1 ? 's' : ''}${suite.agent_suite_count > 1 ? ` · ${suite.agent_suite_count} suites for this agent` : ''}` : undefined}
+        callMedium={suite.agent_call_medium}
+        callType={suite.agent_call_type}
+        isEditing={isEditing}
+        isInbound={isInbound}
+        isActive={suite.is_active}
+        isSaving={updateMutation.isPending}
+        isActivating={activateMutation.isPending}
+        onEdit={handleStartEdit}
+        onCancelEdit={() => setIsEditing(false)}
+        onSave={handleSave}
+        onRun={() => setShowRunModal(true)}
+        onActivate={() => activateMutation.mutate()}
+        onDelete={() => setShowDeleteModal(true)}
+      />
+
+      {/* Overview card */}
+      <div className="bg-white shadow rounded-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">Configuration</h2>
         </div>
+        <div className="p-6 space-y-6">
+          {isEditing && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Suite name</label>
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className={MODERN_INPUT_CLASS}
+                placeholder="Optional display name"
+              />
+            </div>
+          )}
 
-        {/* Main Content */}
-        <div className={`grid grid-cols-1 gap-6 ${isCustom ? 'lg:grid-cols-3' : ''}`}>
-          {/* Left column: main details */}
-          <div className={`${isCustom ? 'lg:col-span-2' : ''} space-y-6`}>
-            {isEditing && editData ? (
-              <div className="bg-white shadow rounded-lg p-6">
-                <label className="block text-sm font-semibold text-gray-700 mb-2">Evaluator Name</label>
-                <input
-                  type="text"
-                  value={editData.name || ''}
-                  onChange={(e) => setEditData({ ...editData, name: e.target.value })}
-                  placeholder={isCustom ? 'e.g. Customer Support Bot v2' : 'e.g. Billing Resolution - English Personas'}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+          {!isEditing && (
+            <motion.div
+              className="grid grid-cols-2 md:grid-cols-4 gap-4"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <StatCard
+                label="Agent"
+                value={suite.agent_name || '—'}
+                accentClass="text-base font-semibold text-gray-900"
+                iconBgClass="bg-blue-50"
+                iconClass="text-blue-600"
+                icon={<Bot className="w-5 h-5" />}
+              />
+              <StatCard
+                label="Persona"
+                value={suite.persona_name || '—'}
+                accentClass="text-base font-semibold text-gray-900"
+                iconBgClass="bg-purple-50"
+                iconClass="text-purple-600"
+                icon={<User className="w-5 h-5" />}
+              />
+              <StatCard
+                label="Scenarios"
+                value={suite.combination_count}
+                accentClass="text-indigo-600"
+                iconBgClass="bg-indigo-50"
+                iconClass="text-indigo-500"
+                icon={<Layers className="w-5 h-5" />}
+              />
+              <StatCard
+                label="Runs / combo"
+                value={suite.default_runs_per_combination}
+                accentClass="text-gray-900"
+                iconBgClass="bg-slate-100"
+                iconClass="text-slate-600"
+                icon={<BarChart3 className="w-5 h-5" />}
+              />
+            </motion.div>
+          )}
+
+          {!isEditing && (
+            <div className="space-y-4">
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <BarChart3 className="h-4 w-4 text-gray-500" />
+                  <h3 className="text-sm font-semibold text-gray-900">Selected metrics</h3>
+                </div>
+                <EvaluatorMetricsDisplay
+                  selectedMetricIds={suite.metric_ids}
+                  metrics={metricRows}
                 />
               </div>
-            ) : null}
-
-            {isCustom ? (
-              <>
-                {/* Metrics */}
-                {(hasMetricSelection || !hasLegacyPrompt) && (
-                  <div className="bg-white shadow rounded-lg overflow-hidden">
-                    <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                      <h2 className="text-lg font-semibold text-gray-900">Metrics</h2>
-                      {isEditing && editData && (
-                        <span className="text-xs text-gray-500">
-                          {selectedMetricIds.length} selected
-                        </span>
-                      )}
-                    </div>
-                    <div className="p-6">
-                      {isEditing && editData ? (
-                        (() => {
-                          const enabledMetrics = (metrics as any[]).filter((m: any) => m.enabled)
-                          if (enabledMetrics.length === 0) {
-                            return (
-                              <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                                <p className="font-medium">No enabled agent metrics yet.</p>
-                                <p>Enable metrics in the Metrics page before editing this evaluator.</p>
-                              </div>
-                            )
-                          }
-                          return (
-                            <div className="space-y-2 max-h-[600px] overflow-y-auto">
-                              {enabledMetrics.map((metric: any) => {
-                                const children: any[] = Array.isArray(metric.children)
-                                  ? metric.children.filter((c: any) => c.enabled)
-                                  : []
-                                const isParent = !!metric.selection_mode && children.length > 0
-                                if (!isParent) {
-                                  return (
-                                    <label key={metric.id} className="flex items-start gap-2 text-sm cursor-pointer">
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedMetricIds.includes(metric.id)}
-                                        onChange={() => toggleMetric(metric.id)}
-                                        className="mt-1"
-                                      />
-                                      <span>
-                                        <span className="font-medium text-gray-900">{metric.name}</span>
-                                        {metric.description ? (
-                                          <span className="block text-xs text-gray-500">{metric.description}</span>
-                                        ) : null}
-                                      </span>
-                                    </label>
-                                  )
-                                }
-                                const childIds = children.map((c) => c.id)
-                                const selectedChildCount = childIds.filter((cid) =>
-                                  selectedMetricIds.includes(cid),
-                                ).length
-                                const allSelected = selectedChildCount === childIds.length && childIds.length > 0
-                                const someSelected = selectedChildCount > 0 && !allSelected
-                                return (
-                                  <div key={metric.id} className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1">
-                                    <label className="flex items-start gap-2 text-sm cursor-pointer">
-                                      <input
-                                        type="checkbox"
-                                        ref={(el) => {
-                                          if (el) el.indeterminate = someSelected
-                                        }}
-                                        checked={allSelected}
-                                        onChange={() => toggleParentMetric(metric)}
-                                        className="mt-1"
-                                      />
-                                      <span className="flex-1">
-                                        <span className="font-medium text-gray-900">{metric.name}</span>
-                                        <span className="ml-2 inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
-                                          {metric.selection_mode === 'single_choice' ? 'pick one' : 'multi-label'}
-                                        </span>
-                                        <span className="ml-2 text-[11px] text-gray-500">
-                                          {selectedChildCount}/{childIds.length} selected
-                                        </span>
-                                        {metric.description ? (
-                                          <span className="block text-xs text-gray-500">{metric.description}</span>
-                                        ) : null}
-                                      </span>
-                                    </label>
-                                    <div className="ml-6 space-y-1 border-l border-gray-200 pl-3">
-                                      {children.map((child: any) => (
-                                        <label key={child.id} className="flex items-start gap-2 text-xs cursor-pointer">
-                                          <input
-                                            type="checkbox"
-                                            checked={selectedMetricIds.includes(child.id)}
-                                            onChange={() => toggleChildMetric(metric, child.id)}
-                                            className="mt-0.5"
-                                          />
-                                          <span>
-                                            <span className="font-medium text-gray-800">{child.name}</span>
-                                            {child.description ? (
-                                              <span className="block text-[11px] text-gray-500">{child.description}</span>
-                                            ) : null}
-                                          </span>
-                                        </label>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          )
-                        })()
-                      ) : (
-                        (() => {
-                          const ids = new Set(evaluator.metric_ids || [])
-                          if (ids.size === 0) {
-                            return (
-                              <p className="text-sm text-gray-500">
-                                No specific metrics selected. This evaluator scores all enabled agent metrics.
-                              </p>
-                            )
-                          }
-                          type Group = {
-                            id: string
-                            name: string
-                            description?: string
-                            selectionMode?: string | null
-                            isParent: boolean
-                            children: { id: string; name: string; description?: string }[]
-                          }
-                          const groups: Group[] = []
-                          let matched = 0
-                          for (const m of metrics as any[]) {
-                            const children: any[] = Array.isArray(m.children) ? m.children : []
-                            const isParent = !!m.selection_mode && children.length > 0
-                            if (isParent) {
-                              const selectedChildren = children
-                                .filter((c: any) => ids.has(c.id))
-                                .map((c: any) => ({ id: c.id, name: c.name, description: c.description }))
-                              if (selectedChildren.length > 0) {
-                                groups.push({
-                                  id: m.id,
-                                  name: m.name,
-                                  description: m.description,
-                                  selectionMode: m.selection_mode,
-                                  isParent: true,
-                                  children: selectedChildren,
-                                })
-                                matched += selectedChildren.length
-                              }
-                            } else if (ids.has(m.id)) {
-                              groups.push({
-                                id: m.id,
-                                name: m.name,
-                                description: m.description,
-                                isParent: false,
-                                children: [],
-                              })
-                              matched += 1
-                            }
-                          }
-                          if (matched === 0) {
-                            return (
-                              <p className="text-sm text-gray-500">
-                                {ids.size} metric{ids.size === 1 ? '' : 's'} selected (details unavailable).
-                              </p>
-                            )
-                          }
-                          return (
-                            <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                              {groups.map((g) =>
-                                g.isParent ? (
-                                  <div
-                                    key={g.id}
-                                    className="rounded-md border border-gray-200 bg-gray-50 p-3"
-                                  >
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <p className="text-sm font-semibold text-gray-900">{g.name}</p>
-                                      {g.selectionMode && (
-                                        <span className="inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
-                                          {g.selectionMode === 'single_choice' ? 'pick one' : 'multi-label'}
-                                        </span>
-                                      )}
-                                      <span className="text-[11px] text-gray-500">
-                                        {g.children.length} selected
-                                      </span>
-                                    </div>
-                                    {g.description ? (
-                                      <p className="text-xs text-gray-500 mb-2">{g.description}</p>
-                                    ) : null}
-                                    <ul className="ml-2 space-y-1.5 border-l border-gray-200 pl-3">
-                                      {g.children.map((child) => (
-                                        <li key={child.id}>
-                                          <p className="text-xs font-medium text-gray-800">{child.name}</p>
-                                          {child.description ? (
-                                            <p className="text-[11px] text-gray-500">{child.description}</p>
-                                          ) : null}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                ) : (
-                                  <div key={g.id} className="border-l-2 border-primary-200 pl-3">
-                                    <p className="text-sm font-medium text-gray-900">{g.name}</p>
-                                    {g.description ? (
-                                      <p className="text-xs text-gray-500">{g.description}</p>
-                                    ) : null}
-                                  </div>
-                                ),
-                              )}
-                            </div>
-                          )
-                        })()
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Legacy custom prompt (read-only when metrics are selected) */}
-                {hasLegacyPrompt && (
-                  <div className="bg-white shadow rounded-lg overflow-hidden">
-                    <div className="px-6 py-4 border-b border-gray-200">
-                      <h2 className="text-lg font-semibold text-gray-900">
-                        {hasMetricSelection ? 'Legacy Prompt' : 'Agent Prompt / Instructions'}
-                      </h2>
-                      {hasMetricSelection && (
-                        <p className="text-xs text-gray-500 mt-0.5">
-                          This evaluator was created with a free-text prompt before metric selection was supported. It is kept for reference.
-                        </p>
-                      )}
-                    </div>
-                    <div className="p-6">
-                      {isEditing && editData && !hasMetricSelection ? (
-                        <textarea
-                          value={editData.custom_prompt || ''}
-                          onChange={(e) => setEditData({ ...editData, custom_prompt: e.target.value })}
-                          rows={16}
-                          placeholder="Paste the full system prompt or description of what the agent is supposed to do..."
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 text-sm font-mono"
-                        />
-                      ) : (
-                        <div className="max-h-[600px] overflow-y-auto">
-                          <ReactMarkdown components={markdownComponents}>
-                            {evaluator.custom_prompt || ''}
-                          </ReactMarkdown>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                {/* Standard evaluator details */}
-                {loadingDetails ? (
-                  <div className="bg-white shadow rounded-lg p-6 text-center text-gray-500">
-                    Loading details...
-                  </div>
-                ) : details ? (
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    <div className="space-y-6">
-                      {/* Agent metadata */}
-                      {details.agent && (
-                        <div className="bg-white shadow rounded-lg overflow-hidden">
-                          <div className="px-6 py-4 border-b border-gray-200">
-                            <h2 className="text-lg font-semibold text-gray-900">Agent</h2>
-                          </div>
-                          <div className="p-6 space-y-3">
-                            <p className="text-base font-medium text-gray-900">{details.agent.name}</p>
-                            <div className="flex items-center gap-2">
-                              {details.agent.call_medium === 'web_call' ? (
-                                <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
-                                  <Globe className="w-3.5 h-3.5 mr-1.5" />
-                                  Web Call
-                                </span>
-                              ) : details.agent.phone_number ? (
-                                <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-teal-100 text-teal-800 border border-teal-300">
-                                  <Phone className="w-3.5 h-3.5 mr-1.5" />
-                                  {details.agent.phone_number}
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
-                                  No phone number
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Persona */}
-                      {details.persona && (
-                        <div className="bg-white shadow rounded-lg overflow-hidden">
-                          <div className="px-6 py-4 border-b border-purple-100 bg-purple-50">
-                            <h2 className="text-lg font-semibold text-purple-900">Persona</h2>
-                          </div>
-                          <div className="p-6 space-y-3">
-                            <p className="text-base font-medium text-gray-900">{details.persona.name}</p>
-                            <div className="flex flex-wrap gap-2">
-                              {details.persona.tts_provider && (
-                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
-                                  Provider: {details.persona.tts_provider}
-                                </span>
-                              )}
-                              {details.persona.tts_voice_name && (
-                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
-                                  Voice: {details.persona.tts_voice_name}
-                                </span>
-                              )}
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
-                                Gender: {details.persona.gender}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Scenario */}
-                      {details.scenario && (
-                        <div className="bg-white shadow rounded-lg overflow-hidden">
-                          <div className="px-6 py-4 border-b border-blue-100 bg-blue-50">
-                            <h2 className="text-lg font-semibold text-blue-900">Scenario</h2>
-                          </div>
-                          <div className="p-6 space-y-3">
-                            <p className="text-base font-medium text-gray-900">{details.scenario.name}</p>
-                            {details.scenario.description && (
-                              <p className="text-sm text-gray-600">{details.scenario.description}</p>
-                            )}
-                            {details.scenario.required_info && Object.keys(details.scenario.required_info).length > 0 && (
-                              <div>
-                                <p className="text-xs font-medium text-blue-700 mb-2">Required Information:</p>
-                                <div className="bg-blue-50 rounded border border-blue-200 p-3">
-                                  <dl className="space-y-1">
-                                    {Object.entries(details.scenario.required_info).map(([key, value]) => (
-                                      <div key={key} className="flex">
-                                        <dt className="text-xs font-medium text-gray-500 w-32">{key}:</dt>
-                                        <dd className="text-xs text-gray-700">{String(value)}</dd>
-                                      </div>
-                                    ))}
-                                  </dl>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Tags */}
-                      <div className="bg-white shadow rounded-lg overflow-hidden">
-                        <div className="px-6 py-4 border-b border-gray-200">
-                          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Tags</h2>
-                        </div>
-                        <div className="p-6">
-                          {isEditing && editData ? (
-                            <div className="space-y-3">
-                              <div className="flex flex-wrap gap-2 min-h-[36px]">
-                                {editData.tags && editData.tags.length > 0 ? (
-                                  editData.tags.map((tag, idx) => (
-                                    <span key={idx} className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
-                                      {tag}
-                                      <button
-                                        onClick={() => {
-                                          const newTags = editData.tags?.filter(t => t !== tag) || []
-                                          setEditData({ ...editData, tags: newTags })
-                                        }}
-                                        className="ml-1 text-blue-600 hover:text-blue-800"
-                                      >
-                                        <X className="w-3 h-3" />
-                                      </button>
-                                    </span>
-                                  ))
-                                ) : (
-                                  <span className="text-sm text-gray-400">No tags</span>
-                                )}
-                              </div>
-                              <div className="flex space-x-2">
-                                <input
-                                  type="text"
-                                  value={editTagInput}
-                                  onChange={(e) => setEditTagInput(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault()
-                                      if (editTagInput.trim() && !editData.tags?.includes(editTagInput.trim())) {
-                                        setEditData({ ...editData, tags: [...(editData.tags || []), editTagInput.trim()] })
-                                        setEditTagInput('')
-                                      }
-                                    }
-                                  }}
-                                  placeholder="Add tag..."
-                                  className="flex-1 px-2 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                                />
-                                <Button
-                                  size="sm"
-                                  onClick={() => {
-                                    if (editTagInput.trim() && !editData.tags?.includes(editTagInput.trim())) {
-                                      setEditData({ ...editData, tags: [...(editData.tags || []), editTagInput.trim()] })
-                                      setEditTagInput('')
-                                    }
-                                  }}
-                                >
-                                  Add
-                                </Button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex flex-wrap gap-2">
-                              {evaluator.tags && evaluator.tags.length > 0 ? (
-                                evaluator.tags.map((tag, idx) => (
-                                  <span key={idx} className="px-3 py-1 text-sm bg-blue-100 text-blue-800 rounded-full">
-                                    {tag}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="text-sm text-gray-400">No tags</span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Evaluation Model */}
-                      <div className="bg-white shadow rounded-lg overflow-hidden">
-                        <div className="px-6 py-4 border-b border-purple-100 bg-purple-50">
-                          <div className="flex items-center gap-2">
-                            <Brain className="h-4 w-4 text-purple-600" />
-                            <h2 className="text-sm font-semibold text-purple-900 uppercase tracking-wide">Evaluation Model</h2>
-                          </div>
-                        </div>
-                        <div className="p-6">
-                          {isEditing && editData ? (
-                            <div className="space-y-3">
-                              {llmProviders.length === 0 ? (
-                                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                                  No AI providers with LLM models configured. Default (gpt-4o) will be used.
-                                </div>
-                              ) : (
-                                <>
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">Provider</label>
-                                    <div className="relative" ref={llmDropdownRef}>
-                                      <button
-                                        type="button"
-                                        onClick={() => setShowLlmDropdown(!showLlmDropdown)}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
-                                      >
-                                        <div className="flex items-center gap-2">
-                                          {editData.llm_provider && getProviderLogo(editData.llm_provider as ModelProvider) ? (
-                                            <img src={getProviderLogo(editData.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain rounded" />
-                                          ) : (
-                                            <Brain className="h-4 w-4 text-gray-400" />
-                                          )}
-                                          <span className={editData.llm_provider ? 'text-gray-900' : 'text-gray-400'}>
-                                            {editData.llm_provider ? getProviderLabel(editData.llm_provider as ModelProvider) || editData.llm_provider : 'Select provider'}
-                                          </span>
-                                        </div>
-                                        <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
-                                      </button>
-                                      {showLlmDropdown && (
-                                        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-auto">
-                                          {llmProviders.map((provider) => (
-                                            <button
-                                              key={provider}
-                                              type="button"
-                                              onClick={() => {
-                                                const models = getModelOptions(provider).llm
-                                                setEditData({ ...editData, llm_provider: provider, llm_model: models.length > 0 ? models[0] : '' })
-                                                setShowLlmDropdown(false)
-                                              }}
-                                              className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
-                                            >
-                                              {getProviderLogo(provider) ? (
-                                                <img src={getProviderLogo(provider)!} alt="" className="w-5 h-5 object-contain rounded" />
-                                              ) : (
-                                                <Brain className="h-4 w-4 text-purple-600" />
-                                              )}
-                                              <span>{getProviderLabel(provider)}</span>
-                                            </button>
-                                          ))}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">Model</label>
-                                    <select
-                                      value={editData.llm_model || ''}
-                                      onChange={(e) => setEditData({ ...editData, llm_model: e.target.value })}
-                                      disabled={!editData.llm_provider}
-                                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
-                                    >
-                                      {editData.llm_provider ? (
-                                        getModelOptions(editData.llm_provider as ModelProvider).llm.map((model) => (
-                                          <option key={model} value={model}>{model}</option>
-                                        ))
-                                      ) : (
-                                        <option value="">Select provider first</option>
-                                      )}
-                                    </select>
-                                  </div>
-                                  <div className="md:col-span-2">
-                                    <LLMAdvancedOptionsPanel
-                                      provider={editData.llm_provider}
-                                      value={editData.llm_config ?? null}
-                                      onChange={(llm_config) =>
-                                        setEditData({ ...editData, llm_config })
-                                      }
-                                    />
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="space-y-2">
-                              {evaluator.llm_provider && evaluator.llm_model ? (
-                                <>
-                                  <div className="flex items-center gap-2">
-                                    {getProviderLogo(evaluator.llm_provider as ModelProvider) && (
-                                      <img src={getProviderLogo(evaluator.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain" />
-                                    )}
-                                    <span className="text-sm font-medium text-gray-900">
-                                      {getProviderLabel(evaluator.llm_provider as ModelProvider) || evaluator.llm_provider}
-                                    </span>
-                                  </div>
-                                  <p className="text-sm text-purple-700 font-mono">{evaluator.llm_model}</p>
-                                </>
-                              ) : (
-                                <p className="text-sm text-gray-400">Default (gpt-4o)</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Metadata */}
-                      <div className="bg-white shadow rounded-lg overflow-hidden">
-                        <div className="px-6 py-4 border-b border-gray-200">
-                          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Details</h2>
-                        </div>
-                        <div className="p-6 space-y-3">
-                          <div>
-                            <p className="text-xs text-gray-500 uppercase tracking-wide">Evaluator ID</p>
-                            <p className="text-sm font-mono font-medium text-gray-900">{evaluator.evaluator_id}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 uppercase tracking-wide">Name</p>
-                            <p className="text-sm font-medium text-gray-900">{evaluator.name || '—'}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 uppercase tracking-wide">Type</p>
-                            <p className="text-sm font-medium text-gray-900">{isCustom ? 'Custom Prompt' : 'Standard (Agent + Persona + Scenario)'}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 uppercase tracking-wide">Created</p>
-                            <p className="text-sm text-gray-700">{new Date(evaluator.created_at).toLocaleString()}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-gray-500 uppercase tracking-wide">Last Updated</p>
-                            <p className="text-sm text-gray-700">{new Date(evaluator.updated_at).toLocaleString()}</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="space-y-6">
-                      <div className="bg-white shadow rounded-lg overflow-hidden">
-                        <div className="px-6 py-4 border-b border-gray-200">
-                          <h2 className="text-lg font-semibold text-gray-900">Agent Prompt</h2>
-                        </div>
-                        <div className="p-6">
-                          {details.agent?.description ? (
-                            <div className="prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700 max-h-[70vh] overflow-y-auto pr-1">
-                              <ReactMarkdown components={markdownComponents}>
-                                {details.agent.description}
-                              </ReactMarkdown>
-                            </div>
-                          ) : (
-                            <span className="text-sm text-gray-400">No system prompt configured.</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-white shadow rounded-lg p-6 text-center text-gray-500">
-                    Failed to load details.
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Right column: sidebar */}
-          {isCustom && <div className="space-y-6">
-            {/* Tags */}
-            <div className="bg-white shadow rounded-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200">
-                <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Tags</h2>
-              </div>
-              <div className="p-6">
-                {isEditing && editData ? (
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap gap-2 min-h-[36px]">
-                      {editData.tags && editData.tags.length > 0 ? (
-                        editData.tags.map((tag, idx) => (
-                          <span key={idx} className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
-                            {tag}
-                            <button
-                              onClick={() => {
-                                const newTags = editData.tags?.filter(t => t !== tag) || []
-                                setEditData({ ...editData, tags: newTags })
-                              }}
-                              className="ml-1 text-blue-600 hover:text-blue-800"
-                            >
-                              <X className="w-3 h-3" />
-                            </button>
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-sm text-gray-400">No tags</span>
-                      )}
-                    </div>
-                    <div className="flex space-x-2">
-                      <input
-                        type="text"
-                        value={editTagInput}
-                        onChange={(e) => setEditTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault()
-                            if (editTagInput.trim() && !editData.tags?.includes(editTagInput.trim())) {
-                              setEditData({ ...editData, tags: [...(editData.tags || []), editTagInput.trim()] })
-                              setEditTagInput('')
-                            }
-                          }
-                        }}
-                        placeholder="Add tag..."
-                        className="flex-1 px-2 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                      />
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          if (editTagInput.trim() && !editData.tags?.includes(editTagInput.trim())) {
-                            setEditData({ ...editData, tags: [...(editData.tags || []), editTagInput.trim()] })
-                            setEditTagInput('')
-                          }
-                        }}
-                      >
-                        Add
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {evaluator.tags && evaluator.tags.length > 0 ? (
-                      evaluator.tags.map((tag, idx) => (
-                        <span key={idx} className="px-3 py-1 text-sm bg-blue-100 text-blue-800 rounded-full">
-                          {tag}
-                        </span>
-                      ))
-                    ) : (
-                      <span className="text-sm text-gray-400">No tags</span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Evaluation Model */}
-            <div className="bg-white shadow rounded-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-purple-100 bg-purple-50">
-                <div className="flex items-center gap-2">
+              <div className="rounded-xl border border-purple-100 bg-purple-50/30 p-4">
+                <div className="flex items-center gap-2 mb-2">
                   <Brain className="h-4 w-4 text-purple-600" />
-                  <h2 className="text-sm font-semibold text-purple-900 uppercase tracking-wide">Evaluation Model</h2>
+                  <h3 className="text-sm font-semibold text-gray-900">Evaluation LLM</h3>
                 </div>
-              </div>
-              <div className="p-6">
-                {isEditing && editData ? (
-                  <div className="space-y-3">
-                    {llmProviders.length === 0 ? (
-                      <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                        No AI providers with LLM models configured. Default (gpt-4o) will be used.
-                      </div>
-                    ) : (
-                      <>
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-1">Provider</label>
-                          <div className="relative" ref={llmDropdownRef}>
-                            <button
-                              type="button"
-                              onClick={() => setShowLlmDropdown(!showLlmDropdown)}
-                              className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
-                            >
-                              <div className="flex items-center gap-2">
-                                {editData.llm_provider && getProviderLogo(editData.llm_provider as ModelProvider) ? (
-                                  <img src={getProviderLogo(editData.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain rounded" />
-                                ) : (
-                                  <Brain className="h-4 w-4 text-gray-400" />
-                                )}
-                                <span className={editData.llm_provider ? 'text-gray-900' : 'text-gray-400'}>
-                                  {editData.llm_provider ? getProviderLabel(editData.llm_provider as ModelProvider) || editData.llm_provider : 'Select provider'}
-                                </span>
-                              </div>
-                              <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
-                            </button>
-                            {showLlmDropdown && (
-                              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-auto">
-                                {llmProviders.map((provider) => (
-                                  <button
-                                    key={provider}
-                                    type="button"
-                                    onClick={() => {
-                                      const models = getModelOptions(provider).llm
-                                      setEditData({ ...editData, llm_provider: provider, llm_model: models.length > 0 ? models[0] : '' })
-                                      setShowLlmDropdown(false)
-                                    }}
-                                    className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
-                                  >
-                                    {getProviderLogo(provider) ? (
-                                      <img src={getProviderLogo(provider)!} alt="" className="w-5 h-5 object-contain rounded" />
-                                    ) : (
-                                      <Brain className="h-4 w-4 text-purple-600" />
-                                    )}
-                                    <span>{getProviderLabel(provider)}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-1">Model</label>
-                          <select
-                            value={editData.llm_model || ''}
-                            onChange={(e) => setEditData({ ...editData, llm_model: e.target.value })}
-                            disabled={!editData.llm_provider}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
-                          >
-                            {editData.llm_provider ? (
-                              getModelOptions(editData.llm_provider as ModelProvider).llm.map((model) => (
-                                <option key={model} value={model}>{model}</option>
-                              ))
-                            ) : (
-                              <option value="">Select provider first</option>
-                            )}
-                          </select>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {evaluator.llm_provider && evaluator.llm_model ? (
-                      <>
-                        <div className="flex items-center gap-2">
-                          {getProviderLogo(evaluator.llm_provider as ModelProvider) && (
-                            <img src={getProviderLogo(evaluator.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain" />
-                          )}
-                          <span className="text-sm font-medium text-gray-900">
-                            {getProviderLabel(evaluator.llm_provider as ModelProvider) || evaluator.llm_provider}
-                          </span>
-                        </div>
-                        <p className="text-sm text-purple-700 font-mono">{evaluator.llm_model}</p>
-                      </>
-                    ) : (
-                      <p className="text-sm text-gray-400">Default (gpt-4o)</p>
-                    )}
-                  </div>
-                )}
+                <p className="text-sm text-gray-600">{llmLabel}</p>
               </div>
             </div>
+          )}
 
-            {/* Metadata */}
-            <div className="bg-white shadow rounded-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200">
-                <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Details</h2>
+          {isEditing && (
+            <div className="space-y-6 border-t border-gray-100 pt-6">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Metrics</h3>
+                <EvaluatorMetricPicker selectedMetricIds={editMetricIds} onChange={setEditMetricIds} />
               </div>
-              <div className="p-6 space-y-3">
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Evaluator ID</p>
-                  <p className="text-sm font-mono font-medium text-gray-900">{evaluator.evaluator_id}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Name</p>
-                  <p className="text-sm font-medium text-gray-900">{evaluator.name || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Type</p>
-                  <p className="text-sm font-medium text-gray-900">{isCustom ? 'Custom Prompt' : 'Standard (Agent + Persona + Scenario)'}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Created</p>
-                  <p className="text-sm text-gray-700">{new Date(evaluator.created_at).toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Last Updated</p>
-                  <p className="text-sm text-gray-700">{new Date(evaluator.updated_at).toLocaleString()}</p>
-                </div>
-              </div>
+              <EvaluatorLlmPicker
+                llmProvider={editLlmProvider}
+                llmModel={editLlmModel}
+                onProviderChange={setEditLlmProvider}
+                onModelChange={setEditLlmModel}
+              />
             </div>
-          </div>}
+          )}
         </div>
       </div>
 
-      {/* Delete Modal */}
-      {showDeleteModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex min-h-screen items-center justify-center p-4">
-            <div
-              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-              onClick={() => { setShowDeleteModal(false); setDeleteDependencies(null) }}
-            />
-            <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Delete Evaluator</h3>
-                <button
-                  onClick={() => { setShowDeleteModal(false); setDeleteDependencies(null) }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
+      {isInbound ? (
+        <EvaluatorInboundCallPanel
+          suite={suite}
+          agentPhoneNumber={agent?.phone_number}
+          onSuiteUpdated={invalidateSuite}
+          showToast={showToast}
+        />
+      ) : firstCombo ? (
+        <EvaluatorOutboundCallPanel
+          evaluatorId={firstCombo.id}
+          agentId={suite.agent_id}
+          personaId={suite.persona_id}
+          scenarioId={firstCombo.scenario_id}
+          personaName={suite.persona_name || undefined}
+          scenarioName={firstCombo.scenario_name || undefined}
+          callMedium={suite.agent_call_medium || 'phone_call'}
+          callType={suite.agent_call_type || 'outbound'}
+          showToast={showToast}
+        />
+      ) : null}
 
-              {deleteDependencies && (
-                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-amber-800 mb-2">This evaluator has dependent records</p>
-                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
-                        {deleteDependencies.evaluator_results && (
-                          <li>{deleteDependencies.evaluator_results} evaluator result{deleteDependencies.evaluator_results !== 1 ? 's' : ''}</li>
-                        )}
-                      </ul>
-                      <p className="text-xs text-amber-700">Force deleting will remove the evaluator and all its results.</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-start gap-4 mb-6">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-                    <Trash2 className="h-6 w-6 text-red-600" />
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to delete evaluator <span className="font-semibold text-gray-900">#{evaluator.evaluator_id}</span>?
-                  </p>
-                  <p className="text-xs text-gray-500">This action cannot be undone.</p>
-                </div>
-              </div>
-
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => { setShowDeleteModal(false); setDeleteDependencies(null) }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                {deleteDependencies ? (
-                  <Button
-                    variant="danger"
-                    onClick={() => deleteMutation.mutate({ evalId: evaluator.id, force: true })}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Force Delete All
-                  </Button>
-                ) : (
-                  <Button
-                    variant="danger"
-                    onClick={() => deleteMutation.mutate({ evalId: evaluator.id })}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Delete
-                  </Button>
-                )}
-              </div>
-            </div>
+      {/* Scenarios table */}
+      <div className="bg-white shadow rounded-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <FileText className="h-5 w-5 text-green-600" />
+            <h2 className="text-lg font-semibold text-gray-900">Scenario Combinations</h2>
+            <span className="px-2 py-0.5 text-xs font-medium text-green-700 bg-green-100 rounded-full">
+              {suite.combination_count}
+            </span>
           </div>
+          {isEditing && availableScenarios.length > 0 && (
+            <div className="flex items-center gap-2">
+              <select
+                value={scenarioToAdd}
+                onChange={(e) => setScenarioToAdd(e.target.value)}
+                className={`${MODERN_SELECT_CLASS} sm:w-56`}
+              >
+                <option value="">Add scenario…</option>
+                {availableScenarios.map((s: any) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => scenarioToAdd && addScenariosMutation.mutate([scenarioToAdd])}
+                disabled={!scenarioToAdd}
+                isLoading={addScenariosMutation.isPending}
+                leftIcon={<Plus className="h-3.5 w-3.5" />}
+              >
+                Add
+              </Button>
+            </div>
+          )}
         </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluator ID</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenario</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {suite.combinations.map((c) => (
+                <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-6 py-4 font-mono text-xs text-gray-500">{c.evaluator_id}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-gray-400 shrink-0" />
+                      <span className="text-sm font-medium text-gray-900">{c.scenario_name || c.scenario_id}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setViewCombination(c)}
+                        leftIcon={<Eye className="h-4 w-4" />}
+                        className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                      >
+                        View
+                      </Button>
+                      {isEditing && suite.combinations.length > 1 && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => removeScenarioMutation.mutate(c.scenario_id)}
+                          isLoading={removeScenarioMutation.isPending}
+                          leftIcon={<Trash2 className="h-4 w-4" />}
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {isEditing && suite.combinations.length <= 1 && (
+          <p className="px-6 py-3 text-xs text-gray-500 border-t border-gray-100 bg-gray-50/50">
+            At least one scenario is required — you cannot remove the last one.
+          </p>
+        )}
+      </div>
+
+      <ScenarioViewModal combination={viewCombination} onClose={() => setViewCombination(null)} />
+
+      {!isInbound && (
+        <EvaluatorSmartRunModal
+          open={showRunModal}
+          onClose={() => setShowRunModal(false)}
+          suites={[suite]}
+          showToast={showToast}
+        />
       )}
-    </>
+
+      <ConfirmModal
+        isOpen={showDeleteModal}
+        title="Delete evaluator suite?"
+        description="Historical evaluation results are preserved. This action cannot be undone."
+        confirmLabel="Delete"
+        onConfirm={() => deleteMutation.mutate()}
+        onCancel={() => setShowDeleteModal(false)}
+        isLoading={deleteMutation.isPending}
+        variant="danger"
+      />
+    </div>
   )
 }

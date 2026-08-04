@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { FileText, Tag, Plus, Sparkles, UserPlus, Trash2, X, Loader, Phone, Edit, Brain, ChevronDown, AlertCircle } from 'lucide-react'
+import { FileText, Tag, Plus, Sparkles, Trash2, X, Loader, Phone, Brain, ChevronDown, AlertCircle } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Button from '../../components/Button'
@@ -9,34 +9,26 @@ import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
 import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptionsPanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import type { GenerateScenariosFromPromptParams } from '../../types/agentTestSetupGeneration'
 import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
 import { resolveLLMModelsForCredential } from '../../lib/llmModelOptions'
-
-interface Scenario {
-  id: string
-  name: string
-  agent_id?: string | null
-  description: string | null
-  required_info: Record<string, string>
-  created_at: string
-  updated_at: string
-  created_by?: string | null
-}
-
-interface AgentOption {
-  id: string
-  name: string
-  description?: string | null
-  language?: string
-  call_type?: string
-}
+import {
+  buildScenarioEditGenerationUserPrompt,
+  SCENARIO_EDIT_GENERATION_SYSTEM_PROMPT,
+} from './scenarioGenerationPrompts'
+import MarkdownEditor from '../../components/shared/MarkdownEditor'
+import ScenarioMarkdownView from './ScenarioMarkdownView'
+import ScenariosAgentSidebar from './ScenariosAgentSidebar'
+import ScenariosListPanel from './ScenariosListPanel'
+import type { Scenario, AgentOption } from './scenarioTypes'
 
 interface GeneratedScenarioDraft {
   id: string
   name: string
   description: string
+  goal?: string
 }
 
 type CreateMode = 'agent_prompt' | 'call' | 'custom' | null
@@ -82,6 +74,7 @@ export default function Scenarios() {
 
   // For Generate from Call
   const [callData, setCallData] = useState('')
+  const [selectedNavAgentId, setSelectedNavAgentId] = useState<string>('')
 
   const { data: scenarios = [], isLoading } = useQuery({
     queryKey: ['scenarios'],
@@ -145,6 +138,74 @@ export default function Scenarios() {
     availableAgents.forEach((agent) => map.set(agent.id, agent.name))
     return map
   }, [availableAgents])
+
+  const scenarioCountByAgent = useMemo(() => {
+    const counts = new Map<string, number>()
+    userScenarios.forEach((scenario) => {
+      if (scenario.agent_id) {
+        counts.set(scenario.agent_id, (counts.get(scenario.agent_id) ?? 0) + 1)
+      }
+    })
+    return counts
+  }, [userScenarios])
+
+  const agentsWithScenarios = useMemo(
+    () =>
+      availableAgents.filter((agent) => (scenarioCountByAgent.get(agent.id) ?? 0) > 0),
+    [availableAgents, scenarioCountByAgent],
+  )
+
+  const unlinkedScenarioCount = useMemo(
+    () => userScenarios.filter((s) => !s.agent_id).length,
+    [userScenarios],
+  )
+
+  const visibleScenarios = useMemo(() => {
+    if (selectedNavAgentId === 'unlinked') {
+      return userScenarios.filter((s) => !s.agent_id)
+    }
+    if (selectedNavAgentId) {
+      return userScenarios.filter((s) => s.agent_id === selectedNavAgentId)
+    }
+    return []
+  }, [userScenarios, selectedNavAgentId])
+
+  const selectedAgentLabel = useMemo(() => {
+    if (selectedNavAgentId === 'unlinked') return 'Unlinked scenarios'
+    return agentNameById.get(selectedNavAgentId) || 'Scenarios'
+  }, [selectedNavAgentId, agentNameById])
+
+  useEffect(() => {
+    const selectedLinkedCount =
+      selectedNavAgentId && selectedNavAgentId !== 'unlinked'
+        ? (scenarioCountByAgent.get(selectedNavAgentId) ?? 0)
+        : 0
+
+    if (selectedNavAgentId === 'unlinked') {
+      if (unlinkedScenarioCount === 0) {
+        if (agentsWithScenarios.length > 0) {
+          setSelectedNavAgentId(agentsWithScenarios[0].id)
+        } else {
+          setSelectedNavAgentId('')
+        }
+      }
+      return
+    }
+
+    if (selectedNavAgentId && selectedLinkedCount > 0) {
+      return
+    }
+
+    if (agentsWithScenarios.length > 0) {
+      setSelectedNavAgentId(agentsWithScenarios[0].id)
+      return
+    }
+    if (unlinkedScenarioCount > 0) {
+      setSelectedNavAgentId('unlinked')
+      return
+    }
+    setSelectedNavAgentId('')
+  }, [agentsWithScenarios, unlinkedScenarioCount, selectedNavAgentId, scenarioCountByAgent])
 
   // Reset model when provider changes
   useEffect(() => {
@@ -272,44 +333,6 @@ export default function Scenarios() {
     })
   }
 
-  const parseScenarioDraftsFromResponse = (text: string): GeneratedScenarioDraft[] => {
-    try {
-      const direct = JSON.parse(text)
-      if (Array.isArray(direct)) {
-        return direct
-          .filter((item: any) => item?.name && item?.description)
-          .map((item: any, index: number) => ({
-            id: `draft-${Date.now()}-${index}`,
-            name: String(item.name).trim(),
-            description: String(item.description).trim(),
-          }))
-      }
-    } catch {
-      // fall through to bracket extraction
-    }
-
-    const start = text.indexOf('[')
-    const end = text.lastIndexOf(']')
-    if (start !== -1 && end !== -1 && end > start) {
-      try {
-        const sliced = JSON.parse(text.slice(start, end + 1))
-        if (Array.isArray(sliced)) {
-          return sliced
-            .filter((item: any) => item?.name && item?.description)
-            .map((item: any, index: number) => ({
-              id: `draft-${Date.now()}-${index}`,
-              name: String(item.name).trim(),
-              description: String(item.description).trim(),
-            }))
-        }
-      } catch {
-        return []
-      }
-    }
-
-    return []
-  }
-
   const handleGenerateFromAgentPrompt = async () => {
     const selectedAgent = availableAgents.find((a) => a.id === selectedAgentIdForGeneration)
     if (!selectedAgent) {
@@ -337,42 +360,25 @@ export default function Scenarios() {
 
     setIsGeneratingFromAgentPrompt(true)
     try {
-      const messages = [
-        {
-          role: 'system',
-          content:
-            'You generate high-quality test scenarios for voice AI agents. Return ONLY valid JSON array with objects: { "name": string, "description": string }.',
-        },
-        {
-          role: 'user',
-          content: [
-            `Generate ${scenarioCount} diverse test scenarios from this agent system prompt.`,
-            `Agent Name: ${selectedAgent.name}`,
-            selectedAgent.language ? `Language: ${selectedAgent.language}` : '',
-            selectedAgent.call_type ? `Call Type: ${selectedAgent.call_type}` : '',
-            `System Prompt:\n${agentPrompt}`,
-            additionalAgentPromptContext.trim()
-              ? `Additional Generation Context:\n${additionalAgentPromptContext.trim()}`
-              : '',
-            'Requirements:',
-            '- Each scenario should test a different user intent or edge case.',
-            '- Keep name concise.',
-            '- Description should be specific and test-oriented.',
-            '- Return only JSON array, no markdown, no explanation.',
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        },
-      ]
-
-      const response = await apiClient.chatCompletion({
-        messages: messages as Array<{ role: string; content: string }>,
+      const generationRequest: GenerateScenariosFromPromptParams = {
+        test_agent_prompt: agentPrompt,
+        agent_name: selectedAgent.name,
+        scenario_count: scenarioCount,
+        language: selectedAgent.language,
+        call_type: selectedAgent.call_type,
+        additional_context: additionalAgentPromptContext.trim() || undefined,
         provider: selectedAIProvider,
         model: selectedModel,
-        llm_config: llmConfig,
-      })
+        ...(llmConfig ? { llm_config: llmConfig } : {}),
+      }
+      const response = await apiClient.generateScenariosFromPrompt(generationRequest)
 
-      const drafts = parseScenarioDraftsFromResponse(response.text)
+      const drafts = response.scenarios.map((item, index) => ({
+        id: `draft-${Date.now()}-${index}`,
+        name: String(item.name).trim(),
+        description: String(item.description).trim(),
+        goal: item.goal ? String(item.goal).trim() : undefined,
+      }))
       if (drafts.length === 0) {
         showToast('Could not parse generated scenarios. Try again.', 'error')
         return
@@ -409,7 +415,7 @@ export default function Scenarios() {
         name: draft.name.trim(),
         agent_id: selectedAgentIdForGeneration || undefined,
         description: draft.description?.trim() || undefined,
-        required_info: {},
+        required_info: draft.goal ? { goal: draft.goal } : {},
       })
       queryClient.invalidateQueries({ queryKey: ['scenarios'] })
       showToast(`Saved scenario "${draft.name}"`, 'success')
@@ -453,6 +459,21 @@ export default function Scenarios() {
       return
     }
     generateFromCallMutation.mutate(callData)
+  }
+
+  const openCreateModal = () => {
+    resetForm()
+    const linkedAgentId = selectedNavAgentId !== 'unlinked' ? selectedNavAgentId : ''
+    if (linkedAgentId) {
+      setFormData((prev) => ({ ...prev, agent_id: linkedAgentId }))
+      setSelectedAgentIdForGeneration(linkedAgentId)
+    }
+    setShowMainModal(true)
+  }
+
+  const handleViewScenario = (scenario: Scenario) => {
+    setSelectedScenario(scenario)
+    setShowDetailsModal(true)
   }
 
   const handleEdit = (scenario: Scenario) => {
@@ -506,21 +527,21 @@ export default function Scenarios() {
         messages: [
           {
             role: 'system',
-            content: 'You write concise, practical scenario descriptions for QA test scenarios.',
+            content: SCENARIO_EDIT_GENERATION_SYSTEM_PROMPT,
           },
           {
             role: 'user',
-            content: [
-              `Scenario Name: ${formData.name || selectedScenario.name}`,
-              `Current Description: ${formData.description || selectedScenario.description || 'None'}`,
-              `Request: ${editGeneratePrompt.trim()}`,
-              'Write only the updated scenario description text.',
-            ].join('\n'),
+            content: buildScenarioEditGenerationUserPrompt({
+              scenarioName: formData.name || selectedScenario.name,
+              currentDescription: formData.description || selectedScenario.description || 'None',
+              request: editGeneratePrompt.trim(),
+            }),
           },
         ],
         provider: selectedAIProvider,
         model: selectedModel,
         llm_config: llmConfig,
+        max_tokens: 4000,
       })
 
       setFormData((prev) => ({
@@ -570,12 +591,14 @@ export default function Scenarios() {
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">Test Scenarios</h1>
-          <p className="text-gray-600 mt-1">Create and manage conversation scenarios for testing</p>
+          <p className="text-gray-600 mt-1">
+            Browse scenarios by agent — select an agent on the left to view and manage its scenarios
+          </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
           <Button
             variant="primary"
-            onClick={() => setShowMainModal(true)}
+            onClick={openCreateModal}
             leftIcon={<Plus className="h-5 w-5" />}
           >
             Create Scenario
@@ -584,104 +607,32 @@ export default function Scenarios() {
         </div>
       </div>
 
-      {/* User-Created Scenarios Section */}
-      {userScenarios.length > 0 && (
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <div className="flex items-center gap-3">
-              <UserPlus className="h-5 w-5 text-green-600" />
-              <h2 className="text-lg font-semibold text-gray-900">Your Scenarios</h2>
-              <span className="px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded-full">
-                {userScenarios.length}
-              </span>
-            </div>
-            <p className="text-sm text-gray-600 mt-1">Scenarios you've created or generated</p>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Name
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Linked Agent
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Description
-                  </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {userScenarios.map((scenario) => (
-                  <tr key={scenario.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
-                        <FileText className="h-4 w-4 text-gray-400" />
-                        <span className="text-sm font-medium text-gray-900">{scenario.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {scenario.agent_id ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
-                          {agentNameById.get(scenario.agent_id) || 'Unlinked'}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-gray-400">Unlinked</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="text-sm text-gray-500 line-clamp-2">
-                        {scenario.description || 'No description'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEdit(scenario)}
-                          leftIcon={<Edit className="h-4 w-4" />}
-                          title="Edit scenario"
-                          className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDelete(scenario)}
-                          leftIcon={<Trash2 className="h-4 w-4" />}
-                          title="Delete scenario"
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {scenarios.length === 0 && (
+      {availableAgents.length === 0 && userScenarios.length === 0 ? (
         <div className="bg-white rounded-lg shadow p-12 text-center">
           <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No scenarios yet</h3>
           <p className="text-gray-500 mb-4">Create your first scenario to get started</p>
-          <Button
-            variant="primary"
-            onClick={() => setShowMainModal(true)}
-            leftIcon={<Plus className="h-5 w-5" />}
-          >
+          <Button variant="primary" onClick={openCreateModal} leftIcon={<Plus className="h-5 w-5" />}>
             Create Scenario
           </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col lg:flex-row gap-4 min-h-[calc(100vh-11rem)]">
+          <ScenariosAgentSidebar
+            agents={agentsWithScenarios}
+            selectedAgentId={selectedNavAgentId || 'unlinked'}
+            scenarioCountByAgent={scenarioCountByAgent}
+            unlinkedCount={unlinkedScenarioCount}
+            onSelectAgent={setSelectedNavAgentId}
+          />
+          <ScenariosListPanel
+            agentLabel={selectedAgentLabel}
+            scenarios={visibleScenarios}
+            onCreateScenario={openCreateModal}
+            onEditScenario={handleEdit}
+            onDeleteScenario={handleDelete}
+            onViewScenario={handleViewScenario}
+          />
         </div>
       )}
 
@@ -965,12 +916,17 @@ export default function Scenarios() {
                               />
                             </div>
                             <div>
-                              <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
-                              <textarea
+                              <label className="block text-xs font-medium text-gray-700 mb-1">
+                                Description
+                              </label>
+                              <MarkdownEditor
                                 value={draft.description}
-                                onChange={(e) => updateGeneratedDraft(draft.id, { description: e.target.value })}
-                                rows={4}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                                onChange={(description) =>
+                                  updateGeneratedDraft(draft.id, { description })
+                                }
+                                rows={8}
+                                defaultMode="preview"
+                                placeholder="Scenario description (markdown supported)..."
                               />
                             </div>
                             <div className="flex items-center justify-end gap-2">
@@ -1091,12 +1047,11 @@ export default function Scenarios() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Description
                     </label>
-                    <textarea
+                    <MarkdownEditor
                       value={formData.description}
-                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                      rows={4}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      placeholder="Describe what this scenario tests..."
+                      onChange={(description) => setFormData({ ...formData, description })}
+                      rows={6}
+                      placeholder="Describe what this scenario tests... (markdown supported)"
                     />
                   </div>
                   <div className="flex gap-3 pt-4">
@@ -1126,24 +1081,19 @@ export default function Scenarios() {
 
       {/* Scenario Details Modal */}
       {showDetailsModal && selectedScenario && renderModal(
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => setShowDetailsModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Scenario Details</h3>
-              <button
-                onClick={() => {
-                  setShowDetailsModal(false)
-                  setSelectedScenario(null)
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-6">
-              <div>
-                <h4 className="text-xl font-semibold text-gray-900 mb-2">{selectedScenario.name}</h4>
-                <div className="mb-2">
+        <div
+          className="fixed inset-0 bg-gray-500/75 flex items-center justify-center z-[9999] p-4 sm:p-6"
+          onClick={() => setShowDetailsModal(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-w-6xl h-[min(92vh,960px)] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-start gap-4 shrink-0">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-semibold text-gray-900">Scenario Details</h3>
+                <h4 className="text-xl font-semibold text-gray-900 mt-1 truncate">{selectedScenario.name}</h4>
+                <div className="mt-2">
                   {selectedScenario.agent_id ? (
                     <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
                       Linked Agent: {agentNameById.get(selectedScenario.agent_id) || 'Unlinked'}
@@ -1152,9 +1102,26 @@ export default function Scenarios() {
                     <span className="text-xs text-gray-500">Linked Agent: Unlinked</span>
                   )}
                 </div>
-                {selectedScenario.description && (
-                  <p className="text-gray-600">{selectedScenario.description}</p>
-                )}
+              </div>
+              <button
+                onClick={() => {
+                  setShowDetailsModal(false)
+                  setSelectedScenario(null)
+                }}
+                className="text-gray-400 hover:text-gray-600 shrink-0"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto min-h-0 p-6 space-y-6">
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-5 sm:p-6 min-h-[min(55vh,100%)]">
+                <ScenarioMarkdownView
+                  content={selectedScenario.description || ''}
+                  emptyMessage="No description configured."
+                  size="lg"
+                />
               </div>
 
               {Object.keys(selectedScenario.required_info).length > 0 && (
@@ -1163,30 +1130,36 @@ export default function Scenarios() {
                     <Tag className="w-4 h-4" />
                     Required Information
                   </div>
-                  <div className="space-y-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {Object.entries(selectedScenario.required_info).map(([key, value]) => (
-                      <div key={key} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <div key={key} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
                         <span className="text-sm font-medium text-gray-900">{key.replace(/_/g, ' ')}</span>
-                        <span className="text-sm text-gray-600 font-mono">{value}</span>
+                        <span className="text-sm text-gray-600 font-mono ml-3 truncate">{value}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
+            </div>
 
-              <div className="pt-4 border-t border-gray-200">
-                <Button
-                  variant="primary"
-                  onClick={() => {
-                    setShowDetailsModal(false)
-                    // TODO: Implement "Use in Test" functionality
-                    showToast('Scenario selected for test', 'success')
-                  }}
-                  className="w-full"
-                >
-                  Use in Test
-                </Button>
-              </div>
+            <div className="px-6 py-4 border-t border-gray-200 bg-gray-50/80 flex flex-wrap items-center justify-end gap-2 shrink-0">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowDetailsModal(false)
+                }}
+              >
+                Close
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowDetailsModal(false)
+                  handleEdit(selectedScenario)
+                }}
+              >
+                Edit Scenario
+              </Button>
             </div>
           </div>
         </div>
@@ -1194,8 +1167,8 @@ export default function Scenarios() {
 
       {/* Edit Modal */}
       {showEditModal && selectedScenario && renderModal(
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="fixed inset-0 bg-gray-500/75 flex items-center justify-center z-[9999] p-4 sm:p-6">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-6xl h-[min(92vh,960px)] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Edit Scenario</h3>
               <button
@@ -1241,12 +1214,11 @@ export default function Scenarios() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Description
                   </label>
-                  <textarea
+                  <MarkdownEditor
                     value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    rows={4}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="Describe what this scenario tests..."
+                    onChange={(description) => setFormData({ ...formData, description })}
+                    rows={14}
+                    placeholder="Describe what this scenario tests... (markdown supported)"
                   />
                 </div>
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg space-y-3">

@@ -19,6 +19,8 @@ from . import generate_evaluation_tldr_insights
 from . import generate_evaluation_metric_clusters
 from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
+from . import initiate_vobiz_outbound
+from . import finalize_telephony_recording
 from . import call_import_bulk_ops
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
@@ -45,6 +47,8 @@ __all__ = [
     "generate_evaluation_prompt_improvements_task",
     "generate_agent_flowchart_task",
     "map_agent_flowchart_prompt_sections_task",
+    "initiate_vobiz_outbound_call_task",
+    "finalize_telephony_recording_task",
     "dispatch_evaluation_rows_task",
     "dispatch_fair_eval_rows_task",
     "dispatch_fair_diarization_rows_task",
@@ -87,6 +91,10 @@ generate_evaluation_prompt_improvements_task = (
 generate_agent_flowchart_task = agent_flowchart_jobs.generate_agent_flowchart_task
 map_agent_flowchart_prompt_sections_task = (
     agent_flowchart_jobs.map_agent_flowchart_prompt_sections_task
+)
+initiate_vobiz_outbound_call_task = initiate_vobiz_outbound.initiate_vobiz_outbound_call_task
+finalize_telephony_recording_task = (
+    finalize_telephony_recording.finalize_telephony_recording_task
 )
 dispatch_evaluation_rows_task = eval_dispatch.dispatch_evaluation_rows_task
 dispatch_fair_eval_rows_task = fair_dispatch.dispatch_fair_eval_rows_task

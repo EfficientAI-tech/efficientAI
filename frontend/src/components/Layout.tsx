@@ -19,6 +19,7 @@ import {
   Plug,
   ChevronRight,
   ChevronDown,
+  ChevronLeft,
   Database,
   Settings,
   Mic,
@@ -113,6 +114,7 @@ const navigationSections: NavSection[] = [
       { name: 'Cloud Storage', href: '/data-sources', icon: Database },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
+      { name: 'Telephony Numbers', href: '/telephony-numbers', icon: Phone },
       { name: 'API Keys', href: '/settings', icon: Key },
       { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],
@@ -128,13 +130,38 @@ const bottomNavigation = [
   { name: 'IAM', href: '/iam', icon: Shield },
 ]
 
+const SIDEBAR_COLLAPSED_KEY = 'sidebarCollapsed'
+
+function readSidebarCollapsedPreference(): boolean {
+  if (typeof window === 'undefined') return false
+  return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
+}
+
+function getFlattenedNavItems(): NavItem[] {
+  const items: NavItem[] = [...otherNavigation]
+  for (const section of navigationSections) {
+    items.push(...section.items)
+  }
+  items.push(...bottomNavigation)
+  return items
+}
+
 export default function Layout() {
   const location = useLocation()
   const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
   const { fetchLicense } = useLicenseStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(readSidebarCollapsedPreference)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
+
+  const toggleDesktopSidebar = () => {
+    setDesktopSidebarCollapsed((prev) => {
+      const next = !prev
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
+      return next
+    })
+  }
 
   // Fetch agents
   const { data: agents = [], isSuccess: agentsLoaded } = useQuery({
@@ -190,20 +217,38 @@ export default function Layout() {
       </div>
 
       {/* Desktop sidebar */}
-      <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
-        <div className="flex flex-col h-full bg-white border-r border-gray-200 shadow-sm">
-          <SidebarContent onLogout={logout} location={location} />
+      <div
+        className={`hidden lg:fixed lg:inset-y-0 lg:z-40 lg:flex lg:flex-col transition-[width] duration-300 ease-in-out ${
+          desktopSidebarCollapsed ? 'lg:w-16' : 'lg:w-64'
+        }`}
+      >
+        <div className="flex flex-col h-full w-full bg-white border-r border-gray-200 shadow-sm overflow-hidden">
+          <SidebarContent
+            onLogout={logout}
+            location={location}
+            collapsed={desktopSidebarCollapsed}
+            onToggleCollapse={toggleDesktopSidebar}
+          />
         </div>
       </div>
 
       {/* Main content */}
-      <div className="lg:pl-64 pt-16 flex flex-col flex-1">
+      <div
+        className={`pt-16 flex flex-col flex-1 transition-[padding] duration-300 ease-in-out ${
+          desktopSidebarCollapsed ? 'lg:pl-16' : 'lg:pl-64'
+        }`}
+      >
         {/* Top bar */}
-        <div className="fixed top-0 left-0 right-0 lg:left-64 z-30 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200">
+        <div
+          className={`fixed top-0 left-0 right-0 z-30 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200 transition-[left] duration-300 ease-in-out ${
+            desktopSidebarCollapsed ? 'lg:left-16' : 'lg:left-64'
+          }`}
+        >
           <button
             type="button"
-            className="px-4 text-gray-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-gray-500 lg:hidden"
+            className="px-4 text-gray-500 hover:text-gray-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-gray-500 lg:hidden"
             onClick={() => setSidebarOpen(true)}
+            aria-label="Open navigation menu"
           >
             <Menu className="h-6 w-6" />
           </button>
@@ -377,9 +422,13 @@ function ProfileAvatar() {
 function SidebarContent({
   onLogout,
   location,
+  collapsed = false,
+  onToggleCollapse,
 }: {
   onLogout: () => void
   location: ReturnType<typeof useLocation>
+  collapsed?: boolean
+  onToggleCollapse?: () => void
 }) {
   const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
@@ -403,10 +452,64 @@ function SidebarContent({
     return section.items.some(item => location.pathname === item.href)
   }
 
+  if (collapsed) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="flex flex-col items-center flex-shrink-0 py-3 border-b border-gray-200 gap-2">
+          <Logo showText={false} />
+          {onToggleCollapse && (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
+              aria-label="Expand sidebar"
+              title="Expand sidebar"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+          <nav className="flex-1 px-2 py-3 space-y-1">
+            {getFlattenedNavItems().map((item) => (
+              <SidebarIconLink
+                key={item.href}
+                item={item}
+                isActive={location.pathname === item.href}
+                isGated={Boolean(item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature))}
+              />
+            ))}
+          </nav>
+        </div>
+        <div className="flex-shrink-0 border-t border-gray-200 p-2">
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
+            title="Logout"
+            aria-label="Logout"
+          >
+            <LogOut className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center flex-shrink-0 px-4 h-16 border-b border-gray-200">
+      <div className="flex items-center justify-between flex-shrink-0 px-4 h-16 border-b border-gray-200">
         <Logo />
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            className="hidden lg:flex p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        )}
       </div>
       {/* Workspace switcher - sits above the Dashboard nav so the
           active workspace context is always visible in the sidebar
@@ -545,6 +648,39 @@ function SidebarContent({
         </button>
       </div>
     </div>
+  )
+}
+
+function SidebarIconLink({
+  item,
+  isActive,
+  isGated,
+}: {
+  item: NavItem
+  isActive: boolean
+  isGated: boolean
+}) {
+  return (
+    <Link
+      to={item.href}
+      title={item.name}
+      className={`group relative flex items-center justify-center p-2 rounded-md transition-colors ${
+        isActive
+          ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
+          : isGated
+            ? 'text-gray-400 hover:bg-gray-50'
+            : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+      }`}
+    >
+      <item.icon
+        className={`h-5 w-5 flex-shrink-0 ${
+          isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
+        }`}
+      />
+      {isGated && (
+        <Lock className="absolute top-1 right-1 h-2.5 w-2.5 text-amber-600" />
+      )}
+    </Link>
   )
 }
 

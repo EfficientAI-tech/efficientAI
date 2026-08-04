@@ -4,14 +4,18 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id
-from app.models.database import TelephonyIntegration, TelephonyMaskedSession
+from app.models.database import TelephonyIntegration, TelephonyMaskedSession, TelephonyDialTarget
 from app.models.schemas import (
     TelephonyIntegrationCreate,
     TelephonyIntegrationResponse,
     TelephonyIntegrationUpdate,
+    TelephonyDialTargetCreate,
+    TelephonyDialTargetResponse,
+    TelephonyDialTargetUpdate,
     TelephonyMaskingSessionCreate,
     TelephonyMaskingSessionResponse,
     TelephonyOutboundCallRequest,
@@ -23,9 +27,67 @@ from app.models.schemas import (
     TelephonyVerifyStartResponse,
 )
 from app.services.telephony.telephony_service import telephony_service
+from app.services.telephony.number_import_service import import_numbers, list_available_numbers
+from app.services.telephony.plivo_client import normalize_e164
 from app.services.telephony.webhook_auth import verify_plivo_webhook
+from app.services.telephony.platform_outbound_pool import outbound_pool_api_payload
 
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
+
+
+class TelephonyAvailableNumberResponse(BaseModel):
+    e164: str
+    provider_number_id: Optional[str] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    capabilities: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
+    application_id: Optional[str] = None
+    already_imported: bool = False
+    imported_number_id: Optional[str] = None
+
+
+class TelephonyImportNumbersRequest(BaseModel):
+    provider: str
+    numbers: List[str]
+    agent_id: Optional[UUID] = None
+    credential_id: Optional[UUID] = None
+
+
+class TelephonyImportNumberResult(BaseModel):
+    number: str
+    success: bool
+    message: str
+    answer_url: str
+    webhook_configured: Optional[bool] = None
+    imported_number_id: Optional[str] = None
+    application_id: Optional[str] = None
+
+
+class TelephonyImportNumbersResponse(BaseModel):
+    provider: str
+    results: List[TelephonyImportNumberResult]
+    answer_url: str
+
+
+class PlatformOutboundPoolNumberResponse(BaseModel):
+    phone_number: str
+    provider: str
+
+
+class PlatformOutboundPoolResponse(BaseModel):
+    numbers: List[PlatformOutboundPoolNumberResponse]
+    max_concurrent_per_org: int
+    shared_across_orgs: bool = True
+
+
+@router.get("/outbound-pool", response_model=PlatformOutboundPoolResponse)
+async def get_platform_outbound_pool(
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+):
+    del organization_id, api_key
+    return PlatformOutboundPoolResponse(**outbound_pool_api_payload())
 
 
 @router.post("/config", response_model=TelephonyIntegrationResponse, status_code=status.HTTP_201_CREATED)
@@ -139,41 +201,17 @@ async def delete_telephony_config(
     """Delete a telephony credential row.
 
     If the deleted row was the default, the most recently updated active
-    row is auto-promoted in its place.
+    row is auto-promoted in its place. Org-owned phone numbers linked to
+    this credential are kept but unlinked so they can fall back to another
+    credential or the platform account.
     """
     del api_key
-    integration = (
-        db.query(TelephonyIntegration)
-        .filter(
-            TelephonyIntegration.id == integration_id,
-            TelephonyIntegration.organization_id == organization_id,
-        )
-        .first()
-    )
-    if not integration:
-        raise HTTPException(status_code=404, detail="Telephony integration not found")
-
-    was_default = bool(integration.is_default)
-    provider_value = integration.provider
-    db.delete(integration)
-    db.flush()
-
-    if was_default:
-        from sqlalchemy import desc, func
-        replacement = (
-            db.query(TelephonyIntegration)
-            .filter(
-                TelephonyIntegration.organization_id == organization_id,
-                func.lower(TelephonyIntegration.provider) == provider_value.lower(),
-                TelephonyIntegration.is_active.is_(True),
-            )
-            .order_by(desc(TelephonyIntegration.updated_at), desc(TelephonyIntegration.created_at))
-            .first()
-        )
-        if replacement:
-            replacement.is_default = True
-
-    db.commit()
+    try:
+        telephony_service.delete_integration(organization_id, integration_id, db)
+    except ValueError as e:
+        if str(e) == "Telephony integration not found":
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -185,7 +223,194 @@ async def list_telephony_numbers(
     db: Session = Depends(get_db),
 ):
     del api_key
-    return telephony_service.list_numbers(organization_id, db, provider=provider)
+    return telephony_service.list_numbers_enriched(organization_id, db, provider=provider)
+
+
+@router.delete("/numbers/{number_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_telephony_number(
+    number_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Remove an org-owned phone number from inventory and unlink agents."""
+    del api_key
+    try:
+        telephony_service.remove_org_phone_number(organization_id, number_id, db)
+    except ValueError as e:
+        message = str(e)
+        if message == "Phone number not found":
+            raise HTTPException(status_code=404, detail=message) from e
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if "active number-masking sessions" in message
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=status_code, detail=message) from e
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/numbers/available", response_model=List[TelephonyAvailableNumberResponse])
+async def list_available_telephony_numbers(
+    provider: str,
+    credential_id: Optional[UUID] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """List remote numbers on a telephony provider account with org import status."""
+    del api_key
+    try:
+        return list_available_numbers(
+            db,
+            organization_id,
+            provider,
+            credential_id=credential_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/numbers/import", response_model=TelephonyImportNumbersResponse)
+async def import_telephony_numbers(
+    payload: TelephonyImportNumbersRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Import selected numbers from a telephony provider into org inventory."""
+    del api_key
+    try:
+        result = import_numbers(
+            db,
+            organization_id,
+            payload.provider,
+            numbers=payload.numbers,
+            agent_id=payload.agent_id,
+            credential_id=payload.credential_id,
+        )
+        return TelephonyImportNumbersResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/dial-targets", response_model=List[TelephonyDialTargetResponse])
+async def list_dial_targets(
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    return (
+        db.query(TelephonyDialTarget)
+        .filter(TelephonyDialTarget.organization_id == organization_id)
+        .order_by(TelephonyDialTarget.label.asc().nullslast(), TelephonyDialTarget.created_at.desc())
+        .all()
+    )
+
+
+@router.post("/dial-targets", response_model=TelephonyDialTargetResponse, status_code=status.HTTP_201_CREATED)
+async def create_dial_target(
+    payload: TelephonyDialTargetCreate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    try:
+        phone_number = normalize_e164(payload.phone_number)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    existing = (
+        db.query(TelephonyDialTarget)
+        .filter(
+            TelephonyDialTarget.organization_id == organization_id,
+            TelephonyDialTarget.phone_number == phone_number,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="This number is already saved for your organization")
+
+    row = TelephonyDialTarget(
+        organization_id=organization_id,
+        phone_number=phone_number,
+        label=payload.label.strip() if payload.label and payload.label.strip() else None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.put("/dial-targets/{target_id}", response_model=TelephonyDialTargetResponse)
+async def update_dial_target(
+    target_id: UUID,
+    payload: TelephonyDialTargetUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    row = (
+        db.query(TelephonyDialTarget)
+        .filter(
+            TelephonyDialTarget.id == target_id,
+            TelephonyDialTarget.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Dial target not found")
+
+    if payload.phone_number is not None:
+        try:
+            phone_number = normalize_e164(payload.phone_number)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        duplicate = (
+            db.query(TelephonyDialTarget)
+            .filter(
+                TelephonyDialTarget.organization_id == organization_id,
+                TelephonyDialTarget.phone_number == phone_number,
+                TelephonyDialTarget.id != target_id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="This number is already saved for your organization")
+        row.phone_number = phone_number
+
+    if payload.label is not None:
+        row.label = payload.label.strip() if payload.label.strip() else None
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/dial-targets/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dial_target(
+    target_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    row = (
+        db.query(TelephonyDialTarget)
+        .filter(
+            TelephonyDialTarget.id == target_id,
+            TelephonyDialTarget.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Dial target not found")
+    db.delete(row)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/calls/outbound", response_model=TelephonyOutboundCallResponse)

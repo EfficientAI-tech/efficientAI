@@ -205,6 +205,7 @@ interface TestVoiceAgentResultData {
       type: string
       metric_name: string
       parent_metric_id?: string | null
+      rationale?: string | null
       skipped?: string
       error?: string | null
     }
@@ -365,6 +366,15 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
 
     const normalizedType = type?.toLowerCase()
 
+    if (normalizedType === 'category') {
+      if (value === '') return <span className="text-gray-400">N/A</span>
+      return (
+        <span className="inline-flex max-w-full items-center px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-700 text-sm font-semibold whitespace-normal break-words leading-snug">
+          {String(value)}
+        </span>
+      )
+    }
+
     if (metricName === 'Emotion Category') {
       const emotion = String(value).toLowerCase()
       const emotionConfig: Record<string, { emoji: string; color: string; bg: string }> = {
@@ -442,6 +452,16 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
     }
 
     return <span className="block max-w-full text-base font-semibold leading-snug text-gray-900 whitespace-normal break-words">{String(value)}</span>
+  }
+
+  const renderMetricRationale = (metric: { rationale?: string | null }) => {
+    const rationale = typeof metric.rationale === 'string' ? metric.rationale.trim() : ''
+    if (!rationale) return null
+    return (
+      <p className="mt-2 text-xs text-gray-600 leading-relaxed border-t border-gray-100 pt-2">
+        {rationale}
+      </p>
+    )
   }
 
   // Helper to check if metric has a valid value
@@ -529,6 +549,7 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
                     </div>
                     <div>
                       {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                      {renderMetricRationale(metric)}
                     </div>
                   </div>
                 ))}
@@ -554,6 +575,7 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
                     </div>
                     <div>
                       {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                      {renderMetricRationale(metric)}
                     </div>
                   </div>
                 ))}
@@ -579,6 +601,7 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
                     </div>
                     <div>
                       {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                      {renderMetricRationale(metric)}
                     </div>
                   </div>
                 ))}

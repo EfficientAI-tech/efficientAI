@@ -5,6 +5,7 @@ from typing import Dict, List, Any
 from app.dependencies import get_api_key
 from app.models.database import ModelProvider
 from app.services.ai.model_config_service import model_config_service
+from app.services.voice_agent.tts_sample_rate import tts_sample_rates_for_provider
 
 router = APIRouter(prefix="/model-config", tags=["Model Config"])
 
@@ -91,6 +92,7 @@ async def get_model_options(
     options = model_config_service.get_model_options_by_provider(provider_enum)
     # Attach model-specific TTS voice lists (e.g. Sarvam bulbul:v3 vs v2)
     options["tts_voices"] = model_config_service.get_tts_voices_by_provider(provider_enum)
+    options["tts_sample_rates"] = tts_sample_rates_for_provider(provider)
     return options
 
 

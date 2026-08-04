@@ -19,11 +19,24 @@ The **Test Agents** page is your control plane for:
 - managing test-agent and provider prompt surfaces,
 - linking the test agent to internal or external execution paths.
 
+Use the **agent list on the left** (public Agent ID + name) to switch between test agents without leaving the page. The main panel shows **Overview**, **Test Agent**, and **Voice AI Agent** tabs for the selected agent. Deep links use `/agents/{agentId}` with optional `?tab=test_agent` or `?tab=voice_ai_agent`.
+
 ## Creating a test agent
 
 ![Creating an agent](/screenshots/creating-agents.png)
 
-Use **Create Test Agent** to add a new evaluation configuration. Each test agent gets a name, call settings, and a prompt that describes how the agent should behave during simulated or provider-backed test calls.
+Use **Create Test Agent** to add a new evaluation configuration. Choose one of two paths:
+
+- **Telephony** — phone-based agent with telephony number, inbound/outbound direction, and silence hangup settings. Paste a production prompt, generate the complementary test agent prompt, then select a voice bundle.
+- **Existing Platform Integration** — connect VAPI, Retell, ElevenLabs, or Smallest with integration credentials and an external Agent ID, select a voice bundle, then import the production prompt and generate the test agent prompt.
+
+The **production prompt** is stored in `provider_prompt` and shown on the **Voice AI Agent** tab. The generated **test agent prompt** is stored in `description` and shown on the **Test Agent** tab.
+
+### Generate test prompt from production prompt
+
+On the prompts step, paste (Telephony) or import (Platform) your production system prompt, then click **Generate test prompt**. EfficientAI produces a complementary caller prompt stored in `description`. Review and edit before creating the agent.
+
+Use **Use Saved**, **Save Prompt**, manual authoring, and **AI Generate** when editing an existing agent in the detail view.
 
 ## Execution paths
 
@@ -43,9 +56,10 @@ If both are configured, you can compare outcomes across both paths from Playgrou
 | `call_type` | Enum | `inbound` or `outbound` behavior context. |
 | `call_medium` | Enum | `phone_call` or `web_call`. |
 | `phone_number` | String | Required when `call_medium = phone_call`. |
-| `voice_bundle_id` | UUID | Internal test stack for voice-bundle testing. |
+| `voice_bundle_id` | UUID | **Required on create.** Internal test stack for voice-bundle testing. |
 | `voice_ai_integration_id` | UUID | External provider integration reference. |
 | `voice_ai_agent_id` | String | External provider agent identifier. |
+| `silence_hangup_secs` | Integer | End live voice sessions after this many seconds without speech from either party (default `15`; `0` disables). |
 
 ## Inbound vs outbound calls
 
@@ -63,7 +77,7 @@ Each test agent can carry two prompt surfaces:
 - **Test Agent Prompt (`description`)**  
   The EfficientAI test-agent prompt — used for internal test-agent behavior, scenario generation, and evaluation context.
 - **Provider Prompt (`provider_prompt`)**  
-  Prompt fetched from the linked external voice provider, when you are evaluating a provider-hosted agent.
+  Production prompt — pasted during Telephony create, imported from a linked external provider, or synced via **Sync Now**.
 
 ### Provider prompt sync
 
@@ -75,6 +89,19 @@ Sync can happen:
 - manually through "Sync Now" in the agent view.
 
 This keeps local review and optimization aligned with what is currently running on the provider.
+
+### Test agent prompt composer
+
+When editing the **Test Agent Prompt**, use inline triggers while writing markdown:
+
+- Type **`{`** to insert **variables** (built-in placeholders such as `{agent_name}`, `{call_type}`, plus **custom variables** you define on the agent).
+- Type **`@`** to insert **prompt partials** (full markdown from your workspace library) or variables from the same menu.
+
+Built-in variables are placeholders for authoring; runtime substitution during calls is not applied automatically yet. Custom variables are stored on the agent as `prompt_variables` (key → optional description).
+
+AI **Generate Description** can optionally use scenarios linked via `Scenario.agent_id` as **LLM context only**; it does not append a scenario reference block to your prompt.
+
+During evaluator runs, the simulator LLM uses a composed **test agent simulation prompt** (core agent prompt, plus the **active scenario** for that run) plus a separate **Persona** section. Legacy **Test scenarios (reference)** sections in stored prompts are ignored at runtime. See [Scenarios](/docs/products/scenarios/) and [Prompt Partials](/docs/products/prompt-partials/).
 
 ## Related setup guides
 

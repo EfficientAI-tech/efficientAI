@@ -36,8 +36,12 @@ function routeExists(routePath) {
 }
 
 function markdownTargetExists(fromFile, href) {
-  const normalized = href.replace(/\.md$/, '.mdx');
   const fromDir = path.dirname(fromFile);
+  if (href.endsWith('.md')) {
+    const mdResolved = path.resolve(fromDir, href);
+    if (fs.existsSync(mdResolved)) return true;
+  }
+  const normalized = href.replace(/\.md$/, '.mdx');
   const resolved = path.resolve(fromDir, normalized);
   if (fs.existsSync(resolved)) return true;
   if (normalized.endsWith('.mdx')) return false;

@@ -1,26 +1,26 @@
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { X } from 'lucide-react'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
 import { AIProvider, VoiceBundle, Integration, IntegrationPlatform } from '../../../types/api'
-import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
-import { resolveLLMModelsForCredential, formatGatewayCredentialLabel } from '../../../lib/llmModelOptions'
-
-interface FormData {
-  name: string
-  phone_number: string
-  language: string
-  description: string
-  call_type: string
-  call_medium: 'phone_call' | 'web_call'
-  telephony_phone_number_id: string
-  voice_bundle_id: string
-  voice_ai_integration_id: string
-  voice_ai_agent_id: string
-}
+import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
+import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
+import { extractPhoneConflictDetail } from './agentPhoneValidation'
+import CreateAgentPathSelector from './create/CreateAgentPathSelector'
+import TelephonyBasicsStep, { validateTelephonyBasics } from './create/TelephonyBasicsStep'
+import PlatformConnectStep, { isPlatformConnectValid } from './create/PlatformConnectStep'
+import VoiceBundleStep from './create/VoiceBundleStep'
+import ProductionPromptStep, { isPromptStepValid } from './create/ProductionPromptStep'
+import {
+  type CreateAgentPath,
+  type CreateAgentFormData,
+  type CreateStepId,
+  DEFAULT_CREATE_AGENT_FORM,
+  TELEPHONY_STEPS,
+  PLATFORM_STEPS,
+} from './create/createAgentTypes'
 
 interface CreateAgentModalProps {
   isOpen: boolean
@@ -29,49 +29,25 @@ interface CreateAgentModalProps {
   showToast: (message: string, type: 'success' | 'error') => void
 }
 
-interface PromptPartial {
-  id: string
-  name: string
-  description?: string | null
-}
-
-const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
-  IntegrationPlatform.RETELL,
-  IntegrationPlatform.VAPI,
-  IntegrationPlatform.ELEVENLABS,
-  IntegrationPlatform.SMALLEST,
-]
-
 export default function CreateAgentModal({
   isOpen,
   onClose,
   onSuccess,
   showToast,
 }: CreateAgentModalProps) {
-  const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
-  const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
-  const [aiDescription, setAiDescription] = useState('')
-  const [aiTone, setAiTone] = useState('professional')
-  const [aiFormat, setAiFormat] = useState('structured')
+  const [createPath, setCreatePath] = useState<CreateAgentPath>('telephony')
+  const [currentStep, setCurrentStep] = useState<CreateStepId>(1)
+  const [formData, setFormData] = useState<CreateAgentFormData>(DEFAULT_CREATE_AGENT_FORM)
+  const [productionPrompt, setProductionPrompt] = useState('')
+  const [setupAdditionalContext, setSetupAdditionalContext] = useState('')
+  const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
+  const [selectedPlatform, setSelectedPlatform] = useState<IntegrationPlatform | null>(null)
   const [aiCredentialId, setAiCredentialId] = useState('')
   const [aiModel, setAiModel] = useState('')
-  const [showUseSavedModal, setShowUseSavedModal] = useState(false)
-  const [savedPromptSearch, setSavedPromptSearch] = useState('')
-  const [selectedSavedPromptId, setSelectedSavedPromptId] = useState('')
-  const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
-  
-  const [formData, setFormData] = useState<FormData>({
-    name: '',
-    phone_number: '',
-    language: 'en',
-    description: '',
-    call_type: 'outbound',
-    call_medium: 'phone_call',
-    telephony_phone_number_id: '',
-    voice_bundle_id: '',
-    voice_ai_integration_id: '',
-    voice_ai_agent_id: ''
-  })
+  const [promptFetchError, setPromptFetchError] = useState<string | null>(null)
+  const [hasFetchedPlatformPrompt, setHasFetchedPlatformPrompt] = useState(false)
+
+  const steps = createPath === 'telephony' ? TELEPHONY_STEPS : PLATFORM_STEPS
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
@@ -87,17 +63,15 @@ export default function CreateAgentModal({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
   })
-  const { data: telephonyConfig, isError: isTelephonyConfigError } = useQuery<TelephonyIntegrationResponse>({
-    queryKey: ['telephony-config', 'plivo'],
-    queryFn: () => apiClient.getTelephonyConfig('plivo'),
-    enabled: isOpen && formData.call_medium === 'phone_call',
-    retry: false,
-  })
-  const { data: telephonyNumbers = [] } = useQuery<TelephonyPhoneNumberResponse[]>({
-    queryKey: ['telephony-numbers'],
-    queryFn: () => apiClient.listTelephonyNumbers(),
-    enabled: isOpen && formData.call_medium === 'phone_call',
-  })
+
+  const { isChecking: isCheckingPhoneAssignment, hasConflict: hasPhoneConflict } =
+    useAgentPhoneAssignmentCheck({
+      enabled: isOpen && createPath === 'telephony',
+      callMedium: 'phone_call',
+      phoneNumber: formData.phone_number,
+      telephonyPhoneNumberId:
+        phoneNumberInputMode === 'provider' ? formData.telephony_phone_number_id : undefined,
+    })
 
   const selectedAiProviderRow = aiCredentialId
     ? aiProviders.find((p) => p.id === aiCredentialId)
@@ -129,100 +103,100 @@ export default function CreateAgentModal({
     }
   }, [aiProvider, selectableModels, aiModel, gatewayDirectModel])
 
-  const { data: savedPromptPartials = [], isLoading: isLoadingSavedPromptPartials } = useQuery<PromptPartial[]>({
-    queryKey: ['create-agent-prompt-partials', savedPromptSearch],
-    queryFn: () => apiClient.listPromptPartials(0, 100, savedPromptSearch.trim() || undefined),
-    enabled: showUseSavedModal,
-  })
-
   useEffect(() => {
-    if (formData.call_medium !== 'phone_call') {
-      return
+    if (!isOpen) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
     }
-    const hasProviderNumbers = !!telephonyConfig && telephonyNumbers.length > 0
-    if (!hasProviderNumbers && phoneNumberInputMode !== 'custom') {
-      setPhoneNumberInputMode('custom')
-      setFormData((prev) => ({ ...prev, telephony_phone_number_id: '' }))
-    }
-    if (
-      phoneNumberInputMode === 'provider' &&
-      formData.telephony_phone_number_id &&
-      !telephonyNumbers.some((n) => n.id === formData.telephony_phone_number_id && !n.agent_id)
-    ) {
-      setFormData((prev) => ({ ...prev, telephony_phone_number_id: '', phone_number: '' }))
-    }
-  }, [
-    formData.call_medium,
-    formData.telephony_phone_number_id,
-    phoneNumberInputMode,
-    telephonyConfig,
-    telephonyNumbers,
-  ])
+  }, [isOpen])
 
-  const generateDescriptionMutation = useMutation({
-    mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
-      apiClient.generateAgentDescription(data),
+  const buildGenerationParams = () => ({
+    ...(aiProvider ? { provider: aiProvider } : {}),
+    ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
+    ...(aiModel ? { model: aiModel } : {}),
+  })
+
+  const generateTestPromptMutation = useMutation({
+    mutationFn: () => {
+      if (!formData.name.trim()) {
+        throw new Error('Agent name is required before generating a test prompt')
+      }
+      if (!productionPrompt.trim()) {
+        throw new Error('Production prompt is required')
+      }
+      return apiClient.generateTestPromptFromProduction({
+        production_prompt: productionPrompt,
+        agent_name: formData.name.trim(),
+        language: formData.language,
+        call_type: formData.call_type,
+        additional_context: setupAdditionalContext.trim() || undefined,
+        ...buildGenerationParams(),
+      })
+    },
     onSuccess: (data) => {
-      setFormData(prev => ({ ...prev, description: data.content }))
-      setShowAIGeneratePanel(false)
-      setAiDescription('')
-      setDescriptionEditorMode('preview')
-      showToast('Description generated successfully!', 'success')
+      setFormData((prev) => ({ ...prev, description: data.test_agent_prompt }))
+      showToast('Test agent prompt generated from production prompt', 'success')
     },
     onError: (err: any) => {
-      showToast(err?.response?.data?.detail || 'Failed to generate description with AI', 'error')
+      showToast(err?.message || err?.response?.data?.detail || 'Failed to generate test prompt', 'error')
     },
   })
 
-  const useSavedPromptMutation = useMutation({
-    mutationFn: (promptPartialId: string) => apiClient.getPromptPartial(promptPartialId),
-    onSuccess: (data) => {
-      const content = (data?.content || '').trim()
-      if (!content) {
-        showToast('Selected prompt partial has no content', 'error')
-        return
+  const fetchPlatformPromptMutation = useMutation({
+    mutationFn: () => {
+      if (!formData.voice_ai_integration_id || !formData.voice_ai_agent_id) {
+        throw new Error('Integration and Agent ID are required')
       }
-      setFormData((prev) => ({ ...prev, description: content }))
-      setDescriptionEditorMode('preview')
-      setShowUseSavedModal(false)
-      setSavedPromptSearch('')
-      setSelectedSavedPromptId('')
-      showToast('Saved prompt applied to Test Agent Prompt', 'success')
+      return apiClient.previewIntegrationAgentPrompt(
+        formData.voice_ai_integration_id,
+        formData.voice_ai_agent_id.trim(),
+      )
+    },
+    onSuccess: (data) => {
+      setProductionPrompt(data.provider_prompt)
+      setPromptFetchError(null)
+      setHasFetchedPlatformPrompt(true)
     },
     onError: (err: any) => {
-      showToast(err?.response?.data?.detail || 'Failed to load saved prompt', 'error')
+      const message = err?.response?.data?.detail || err?.message || 'Failed to fetch production prompt'
+      setPromptFetchError(typeof message === 'string' ? message : 'Failed to fetch production prompt')
+      setProductionPrompt('')
     },
   })
 
   const createMutation = useMutation({
-    mutationFn: (data: FormData) => {
-      const payload: any = {
+    mutationFn: async (data: CreateAgentFormData) => {
+      const payload: Record<string, unknown> = {
         name: data.name,
         language: data.language,
         description: data.description || null,
         call_type: data.call_type,
-        call_medium: data.call_medium,
+        call_medium: createPath === 'platform' ? 'web_call' : 'phone_call',
+        voice_bundle_id: data.voice_bundle_id.trim(),
+        silence_hangup_secs: data.silence_hangup_secs ?? 15,
       }
 
-      if (data.call_medium === 'phone_call' && data.phone_number) {
-        payload.phone_number = data.phone_number
-      }
-      if (data.call_medium === 'phone_call' && data.telephony_phone_number_id) {
-        payload.telephony_phone_number_id = data.telephony_phone_number_id
+      if (createPath === 'telephony') {
+        if (data.phone_number) payload.phone_number = data.phone_number
+        if (data.telephony_phone_number_id) {
+          payload.telephony_phone_number_id = data.telephony_phone_number_id
+        }
+        if (productionPrompt.trim()) {
+          payload.provider_prompt = productionPrompt.trim()
+        }
       }
 
-      if (data.voice_bundle_id && data.voice_bundle_id.trim() !== '') {
-        payload.voice_bundle_id = data.voice_bundle_id.trim()
-      }
-
-      if (data.voice_ai_integration_id && data.voice_ai_integration_id.trim() !== '') {
+      if (createPath === 'platform') {
         payload.voice_ai_integration_id = data.voice_ai_integration_id.trim()
-      }
-      if (data.voice_ai_agent_id && data.voice_ai_agent_id.trim() !== '') {
         payload.voice_ai_agent_id = data.voice_ai_agent_id.trim()
+        if (productionPrompt.trim()) {
+          payload.provider_prompt = productionPrompt.trim()
+        }
       }
 
-      return apiClient.createAgent(payload)
+      return apiClient.createAgent(payload as Parameters<typeof apiClient.createAgent>[0])
     },
     onSuccess: () => {
       onSuccess()
@@ -230,666 +204,366 @@ export default function CreateAgentModal({
       showToast('Agent created successfully!', 'success')
     },
     onError: (error: any) => {
-      showToast(`Failed to create agent: ${error.response?.data?.detail || error.message}`, 'error')
+      const conflictMessage = extractPhoneConflictDetail(error.response?.data?.detail)
+      showToast(conflictMessage || `Failed to create agent: ${error.message}`, 'error')
     },
   })
 
   const resetForm = () => {
-    setFormData({
-      name: '',
-      phone_number: '',
-      language: 'en',
-      description: '',
-      call_type: 'outbound',
-      call_medium: 'phone_call',
-      telephony_phone_number_id: '',
-      voice_bundle_id: '',
-      voice_ai_integration_id: '',
-      voice_ai_agent_id: ''
-    })
-    setDescriptionEditorMode('write')
-    setShowAIGeneratePanel(false)
-    setAiDescription('')
-    setAiTone('professional')
-    setAiFormat('structured')
+    setFormData(DEFAULT_CREATE_AGENT_FORM)
+    setCreatePath('telephony')
+    setCurrentStep(1)
+    setProductionPrompt('')
+    setSetupAdditionalContext('')
+    setPhoneNumberInputMode('provider')
+    setSelectedPlatform(null)
     setAiCredentialId('')
     setAiModel('')
-    setPhoneNumberInputMode('provider')
-    setShowUseSavedModal(false)
-    setSavedPromptSearch('')
-    setSelectedSavedPromptId('')
+    setPromptFetchError(null)
+    setHasFetchedPlatformPrompt(false)
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handlePathChange = (path: CreateAgentPath) => {
+    setCreatePath(path)
+    setCurrentStep(1)
+    setFormData(DEFAULT_CREATE_AGENT_FORM)
+    setProductionPrompt('')
+    setSetupAdditionalContext('')
+    setSelectedPlatform(null)
+    setPromptFetchError(null)
+    setHasFetchedPlatformPrompt(false)
+  }
 
-    const descriptionWords = formData.description.trim().split(/\s+/).filter(Boolean)
-    if (descriptionWords.length < 10) {
-      showToast('Description must be at least 10 words.', 'error')
-      return
-    }
-
-    if (formData.call_medium === 'phone_call') {
-      if (phoneNumberInputMode === 'provider') {
-        if (!formData.telephony_phone_number_id) {
-          showToast('Please select a telephony number from your provider.', 'error')
-          return
+  const validateCurrentStep = (): boolean => {
+    if (createPath === 'telephony') {
+      if (currentStep === 1) {
+        if (!validateTelephonyBasics(formData, phoneNumberInputMode, isCheckingPhoneAssignment, hasPhoneConflict)) {
+          if (!formData.name.trim()) showToast('Name is required.', 'error')
+          else if (phoneNumberInputMode === 'provider' && !formData.telephony_phone_number_id) {
+            showToast('Please select a telephony number from your provider.', 'error')
+          } else if (phoneNumberInputMode === 'custom' && !formData.phone_number?.trim()) {
+            showToast('Phone number is required for phone calls.', 'error')
+          } else if (isCheckingPhoneAssignment) {
+            showToast('Checking phone number availability…', 'error')
+          } else if (hasPhoneConflict) {
+            showToast('This phone number is already assigned to another agent.', 'error')
+          }
+          return false
         }
-      } else {
-        if (!formData.phone_number || formData.phone_number.trim() === '') {
-          showToast('Phone number is required for phone calls.', 'error')
-          return
+        return true
+      }
+      if (currentStep === 2) {
+        if (!isPromptStepValid(productionPrompt, formData.description)) {
+          if (!productionPrompt.trim()) showToast('Production prompt is required.', 'error')
+          else showToast('Test agent prompt must be at least 10 words.', 'error')
+          return false
         }
-        if (!/^[\d+]+$/.test(formData.phone_number)) {
-          showToast('Phone number must contain only digits and the + character.', 'error')
-          return
+        return true
+      }
+      if (currentStep === 3) {
+        if (!formData.voice_bundle_id?.trim()) {
+          showToast('Voice bundle is required.', 'error')
+          return false
         }
+        return true
       }
     }
 
-    if (!formData.voice_ai_integration_id || formData.voice_ai_integration_id.trim() === '') {
-      showToast('Voice AI Integration Provider is required.', 'error')
-      return
+    if (createPath === 'platform') {
+      if (currentStep === 1) {
+        if (!isPlatformConnectValid(formData.name, selectedPlatform, formData.voice_ai_integration_id, formData.voice_ai_agent_id)) {
+          if (!formData.name.trim()) showToast('Name is required.', 'error')
+          else if (!selectedPlatform) showToast('Please connect a platform.', 'error')
+          else showToast('Integration and Agent ID are required.', 'error')
+          return false
+        }
+        return true
+      }
+      if (currentStep === 2) {
+        if (!formData.voice_bundle_id?.trim()) {
+          showToast('Voice bundle is required.', 'error')
+          return false
+        }
+        return true
+      }
+      if (currentStep === 3) {
+        if (!isPromptStepValid(productionPrompt, formData.description)) {
+          if (!productionPrompt.trim()) showToast('Production prompt must be fetched from the provider.', 'error')
+          else showToast('Test agent prompt must be at least 10 words.', 'error')
+          return false
+        }
+        return true
+      }
     }
-    if (!formData.voice_ai_agent_id || formData.voice_ai_agent_id.trim() === '') {
-      showToast('Voice AI Agent ID is required.', 'error')
+
+    return true
+  }
+
+  const handleNext = () => {
+    if (!validateCurrentStep()) return
+
+    if (createPath === 'platform' && currentStep === 2) {
+      setCurrentStep(3)
+      if (!hasFetchedPlatformPrompt) {
+        fetchPlatformPromptMutation.mutate()
+      }
       return
     }
 
+    setCurrentStep((step) => Math.min(step + 1, 3) as CreateStepId)
+  }
+
+  const handleBack = () => {
+    setCurrentStep((step) => Math.max(step - 1, 1) as CreateStepId)
+  }
+
+  const handleCreate = () => {
+    if (currentStep !== 3 || !validateCurrentStep()) return
+    if (createPath === 'telephony') {
+      if (!validateTelephonyBasics(formData, phoneNumberInputMode, isCheckingPhoneAssignment, hasPhoneConflict)) {
+        showToast('Please fix telephony settings.', 'error')
+        return
+      }
+    }
+    if (!isPromptStepValid(productionPrompt, formData.description)) {
+      showToast('Production and test agent prompts are required.', 'error')
+      return
+    }
+    if (!formData.voice_bundle_id?.trim()) {
+      showToast('Voice bundle is required.', 'error')
+      return
+    }
     createMutation.mutate(formData)
   }
 
-  const voiceAgentIntegrations = integrations.filter(
-    (integration) =>
-      integration.is_active &&
-      SUPPORTED_VOICE_AI_PLATFORMS.includes(integration.platform as IntegrationPlatform),
-  )
+  const handlePlatformSelect = (platform: IntegrationPlatform | null) => {
+    setSelectedPlatform(platform)
+    setFormData((prev) => ({
+      ...prev,
+      voice_ai_integration_id: '',
+      voice_ai_agent_id: '',
+    }))
+    setProductionPrompt('')
+    setPromptFetchError(null)
+    setHasFetchedPlatformPrompt(false)
+  }
 
-  const selectedVoiceIntegration = voiceAgentIntegrations.find(
-    (integration) => integration.id === formData.voice_ai_integration_id,
-  )
+  const handlePlatformIntegrationChange = (integrationId: string) => {
+    setFormData((prev) => ({ ...prev, voice_ai_integration_id: integrationId }))
+    setProductionPrompt('')
+    setPromptFetchError(null)
+    setHasFetchedPlatformPrompt(false)
+  }
+
+  const handlePlatformAgentIdChange = (agentId: string) => {
+    setFormData((prev) => ({ ...prev, voice_ai_agent_id: agentId }))
+    setProductionPrompt('')
+    setPromptFetchError(null)
+    setHasFetchedPlatformPrompt(false)
+  }
 
   if (!isOpen) return null
 
-  return (
-    <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-gray-900">Create Test Agent</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+  const renderStepContent = () => {
+    if (createPath === 'telephony') {
+      if (currentStep === 1) {
+        return (
+          <TelephonyBasicsStep
+            formData={formData}
+            onChange={setFormData}
+            isOpen={isOpen}
+            phoneNumberInputMode={phoneNumberInputMode}
+            onPhoneNumberInputModeChange={setPhoneNumberInputMode}
+          />
+        )
+      }
+      if (currentStep === 2) {
+        return (
+          <ProductionPromptStep
+            agentName={formData.name}
+            language={formData.language}
+            callType={formData.call_type}
+            productionPrompt={productionPrompt}
+            onProductionPromptChange={setProductionPrompt}
+            testAgentPrompt={formData.description}
+            onTestAgentPromptChange={(description) => setFormData((prev) => ({ ...prev, description }))}
+            additionalContext={setupAdditionalContext}
+            onAdditionalContextChange={setSetupAdditionalContext}
+            aiProviders={aiProviders}
+            aiCredentialId={aiCredentialId}
+            onAiCredentialIdChange={setAiCredentialId}
+            aiModel={aiModel}
+            onAiModelChange={setAiModel}
+            selectableModels={selectableModels}
+            gatewayDirectModel={gatewayDirectModel}
+            aiProvider={aiProvider}
+            onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
+            isGenerating={generateTestPromptMutation.isPending}
+            canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+          />
+        )
+      }
+      return (
+        <VoiceBundleStep
+          voiceBundles={voiceBundles}
+          value={formData.voice_bundle_id}
+          onChange={(voiceBundleId) => setFormData((prev) => ({ ...prev, voice_bundle_id: voiceBundleId }))}
+        />
+      )
+    }
+
+    if (currentStep === 1) {
+      return (
+        <PlatformConnectStep
+          integrations={integrations}
+          agentName={formData.name}
+          onAgentNameChange={(name) => setFormData((prev) => ({ ...prev, name }))}
+          selectedPlatform={selectedPlatform}
+          onSelectPlatform={handlePlatformSelect}
+          voiceAiIntegrationId={formData.voice_ai_integration_id}
+          voiceAiAgentId={formData.voice_ai_agent_id}
+          onIntegrationChange={handlePlatformIntegrationChange}
+          onAgentIdChange={handlePlatformAgentIdChange}
+        />
+      )
+    }
+    if (currentStep === 2) {
+      return (
+        <VoiceBundleStep
+          voiceBundles={voiceBundles}
+          value={formData.voice_bundle_id}
+          onChange={(voiceBundleId) => setFormData((prev) => ({ ...prev, voice_bundle_id: voiceBundleId }))}
+        />
+      )
+    }
+    return (
+      <ProductionPromptStep
+        agentName={formData.name}
+        language={formData.language}
+        callType={formData.call_type}
+        productionPrompt={productionPrompt}
+        onProductionPromptChange={setProductionPrompt}
+        productionPromptReadOnly
+        isFetchingProductionPrompt={fetchPlatformPromptMutation.isPending}
+        fetchError={promptFetchError}
+        testAgentPrompt={formData.description}
+        onTestAgentPromptChange={(description) => setFormData((prev) => ({ ...prev, description }))}
+        additionalContext={setupAdditionalContext}
+        onAdditionalContextChange={setSetupAdditionalContext}
+        aiProviders={aiProviders}
+        aiCredentialId={aiCredentialId}
+        onAiCredentialIdChange={setAiCredentialId}
+        aiModel={aiModel}
+        onAiModelChange={setAiModel}
+        selectableModels={selectableModels}
+        gatewayDirectModel={gatewayDirectModel}
+        aiProvider={aiProvider}
+        onGenerateTestPrompt={() => generateTestPromptMutation.mutate()}
+        isGenerating={generateTestPromptMutation.isPending}
+        canGenerate={Boolean(formData.name.trim() && productionPrompt.trim())}
+      />
+    )
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6 bg-gray-900/50 backdrop-blur-sm"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl ring-1 ring-gray-200/80 w-[min(96vw,88rem)] h-[min(92vh,920px)] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-agent-modal-title"
+      >
+        <div className="flex items-center justify-between shrink-0 px-6 py-5 border-b border-gray-100">
+          <div>
+            <h2 id="create-agent-modal-title" className="text-2xl font-bold text-gray-900 tracking-tight">
+              Create Test Agent
+            </h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Step {currentStep} of {steps.length} · {steps[currentStep - 1]?.title}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+            aria-label="Close"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
-        
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Name */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-            <input
-              type="text"
-              required
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              placeholder="Customer Support Bot"
-            />
-          </div>
 
-          {/* Call Medium */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Call Medium *</label>
-            <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-              {(['web_call', 'phone_call'] as const).map((medium) => (
-                <button
-                  key={medium}
-                  type="button"
-                  onClick={() => setFormData({
-                    ...formData,
-                    call_medium: medium,
-                    phone_number: medium === 'web_call' ? '' : formData.phone_number,
-                    telephony_phone_number_id: medium === 'web_call' ? '' : formData.telephony_phone_number_id,
-                  })}
-                  className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
-                    formData.call_medium === medium
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-white text-gray-700 hover:bg-gray-50'
-                  } ${medium === 'web_call' ? 'border-r border-gray-300' : ''}`}
-                >
-                  {medium === 'web_call' ? 'Web Call' : 'Phone Call'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Phone Number */}
-          {formData.call_medium === 'phone_call' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="block text-sm font-medium text-gray-700">Phone Number *</label>
-                <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPhoneNumberInputMode('provider')
-                      setFormData((prev) => ({ ...prev, phone_number: '' }))
-                    }}
-                    disabled={!telephonyConfig || telephonyNumbers.length === 0}
-                    className={`px-3 py-1 text-xs font-medium ${
-                      phoneNumberInputMode === 'provider'
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white text-gray-700 hover:bg-gray-50'
-                    } disabled:bg-gray-100 disabled:text-gray-400`}
-                  >
-                    Select from provider
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPhoneNumberInputMode('custom')
-                      setFormData((prev) => ({ ...prev, telephony_phone_number_id: '' }))
-                    }}
-                    className={`px-3 py-1 text-xs font-medium border-l border-gray-300 ${
-                      phoneNumberInputMode === 'custom'
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    Enter custom
-                  </button>
-                </div>
-              </div>
-
-              {(!telephonyConfig || isTelephonyConfigError) && (
-                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                  No telephony provider is configured yet. You can still enter a custom number, or configure
-                  telephony in Integrations.
-                </p>
-              )}
-
-              {phoneNumberInputMode === 'provider' ? (
-                <select
-                  required
-                  value={formData.telephony_phone_number_id}
-                  onChange={(e) => {
-                    const selected = telephonyNumbers.find((n) => n.id === e.target.value)
-                    setFormData((prev) => ({
-                      ...prev,
-                      telephony_phone_number_id: e.target.value,
-                      phone_number: selected?.phone_number || '',
-                    }))
-                  }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                  disabled={!telephonyConfig || telephonyNumbers.length === 0}
-                >
-                  <option value="">Select a synced telephony number</option>
-                  {telephonyNumbers.map((number) => (
-                    <option key={number.id} value={number.id} disabled={!!number.agent_id}>
-                      {number.phone_number}
-                      {number.region ? ` - ${number.region}` : ''}
-                      {number.country_iso2 ? ` (${number.country_iso2})` : ''}
-                      {number.agent_id ? ' [In use]' : ''}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  required
-                  value={formData.phone_number}
-                  onChange={(e) =>
-                    setFormData({
-                      ...formData,
-                      phone_number: e.target.value.replace(/[^\d+]/g, ''),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="+1234567890"
-                />
-              )}
-            </div>
-          )}
-
-          {/* Language */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
-            <select
-              value={formData.language}
-              onChange={(e) => setFormData({ ...formData, language: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            >
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="zh">Chinese</option>
-              <option value="hi">Hindi</option>
-            </select>
-          </div>
-
-          {/* Call Type */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Call Type *</label>
-            <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-              {(['outbound', 'inbound'] as const).map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setFormData({ ...formData, call_type: type })}
-                  className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
-                    formData.call_type === type
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-white text-gray-700 hover:bg-gray-50'
-                  } ${type === 'outbound' ? 'border-r border-gray-300' : ''}`}
-                >
-                  {type === 'outbound' ? <PhoneOutgoing className="h-3.5 w-3.5" /> : <PhoneIncoming className="h-3.5 w-3.5" />}
-                  {type === 'outbound' ? 'Outbound' : 'Inbound'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Description with AI Generate */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">Test Agent Prompt *</label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowAIGeneratePanel(!showAIGeneratePanel)}
-                  disabled={generateDescriptionMutation.isPending}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                    showAIGeneratePanel
-                      ? 'bg-amber-100 text-amber-800 border-amber-300'
-                      : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                  }`}
-                >
-                  {generateDescriptionMutation.isPending ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-3 w-3" />
+        <div className="shrink-0 px-6 py-4 border-b border-gray-100 bg-gray-50/50 space-y-4">
+          <CreateAgentPathSelector value={createPath} onChange={handlePathChange} />
+          <div className="flex items-center">
+            {steps.map((step, index) => {
+              const isComplete = currentStep > step.id
+              const isCurrent = currentStep === step.id
+              return (
+                <div key={step.id} className={`flex items-center ${index < steps.length - 1 ? 'flex-1' : ''}`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+                        isComplete
+                          ? 'bg-primary-600 text-white'
+                          : isCurrent
+                            ? 'border-2 border-primary-600 text-primary-600 bg-white'
+                            : 'border-2 border-gray-300 text-gray-400 bg-white'
+                      }`}
+                    >
+                      {step.id}
+                    </div>
+                    <div className="hidden sm:block min-w-0">
+                      <p className={`text-sm font-medium ${isCurrent ? 'text-gray-900' : 'text-gray-500'}`}>
+                        {step.title}
+                      </p>
+                      <p className="text-xs text-gray-400 truncate">{step.description}</p>
+                    </div>
+                  </div>
+                  {index < steps.length - 1 && (
+                    <div className={`mx-3 h-0.5 flex-1 ${isComplete ? 'bg-primary-600' : 'bg-gray-200'}`} />
                   )}
-                  {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowUseSavedModal(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-primary-300 bg-primary-50 text-primary-700 hover:bg-primary-100"
-                >
-                  <FileText className="h-3 w-3" />
-                  Use Saved
-                </button>
-                <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setDescriptionEditorMode('write')}
-                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                      descriptionEditorMode === 'write'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    <Code className="h-3 w-3" />
-                    Write
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDescriptionEditorMode('preview')}
-                    className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                      descriptionEditorMode === 'preview'
-                        ? 'bg-white text-gray-900 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    <Eye className="h-3 w-3" />
-                    Preview
-                  </button>
                 </div>
-              </div>
-            </div>
-
-            {/* AI Generate Panel */}
-            {showAIGeneratePanel && (
-              <div className="mb-2 p-3 bg-amber-50 rounded-lg border border-amber-200">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className="h-4 w-4 text-amber-600" />
-                  <span className="text-sm font-medium text-amber-900">Generate Description with AI</span>
-                </div>
-                <p className="text-xs text-amber-700 mb-3">
-                  Describe what this agent should do and AI will generate a rich markdown description.
-                </p>
-                <textarea
-                  value={aiDescription}
-                  onChange={(e) => setAiDescription(e.target.value)}
-                  placeholder="e.g., A customer support agent that handles refund requests, tracks orders, and escalates complex issues..."
-                  rows={3}
-                  className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white mb-2"
-                />
-                <div className="grid grid-cols-2 gap-3 mb-2">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Tone</label>
-                    <select
-                      value={aiTone}
-                      onChange={(e) => setAiTone(e.target.value)}
-                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                    >
-                      <option value="professional">Professional</option>
-                      <option value="casual">Casual / Friendly</option>
-                      <option value="technical">Technical</option>
-                      <option value="concise">Concise / Direct</option>
-                      <option value="detailed">Detailed / Thorough</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Format Style</label>
-                    <select
-                      value={aiFormat}
-                      onChange={(e) => setAiFormat(e.target.value)}
-                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                    >
-                      <option value="structured">Structured (sections & bullet points)</option>
-                      <option value="narrative">Narrative (flowing text)</option>
-                      <option value="template">Template (with placeholders)</option>
-                      <option value="step-by-step">Step-by-step Instructions</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="flex gap-3 mb-2">
-                  <div className="flex-1">
-                    <label className="block text-xs font-medium text-gray-600 mb-1">
-                      <Bot className="w-3 h-3 inline mr-1" />
-                      LLM Provider
-                    </label>
-                    <select
-                      value={aiCredentialId}
-                      onChange={(e) => {
-                        setAiCredentialId(e.target.value)
-                        setAiModel('')
-                      }}
-                      className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                    >
-                      <option value="">Auto-detect (use first available)</option>
-                      {aiProviders.filter((p) => p.is_active).map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {formatGatewayCredentialLabel(p, {
-                            custom: 'Custom',
-                            openai: 'OpenAI',
-                            anthropic: 'Anthropic',
-                            google: 'Google',
-                          })}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex-1">
-                    <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-                    {gatewayDirectModel ? (
-                      <div
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
-                        title={gatewayDirectModel}
-                      >
-                        {gatewayDirectModel}
-                      </div>
-                    ) : (
-                      <select
-                        value={aiModel}
-                        onChange={(e) => setAiModel(e.target.value)}
-                        disabled={!aiCredentialId}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-                      >
-                        {!aiCredentialId ? (
-                          <option value="">Select a provider first</option>
-                        ) : selectableModels.length === 0 ? (
-                          <option value="">Loading models...</option>
-                        ) : (
-                          selectableModels.map((m: string) => (
-                            <option key={m} value={m}>{m}</option>
-                          ))
-                        )}
-                      </select>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setShowAIGeneratePanel(false)}
-                    className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => generateDescriptionMutation.mutate({
-                      description: aiDescription,
-                      tone: aiTone,
-                      format_style: aiFormat,
-                      ...(aiProvider ? { provider: aiProvider } : {}),
-                      ...(aiModel ? { model: aiModel } : {}),
-                    })}
-                    disabled={generateDescriptionMutation.isPending || !aiDescription.trim()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
-                  >
-                    {generateDescriptionMutation.isPending ? (
-                      <><Loader2 className="h-3 w-3 animate-spin" /> Generating...</>
-                    ) : (
-                      <><Sparkles className="h-3 w-3" /> Generate</>
-                    )}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Editor / Preview */}
-            {descriptionEditorMode === 'write' ? (
-              <textarea
-                required
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm"
-                rows={6}
-                placeholder="Describe the agent's purpose, behavior, and expected interactions... Markdown is supported (at least 10 words)"
-              />
-            ) : (
-              <div className="min-h-[150px] max-h-[300px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
-                {formData.description ? (
-                  <ReactMarkdown>{formData.description}</ReactMarkdown>
-                ) : (
-                  <p className="text-gray-400 italic">Nothing to preview yet...</p>
-                )}
-              </div>
-            )}
-            <p className={`mt-1 text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
-              {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
-            </p>
-          </div>
-
-          {/* Voice Configuration */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Test Voice AI Agents */}
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Configure your test agent</h3>
-              <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using Voice Bundles for testing purposes</p>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle *</label>
-                <select
-                  value={formData.voice_bundle_id}
-                  onChange={(e) => setFormData({ ...formData, voice_bundle_id: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                >
-                  <option value="">Select a Voice Bundle</option>
-                  {voiceBundles.filter((vb) => vb.is_active).map((vb) => (
-                    <option key={vb.id} value={vb.id}>{vb.name}</option>
-                  ))}
-                </select>
-                {voiceBundles.filter((vb) => vb.is_active).length === 0 && (
-                  <p className="mt-1 text-xs text-gray-500">No active voice bundles available.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Voice AI Agent */}
-            <div className="border border-blue-200 rounded-lg p-4 bg-blue-50 flex flex-col h-full">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent *</h3>
-              <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs, Smallest)</p>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider *</label>
-                  <div className="flex items-center gap-3">
-                    <select
-                      value={formData.voice_ai_integration_id}
-                      onChange={(e) => setFormData({ ...formData, voice_ai_integration_id: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    >
-                      <option value="">Select an Integration</option>
-                      {voiceAgentIntegrations.map((integration) => {
-                        const platformLabel = getIntegrationPlatformLabel(integration.platform as IntegrationPlatform)
-                        return (
-                          <option key={integration.id} value={integration.id}>
-                            {integration.name || platformLabel} ({platformLabel})
-                          </option>
-                        )
-                      })}
-                    </select>
-                    {selectedVoiceIntegration && (
-                      <div className="flex-shrink-0">
-                        {(() => {
-                          const logo = getIntegrationPlatformLogo(
-                            selectedVoiceIntegration.platform as IntegrationPlatform,
-                          )
-                          const label = getIntegrationPlatformLabel(
-                            selectedVoiceIntegration.platform as IntegrationPlatform,
-                          )
-                          return logo ? (
-                            <img src={logo} alt={label} className="h-8 w-8 rounded-full object-contain" />
-                          ) : null
-                        })()}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Agent ID *</label>
-                  <input
-                    type="text"
-                    value={formData.voice_ai_agent_id}
-                    onChange={(e) => setFormData({ ...formData, voice_ai_agent_id: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">Enter the agent ID from your voice AI provider</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-4">
-            <Button type="button" variant="outline" onClick={onClose} className="flex-1">
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" className="flex-1" isLoading={createMutation.isPending}>
-              Create Agent
-            </Button>
-          </div>
-        </form>
-      </div>
-
-      {showUseSavedModal && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
-          setShowUseSavedModal(false)
-          setSavedPromptSearch('')
-          setSelectedSavedPromptId('')
-        }}>
-          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Use Saved Prompt Partials</h3>
-              <button
-                onClick={() => {
-                  setShowUseSavedModal(false)
-                  setSavedPromptSearch('')
-                  setSelectedSavedPromptId('')
-                }}
-                className="text-gray-400 hover:text-gray-600"
-                aria-label="Close use saved prompts modal"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4 overflow-y-auto flex-1">
-              <input
-                type="text"
-                value={savedPromptSearch}
-                onChange={(e) => setSavedPromptSearch(e.target.value)}
-                placeholder="Search saved prompts..."
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              />
-
-              {isLoadingSavedPromptPartials ? (
-                <div className="flex items-center justify-center py-8 text-sm text-gray-500">
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Loading saved prompts...
-                </div>
-              ) : savedPromptPartials.length === 0 ? (
-                <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
-                  No saved prompt partials found.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {savedPromptPartials.map((partial) => {
-                    const isSelected = selectedSavedPromptId === partial.id
-                    return (
-                      <label
-                        key={partial.id}
-                        className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
-                          isSelected ? 'border-primary-300 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <div className="flex items-start gap-3">
-                          <input
-                            type="radio"
-                            name="saved-prompt-partial"
-                            checked={isSelected}
-                            onChange={() => setSelectedSavedPromptId(partial.id)}
-                            className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold text-gray-900">{partial.name}</p>
-                            {partial.description && (
-                              <p className="mt-0.5 text-xs text-gray-500">{partial.description}</p>
-                            )}
-                          </div>
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setShowUseSavedModal(false)
-                  setSavedPromptSearch('')
-                  setSelectedSavedPromptId('')
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                variant="primary"
-                onClick={() => useSavedPromptMutation.mutate(selectedSavedPromptId)}
-                isLoading={useSavedPromptMutation.isPending}
-                disabled={!selectedSavedPromptId}
-              >
-                Use Selected Prompt
-              </Button>
-            </div>
+              )
+            })}
           </div>
         </div>
-      )}
-    </div>
+
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+          {renderStepContent()}
+        </div>
+
+        <div className="shrink-0 px-6 py-4 border-t border-gray-100 bg-gray-50/80 flex gap-3">
+          <Button type="button" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          {currentStep > 1 && (
+            <Button type="button" variant="outline" onClick={handleBack}>
+              Back
+            </Button>
+          )}
+          <div className="flex-1" />
+          {currentStep < 3 ? (
+            <Button type="button" variant="primary" onClick={handleNext}>
+              Next
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={handleCreate}
+              isLoading={createMutation.isPending}
+            >
+              Create Agent
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }

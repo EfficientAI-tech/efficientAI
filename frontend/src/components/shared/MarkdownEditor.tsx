@@ -9,6 +9,7 @@ interface MarkdownEditorProps {
   rows?: number
   minWords?: number
   required?: boolean
+  defaultMode?: 'write' | 'preview'
 }
 
 export default function MarkdownEditor({
@@ -18,8 +19,9 @@ export default function MarkdownEditor({
   rows = 6,
   minWords,
   required = false,
+  defaultMode = 'write',
 }: MarkdownEditorProps) {
-  const [mode, setMode] = useState<'write' | 'preview'>('write')
+  const [mode, setMode] = useState<'write' | 'preview'>(defaultMode)
   
   const wordCount = value.trim().split(/\s+/).filter(Boolean).length
   const meetsMinWords = !minWords || wordCount >= minWords

@@ -208,6 +208,18 @@ sequenceDiagram
 | **VapiWebRTCBridge** | `app/services/webrtc_bridge/vapi_webrtc_bridge.py` | WebRTC connection to Vapi via Daily.co SDK |
 | **RetellWebRTCBridge** | `app/services/webrtc_bridge/retell_webrtc_bridge.py` | WebRTC connection to Retell via LiveKit SDK |
 | **TestAgentProcessor** | `app/services/webrtc_bridge/test_agent_processor.py` | LLM + TTS pipeline with turn-taking logic |
+| **test_agent_simulation_prompt** | `app/services/testing/test_agent_simulation_prompt.py` | Builds caller LLM prompt: merged agent+scenario core, Persona block, instructions |
+
+### Simulator system prompt
+
+`TestAgentProcessor` receives a pre-built caller system prompt from `build_test_agent_system_prompt()`:
+
+1. **TEST AGENT SIMULATION PROMPT** — `compose_test_agent_simulation_prompt(agent, scenario)` (agent `description`, or `provider_prompt` fallback, plus scenario text and `required_info`).
+2. **PERSONA** — `format_persona_block(persona)` (name, voice traits, optional description).
+3. **INSTRUCTIONS** — turn-taking and conversational constraints.
+
+Phone evaluator paths should use the same helper via `build_test_agent_system_prompt_for_evaluator()` when a simulator LLM is wired.
+
 | **Voice Providers** | `app/services/voice_providers/vapi.py`, `retell.py` | API clients for creating calls and fetching results |
 
 ---
@@ -328,3 +340,9 @@ The fix models Retell's turn-taking approach:
 - **STT/TTS Provider Extensibility**: The `STT_PROVIDERS` and `TTS_PROVIDERS` registries in `voice_bundle.py` allow adding new providers via configuration.
 - **Streaming TTS**: Currently the full TTS audio is generated before streaming. A streaming TTS approach could reduce first-byte latency.
 - **Parallel Evaluations**: Multiple evaluations can run concurrently via Celery worker pool scaling.
+
+---
+
+## 13. Live Vobiz telephony (inbound)
+
+For PSTN inbound via Vobiz (separate from the Test Agent Bridge WebRTC flow), see [telephony-media.md](./telephony-media.md) for media worker deployment (`MEDIA_WS_BASE_URL`), WebSocket vs Celery responsibilities, and recording artifact sources.

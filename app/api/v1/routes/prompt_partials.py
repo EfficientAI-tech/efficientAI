@@ -23,7 +23,7 @@ from app.models.schemas import (
     PromptPartialDetailResponse,
     PromptPartialVersionResponse,
 )
-from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
+from app.services.imported_agent_constants import IMPORTED_AGENT_TAG, partial_supports_flowchart
 from app.services.metric_partial_constants import METRIC_PARTIAL_TAG
 from app.services.metric_partial_validation import validate_metric_partial_content
 
@@ -66,6 +66,10 @@ class NodePromptMapRequest(BaseModel):
 
 def _partial_has_imported_agent_tag(tags: Optional[list]) -> bool:
     return isinstance(tags, list) and IMPORTED_AGENT_TAG in tags
+
+
+def _partial_supports_flowchart(tags: Optional[list]) -> bool:
+    return partial_supports_flowchart(tags)
 
 
 def _flowchart_for_response(partial: PromptPartial) -> Optional[dict]:
@@ -673,10 +677,10 @@ async def generate_prompt_partial_flowchart(
     )
     if not partial:
         raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
-    if not _partial_has_imported_agent_tag(partial.tags):
+    if not _partial_supports_flowchart(partial.tags):
         raise HTTPException(
             status_code=400,
-            detail="Flowchart generation is only available for imported agents",
+            detail="Flowchart generation is not available for this prompt partial",
         )
 
     if (
@@ -709,7 +713,6 @@ async def generate_prompt_partial_flowchart(
             "provider": data.provider,
             "model": data.model,
         },
-        queue="imports",
     )
     db.refresh(partial)
     return _agent_flowchart_response(partial)
@@ -739,10 +742,10 @@ async def save_prompt_partial_flowchart_layout(
     )
     if not partial:
         raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
-    if not _partial_has_imported_agent_tag(partial.tags):
+    if not _partial_supports_flowchart(partial.tags):
         raise HTTPException(
             status_code=400,
-            detail="Layout save is only available for imported agents",
+            detail="Layout save is not available for this prompt partial",
         )
     if not isinstance(partial.agent_flowchart, dict) or not partial.agent_flowchart.get("nodes"):
         raise HTTPException(status_code=400, detail="Generate a flowchart before saving layout")
@@ -810,10 +813,10 @@ async def map_prompt_partial_flowchart_nodes(
     )
     if not partial:
         raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
-    if not _partial_has_imported_agent_tag(partial.tags):
+    if not _partial_supports_flowchart(partial.tags):
         raise HTTPException(
             status_code=400,
-            detail="Node prompt mapping is only available for imported agents",
+            detail="Node prompt mapping is not available for this prompt partial",
         )
     if not isinstance(partial.agent_flowchart, dict) or not partial.agent_flowchart.get("nodes"):
         raise HTTPException(status_code=400, detail="Generate a flowchart before mapping nodes")
@@ -840,7 +843,6 @@ async def map_prompt_partial_flowchart_nodes(
             "provider": data.provider,
             "model": data.model,
         },
-        queue="imports",
     )
     db.refresh(partial)
     return _agent_flowchart_response(partial)

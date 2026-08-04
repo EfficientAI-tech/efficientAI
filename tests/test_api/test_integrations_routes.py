@@ -1,5 +1,11 @@
 """API tests for integrations routes."""
 
+import importlib
+
+from app.api.v1.routes import integrations as integrations_route
+
+prompt_sync_module = importlib.import_module("app.services.voice_providers.prompt_sync")
+
 
 def test_create_and_list_integrations(authenticated_client):
     payload = {"platform": "retell", "api_key": "secret-key", "name": "Retell Main"}
@@ -28,8 +34,6 @@ def test_update_integration(authenticated_client, make_integration):
 
 
 def test_get_integration_api_key(authenticated_client, monkeypatch, make_integration):
-    from app.api.v1.routes import integrations as integrations_route
-
     integration = make_integration(platform="retell", api_key="encrypted")
     monkeypatch.setattr(integrations_route, "decrypt_api_key", lambda _v: "decrypted-key")
 
@@ -40,8 +44,6 @@ def test_get_integration_api_key(authenticated_client, monkeypatch, make_integra
 
 
 def test_create_smallest_integration_validates_key_and_sets_default_name(authenticated_client, monkeypatch):
-    from app.api.v1.routes import integrations as integrations_route
-
     calls = {"count": 0}
 
     def _validate(api_key: str):
@@ -63,8 +65,6 @@ def test_create_smallest_integration_validates_key_and_sets_default_name(authent
 
 
 def test_update_smallest_integration_validates_updated_key(authenticated_client, monkeypatch, make_integration):
-    from app.api.v1.routes import integrations as integrations_route
-
     integration = make_integration(platform="smallest", api_key="encrypted")
     calls = {"count": 0}
 
@@ -82,3 +82,45 @@ def test_update_smallest_integration_validates_updated_key(authenticated_client,
 
     assert response.status_code == 200
     assert calls["count"] == 1
+
+
+def test_preview_integration_agent_prompt_success(authenticated_client, monkeypatch, make_integration):
+    integration = make_integration(platform="retell")
+    monkeypatch.setattr(
+        prompt_sync_module,
+        "fetch_provider_prompt",
+        lambda _integration, agent_id: f"Prompt for {agent_id}",
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/preview-agent-prompt",
+        json={"voice_ai_agent_id": "external-agent-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider_prompt"] == "Prompt for external-agent-123"
+
+
+def test_preview_integration_agent_prompt_not_found(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/integrations/11111111-1111-1111-1111-111111111111/preview-agent-prompt",
+        json={"voice_ai_agent_id": "external-agent-123"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_preview_integration_agent_prompt_empty(authenticated_client, monkeypatch, make_integration):
+    integration = make_integration(platform="vapi")
+    monkeypatch.setattr(
+        prompt_sync_module,
+        "fetch_provider_prompt",
+        lambda _integration, _agent_id: None,
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/preview-agent-prompt",
+        json={"voice_ai_agent_id": "external-agent-123"},
+    )
+
+    assert response.status_code == 422

@@ -55,6 +55,7 @@ export default function Integrations() {
   const [apiKey, setApiKey] = useState('')
   const [publicKey, setPublicKey] = useState('')
   const [name, setName] = useState('')
+  const [azureEndpointUrl, setAzureEndpointUrl] = useState('')
   const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('inherit')
   const [gatewayModel, setGatewayModel] = useState('')
   const [gatewayInterface, setGatewayInterface] = useState<GatewayInterfaceMode>('inherit')
@@ -358,7 +359,7 @@ export default function Integrations() {
   const resetForm = () => {
     setShowModal(false); setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
-    setApiKey(''); setPublicKey(''); setName('')
+    setApiKey(''); setPublicKey(''); setName(''); setAzureEndpointUrl('')
     setCredentialRoutingMode('inherit'); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
     setGatewayAuthHeader(''); setGatewayAuthSecretEnv(''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson('')
@@ -381,6 +382,7 @@ export default function Integrations() {
   const handleEditAIProvider = (provider: AIProvider) => {
     setIntegrationType('ai_provider'); setSelectedAIProvider(provider); setSelectedProvider(provider.provider)
     setName(provider.name || ''); setApiKey(''); setCredentialRoutingMode(provider.routing_mode || 'inherit')
+    setAzureEndpointUrl(provider.endpoint_url || '')
     setGatewayModel(provider.gateway_model || ''); setGatewayInterface(provider.gateway_interface || 'inherit')
     setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
     setGatewayAuthSecretEnv(provider.gateway_auth_secret_env || ''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
@@ -436,6 +438,10 @@ export default function Integrations() {
         const updateData: Partial<AIProviderUpdate> = {}
         if (apiKey.trim()) updateData.api_key = apiKey
         if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
+        const trimmedAzureEndpointUrl = azureEndpointUrl.trim()
+        if (trimmedAzureEndpointUrl !== (selectedAIProvider.endpoint_url || '')) {
+          updateData.endpoint_url = trimmedAzureEndpointUrl || null
+        }
         if (credentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')) {
           updateData.routing_mode = credentialRoutingMode
         }
@@ -480,11 +486,16 @@ export default function Integrations() {
           showToast('Please enter an API key', 'error')
           return
         }
+        if (selectedProvider === ModelProvider.AZURE && !azureEndpointUrl.trim()) {
+          showToast('Please enter your Azure OpenAI endpoint URL', 'error')
+          return
+        }
         createAIProviderMutation.mutate({
           provider: selectedProvider,
           api_key: apiKey.trim() || undefined,
           name: name || null,
           routing_mode: credentialRoutingMode,
+          endpoint_url: selectedProvider === ModelProvider.AZURE ? azureEndpointUrl.trim() : undefined,
           gateway_model: gatewayModel.trim() || undefined,
           gateway_interface: gatewayInterface,
           gateway_base_url: gatewayBaseUrl.trim() || undefined,
@@ -752,6 +763,14 @@ export default function Integrations() {
                           </div>
                           <div className="flex items-center gap-2 flex-wrap min-w-0">
                             <h3 className="text-base font-semibold text-gray-900 truncate">{getProviderLabel(provider.provider)}</h3>
+                            {provider.provider === ModelProvider.AZURE && provider.endpoint_url && (
+                              <span
+                                className="text-xs text-gray-500 truncate max-w-[280px]"
+                                title={provider.endpoint_url}
+                              >
+                                {provider.endpoint_url}
+                              </span>
+                            )}
                             {provider.is_default && (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
                                 <Star className="h-3 w-3 fill-current" /> Default
@@ -811,10 +830,15 @@ export default function Integrations() {
             {hasTelephony && (
               <div>
                 <div className="px-6 py-3 bg-green-50 border-b border-green-100">
-                  <div className="flex items-center gap-2">
-                    <Phone className="h-4 w-4 text-green-600" />
-                    <h3 className="text-sm font-semibold text-green-900">Telephony Providers</h3>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{allTelephonyConfigs.length}</span>
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2">
+                      <Phone className="h-4 w-4 text-green-600" />
+                      <h3 className="text-sm font-semibold text-green-900">Telephony Providers</h3>
+                      <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{allTelephonyConfigs.length}</span>
+                    </div>
+                    <p className="text-xs text-green-800">
+                      Phone numbers are managed on the Telephony Numbers page.
+                    </p>
                   </div>
                 </div>
                 <div className="divide-y divide-gray-200">
@@ -1244,6 +1268,24 @@ export default function Integrations() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Name (Optional)</label>
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="e.g., OpenAI Production Key" />
                   </div>
+                  {selectedProvider === ModelProvider.AZURE && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Azure Endpoint URL *
+                      </label>
+                      <input
+                        type="url"
+                        required={!isEditMode}
+                        value={azureEndpointUrl}
+                        onChange={(e) => setAzureEndpointUrl(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                        placeholder="https://your-resource.openai.azure.com"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Your Azure OpenAI resource root URL. You can also paste a full v1 URL — we normalize it automatically.
+                      </p>
+                    </div>
+                  )}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
                     <select

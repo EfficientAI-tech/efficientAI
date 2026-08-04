@@ -183,10 +183,17 @@ class AgentCreate(BaseModel):
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     telephony_phone_number_id: Optional[UUID] = None
-    voice_bundle_id: Optional[UUID] = None
+    voice_bundle_id: UUID = Field(..., description="Required voice bundle for test agent execution")
     ai_provider_id: Optional[UUID] = None
-    voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
-    voice_ai_agent_id: str = Field(..., min_length=1, description="Voice AI agent ID is required")
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
+    provider_prompt: Optional[str] = None
+    silence_hangup_secs: int = Field(
+        default=15,
+        ge=0,
+        le=600,
+        description="End live calls after this many seconds of silence (0 disables)",
+    )
 
     @field_validator('description')
     @classmethod
@@ -237,6 +244,9 @@ class AgentUpdate(BaseModel):
     voice_bundle_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
+    provider_prompt: Optional[str] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
 
     @model_validator(mode='after')
     def validate_voice_config(self):
@@ -259,6 +269,129 @@ class AgentUpdate(BaseModel):
             # This will be handled in the route
             pass
         return self
+
+
+
+class PreviewIntegrationAgentPromptRequest(BaseModel):
+    """Fetch a provider agent prompt before an EfficientAI agent exists."""
+    voice_ai_agent_id: str = Field(..., min_length=1)
+
+
+
+
+class PreviewIntegrationAgentPromptResponse(BaseModel):
+    provider_prompt: str
+
+
+
+
+class AgentPhoneAssignmentConflict(BaseModel):
+    """Another agent already owns this phone number."""
+    agent_id: UUID
+    agent_name: str
+    phone_number: str
+
+
+
+
+class AgentPhoneAssignmentCheckResponse(BaseModel):
+    """Result of checking whether a phone number is free to assign."""
+    available: bool
+    phone_number: Optional[str] = None
+    conflict: Optional[AgentPhoneAssignmentConflict] = None
+
+
+
+
+class TestPromptSectionResponse(BaseModel):
+    """One canonical section of a generated test agent prompt."""
+    key: str
+    title: str
+    content: str
+
+
+
+
+class GeneratedScenarioDraftResponse(BaseModel):
+    """LLM-generated scenario draft before persistence."""
+    name: str
+    description: str
+    goal: Optional[str] = None
+
+
+
+
+class GenerateTestPromptRequest(BaseModel):
+    """Stage 1: generate foundational test agent prompt from production prompt."""
+    production_prompt: str = Field(..., min_length=1)
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+
+
+class GenerateTestPromptResponse(BaseModel):
+    sections: List[TestPromptSectionResponse]
+    test_agent_prompt: str
+    provider: str
+    model: str
+
+
+
+
+class GenerateScenariosFromPromptRequest(BaseModel):
+    """Stage 2: generate scenario drafts from test agent prompt."""
+    test_agent_prompt: str = Field(..., min_length=1)
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    scenario_count: int = Field(default=5, ge=1, le=10)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+
+
+class GenerateScenariosFromPromptResponse(BaseModel):
+    scenarios: List[GeneratedScenarioDraftResponse]
+    provider: str
+    model: str
+
+
+
+
+class GenerateTestSetupRequest(BaseModel):
+    """Convenience: run stage 1 then stage 2 sequentially."""
+    production_prompt: str = Field(..., min_length=1)
+    agent_name: str = Field(..., min_length=1, max_length=255)
+    scenario_count: int = Field(default=5, ge=1, le=10)
+    language: Optional[str] = None
+    call_type: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    additional_context: Optional[str] = None
+
+
+
+
+class GenerateTestSetupResponse(BaseModel):
+    sections: List[TestPromptSectionResponse]
+    test_agent_prompt: str
+    scenarios: List[GeneratedScenarioDraftResponse]
+    provider: str
+    model: str
+
 
 
 class AgentResponse(BaseModel):
@@ -349,6 +482,20 @@ class PersonaCreate(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: bool = False
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0, le=8192)
+    response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
+    max_turns: Optional[int] = Field(None, ge=1, le=100)
+    allow_interruptions: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_tts_config(self):
+        from app.services.personas.persona_tts_config import validate_persona_tts_config
+
+        validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
 
 
 class PersonaUpdate(BaseModel):
@@ -359,6 +506,21 @@ class PersonaUpdate(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: Optional[bool] = None
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0, le=8192)
+    response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
+    max_turns: Optional[int] = Field(None, ge=1, le=100)
+    allow_interruptions: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def validate_tts_config(self):
+        from app.services.personas.persona_tts_config import validate_persona_tts_config
+
+        if self.tts_config is not None:
+            validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
 
 
 class PersonaResponse(BaseModel):
@@ -370,6 +532,13 @@ class PersonaResponse(BaseModel):
     tts_voice_id: Optional[str] = None
     tts_voice_name: Optional[str] = None
     is_custom: bool = False
+    description: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
+    response_delay_ms: Optional[int] = None
+    max_turns: Optional[int] = None
+    allow_interruptions: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
 
@@ -393,6 +562,41 @@ class PersonaCloneRequest(BaseModel):
 
 
 # Scenario Schemas
+
+class AgentPromptSourcesResponse(BaseModel):
+    """Prompt texts from an agent that can seed a persona description."""
+    agent_id: UUID
+    agent_name: str
+    test_agent_prompt: str
+    agent_prompt: str
+
+
+
+
+class GeneratePersonaPromptRequest(BaseModel):
+    """Generate a persona caller prompt from an agent prompt via LLM."""
+    agent_id: UUID
+    source: str = Field(default="auto", pattern="^(test_agent|agent|auto)$")
+    persona_name: Optional[str] = Field(None, max_length=255)
+    persona_gender: Optional[str] = None
+    additional_context: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+
+
+
+
+class GeneratePersonaPromptResponse(BaseModel):
+    persona_prompt: str
+    source_used: str
+    provider: str
+    model: str
+
+
+# Scenario Schemas
+
 class ScenarioCreate(BaseModel):
     """Schema for creating a new scenario"""
     name: str = Field(..., min_length=1, max_length=255)
@@ -773,10 +977,22 @@ class AIProviderCreate(BaseModel):
             "If omitted and no default exists yet, this row becomes the default."
         ),
     )
+    endpoint_url: Optional[str] = Field(
+        None,
+        description="Provider endpoint URL (required for Azure OpenAI).",
+    )
 
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        trimmed = v.strip()
+        return trimmed or None
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def validate_endpoint_url(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
             return v
         trimmed = v.strip()
@@ -842,6 +1058,7 @@ class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
     api_key: Optional[str] = Field(None, min_length=1)
     name: Optional[str] = None
+    endpoint_url: Optional[str] = None
     is_active: Optional[bool] = None
     routing_mode: Optional[CredentialRoutingMode] = None
     gateway_model: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -917,6 +1134,7 @@ class AIProviderResponse(BaseModel):
     provider: ModelProvider
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
+    endpoint_url: Optional[str] = None
     is_active: bool
     is_default: bool = False
     routing_mode: CredentialRoutingMode = CredentialRoutingMode.INHERIT
@@ -1368,6 +1586,147 @@ MetricScope = Literal["workspace", "organization"]
 METRIC_RUBRIC_TEXT_MAX_LENGTH = 32_000
 
 
+
+class EvaluatorSuiteCombinationResponse(BaseModel):
+    """One agent+persona+scenario combination inside a suite."""
+    id: UUID
+    evaluator_id: str
+    scenario_id: Optional[UUID] = None
+    scenario_name: Optional[str] = None
+    scenario_description: Optional[str] = None
+    scenario_required_info: Optional[Any] = None
+
+
+
+
+class EvaluatorSuiteCreate(BaseModel):
+    """Schema for creating an evaluator suite."""
+    name: Optional[str] = None
+    agent_id: UUID
+    persona_id: UUID
+    scenario_ids: List[UUID]
+    metric_ids: Optional[List[UUID]] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
+    default_runs_per_combination: int = 1
+
+
+
+
+class EvaluatorSuiteUpdate(BaseModel):
+    """Schema for updating an evaluator suite."""
+    name: Optional[str] = None
+    tags: Optional[List[str]] = None
+    default_runs_per_combination: Optional[int] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    metric_ids: Optional[List[UUID]] = None
+
+
+
+
+class EvaluatorSuiteResponse(BaseModel):
+    """Schema for evaluator suite response."""
+    id: UUID
+    organization_id: UUID
+    name: Optional[str] = None
+    agent_id: UUID
+    persona_id: UUID
+    agent_name: Optional[str] = None
+    persona_name: Optional[str] = None
+    agent_call_type: Optional[str] = None
+    agent_call_medium: Optional[str] = None
+    metric_ids: Optional[List[str]] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
+    default_runs_per_combination: int = 1
+    round_robin_index: int = 0
+    is_active: bool = False
+    agent_suite_count: int = 1
+    combination_count: int = 0
+    combinations: List[EvaluatorSuiteCombinationResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str] = None
+
+
+
+
+class EvaluatorSuiteAddScenariosRequest(BaseModel):
+    """Schema for adding scenarios to an existing suite."""
+    scenario_ids: List[UUID]
+
+
+
+
+class RunEvaluatorSuiteRequest(BaseModel):
+    """Schema for running all combinations in a suite."""
+    runs_per_combination: Optional[int] = None
+    to_number: Optional[str] = None
+    from_number: Optional[str] = None
+
+
+
+
+class RunEvaluatorSuiteResponse(BaseModel):
+    """Schema for suite run response."""
+    total_runs: int
+    task_ids: List[str] = Field(default_factory=list)
+    evaluator_results: List["EvaluatorResultResponse"] = Field(default_factory=list)
+    phone_call_refs: List[str] = Field(default_factory=list)
+
+
+
+
+class RunNextCombinationRequest(BaseModel):
+    """Schema for running the next round-robin combination."""
+    from_number: Optional[str] = None
+
+
+
+
+class RunNextCombinationResponse(BaseModel):
+    """Schema for round-robin run response."""
+    evaluator_id: UUID
+    scenario_id: Optional[UUID] = None
+    scenario_name: str
+    combination_index: int
+    next_index: int
+    evaluator_result_id: Optional[UUID] = None
+    result_id: Optional[str] = None
+    task_id: Optional[str] = None
+    phone_call_ref: Optional[str] = None
+    call_short_id: Optional[str] = None
+
+
+
+
+class ChooseNextCombinationResponse(BaseModel):
+    """Advance inbound round-robin without initiating a call or evaluation run."""
+    evaluator_id: UUID
+    scenario_id: Optional[UUID] = None
+    scenario_name: str
+    combination_index: int
+    next_index: int
+
+
+# Metric Schemas
+SelectionMode = Literal["single_choice", "multi_label"]
+
+
+MetricScope = Literal["workspace", "organization"]
+
+# Max length for metric rubric text (description / example) accepted by
+# the API. DB columns are TEXT or unbounded VARCHAR; this cap is validation-only.
+METRIC_RUBRIC_TEXT_MAX_LENGTH = 32_000
+
+
+
 class MetricCreate(BaseModel):
     """Schema for creating a metric.
 
@@ -1416,7 +1775,7 @@ class MetricCreate(BaseModel):
     # worker-produced) to the LLM as a labeled pair. The parent
     # evaluation's ``transcript_source`` is ignored for these metrics.
     # Mutually exclusive with ``parent_metric_id`` / ``selection_mode``
-    # — comparison metrics stay standalone so the LLM grouping logic
+    # G�� comparison metrics stay standalone so the LLM grouping logic
     # doesn't have to second-guess which prompt template to use within
     # a hierarchy. (Parent-level keyword auto-detection in the worker
     # still routes a categorisation parent through the comparison
@@ -1438,7 +1797,7 @@ class MetricCreate(BaseModel):
         The Metric ORM column accepts the value; the validator just
         prevents the user from accidentally requesting an incoherent
         metric shape (e.g. "compare two transcripts but also live
-        inside a categorisation hierarchy" — different prompt
+        inside a categorisation hierarchy" � different prompt
         templates).
         """
         if not self.compare_transcripts:
@@ -1694,6 +2053,68 @@ class EvaluatorResultUpdate(BaseModel):
     metric_scores: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     duration_seconds: Optional[float] = None
+
+
+
+class EvaluatorResultCounts(BaseModel):
+    """Rollup counts for evaluator result navigation."""
+
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    in_progress: int = 0
+    last_run_at: Optional[datetime] = None
+
+
+
+
+class EvaluatorResultsScenarioSummary(BaseModel):
+    scenario_id: UUID
+    scenario_name: str
+    counts: EvaluatorResultCounts
+
+
+
+
+class EvaluatorResultsSuiteSummary(BaseModel):
+    suite_id: UUID
+    suite_name: Optional[str] = None
+    agent_id: UUID
+    persona_id: Optional[UUID] = None
+    counts: EvaluatorResultCounts
+    scenarios: Optional[List["EvaluatorResultsScenarioSummary"]] = None
+
+
+
+
+class EvaluatorResultsAgentSummary(BaseModel):
+    agent_id: UUID
+    agent_name: str
+    counts: EvaluatorResultCounts
+    suites: Optional[List[EvaluatorResultsSuiteSummary]] = None
+
+
+
+
+class EvaluatorResultsUnassignedSummary(BaseModel):
+    counts: EvaluatorResultCounts
+    recent_result_ids: List[str] = Field(default_factory=list)
+
+
+
+
+class EvaluatorResultsOverviewResponse(BaseModel):
+    workspace_counts: EvaluatorResultCounts
+    agents: List[EvaluatorResultsAgentSummary] = Field(default_factory=list)
+    unassigned: EvaluatorResultsUnassignedSummary
+
+
+
+
+class EvaluatorResultListResponse(BaseModel):
+    items: List["EvaluatorResultResponse"]
+    total: int
+
 
 
 class EvaluatorResultResponse(BaseModel):
@@ -2007,7 +2428,14 @@ class CronJobCreate(BaseModel):
     cron_expression: str = Field(..., min_length=1, max_length=100, description="Cron expression (e.g., '0 9 * * 1-5')")
     timezone: str = Field(default="UTC", max_length=100, description="Timezone for the cron schedule")
     max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
-    evaluator_ids: List[UUID] = Field(..., min_length=1, description="List of evaluator IDs to trigger")
+    evaluator_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Evaluator IDs to trigger (expanded with evaluator_suite_ids when both are set).",
+    )
+    evaluator_suite_ids: Optional[List[UUID]] = Field(
+        None,
+        description="Evaluator suite IDs whose combinations are expanded into evaluator_ids.",
+    )
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -2027,6 +2455,7 @@ class CronJobUpdate(BaseModel):
     timezone: Optional[str] = Field(None, max_length=100)
     max_runs: Optional[int] = Field(None, ge=1, le=1000)
     evaluator_ids: Optional[List[UUID]] = None
+    evaluator_suite_ids: Optional[List[UUID]] = None
     status: Optional[CronJobStatus] = None
 
 
@@ -2269,12 +2698,40 @@ class TelephonyPhoneNumberResponse(BaseModel):
     number_type: Optional[str]
     capabilities: Optional[Dict[str, Any]]
     is_masking_pool: bool
+    inbound_enabled: Optional[bool] = None
+    outbound_enabled: Optional[bool] = None
+    source: Optional[str] = None
     agent_id: Optional[UUID]
+    linked_agent_name: Optional[str] = None
+    provider: Optional[str] = None
     is_active: bool
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class TelephonyDialTargetCreate(BaseModel):
+    """Schema for creating a saved outbound dial target."""
+    phone_number: str
+    label: Optional[str] = None
+
+
+class TelephonyDialTargetUpdate(BaseModel):
+    """Schema for updating a saved outbound dial target."""
+    phone_number: Optional[str] = None
+    label: Optional[str] = None
+
+
+class TelephonyDialTargetResponse(BaseModel):
+    """Schema for dial target response."""
+    id: UUID
+    phone_number: str
+    label: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TelephonyVerifyStartRequest(BaseModel):
@@ -2719,14 +3176,14 @@ class CallImportDetailResponse(CallImportResponse):
     """A call-import batch with its rows expanded.
 
     ``filtered_total_rows`` is only set when the caller passed a ``q``
-    search term — it lets the UI paginate against the filtered subset
+    search term G�� it lets the UI paginate against the filtered subset
     while still showing the unfiltered ``total_rows`` in the header.
 
     The ``diarised_*_rows`` counters aggregate
     ``CallImportRow.diarised_transcript_status`` across the batch so the
     UI can render a transcribe-and-diarise progress bar without paging
     through every row. Rows that have never been touched by the
-    transcribe/diarise worker (``status='idle'``) are NOT counted here —
+    transcribe/diarise worker (``status='idle'``) are NOT counted here G��
     callers compute the idle bucket as
     ``total_rows - (pending + running + completed + failed)``.
     """
@@ -2838,7 +3295,7 @@ class CallImportPreviewResponse(BaseModel):
     """Sheets/headers extracted from an uploaded CSV or Excel workbook.
 
     The frontend uses this to drive the column-mapping UI without doing
-    its own parsing — keeps client and server in lockstep on quoted
+    its own parsing G�� keeps client and server in lockstep on quoted
     fields, encodings, and Excel cell coercion.
     """
 
@@ -3080,7 +3537,7 @@ class CallImportEvaluationCreate(BaseModel):
         description=(
             "Diarisation pipeline shape for the auto-transcribe step. "
             "'stt_llm' (default) runs STT then an LLM diariser over the "
-            "resulting text — ``stt_provider`` + ``stt_model`` must be "
+            "resulting text G�� ``stt_provider`` + ``stt_model`` must be "
             "provided. 'llm_only' skips STT and feeds the audio "
             "directly to the multimodal ``diarization_llm_*`` model "
             "along with ``diarization_prompt``; STT fields must be "
@@ -3115,7 +3572,7 @@ class CallImportEvaluationCreate(BaseModel):
     )
     # --- LLM diariser config (mirror of CallImportTranscribeRequest) ---
     # Auto-diarised eval rows go through the same LLM-based diariser as
-    # the standalone Transcribe modal — the run remembers the provider /
+    # the standalone Transcribe modal G�� the run remembers the provider /
     # model / prompt so a follow-up retry can reproduce them without
     # having to re-prompt the user.
     diarization_llm_provider: Optional[str] = Field(
@@ -3515,7 +3972,7 @@ class CallImportEvaluationResponse(BaseModel):
     transcript_source: CallImportEvaluationTranscriptSource = "diarised"
     # Sibling evaluation ids created in the same Run Evaluation request.
     # Populated only on the POST response (and only when the user ticked
-    # both Production and Diarised in the modal — the backend creates
+    # both Production and Diarised in the modal G�� the backend creates
     # one ``CallImportEvaluation`` per source and links them via this
     # field so the frontend can deep-link to either run). Empty for all
     # other reads.
@@ -3693,16 +4150,16 @@ class CallImportTranscribeRequest(BaseModel):
 
     The same shape powers both the per-row endpoint (where ``row_ids``
     is ignored) and the batch-level endpoint. ``only_missing`` is the
-    safe default — rows with an existing transcript are skipped unless
+    safe default G�� rows with an existing transcript are skipped unless
     ``overwrite_existing`` is set.
 
     Two modes are supported:
 
-    * ``mode="stt_llm"`` (default) — the legacy two-stage pipeline: STT
+    * ``mode="stt_llm"`` (default) G�� the legacy two-stage pipeline: STT
       produces plain text, an LLM splits it into agent/user turns using
       ``diarization_prompt``. ``stt_provider`` and ``stt_model`` are
       required in this mode.
-    * ``mode="llm_only"`` — skip STT entirely and hand the recording's
+    * ``mode="llm_only"`` G�� skip STT entirely and hand the recording's
       audio bytes to a multimodal chat model along with
       ``diarization_prompt``. The model both transcribes and diarises in
       a single pass. The STT fields are ignored (and must be omitted /
@@ -3811,7 +4268,7 @@ class CallImportTranscribeRequest(BaseModel):
     def _validate_mode_fields(self) -> "CallImportTranscribeRequest":
         """Enforce STT-field presence rules based on ``mode``.
 
-        ``stt_llm`` (default) requires both STT fields — the worker
+        ``stt_llm`` (default) requires both STT fields G�� the worker
         cannot diarise without a transcript. ``llm_only`` forbids them
         so the API contract makes it clear that the audio is going
         straight to the LLM; passing both would be ambiguous about
@@ -3852,7 +4309,7 @@ class CallImportRowIdsResponse(BaseModel):
     """Flat row-id list for cross-page bulk selection.
 
     Powers the "Select all M rows in this import" affordance on the
-    detail page — returning only ids keeps the payload tiny so the UI
+    detail page G�� returning only ids keeps the payload tiny so the UI
     can hold the full set in memory even for batches with thousands
     of rows. The frontend then passes those ids straight to the
     existing bulk-delete / bulk-transcribe endpoints.
@@ -3929,7 +4386,7 @@ class CallImportCancelDiarisationResponse(BaseModel):
     when the cancel landed and got flipped to ``failed`` with a
     "Cancelled by user" error. ``skipped`` counts rows that were
     requested (or matched the implicit "all rows" filter) but were
-    not in a cancellable state — typically because they had already
+    not in a cancellable state G�� typically because they had already
     finished or were never queued for diarisation in the first place.
     """
 
@@ -3988,7 +4445,7 @@ class CallImportMetricAggregate(BaseModel):
 
     Numeric metrics return summary statistics + histogram buckets;
     categorical / pass-fail / text metrics return the top value counts.
-    Both shapes can coexist if a metric mixes types — the UI prefers
+    Both shapes can coexist if a metric mixes types G�� the UI prefers
     histogram when present, falls back to value_counts otherwise.
     """
 
@@ -4054,6 +4511,24 @@ class CallImportEvaluationAggregateResponse(BaseModel):
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---
+
+
+
+class EvaluatorResultsAggregateResponse(BaseModel):
+    """Chart-friendly metric rollups for evaluator results in a suite or scenario scope."""
+
+    scope: str
+    suite_id: Optional[UUID] = None
+    agent_id: Optional[UUID] = None
+    scenario_id: Optional[UUID] = None
+    total_rows: int = 0
+    completed_rows: int = 0
+    failed_rows: int = 0
+    metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+
+
+# --- LLM-generated TLDR for the Visualizations tab ---
+
 
 
 class EvaluationTldrSummary(BaseModel):
@@ -4515,7 +4990,7 @@ class DiscoveredLabelItem(BaseModel):
     evaluation that emitted this slug. ``sample_rationale`` is the
     first non-empty rationale captured from any row (back-compat
     field, identical to ``examples[0]`` when present). ``examples``
-    holds up to 3 distinct rationales — the UI surfaces 2 of them as
+    holds up to 3 distinct rationales G�� the UI surfaces 2 of them as
     ``Examples:`` in the rubric on Promote, with the third kept as
     headroom in case the first is unhelpful.
     """
@@ -4588,7 +5063,7 @@ class PromoteDiscoveredChildRequest(BaseModel):
 
 # --- Discovered top-level metrics (per-evaluation discovery) ---
 #
-# Parallel to ``DiscoveredLabelItem`` / merge / delete / promote — but
+# Parallel to ``DiscoveredLabelItem`` / merge / delete / promote G�� but
 # scoped to the evaluation as a whole, not to a parent category metric.
 # Used by the "Discovered metrics" panel at the top of the evaluation
 # detail Flow tab when ``CallImportEvaluation.discover_new_metrics``

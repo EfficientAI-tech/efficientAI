@@ -1,28 +1,41 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
+import ParamSlider from './ParamSlider'
+import { OverviewSection, formatSilenceHangupLabel } from './AgentOverviewLayout'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
 import { VoiceBundle, Integration, AIProvider, IntegrationPlatform } from '../../../types/api'
-import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo, getTelephonyProviderLabel } from '../../../config/providers'
+import { useOrgTelephony } from '../../../hooks/useOrgTelephony'
+import { TelephonyProvider } from '../../../types/api'
+import type { AgentDetailTab } from './AgentInfoView'
+import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
+import VoiceBundleDetailCard from './VoiceBundleDetailCard'
+import AgentPromptComposer from './AgentPromptComposer'
 import {
   formatGatewayCredentialLabel,
   resolveLLMModelsForCredential,
 } from '../../../lib/llmModelOptions'
+import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
+import { formatAgentPhoneConflictMessage } from './agentPhoneValidation'
 
 interface FormData {
   name: string
   phone_number: string
   language: string
   description: string
+  prompt_variables: Record<string, string>
+  silence_hangup_secs: number
   call_type: string
   call_medium: 'phone_call' | 'web_call'
   telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
+  provider_prompt: string
 }
 
 interface AgentEditFormProps {
@@ -33,9 +46,9 @@ interface AgentEditFormProps {
   voiceBundles: VoiceBundle[]
   integrations: Integration[]
   showToast: (message: string, type: 'success' | 'error') => void
-  createdAt?: string
-  updatedAt?: string
+  activeTab: AgentDetailTab
   onSaveSystemPrompt: () => void
+  agentId?: string
 }
 
 const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
@@ -53,16 +66,22 @@ export default function AgentEditForm({
   voiceBundles,
   integrations,
   showToast,
+  activeTab,
   onSaveSystemPrompt,
+  agentId,
 }: AgentEditFormProps) {
+  const navigate = useNavigate()
   const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
+  const [providerPromptEditorMode, setProviderPromptEditorMode] = useState<'write' | 'preview'>('write')
   const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
+  const [includeLinkedScenarios, setIncludeLinkedScenarios] = useState(true)
   const [aiDescription, setAiDescription] = useState('')
   const [aiTone, setAiTone] = useState('professional')
   const [aiFormat, setAiFormat] = useState('structured')
   const [aiCredentialId, setAiCredentialId] = useState('')
   const [aiModel, setAiModel] = useState('')
   const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
+  const [testAgentSubTab, setTestAgentSubTab] = useState<TestAgentSubTab>('prompt')
 
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
@@ -79,17 +98,36 @@ export default function AgentEditForm({
     queryFn: () => apiClient.getModelOptions(aiProvider),
     enabled: !!aiProvider,
   })
-  const { data: telephonyConfig, isError: isTelephonyConfigError } = useQuery<TelephonyIntegrationResponse>({
-    queryKey: ['telephony-config', 'plivo'],
-    queryFn: () => apiClient.getTelephonyConfig('plivo'),
-    enabled: formData.call_medium === 'phone_call',
-    retry: false,
-  })
-  const { data: telephonyNumbers = [] } = useQuery<TelephonyPhoneNumberResponse[]>({
-    queryKey: ['telephony-numbers'],
-    queryFn: () => apiClient.listTelephonyNumbers(),
-    enabled: formData.call_medium === 'phone_call',
-  })
+  const {
+    canUseProviderNumbers,
+    numbersForCallType,
+  } = useOrgTelephony(formData.call_medium === 'phone_call')
+  const telephonyNumbers = numbersForCallType(formData.call_type)
+  const isTelephonyConfigError = !canUseProviderNumbers
+  const { conflict: phoneConflict, isChecking: isCheckingPhoneAssignment, hasConflict: hasPhoneConflict } =
+    useAgentPhoneAssignmentCheck({
+      enabled: formData.call_medium === 'phone_call',
+      callMedium: formData.call_medium,
+      phoneNumber: formData.phone_number,
+      telephonyPhoneNumberId:
+        phoneNumberInputMode === 'provider' ? formData.telephony_phone_number_id : undefined,
+      excludeAgentId: agentId,
+    })
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (formData.call_medium === 'phone_call') {
+      if (isCheckingPhoneAssignment) {
+        showToast('Checking phone number availability…', 'error')
+        return
+      }
+      if (hasPhoneConflict && phoneConflict) {
+        showToast(formatAgentPhoneConflictMessage(phoneConflict), 'error')
+        return
+      }
+    }
+    onSubmit(e)
+  }
 
   const llmModels = modelOptions?.llm || []
   const modelResolution = selectedAiProviderRow
@@ -120,7 +158,7 @@ export default function AgentEditForm({
       return
     }
 
-    if (!telephonyConfig || telephonyNumbers.length === 0) {
+    if (!canUseProviderNumbers || telephonyNumbers.length === 0) {
       setPhoneNumberInputMode('custom')
       return
     }
@@ -133,13 +171,21 @@ export default function AgentEditForm({
     formData,
     onChange,
     phoneNumberInputMode,
-    telephonyConfig,
+    canUseProviderNumbers,
     telephonyNumbers,
   ])
 
   const generateDescriptionMutation = useMutation({
-    mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
-      apiClient.generateAgentDescription(data),
+    mutationFn: (data: {
+      description: string
+      tone?: string
+      format_style?: string
+      provider?: string
+      model?: string
+      agent_id?: string
+      include_linked_scenarios?: boolean
+      append_scenarios_to_output?: boolean
+    }) => apiClient.generateAgentDescription(data),
     onSuccess: (data) => {
       onChange({ ...formData, description: data.content })
       setShowAIGeneratePanel(false)
@@ -162,297 +208,306 @@ export default function AgentEditForm({
     (integration) => integration.id === formData.voice_ai_integration_id,
   )
 
-  return (
-    <form onSubmit={onSubmit}>
-      <div className="overflow-x-auto">
-        <div className="grid grid-cols-2 gap-6 min-w-[1280px]">
-          <div className="min-w-0 space-y-4">
-            {/* Name */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-              <input
-                type="text"
-                required
-                value={formData.name}
-                onChange={(e) => onChange({ ...formData, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                placeholder="Customer Support Bot"
-              />
-            </div>
+  const linkedVoiceBundle = formData.voice_bundle_id
+    ? voiceBundles.find((vb) => vb.id === formData.voice_bundle_id)
+    : undefined
 
-            {/* Call Medium */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Call Medium *</label>
-              <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-                {(['web_call', 'phone_call'] as const).map((medium) => (
-                  <button
-                    key={medium}
-                    type="button"
-                    onClick={() =>
-                      onChange({
-                        ...formData,
-                        call_medium: medium,
-                        phone_number: medium === 'web_call' ? '' : formData.phone_number,
-                      })
-                    }
-                    className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
-                      formData.call_medium === medium
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white text-gray-700 hover:bg-gray-50'
-                    } ${medium === 'web_call' ? 'border-r border-gray-300' : ''}`}
-                  >
-                    {medium === 'web_call' ? 'Web Call' : 'Phone Call'}
-                  </button>
-                ))}
+  const hasPlatformLink = Boolean(formData.voice_ai_integration_id || formData.voice_ai_agent_id)
+
+  const productionPromptProse =
+    'prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700'
+
+  return (
+    <form onSubmit={handleFormSubmit}>
+      {activeTab === 'overview' && (
+        <div className="space-y-5 max-w-3xl">
+          <OverviewSection title="Agent profile" description="Name and language shown to evaluators and logs.">
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="agent-name" className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Name *
+                </label>
+                <input
+                  id="agent-name"
+                  type="text"
+                  required
+                  value={formData.name}
+                  onChange={(e) => onChange({ ...formData, name: e.target.value })}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400"
+                  placeholder="Customer Support Bot"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="agent-language" className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Language
+                </label>
+                <select
+                  id="agent-language"
+                  value={formData.language}
+                  onChange={(e) => onChange({ ...formData, language: e.target.value })}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400"
+                >
+                  <option value="en">English</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                  <option value="zh">Chinese</option>
+                  <option value="hi">Hindi</option>
+                </select>
               </div>
             </div>
+          </OverviewSection>
 
-            {/* Phone Number */}
-            {formData.call_medium === 'phone_call' && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="block text-sm font-medium text-gray-700">Phone Number *</label>
-                  <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+          <OverviewSection title="Call setup" description="How sessions are placed and routed.">
+            <div className="space-y-5">
+              <div>
+                <span className="block text-sm font-medium text-gray-700 mb-2">Call medium *</span>
+                <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50/80 p-1 shadow-sm">
+                  {(['web_call', 'phone_call'] as const).map((medium) => (
                     <button
+                      key={medium}
                       type="button"
-                      onClick={() => {
-                        setPhoneNumberInputMode('provider')
-                        onChange({ ...formData, phone_number: '' })
-                      }}
-                      disabled={!telephonyConfig || telephonyNumbers.length === 0}
-                      className={`px-3 py-1 text-xs font-medium ${
-                        phoneNumberInputMode === 'provider'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white text-gray-700 hover:bg-gray-50'
-                      } disabled:bg-gray-100 disabled:text-gray-400`}
-                    >
-                      Select from provider
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPhoneNumberInputMode('custom')
-                        onChange({ ...formData, telephony_phone_number_id: '' })
-                      }}
-                      className={`px-3 py-1 text-xs font-medium border-l border-gray-300 ${
-                        phoneNumberInputMode === 'custom'
-                          ? 'bg-primary-600 text-white'
-                          : 'bg-white text-gray-700 hover:bg-gray-50'
+                      onClick={() =>
+                        onChange({
+                          ...formData,
+                          call_medium: medium,
+                          phone_number: medium === 'web_call' ? '' : formData.phone_number,
+                        })
+                      }
+                      className={`rounded-lg px-4 py-2 text-sm font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 ${
+                        formData.call_medium === medium
+                          ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200/80'
+                          : 'text-gray-600 hover:text-gray-900'
                       }`}
                     >
-                      Enter custom
+                      {medium === 'web_call' ? 'Web call' : 'Phone call'}
                     </button>
-                  </div>
-                </div>
-
-                {(!telephonyConfig || isTelephonyConfigError) && (
-                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                    No telephony provider is configured yet. You can still enter a custom number, or configure
-                    telephony in Integrations.
-                  </p>
-                )}
-
-                {phoneNumberInputMode === 'provider' ? (
-                  <select
-                    required
-                    value={formData.telephony_phone_number_id}
-                    onChange={(e) => {
-                      const selected = telephonyNumbers.find((n) => n.id === e.target.value)
-                      onChange({
-                        ...formData,
-                        telephony_phone_number_id: e.target.value,
-                        phone_number: selected?.phone_number || '',
-                      })
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    disabled={!telephonyConfig || telephonyNumbers.length === 0}
-                  >
-                    <option value="">Select a synced telephony number</option>
-                    {telephonyNumbers.map((number) => (
-                      <option
-                        key={number.id}
-                        value={number.id}
-                        disabled={!!number.agent_id && number.id !== formData.telephony_phone_number_id}
-                      >
-                        {number.phone_number}
-                        {number.region ? ` - ${number.region}` : ''}
-                        {number.country_iso2 ? ` (${number.country_iso2})` : ''}
-                        {number.agent_id ? ' [In use]' : ''}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    required
-                    value={formData.phone_number}
-                    onChange={(e) =>
-                      onChange({
-                        ...formData,
-                        phone_number: e.target.value.replace(/[^\d+]/g, ''),
-                      })
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="+1234567890"
-                  />
-                )}
-              </div>
-            )}
-
-            {/* Language */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
-              <select
-                value={formData.language}
-                onChange={(e) => onChange({ ...formData, language: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              >
-                <option value="en">English</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="zh">Chinese</option>
-                <option value="hi">Hindi</option>
-              </select>
-            </div>
-
-            {/* Call Type */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Call Type</label>
-              <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-                {(['outbound', 'inbound'] as const).map((type) => (
-                  <button
-                    key={type}
-                    type="button"
-                    onClick={() => onChange({ ...formData, call_type: type })}
-                    className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
-                      formData.call_type === type
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-white text-gray-700 hover:bg-gray-50'
-                    } ${type === 'outbound' ? 'border-r border-gray-300' : ''}`}
-                  >
-                    {type === 'outbound' ? <PhoneOutgoing className="h-3.5 w-3.5" /> : <PhoneIncoming className="h-3.5 w-3.5" />}
-                    {type === 'outbound' ? 'Outbound' : 'Inbound'}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Voice Configuration */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Test Voice Agent */}
-              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Configure your test agent</h3>
-                <p className="text-sm text-gray-600 mb-4 flex-grow">
-                  Configure agents using Voice Bundles for testing purposes
-                </p>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle *</label>
-                  <select
-                    value={formData.voice_bundle_id}
-                    onChange={(e) => onChange({ ...formData, voice_bundle_id: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                  >
-                    <option value="">Select a Voice Bundle</option>
-                    {voiceBundles
-                      .filter((vb) => vb.is_active)
-                      .map((vb) => (
-                        <option key={vb.id} value={vb.id}>
-                          {vb.name}
-                        </option>
-                      ))}
-                  </select>
-                  {voiceBundles.filter((vb) => vb.is_active).length === 0 && (
-                    <p className="mt-1 text-xs text-gray-500">
-                      No active voice bundles available. Create one in VoiceBundle section.
-                    </p>
-                  )}
+                  ))}
                 </div>
               </div>
 
-              {/* Voice AI Agent */}
-              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
-                <p className="text-sm text-gray-600 mb-4 flex-grow">
-                  Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs, Smallest)
-                </p>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Integration Provider *
-                    </label>
-                    <div className="flex items-center gap-3">
-                      <select
-                        value={formData.voice_ai_integration_id}
-                        onChange={(e) => onChange({ ...formData, voice_ai_integration_id: e.target.value })}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                      >
-                        <option value="">Select an Integration</option>
-                        {voiceAgentIntegrations.map((integration) => {
-                          const platformLabel = getIntegrationPlatformLabel(
-                            integration.platform as IntegrationPlatform,
-                          )
-                          return (
-                            <option key={integration.id} value={integration.id}>
-                              {integration.name || platformLabel} ({platformLabel})
-                            </option>
-                          )
-                        })}
-                      </select>
-                      {selectedVoiceIntegration && (
-                        <div className="flex-shrink-0">
-                          {(() => {
-                            const logo = getIntegrationPlatformLogo(
-                              selectedVoiceIntegration.platform as IntegrationPlatform,
-                            )
-                            const label = getIntegrationPlatformLabel(
-                              selectedVoiceIntegration.platform as IntegrationPlatform,
-                            )
-                            return logo ? (
-                              <img
-                                src={logo}
-                                alt={label}
-                                className="h-8 w-8 rounded-full object-contain"
-                              />
-                            ) : null
-                          })()}
-                        </div>
+              <div>
+                <span className="block text-sm font-medium text-gray-700 mb-2">Call type</span>
+                <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50/80 p-1 shadow-sm">
+                  {(['outbound', 'inbound'] as const).map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      onClick={() => {
+                        const nextType = type
+                        const nextNumbers = numbersForCallType(nextType)
+                        const stillValid = nextNumbers.some((n) => n.id === formData.telephony_phone_number_id)
+                        onChange({
+                          ...formData,
+                          call_type: nextType,
+                          ...(stillValid
+                            ? {}
+                            : { telephony_phone_number_id: '', phone_number: '' }),
+                        })
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 ${
+                        formData.call_type === type
+                          ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200/80'
+                          : 'text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      {type === 'outbound' ? (
+                        <PhoneOutgoing className="h-3.5 w-3.5" />
+                      ) : (
+                        <PhoneIncoming className="h-3.5 w-3.5" />
                       )}
+                      {type === 'outbound' ? 'Outbound' : 'Inbound'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {formData.call_medium === 'phone_call' && (
+                <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50/50 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-sm font-medium text-gray-700">Phone number *</label>
+                    <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPhoneNumberInputMode('provider')
+                          onChange({ ...formData, phone_number: '' })
+                        }}
+                        disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
+                        className={`rounded-md px-2.5 py-1 font-medium ${
+                          phoneNumberInputMode === 'provider'
+                            ? 'bg-primary-600 text-white'
+                            : 'text-gray-600 hover:bg-gray-50'
+                        } disabled:opacity-40`}
+                      >
+                        From provider
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPhoneNumberInputMode('custom')
+                          onChange({ ...formData, telephony_phone_number_id: '' })
+                        }}
+                        className={`rounded-md px-2.5 py-1 font-medium ${
+                          phoneNumberInputMode === 'custom'
+                            ? 'bg-primary-600 text-white'
+                            : 'text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        Custom
+                      </button>
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Agent ID *</label>
+
+                  {isTelephonyConfigError && (
+                    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200/80 rounded-lg px-3 py-2">
+                      No synced telephony numbers found yet. Import numbers on the Telephony Numbers page,
+                      configure a provider in Integrations, or enter a custom number below.
+                    </p>
+                  )}
+
+                  {phoneNumberInputMode === 'provider' ? (
+                    <select
+                      required
+                      value={formData.telephony_phone_number_id}
+                      onChange={(e) => {
+                        const selected = telephonyNumbers.find((n) => n.id === e.target.value)
+                        onChange({
+                          ...formData,
+                          telephony_phone_number_id: e.target.value,
+                          phone_number: selected?.phone_number || '',
+                        })
+                      }}
+                      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400"
+                      disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
+                    >
+                      <option value="">Select a synced telephony number</option>
+                      {telephonyNumbers.map((number) => (
+                        <option
+                          key={number.id}
+                          value={number.id}
+                          disabled={!!number.agent_id && number.id !== formData.telephony_phone_number_id}
+                        >
+                          {number.phone_number}
+                          {number.provider
+                            ? ` [${getTelephonyProviderLabel(number.provider as TelephonyProvider)}]`
+                            : ''}
+                          {number.region ? ` - ${number.region}` : ''}
+                          {number.country_iso2 ? ` (${number.country_iso2})` : ''}
+                          {number.agent_id && number.id !== formData.telephony_phone_number_id
+                            ? ` [Assigned to ${number.linked_agent_name || 'another agent'}]`
+                            : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
                     <input
                       type="text"
-                      value={formData.voice_ai_agent_id}
-                      onChange={(e) => onChange({ ...formData, voice_ai_agent_id: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                      placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
+                      required
+                      value={formData.phone_number}
+                      onChange={(e) =>
+                        onChange({
+                          ...formData,
+                          phone_number: e.target.value.replace(/[^\d+]/g, ''),
+                        })
+                      }
+                      className={`w-full px-3 py-2.5 border rounded-lg bg-white shadow-sm focus:ring-2 focus:ring-primary-500/30 focus:border-primary-400 ${
+                        hasPhoneConflict ? 'border-red-300' : 'border-gray-200'
+                      }`}
+                      placeholder="+1234567890"
                     />
-                    <p className="mt-1 text-xs text-gray-500">
-                      Enter the agent ID you received from your voice AI provider
+                  )}
+                  {formData.call_medium === 'phone_call' && hasPhoneConflict && phoneConflict && (
+                    <p className="text-xs text-red-600 mt-1">
+                      {formatAgentPhoneConflictMessage(phoneConflict)}
                     </p>
-                  </div>
+                  )}
+                  {formData.call_medium === 'phone_call' && isCheckingPhoneAssignment && (
+                    <p className="text-xs text-gray-500 mt-1">Checking number availability…</p>
+                  )}
                 </div>
-              </div>
+              )}
             </div>
+          </OverviewSection>
 
-            {/* Delete Button */}
-            <div className="flex gap-3 pt-4 border-t border-gray-200">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={onDelete}
-                leftIcon={<Trash2 className="w-4 h-4" />}
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:border-red-400"
-              >
-                Delete
-              </Button>
-            </div>
+          <OverviewSection title="Live session" description="Hang up when neither side speaks for too long.">
+            <ParamSlider
+              label="End call after silence"
+              helpText={`${formatSilenceHangupLabel(formData.silence_hangup_secs)} · Resets on voice activity. Default 15. Set to 0 to disable.`}
+              min={0}
+              max={600}
+              step={1}
+              integer
+              value={formData.silence_hangup_secs}
+              onChange={(next) =>
+                onChange({
+                  ...formData,
+                  silence_hangup_secs: next ?? 0,
+                })
+              }
+            />
+          </OverviewSection>
+
+          <div className="flex gap-3 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onDelete}
+              leftIcon={<Trash2 className="w-4 h-4" />}
+              className="border-red-200 text-red-700 hover:bg-red-50 hover:border-red-300"
+            >
+              Delete agent
+            </Button>
           </div>
+        </div>
+      )}
 
-          {/* System Prompt / Description */}
-          <div className="min-w-0">
+      {activeTab === 'test_agent' && (
+        <div className="max-w-4xl space-y-4">
+          <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
+
+          {testAgentSubTab === 'configuration' && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Voice Bundle</label>
+                <select
+                  value={formData.voice_bundle_id}
+                  onChange={(e) => onChange({ ...formData, voice_bundle_id: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                >
+                  <option value="">Select a Voice Bundle</option>
+                  {voiceBundles
+                    .filter((vb) => vb.is_active)
+                    .map((vb) => (
+                      <option key={vb.id} value={vb.id}>
+                        {vb.name}
+                      </option>
+                    ))}
+                </select>
+                {voiceBundles.filter((vb) => vb.is_active).length === 0 && (
+                  <p className="mt-1 text-xs text-gray-500">
+                    No active voice bundles available. Create one in Voice Bundles.
+                  </p>
+                )}
+              </div>
+              {linkedVoiceBundle && (
+                <VoiceBundleDetailCard
+                  bundle={linkedVoiceBundle}
+                  allowParamTuning
+                  onEdit={() => {
+                    const returnPath = agentId ? `/agents/${agentId}?tab=test_agent` : '/agents'
+                    navigate(
+                      `/voicebundles?edit=${linkedVoiceBundle.id}&return=${encodeURIComponent(returnPath)}`
+                    )
+                  }}
+                  onManageInVoiceBundles={() => navigate('/voicebundles')}
+                />
+              )}
+            </div>
+          )}
+
+          {testAgentSubTab === 'prompt' && (
             <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
               <div className="flex items-center justify-between mb-3">
                 <label className="block text-sm font-medium text-gray-700">EfficientAI Test Agent Prompt</label>
@@ -529,6 +584,17 @@ export default function AgentEditForm({
                     rows={3}
                     className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white mb-2"
                   />
+                  {agentId ? (
+                    <label className="flex items-center gap-2 text-xs text-gray-700 mb-2">
+                      <input
+                        type="checkbox"
+                        checked={includeLinkedScenarios}
+                        onChange={(e) => setIncludeLinkedScenarios(e.target.checked)}
+                        className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                      />
+                      Include linked scenarios as AI context (does not append to prompt)
+                    </label>
+                  ) : null}
                   <div className="grid grid-cols-2 gap-3 mb-2">
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Tone</label>
@@ -635,6 +701,13 @@ export default function AgentEditForm({
                           format_style: aiFormat,
                           ...(aiProvider ? { provider: aiProvider } : {}),
                           ...(aiModel ? { model: aiModel } : {}),
+                          ...(agentId
+                            ? {
+                                agent_id: agentId,
+                                include_linked_scenarios: includeLinkedScenarios,
+                                append_scenarios_to_output: false,
+                              }
+                            : {}),
                         })
                       }
                       disabled={generateDescriptionMutation.isPending || !aiDescription.trim()}
@@ -654,13 +727,87 @@ export default function AgentEditForm({
                 </div>
               )}
 
+              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <label className="text-sm font-medium text-gray-700">Custom prompt variables</label>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-primary-600 hover:text-primary-800"
+                    onClick={() => {
+                      const base = { ...(formData.prompt_variables || {}) }
+                      let n = 1
+                      let key = 'custom_var'
+                      while (base[key]) {
+                        n += 1
+                        key = `custom_var_${n}`
+                      }
+                      base[key] = ''
+                      onChange({ ...formData, prompt_variables: base })
+                    }}
+                  >
+                    + Add variable
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mb-2">
+                  Define keys you can insert with <code className="text-gray-700">{'{'}</code> or{' '}
+                  <code className="text-gray-700">@</code>. Values are optional descriptions for your team.
+                </p>
+                {Object.keys(formData.prompt_variables || {}).length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">No custom variables yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {Object.entries(formData.prompt_variables || {}).map(([key, desc]) => (
+                      <div key={key} className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={key}
+                          onChange={(e) => {
+                            const nextKey = e.target.value.replace(/\s+/g, '_')
+                            const vars = { ...(formData.prompt_variables || {}) }
+                            delete vars[key]
+                            if (nextKey) vars[nextKey] = desc
+                            onChange({ ...formData, prompt_variables: vars })
+                          }}
+                          className="w-36 px-2 py-1.5 text-xs font-mono border border-gray-300 rounded-md"
+                          placeholder="variable_key"
+                        />
+                        <input
+                          type="text"
+                          value={desc}
+                          onChange={(e) =>
+                            onChange({
+                              ...formData,
+                              prompt_variables: {
+                                ...(formData.prompt_variables || {}),
+                                [key]: e.target.value,
+                              },
+                            })
+                          }
+                          className="flex-1 min-w-[120px] px-2 py-1.5 text-xs border border-gray-300 rounded-md"
+                          placeholder="Description (optional)"
+                        />
+                        <button
+                          type="button"
+                          className="text-xs text-red-600 hover:text-red-800"
+                          onClick={() => {
+                            const vars = { ...(formData.prompt_variables || {}) }
+                            delete vars[key]
+                            onChange({ ...formData, prompt_variables: vars })
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {descriptionEditorMode === 'write' ? (
-                <textarea
+                <AgentPromptComposer
                   value={formData.description}
-                  onChange={(e) => onChange({ ...formData, description: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm min-h-[380px]"
-                  rows={18}
-                  placeholder="Write your agent description here... Markdown is supported."
+                  onChange={(description) => onChange({ ...formData, description })}
+                  customVariables={formData.prompt_variables}
                 />
               ) : (
                 <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100">
@@ -672,9 +819,114 @@ export default function AgentEditForm({
                 </div>
               )}
             </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'voice_ai_agent' && hasPlatformLink && (
+        <div className="max-w-2xl space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
+            <div className="flex items-center gap-3">
+              <select
+                value={formData.voice_ai_integration_id}
+                onChange={(e) => onChange({ ...formData, voice_ai_integration_id: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+              >
+                <option value="">Select an Integration</option>
+                {voiceAgentIntegrations.map((integration) => {
+                  const platformLabel = getIntegrationPlatformLabel(
+                    integration.platform as IntegrationPlatform,
+                  )
+                  return (
+                    <option key={integration.id} value={integration.id}>
+                      {integration.name || platformLabel} ({platformLabel})
+                    </option>
+                  )
+                })}
+              </select>
+              {selectedVoiceIntegration && (
+                <div className="flex-shrink-0">
+                  {(() => {
+                    const logo = getIntegrationPlatformLogo(
+                      selectedVoiceIntegration.platform as IntegrationPlatform,
+                    )
+                    const label = getIntegrationPlatformLabel(
+                      selectedVoiceIntegration.platform as IntegrationPlatform,
+                    )
+                    return logo ? (
+                      <img src={logo} alt={label} className="h-8 w-8 rounded-full object-contain" />
+                    ) : null
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Agent ID</label>
+            <input
+              type="text"
+              value={formData.voice_ai_agent_id}
+              onChange={(e) => onChange({ ...formData, voice_ai_agent_id: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+              placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
+            />
           </div>
         </div>
-      </div>
+      )}
+
+      {activeTab === 'voice_ai_agent' && !hasPlatformLink && (
+        <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+          <div className="flex items-center justify-between mb-3">
+            <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setProviderPromptEditorMode('write')}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  providerPromptEditorMode === 'write'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Code className="h-3 w-3" />
+                Write
+              </button>
+              <button
+                type="button"
+                onClick={() => setProviderPromptEditorMode('preview')}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  providerPromptEditorMode === 'preview'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Eye className="h-3 w-3" />
+                Preview
+              </button>
+            </div>
+          </div>
+          {providerPromptEditorMode === 'write' ? (
+            <textarea
+              value={formData.provider_prompt}
+              onChange={(e) => onChange({ ...formData, provider_prompt: e.target.value })}
+              className="w-full min-h-[380px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
+              rows={16}
+              placeholder="Paste or edit the production system prompt…"
+            />
+          ) : (
+            <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 bg-white">
+              {formData.provider_prompt?.trim() ? (
+                <div className={productionPromptProse}>
+                  <ReactMarkdown>{formData.provider_prompt}</ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-gray-400 italic">Nothing to preview yet…</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </form>
   )
 }

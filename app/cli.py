@@ -112,6 +112,17 @@ def start_frontend_watcher(frontend_dir: Path) -> FrontendWatcher:
     return watcher
 
 
+def _read_config_media_ws_base_url(config_path: Path) -> Optional[str]:
+    """Return vobiz.media_ws_base_url from YAML when explicitly configured."""
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        value = ((data.get("vobiz") or {}).get("media_ws_base_url") or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
 @main.command()
 @click.option(
     "--verbose",
@@ -186,17 +197,27 @@ def migrate(verbose: bool):
 )
 def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool, skip_migrations: bool):
     """Start the EfficientAI application server."""
-    from app.config import load_config_from_file, settings
-    
+    from app.config import apply_service_mode, load_config_from_file, settings
+
     # Load configuration from YAML file
     config_path = Path(config)
     if not config_path.exists():
         click.echo(f"❌ Config file not found: {config}", err=True)
         click.echo(f"💡 Create a config.yml file or use --config to specify a different path.", err=True)
         sys.exit(1)
-    
+
+    explicit_media_ws = _read_config_media_ws_base_url(config_path)
+    os.environ["SERVICE_MODE"] = "api"
+    if not explicit_media_ws:
+        # Single-process dev: co-locate voice WebSockets on the API port unless
+        # config.yml sets vobiz.media_ws_base_url (used with eai telephony-worker).
+        os.environ.pop("MEDIA_WS_BASE_URL", None)
+
     try:
         load_config_from_file(str(config_path))
+        apply_service_mode("api")
+        if not explicit_media_ws:
+            settings.MEDIA_WS_BASE_URL = ""
         click.echo(f"✅ Loaded configuration from {config_path}")
     except Exception as e:
         click.echo(f"❌ Error loading config: {e}", err=True)
@@ -402,6 +423,134 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         sys.exit(1)
 
 
+@main.command("telephony-worker")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--host", default=None, help="Host to bind (default from config)")
+@click.option("--port", default=None, type=int, help="Media server port (default 8001)")
+def telephony_worker(config: str, host: Optional[str], port: Optional[int]):
+    """Start the media server for live voice WebSocket connections."""
+    os.environ["SERVICE_MODE"] = "media"
+    from app.config import apply_service_mode, load_config_from_file, settings
+
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+
+    try:
+        load_config_from_file(str(config_path))
+        apply_service_mode("media")
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}", err=True)
+        sys.exit(1)
+    bind_host = host or settings.HOST
+    bind_port = port or settings.MEDIA_PORT
+
+    from app.app_factory import create_app
+
+    app = create_app()
+    print(
+        f"[MEDIA] telephony-worker ready on {bind_host}:{bind_port} "
+        f"(SERVICE_MODE={settings.SERVICE_MODE}, media_routes mounted)",
+        flush=True,
+    )
+
+    import uvicorn
+
+    click.echo(f"🎙️  Starting EfficientAI media server on {bind_host}:{bind_port}")
+    uvicorn.run(
+        app,
+        host=bind_host,
+        port=bind_port,
+        reload=False,
+    )
+
+
+@main.command("start-worker-all")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--loglevel", "-l", default="info", help="Celery log level")
+@click.option("--media-port", default=None, type=int, help="Media server port (default 8001)")
+def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
+    """Start Celery worker and media server together.
+
+    Deprecated: prefer separate ``eai telephony-worker`` and ``eai worker`` services
+    (see docker-compose ``media`` + ``worker``).
+    """
+    import signal
+    import atexit
+
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+
+    from app.config import load_config_from_file, settings
+
+    load_config_from_file(str(config_path))
+
+    media_proc = None
+    celery_proc = None
+
+    def cleanup():
+        nonlocal media_proc, celery_proc
+        for proc, label in ((media_proc, "media server"), (celery_proc, "Celery worker")):
+            if proc is None or proc.poll() is not None:
+                continue
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+                click.echo(f"✅ {label} stopped")
+            except Exception:
+                proc.kill()
+
+    atexit.register(cleanup)
+
+    def _handle_signal(sig, frame):
+        cleanup()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+    port = media_port or settings.MEDIA_PORT
+    telephony_env = os.environ.copy()
+    telephony_env["SERVICE_MODE"] = "media"
+    media_proc = subprocess.Popen(
+        [sys.executable, "-m", "app.cli", "telephony-worker", "--config", str(config_path), "--port", str(port)],
+        env=telephony_env,
+    )
+    celery_proc = subprocess.Popen(
+        ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"],
+    )
+    click.echo(f"🚀 Started media server (pid={media_proc.pid}) and Celery worker (pid={celery_proc.pid})")
+
+    try:
+        while True:
+            if media_proc.poll() is not None:
+                click.echo("❌ Media server exited", err=True)
+                break
+            if celery_proc.poll() is not None:
+                click.echo("❌ Celery worker exited", err=True)
+                break
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cleanup()
+
+
 @main.command()
 @click.option(
     "--config",
@@ -474,6 +623,17 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         "is enabled; 32 threads can exhaust per-shard SQLAlchemy pools."
     ),
 )
+@click.option(
+    "--telephony-worker/--no-telephony-worker",
+    default=True,
+    help="Spawn telephony media server for live voice WebSockets (default: on).",
+)
+@click.option(
+    "--media-port",
+    default=None,
+    type=int,
+    help="Telephony media server port (default: MEDIA_PORT / 8001).",
+)
 def start_all(
     config: str,
     host: Optional[str],
@@ -486,18 +646,21 @@ def start_all(
     worker_loglevel: str,
     imports_worker: bool,
     imports_worker_concurrency: int,
+    telephony_worker: bool,
+    media_port: Optional[int],
 ):
     """Start the application server and Celery worker(s) together.
 
-    By default this also spawns a second Celery worker that consumes the
-    `imports` queue (call-import CSV fan-out) so CSV processing does not
-    starve synthetic-calling, audio generation, and evaluation jobs on the
-    default queue. Use --no-imports-worker to skip it.
+    By default this also spawns a telephony media server (``eai telephony-worker``)
+    and a second Celery worker that consumes the ``imports`` queue (call-import CSV
+    fan-out). Use --no-telephony-worker or --no-imports-worker to skip either.
     """
     import signal
     import atexit
 
     click.echo("🚀 Starting EfficientAI (App + Worker)...")
+    if telephony_worker:
+        click.echo("   Telephony media server will run on a separate port (SERVICE_MODE=media).")
     if imports_worker:
         click.echo(
             "   This will start the API server, the default Celery worker, "
@@ -515,18 +678,21 @@ def start_all(
         sys.exit(1)
     
     try:
-        from app.config import load_config_from_file
+        from app.config import load_config_from_file, settings
         load_config_from_file(str(config_path))
         click.echo(f"✅ Loaded configuration from {config_path}")
     except Exception as e:
         click.echo(f"❌ Error loading config: {e}", err=True)
         sys.exit(1)
+
+    bind_media_port = media_port or settings.MEDIA_PORT
+
+    os.environ["SERVICE_MODE"] = "api"
     
-    # Store worker processes for cleanup. We may spawn one or two:
-    #   - worker_process: the default-queue worker (existing behavior)
-    #   - worker_imports_process: dedicated worker for the `imports` queue
+    # Store worker processes for cleanup.
     worker_process = None
     worker_imports_process = None
+    telephony_process = None
 
     def _terminate(proc, label: str):
         """Best-effort terminate -> wait -> kill for a worker subprocess."""
@@ -545,7 +711,8 @@ def start_all(
 
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process, worker_imports_process
+        nonlocal worker_process, worker_imports_process, telephony_process
+        _terminate(telephony_process, "Telephony media server")
         _terminate(worker_process, "Celery worker (default)")
         _terminate(worker_imports_process, "Celery worker (imports)")
     
@@ -617,6 +784,47 @@ def start_all(
 
         threading.Thread(target=_stream, daemon=True).start()
         return proc
+
+    if telephony_worker:
+        try:
+            telephony_env = os.environ.copy()
+            telephony_env["SERVICE_MODE"] = "media"
+            telephony_process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "app.cli",
+                    "telephony-worker",
+                    "--config",
+                    str(config_path),
+                    "--port",
+                    str(bind_media_port),
+                ],
+                env=telephony_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            click.echo(
+                f"✅ Telephony media server started on port {bind_media_port} "
+                f"(pid={telephony_process.pid})"
+            )
+
+            def _stream_telephony():
+                if telephony_process.stdout:
+                    for line in iter(telephony_process.stdout.readline, ""):
+                        if line:
+                            click.echo(f"[MEDIA] {line.rstrip()}", err=False)
+                    telephony_process.stdout.close()
+
+            threading.Thread(target=_stream_telephony, daemon=True).start()
+        except FileNotFoundError:
+            click.echo("❌ Python interpreter not found for telephony-worker subprocess", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"❌ Failed to start telephony media server: {e}", err=True)
+            sys.exit(1)
 
     # Start Celery workers as subprocess(es) with output streaming
     try:
@@ -698,6 +906,18 @@ def start_all(
             )
         else:
             click.echo("   Workers: default queue only (--no-imports-worker)")
+        if telephony_worker:
+            telephony_public = (settings.VOBIZ_WEBHOOK_BASE_URL or "").strip()
+            click.echo(f"   Telephony edge: http://localhost:{bind_media_port} (local)")
+            if telephony_public:
+                click.echo(f"   Vobiz webhook_base_url: {telephony_public}")
+            else:
+                click.echo(
+                    "   Set vobiz.webhook_base_url to your telephony public URL "
+                    f"(e.g. ngrok http {bind_media_port}) for inbound PSTN"
+                )
+            if (settings.MEDIA_WS_BASE_URL or "").strip():
+                click.echo(f"   Browser voice-agent WS: {settings.MEDIA_WS_BASE_URL}")
         click.echo("\n📝 All services are running. Press Ctrl+C to stop.\n")
         
         # Run uvicorn in the main process (allows reload to work)

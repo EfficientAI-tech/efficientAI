@@ -12,19 +12,50 @@ from uuid import UUID
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_workspace_id
+from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.models.database import (
     Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
-    PromptOptimizationRun, CallRecording,
+    PromptOptimizationRun, CallRecording, Agent,
 )
 from app.models.enums import LanguageEnum, AccentEnum, GenderEnum, BackgroundNoiseEnum
 from app.models.schemas import (
-    PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest
+    PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest,
+    AgentPromptSourcesResponse, GeneratePersonaPromptRequest, GeneratePersonaPromptResponse,
 )
 from app.models.enums import ModelProvider
 from app.services.ai.model_config_service import model_config_service
+from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
+from app.services.personas.persona_tts_config import (
+    normalize_persona_tts_config,
+    validate_persona_tts_config,
+)
+from app.services.personas.persona_prompt_generation import (
+    generate_persona_prompt_from_agent,
+    resolve_agent_prompt_sources,
+)
 
 router = APIRouter(prefix="/personas", tags=["personas"])
+
+
+def _normalized_persona_tts_config(provider: Optional[str], tts_config: Optional[Dict[str, Any]]):
+    return normalize_persona_tts_config(provider, tts_config)
+
+
+def _get_agent_for_workspace(
+    db: Session,
+    *,
+    agent_id: UUID,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> Agent:
+    agent = db.query(Agent).filter(
+        Agent.id == agent_id,
+        Agent.organization_id == organization_id,
+        Agent.workspace_id == workspace_id,
+    ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return agent
 # ---------------------------------------------------------------------------
 # Built-in voice catalog (same data used in voice_playground)
 # ---------------------------------------------------------------------------
@@ -184,6 +215,13 @@ async def create_persona(
             tts_voice_id=persona.tts_voice_id,
             tts_voice_name=persona.tts_voice_name,
             is_custom=persona.is_custom,
+            description=persona.description,
+            tts_config=_normalized_persona_tts_config(persona.tts_provider, persona.tts_config),
+            llm_temperature=persona.llm_temperature,
+            llm_max_tokens=persona.llm_max_tokens,
+            response_delay_ms=persona.response_delay_ms,
+            max_turns=persona.max_turns,
+            allow_interruptions=persona.allow_interruptions,
         )
         db.add(db_persona)
         db.commit()
@@ -355,6 +393,85 @@ async def get_voice_options(
     return {"providers": result}
 
 
+@router.get(
+    "/agent-prompt-sources/{agent_id}",
+    response_model=AgentPromptSourcesResponse,
+    operation_id="getPersonaAgentPromptSources",
+)
+async def get_agent_prompt_sources(
+    agent_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Return agent prompts that can seed a persona description."""
+    agent = _get_agent_for_workspace(
+        db,
+        agent_id=agent_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    sources = resolve_agent_prompt_sources(agent)
+    return AgentPromptSourcesResponse(
+        agent_id=agent.id,
+        agent_name=agent.name,
+        test_agent_prompt=sources["test_agent_prompt"],
+        agent_prompt=sources["agent_prompt"],
+    )
+
+
+@router.post(
+    "/generate-prompt",
+    response_model=GeneratePersonaPromptResponse,
+    operation_id="generatePersonaPrompt",
+)
+async def generate_persona_prompt(
+    data: GeneratePersonaPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate a persona caller prompt from an agent prompt via LLM."""
+    agent = _get_agent_for_workspace(
+        db,
+        agent_id=data.agent_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+    try:
+        result = generate_persona_prompt_from_agent(
+            agent,
+            source=data.source,
+            persona_name=data.persona_name,
+            persona_gender=data.persona_gender,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GeneratePersonaPromptResponse(
+            persona_prompt=result.persona_prompt,
+            source_used=result.source_used,
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Failed to generate persona prompt for agent {}", data.agent_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate persona prompt: {str(e)}",
+        ) from e
+
+
 # ============================================
 # CUSTOM VOICES (ungated, org-scoped)
 # Must be registered BEFORE /{persona_id} routes.
@@ -523,6 +640,21 @@ async def update_persona(
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
         
         update_data = persona_update.model_dump(exclude_unset=True)
+        if db_persona.tts_provider and "tts_provider" in update_data:
+            incoming = update_data.get("tts_provider")
+            if incoming and str(incoming).strip().lower() != str(db_persona.tts_provider).strip().lower():
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="tts_provider cannot be changed after persona creation. Change the voice instead.",
+                )
+            update_data.pop("tts_provider", None)
+        if "tts_config" in update_data:
+            provider = update_data.get("tts_provider", db_persona.tts_provider)
+            try:
+                validate_persona_tts_config(provider, update_data["tts_config"])
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+            update_data["tts_config"] = _normalized_persona_tts_config(provider, update_data["tts_config"])
         for field, value in update_data.items():
             setattr(db_persona, field, value)
         
@@ -704,6 +836,13 @@ async def clone_persona(
             tts_voice_id=source_persona.tts_voice_id,
             tts_voice_name=source_persona.tts_voice_name,
             is_custom=source_persona.is_custom,
+            description=source_persona.description,
+            tts_config=source_persona.tts_config,
+            llm_temperature=source_persona.llm_temperature,
+            llm_max_tokens=source_persona.llm_max_tokens,
+            response_delay_ms=source_persona.response_delay_ms,
+            max_turns=source_persona.max_turns,
+            allow_interruptions=source_persona.allow_interruptions,
         )
         db.add(new_persona)
         db.commit()

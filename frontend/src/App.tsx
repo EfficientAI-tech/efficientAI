@@ -15,8 +15,7 @@ import Dashboard from './pages/dashboard/Dashboard'
 import PromptPartials from './pages/promptPartials/PromptPartials'
 
 // Agents
-import Agents from './pages/agents/Agents'
-import AgentDetail from './pages/agents/AgentDetail'
+import AgentsWorkspace from './pages/agents/AgentsWorkspace'
 
 // Personas
 import Personas from './pages/personas/Personas'
@@ -41,7 +40,13 @@ import EvaluateTestAgents from './pages/evaluators/evaluators/EvaluateTestAgents
 import EvaluatorDetail from './pages/evaluators/evaluators/EvaluatorDetail'
 
 // Evaluator Results
-import Results from './pages/evaluators/results/Results'
+import ResultsOverview from './pages/evaluators/results/ResultsOverview'
+import ResultsAgentWorkspace from './pages/evaluators/results/ResultsAgentWorkspace'
+import {
+  RedirectAgentScenarioToWorkspace,
+  RedirectAgentSuiteToWorkspace,
+} from './pages/evaluators/results/ResultsAgentWorkspaceRedirects'
+import ResultsUnassigned from './pages/evaluators/results/ResultsUnassigned'
 import EvaluatorResultDetail from './pages/evaluators/results/EvaluatorResultDetail'
 import EvaluationDetail from './pages/evaluators/results/EvaluationDetail'
 import EvaluationsList from './pages/evaluators/results/EvaluationsList'
@@ -60,6 +65,7 @@ import AlertHistory from './pages/alerting/AlertHistory'
 import DataSources from './pages/configurations/DataSources'
 import VoiceBundles from './pages/configurations/VoiceBundles'
 import Integrations from './pages/configurations/Integrations'
+import TelephonyNumbers from './pages/configurations/TelephonyNumbers'
 import Settings from './pages/configurations/Settings'
 import CronJobs from './pages/configurations/CronJobs'
 
@@ -148,18 +154,29 @@ function App() {
           <Route path="playground" element={<AgentPlayground />} />
           <Route path="playground/call-recordings/:callShortId" element={<CallRecordingDetail />} />
           <Route path="playground/test-agent-results/:id" element={<TestAgentResultDetail />} />
-          <Route path="agents" element={<Agents />} />
-          <Route path="agents/:id" element={<AgentDetail />} />
+          <Route path="agents" element={<AgentsWorkspace />} />
+          <Route path="agents/:id" element={<AgentsWorkspace />} />
           <Route path="personas" element={<Personas />} />
           <Route path="scenarios" element={<Scenarios />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="integrations" element={<Integrations />} />
+          <Route path="telephony-numbers" element={<TelephonyNumbers />} />
           <Route path="data-sources" element={<DataSources />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
           <Route path="evaluate-test-agents/:id" element={<EvaluatorDetail />} />
           <Route path="metrics-management" element={<MetricsManagement />} />
-          <Route path="results" element={<Results />} />
+          <Route path="results" element={<ResultsOverview />} />
+          <Route path="results/unassigned" element={<ResultsUnassigned />} />
+          <Route path="results/agents/:agentId" element={<ResultsAgentWorkspace />} />
+          <Route
+            path="results/agents/:agentId/suites/:suiteId"
+            element={<RedirectAgentSuiteToWorkspace />}
+          />
+          <Route
+            path="results/agents/:agentId/suites/:suiteId/scenarios/:scenarioId"
+            element={<RedirectAgentScenarioToWorkspace />}
+          />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<ObservabilityCalls />} />

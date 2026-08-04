@@ -5,7 +5,7 @@ Complete CRUD operations for test scenarios
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id
@@ -53,15 +53,19 @@ async def create_scenario(
 async def list_scenarios(
     skip: int = 0,
     limit: int = 100,
+    agent_id: Optional[UUID] = None,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
     """List scenarios for the active workspace."""
-    scenarios = db.query(Scenario).filter(
+    query = db.query(Scenario).filter(
         Scenario.organization_id == organization_id,
         Scenario.workspace_id == workspace_id,
-    ).offset(skip).limit(limit).all()
+    )
+    if agent_id is not None:
+        query = query.filter(Scenario.agent_id == agent_id)
+    scenarios = query.offset(skip).limit(limit).all()
     return scenarios
 
 

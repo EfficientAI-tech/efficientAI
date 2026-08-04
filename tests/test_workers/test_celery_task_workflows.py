@@ -8,7 +8,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.orm import sessionmaker
 
 from app.models.database import (
     Agent,
@@ -20,6 +19,29 @@ from app.models.database import (
     TTSSample,
     Workspace,
 )
+
+
+class _NonClosingSession:
+    """Prevent worker tasks from closing the pytest ``db_session`` connection."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def close(self):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+
+def _worker_db(db_session):
+    return _NonClosingSession(db_session)
+
+
+def _reload_row(db_session, model, entity_id):
+    """Re-read persisted worker writes on the test transaction."""
+    db_session.expire_all()
+    return db_session.query(model).filter(model.id == entity_id).one()
 
 
 class RetryCalled(Exception):
@@ -93,7 +115,7 @@ def _default_workspace_id(db_session, org_id):
 def test_process_evaluation_returns_service_result_on_success(db_session, monkeypatch):
     from app.workers.tasks import process_evaluation as task_module
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     fake_eval_module = types.ModuleType("app.services.evaluation.evaluation_service")
 
@@ -113,7 +135,7 @@ def test_process_evaluation_returns_service_result_on_success(db_session, monkey
 def test_process_evaluation_retries_when_service_raises_exception(db_session, monkeypatch):
     from app.workers.tasks import process_evaluation as task_module
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     fake_eval_module = types.ModuleType("app.services.evaluation.evaluation_service")
 
@@ -137,7 +159,7 @@ def test_process_evaluation_retries_when_service_raises_exception(db_session, mo
 def test_process_evaluator_result_returns_error_when_result_missing(db_session, monkeypatch):
     from app.workers.tasks import process_evaluator_result as task_module
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     result = task_module.process_evaluator_result_task.run(str(uuid4()))
 
@@ -145,7 +167,7 @@ def test_process_evaluator_result_returns_error_when_result_missing(db_session, 
 
 
 def test_process_evaluator_result_uses_existing_transcript_and_adds_call_analysis(
-    db_session, test_engine, monkeypatch
+    db_session, monkeypatch
 ):
     from app.workers.tasks import process_evaluator_result as task_module
 
@@ -161,7 +183,7 @@ def test_process_evaluator_result_uses_existing_transcript_and_adds_call_analysi
     db_session.add(eval_result)
     db_session.commit()
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
     monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         task_module,
@@ -182,18 +204,19 @@ def test_process_evaluator_result_uses_existing_transcript_and_adds_call_analysi
 
     result = task_module.process_evaluator_result_task.run(str(eval_result.id))
 
-    verify_session = sessionmaker(bind=test_engine)()
-    persisted = verify_session.query(EvaluatorResult).filter(EvaluatorResult.id == eval_result.id).one()
+    persisted = _reload_row(db_session, EvaluatorResult, eval_result.id)
     assert result["status"] == "completed"
     assert result["transcription"] == "existing transcript"
     assert persisted.status == "completed"
     assert persisted.call_data["call_analysis"]["call_successful"] is True
-    assert persisted.call_data["generated"]["call_analysis"]["user_sentiment"] == "Neutral"
-    verify_session.close()
+    assert persisted.call_data["call_analysis"]["user_sentiment"] == "Neutral"
+    assert "generated" not in persisted.call_data or "call_analysis" not in (
+        persisted.call_data.get("generated") or {}
+    )
 
 
 def test_process_evaluator_result_handles_audio_and_llm_failures_with_fallback_scores(
-    db_session, test_engine, monkeypatch
+    db_session, monkeypatch
 ):
     from app.workers.tasks import process_evaluator_result as task_module
 
@@ -234,7 +257,7 @@ def test_process_evaluator_result_handles_audio_and_llm_failures_with_fallback_s
     )
     db_session.commit()
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
     monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         task_module,
@@ -262,19 +285,17 @@ def test_process_evaluator_result_handles_audio_and_llm_failures_with_fallback_s
 
     result = task_module.process_evaluator_result_task.run(str(eval_result.id))
 
-    verify_session = sessionmaker(bind=test_engine)()
-    persisted = verify_session.query(EvaluatorResult).filter(EvaluatorResult.id == eval_result.id).one()
+    persisted = _reload_row(db_session, EvaluatorResult, eval_result.id)
     assert result["status"] == "completed"
     assert persisted.status == "completed"
     assert isinstance(persisted.metric_scores, dict)
     assert len(persisted.metric_scores) == 2
     errors = {v.get("error") for v in persisted.metric_scores.values()}
     assert errors == {"audio_failed", "llm_failed"}
-    verify_session.close()
 
 
 def test_process_evaluator_result_excludes_metrics_not_enabled_for_agent_surface(
-    db_session, test_engine, monkeypatch
+    db_session, monkeypatch
 ):
     """Metrics enabled only on voice_playground must be excluded from agent runs.
 
@@ -344,7 +365,7 @@ def test_process_evaluator_result_excludes_metrics_not_enabled_for_agent_surface
     both_metric_id = str(both_metric.id)
     vp_only_metric_id = str(vp_only_metric.id)
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
     monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_a, **_k: False)
     monkeypatch.setattr(
         task_module,
@@ -370,19 +391,15 @@ def test_process_evaluator_result_excludes_metrics_not_enabled_for_agent_surface
 
     result = task_module.process_evaluator_result_task.run(str(eval_result.id))
 
-    verify_session = sessionmaker(bind=test_engine)()
-    persisted = verify_session.query(EvaluatorResult).filter(EvaluatorResult.id == eval_result.id).one()
-    try:
-        assert result["status"] == "completed"
-        assert isinstance(persisted.metric_scores, dict)
-        # Strict gate: the voice_playground-only metric must not be evaluated.
-        scored_names = {entry.get("metric_name") for entry in persisted.metric_scores.values()}
-        assert scored_names == {"Professionalism", "Both Surfaces"}
-        assert vp_only_metric_id not in persisted.metric_scores
-        assert agent_metric_id in persisted.metric_scores
-        assert both_metric_id in persisted.metric_scores
-    finally:
-        verify_session.close()
+    persisted = _reload_row(db_session, EvaluatorResult, eval_result.id)
+    assert result["status"] == "completed"
+    assert isinstance(persisted.metric_scores, dict)
+    # Strict gate: the voice_playground-only metric must not be evaluated.
+    scored_names = {entry.get("metric_name") for entry in persisted.metric_scores.values()}
+    assert scored_names == {"Professionalism", "Both Surfaces"}
+    assert vp_only_metric_id not in persisted.metric_scores
+    assert agent_metric_id in persisted.metric_scores
+    assert both_metric_id in persisted.metric_scores
 
 
 def test_process_evaluator_result_emits_playground_billing_with_metric_count(
@@ -454,7 +471,7 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
         "app.services.billing.flexprice_service.record_playground_evaluation_completed",
         _capture_completed,
     )
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
     monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_a, **_k: False)
     monkeypatch.setattr(
         task_module,
@@ -525,14 +542,14 @@ def test_run_evaluator_returns_error_when_evaluator_missing(db_session, monkeypa
     fake_bridge_module = types.ModuleType("app.services.testing.test_agent_bridge_service")
     fake_bridge_module.test_agent_bridge_service = object()
     monkeypatch.setitem(sys.modules, "app.services.testing.test_agent_bridge_service", fake_bridge_module)
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     result = task_module.run_evaluator_task.run(str(uuid4()), str(eval_result.id))
 
     assert result == {"error": "Evaluator not found"}
 
 
-def test_run_prompt_optimization_marks_failed_without_training_data(db_session, test_engine, monkeypatch):
+def test_run_prompt_optimization_marks_failed_without_training_data(db_session, monkeypatch):
     task_module = _load_run_prompt_optimization_module()
 
     org = _seed_org(db_session)
@@ -561,18 +578,16 @@ def test_run_prompt_optimization_marks_failed_without_training_data(db_session, 
     db_session.add(run)
     db_session.commit()
 
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
     monkeypatch.setattr(task_module.logger, "error", lambda *_args, **_kwargs: None)
     _invoke_bound_task(task_module.run_prompt_optimization_task, run.id)
-    verify_session = sessionmaker(bind=test_engine)()
-    persisted_run = verify_session.query(PromptOptimizationRun).filter(PromptOptimizationRun.id == run.id).first()
+    persisted_run = _reload_row(db_session, PromptOptimizationRun, run.id)
 
     assert persisted_run.status == "failed"
     assert "No completed evaluator results" in persisted_run.error_message
-    verify_session.close()
 
 
-def test_run_prompt_optimization_persists_best_prompt_and_candidates_on_success(db_session, test_engine, monkeypatch):
+def test_run_prompt_optimization_persists_best_prompt_and_candidates_on_success(db_session, monkeypatch):
     task_module = _load_run_prompt_optimization_module()
 
     org = _seed_org(db_session)
@@ -633,17 +648,15 @@ def test_run_prompt_optimization_persists_best_prompt_and_candidates_on_success(
         "candidates": [{"prompt_text": "candidate prompt", "score": 0.92}],
     }
     monkeypatch.setitem(sys.modules, "app.services.optimization", fake_opt_module)
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     monkeypatch.setattr(task_module.logger, "error", lambda *_args, **_kwargs: None)
     _invoke_bound_task(task_module.run_prompt_optimization_task, run.id)
-    verify_session = sessionmaker(bind=test_engine)()
-    persisted_run = verify_session.query(PromptOptimizationRun).filter(PromptOptimizationRun.id == run.id).first()
+    persisted_run = _reload_row(db_session, PromptOptimizationRun, run.id)
 
     assert persisted_run.status == "completed"
     assert persisted_run.best_prompt == "improved prompt"
     assert persisted_run.best_score == 0.92
-    verify_session.close()
 
 
 def test_generate_tts_comparison_dispatches_evaluation_after_sample_generation(db_session, monkeypatch):
@@ -713,7 +726,7 @@ def test_generate_tts_comparison_dispatches_evaluation_after_sample_generation(d
         "delay",
         lambda _comparison_id: called.__setitem__("value", True),
     )
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     result = task_module.generate_tts_comparison_task.run(str(comp.id))
 
@@ -755,8 +768,94 @@ def test_evaluate_tts_comparison_returns_zero_when_no_completed_samples(db_sessi
     fake_vp_module = types.ModuleType("app.api.v1.routes.voice_playground")
     fake_vp_module._recompute_summary = lambda _comp, _db: None
     monkeypatch.setitem(sys.modules, "app.api.v1.routes.voice_playground", fake_vp_module)
-    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
     result = task_module.evaluate_tts_comparison_task.run(str(comp.id))
 
     assert result == {"evaluated": 0}
+
+
+def test_evaluate_llm_metrics_grouped_passes_parent_for_categorization_children(
+    db_session,
+    monkeypatch,
+):
+    from app.workers.tasks import process_evaluator_result as task_module
+
+    org = _seed_org(db_session)
+    workspace_id = _default_workspace_id(db_session, org.id)
+    parent = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Call Outcome",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        selection_mode="single_choice",
+    )
+    child_yes = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Yes",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        parent_metric_id=parent.id,
+    )
+    child_no = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="No",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        parent_metric_id=parent.id,
+    )
+    db_session.add_all([parent, child_yes, child_no])
+    db_session.commit()
+
+    parent_calls: list = []
+    flat_calls: list = []
+
+    def fake_evaluate_with_llm(*, llm_metrics, parent_metric=None, **kwargs):
+        if parent_metric is not None:
+            parent_calls.append((parent_metric, list(llm_metrics)))
+            return (
+                {
+                    str(parent.id): {
+                        "type": "category",
+                        "metric_name": parent.name,
+                        "value": "Yes",
+                    }
+                },
+                0.1,
+            )
+        flat_calls.append(list(llm_metrics))
+        return {}, 0.1
+
+    monkeypatch.setattr(task_module, "evaluate_with_llm", fake_evaluate_with_llm)
+
+    scores, _eval_time = task_module._evaluate_llm_metrics_grouped(
+        transcription="hello",
+        llm_metrics=[child_yes, child_no],
+        ai_providers=[],
+        organization_id=org.id,
+        result_id="710099",
+        db=db_session,
+        evaluator=None,
+        agent=None,
+        persona=None,
+        scenario=None,
+    )
+
+    assert len(parent_calls) == 1
+    assert parent_calls[0][0].id == parent.id
+    assert {m.id for m in parent_calls[0][1]} == {child_yes.id, child_no.id}
+    assert flat_calls == []
+    assert str(parent.id) in scores
+    assert scores[str(parent.id)]["type"] == "category"

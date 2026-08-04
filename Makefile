@@ -1,4 +1,4 @@
-.PHONY: help install-dev check-pytest test test-docker-db test-unit test-integration test-phase1 test-file test-k test-sharding test-sharding-integration
+.PHONY: help install-dev check-pytest test test-parallel test-docker-db test-unit test-integration test-phase1 test-file test-k test-sharding test-sharding-integration
 
 PYTHON ?= python
 PYTEST ?= $(PYTHON) -m pytest
@@ -14,6 +14,7 @@ help: ## Show available make targets
 	@echo "Available targets:"
 	@echo "  make install-dev       - install project + dev dependencies"
 	@echo "  make test              - run all tests under tests/"
+	@echo "  make test-parallel     - run all tests with pytest-xdist (-n auto)"
 	@echo "  make test-docker-db    - run tests against running Docker Compose Postgres"
 	@echo "  make test-unit         - run unit tests (marker: unit)"
 	@echo "  make test-integration  - run integration tests (marker: integration)"
@@ -33,8 +34,19 @@ check-pytest:
 		exit 1; \
 	)
 
+check-pytest-xdist: check-pytest
+	@$(PYTHON) -c "import xdist" >/dev/null 2>&1 || ( \
+		echo "pytest-xdist is not installed in the current environment."; \
+		echo "Run: make install-dev"; \
+		echo "or:  $(PYTHON) -m pip install pytest-xdist"; \
+		exit 1; \
+	)
+
 test: check-pytest ## Run the full test suite
 	$(PYTEST) tests $(PYTEST_FLAGS) $(PYTEST_ARGS)
+
+test-parallel: check-pytest-xdist ## Run the full test suite in parallel (pytest-xdist)
+	$(PYTEST) tests $(PYTEST_FLAGS) -n auto --dist loadscope $(PYTEST_ARGS)
 
 test-docker-db: check-pytest ## Run tests against running Docker Compose Postgres
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" DATABASE_URL="$(TEST_DATABASE_URL)" \

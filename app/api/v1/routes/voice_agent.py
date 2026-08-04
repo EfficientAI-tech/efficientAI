@@ -14,13 +14,15 @@ from app.dependencies import get_organization_id, get_api_key
 from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
+ws_router = APIRouter(prefix="/voice-agent", tags=["voice-agent-media"])
 
 
-@router.websocket("/ws")
+@ws_router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
 ):
@@ -49,12 +51,26 @@ async def websocket_endpoint(
     )
 
     if not bearer_token and not api_key:
-        print("WebSocket connection rejected: No credentials provided")
+        from urllib.parse import parse_qs
+
+        raw_qs = websocket.scope.get("query_string", b"")
+        if isinstance(raw_qs, bytes):
+            raw_qs = raw_qs.decode("utf-8", errors="replace")
+        parsed = parse_qs(raw_qs)
+        bearer_token = bearer_token or (parsed.get("token") or parsed.get("access_token") or [None])[0]
+        api_key = api_key or (parsed.get("X-API-Key") or parsed.get("api_key") or [None])[0]
+
+    if not bearer_token and not api_key:
+        print(
+            f"[MEDIA-WS] rejected: no credentials (query_string_len="
+            f"{len(websocket.scope.get('query_string') or b'')})",
+            flush=True,
+        )
         await websocket.close(code=1008, reason="Authentication required")
         return
 
     await websocket.accept()
-    print("WebSocket connection accepted")
+    print("[MEDIA-WS] WebSocket connection accepted", flush=True)
 
     try:
         db = next(get_db())
@@ -201,6 +217,26 @@ async def websocket_endpoint(
             logger.warning(f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'")
             return None
 
+        def resolve_azure_endpoint_for_provider(provider: ModelProvider) -> str | None:
+            """Resolve Azure OpenAI endpoint URL from the org's AIProvider credential."""
+            from sqlalchemy import func
+
+            provider_value = provider.value if hasattr(provider, "value") else provider
+            ai_provider_rec = db.query(AIProvider).filter(
+                AIProvider.organization_id == organization_id,
+                AIProvider.provider == provider_value,
+                AIProvider.is_active == True,
+            ).first()
+            if not ai_provider_rec:
+                ai_provider_rec = db.query(AIProvider).filter(
+                    AIProvider.organization_id == organization_id,
+                    func.lower(AIProvider.provider) == provider_value.lower(),
+                    AIProvider.is_active == True,
+                ).first()
+            if not ai_provider_rec:
+                return None
+            return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
+
         # Determine which AI Provider to use (only needed for S2S/Gemini path)
         # Priority: 1) Agent's ai_provider_id, 2) Default Google
         ai_provider = None
@@ -270,6 +306,7 @@ async def websocket_endpoint(
                 model_name = voice_bundle.s2s_model
         
         # 2. Add Persona information (characteristics)
+        persona = None
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
@@ -441,6 +478,9 @@ async def websocket_endpoint(
         
         # Run the bot with the appropriate pipeline
         call_metadata = None
+        from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+        agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
         try:
             if use_voice_bundle_pipeline:
                 # Resolve per-provider keys for voice bundle
@@ -451,6 +491,13 @@ async def websocket_endpoint(
                 stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
                 tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
                 llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+                llm_endpoint_url = (
+                    resolve_azure_endpoint_for_provider(llm_provider)
+                    if llm_provider and (
+                        llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+                    ).lower() == "azure"
+                    else None
+                )
 
                 # If in bridge mode, we need to bridge test agent to Retell call
                 # For now, we'll run the voice bundle normally and note that bridging
@@ -476,9 +523,12 @@ async def websocket_endpoint(
                     evaluator_id=str(evaluator.id) if evaluator else None,
                     result_id=result_id,
                     voice_bundle=voice_bundle,
+                    persona=persona,
                     stt_api_key=stt_api_key,
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
+                    llm_endpoint_url=llm_endpoint_url,
+                    silence_hangup_secs=agent_silence_hangup_secs,
                 )
             else:
                 call_metadata = await run_bot(
@@ -492,6 +542,7 @@ async def websocket_endpoint(
                     evaluator_id=str(evaluator.id) if evaluator else None,
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
+                    silence_hangup_secs=agent_silence_hangup_secs,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
@@ -704,21 +755,21 @@ async def bot_connect(
             return None
         return token.strip()
 
-    # Bearer / access token: header, cookie, query param.
+    # Bearer / access token: header, query param, then cookie.
     bearer_token = (
         _extract_bearer(request.headers.get("Authorization"))
-        or request.cookies.get("access_token")
         or request.query_params.get("token")
         or request.query_params.get("access_token")
+        or request.cookies.get("access_token")
     )
 
-    # API key: header, cookie, query param.
+    # API key: header, query param, then cookie.
     api_key = (
         request.headers.get("X-API-Key")
         or request.headers.get("X-EFFICIENTAI-API-KEY")
-        or request.cookies.get("api_key")
         or request.query_params.get("X-API-Key")
         or request.query_params.get("api_key")
+        or request.cookies.get("api_key")
     )
 
     print(
@@ -892,28 +943,28 @@ async def bot_connect(
         
         print(f"[BACKEND] ✅ Voice bundle providers configured")
     
-    # Determine WebSocket protocol based on request
-    scheme = "wss" if request.url.scheme == "https" else "ws"
-    host = request.headers.get("host", f"localhost:{settings.PORT}")
-    base_url = f"{scheme}://{host}"
-
-    # The WebSocket endpoint accepts either a bearer token (?token=...) or an
-    # API key (?X-API-Key=...). Embed whichever credential authenticated this
-    # /connect request so the client doesn't need to re-supply it.
+    # Determine WebSocket URL — prefer dedicated media server when configured.
     from urllib.parse import quote
+
+    from app.services.media_urls import build_voice_agent_ws_url
+
     if bearer_token:
         ws_auth_query = f"token={quote(bearer_token, safe='')}"
     else:
         ws_auth_query = f"X-API-Key={quote(api_key or '', safe='')}"
-    ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?{ws_auth_query}"
 
-    # Append agent_id, persona_id and scenario_id if present
-    if agent_id:
-        ws_url += f"&agent_id={agent_id}"
-    if persona_id:
-        ws_url += f"&persona_id={persona_id}"
-    if scenario_id:
-        ws_url += f"&scenario_id={scenario_id}"
+    ws_url = build_voice_agent_ws_url(
+        auth_query=ws_auth_query,
+        agent_id=agent_id,
+        persona_id=persona_id,
+        scenario_id=scenario_id,
+        fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
+        fallback_scheme=(
+            request.headers.get("x-forwarded-proto")
+            or getattr(request.url, "scheme", "http")
+            or "http"
+        ),
+    )
     
     # Return the response in the format Pipecat expects
     # Pipecat expects a JSON response with ws_url field

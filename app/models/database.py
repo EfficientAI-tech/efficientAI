@@ -477,6 +477,8 @@ class Agent(Base):
     # Voice AI agent integration (Retell, Vapi, etc.)
     voice_ai_integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True, index=True)
     voice_ai_agent_id = Column(String, nullable=True)  # Agent ID from the external provider (Retell/Vapi)
+    prompt_variables = Column(JSON, nullable=True)
+    silence_hangup_secs = Column(Integer, nullable=False, server_default="15")
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -504,6 +506,13 @@ class Persona(Base):
     tts_voice_id = Column(String(255), nullable=True)
     tts_voice_name = Column(String(255), nullable=True)
     is_custom = Column(Boolean, default=False)
+    description = Column(Text, nullable=True)
+    tts_config = Column(JSON, nullable=True)
+    llm_temperature = Column(Float, nullable=True)
+    llm_max_tokens = Column(Integer, nullable=True)
+    response_delay_ms = Column(Integer, nullable=True)
+    max_turns = Column(Integer, nullable=True)
+    allow_interruptions = Column(Boolean, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -625,6 +634,9 @@ class AIProvider(Base):
 
     api_key = Column(String, nullable=False)  # Encrypted API key
     name = Column(String, nullable=True)  # Optional friendly name
+    # Azure OpenAI resource endpoint (e.g. https://my-resource.openai.azure.com).
+    # Only used when provider is azure; other providers ignore this column.
+    endpoint_url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     # Multiple AIProvider rows per (org, provider) are allowed. is_default
     # marks the row resolved when no explicit credential id is selected.
@@ -759,6 +771,37 @@ class TestAgentConversation(Base):
     created_by = Column(String, nullable=True)
 
 
+class EvaluatorSuite(Base):
+    """Evaluator suite — one agent + one persona + N scenario combinations."""
+
+    __tablename__ = "evaluator_suites"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    name = Column(String, nullable=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
+    metric_ids = Column(JSON, nullable=True)
+    llm_provider = Column(String, nullable=True)
+    llm_model = Column(String, nullable=True)
+    llm_config = Column(JSON, nullable=True)
+    tags = Column(JSON, nullable=True)
+    default_runs_per_combination = Column(Integer, nullable=False, default=1)
+    round_robin_index = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
 class Evaluator(Base):
     """Evaluator - Configuration for testing agents with specific persona and scenario combinations, or custom prompt evaluators."""
     __tablename__ = "evaluators"
@@ -779,6 +822,14 @@ class Evaluator(Base):
     # Display name (required for custom evaluators, optional for standard)
     name = Column(String, nullable=True)
     
+    # Parent suite (nullable for legacy/custom evaluators)
+    suite_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_suites.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # Standard evaluator configuration (nullable for custom evaluators)
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
     persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=True)
@@ -989,6 +1040,9 @@ class EvaluatorResult(Base):
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
     call_data = Column(JSON, nullable=True)  # Full call details from provider (like CallRecording)
     
+    # Data-plane shard routing (payload rows on shard DBs when sharding enabled)
+    shard_id = Column(String(64), nullable=True, index=True)
+    
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1031,8 +1085,43 @@ class CallRecording(Base):
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Reference to our agent
     
     # Link to EvaluatorResult for metric evaluations
-    evaluator_result_id = Column(UUID(as_uuid=True), ForeignKey("evaluator_results.id"), nullable=True, index=True)
+    evaluator_result_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_results.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     
+    shard_id = Column(String(64), nullable=True, index=True)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class EvaluatorResultPayload(Base):
+    """Heavy evaluator result fields stored on data shards when sharding is enabled."""
+
+    __tablename__ = "evaluator_result_payloads"
+
+    evaluator_result_id = Column(UUID(as_uuid=True), primary_key=True)
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    audio_s3_key = Column(String, nullable=True)
+    transcription = Column(String, nullable=True)
+    speaker_segments = Column(JSON, nullable=True)
+    metric_scores = Column(JSON, nullable=True)
+    call_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CallRecordingPayload(Base):
+    """Heavy call recording fields stored on data shards when sharding is enabled."""
+
+    __tablename__ = "call_recording_payloads"
+
+    call_recording_id = Column(UUID(as_uuid=True), primary_key=True)
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    call_data = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -1591,7 +1680,7 @@ class TelephonyPhoneNumber(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     telephony_integration_id = Column(
-        UUID(as_uuid=True), ForeignKey("telephony_integrations.id"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("telephony_integrations.id"), nullable=True, index=True
     )
 
     phone_number = Column(String(20), nullable=False, index=True)
@@ -1602,6 +1691,9 @@ class TelephonyPhoneNumber(Base):
     provider_app_id = Column(String(255), nullable=True)
 
     is_masking_pool = Column(Boolean, default=False, nullable=False)
+    inbound_enabled = Column(Boolean, default=True, nullable=False)
+    outbound_enabled = Column(Boolean, default=True, nullable=False)
+    source = Column(String(20), nullable=False, default="imported")
     agent_id = Column(
         UUID(as_uuid=True),
         ForeignKey(
@@ -1614,6 +1706,22 @@ class TelephonyPhoneNumber(Base):
         index=True,
     )
     is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TelephonyDialTarget(Base):
+    """Org-scoped saved destination numbers for outbound test calls."""
+
+    __tablename__ = "telephony_dial_targets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "phone_number", name="uq_telephony_dial_target_org_phone"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    phone_number = Column(String(20), nullable=False, index=True)
+    label = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

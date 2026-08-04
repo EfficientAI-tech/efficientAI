@@ -57,6 +57,14 @@ def test_litellm_model_name_maps_known_provider_prefixes():
         LLMService._litellm_model_name(ModelProvider.SARVAM, "sarvam-30b")
         == "sarvam/sarvam-30b"
     )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.AZURE, "azure-gpt-5-mini")
+        == "azure/gpt-5-mini"
+    )
+    assert (
+        LLMService._litellm_model_name(ModelProvider.AZURE, "azure-openai-gpt4")
+        == "azure/gpt-4"
+    )
 
 
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
@@ -241,3 +249,97 @@ def test_generate_response_wraps_litellm_errors(monkeypatch):
             organization_id=uuid4(),
             db=_mock_org_db(),
         )
+
+
+def test_build_azure_litellm_kwargs_from_provider_endpoint_url():
+    provider = SimpleNamespace(
+        name="Should Not Be Used",
+        endpoint_url="https://my-resource.openai.azure.com/",
+    )
+    kwargs, remaining, uses_v1 = llm_module._build_azure_litellm_kwargs(provider, None)
+
+    assert uses_v1 is True
+    assert kwargs["api_base"] == "https://my-resource.openai.azure.com/openai/v1"
+    assert "azure_endpoint" not in kwargs
+    assert remaining is None
+
+
+def test_build_azure_litellm_kwargs_from_provider_name():
+    provider = SimpleNamespace(name="https://my-resource.openai.azure.com/")
+    kwargs, remaining, uses_v1 = llm_module._build_azure_litellm_kwargs(provider, None)
+
+    assert uses_v1 is True
+    assert kwargs["api_base"] == "https://my-resource.openai.azure.com/openai/v1"
+    assert "azure_endpoint" not in kwargs
+    assert remaining is None
+
+
+def test_build_azure_litellm_kwargs_normalizes_v1_chat_completions_url():
+    provider = SimpleNamespace(
+        name="https://eaitest-resource.openai.azure.com/openai/v1/chat/completions"
+    )
+    kwargs, remaining, uses_v1 = llm_module._build_azure_litellm_kwargs(provider, None)
+
+    assert uses_v1 is True
+    assert kwargs["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
+    assert "azure_endpoint" not in kwargs
+    assert remaining is None
+
+
+def test_build_azure_litellm_kwargs_from_config():
+    kwargs, remaining, uses_v1 = llm_module._build_azure_litellm_kwargs(
+        None,
+        {
+            "azure_endpoint": "https://foundry.example.com",
+            "api_version": "2024-10-21",
+            "temperature": 0.2,
+        },
+    )
+
+    assert uses_v1 is False
+    assert kwargs["api_base"] == "https://foundry.example.com"
+    assert kwargs["azure_endpoint"] == "https://foundry.example.com"
+    assert kwargs["api_version"] == "2024-10-21"
+    assert remaining == {"temperature": 0.2}
+
+
+def test_generate_response_azure_foundry_uses_openai_v1_routing(monkeypatch):
+    service = LLMService()
+    provider = SimpleNamespace(
+        api_key="encrypted-key",
+        endpoint_url="https://eaitest-resource.openai.azure.com",
+        name="Azure Test",
+    )
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: provider)
+
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(encryption_module, "decrypt_api_key", lambda value: "azure-api-key")
+
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="azure ok"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+
+    result = service.generate_response(
+        messages=[{"role": "user", "content": "hello"}],
+        llm_provider=ModelProvider.AZURE,
+        llm_model="azure-gpt-5-mini",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+    )
+
+    assert result["text"] == "azure ok"
+    assert captured["model"] == "openai/gpt-5-mini"
+    assert captured["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
+    assert "azure_endpoint" not in captured

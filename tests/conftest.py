@@ -10,7 +10,8 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -19,10 +20,29 @@ from sqlalchemy.pool import StaticPool
 os.environ["ALLOWED_AUDIO_FORMATS"] = '["wav","mp3","flac","m4a"]'
 # Ensure storage service singletons can initialize in test environments.
 os.environ["UPLOAD_DIR"] = "/tmp/efficientai-test-uploads"
+# Local dev often sets SERVICE_MODE=media and config.yml media URLs; keep API tests on full app mode.
+os.environ["SERVICE_MODE"] = "api"
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC_ROOT = _REPO_ROOT / "src"
+for _path in (str(_REPO_ROOT), str(_SRC_ROOT)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 _TASKS_PACKAGE_DIR = str(
     Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks"
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_mode_for_app_factory(monkeypatch):
+    """Prevent local SERVICE_MODE / media URL config from breaking create_app tests."""
+    from app.config import settings
+
+    monkeypatch.setenv("SERVICE_MODE", "api")
+    monkeypatch.setattr(settings, "SERVICE_MODE", "api", raising=False)
+    monkeypatch.setattr(settings, "MEDIA_WS_BASE_URL", "", raising=False)
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -69,52 +89,174 @@ def org_id():
 
 
 @pytest.fixture
+def seed_org(db_session, org_id):
+    from app.models.database import Organization
+
+    org = db_session.query(Organization).filter(Organization.id == org_id).first()
+    if org is None:
+        org = Organization(id=org_id, name="Test Org")
+        db_session.add(org)
+        db_session.commit()
+    return org
+
+
+@pytest.fixture
+def default_workspace(db_session, org_id, seed_org):
+    from app.models.database import Workspace
+
+    ws = (
+        db_session.query(Workspace)
+        .filter(
+            Workspace.organization_id == org_id,
+            Workspace.is_default.is_(True),
+        )
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+        db_session.add(ws)
+        db_session.commit()
+        db_session.refresh(ws)
+    return ws
+
+
+@pytest.fixture
 def api_key():
     """Stable API key for authenticated test clients."""
     return "test_api_key_123"
 
 
-@pytest.fixture
-def test_engine():
+def _xdist_worker_id(worker_id: str) -> str | None:
+    """Return the xdist worker suffix (``gw0``), or None for serial runs."""
+    if worker_id in ("master", "main"):
+        return None
+    return worker_id
+
+
+def _worker_database_url(base_url: str, worker_id: str) -> str:
+    """Give each xdist worker its own Postgres database to avoid DDL races."""
+    suffix = _xdist_worker_id(worker_id)
+    if suffix is None:
+        return base_url
+    parsed = make_url(base_url)
+    db_name = parsed.database or "efficientai_test"
+    return parsed.set(database=f"{db_name}_{suffix}").render_as_string(
+        hide_password=False
+    )
+
+
+def _ensure_postgres_database(admin_url: str, database_name: str) -> None:
+    """Create ``database_name`` if missing (connects via the admin database)."""
+    admin = make_url(admin_url).set(database="postgres")
+    bootstrap = create_engine(admin, isolation_level="AUTOCOMMIT")
+    try:
+        with bootstrap.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": database_name},
+            ).scalar()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{database_name}"'))
+    finally:
+        bootstrap.dispose()
+
+
+def _postgres_engine_kwargs(*, parallel: bool) -> dict:
+    if parallel:
+        # Many xdist workers × large pools exhaust Postgres connection limits.
+        return {"pool_pre_ping": True, "pool_size": 1, "max_overflow": 2}
+    return {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 10}
+
+
+def _bind_runtime_database_url(database_url: str) -> None:
+    """Keep SessionLocal/db_pool_manager on the same DB as the test engine."""
+    os.environ["TEST_DATABASE_URL"] = database_url
+    os.environ["DATABASE_URL"] = database_url
+    from app.config import settings
+
+    settings.DATABASE_URL = database_url
+
+
+@pytest.fixture(scope="session")
+def test_engine(worker_id):
     """
     Database engine used for tests.
     Defaults to in-memory SQLite for local speed, but can use a real database
     when TEST_DATABASE_URL is provided (for CI/Postgres validation).
-    """
-    test_database_url = os.getenv("TEST_DATABASE_URL", "").strip()
+    Schema is created once per test session and torn down at the end.
 
-    if test_database_url:
-        engine = create_engine(test_database_url, pool_pre_ping=True)
+    With pytest-xdist, each worker gets its own Postgres database
+    (``…_gw0``, ``…_gw1``, …) so parallel ``create_all()`` calls do not race
+    on shared ENUM types.
+    """
+    from app.database import Base
+
+    import app.models.database  # noqa: F401
+
+    base_database_url = os.getenv("TEST_DATABASE_URL", "").strip()
+    parallel_postgres = bool(base_database_url and _xdist_worker_id(worker_id))
+
+    if base_database_url:
+        database_url = _worker_database_url(base_database_url, worker_id)
+        parsed = make_url(database_url)
+        if parsed.drivername.startswith("postgresql"):
+            _ensure_postgres_database(base_database_url, parsed.database)
+        _bind_runtime_database_url(database_url)
+        engine = create_engine(
+            database_url,
+            **_postgres_engine_kwargs(parallel=parallel_postgres),
+        )
+        drop_schema_on_teardown = not parallel_postgres
     else:
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
-    return engine
+        drop_schema_on_teardown = True
+
+    Base.metadata.create_all(bind=engine)
+    try:
+        yield engine
+    finally:
+        if drop_schema_on_teardown:
+            Base.metadata.drop_all(bind=engine)
+        engine.dispose()
 
 
 @pytest.fixture
 def db_session(test_engine):
-    """Create a transaction-scoped SQLAlchemy session for a test."""
-    from app.database import Base
-
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-    Base.metadata.create_all(bind=test_engine)
+    """Transaction-scoped SQLAlchemy session; rolls back after each test."""
+    connection = test_engine.connect()
+    transaction = connection.begin()
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=connection)
     session = TestingSessionLocal()
+    nested = connection.begin_nested()
+
+    @event.listens_for(session, "after_transaction_end")
+    def _restart_savepoint(sess, trans):  # noqa: ARG001
+        nonlocal nested
+        if trans.nested and not trans._parent.nested:
+            nested = connection.begin_nested()
+
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=test_engine)
+        transaction.rollback()
+        connection.close()
 
 
-@pytest.fixture
-def client(db_session, api_key, org_id):
-    """
-    FastAPI client with DB/auth dependency overrides and no startup lifespan.
-    This avoids running migrations in test bootstrap.
-    """
+_SESSION_API_APP = None
+_SESSION_STUBS_READY = False
+
+
+def _install_static_stubs():
     if "python_multipart" not in sys.modules:
         fake_python_multipart = types.ModuleType("python_multipart")
         fake_python_multipart.__version__ = "0.0.20"
@@ -255,6 +397,7 @@ def client(db_session, api_key, org_id):
 
         fake_model_config_module.model_config_service = _FakeModelConfigService()
         fake_llm_module.llm_service = _FakeLLMService()
+        fake_llm_module._resolve_azure_endpoint_from_provider = lambda *_args, **_kwargs: None
         fake_transcription_module.transcription_service = _FakeTranscriptionService()
         fake_ai_pkg.model_config_service = fake_model_config_module
         fake_ai_pkg.llm_service = fake_llm_module
@@ -305,8 +448,11 @@ def client(db_session, api_key, org_id):
         sys.modules["app.services.voice_providers"] = fake_voice_providers_module
 
     if "app.services.voice_agent.bot_fast_api" not in sys.modules:
+        voice_agent_dir = str(
+            Path(__file__).resolve().parents[1] / "app" / "services" / "voice_agent"
+        )
         fake_voice_agent_pkg = types.ModuleType("app.services.voice_agent")
-        fake_voice_agent_pkg.__path__ = []
+        fake_voice_agent_pkg.__path__ = [voice_agent_dir]
         fake_bot_fast_api_module = types.ModuleType("app.services.voice_agent.bot_fast_api")
         fake_voice_bundle_module = types.ModuleType("app.services.voice_agent.voice_bundle")
         fake_bot_fast_api_module.run_bot = lambda *_args, **_kwargs: None
@@ -363,8 +509,7 @@ def client(db_session, api_key, org_id):
         sys.modules["app.workers.tasks.run_prompt_optimization"] = fake_run_prompt_opt_module
 
     class _FakePromptOptTask:
-        @staticmethod
-        def delay(*_args, **_kwargs):
+        def delay(self, *_args, **_kwargs):
             class _TaskResult:
                 id = "fake-prompt-opt-task-id"
 
@@ -419,7 +564,12 @@ def client(db_session, api_key, org_id):
     fake_celery_app_module.process_call_import_row_task = _FakePromptOptTask()
     fake_celery_app_module.run_judge_alignment_task = _FakePromptOptTask()
     sys.modules["app.workers.celery_app"] = fake_celery_app_module
+    import importlib
 
+    workers_pkg = importlib.import_module("app.workers")
+    workers_pkg.celery_app = fake_celery_app_module
+
+def _wire_bulk_ops_stubs(db_session):
     # Bulk call-import tasks: materialize runs synchronously in API tests;
     # diarize/delete are no-ops (return immediately).
     fake_bulk_ops_module = sys.modules.get("app.workers.tasks.call_import_bulk_ops")
@@ -541,6 +691,7 @@ def client(db_session, api_key, org_id):
         delay=_sync_cancel_delay
     )
 
+def _install_concurrency_stubs():
     fake_fair_dispatch_module = sys.modules.get("app.workers.concurrency.fair_dispatch")
     if fake_fair_dispatch_module is None:
         fake_fair_dispatch_module = types.ModuleType(
@@ -629,18 +780,8 @@ def client(db_session, api_key, org_id):
     if not hasattr(fake_eval_dispatch_module, "schedule_evaluation_dispatch"):
         fake_eval_dispatch_module.schedule_evaluation_dispatch = lambda *_a, **_kw: None
 
-    from app.database import get_db
-    from app.dependencies import (
-        get_api_key,
-        get_organization_id,
-        get_workspace_context,
-        get_workspace_id,
-        require_enterprise_feature,
-        WorkspaceContext,
-    )
-    from app.core.auth.capabilities import ALL_CAPABILITIES
-    from app.models.database import Organization, OrganizationMember, RoleEnum, User, Workspace, APIKey
-    from app.services.workspace_rbac import backfill_org_workspace_memberships, seed_system_workspace_roles
+
+def _build_session_api_app():
     import app.dependencies as app_dependencies
     from app.api.v1.routes import (
         aiproviders,
@@ -660,6 +801,7 @@ def client(db_session, api_key, org_id):
         evaluations,
         evaluator_results,
         evaluators,
+        evaluator_suites,
         iam,
         integrations,
         manual_evaluations,
@@ -679,6 +821,7 @@ def client(db_session, api_key, org_id):
         voice_agent,
         voice_playground,
         voicebundles,
+        vobiz_telephony,
         workspaces,
         workspace_iam,
     )
@@ -689,6 +832,7 @@ def client(db_session, api_key, org_id):
     app.include_router(results.router, prefix="/api/v1")
     app.include_router(agents.router, prefix="/api/v1")
     app.include_router(evaluators.router, prefix="/api/v1")
+    app.include_router(evaluator_suites.router, prefix="/api/v1")
     app.include_router(personas.router, prefix="/api/v1")
     app.include_router(scenarios.router, prefix="/api/v1")
     app.include_router(settings.router, prefix="/api/v1")
@@ -716,12 +860,54 @@ def client(db_session, api_key, org_id):
     app.include_router(voice_agent.router, prefix="/api/v1")
     app.include_router(voice_playground.router, prefix="/api/v1")
     app.include_router(telephony.router, prefix="/api/v1")
+    app.include_router(vobiz_telephony.router, prefix="/api/v1")
     app.include_router(call_imports.router, prefix="/api/v1")
     app.include_router(call_import_schemas.router, prefix="/api/v1")
     app.include_router(call_import_tags.router, prefix="/api/v1")
     app.include_router(call_import_evaluations.router, prefix="/api/v1")
     app.include_router(workspaces.router, prefix="/api/v1")
     app.include_router(workspace_iam.router, prefix="/api/v1")
+    # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
+    # Force-enable it for API tests so tests remain focused on route behavior.
+    app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True
+
+    @asynccontextmanager
+    async def _noop_lifespan(_: object):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
+    return app
+
+@pytest.fixture
+def client(db_session, api_key, org_id):
+    """
+    FastAPI client with DB/auth dependency overrides and no startup lifespan.
+    This avoids running migrations in test bootstrap.
+    """
+    global _SESSION_API_APP, _SESSION_STUBS_READY
+
+    if not _SESSION_STUBS_READY:
+        _install_static_stubs()
+        _install_concurrency_stubs()
+        _SESSION_API_APP = _build_session_api_app()
+        _SESSION_STUBS_READY = True
+
+    _wire_bulk_ops_stubs(db_session)
+
+    from app.database import get_db
+    from app.dependencies import (
+        get_api_key,
+        get_organization_id,
+        get_workspace_context,
+        get_workspace_id,
+        require_enterprise_feature,
+        WorkspaceContext,
+    )
+    from app.core.auth.capabilities import ALL_CAPABILITIES
+    from app.models.database import Organization, Workspace
+    from app.services.workspace_rbac import backfill_org_workspace_memberships, seed_system_workspace_roles
+
+    app = _SESSION_API_APP
 
     def _override_workspace_context() -> WorkspaceContext:
         return WorkspaceContext(
@@ -730,18 +916,6 @@ def client(db_session, api_key, org_id):
             capabilities=frozenset(ALL_CAPABILITIES),
             is_org_admin=True,
         )
-
-    # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
-    # Force-enable it for API tests so tests remain focused on route behavior.
-    app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True
-
-    def _override_get_db():
-        yield db_session
-
-    @asynccontextmanager
-    async def _noop_lifespan(_: object):
-        yield
-
     # The TestClient flow doesn't run migration 033, so we manually
     # ensure the test org has a Default workspace before any route
     # that depends on ``get_workspace_id`` runs. This mirrors what the
@@ -779,13 +953,47 @@ def client(db_session, api_key, org_id):
     default_workspace = _ensure_default_workspace()
     backfill_org_workspace_memberships(db_session, organization_id=org_id)
 
-    app.router.lifespan_context = _noop_lifespan
+    def _override_get_db():
+        yield db_session
+
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_api_key] = lambda: api_key
     app.dependency_overrides[get_organization_id] = lambda: org_id
     app.dependency_overrides[get_workspace_id] = lambda: default_workspace.id
     app.dependency_overrides[get_workspace_context] = _override_workspace_context
     app.dependency_overrides[require_enterprise_feature] = lambda: None
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def telephony_client(db_session):
+    """Telephony edge TestClient (Vobiz carrier webhooks + media WebSocket routes only)."""
+    from contextlib import asynccontextmanager
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.v1.routes import vobiz_telephony
+    from app.database import get_db
+
+    app = FastAPI()
+
+    @asynccontextmanager
+    async def _noop_lifespan(_: object):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
+    app.include_router(vobiz_telephony.webhook_router, prefix="/api/v1")
+    app.include_router(vobiz_telephony.ws_router, prefix="/api/v1")
+
+    def _override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_get_db
 
     with TestClient(app) as test_client:
         yield test_client

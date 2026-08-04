@@ -21,6 +21,7 @@ from app.api.v1.routes import (
     conversation_evaluations,
     voice_agent,
     evaluators,
+    evaluator_suites,
     metrics,
     evaluator_results,
     chat,
@@ -34,6 +35,7 @@ from app.api.v1.routes import (
     prompt_partials,
     prompt_optimization,
     telephony,
+    vobiz_telephony,
     call_imports,
     call_import_schemas,
     call_import_tags,
@@ -67,6 +69,7 @@ api_router.include_router(test_agents.router)
 api_router.include_router(conversation_evaluations.router)
 api_router.include_router(voice_agent.router)
 api_router.include_router(evaluators.router)
+api_router.include_router(evaluator_suites.router)
 api_router.include_router(metrics.router)
 api_router.include_router(evaluator_results.router)
 api_router.include_router(chat.router)
@@ -80,6 +83,7 @@ api_router.include_router(public_blind_test.router)
 api_router.include_router(prompt_partials.router)
 api_router.include_router(prompt_optimization.router)
 api_router.include_router(telephony.router)
+api_router.include_router(vobiz_telephony.router)
 api_router.include_router(call_imports.router)
 api_router.include_router(call_import_schemas.router)
 api_router.include_router(call_import_tags.router)

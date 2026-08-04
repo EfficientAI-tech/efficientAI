@@ -107,6 +107,7 @@ class TelephonyProvider(str, enum.Enum):
     """Telephony provider enumeration - extensible for future providers."""
     PLIVO = "plivo"
     EXOTEL = "exotel"
+    VOBIZ = "vobiz"
 
 
 class CredentialRoutingMode(str, enum.Enum):

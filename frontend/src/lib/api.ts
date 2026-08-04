@@ -1,5 +1,10 @@
 import axios, { AxiosInstance } from 'axios'
 import type {
+  GenerateScenariosFromPromptParams,
+  GenerateTestPromptParams,
+  GenerateTestSetupParams,
+} from '../types/agentTestSetupGeneration'
+import type {
   AudioFile,
   Evaluation,
   EvaluationCreate,
@@ -27,6 +32,7 @@ import type {
   CallImportDetail,
   CallImportListResponse,
   CallImportRow,
+  ObservabilityCall,
   CallImportSchema,
   CallImportSchemaCreate,
   CallImportSchemaListResponse,
@@ -45,11 +51,16 @@ import type {
   CallImportEvaluationBulkActionResponse,
   CallImportEvaluationAggregateResponse,
   CallImportInsightsResponse,
+  EvaluatorResultListResponse,
+  EvaluatorResultsOverviewResponse,
+  EvaluatorResultsAggregateResponse,
+  ListEvaluatorResultsParams,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
   CallImportRetryFailedRowsResponse,
   Workspace,
   LLMGenerationConfig,
+  TestAgent,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -259,9 +270,153 @@ export interface TelephonyPhoneNumberResponse {
   number_type?: string | null
   capabilities?: Record<string, any> | null
   is_masking_pool: boolean
+  inbound_enabled?: boolean
+  outbound_enabled?: boolean
+  source?: string
   agent_id?: string | null
+  linked_agent_name?: string | null
+  provider?: string | null
   is_active: boolean
   created_at: string
+}
+
+export interface TelephonyAvailableNumber {
+  e164: string
+  provider_number_id?: string | null
+  country?: string | null
+  region?: string | null
+  capabilities?: Record<string, any> | null
+  status?: string | null
+  application_id?: string | null
+  already_imported: boolean
+  imported_number_id?: string | null
+}
+
+export interface TelephonyImportNumberResult {
+  number: string
+  success: boolean
+  message: string
+  answer_url: string
+  webhook_configured?: boolean | null
+  imported_number_id?: string | null
+  application_id?: string | null
+}
+
+export interface TelephonyImportNumbersResponse {
+  provider: string
+  results: TelephonyImportNumberResult[]
+  answer_url: string
+}
+
+/** @deprecated Use TelephonyAvailableNumber */
+export type VobizAvailableNumber = TelephonyAvailableNumber
+
+/** @deprecated Use TelephonyImportNumbersResponse */
+export type VobizImportNumbersResponse = TelephonyImportNumbersResponse
+
+/** @deprecated Use TelephonyImportNumberResult */
+export type VobizImportNumberResult = TelephonyImportNumberResult
+
+export interface PlatformOutboundPoolNumber {
+  phone_number: string
+  provider: string
+}
+
+export interface PlatformOutboundPoolResponse {
+  numbers: PlatformOutboundPoolNumber[]
+  max_concurrent_per_org: number
+  shared_across_orgs: boolean
+}
+
+/** @deprecated Use PlatformOutboundPoolResponse */
+export type VobizOutboundPoolResponse = PlatformOutboundPoolResponse
+
+export interface VobizOutboundCallRequest {
+  to_number: string
+  agent_id: string
+  from_number?: string
+  persona_id?: string
+  scenario_id?: string
+  evaluator_id?: string
+}
+
+export interface TelephonyDialTargetResponse {
+  id: string
+  phone_number: string
+  label?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface VobizOutboundCallResponse {
+  provider_request_uuid: string
+  call_status: string
+  from_number: string
+  to_number: string
+  call_ref: string
+  call_short_id?: string
+  message: string
+}
+
+export interface EvaluatorSuiteCombination {
+  id: string
+  evaluator_id: string
+  scenario_id: string
+  scenario_name?: string | null
+  scenario_description?: string | null
+  scenario_required_info?: Record<string, unknown> | null
+}
+
+export interface EvaluatorSuite {
+  id: string
+  organization_id: string
+  name?: string | null
+  agent_id: string
+  persona_id: string
+  agent_name?: string | null
+  persona_name?: string | null
+  agent_call_type?: string | null
+  agent_call_medium?: string | null
+  metric_ids?: string[] | null
+  llm_provider?: string | null
+  llm_model?: string | null
+  tags?: string[] | null
+  default_runs_per_combination: number
+  round_robin_index: number
+  is_active: boolean
+  agent_suite_count: number
+  combination_count: number
+  combinations: EvaluatorSuiteCombination[]
+  created_at: string
+  updated_at: string
+}
+
+export interface RunEvaluatorSuiteResponse {
+  total_runs: number
+  task_ids: string[]
+  evaluator_results: any[]
+  phone_call_refs: string[]
+}
+
+export interface RunNextCombinationResponse {
+  evaluator_id: string
+  scenario_id: string
+  scenario_name: string
+  combination_index: number
+  next_index: number
+  evaluator_result_id?: string | null
+  result_id?: string | null
+  task_id?: string | null
+  phone_call_ref?: string | null
+  call_short_id?: string | null
+}
+
+export interface ChooseNextCombinationResponse {
+  evaluator_id: string
+  scenario_id: string
+  scenario_name: string
+  combination_index: number
+  next_index: number
 }
 
 type TTSReportOptionsPayload = {
@@ -291,8 +446,11 @@ type TTSReportOptionsPayload = {
 
 // When running in production (served from same origin), use relative path
 // Otherwise use environment variable or default
-const API_BASE_URL = import.meta.env.VITE_API_URL ||
+export const apiBaseUrl =
+  import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
+
+const API_BASE_URL = apiBaseUrl
 
 let refreshPromise: Promise<string | null> | null = null
 
@@ -752,6 +910,8 @@ class ApiClient {
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string
+    provider_prompt?: string | null
+    silence_hangup_secs?: number
   }): Promise<any> {
     const response = await this.client.post('/api/v1/agents', data)
     return response.data
@@ -764,24 +924,42 @@ class ApiClient {
     return response.data
   }
 
-  async getAgent(agentId: string): Promise<any> {
+  async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
+    return response.data
+  }
+
+  async checkAgentPhoneAssignment(params: {
+    phoneNumber?: string
+    telephonyPhoneNumberId?: string
+    excludeAgentId?: string
+  }): Promise<import('../types/api').AgentPhoneAssignmentCheckResponse> {
+    const response = await this.client.get('/api/v1/agents/check-phone-assignment', {
+      params: {
+        phone_number: params.phoneNumber,
+        telephony_phone_number_id: params.telephonyPhoneNumberId,
+        exclude_agent_id: params.excludeAgentId,
+      },
+    })
     return response.data
   }
 
   async updateAgent(agentId: string, data: {
     name?: string
-    phone_number?: string
+    phone_number?: string | null
     telephony_phone_number_id?: string | null
     language?: string
     description?: string | null
     call_type?: string
     call_medium?: string
-    voice_bundle_id?: string
+    silence_hangup_secs?: number
+    voice_bundle_id?: string | null
     ai_provider_id?: string
-    voice_ai_integration_id?: string
-    voice_ai_agent_id?: string
-  }): Promise<any> {
+    voice_ai_integration_id?: string | null
+    voice_ai_agent_id?: string | null
+    provider_prompt?: string | null
+    prompt_variables?: Record<string, string>
+  }): Promise<TestAgent> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
   }
@@ -809,8 +987,47 @@ class ApiClient {
     format_style?: string
     provider?: string
     model?: string
+    agent_id?: string
+    include_linked_scenarios?: boolean
+    append_scenarios_to_output?: boolean
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/agents/generate-description', data)
+    return response.data
+  }
+
+  async generateTestPromptFromProduction(
+    data: GenerateTestPromptParams,
+  ): Promise<{
+    sections: Array<{ key: string; title: string; content: string }>
+    test_agent_prompt: string
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/agents/generate-test-prompt', data)
+    return response.data
+  }
+
+  async generateScenariosFromPrompt(
+    data: GenerateScenariosFromPromptParams,
+  ): Promise<{
+    scenarios: Array<{ name: string; description: string; goal?: string | null }>
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/agents/generate-scenarios-from-prompt', data)
+    return response.data
+  }
+
+  async generateTestSetupFromProduction(
+    data: GenerateTestSetupParams,
+  ): Promise<{
+    sections: Array<{ key: string; title: string; content: string }>
+    test_agent_prompt: string
+    scenarios: Array<{ name: string; description: string; goal?: string | null }>
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/agents/generate-test-setup', data)
     return response.data
   }
 
@@ -834,6 +1051,13 @@ class ApiClient {
     tts_voice_id?: string
     tts_voice_name?: string
     is_custom?: boolean
+    description?: string
+    tts_config?: Record<string, unknown>
+    llm_temperature?: number
+    llm_max_tokens?: number
+    response_delay_ms?: number
+    max_turns?: number
+    allow_interruptions?: boolean
   }): Promise<any> {
     const response = await this.client.post('/api/v1/personas', data)
     return response.data
@@ -858,6 +1082,36 @@ class ApiClient {
 
   async seedDemoData(): Promise<any> {
     const response = await this.client.post('/api/v1/personas/seed-data')
+    return response.data
+  }
+
+  async getPersonaAgentPromptSources(agentId: string): Promise<{
+    agent_id: string
+    agent_name: string
+    test_agent_prompt: string
+    agent_prompt: string
+  }> {
+    const response = await this.client.get(`/api/v1/personas/agent-prompt-sources/${agentId}`)
+    return response.data
+  }
+
+  async generatePersonaPrompt(data: {
+    agent_id: string
+    source?: 'test_agent' | 'agent' | 'auto'
+    persona_name?: string
+    persona_gender?: string
+    additional_context?: string
+    provider?: string
+    model?: string
+    credential_id?: string
+    llm_config?: LLMGenerationConfig | null
+  }): Promise<{
+    persona_prompt: string
+    source_used: string
+    provider: string
+    model: string
+  }> {
+    const response = await this.client.post('/api/v1/personas/generate-prompt', data)
     return response.data
   }
 
@@ -917,9 +1171,9 @@ class ApiClient {
   }
 
   // Scenarios endpoints
-  async listScenarios(skip = 0, limit = 100): Promise<any[]> {
+  async listScenarios(skip = 0, limit = 100, agentId?: string): Promise<any[]> {
     const response = await this.client.get('/api/v1/scenarios', {
-      params: { skip, limit },
+      params: { skip, limit, ...(agentId ? { agent_id: agentId } : {}) },
     })
     return response.data
   }
@@ -1157,6 +1411,17 @@ class ApiClient {
     return response.data
   }
 
+  async previewIntegrationAgentPrompt(
+    integrationId: string,
+    voiceAiAgentId: string,
+  ): Promise<{ provider_prompt: string }> {
+    const response = await this.client.post(
+      `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
+      { voice_ai_agent_id: voiceAiAgentId },
+    )
+    return response.data
+  }
+
   async createIntegration(data: IntegrationCreate): Promise<Integration> {
     const response = await this.client.post('/api/v1/integrations', data)
     return response.data
@@ -1225,6 +1490,91 @@ class ApiClient {
       params: provider ? { provider } : undefined,
     })
     return response.data
+  }
+
+  async listAvailableTelephonyNumbers(
+    provider: string,
+    credentialId?: string,
+  ): Promise<TelephonyAvailableNumber[]> {
+    const response = await this.client.get('/api/v1/telephony/numbers/available', {
+      params: {
+        provider,
+        ...(credentialId ? { credential_id: credentialId } : {}),
+      },
+    })
+    return response.data
+  }
+
+  async importTelephonyNumbers(
+    provider: string,
+    numbers: string[],
+    agentId?: string,
+    credentialId?: string,
+  ): Promise<TelephonyImportNumbersResponse> {
+    const response = await this.client.post('/api/v1/telephony/numbers/import', {
+      provider,
+      numbers,
+      agent_id: agentId || undefined,
+      credential_id: credentialId || undefined,
+    })
+    return response.data
+  }
+
+  async listVobizAvailableNumbers(): Promise<TelephonyAvailableNumber[]> {
+    return this.listAvailableTelephonyNumbers('vobiz')
+  }
+
+  async importVobizNumbers(numbers: string[], agentId?: string): Promise<TelephonyImportNumbersResponse> {
+    return this.importTelephonyNumbers('vobiz', numbers, agentId)
+  }
+
+  async deleteTelephonyNumber(numberId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/numbers/${numberId}`)
+  }
+
+  async deleteImportedVobizNumber(numberId: string): Promise<void> {
+    await this.deleteTelephonyNumber(numberId)
+  }
+
+  async listTelephonyOutboundPool(): Promise<PlatformOutboundPoolResponse> {
+    const response = await this.client.get('/api/v1/telephony/outbound-pool')
+    return response.data
+  }
+
+  async listVobizOutboundPool(): Promise<PlatformOutboundPoolResponse> {
+    return this.listTelephonyOutboundPool()
+  }
+
+  async listTelephonyDialTargets(): Promise<TelephonyDialTargetResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/dial-targets')
+    return response.data
+  }
+
+  async createVobizOutboundCall(data: VobizOutboundCallRequest): Promise<VobizOutboundCallResponse> {
+    const response = await this.client.post('/api/v1/telephony/vobiz/calls/outbound', data)
+    return response.data
+  }
+
+  async listDialTargets(): Promise<TelephonyDialTargetResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/dial-targets')
+    return response.data
+  }
+
+  async createDialTarget(data: { phone_number: string; label?: string }): Promise<TelephonyDialTargetResponse> {
+    const response = await this.client.post('/api/v1/telephony/dial-targets', data)
+    return response.data
+  }
+
+  async updateDialTarget(
+    targetId: string,
+    data: { phone_number?: string; label?: string },
+  ): Promise<TelephonyDialTargetResponse> {
+    const response = await this.client.put(`/api/v1/telephony/dial-targets/${targetId}`, data)
+    return response.data
+  }
+
+  async deleteDialTarget(targetId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/dial-targets/${targetId}`)
   }
 
   // Data Sources endpoints
@@ -2616,7 +2966,7 @@ class ApiClient {
     return response.data
   }
 
-  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }> {
+  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]>; tts_sample_rates?: number[] }> {
     const response = await this.client.get(`/api/v1/model-config/providers/${provider}/options`)
     const data = response.data
     // Ensure s2s and tts_voices are always present (for backward compatibility)
@@ -2927,16 +3277,51 @@ class ApiClient {
   }
 
   // Observability endpoints
-  async listObservabilityCalls(skip = 0, limit = 100): Promise<any[]> {
+  async listObservabilityCalls(skip = 0, limit = 100): Promise<ObservabilityCall[]> {
     const response = await this.client.get('/api/v1/observability/calls', {
       params: { skip, limit },
     })
     return response.data
   }
 
-  async getObservabilityCall(callShortId: string): Promise<any> {
+  private buildAuthenticatedApiUrl(path: string): string {
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`
+    const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
+    const url = configuredBase
+      ? new URL(`${configuredBase}${normalizedPath}`)
+      : new URL(normalizedPath, window.location.origin)
+
+    const accessToken = localStorage.getItem('accessToken')
+    const apiKey = localStorage.getItem('apiKey')
+    const workspaceId = localStorage.getItem('activeWorkspaceId')
+    if (accessToken) {
+      url.searchParams.set('token', accessToken)
+    } else if (apiKey) {
+      url.searchParams.set('api_key', apiKey)
+    }
+    if (workspaceId) {
+      url.searchParams.set('workspace_id', workspaceId)
+    }
+    return url.toString()
+  }
+
+  async getObservabilityCall(callShortId: string): Promise<ObservabilityCall> {
     const response = await this.client.get(`/api/v1/observability/calls/${callShortId}`)
     return response.data
+  }
+
+  getObservabilityCallLiveEventsUrl(callShortId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/observability/calls/${callShortId}/live-events`,
+    )
+  }
+
+  async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/observability/calls/${callShortId}/audio`,
+      { responseType: 'blob' },
+    )
+    return URL.createObjectURL(response.data)
   }
 
   async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {
@@ -3017,6 +3402,90 @@ class ApiClient {
 
   async runEvaluators(evaluatorIds: string[]): Promise<{ task_ids: string[]; evaluator_results: any[] }> {
     const response = await this.client.post('/api/v1/evaluators/run', { evaluator_ids: evaluatorIds })
+    return response.data
+  }
+
+  async createEvaluatorSuite(data: {
+    name?: string
+    agent_id: string
+    persona_id: string
+    scenario_ids: string[]
+    metric_ids?: string[]
+    llm_provider?: string
+    llm_model?: string
+    tags?: string[]
+    default_runs_per_combination?: number
+  }): Promise<EvaluatorSuite> {
+    const response = await this.client.post('/api/v1/evaluator-suites', data)
+    return response.data
+  }
+
+  async listEvaluatorSuites(): Promise<EvaluatorSuite[]> {
+    const response = await this.client.get('/api/v1/evaluator-suites')
+    return response.data
+  }
+
+  async getEvaluatorSuite(suiteId: string): Promise<EvaluatorSuite> {
+    const response = await this.client.get(`/api/v1/evaluator-suites/${suiteId}`)
+    return response.data
+  }
+
+  async updateEvaluatorSuite(
+    suiteId: string,
+    data: {
+      name?: string
+      metric_ids?: string[] | null
+      llm_provider?: string | null
+      llm_model?: string | null
+      tags?: string[]
+      default_runs_per_combination?: number
+    },
+  ): Promise<EvaluatorSuite> {
+    const response = await this.client.put(`/api/v1/evaluator-suites/${suiteId}`, data)
+    return response.data
+  }
+
+  async addEvaluatorSuiteScenarios(suiteId: string, scenarioIds: string[]): Promise<EvaluatorSuite> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/scenarios`, {
+      scenario_ids: scenarioIds,
+    })
+    return response.data
+  }
+
+  async removeEvaluatorSuiteScenario(suiteId: string, scenarioId: string): Promise<EvaluatorSuite> {
+    const response = await this.client.delete(
+      `/api/v1/evaluator-suites/${suiteId}/scenarios/${scenarioId}`,
+    )
+    return response.data
+  }
+
+  async deleteEvaluatorSuite(suiteId: string): Promise<void> {
+    await this.client.delete(`/api/v1/evaluator-suites/${suiteId}`)
+  }
+
+  async runEvaluatorSuite(
+    suiteId: string,
+    data: { runs_per_combination: number; to_number?: string; from_number?: string },
+  ): Promise<RunEvaluatorSuiteResponse> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/run`, data)
+    return response.data
+  }
+
+  async runNextCombination(
+    suiteId: string,
+    data?: { from_number?: string },
+  ): Promise<RunNextCombinationResponse> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/run-next`, data || {})
+    return response.data
+  }
+
+  async chooseNextCombination(suiteId: string): Promise<ChooseNextCombinationResponse> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/choose-next`)
+    return response.data
+  }
+
+  async activateEvaluatorSuite(suiteId: string): Promise<EvaluatorSuite> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/activate`)
     return response.data
   }
 
@@ -3134,18 +3603,64 @@ class ApiClient {
   }
 
   // Evaluator Results endpoints
-  async listEvaluatorResults(evaluatorId?: string, playground?: boolean, testAgentsOnly?: boolean): Promise<any[]> {
-    const params: any = {}
-    if (evaluatorId) {
-      params.evaluator_id = evaluatorId
-    }
-    if (playground !== undefined) {
-      params.playground = playground
-    }
-    if (testAgentsOnly !== undefined) {
-      params.test_agents_only = testAgentsOnly
+  async listEvaluatorResults(
+    paramsOrEvaluatorId?: ListEvaluatorResultsParams | string,
+    playground?: boolean,
+    testAgentsOnly?: boolean,
+    agentId?: string
+  ): Promise<EvaluatorResultListResponse> {
+    let params: Record<string, unknown> = {}
+    if (typeof paramsOrEvaluatorId === 'string' || paramsOrEvaluatorId === undefined) {
+      if (paramsOrEvaluatorId) {
+        params.evaluator_id = paramsOrEvaluatorId
+      }
+      if (agentId) {
+        params.agent_id = agentId
+      }
+      if (playground !== undefined) {
+        params.playground = playground
+      }
+      if (testAgentsOnly !== undefined) {
+        params.test_agents_only = testAgentsOnly
+      }
+    } else {
+      const p = paramsOrEvaluatorId
+      if (p.skip !== undefined) params.skip = p.skip
+      if (p.limit !== undefined) params.limit = p.limit
+      if (p.evaluatorId) params.evaluator_id = p.evaluatorId
+      if (p.agentId) params.agent_id = p.agentId
+      if (p.suiteId) params.suite_id = p.suiteId
+      if (p.scenarioId) params.scenario_id = p.scenarioId
+      if (p.status) params.status = p.status
+      if (p.unassignedOnly) params.unassigned_only = true
+      if (p.playground !== undefined) params.playground = p.playground
+      if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
+    return response.data
+  }
+
+  async getEvaluatorResultsOverview(params?: {
+    agentId?: string
+    suiteId?: string
+  }): Promise<EvaluatorResultsOverviewResponse> {
+    const query: Record<string, string> = {}
+    if (params?.agentId) query.agent_id = params.agentId
+    if (params?.suiteId) query.suite_id = params.suiteId
+    const response = await this.client.get('/api/v1/evaluator-results/overview', { params: query })
+    return response.data
+  }
+
+  async getEvaluatorResultsAggregate(params: {
+    suiteId?: string
+    agentId?: string
+    scenarioId?: string
+  }): Promise<EvaluatorResultsAggregateResponse> {
+    const query: Record<string, string> = {}
+    if (params.suiteId) query.suite_id = params.suiteId
+    if (params.agentId) query.agent_id = params.agentId
+    if (params.scenarioId) query.scenario_id = params.scenarioId
+    const response = await this.client.get('/api/v1/evaluator-results/aggregate', { params: query })
     return response.data
   }
 

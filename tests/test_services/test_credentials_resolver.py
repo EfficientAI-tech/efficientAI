@@ -162,8 +162,21 @@ def test_resolve_telephony_integration_explicit_id(db_session, org):
 
 
 def test_clear_other_defaults_only_touches_matching_provider(db_session, org):
-    keep = _make_ai_provider(db_session, org, name="Keep", is_default=True)
+    # Postgres enforces at most one default per (org, provider) at insert time,
+    # so seed the pre-promotion state: one existing default, one candidate row.
+    keep = _make_ai_provider(db_session, org, name="Keep", is_default=False)
     other = _make_ai_provider(db_session, org, name="Other", is_default=True)
+    anthropic_default = AIProvider(
+        id=uuid4(),
+        organization_id=org.id,
+        provider="anthropic",
+        api_key="enc",
+        name="Anthropic Default",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(anthropic_default)
+    db_session.commit()
 
     clear_other_defaults(
         AIProvider,
@@ -173,9 +186,12 @@ def test_clear_other_defaults_only_touches_matching_provider(db_session, org):
         provider_field="provider",
         provider_value="openai",
     )
+    keep.is_default = True
     db_session.commit()
 
     db_session.refresh(keep)
     db_session.refresh(other)
+    db_session.refresh(anthropic_default)
     assert keep.is_default is True
     assert other.is_default is False
+    assert anthropic_default.is_default is True

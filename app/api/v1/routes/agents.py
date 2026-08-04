@@ -15,14 +15,98 @@ from app.dependencies import get_db, get_organization_id, get_workspace_id, get_
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
-    Evaluator, EvaluatorResult, CallRecording,
+    Evaluator, EvaluatorResult, CallRecording, Scenario,
 )
 from sqlalchemy import and_
 from app.models.schemas import (
-    AgentCreate, AgentUpdate, AgentResponse, CallMediumEnum as CallMediumEnumSchema
+    AgentCreate,
+    AgentUpdate,
+    AgentResponse,
+    AgentPhoneAssignmentCheckResponse,
+    AgentPhoneAssignmentConflict,
+    CallMediumEnum as CallMediumEnumSchema,
+    GenerateTestPromptRequest,
+    GenerateTestPromptResponse,
+    GenerateScenariosFromPromptRequest,
+    GenerateScenariosFromPromptResponse,
+    GenerateTestSetupRequest,
+    GenerateTestSetupResponse,
+    GeneratedScenarioDraftResponse,
+    TestPromptSectionResponse,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _validate_agent_phone_assignment(
+    db: Session,
+    *,
+    organization_id: UUID,
+    call_medium,
+    phone_number: Optional[str],
+    telephony_phone_number_id: Optional[UUID],
+    exclude_agent_id: Optional[UUID] = None,
+) -> None:
+    """Raise HTTPException if phone assignment conflicts with another agent."""
+    if call_medium != CallMediumEnum.PHONE_CALL:
+        return
+    if not phone_number and not telephony_phone_number_id:
+        return
+
+    from app.services.telephony.phone_routing import find_agent_phone_assignment_conflict
+
+    conflict = find_agent_phone_assignment_conflict(
+        db,
+        organization_id=organization_id,
+        phone_number=phone_number,
+        telephony_phone_number_id=telephony_phone_number_id,
+        exclude_agent_id=exclude_agent_id,
+    )
+    if not conflict:
+        return
+    if conflict.get("error") == "telephony_not_found":
+        raise HTTPException(status_code=404, detail="Telephony phone number not found")
+
+    agent_name = conflict["agent_name"]
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "message": f'This number is already assigned to agent "{agent_name}".',
+            "agent_id": str(conflict["agent_id"]),
+            "agent_name": agent_name,
+            "phone_number": conflict["phone_number"],
+        },
+    )
+
+
+def resolve_agent_by_path_id(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    agent_id: str,
+) -> Agent:
+    """Resolve agent by UUID primary key or 6-digit agent_id (same as GET /agents/{id})."""
+    try:
+        agent_uuid = UUID(agent_id)
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.id == agent_uuid,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
+        ).first()
+    except ValueError:
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.agent_id == agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
+        ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return agent
 
 
 # ======================================================================
@@ -35,6 +119,9 @@ class GenerateAgentDescriptionRequest(BaseModel):
     format_style: Optional[str] = "structured"
     provider: Optional[str] = None
     model: Optional[str] = None
+    agent_id: Optional[UUID] = None
+    include_linked_scenarios: bool = True
+    append_scenarios_to_output: bool = False
 
 
 GENERATE_AGENT_DESCRIPTION_SYSTEM = (
@@ -57,11 +144,18 @@ from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_
 async def generate_agent_description(
     data: GenerateAgentDescriptionRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Generate an agent description using AI from a brief description."""
     from app.services.ai.llm_service import llm_service
+    from app.services.testing.test_agent_simulation_prompt import (
+        format_scenarios_for_generation_context,
+        format_scenarios_reference_appendix,
+        load_linked_scenarios_for_agent,
+        merge_generated_description_with_scenario_appendix,
+    )
 
     if not data.description.strip():
         raise HTTPException(400, "Description is required")
@@ -70,13 +164,37 @@ async def generate_agent_description(
         organization_id, db, data.provider, data.model
     )
 
-    user_prompt = (
-        f"Create a detailed agent description for the following:\n\n"
-        f"Description: {data.description}\n"
-        f"Tone: {data.tone or 'professional'}\n"
-        f"Format: {data.format_style or 'structured'}\n\n"
-        f"Generate a comprehensive, well-formatted agent description in markdown."
-    )
+    linked_scenarios = []
+    if data.agent_id and data.include_linked_scenarios:
+        agent = db.query(Agent).filter(
+            Agent.id == data.agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent {data.agent_id} not found")
+        linked_scenarios = load_linked_scenarios_for_agent(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agent_id=agent.id,
+        )
+
+    user_prompt_parts = [
+        "Create a detailed agent description for the following:",
+        "",
+        f"Description: {data.description}",
+        f"Tone: {data.tone or 'professional'}",
+        f"Format: {data.format_style or 'structured'}",
+    ]
+    scenario_context = format_scenarios_for_generation_context(linked_scenarios)
+    if scenario_context:
+        user_prompt_parts.extend(["", scenario_context])
+    user_prompt_parts.extend([
+        "",
+        "Generate a comprehensive, well-formatted agent description in markdown.",
+    ])
+    user_prompt = "\n".join(user_prompt_parts)
 
     messages = [
         {"role": "system", "content": GENERATE_AGENT_DESCRIPTION_SYSTEM},
@@ -93,10 +211,182 @@ async def generate_agent_description(
             temperature=0.7,
             max_tokens=4000,
         )
-        return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
+        content = result["text"]
+        if data.append_scenarios_to_output and linked_scenarios:
+            appendix = format_scenarios_reference_appendix(linked_scenarios)
+            content = merge_generated_description_with_scenario_appendix(content, appendix)
+        return {"content": content, "provider": provider_enum.value, "model": model_str}
     except Exception as e:
         logger.error(f"[Agents] AI description generation failed: {repr(e)}")
         raise HTTPException(500, f"AI generation failed: {str(e)}")
+
+
+def _test_prompt_section_responses(sections) -> list[TestPromptSectionResponse]:
+    return [
+        TestPromptSectionResponse(key=s.key, title=s.title, content=s.content)
+        for s in sections
+    ]
+
+
+def _scenario_draft_responses(scenarios) -> list[GeneratedScenarioDraftResponse]:
+    return [
+        GeneratedScenarioDraftResponse(name=s.name, description=s.description, goal=s.goal)
+        for s in scenarios
+    ]
+
+
+@router.post("/generate-test-prompt", response_model=GenerateTestPromptResponse)
+async def generate_test_prompt(
+    data: GenerateTestPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Stage 1: generate foundational test agent prompt from production prompt."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_test_prompt_from_production,
+    )
+
+    if not data.production_prompt.strip():
+        raise HTTPException(400, "Production prompt is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        result = generate_test_prompt_from_production(
+            data.production_prompt,
+            agent_name=data.agent_name,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GenerateTestPromptResponse(
+            sections=_test_prompt_section_responses(result.sections),
+            test_agent_prompt=result.test_agent_prompt,
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logger.error(f"[Agents] Test prompt generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
+
+
+@router.post("/generate-scenarios-from-prompt", response_model=GenerateScenariosFromPromptResponse)
+async def generate_scenarios_from_prompt(
+    data: GenerateScenariosFromPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Stage 2: generate scenario drafts from a test agent prompt."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_scenarios_from_test_prompt,
+    )
+
+    if not data.test_agent_prompt.strip():
+        raise HTTPException(400, "Test agent prompt is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        result = generate_scenarios_from_test_prompt(
+            data.test_agent_prompt,
+            agent_name=data.agent_name,
+            scenario_count=data.scenario_count,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GenerateScenariosFromPromptResponse(
+            scenarios=_scenario_draft_responses(result.scenarios),
+            provider=result.provider,
+            model=result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logger.error(f"[Agents] Scenario generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
+
+
+@router.post("/generate-test-setup", response_model=GenerateTestSetupResponse)
+async def generate_test_setup(
+    data: GenerateTestSetupRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Run stage 1 then stage 2: foundational test prompt + scenario drafts."""
+    from app.services.testing.agent_test_setup_generation import (
+        generate_scenarios_from_test_prompt,
+        generate_test_prompt_from_production,
+    )
+
+    if not data.production_prompt.strip():
+        raise HTTPException(400, "Production prompt is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model, data.credential_id
+    )
+
+    try:
+        prompt_result = generate_test_prompt_from_production(
+            data.production_prompt,
+            agent_name=data.agent_name,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        scenario_result = generate_scenarios_from_test_prompt(
+            prompt_result.test_agent_prompt,
+            agent_name=data.agent_name,
+            scenario_count=data.scenario_count,
+            language=data.language,
+            call_type=data.call_type,
+            additional_context=data.additional_context,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            llm_config=data.llm_config,
+            credential_id=data.credential_id,
+        )
+        return GenerateTestSetupResponse(
+            sections=_test_prompt_section_responses(prompt_result.sections),
+            test_agent_prompt=prompt_result.test_agent_prompt,
+            scenarios=_scenario_draft_responses(scenario_result.scenarios),
+            provider=prompt_result.provider,
+            model=prompt_result.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        logger.error(f"[Agents] Test setup generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}") from e
 
 
 def generate_unique_agent_id(db: Session) -> str:
@@ -174,16 +464,19 @@ async def create_agent(
             detail="phone_number is required when call_medium is phone_call"
         )
     
-    # Validate voice_bundle_id exists and belongs to organization
-    if agent.voice_bundle_id:
-        voice_bundle = db.query(VoiceBundle).filter(
-            and_(
-                VoiceBundle.id == agent.voice_bundle_id,
-                VoiceBundle.organization_id == organization_id
-            )
-        ).first()
-        if not voice_bundle:
-            raise HTTPException(status_code=404, detail="Voice bundle not found")
+    # Validate voice_bundle_id exists, is active, and belongs to organization
+    voice_bundle = db.query(VoiceBundle).filter(
+        and_(
+            VoiceBundle.id == agent.voice_bundle_id,
+            VoiceBundle.organization_id == organization_id,
+            VoiceBundle.is_active == True,
+        )
+    ).first()
+    if not voice_bundle:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Active voice bundle not found",
+        )
     
     # Validate voice_ai_integration_id exists and belongs to organization
     if agent.voice_ai_integration_id:
@@ -216,7 +509,15 @@ async def create_agent(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
             )
-    
+
+    _validate_agent_phone_assignment(
+        db,
+        organization_id=organization_id,
+        call_medium=agent.call_medium,
+        phone_number=agent.phone_number,
+        telephony_phone_number_id=agent.telephony_phone_number_id,
+    )
+
     # Generate unique 6-digit agent_id
     agent_id = generate_unique_agent_id(db)
     
@@ -230,16 +531,25 @@ async def create_agent(
         description=agent.description,
         call_type=agent.call_type,
         call_medium=agent.call_medium,
+        telephony_phone_number_id=agent.telephony_phone_number_id,
         voice_bundle_id=agent.voice_bundle_id,
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
-        voice_ai_agent_id=agent.voice_ai_agent_id
+        voice_ai_agent_id=agent.voice_ai_agent_id,
+        provider_prompt=agent.provider_prompt,
+        silence_hangup_secs=agent.silence_hangup_secs,
     )
     db.add(db_agent)
     db.commit()
     db.refresh(db_agent)
 
-    if agent.voice_ai_integration_id and agent.voice_ai_agent_id:
+    from app.services.telephony.phone_routing import sync_agent_telephony_number_link
+
+    sync_agent_telephony_number_link(db, db_agent)
+    db.refresh(db_agent)
+
+    has_provider_prompt = isinstance(agent.provider_prompt, str) and bool(agent.provider_prompt.strip())
+    if agent.voice_ai_integration_id and agent.voice_ai_agent_id and not has_provider_prompt:
         try:
             from app.services.voice_providers.prompt_sync import sync_provider_prompt
             integration = db.query(Integration).filter(Integration.id == agent.voice_ai_integration_id).first()
@@ -270,6 +580,60 @@ async def list_agents(
         Agent.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
     return agents
+
+
+@router.get("/check-phone-assignment", response_model=AgentPhoneAssignmentCheckResponse)
+async def check_phone_assignment(
+    phone_number: Optional[str] = Query(None),
+    telephony_phone_number_id: Optional[UUID] = Query(None),
+    exclude_agent_id: Optional[UUID] = Query(None),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Check whether a phone number is available for agent assignment in this org."""
+    if not phone_number and not telephony_phone_number_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="phone_number or telephony_phone_number_id is required",
+        )
+
+    from app.services.telephony.phone_routing import find_agent_phone_assignment_conflict
+
+    conflict = find_agent_phone_assignment_conflict(
+        db,
+        organization_id=organization_id,
+        phone_number=phone_number,
+        telephony_phone_number_id=telephony_phone_number_id,
+        exclude_agent_id=exclude_agent_id,
+    )
+    if conflict and conflict.get("error") == "telephony_not_found":
+        raise HTTPException(status_code=404, detail="Telephony phone number not found")
+    if conflict:
+        return AgentPhoneAssignmentCheckResponse(
+            available=False,
+            phone_number=conflict["phone_number"],
+            conflict=AgentPhoneAssignmentConflict(**conflict),
+        )
+
+    resolved_phone = phone_number
+    if telephony_phone_number_id:
+        from app.models.database import TelephonyPhoneNumber
+
+        row = (
+            db.query(TelephonyPhoneNumber)
+            .filter(
+                TelephonyPhoneNumber.id == telephony_phone_number_id,
+                TelephonyPhoneNumber.organization_id == organization_id,
+            )
+            .first()
+        )
+        if row:
+            resolved_phone = row.phone_number
+
+    return AgentPhoneAssignmentCheckResponse(
+        available=True,
+        phone_number=resolved_phone,
+    )
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -391,10 +755,34 @@ async def update_agent(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
             )
-    
+
+    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+
+    effective_call_medium = (
+        agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
+    )
+    effective_phone_number = (
+        agent_update.phone_number
+        if "phone_number" in update_data
+        else db_agent.phone_number
+    )
+    effective_telephony_id = (
+        agent_update.telephony_phone_number_id
+        if "telephony_phone_number_id" in update_data
+        else db_agent.telephony_phone_number_id
+    )
+
+    _validate_agent_phone_assignment(
+        db,
+        organization_id=organization_id,
+        call_medium=effective_call_medium,
+        phone_number=effective_phone_number,
+        telephony_phone_number_id=effective_telephony_id,
+        exclude_agent_id=db_agent.id,
+    )
+
     # Convert the update model to dict, handling None values properly
     # Use model_dump with exclude_unset to only get fields that were explicitly provided
-    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
     
     # Apply updates
     for field, value in update_data.items():
@@ -403,9 +791,16 @@ async def update_agent(
     db.commit()
     db.refresh(db_agent)
 
+    from app.services.telephony.phone_routing import sync_agent_telephony_number_link
+
+    if "telephony_phone_number_id" in update_data or "phone_number" in update_data:
+        sync_agent_telephony_number_link(db, db_agent)
+        db.refresh(db_agent)
+
     if "voice_ai_agent_id" in update_data or "voice_ai_integration_id" in update_data:
         integration_id = db_agent.voice_ai_integration_id
-        if integration_id and db_agent.voice_ai_agent_id:
+        provider_prompt_updated = "provider_prompt" in update_data
+        if integration_id and db_agent.voice_ai_agent_id and not provider_prompt_updated:
             try:
                 from app.services.voice_providers.prompt_sync import sync_provider_prompt
                 integration = db.query(Integration).filter(Integration.id == integration_id).first()

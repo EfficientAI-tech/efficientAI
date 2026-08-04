@@ -208,6 +208,39 @@ judge_alignment:
 # license:
 #   key: "eyJhbGciOi..."
 
+# Vobiz Telephony (platform-level). Shared account credentials used for
+# inbound/outbound PSTN calls bridged into agent Pipecat pipelines.
+# vobiz:
+#   auth_id: "MA_XXXXXXXX"
+#   auth_token: "your-token-here"
+#   api_base: "https://api.vobiz.ai"
+#   media_base: "https://media.vobiz.ai"
+#   webhook_base_url: "https://your-telephony-edge.example.com"
+#   # Public telephony edge (media service). Vobiz webhooks + carrier WS use this host.
+#   # Local split dev: ngrok http 8001, set this to the tunnel URL (no media_ws_base_url needed for Vobiz).
+#   webhook_verify: true   # set false ONLY on local dev (never in sandbox/prod)
+#   carrier_session_recording: false  # true = Vobiz <Record> + download MP3 from media.vobiz.ai
+#   # Optional override for browser voice-agent WS when telephony host differs from API.
+#   # Vobiz ignores this when webhook_base_url already points at telephony (https→wss fallback).
+#   media_ws_base_url: "ws://localhost:8001"
+#   from_number: "+918011223344"
+#   outbound_pool:
+#     - "+918011223344"
+#     - "+918011223345"
+#   outbound_pool_max_concurrent_per_org: 5
+
+# Provider-agnostic platform outbound caller-ID pool (preferred). Each entry can be a
+# plain E.164 string (defaults to provider vobiz) or an object with number + provider.
+# Legacy vobiz.outbound_pool / plivo.outbound_pool / exotel.outbound_pool are merged in.
+# telephony:
+#   outbound_pool:
+#     - number: "+918011223344"
+#       provider: vobiz
+#     - number: "+918011223345"
+#       provider: plivo
+#     - "+918011223346"   # shorthand, treated as vobiz
+#   outbound_pool_max_concurrent_per_org: 5
+
 # Flexprice usage-based billing (optional). When disabled or api_key is unset,
 # no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
 # true and provide FLEXPRICE_API_KEY (env var overrides api_key below).

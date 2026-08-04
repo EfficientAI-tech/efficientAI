@@ -1,0 +1,26 @@
+name: Setup Python dependencies
+description: Install Python 3.12 and project dev dependencies with uv
+
+inputs:
+  python-version:
+    description: Python version to install
+    required: false
+    default: "3.12"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+        cache-dependency-glob: "pyproject.toml"
+
+    - name: Install dependencies
+      shell: bash
+      run: uv pip install --system -e ".[dev]"

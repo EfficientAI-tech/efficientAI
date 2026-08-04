@@ -31,6 +31,7 @@ interface AIGeneratePanelProps {
   title?: string
   placeholder?: string
   showToneAndFormat?: boolean
+  requireDescription?: boolean
 }
 
 export default function AIGeneratePanel({
@@ -40,6 +41,7 @@ export default function AIGeneratePanel({
   title = 'Generate with AI',
   placeholder = 'Describe what you want to generate...',
   showToneAndFormat = true,
+  requireDescription = true,
 }: AIGeneratePanelProps) {
   const [description, setDescription] = useState('')
   const [tone, setTone] = useState('professional')
@@ -295,7 +297,7 @@ export default function AIGeneratePanel({
         <button
           type="button"
           onClick={handleGenerate}
-          disabled={generateMutation.isPending || !description.trim()}
+          disabled={generateMutation.isPending || (requireDescription && !description.trim())}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
         >
           {generateMutation.isPending ? (

@@ -1,5 +1,6 @@
 export { default as DataSources } from './DataSources'
 export { default as VoiceBundles } from './VoiceBundles'
 export { default as Integrations } from './Integrations'
+export { default as TelephonyNumbers } from './TelephonyNumbers'
 export { default as Settings } from './Settings'
 export { default as CronJobs } from './CronJobs'
