@@ -283,9 +283,11 @@ def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
     """Wire up row lookup + the lazily-imported services the task uses."""
     from uuid import UUID
 
-    from app.models.database import CallImportRow
+    from app.models.database import CallImportEvaluationRow, CallImportRow
 
     task_module = _load_task_module()
+    session_factory = lambda: _NonClosingSession(db_session)
+    monkeypatch.setattr("app.database.SessionLocal", session_factory)
 
     def fake_locate_call_import_row(row_id):
         rid = row_id if isinstance(row_id, UUID) else UUID(str(row_id))
@@ -295,9 +297,34 @@ def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
         session = _NonClosingSession(db_session)
         return session, session, row, "legacy"
 
+    def fake_locate_call_import_evaluation_row(eval_row_id):
+        eid = eval_row_id if isinstance(eval_row_id, UUID) else UUID(str(eval_row_id))
+        row = (
+            db_session.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.id == eid)
+            .first()
+        )
+        if row is None:
+            raise LookupError(f"call_import_evaluation_row {eid} not found")
+        eval_row, source_row = row
+        session = _NonClosingSession(db_session)
+        return session, session, eval_row, source_row, "legacy"
+
     monkeypatch.setattr(
         "app.db_sharding.row_ops.locate_call_import_row",
         fake_locate_call_import_row,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.locate_call_import_evaluation_row",
+        fake_locate_call_import_evaluation_row,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.eval_rows.locate_call_import_evaluation_row",
+        fake_locate_call_import_evaluation_row,
     )
     monkeypatch.setattr(
         "app.db_sharding.sessions.is_sharding_enabled",

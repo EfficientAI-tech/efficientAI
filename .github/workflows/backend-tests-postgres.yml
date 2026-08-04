@@ -46,19 +46,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+      - name: Set up Python and install dependencies
+        uses: ./.github/actions/setup-python-deps
 
       - name: Run backend test suite on Postgres
-        run: make test
+        run: make test-parallel PYTEST_ARGS="--durations=25"
 
   db-sharding:
     runs-on: ubuntu-latest
@@ -96,16 +88,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+      - name: Set up Python and install dependencies
+        uses: ./.github/actions/setup-python-deps
 
       - name: Create catalog and row-shard databases
         run: |
@@ -115,7 +99,7 @@ jobs:
           done
 
       - name: Run db_sharding unit tests
-        run: make test-sharding
+        run: make test-sharding PYTEST_ARGS="--durations=10"
 
       - name: Run sharding Postgres integration tests
-        run: make test-sharding-integration
+        run: make test-sharding-integration PYTEST_ARGS="--durations=10"

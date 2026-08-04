@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -130,47 +130,70 @@ def api_key():
     return "test_api_key_123"
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_engine():
     """
     Database engine used for tests.
     Defaults to in-memory SQLite for local speed, but can use a real database
     when TEST_DATABASE_URL is provided (for CI/Postgres validation).
+    Schema is created once per test session and torn down at the end.
     """
+    from app.database import Base
+
+    import app.models.database  # noqa: F401
+
     test_database_url = os.getenv("TEST_DATABASE_URL", "").strip()
 
     if test_database_url:
-        engine = create_engine(test_database_url, pool_pre_ping=True)
+        engine = create_engine(
+            test_database_url,
+            pool_pre_ping=True,
+            pool_size=10,
+            max_overflow=20,
+        )
     else:
         engine = create_engine(
             "sqlite+pysqlite:///:memory:",
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
-    return engine
+
+    Base.metadata.create_all(bind=engine)
+    try:
+        yield engine
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
 
 
 @pytest.fixture
 def db_session(test_engine):
-    """Create a transaction-scoped SQLAlchemy session for a test."""
-    from app.database import Base
-
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-    Base.metadata.create_all(bind=test_engine)
+    """Transaction-scoped SQLAlchemy session; rolls back after each test."""
+    connection = test_engine.connect()
+    transaction = connection.begin()
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=connection)
     session = TestingSessionLocal()
+    nested = connection.begin_nested()
+
+    @event.listens_for(session, "after_transaction_end")
+    def _restart_savepoint(sess, trans):  # noqa: ARG001
+        nonlocal nested
+        if trans.nested and not trans._parent.nested:
+            nested = connection.begin_nested()
+
     try:
         yield session
     finally:
         session.close()
-        Base.metadata.drop_all(bind=test_engine)
+        transaction.rollback()
+        connection.close()
 
 
-@pytest.fixture
-def client(db_session, api_key, org_id):
-    """
-    FastAPI client with DB/auth dependency overrides and no startup lifespan.
-    This avoids running migrations in test bootstrap.
-    """
+_SESSION_API_APP = None
+_SESSION_STUBS_READY = False
+
+
+def _install_static_stubs():
     if "python_multipart" not in sys.modules:
         fake_python_multipart = types.ModuleType("python_multipart")
         fake_python_multipart.__version__ = "0.0.20"
@@ -483,6 +506,7 @@ def client(db_session, api_key, org_id):
     workers_pkg = importlib.import_module("app.workers")
     workers_pkg.celery_app = fake_celery_app_module
 
+def _wire_bulk_ops_stubs(db_session):
     # Bulk call-import tasks: materialize runs synchronously in API tests;
     # diarize/delete are no-ops (return immediately).
     fake_bulk_ops_module = sys.modules.get("app.workers.tasks.call_import_bulk_ops")
@@ -604,6 +628,7 @@ def client(db_session, api_key, org_id):
         delay=_sync_cancel_delay
     )
 
+def _install_concurrency_stubs():
     fake_fair_dispatch_module = sys.modules.get("app.workers.concurrency.fair_dispatch")
     if fake_fair_dispatch_module is None:
         fake_fair_dispatch_module = types.ModuleType(
@@ -692,18 +717,8 @@ def client(db_session, api_key, org_id):
     if not hasattr(fake_eval_dispatch_module, "schedule_evaluation_dispatch"):
         fake_eval_dispatch_module.schedule_evaluation_dispatch = lambda *_a, **_kw: None
 
-    from app.database import get_db
-    from app.dependencies import (
-        get_api_key,
-        get_organization_id,
-        get_workspace_context,
-        get_workspace_id,
-        require_enterprise_feature,
-        WorkspaceContext,
-    )
-    from app.core.auth.capabilities import ALL_CAPABILITIES
-    from app.models.database import Organization, OrganizationMember, RoleEnum, User, Workspace, APIKey
-    from app.services.workspace_rbac import backfill_org_workspace_memberships, seed_system_workspace_roles
+
+def _build_session_api_app():
     import app.dependencies as app_dependencies
     from app.api.v1.routes import (
         aiproviders,
@@ -789,6 +804,47 @@ def client(db_session, api_key, org_id):
     app.include_router(call_import_evaluations.router, prefix="/api/v1")
     app.include_router(workspaces.router, prefix="/api/v1")
     app.include_router(workspace_iam.router, prefix="/api/v1")
+    # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
+    # Force-enable it for API tests so tests remain focused on route behavior.
+    app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True
+
+    @asynccontextmanager
+    async def _noop_lifespan(_: object):
+        yield
+
+    app.router.lifespan_context = _noop_lifespan
+    return app
+
+@pytest.fixture
+def client(db_session, api_key, org_id):
+    """
+    FastAPI client with DB/auth dependency overrides and no startup lifespan.
+    This avoids running migrations in test bootstrap.
+    """
+    global _SESSION_API_APP, _SESSION_STUBS_READY
+
+    if not _SESSION_STUBS_READY:
+        _install_static_stubs()
+        _install_concurrency_stubs()
+        _SESSION_API_APP = _build_session_api_app()
+        _SESSION_STUBS_READY = True
+
+    _wire_bulk_ops_stubs(db_session)
+
+    from app.database import get_db
+    from app.dependencies import (
+        get_api_key,
+        get_organization_id,
+        get_workspace_context,
+        get_workspace_id,
+        require_enterprise_feature,
+        WorkspaceContext,
+    )
+    from app.core.auth.capabilities import ALL_CAPABILITIES
+    from app.models.database import Organization, Workspace
+    from app.services.workspace_rbac import backfill_org_workspace_memberships, seed_system_workspace_roles
+
+    app = _SESSION_API_APP
 
     def _override_workspace_context() -> WorkspaceContext:
         return WorkspaceContext(
@@ -797,18 +853,6 @@ def client(db_session, api_key, org_id):
             capabilities=frozenset(ALL_CAPABILITIES),
             is_org_admin=True,
         )
-
-    # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
-    # Force-enable it for API tests so tests remain focused on route behavior.
-    app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True
-
-    def _override_get_db():
-        yield db_session
-
-    @asynccontextmanager
-    async def _noop_lifespan(_: object):
-        yield
-
     # The TestClient flow doesn't run migration 033, so we manually
     # ensure the test org has a Default workspace before any route
     # that depends on ``get_workspace_id`` runs. This mirrors what the
@@ -846,7 +890,9 @@ def client(db_session, api_key, org_id):
     default_workspace = _ensure_default_workspace()
     backfill_org_workspace_memberships(db_session, organization_id=org_id)
 
-    app.router.lifespan_context = _noop_lifespan
+    def _override_get_db():
+        yield db_session
+
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_api_key] = lambda: api_key
     app.dependency_overrides[get_organization_id] = lambda: org_id
