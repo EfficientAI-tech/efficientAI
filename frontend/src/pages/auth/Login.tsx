@@ -5,9 +5,10 @@ import { apiClient, isLoginOrgSelectionResponse } from '../../lib/api'
 import type { AuthConfigResponse, AuthProviderConfig, LoginOrgOption } from '../../lib/api'
 import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
+import { consumeAuthRedirectMessage } from '../../lib/authSession'
 import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
-import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
+import { Card, CardBody, Button, Divider, Tabs, Tab } from '@heroui/react'
 
 /**
  * Provider-aware sign-in screen.
@@ -24,6 +25,18 @@ import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
 type Mode = 'password' | 'signup' | 'sso'
 type LoginStep = 'credentials' | 'org-select'
 
+function LoginFormError({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="flex w-full items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-700"
+    >
+      <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+      <p className="min-w-0 flex-1 whitespace-normal break-words">{message}</p>
+    </div>
+  )
+}
+
 export default function Login() {
   const navigate = useNavigate()
   const { setSession } = useAuthStore()
@@ -38,12 +51,20 @@ export default function Login() {
   const [orgName, setOrgName] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
+  const [referenceCode, setReferenceCode] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [loginStep, setLoginStep] = useState<LoginStep>('credentials')
   const [orgOptions, setOrgOptions] = useState<LoginOrgOption[]>([])
   const [selectingOrgId, setSelectingOrgId] = useState<string | null>(null)
   const [showPassword, setShowPassword] = useState(false)
+
+  useEffect(() => {
+    const redirectMessage = consumeAuthRedirectMessage()
+    if (redirectMessage) {
+      setError(redirectMessage)
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -129,6 +150,7 @@ export default function Login() {
         organization_name: orgName || undefined,
         first_name: firstName || undefined,
         last_name: lastName || undefined,
+        reference_code: authConfig?.gated_signup ? referenceCode : undefined,
       })
       setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
@@ -253,14 +275,10 @@ export default function Login() {
                     {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                   </button>
                 </div>
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
                 <Button type="submit" color="primary" isLoading={isLoading} className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207] border border-[#facc15]" size="lg" radius="full">
                   Sign in
                 </Button>
+                {error && <LoginFormError message={error} />}
               </form>
             )}
 
@@ -292,11 +310,6 @@ export default function Login() {
                     )
                   })}
                 </div>
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -308,6 +321,7 @@ export default function Login() {
                 >
                   Back to sign in
                 </button>
+                {error && <LoginFormError message={error} />}
               </div>
             )}
 
@@ -341,14 +355,20 @@ export default function Login() {
                   </button>
                 </div>
                 <input type="text" placeholder="Organization name (optional)" value={orgName} onChange={(e) => setOrgName(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
+                {authConfig?.gated_signup && (
+                  <input
+                    type="text"
+                    placeholder="Reference code"
+                    value={referenceCode}
+                    onChange={(e) => setReferenceCode(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
+                  />
                 )}
                 <Button type="submit" color="primary" isLoading={isLoading} className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207]" size="lg" radius="full">
                   Create account
                 </Button>
+                {error && <LoginFormError message={error} />}
                 <p className="text-xs text-gray-500 text-center">
                   By signing up you become the admin of a new organization. You can invite teammates later.
                 </p>
@@ -360,11 +380,7 @@ export default function Login() {
                 <Button onPress={() => handleSsoRedirect(oidc)} className="w-full font-semibold" size="lg" radius="full" color="primary" variant="bordered">
                   Continue with {oidc.display_name}
                 </Button>
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
+                {error && <LoginFormError message={error} />}
                 <p className="text-xs text-gray-500 text-center">
                   You'll be redirected to your identity provider to complete sign-in.
                 </p>

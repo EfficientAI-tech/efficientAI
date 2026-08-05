@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     # Authentication
     AUTH_PROVIDERS: List[str] = ["api_key"]
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
+    AUTH_GATED_SIGNUP_ENABLED: bool = False
     AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 15
     AUTH_REFRESH_TOKEN_TTL_DAYS: int = 7
     AUTH_OIDC_ISSUER: Optional[str] = None
@@ -686,6 +687,9 @@ def load_config_from_file(config_path: str) -> None:
                 settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_config["token_ttl_minutes"])
             if "refresh_token_ttl_days" in local_config:
                 settings.AUTH_REFRESH_TOKEN_TTL_DAYS = int(local_config["refresh_token_ttl_days"])
+            gated_config = local_config.get("gated_signup", {})
+            if isinstance(gated_config, dict) and "enabled" in gated_config:
+                settings.AUTH_GATED_SIGNUP_ENABLED = bool(gated_config["enabled"])
 
         oidc_config = auth_config.get("oidc", {})
         if isinstance(oidc_config, dict):

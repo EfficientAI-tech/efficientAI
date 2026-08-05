@@ -54,6 +54,10 @@ from app.services.organization_provisioning import (
     provision_billing_customer,
     provision_default_workspace,
 )
+from app.services.signup_reference_codes import (
+    consume_reference_code,
+    validate_reference_code_for_signup,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -81,6 +85,7 @@ class AuthProviderConfig(BaseModel):
 class AuthConfigResponse(BaseModel):
     providers: List[AuthProviderConfig]
     tier: str  # "oss" | "enterprise"
+    gated_signup: bool = False
 
 
 class SignupRequest(BaseModel):
@@ -89,6 +94,7 @@ class SignupRequest(BaseModel):
     organization_name: Optional[str] = Field(default=None, max_length=255)
     first_name: Optional[str] = Field(default=None, max_length=255)
     last_name: Optional[str] = Field(default=None, max_length=255)
+    reference_code: Optional[str] = Field(default=None, max_length=64)
 
 
 class LoginRequest(BaseModel):
@@ -200,7 +206,15 @@ def get_auth_config() -> AuthConfigResponse:
             )
         )
 
-    return AuthConfigResponse(providers=providers, tier=tier)
+    return AuthConfigResponse(
+        providers=providers,
+        tier=tier,
+        gated_signup=(
+            settings.AUTH_GATED_SIGNUP_ENABLED
+            and settings.AUTH_LOCAL_ALLOW_SIGNUP
+            and "local_password" in enabled
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +306,10 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
             detail="Self-service signup is disabled. Contact your administrator for access.",
         )
 
+    reference_row = None
+    if settings.AUTH_GATED_SIGNUP_ENABLED:
+        reference_row = validate_reference_code_for_signup(db, payload.reference_code)
+
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(
@@ -332,6 +350,8 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
         name=org_name,
         email=payload.email,
     )
+    if reference_row is not None:
+        consume_reference_code(db, reference_row)
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(user)
@@ -368,14 +388,17 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
     memberships = (
         db.query(OrganizationMember, Organization)
         .join(Organization, Organization.id == OrganizationMember.organization_id)
-        .filter(OrganizationMember.user_id == user.id)
+        .filter(
+            OrganizationMember.user_id == user.id,
+            Organization.is_active == True,  # noqa: E712
+        )
         .order_by(OrganizationMember.joined_at.asc())
         .all()
     )
     if not memberships:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account is not a member of any organization. Contact your administrator.",
+            detail="Your account is not a member of any active organization. Contact your administrator.",
         )
 
     if len(memberships) > 1 and not payload.organization_id:
@@ -512,6 +535,13 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)) -> T
             detail="User is not a member of this organization.",
         )
 
+    org = db.query(Organization).filter(Organization.id == row.organization_id).first()
+    if org is None or not org.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization disabled.",
+        )
+
     revoke_refresh_token(db, payload.refresh_token)
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
     return _issue_session_tokens(
@@ -594,6 +624,13 @@ def switch_organization(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not a member of that organization.",
+        )
+
+    org = db.query(Organization).filter(Organization.id == target_org_id).first()
+    if org is None or not org.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization disabled.",
         )
 
     user = db.query(User).filter(User.id == principal.user_id).first()
