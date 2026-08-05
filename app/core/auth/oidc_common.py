@@ -20,7 +20,6 @@ from jose import JWTError, jwt
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.core.auth.org_access import ensure_organization_active
 from app.core.auth.principal import Principal
 from app.core.auth.providers import AuthError
 from app.models.database import Organization, OrganizationMember, User
@@ -261,8 +260,6 @@ def principal_from_oidc_claims(
         first_name=first_name,
         last_name=last_name,
     )
-
-    ensure_organization_active(db, organization.id)
 
     return Principal(
         organization_id=organization.id,

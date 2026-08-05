@@ -173,21 +173,7 @@ function buildMetricPartialContentForTarget(
   }
 }
 
-export interface MetricsManagementProps {
-  createModalOnly?: boolean
-  draftMode?: boolean
-  createModalOpen?: boolean
-  onCreateModalClose?: () => void
-  onMetricCreated?: (metric: Metric) => void
-}
-
-export default function MetricsManagement({
-  createModalOnly = false,
-  draftMode = false,
-  createModalOpen = false,
-  onCreateModalClose,
-  onMetricCreated,
-}: MetricsManagementProps = {}) {
+export default function MetricsManagement() {
   const queryClient = useQueryClient()
   // Adding the active workspace id to every metrics queryKey so a
   // workspace switch produces a clean cache miss instead of showing
@@ -641,31 +627,17 @@ export default function MetricsManagement({
   })
 
   useEffect(() => {
-    if (metrics.length === 0 && !isLoading && !createModalOnly) {
+    if (metrics.length === 0 && !isLoading) {
       seedMutation.mutate()
     }
-  }, [metrics.length, isLoading, createModalOnly])
-
-  useEffect(() => {
-    if (createModalOnly && createModalOpen) {
-      setShowCreateModal(true)
-      setIsCustomMetricMode(true)
-      setEditingMetric(null)
-      setIsEditingCategory(false)
-      setCreateMode('single')
-      setPasteMetricError(null)
-    } else if (createModalOnly && !createModalOpen) {
-      setShowCreateModal(false)
-    }
-  }, [createModalOnly, createModalOpen])
+  }, [metrics.length, isLoading])
 
   const createMutation = useMutation({
-    mutationFn: (data: typeof formData) =>
-      draftMode ? apiClient.createMetricDraft(data as any) : apiClient.createMetric(data),
-    onSuccess: (metric) => {
+    mutationFn: (data: typeof formData) => apiClient.createMetric(data),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
-      onMetricCreated?.(metric)
-      closeModal()
+      setShowCreateModal(false)
+      resetForm()
     },
   })
 
@@ -745,17 +717,11 @@ export default function MetricsManagement({
       // parent + every child with workspace_id=NULL so the whole
       // category subtree appears in every workspace.
       scope?: 'workspace' | 'organization'
-    }) =>
-      draftMode
-        ? apiClient.createMetricDraftWithChildren(payload)
-        : apiClient.createMetricWithChildren(payload),
-    onSuccess: (metric) => {
+    }) => apiClient.createMetricWithChildren(payload),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
-      onMetricCreated?.(metric)
       closeModal()
-      if (!draftMode) {
-        showToast('Category metric created', 'success')
-      }
+      showToast('Category metric created', 'success')
     },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail || 'Failed to create category metric'
@@ -1347,9 +1313,6 @@ export default function MetricsManagement({
     resetForm()
     resetAIForm()
     resetCategoryForm()
-    if (createModalOnly) {
-      onCreateModalClose?.()
-    }
   }
 
   const handleSort = (field: 'type' | 'method') => {
@@ -1422,11 +1385,10 @@ export default function MetricsManagement({
   return (
     <div className="space-y-6">
       <ToastContainer />
-      {!createModalOnly && (
-      <>
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm text-gray-600">
+          <h1 className="text-3xl font-bold text-gray-900">Metrics</h1>
+          <p className="mt-2 text-sm text-gray-600">
             Manage evaluation metrics for your conversations
           </p>
           <p className="mt-1 text-xs text-gray-500">
@@ -1863,12 +1825,9 @@ export default function MetricsManagement({
         )}
       </div>
 
-      </>
-      )}
-
       {/* Create/Edit Modal */}
       {showCreateModal && (
-        <div className={`fixed inset-0 ${createModalOnly ? 'z-[9999]' : 'z-50'} overflow-y-auto`}>
+        <div className="fixed inset-0 z-50 overflow-y-auto">
           <div className="flex min-h-screen items-center justify-center p-4">
             <div
               className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
@@ -1893,13 +1852,9 @@ export default function MetricsManagement({
                       : 'Edit Metric'
                     : createMode === 'category'
                       ? `Manage Categorization Labels${categoryForm.name.trim() ? ` for: ${categoryForm.name.trim()}` : ''}`
-                      : draftMode
-                        ? isCustomMetricMode
-                          ? 'Create draft custom metric'
-                          : 'Create draft metric'
-                        : isCustomMetricMode
-                          ? 'Create Custom Metric'
-                          : 'Create Metric'}
+                      : isCustomMetricMode
+                        ? 'Create Custom Metric'
+                        : 'Create Metric'}
                 </h2>
                 <div className="flex items-center gap-2">
                   {!editingMetric && (

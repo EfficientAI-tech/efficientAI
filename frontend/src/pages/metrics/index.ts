@@ -1,5 +1,2 @@
 export { default as Metrics } from './Metrics'
 export { default as MetricsManagement } from './MetricsManagement'
-export { default as MetricsLayout } from './MetricsLayout'
-export { default as MetricsStudio } from './MetricsStudio'
-export { default as MetricsStudioRunDetail } from './MetricsStudioRunDetail'

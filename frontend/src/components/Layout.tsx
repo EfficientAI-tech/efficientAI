@@ -146,15 +146,6 @@ function getFlattenedNavItems(): NavItem[] {
   return items
 }
 
-function isNavItemActive(href: string, pathname: string): boolean {
-  if (href === '/metrics-management') {
-    return (
-      pathname === href || pathname.startsWith('/metrics-management/')
-    )
-  }
-  return pathname === href
-}
-
 export default function Layout() {
   const location = useLocation()
   const { logout } = useAuthStore()
@@ -484,7 +475,7 @@ function SidebarContent({
               <SidebarIconLink
                 key={item.href}
                 item={item}
-                isActive={isNavItemActive(item.href, location.pathname)}
+                isActive={location.pathname === item.href}
                 isGated={Boolean(item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature))}
               />
             ))}
@@ -535,7 +526,7 @@ function SidebarContent({
         <nav className="flex-1 px-2 py-4 space-y-1">
           {/* Other Navigation */}
           {otherNavigation.map((item) => {
-            const isActive = isNavItemActive(item.href, location.pathname)
+            const isActive = location.pathname === item.href
             const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
             return (
               <Link
@@ -590,7 +581,7 @@ function SidebarContent({
                   {isExpanded && (
                     <div className="ml-6 mt-1 space-y-1">
                       {section.items.map((item) => {
-                        const isItemActive = isNavItemActive(item.href, location.pathname)
+                        const isItemActive = location.pathname === item.href
                         const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
                         return (
                           <Link
@@ -623,7 +614,7 @@ function SidebarContent({
         </nav>
         <nav className="mt-5 px-2 space-y-1 border-t border-gray-200 pt-4">
           {bottomNavigation.map((item) => {
-            const isActive = isNavItemActive(item.href, location.pathname)
+            const isActive = location.pathname === item.href
             return (
               <Link
                 key={item.name}

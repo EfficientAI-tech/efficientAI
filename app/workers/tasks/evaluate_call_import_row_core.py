@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, update
+from sqlalchemy import case, func, update
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -489,7 +489,6 @@ def load_enabled_metrics(
             Metric.organization_id == evaluation.organization_id,
             Metric.id.in_(metric_ids),
             Metric.enabled.is_(True),
-            or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
         )
         .all()
     )

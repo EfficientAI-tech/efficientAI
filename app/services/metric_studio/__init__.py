@@ -1,1 +1,0 @@
-"""Metrics Studio services."""
