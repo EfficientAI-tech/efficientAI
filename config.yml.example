@@ -164,9 +164,6 @@ auth:
     refresh_token_ttl_days: 7
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
-    # When enabled, signup requires a valid reference code from the platform admin API.
-    gated_signup:
-      enabled: false
 
   # External OIDC (enterprise): bring your own IdP. Works with any
   # OIDC-compliant provider. See README.md > Authentication & Deployment
