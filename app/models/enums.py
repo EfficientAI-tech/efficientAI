@@ -182,6 +182,13 @@ class MetricCategory(str, enum.Enum):
     USER_INSIGHT = "user_insight"
 
 
+class MetricLifecycle(str, enum.Enum):
+    """Lifecycle state for metrics — drafts are Studio-only until promoted."""
+
+    ACTIVE = "active"
+    DRAFT = "draft"
+
+
 class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
     ALWAYS = "always"

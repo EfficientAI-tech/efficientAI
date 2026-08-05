@@ -657,6 +657,20 @@ async def create_call_import_evaluation(
                 "Refresh the metrics list and try again."
             ),
         )
+    draft_metrics = [
+        metric
+        for metric in org_metrics
+        if (getattr(metric, "lifecycle", None) or "active") == "draft"
+    ]
+    if draft_metrics:
+        names = ", ".join(metric.name for metric in draft_metrics)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Draft metrics cannot be used in call import evaluations: {names}. "
+                "Promote them in Metrics Studio first."
+            ),
+        )
     # Parents themselves are containers, not scored rows, so a disabled
     # parent shouldn't block the run as long as it has enabled children.
     # We only reject disabled rows that the worker will actually try to

@@ -21,6 +21,7 @@ from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
 from . import initiate_vobiz_outbound
 from . import finalize_telephony_recording
+from . import evaluate_studio_run_item
 from . import call_import_bulk_ops
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
@@ -52,6 +53,7 @@ __all__ = [
     "dispatch_evaluation_rows_task",
     "dispatch_fair_eval_rows_task",
     "dispatch_fair_diarization_rows_task",
+    "evaluate_studio_run_item_task",
     "dispatch_fair_import_rows_task",
     "bulk_diarize_call_import_task",
     "bulk_delete_call_import_rows_task",
@@ -112,6 +114,9 @@ materialize_call_import_rows_task = (
     call_import_bulk_ops.materialize_call_import_rows_task
 )
 delete_call_import_task = call_import_bulk_ops.delete_call_import_task
+evaluate_studio_run_item_task = (
+    evaluate_studio_run_item.evaluate_studio_run_item_task
+)
 materialize_call_import_evaluation_task = (
     call_import_bulk_ops.materialize_call_import_evaluation_task
 )

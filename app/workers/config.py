@@ -135,6 +135,7 @@ celery_app.conf.task_routes = {
     "generate_evaluation_user_insights": {"queue": "evaluations"},
     "generate_evaluation_metric_clusters": {"queue": "evaluations"},
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
+    "evaluate_studio_run_item": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
 }
