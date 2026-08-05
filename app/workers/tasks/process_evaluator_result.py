@@ -5,7 +5,6 @@ import uuid as _uuid
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import or_
 
 from app.database import SessionLocal
 from app.models.database import ModelProvider
@@ -543,7 +542,6 @@ def process_evaluator_result_task(self, result_id: str):
             enabled_metrics = db.query(Metric).filter(
                 Metric.organization_id == result.organization_id,
                 Metric.enabled == True,
-                or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
             ).all()
             enabled_metrics = [
                 m for m in enabled_metrics

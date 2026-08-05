@@ -57,8 +57,6 @@ class Organization(Base):
     judge_alignment_settings = Column(JSON, nullable=True)
     # Per-org LLM gateway overrides (enabled, gateway_type, base_url, keys).
     llm_gateway_settings = Column(JSON, nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False, server_default=text("true"), index=True)
-    disabled_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -261,47 +259,6 @@ class User(Base):
     api_keys = relationship("APIKey", back_populates="user")
     invitations = relationship("Invitation", back_populates="invited_user", foreign_keys="Invitation.invited_user_id")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
-
-
-class PlatformAdmin(Base):
-    """Platform-level administrator (separate from org-scoped users)."""
-
-    __tablename__ = "platform_admins"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    last_login_at = Column(DateTime(timezone=True), nullable=True)
-
-    signup_reference_codes = relationship(
-        "SignupReferenceCode",
-        back_populates="created_by_admin",
-        foreign_keys="SignupReferenceCode.created_by",
-    )
-
-
-class SignupReferenceCode(Base):
-    """Single- or multi-use reference code required for gated self-service signup."""
-
-    __tablename__ = "signup_reference_codes"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code_hash = Column(String(64), unique=True, nullable=False)
-    label = Column(String(255), nullable=True)
-    max_uses = Column(Integer, nullable=True)
-    use_count = Column(Integer, default=0, nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False, index=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("platform_admins.id"), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    created_by_admin = relationship(
-        "PlatformAdmin",
-        back_populates="signup_reference_codes",
-        foreign_keys=[created_by],
-    )
 
 
 class RefreshToken(Base):
@@ -1025,17 +982,6 @@ class Metric(Base):
     capture_rationale = Column(Boolean, nullable=False, default=False)
 
     enabled = Column(Boolean, nullable=False, default=True)
-
-    # Studio draft lifecycle: ``draft`` metrics are visible only in Metrics
-    # Studio until promoted to ``active``.
-    lifecycle = Column(
-        String(20),
-        nullable=False,
-        default="active",
-        server_default="active",
-    )
-    promoted_from_draft_at = Column(DateTime(timezone=True), nullable=True)
-    studio_notes = Column(Text, nullable=True)
     
     # Metadata
     is_default = Column(Boolean, nullable=False, default=False)  # Pre-defined metrics
@@ -2554,107 +2500,6 @@ def _call_import_evaluation_row_fill_workspace_id(_mapper, connection, target):
     ).scalar_one_or_none()
     if workspace_id is not None:
         target.workspace_id = workspace_id
-
-
-class MetricStudioRun(Base):
-    """Ad-hoc metric experiment run in Metrics Studio."""
-
-    __tablename__ = "metric_studio_runs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organization_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id"),
-        nullable=False,
-        index=True,
-    )
-    workspace_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("workspaces.id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
-    )
-    created_by_user_id = Column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
-    )
-
-    name = Column(String(255), nullable=True)
-    selected_metric_ids = Column(JSON, nullable=False, default=list)
-    selected_metric_groups = Column(JSON, nullable=True)
-    transcript_source = Column(
-        String(20),
-        nullable=False,
-        default="diarised",
-        server_default="diarised",
-    )
-
-    llm_provider = Column(String(50), nullable=True)
-    llm_model = Column(String(100), nullable=True)
-    llm_credential_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("aiproviders.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    llm_config = Column(JSON, nullable=True)
-    metric_llm_overrides = Column(JSON, nullable=True)
-
-    status = Column(String(20), nullable=False, default="pending", index=True)
-    total_items = Column(Integer, nullable=False, default=0)
-    completed_items = Column(Integer, nullable=False, default=0)
-    failed_items = Column(Integer, nullable=False, default=0)
-    error_message = Column(Text, nullable=True)
-
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    results = relationship(
-        "MetricStudioRunResult",
-        back_populates="run",
-        cascade="all, delete-orphan",
-    )
-
-
-class MetricStudioRunResult(Base):
-    """Per-source scoring output for a MetricStudioRun."""
-
-    __tablename__ = "metric_studio_run_results"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    run_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("metric_studio_runs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    workspace_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("workspaces.id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
-    )
-
-    source_kind = Column(String(40), nullable=False)
-    source_ref = Column(String(255), nullable=False)
-    display_label = Column(String(512), nullable=True)
-    source_metadata = Column(JSON, nullable=True)
-
-    status = Column(String(20), nullable=False, default="pending", index=True)
-    metric_scores = Column(JSON, nullable=False, default=dict)
-    error_message = Column(Text, nullable=True)
-    celery_task_id = Column(String(255), nullable=True)
-
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    run = relationship("MetricStudioRun", back_populates="results")
 
 
 class CallImportEvaluationReportSnapshot(Base):

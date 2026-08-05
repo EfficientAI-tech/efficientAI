@@ -2,7 +2,6 @@
 
 import json
 import re
-from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -19,9 +18,6 @@ from app.models.schemas import (
     MetricCreate,
     MetricCreateWithChildren,
     MetricChildDraft,
-    MetricDraftCreate,
-    MetricDraftCreateWithChildren,
-    MetricPromoteResponse,
     MetricUpdate,
     MetricResponse,
     PromoteDiscoveredChildRequest,
@@ -184,9 +180,6 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "compare_transcripts": bool(
             getattr(metric, "compare_transcripts", False)
         ),
-        "lifecycle": getattr(metric, "lifecycle", None) or "active",
-        "promoted_from_draft_at": getattr(metric, "promoted_from_draft_at", None),
-        "studio_notes": getattr(metric, "studio_notes", None),
         "children": children_payload,
         "created_at": metric.created_at,
         "updated_at": metric.updated_at,
@@ -327,114 +320,27 @@ def create_metric(
 
 
 @router.post(
-    "/drafts",
+    "/with-children",
     response_model=MetricResponse,
     status_code=201,
-    operation_id="createMetricDraft",
+    operation_id="createMetricWithChildren",
 )
-def create_metric_draft(
-    metric_data: MetricDraftCreate,
+def create_metric_with_children(
+    payload: MetricCreateWithChildren,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Create a draft metric for Metrics Studio (hidden from production flows)."""
-    _validate_hierarchy_fields(
-        organization_id,
-        db,
-        parent_metric_id=metric_data.parent_metric_id,
-        selection_mode=metric_data.selection_mode,
-        metric_type=metric_data.metric_type,
-        allow_discovery=metric_data.allow_discovery,
-    )
+    """Atomically create a parent category metric plus its children.
 
-    if metric_data.parent_metric_id is not None:
-        parent_row = (
-            db.query(Metric)
-            .filter(
-                Metric.id == metric_data.parent_metric_id,
-                Metric.organization_id == organization_id,
-            )
-            .first()
-        )
-        if parent_row is None:
-            raise HTTPException(status_code=400, detail="Parent metric not found.")
-        effective_workspace_id: Optional[UUID] = parent_row.workspace_id
-    elif metric_data.scope == "organization":
-        effective_workspace_id = None
-    else:
-        effective_workspace_id = workspace_id
-
-    workspace_filter = (
-        Metric.workspace_id.is_(None)
-        if effective_workspace_id is None
-        else Metric.workspace_id == effective_workspace_id
-    )
-    parent_filter = (
-        Metric.parent_metric_id.is_(None)
-        if metric_data.parent_metric_id is None
-        else Metric.parent_metric_id == metric_data.parent_metric_id
-    )
-    existing = (
-        db.query(Metric)
-        .filter(
-            Metric.name == metric_data.name,
-            Metric.organization_id == organization_id,
-            workspace_filter,
-            parent_filter,
-        )
-        .first()
-    )
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A metric with this name already exists",
-        )
-
-    effective_metric_type = metric_data.metric_type
-    if metric_data.parent_metric_id is not None:
-        effective_metric_type = MetricType.BOOLEAN
-
-    metric = Metric(
-        organization_id=organization_id,
-        workspace_id=effective_workspace_id,
-        name=metric_data.name,
-        description=metric_data.description,
-        example=metric_data.example,
-        metric_type=effective_metric_type,
-        metric_category=metric_data.metric_category,
-        trigger=metric_data.trigger,
-        enabled=False,
-        is_default=False,
-        metric_origin=metric_data.metric_origin or "custom",
-        supported_surfaces=metric_data.supported_surfaces or ["agent"],
-        enabled_surfaces=[],
-        custom_data_type=metric_data.custom_data_type,
-        custom_config=metric_data.custom_config,
-        tags=metric_data.tags,
-        capture_rationale=bool(metric_data.capture_rationale),
-        parent_metric_id=metric_data.parent_metric_id,
-        selection_mode=metric_data.selection_mode,
-        allow_discovery=bool(metric_data.allow_discovery),
-        compare_transcripts=bool(metric_data.compare_transcripts),
-        lifecycle="draft",
-        studio_notes=metric_data.studio_notes,
-    )
-    db.add(metric)
-    db.commit()
-    db.refresh(metric)
-    return _serialize_metric_tree(metric)
-
-
-def _create_metric_with_children(
-    db: Session,
-    *,
-    organization_id: UUID,
-    workspace_id: UUID,
-    payload: MetricCreateWithChildren,
-    lifecycle: str = "active",
-    studio_notes: Optional[str] = None,
-) -> Metric:
+    The parent gets ``metric_type=text`` (it's a category label, not a
+    score) and ``selection_mode`` from the payload. Every child is
+    forced to ``boolean`` so the LLM-evaluation path treats them as
+    yes/no labels. Both the parent and all children are stamped with
+    the same scope: either the active workspace (``scope="workspace"``,
+    default) or ``workspace_id=NULL`` (``scope="organization"``, the
+    org-shared shape).
+    """
     if payload.selection_mode not in _VALID_SELECTION_MODES:
         raise HTTPException(
             status_code=400,
@@ -444,6 +350,8 @@ def _create_metric_with_children(
             ),
         )
 
+    # Org-shared categories live with ``workspace_id=NULL`` so every
+    # workspace in the org sees the same category + children.
     effective_workspace_id: Optional[UUID] = (
         None if payload.scope == "organization" else workspace_id
     )
@@ -468,6 +376,9 @@ def _create_metric_with_children(
             detail=f"A top-level metric named '{payload.name}' already exists.",
         )
 
+    # Detect duplicate child names within the same request before any
+    # writes — the DB has no compound uniqueness constraint, so we
+    # enforce it in code.
     child_names_seen: set[str] = set()
     for child in payload.children:
         key = (child.name or "").strip().lower()
@@ -490,9 +401,10 @@ def _create_metric_with_children(
         if payload.enabled_surfaces is not None
         else (payload.supported_surfaces or ["agent"]) if payload.enabled else []
     )
-    is_draft = lifecycle == "draft"
-    parent_enabled_surfaces: List[str] = [] if is_draft else enabled_surfaces
 
+    # ``allow_discovery`` requires a parent (selection_mode set).
+    # Both single_choice and multi_label parents are valid hosts; the
+    # prompt builder + mapper handle the per-mode semantics.
     if payload.allow_discovery and not payload.selection_mode:
         raise HTTPException(
             status_code=400,
@@ -507,28 +419,36 @@ def _create_metric_with_children(
         workspace_id=effective_workspace_id,
         name=payload.name,
         description=payload.description,
+        # The parent itself stores no numeric value — its "result" is the
+        # set of true children. Treat it as text so the rest of the
+        # stack (aggregation, CSV export, etc.) renders the chosen child
+        # name as the parent's "value".
         metric_type=MetricType.TEXT,
         metric_category=payload.metric_category,
         trigger=MetricTrigger.ALWAYS,
-        enabled=not is_draft and len(parent_enabled_surfaces) > 0,
+        enabled=len(enabled_surfaces) > 0,
         is_default=False,
         metric_origin="custom",
         supported_surfaces=payload.supported_surfaces or ["agent"],
-        enabled_surfaces=parent_enabled_surfaces,
+        enabled_surfaces=enabled_surfaces,
         tags=payload.tags,
+        # Hierarchical mode now captures rationale at the PARENT level
+        # (the LLM emits one rationale per category, never per child),
+        # so honour the user's toggle here and force children below to
+        # capture_rationale=False.
         capture_rationale=bool(payload.capture_rationale),
         selection_mode=payload.selection_mode,
         allow_discovery=bool(payload.allow_discovery),
-        lifecycle=lifecycle,
-        studio_notes=studio_notes,
     )
     db.add(parent)
     db.flush()
 
     for child_draft in payload.children:
-        child_enabled = bool(child_draft.enabled) and len(parent_enabled_surfaces) > 0
         child = Metric(
             organization_id=organization_id,
+            # Children inherit the parent's scope (workspace UUID or
+            # NULL for org-shared) so the whole category subtree stays
+            # in one place.
             workspace_id=effective_workspace_id,
             name=child_draft.name,
             description=child_draft.description,
@@ -536,120 +456,28 @@ def _create_metric_with_children(
             metric_type=MetricType.BOOLEAN,
             metric_category=payload.metric_category,
             trigger=MetricTrigger.ALWAYS,
-            enabled=not is_draft and child_enabled,
+            enabled=bool(child_draft.enabled) and len(enabled_surfaces) > 0,
             is_default=False,
             metric_origin="custom",
             supported_surfaces=payload.supported_surfaces or ["agent"],
-            enabled_surfaces=parent_enabled_surfaces if child_draft.enabled else [],
+            enabled_surfaces=(
+                enabled_surfaces if child_draft.enabled else []
+            ),
             custom_data_type="boolean",
             custom_config={},
             tags=child_draft.tags,
+            # Children in hierarchical mode never carry their own
+            # rationale — the parent owns the single rationale string
+            # for the whole group. Force false regardless of payload so
+            # legacy clients can't accidentally enable per-child
+            # rationales that the worker would then ignore.
             capture_rationale=False,
             parent_metric_id=parent.id,
-            lifecycle=lifecycle,
         )
         db.add(child)
 
     db.commit()
     db.refresh(parent)
-    return parent
-
-
-@router.post(
-    "/drafts/with-children",
-    response_model=MetricResponse,
-    status_code=201,
-    operation_id="createMetricDraftWithChildren",
-)
-def create_metric_draft_with_children(
-    payload: MetricDraftCreateWithChildren,
-    organization_id: UUID = Depends(get_organization_id),
-    workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db),
-):
-    """Atomically create a draft parent category metric plus its children."""
-    parent = _create_metric_with_children(
-        db,
-        organization_id=organization_id,
-        workspace_id=workspace_id,
-        payload=payload,
-        lifecycle="draft",
-        studio_notes=payload.studio_notes,
-    )
-    return _serialize_metric_tree(parent)
-
-
-@router.post(
-    "/{metric_id}/promote",
-    response_model=MetricPromoteResponse,
-    operation_id="promoteMetricDraft",
-)
-def promote_metric_draft(
-    metric_id: UUID,
-    organization_id: UUID = Depends(get_organization_id),
-    db: Session = Depends(get_db),
-):
-    """Promote a draft metric to active production use."""
-    metric = (
-        db.query(Metric)
-        .filter(
-            Metric.id == metric_id,
-            Metric.organization_id == organization_id,
-        )
-        .first()
-    )
-    if not metric:
-        raise HTTPException(status_code=404, detail="Metric not found")
-    if (metric.lifecycle or "active") != "draft":
-        raise HTTPException(
-            status_code=400,
-            detail="Only draft metrics can be promoted.",
-        )
-
-    promoted_at = datetime.now(timezone.utc)
-    metric.lifecycle = "active"
-    metric.enabled = True
-    metric.promoted_from_draft_at = promoted_at
-    if not (metric.enabled_surfaces or []):
-        metric.enabled_surfaces = ["agent"]
-    if not (metric.supported_surfaces or []):
-        metric.supported_surfaces = ["agent"]
-    db.commit()
-    db.refresh(metric)
-    return MetricPromoteResponse(
-        metric=_serialize_metric_tree(metric),
-        promoted_at=promoted_at,
-    )
-
-
-@router.post(
-    "/with-children",
-    response_model=MetricResponse,
-    status_code=201,
-    operation_id="createMetricWithChildren",
-)
-def create_metric_with_children(
-    payload: MetricCreateWithChildren,
-    organization_id: UUID = Depends(get_organization_id),
-    workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db),
-):
-    """Atomically create a parent category metric plus its children.
-
-    The parent gets ``metric_type=text`` (it's a category label, not a
-    score) and ``selection_mode`` from the payload. Every child is
-    forced to ``boolean`` so the LLM-evaluation path treats them as
-    yes/no labels. Both the parent and all children are stamped with
-    the same scope: either the active workspace (``scope="workspace"``,
-    default) or ``workspace_id=NULL`` (``scope="organization"``, the
-    org-shared shape).
-    """
-    parent = _create_metric_with_children(
-        db,
-        organization_id=organization_id,
-        workspace_id=workspace_id,
-        payload=payload,
-    )
     return _serialize_metric_tree(parent)
 
 
@@ -1013,14 +841,6 @@ def promote_discovered_metric(
 @router.get("", response_model=List[MetricResponse])
 def list_metrics(
     surface: Optional[str] = None,
-    include_drafts: bool = Query(
-        False,
-        description="When true, include draft metrics (Studio-only) in the listing.",
-    ),
-    drafts_only: bool = Query(
-        False,
-        description="When true, return only draft metrics.",
-    ),
     include_children: bool = Query(
         True,
         description=(
@@ -1058,12 +878,6 @@ def list_metrics(
             Metric.metric_origin == "default",
         ),
     )
-    if drafts_only:
-        query = query.filter(Metric.lifecycle == "draft")
-    elif not include_drafts:
-        query = query.filter(
-            or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active")
-        )
     metrics = (
         query.order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
     )

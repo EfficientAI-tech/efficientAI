@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from app.core.auth.org_access import ensure_organization_active
 from app.core.auth.principal import AuthMethod, Principal
 from app.core.auth.providers import AuthError, AuthProvider, RawCredential
 from app.models.database import APIKey
@@ -37,8 +36,6 @@ class ApiKeyProvider(AuthProvider):
         )
         if not db_key:
             raise AuthError("Invalid API key")
-
-        ensure_organization_active(db, db_key.organization_id)
 
         db_key.last_used = datetime.now(timezone.utc)
         db.commit()
