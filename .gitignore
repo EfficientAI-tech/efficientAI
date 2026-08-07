@@ -34,6 +34,7 @@ env/
 ENV/
 .venv
 config.yml
+config.docker.yml
 # uv
 .python-version
 uv.lock
