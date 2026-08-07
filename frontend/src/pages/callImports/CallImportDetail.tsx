@@ -57,6 +57,10 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
+import {
+  CallImportAuditMeta,
+  EvaluationAuditMeta,
+} from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
@@ -1680,12 +1684,12 @@ export default function CallImportDetail() {
                   )}
                 </span>
               </span>
-              <span className="text-sm text-gray-600">
-                Created: {new Date(data.created_at).toLocaleString()}
-              </span>
-              <span className="text-sm text-gray-600">
-                Updated: {new Date(data.updated_at).toLocaleString()}
-              </span>
+              <CallImportAuditMeta
+                createdAt={data.created_at}
+                updatedAt={data.updated_at}
+                createdByEmail={data.created_by_email}
+                lastUpdatedByEmail={data.last_updated_by_email}
+              />
             </div>
           </div>
 
@@ -3183,13 +3187,19 @@ export default function CallImportDetail() {
                     to={`/call-imports/${id}/evaluations/${evaluation.id}`}
                     className="flex-1 min-w-0 flex items-center justify-between gap-3"
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-900 truncate">
                         {headerLabel}
                       </p>
-                      <p className="text-[11px] text-gray-400 mt-0.5">
-                        Created {new Date(evaluation.created_at).toLocaleString()}
-                      </p>
+                      <EvaluationAuditMeta
+                        className="mt-1.5"
+                        compact
+                        showRunTimes={false}
+                        createdAt={evaluation.created_at}
+                        updatedAt={evaluation.updated_at}
+                        runByEmail={evaluation.created_by_email}
+                        lastUpdatedByEmail={evaluation.last_updated_by_email}
+                      />
                     </div>
                     <div className="text-right flex-shrink-0">
                       <StatusBadge status={evaluation.status} size="sm" />

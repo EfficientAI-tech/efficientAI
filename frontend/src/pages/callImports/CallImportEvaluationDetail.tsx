@@ -92,6 +92,7 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import { getActiveWorkspaceId, useWorkspaceStore } from '../../store/workspaceStore'
 import StatusBadge from '../../components/shared/StatusBadge'
+import { EvaluationAuditMeta } from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
@@ -2499,19 +2500,15 @@ export default function CallImportEvaluationDetail() {
                   ? 'Evaluated on Diarised transcript'
                   : 'Evaluated on Production transcript'}
               </span>
-              <span className="text-sm text-gray-600">
-                Created: {formatDateTime(evaluation.created_at)}
-              </span>
-              {evaluation.started_at && (
-                <span className="text-sm text-gray-600">
-                  Started: {formatDateTime(evaluation.started_at)}
-                </span>
-              )}
-              {evaluation.finished_at && (
-                <span className="text-sm text-gray-600">
-                  Finished: {formatDateTime(evaluation.finished_at)}
-                </span>
-              )}
+              <EvaluationAuditMeta
+                createdAt={evaluation.created_at}
+                updatedAt={evaluation.updated_at}
+                startedAt={evaluation.started_at}
+                finishedAt={evaluation.finished_at}
+                runByEmail={evaluation.created_by_email}
+                lastUpdatedByEmail={evaluation.last_updated_by_email}
+                formatDate={formatDateTime}
+              />
             </div>
           </div>
 
