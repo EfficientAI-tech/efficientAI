@@ -117,3 +117,48 @@ def test_create_evaluation_from_mapped_enqueues_async_materialization(
         .first()
     )
     assert refreshed_import.status == CallImportStatus.PROCESSING
+
+
+def test_create_evaluation_from_mapped_stamps_parent_last_updated_by(
+    authenticated_client,
+    db_session,
+    org_id,
+    seed_org,
+    monkeypatch,
+):
+    from tests.test_api.test_call_import_evaluations import (
+        _eval_body,
+        _make_metric,
+    )
+
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports._ensure_blob_storage_enabled",
+        lambda: None,
+    )
+
+    metric = _make_metric(db_session, org_id)
+    workspace = metric.workspace_id
+    call_import = _make_mapped_call_import(db_session, org_id, workspace)
+    call_import.last_updated_by_user_id = None
+    db_session.commit()
+
+    delay_mock = MagicMock(return_value=MagicMock(id="async-task"))
+    fake_bulk_ops = types.ModuleType("app.workers.tasks.call_import_bulk_ops")
+    fake_bulk_ops.materialize_mapped_call_import_evaluation_task = MagicMock(
+        delay=delay_mock,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.workers.tasks.call_import_bulk_ops",
+        fake_bulk_ops,
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert response.status_code == 202, response.text
+
+    detail = authenticated_client.get(f"/api/v1/call-imports/{call_import.id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["last_updated_by_email"] == "owner@example.com"

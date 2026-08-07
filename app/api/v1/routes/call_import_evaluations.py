@@ -35,6 +35,7 @@ from app.dependencies import (
 from app.services.call_imports.audit import (
     actor_emails_for_evaluation,
     emails_for_user_ids,
+    stamp_call_import_actor,
     stamp_evaluation_actor,
     user_ids_from_evaluations,
 )
@@ -1032,6 +1033,7 @@ async def create_call_import_evaluation(
         call_import.failed_rows = 0
         call_import.error_message = None
         call_import.status = CallImportStatus.PROCESSING
+        stamp_call_import_actor(call_import, principal)
         db.commit()
         db.refresh(call_import)
         starting_from_mapped = True
@@ -5139,6 +5141,9 @@ async def generate_call_import_evaluation_insights(
 
     summary = EvaluationTldrSummary.model_validate(task_result)
     db.refresh(evaluation)
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
 
@@ -5153,6 +5158,7 @@ async def generate_call_import_evaluation_insights(
         force=body.regenerate,
         max_llm_calls=body.max_llm_calls,
         db=db,
+        principal=principal,
     )
 
     return summary
@@ -5210,6 +5216,7 @@ def _enqueue_user_insights_job(
     force: bool = False,
     max_llm_calls: Optional[int] = None,
     db: Optional[Session] = None,
+    principal: Optional[Principal] = None,
 ) -> None:
     """Enqueue background user-insights generation unless already running."""
     current = _user_insights_payload(evaluation)
@@ -5241,6 +5248,8 @@ def _enqueue_user_insights_job(
         "error_message": None,
     }
     if db is not None:
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "user_insights")
         db.commit()
 
@@ -5348,6 +5357,7 @@ async def generate_call_import_evaluation_user_insights(
         force=body.force or body.regenerate,
         max_llm_calls=body.max_llm_calls,
         db=db,
+        principal=principal,
     )
 
     db.refresh(evaluation)
@@ -5590,6 +5600,7 @@ def _enqueue_metric_clusters_job(
     selected_evaluation_row_ids: Optional[List[str]] = None,
     failure_policies: Optional[Dict[str, MetricFailurePolicy]] = None,
     db: Optional[Session] = None,
+    principal: Optional[Principal] = None,
 ) -> None:
     current = _metric_clusters_payload(evaluation)
     if current is not None and current.status == "running" and not force:
@@ -5668,6 +5679,8 @@ def _enqueue_metric_clusters_job(
         **policy_blob,
     }
     if db is not None:
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "metric_clusters")
         db.commit()
 
@@ -5689,6 +5702,8 @@ def _enqueue_metric_clusters_job(
     if db is not None and isinstance(evaluation.metric_clusters, dict):
         evaluation.metric_clusters["celery_task_id"] = async_result.id
         flag_modified(evaluation, "metric_clusters")
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         db.commit()
 
 
@@ -6092,6 +6107,7 @@ async def generate_call_import_evaluation_metric_clusters(
         selected_evaluation_row_ids=selected_row_ids,
         failure_policies=merged_policies,
         db=db,
+        principal=principal,
     )
 
     db.refresh(evaluation)
