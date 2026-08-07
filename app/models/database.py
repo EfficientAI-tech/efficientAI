@@ -2552,6 +2552,50 @@ class CallImportEvaluationReportSnapshot(Base):
     )
 
 
+class CallImportEvaluationPdfReport(Base):
+    """Stored PDF artifact for a call import evaluation report generation."""
+
+    __tablename__ = "call_import_evaluation_pdf_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluation_report_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    vendor_name = Column(String(120), nullable=False)
+    report_type = Column(String(20), nullable=False, default="external")
+    filename = Column(String(255), nullable=True)
+    s3_key = Column(String(512), nullable=True)
+    report_config = Column(JSON, nullable=False, default=dict, server_default="{}")
+    cache_fingerprint = Column(String(64), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_by_user_id = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Judge Alignment (AlignEval-style hybrid integration)
 #

@@ -1701,6 +1701,35 @@ export interface CallImportEvaluationBaselineCandidatesResponse {
   default_evaluation_id: string | null
 }
 
+export interface CallImportEvaluationPdfReport {
+  id: string
+  filename: string
+  preview_url?: string | null
+  download_url?: string | null
+  created_at: string
+  created_by?: string | null
+  report_type: string
+  vendor_name: string
+  config_summary?: string | null
+  storage_available?: boolean
+  cache_hit?: boolean
+}
+
+export interface CallImportEvaluationPdfReportListItem {
+  id: string
+  filename?: string | null
+  vendor_name: string
+  report_type: string
+  created_by?: string | null
+  created_at: string
+  config_summary?: string | null
+  cache_fingerprint?: string | null
+}
+
+export interface CallImportEvaluationPdfReportListResponse {
+  items: CallImportEvaluationPdfReportListItem[]
+}
+
 export interface CallImportEvaluationRow {
   id: string
   evaluation_id: string

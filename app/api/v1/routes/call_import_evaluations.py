@@ -11,7 +11,7 @@ import math
 import re
 import statistics
 from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from datetime import date, datetime, timedelta, timezone
 
@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, func, or_, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -45,6 +46,7 @@ from app.models.database import (
     CallImport,
     CallImportEvaluation,
     CallImportEvaluationReportSnapshot,
+    CallImportEvaluationPdfReport,
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
@@ -98,6 +100,15 @@ from app.models.schemas import (
 )
 from app.services.reporting.call_import_evaluation_pdf_report import (
     call_import_evaluation_pdf_report_service,
+)
+from app.services.reporting.call_import_pdf_report_storage import (
+    build_pdf_report_s3_key,
+    compute_pdf_report_cache_fingerprint,
+    compute_pdf_report_config_fingerprint,
+    compute_pdf_report_content_fingerprint,
+    config_summary_from_report_config,
+    find_cached_pdf_report,
+    presigned_urls_for_pdf_report,
 )
 from app.services.call_import_metric_clusters import (
     METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
@@ -157,6 +168,35 @@ class CallImportEvaluationPdfReportRequest(BaseModel):
         if not cleaned:
             raise ValueError("Vendor name is required.")
         return cleaned
+
+
+class CallImportEvaluationPdfReportResponse(BaseModel):
+    id: str
+    filename: str
+    preview_url: Optional[str] = None
+    download_url: Optional[str] = None
+    created_at: datetime
+    created_by: Optional[str] = None
+    report_type: str
+    vendor_name: str
+    config_summary: Optional[str] = None
+    storage_available: bool = True
+    cache_hit: bool = False
+
+
+class CallImportEvaluationPdfReportListItem(BaseModel):
+    id: str
+    filename: Optional[str] = None
+    vendor_name: str
+    report_type: str
+    created_by: Optional[str] = None
+    created_at: datetime
+    config_summary: Optional[str] = None
+    cache_fingerprint: Optional[str] = None
+
+
+class CallImportEvaluationPdfReportListResponse(BaseModel):
+    items: List[CallImportEvaluationPdfReportListItem]
 
 
 class CallImportEvaluationBaselineCandidate(BaseModel):
@@ -2112,6 +2152,57 @@ def _report_filename_slug(value: str) -> str:
     return slug or "client"
 
 
+def _pdf_report_actor(principal: Principal) -> tuple[Optional[str], Optional[UUID]]:
+    created_by = principal.email
+    if not created_by and principal.user_id:
+        created_by = str(principal.user_id)
+    return created_by, principal.user_id
+
+
+def _pdf_report_response_from_row(
+    row: CallImportEvaluationPdfReport,
+    *,
+    cache_hit: bool = False,
+) -> CallImportEvaluationPdfReportResponse:
+    filename = row.filename or "report.pdf"
+    preview_url, download_url = presigned_urls_for_pdf_report(
+        row.s3_key or "",
+        filename,
+    )
+    return CallImportEvaluationPdfReportResponse(
+        id=str(row.id),
+        filename=filename,
+        preview_url=preview_url,
+        download_url=download_url,
+        created_at=row.created_at or datetime.now(timezone.utc),
+        created_by=row.created_by,
+        report_type=row.report_type,
+        vendor_name=row.vendor_name,
+        config_summary=config_summary_from_report_config(
+            row.report_config if isinstance(row.report_config, dict) else {}
+        ),
+        storage_available=bool(row.s3_key),
+        cache_hit=cache_hit,
+    )
+
+
+def _pdf_report_list_item_from_row(
+    row: CallImportEvaluationPdfReport,
+) -> CallImportEvaluationPdfReportListItem:
+    return CallImportEvaluationPdfReportListItem(
+        id=str(row.id),
+        filename=row.filename,
+        vendor_name=row.vendor_name,
+        report_type=row.report_type,
+        created_by=row.created_by,
+        created_at=row.created_at or datetime.now(timezone.utc),
+        config_summary=config_summary_from_report_config(
+            row.report_config if isinstance(row.report_config, dict) else {}
+        ),
+        cache_fingerprint=row.cache_fingerprint,
+    )
+
+
 def _report_branding_for_import_workspace(
     db: Session,
     organization_id: UUID,
@@ -3405,8 +3496,9 @@ async def generate_call_import_evaluation_pdf_report(
     payload: CallImportEvaluationPdfReportRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> StreamingResponse:
+):
     del api_key
     call_import = _require_import(db, call_import_id, organization_id)
 
@@ -3527,17 +3619,6 @@ async def generate_call_import_evaluation_pdf_report(
         cached_prompt_improvements,
         report_config,
     )
-    narrative = _generate_report_narrative(
-        db,
-        organization_id,
-        metric_aggregates=metric_aggregates,
-        insight_aggregates=insight_aggregates if is_internal else [],
-        period_delta_by_metric=period_delta_by_metric,
-        evidence_samples=evidence_samples if is_internal else {},
-        report_config=report_config,
-    )
-
-    generated_at = datetime.now(timezone.utc)
     branding_images, custom_heading = _report_branding_for_import_workspace(
         db,
         organization_id,
@@ -3562,6 +3643,76 @@ async def generate_call_import_evaluation_pdf_report(
         pdf_aggregates,
         child_names_by_parent=pdf_child_map,
     )
+
+    from app.services.storage.s3_service import s3_service
+
+    config_fingerprint = compute_pdf_report_config_fingerprint(
+        report_type=payload.report_type,
+        include_period_delta=bool(payload.include_period_delta),
+        include_weekly_delta=bool(payload.include_weekly_delta),
+        baseline_evaluation_id=payload.baseline_evaluation_id,
+        internal_brand_image_id=payload.internal_brand_image_id,
+        external_brand_image_id=payload.external_brand_image_id,
+        use_case=payload.use_case,
+        report_config=report_config,
+        report_heading=custom_heading,
+        vendor_name=payload.vendor_name,
+        platform_base_url=payload.platform_base_url,
+        period_label=period_label,
+    )
+    content_fingerprint = compute_pdf_report_content_fingerprint(
+        evaluation_status=evaluation.status,
+        completed_rows=int(evaluation.completed_rows or 0),
+        total_rows=int(evaluation.total_rows or 0),
+        failed_rows=int(evaluation.failed_rows or 0),
+        metric_aggregates=metric_aggregates,
+        insight_aggregates=insight_aggregates,
+        period_delta_by_metric=period_delta_by_metric,
+        benchmark_context=benchmark_context,
+        metric_metadata=[
+            {
+                "id": str(metric.id),
+                "name": metric.name,
+                "description": metric.description,
+            }
+            for metric in metrics
+        ],
+        failure_policies=failure_policies_for_pdf,
+        tldr_summary=cached_tldr_summary,
+        user_insights_for_pdf=generated_insights_for_pdf,
+        metric_clusters_for_pdf=metric_clusters_for_pdf,
+        prompt_improvements_for_pdf=prompt_improvements_for_pdf,
+    )
+    cache_fingerprint = compute_pdf_report_cache_fingerprint(
+        config_fingerprint=config_fingerprint,
+        content_fingerprint=content_fingerprint,
+    )
+    if s3_service.is_enabled():
+        cached_pdf_report = find_cached_pdf_report(
+            db,
+            evaluation_id=evaluation.id,
+            organization_id=organization_id,
+            cache_fingerprint=cache_fingerprint,
+        )
+        if cached_pdf_report is not None:
+            logger.info(
+                "Reusing stored PDF report {} for evaluation {} (cache fingerprint match)",
+                cached_pdf_report.id,
+                eval_id,
+            )
+            return _pdf_report_response_from_row(cached_pdf_report, cache_hit=True)
+
+    narrative = _generate_report_narrative(
+        db,
+        organization_id,
+        metric_aggregates=metric_aggregates,
+        insight_aggregates=insight_aggregates if is_internal else [],
+        period_delta_by_metric=period_delta_by_metric,
+        evidence_samples=evidence_samples if is_internal else {},
+        report_config=report_config,
+    )
+
+    generated_at = datetime.now(timezone.utc)
     try:
         pdf_started = datetime.now(timezone.utc)
         pdf_bytes = await asyncio.to_thread(
@@ -3635,17 +3786,168 @@ async def generate_call_import_evaluation_pdf_report(
         .count(),
     )
     db.add(snapshot)
-    db.commit()
+    db.flush()
 
     filename = (
         f"{_report_filename_slug(payload.vendor_name)}-"
         f"{payload.report_type}-quality-metric-audit-{eval_id}.pdf"
     )
-    return StreamingResponse(
-        iter([pdf_bytes]),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+
+    if not s3_service.is_enabled():
+        db.commit()
+        return StreamingResponse(
+            iter([pdf_bytes]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    report_id = uuid4()
+    s3_key = build_pdf_report_s3_key(
+        organization_id=organization_id,
+        call_import_id=call_import.id,
+        evaluation_id=evaluation.id,
+        report_id=report_id,
     )
+    try:
+        s3_service.upload_file_by_key(
+            file_content=pdf_bytes,
+            key=s3_key,
+            content_type="application/pdf",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to upload PDF report for evaluation {} to object storage",
+            eval_id,
+        )
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to store PDF report: {exc}",
+        ) from exc
+
+    created_by, created_by_user_id = _pdf_report_actor(principal)
+    pdf_report = CallImportEvaluationPdfReport(
+        id=report_id,
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=organization_id,
+        workspace_id=call_import.workspace_id,
+        snapshot_id=snapshot.id,
+        vendor_name=payload.vendor_name,
+        report_type=payload.report_type,
+        filename=filename,
+        s3_key=s3_key,
+        report_config=report_config,
+        cache_fingerprint=cache_fingerprint,
+        created_by=created_by,
+        created_by_user_id=created_by_user_id,
+    )
+    db.add(pdf_report)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        try:
+            s3_service.delete_file_by_key(s3_key)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to delete orphan PDF after cache race for evaluation {}",
+                eval_id,
+            )
+        raced_winner = find_cached_pdf_report(
+            db,
+            evaluation_id=evaluation.id,
+            organization_id=organization_id,
+            cache_fingerprint=cache_fingerprint,
+        )
+        if raced_winner is not None:
+            logger.info(
+                "PDF report cache race resolved for evaluation {} (winner {})",
+                eval_id,
+                raced_winner.id,
+            )
+            return _pdf_report_response_from_row(raced_winner, cache_hit=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to store PDF report due to a concurrent duplicate request.",
+        ) from None
+    db.refresh(pdf_report)
+    return _pdf_report_response_from_row(pdf_report)
+
+
+@router.get(
+    "/{eval_id}/pdf-reports",
+    response_model=CallImportEvaluationPdfReportListResponse,
+    operation_id="listCallImportEvaluationPdfReports",
+)
+async def list_call_import_evaluation_pdf_reports(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationPdfReportListResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    rows = (
+        db.query(CallImportEvaluationPdfReport)
+        .filter(
+            CallImportEvaluationPdfReport.evaluation_id == eval_id,
+            CallImportEvaluationPdfReport.organization_id == organization_id,
+        )
+        .order_by(desc(CallImportEvaluationPdfReport.created_at))
+        .all()
+    )
+    return CallImportEvaluationPdfReportListResponse(
+        items=[_pdf_report_list_item_from_row(row) for row in rows],
+    )
+
+
+@router.get(
+    "/{eval_id}/pdf-reports/{report_id}",
+    response_model=CallImportEvaluationPdfReportResponse,
+    operation_id="getCallImportEvaluationPdfReport",
+)
+async def get_call_import_evaluation_pdf_report(
+    call_import_id: UUID,
+    eval_id: UUID,
+    report_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationPdfReportResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    row = (
+        db.query(CallImportEvaluationPdfReport)
+        .filter(
+            CallImportEvaluationPdfReport.id == report_id,
+            CallImportEvaluationPdfReport.evaluation_id == eval_id,
+            CallImportEvaluationPdfReport.call_import_id == call_import_id,
+            CallImportEvaluationPdfReport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="PDF report not found")
+    if not row.s3_key:
+        raise HTTPException(
+            status_code=404,
+            detail="PDF report file is not available in object storage",
+        )
+    return _pdf_report_response_from_row(row)
 
 
 @router.patch(

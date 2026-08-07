@@ -43,6 +43,8 @@ import type {
   CallImportPreviewResponse,
   CallImportEvaluation,
   CallImportEvaluationBaselineCandidatesResponse,
+  CallImportEvaluationPdfReport,
+  CallImportEvaluationPdfReportListResponse,
   CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
   CallImportEvaluationRow,
@@ -2882,7 +2884,7 @@ class ApiClient {
       reportConfig?: Record<string, any>
       platformBaseUrl?: string | null
     },
-  ): Promise<Blob> {
+  ): Promise<CallImportEvaluationPdfReport | Blob> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
       {
@@ -2897,7 +2899,33 @@ class ApiClient {
         report_config: options?.reportConfig || {},
         platform_base_url: options?.platformBaseUrl || null,
       },
-      { responseType: 'blob' },
+      { responseType: 'arraybuffer' },
+    )
+    const contentType = String(response.headers['content-type'] || '')
+    if (contentType.includes('application/pdf')) {
+      return new Blob([response.data], { type: 'application/pdf' })
+    }
+    const text = new TextDecoder().decode(response.data)
+    return JSON.parse(text) as CallImportEvaluationPdfReport
+  }
+
+  async listCallImportEvaluationPdfReports(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluationPdfReportListResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationPdfReport(
+    callImportId: string,
+    evaluationId: string,
+    reportId: string,
+  ): Promise<CallImportEvaluationPdfReport> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports/${reportId}`,
     )
     return response.data
   }
