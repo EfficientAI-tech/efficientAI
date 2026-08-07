@@ -1876,6 +1876,9 @@ class CallImport(Base):
         index=True,
     )
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    last_updated_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Telephony provider key (e.g. ``'exotel'``, ``'plivo'``). In the
     # legacy one-shot ``POST /upload`` endpoint this is supplied with the
@@ -2265,6 +2268,9 @@ class CallImportEvaluation(Base):
     )
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    last_updated_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
     # Optional user-supplied label for this run. Lets the UI surface

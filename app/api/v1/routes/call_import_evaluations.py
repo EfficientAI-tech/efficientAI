@@ -32,6 +32,12 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
+from app.services.call_imports.audit import (
+    actor_emails_for_evaluation,
+    emails_for_user_ids,
+    stamp_evaluation_actor,
+    user_ids_from_evaluations,
+)
 from app.services.workspace_rbac import resolve_workspace_capabilities
 from app.models.database import (
     AIProvider,
@@ -464,6 +470,7 @@ def _serialize_eval(
     row: CallImportEvaluation,
     *,
     sibling_evaluation_ids: Optional[List[UUID]] = None,
+    user_emails: Optional[Dict[UUID, str]] = None,
 ) -> CallImportEvaluationResponse:
     selected_ids = _serialize_selected_metric_ids(row.selected_metric_ids)
 
@@ -510,6 +517,10 @@ def _serialize_eval(
         min(ui_completed_raw, total) if total else ui_completed_raw
     )
     ui_failed = min(ui_failed_raw, total) if total else ui_failed_raw
+
+    if user_emails is None:
+        user_emails = emails_for_user_ids(db, user_ids_from_evaluations([row]))
+    created_email, updated_email = actor_emails_for_evaluation(row, user_emails)
 
     return CallImportEvaluationResponse(
         id=row.id,
@@ -570,6 +581,8 @@ def _serialize_eval(
         finished_at=row.finished_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        created_by_email=created_email,
+        last_updated_by_email=updated_email,
         tldr_summary=_tldr_summary_payload(row),
         user_insights=_user_insights_payload(row),
         metric_clusters=_metric_clusters_payload(row),
@@ -626,6 +639,7 @@ async def create_call_import_evaluation(
     payload: CallImportEvaluationCreate,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationResponse:
     del api_key
@@ -1095,6 +1109,7 @@ async def create_call_import_evaluation(
                 getattr(payload, "discover_new_metrics", False)
             ),
         )
+        stamp_evaluation_actor(evaluation, principal, creating=True)
         db.add(evaluation)
         db.flush()
         created_evaluations.append(evaluation)
@@ -1170,8 +1185,9 @@ async def list_call_import_evaluations(
         .order_by(desc(CallImportEvaluation.created_at))
         .all()
     )
+    email_map = emails_for_user_ids(db, user_ids_from_evaluations(rows))
     return CallImportEvaluationListResponse(
-        items=[_serialize_eval(db, row) for row in rows],
+        items=[_serialize_eval(db, row, user_emails=email_map) for row in rows],
         total=len(rows),
     )
 
@@ -3641,6 +3657,7 @@ async def update_call_import_evaluation(
     payload: CallImportEvaluationUpdate,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationResponse:
     """Edit metadata on an existing evaluation run (currently just ``name``)."""
@@ -3666,6 +3683,7 @@ async def update_call_import_evaluation(
     if "name" in payload_data:
         row.name = _normalize_name(payload_data["name"])
 
+    stamp_evaluation_actor(row, principal)
     db.commit()
     db.refresh(row)
     return _serialize_eval(db, row)
@@ -3847,6 +3865,7 @@ async def cancel_call_import_evaluation(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationBulkActionResponse:
     """Abort all in-flight (or queued) rows in a single evaluation run.
@@ -3887,6 +3906,7 @@ async def cancel_call_import_evaluation(
 
     _claim_evaluation_bulk_operation(eval_id, "abort")
     evaluation.status = "cancelled"
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
@@ -3912,6 +3932,7 @@ async def force_fail_pending_call_import_evaluation_rows(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationBulkActionResponse:
     """Force-fail only rows currently in ``pending`` for a single run.
@@ -3953,6 +3974,8 @@ async def force_fail_pending_call_import_evaluation_rows(
         )
 
     _claim_evaluation_bulk_operation(eval_id, "force_fail_pending")
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
         cancel_call_import_evaluation_task,
@@ -3980,6 +4003,7 @@ async def cancel_call_import_evaluation_row(
     eval_row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationRowResponse:
     """Abort an in-flight (or queued) evaluation for a single row.
@@ -4029,6 +4053,7 @@ async def cancel_call_import_evaluation_row(
                 _apply_evaluation_cancel([eval_row])
                 row_db.commit()
                 _rollup_evaluation_status(evaluation, db)
+                stamp_evaluation_actor(evaluation, principal)
                 db.commit()
                 row_db.refresh(eval_row)
                 return _to_evaluation_row_response(eval_row, source_row, evaluation)
@@ -4053,6 +4078,7 @@ async def cancel_call_import_evaluation_row(
     _apply_evaluation_cancel([eval_row])
     db.flush()
     _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     db.refresh(eval_row)
 
@@ -4075,6 +4101,7 @@ async def delete_call_import_evaluation(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Response:
     del api_key
@@ -4109,6 +4136,7 @@ async def bulk_delete_call_import_evaluations(
     payload: CallImportEvaluationBulkDelete,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Dict[str, int]:
     """Delete multiple evaluation runs scoped to one call import.
@@ -5039,6 +5067,7 @@ async def generate_call_import_evaluation_insights(
     body: EvaluationInsightsRequest = Body(default_factory=EvaluationInsightsRequest),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationTldrSummary:
     """Generate (or return-cached) the LLM TLDR for an evaluation run.
@@ -5271,6 +5300,7 @@ async def generate_call_import_evaluation_user_insights(
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationUserInsightsState:
     del api_key
@@ -5778,6 +5808,7 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
     body: MetricFailurePoliciesSaveRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MetricFailurePoliciesResponse:
     del api_key
@@ -5817,6 +5848,7 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
         source="user",
     )
     flag_modified(evaluation, "metric_clusters")
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     db.refresh(evaluation)
 
@@ -5938,6 +5970,7 @@ async def generate_call_import_evaluation_metric_clusters(
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationMetricClustersState:
     del api_key
@@ -6077,6 +6110,7 @@ async def cancel_call_import_evaluation_metric_clusters(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationMetricClustersState:
     """Abort in-flight failure-diagnostics clustering.
@@ -6103,6 +6137,7 @@ async def cancel_call_import_evaluation_metric_clusters(
 
     _apply_metric_clusters_cancel(evaluation)
     flag_modified(evaluation, "metric_clusters")
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     db.refresh(evaluation)
 
@@ -6154,6 +6189,7 @@ async def generate_call_import_evaluation_prompt_improvements(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationPromptImprovementsState:
     del api_key
@@ -7213,6 +7249,7 @@ async def merge_call_import_evaluation_discovered_labels(
     body: DiscoveredLabelMergeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredLabelsResponse:
     """Rewrite every row's ``discovered_labels`` entry from from_key -> to_key.
@@ -7379,6 +7416,7 @@ async def merge_call_import_evaluation_discovered_labels(
     aliases_top[parent_id_str] = parent_aliases
     evaluation.discovered_label_aliases = aliases_top
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     alias_map_after = _alias_map_for_parent(evaluation, parent.id)
@@ -7406,6 +7444,7 @@ async def delete_call_import_evaluation_discovered_label(
     body: DiscoveredLabelDeleteRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredLabelsResponse:
     """Tombstone a single LLM-discovered candidate for this evaluation.
@@ -7540,6 +7579,7 @@ async def delete_call_import_evaluation_discovered_label(
     aliases_top[parent_id_str] = parent_aliases
     evaluation.discovered_label_aliases = aliases_top
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     alias_map_after = _alias_map_for_parent(evaluation, parent.id)
@@ -7645,6 +7685,7 @@ async def merge_call_import_evaluation_discovered_metrics(
     body: DiscoveredMetricMergeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredMetricsResponse:
     """Rewrite every row's ``__discovered_metrics__`` entry from→to.
@@ -7749,6 +7790,7 @@ async def merge_call_import_evaluation_discovered_metrics(
             aliases[k] = canonical_to
     evaluation.discovered_metric_aliases = aliases
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     items_raw = _get_running_discovered_metrics(
@@ -7774,6 +7816,7 @@ async def delete_call_import_evaluation_discovered_metric(
     body: DiscoveredMetricDeleteRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredMetricsResponse:
     """Tombstone a single LLM-discovered top-level metric candidate."""
@@ -7847,6 +7890,7 @@ async def delete_call_import_evaluation_discovered_metric(
             aliases[k] = ""
     evaluation.discovered_metric_aliases = aliases
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     items_raw = _get_running_discovered_metrics(
@@ -7872,6 +7916,7 @@ async def delete_call_import_evaluation_row(
     eval_row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Response:
     """Delete a single per-row scoring entry within an evaluation run.
@@ -7936,6 +7981,7 @@ async def delete_call_import_evaluation_row(
     db.delete(eval_row)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -8467,6 +8513,7 @@ async def retry_call_import_evaluation(
     payload: Optional[CallImportEvaluationRetryRequest] = Body(default=None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationRetryResponse:
     """Re-enqueue failed rows in an evaluation run.
@@ -8699,6 +8746,7 @@ async def retry_call_import_evaluation(
         evaluation.started_at = datetime.now(timezone.utc)
 
     _claim_evaluation_bulk_operation(eval_id, "retry")
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
@@ -8736,6 +8784,7 @@ async def retry_call_import_evaluation_row(
     eval_row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationRowResponse:
     """Re-enqueue a single failed evaluation row.
@@ -8821,6 +8870,7 @@ async def retry_call_import_evaluation_row(
         evaluation.started_at = datetime.now(timezone.utc)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     try:

@@ -25,6 +25,7 @@ from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.auth import Principal, get_principal
 from app.core.auth.rbac import require_admin
 from app.database import get_db
 from app.db_sharding.sessions import is_sharding_enabled
@@ -35,6 +36,12 @@ from app.dependencies import (
     require_enterprise_feature,
 )
 from app.services.billing.flexprice_service import record_call_import_batch_created
+from app.services.call_imports.audit import (
+    actor_emails_for_call_import,
+    emails_for_user_ids,
+    stamp_call_import_actor,
+    user_ids_from_call_imports,
+)
 from app.services.call_imports.dispatch_diagnostics import (
     build_call_import_dispatch_diagnostics,
 )
@@ -123,7 +130,12 @@ def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
-def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportResponse:
+def _serialize_call_import(
+    db: Session,
+    call_import: CallImport,
+    *,
+    user_emails: Optional[Dict[UUID, str]] = None,
+) -> CallImportResponse:
     """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
     from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
     from app.services.call_imports.progress_counters import (
@@ -150,8 +162,22 @@ def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportRe
     failed = min(int(call_import.failed_rows or 0), total) if total else int(
         call_import.failed_rows or 0
     )
+    if user_emails is None:
+        user_emails = emails_for_user_ids(
+            db, user_ids_from_call_imports([call_import])
+        )
+    created_email, updated_email = actor_emails_for_call_import(
+        call_import, user_emails
+    )
     base = CallImportResponse.model_validate(call_import)
-    return base.model_copy(update={"completed_rows": completed, "failed_rows": failed})
+    return base.model_copy(
+        update={
+            "completed_rows": completed,
+            "failed_rows": failed,
+            "created_by_email": created_email,
+            "last_updated_by_email": updated_email,
+        }
+    )
 
 
 def _resolve_tags(
@@ -1479,6 +1505,7 @@ async def create_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
     """UPLOAD stage of the staged call-import flow.
@@ -1584,6 +1611,7 @@ async def create_call_import(
     if tag_rows:
         call_import.tags = tag_rows
 
+    stamp_call_import_actor(call_import, principal, creating=True)
     db.add(call_import)
     try:
         db.commit()
@@ -1616,6 +1644,7 @@ async def update_call_import_mapping(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
     """MAP stage of the staged call-import flow.
@@ -1723,6 +1752,7 @@ async def update_call_import_mapping(
     call_import.skipped_columns = list(cleaned_skipped)
     call_import.sheet_name = canonical_sheet
     call_import.status = CallImportStatus.MAPPED
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
     return _serialize_call_import(db, call_import)
@@ -1748,6 +1778,7 @@ async def start_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Deprecated IMPORT stage — use Run Evaluation for new batches.
@@ -1846,6 +1877,7 @@ async def start_call_import(
     call_import.failed_rows = 0
     call_import.error_message = None
     call_import.status = CallImportStatus.PROCESSING
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
 
@@ -1946,6 +1978,7 @@ async def upload_call_import_csv(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Legacy one-shot upload kept for backward compatibility.
@@ -2052,6 +2085,7 @@ async def upload_call_import_csv(
     )
     if tag_rows:
         call_import.tags = tag_rows
+    stamp_call_import_actor(call_import, principal, creating=True)
     db.add(call_import)
     db.flush()  # populate call_import.id
     if integration is None:
@@ -2064,6 +2098,7 @@ async def upload_call_import_csv(
     )
 
     call_import.status = CallImportStatus.PROCESSING
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
 
@@ -2115,6 +2150,7 @@ async def upload_call_import_audio(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Persist manually uploaded recordings as completed CallImport rows.
@@ -2212,6 +2248,7 @@ async def upload_call_import_audio(
     if tag_rows:
         call_import.tags = tag_rows
 
+    stamp_call_import_actor(call_import, principal, creating=True)
     try:
         db.add(call_import)
         db.flush()
@@ -2391,8 +2428,12 @@ async def list_call_imports(
         .all()
     )
 
+    email_map = emails_for_user_ids(db, user_ids_from_call_imports(items))
     return CallImportListResponse(
-        items=[_serialize_call_import(db, item) for item in items],
+        items=[
+            _serialize_call_import(db, item, user_emails=email_map)
+            for item in items
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -2514,6 +2555,7 @@ async def update_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
     """Edit dataset / tag assignments (and schema, pre-import) on a batch.
@@ -2575,6 +2617,7 @@ async def update_call_import(
             call_import.sheet_name = None
             call_import.status = CallImportStatus.UPLOADED
 
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
     return _serialize_call_import(db, call_import)
@@ -2929,6 +2972,7 @@ async def delete_call_import(
     call_import_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportDeleteResponse:
     """Delete a call-import batch asynchronously.
@@ -2960,6 +3004,7 @@ async def delete_call_import(
 
     call_import.status = CallImportStatus.DELETING
     call_import.error_message = None
+    stamp_call_import_actor(call_import, principal)
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
@@ -3025,6 +3070,7 @@ async def delete_call_import_row(
     row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Response:
     """Delete a single CallImportRow and its S3 recording.
@@ -3075,6 +3121,7 @@ async def delete_call_import_row(
         row_db.commit()
 
         _recompute_call_import_counters(db, call_import)
+        stamp_call_import_actor(call_import, principal)
         db.commit()
     finally:
         close_row_sessions(row_db, extra_catalog)
@@ -3116,6 +3163,7 @@ async def retry_failed_call_import_rows(
     payload: Optional[CallImportRetryFailedRowsRequest] = Body(None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRetryFailedRowsResponse:
     """Re-enqueue every failed import row in this batch.
@@ -3199,6 +3247,7 @@ async def retry_failed_call_import_rows(
 
     db.flush()
     _recompute_call_import_counters(db, call_import)
+    stamp_call_import_actor(call_import, principal)
     db.commit()
 
     try:
@@ -3244,6 +3293,7 @@ async def bulk_delete_call_import_rows(
     payload: CallImportRowBulkDelete,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRowBulkDeleteResponse:
     """Delete multiple ``CallImportRow`` rows in one request.
@@ -3275,6 +3325,9 @@ async def bulk_delete_call_import_rows(
     from app.workers.tasks.call_import_bulk_ops import bulk_delete_call_import_rows_task
 
     row_id_strs = [str(rid) for rid in payload.row_ids]
+
+    stamp_call_import_actor(call_import, principal)
+    db.commit()
 
     bulk_delete_call_import_rows_task.delay(
         str(call_import_id),
@@ -3321,6 +3374,7 @@ async def transcribe_call_import(
     payload: CallImportTranscribeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportTranscribeResponse:
     """Fan out diarization tasks for many rows in a single call.
@@ -3349,6 +3403,9 @@ async def transcribe_call_import(
 
     from app.workers.tasks.call_import_bulk_ops import bulk_diarize_call_import_task
 
+    stamp_call_import_actor(call_import, principal)
+    db.commit()
+
     bulk_diarize_call_import_task.delay(
         str(call_import_id),
         str(organization_id),
@@ -3376,6 +3433,7 @@ async def transcribe_call_import_row(
     payload: CallImportTranscribeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportTranscribeResponse:
     """Diarize / transcribe a single row.
@@ -3415,6 +3473,9 @@ async def transcribe_call_import_row(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    stamp_call_import_actor(call_import, principal)
+    db.commit()
 
     return CallImportTranscribeResponse(
         queued=result.queued,
@@ -3531,6 +3592,7 @@ async def cancel_call_import_row_diarisation(
     row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRowResponse:
     """Abort an in-flight (or queued) diarisation for a single row.
@@ -3577,6 +3639,8 @@ async def cancel_call_import_row_diarisation(
     try:
         _apply_diarisation_cancel([row])
         row_db.commit()
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
         row_db.refresh(row)
         return CallImportRowResponse.model_validate(row)
     finally:
@@ -3594,6 +3658,7 @@ async def cancel_call_import_diarisation(
     payload: Optional[CallImportCancelDiarisationRequest] = None,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportCancelDiarisationResponse:
     """Abort in-flight diarisation for many rows in a single call.
@@ -3652,6 +3717,7 @@ async def cancel_call_import_diarisation(
         skipped_missing = 0
 
     cancelled, skipped = _apply_diarisation_cancel(rows)
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     return CallImportCancelDiarisationResponse(
         cancelled=cancelled,
@@ -3702,6 +3768,7 @@ async def toggle_call_import_row_speaker_swap(
     row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRowResponse:
     """Flip the user <-> agent mapping on a diarised row.
@@ -3766,6 +3833,8 @@ async def toggle_call_import_row_speaker_swap(
             _render_diarised_segments_text(segments, swap=new_swap) or None
         )
         row_db.commit()
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
         row_db.refresh(row)
         return CallImportRowResponse.model_validate(row)
     finally:

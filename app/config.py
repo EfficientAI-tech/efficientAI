@@ -107,7 +107,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
 
     # Authentication
-    AUTH_PROVIDERS: List[str] = ["api_key"]
+    AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
     AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 15
     AUTH_REFRESH_TOKEN_TTL_DAYS: int = 7

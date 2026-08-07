@@ -1176,6 +1176,8 @@ export interface CallImport {
   error_message: string | null
   created_at: string
   updated_at: string
+  created_by_email?: string | null
+  last_updated_by_email?: string | null
 }
 
 export interface CallImportDetail extends CallImport {
@@ -1312,6 +1314,8 @@ export interface CallImportEvaluation {
   finished_at: string | null
   created_at: string
   updated_at: string
+  created_by_email?: string | null
+  last_updated_by_email?: string | null
   /**
    * Cached LLM-generated TLDR rendered above the Visualizations tab.
    * Populated lazily via ``POST /evaluations/{id}/insights``; null on
