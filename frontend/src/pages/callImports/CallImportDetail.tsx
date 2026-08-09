@@ -34,6 +34,7 @@ import {
   Search,
   Square,
   Trash2,
+  Upload,
   Volume2,
   X,
   XCircle,
@@ -69,6 +70,7 @@ import {
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
+import UploadAudioModal from './components/UploadAudioModal'
 import InsightsMetricCard, {
   INSIGHTS_PALETTE,
 } from './components/InsightsMetricCard'
@@ -126,6 +128,13 @@ function formatRecordingDate(value: string | null | undefined): string {
 function isNonRetryableError(message: string | null | undefined): boolean {
   if (!message) return false
   return /(401|403|404|forbidden|unauthor|not found|exceeds|too large|invalid content)/i.test(message)
+}
+
+function isImportCredentialError(message: string | null | undefined): boolean {
+  if (!message) return false
+  return /(rejected credentials|telephony credentials rejected|auth failed|credentials could not be verified)/i.test(
+    message,
+  )
 }
 
 // --- Insights tab helpers ---------------------------------------------
@@ -405,6 +414,7 @@ export default function CallImportDetail() {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const [showDeleteImport, setShowDeleteImport] = useState(false)
+  const [showAppendAudioModal, setShowAppendAudioModal] = useState(false)
   const [showRetryFailedImportConfirm, setShowRetryFailedImportConfirm] =
     useState(false)
   const [retryFailedImportError, setRetryFailedImportError] = useState<string | null>(
@@ -595,6 +605,7 @@ export default function CallImportDetail() {
   })
 
   const [editingMeta, setEditingMeta] = useState(false)
+  const [draftImportName, setDraftImportName] = useState('')
   const [draftDataset, setDraftDataset] = useState('')
   const [draftTagIds, setDraftTagIds] = useState<string[]>([])
 
@@ -610,8 +621,11 @@ export default function CallImportDetail() {
   })
 
   const updateMetaMutation = useMutation({
-    mutationFn: (payload: { dataset?: string | null; tag_ids?: string[] }) =>
-      apiClient.updateCallImport(id!, payload),
+    mutationFn: (payload: {
+      original_filename?: string | null
+      dataset?: string | null
+      tag_ids?: string[]
+    }) => apiClient.updateCallImport(id!, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -1516,6 +1530,14 @@ export default function CallImportDetail() {
   }
 
   const rows = data.rows ?? []
+  const pendingCredentialErrorCount = rows.filter(
+    (row) =>
+      row.status === 'pending' &&
+      !!row.error_message &&
+      isImportCredentialError(row.error_message),
+  ).length
+  const showCredentialImportWarning =
+    data.status === 'processing' && pendingCredentialErrorCount > 0
 
   // The staged-flow batch isn't ready to render rows / evaluations
   // until the user finishes the MAP + IMPORT steps. We swap out the
@@ -1524,6 +1546,9 @@ export default function CallImportDetail() {
   const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
   const showWorkflowTabs = !needsMapping
   const isDeleting = data.status === 'deleting'
+  const isManualAudioImport = (data.source_format || '').toLowerCase() === 'audio'
+  const canAppendManualAudio =
+    isManualAudioImport && data.status === 'completed' && !isDeleting
   const canRunEvaluation = data.status === 'mapped' || showWorkflowTabs
 
   // Selection state — ``selectedRowIds`` can now span pages (we no
@@ -1600,6 +1625,17 @@ export default function CallImportDetail() {
               }
             >
               Run Evaluation
+            </Button>
+          )}
+          {canAppendManualAudio && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Upload className="h-4 w-4" />}
+              onClick={() => setShowAppendAudioModal(true)}
+              title="Upload more recordings into this import batch"
+            >
+              Add recordings
             </Button>
           )}
           <Button
@@ -1799,16 +1835,33 @@ export default function CallImportDetail() {
                 size="sm"
                 leftIcon={<Edit3 className="h-4 w-4" />}
                 onClick={() => {
+                  setDraftImportName(data.original_filename || '')
                   setDraftDataset(data.dataset || '')
                   setDraftTagIds(data.tags.map((t) => t.id))
                   setEditingMeta(true)
                 }}
               >
-                Edit dataset / tags
+                Edit name / dataset / tags
               </Button>
             </div>
           ) : (
             <div className="space-y-3">
+              <div>
+                <label
+                  htmlFor="import-name-edit"
+                  className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1"
+                >
+                  Import name
+                </label>
+                <input
+                  id="import-name-edit"
+                  type="text"
+                  value={draftImportName}
+                  onChange={(e) => setDraftImportName(e.target.value)}
+                  placeholder="Leave blank to clear"
+                  className="w-full max-w-sm px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
               <div>
                 <label
                   htmlFor="dataset-edit"
@@ -1887,6 +1940,9 @@ export default function CallImportDetail() {
                   isLoading={updateMetaMutation.isPending}
                   onClick={() =>
                     updateMetaMutation.mutate({
+                      original_filename: draftImportName.trim()
+                        ? draftImportName.trim()
+                        : null,
                       dataset: draftDataset.trim() ? draftDataset.trim() : null,
                       tag_ids: draftTagIds,
                     })
@@ -1918,6 +1974,22 @@ export default function CallImportDetail() {
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
               <p className="text-sm text-red-800">{data.error_message}</p>
+            </div>
+          </div>
+        )}
+
+        {showCredentialImportWarning && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-amber-900 space-y-1">
+                <p>
+                  {pendingCredentialErrorCount} row
+                  {pendingCredentialErrorCount === 1 ? '' : 's'} failed to fetch
+                  recordings due to telephony credential errors. Update credentials in
+                  Integrations, then use Retry failed to try again.
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -2568,6 +2640,15 @@ export default function CallImportDetail() {
                             no retry
                           </span>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {row.status === 'pending' && row.error_message && (
+                    <div className="border-t border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900 flex items-start gap-2">
+                      <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1 break-words">
+                        <span className="font-medium">Retry pending:</span> {row.error_message}
                       </div>
                     </div>
                   )}
@@ -4524,10 +4605,10 @@ export default function CallImportDetail() {
                           </div>
                           {evalTranscriptSource === 'production' ? (
                             <p className="text-[11px] text-gray-500">
-                              Skips diarization and scores the transcript
-                              imported from your CSV. Recordings are still
-                              fetched from Exotel/Plivo when a recording URL
-                              is mapped (needed for audio metrics).
+                              Skips diarization and recording download, and
+                              scores the transcript imported from your CSV
+                              directly. Audio metrics require a recording
+                              already stored on the row.
                             </p>
                           ) : null}
                         </div>
@@ -5021,6 +5102,21 @@ export default function CallImportDetail() {
           if (retryFailedImportMutation.isPending) return
           setShowRetryFailedImportConfirm(false)
           setRetryFailedImportError(null)
+        }}
+      />
+
+      <UploadAudioModal
+        open={showAppendAudioModal}
+        onClose={() => setShowAppendAudioModal(false)}
+        appendToImportId={id}
+        appendToImportName={data.original_filename || undefined}
+        onAppendSuccess={(response) => {
+          showToast(
+            response.message ||
+              `Added recordings (${response.total_rows} total in batch).`,
+            'success',
+          )
+          refetch()
         }}
       />
 

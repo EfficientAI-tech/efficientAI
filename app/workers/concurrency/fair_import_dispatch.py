@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models.database import CallImport, CallImportRow
+from app.models.database import CallImport, CallImportRow, Workspace
 from app.models.enums import CallImportRowStatus, CallImportStatus
 from app.workers.concurrency.eval_dispatch import IMPORTS_QUEUE
 from app.workers.concurrency.import_dispatch import _try_dispatch_single_import_row
@@ -85,10 +85,12 @@ def _workspaces_with_pending_imports(db: Session) -> List[UUID]:
     rows = (
         db.query(CallImport.workspace_id)
         .join(CallImportRow, CallImportRow.call_import_id == CallImport.id)
+        .join(Workspace, Workspace.id == CallImport.workspace_id)
         .filter(
             CallImport.status != CallImportStatus.DELETING,
             CallImportRow.status == CallImportRowStatus.PENDING,
             CallImportRow.celery_task_id.is_(None),
+            Workspace.is_active.is_(True),
         )
         .distinct()
         .all()

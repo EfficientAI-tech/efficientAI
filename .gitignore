@@ -33,6 +33,7 @@ newenv/
 env/
 ENV/
 .venv
+.pptx_venv
 config.yml
 config.docker.yml
 # uv

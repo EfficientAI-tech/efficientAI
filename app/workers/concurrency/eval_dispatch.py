@@ -98,8 +98,18 @@ def _diarisation_in_flight(source_row: CallImportRow) -> bool:
     return bool((source_row.celery_task_id or "").strip())
 
 
-def _needs_import_for_eval(source_row: CallImportRow) -> bool:
+def _needs_import_for_eval(
+    source_row: CallImportRow,
+    evaluation: CallImportEvaluation | None = None,
+) -> bool:
     """True when the eval pipeline must fetch a recording before later stages."""
+    if evaluation is not None and (
+        (getattr(evaluation, "transcript_source", None) or "")
+        .strip()
+        .lower()
+        == "production"
+    ):
+        return False
     if source_row.status in (
         CallImportRowStatus.COMPLETED,
         CallImportRowStatus.FAILED,
@@ -419,7 +429,7 @@ def _try_dispatch_single_row(
             if not (source_row.recording_s3_key or "").strip():
                 return EvalDispatchOutcome("skip")
 
-        if _needs_import_for_eval(source_row):
+        if _needs_import_for_eval(source_row, evaluation):
             from app.workers.concurrency.import_dispatch import (
                 _peek_authenticated_import_credit,
             )

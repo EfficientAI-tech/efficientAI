@@ -1093,7 +1093,7 @@ def test_retry_marks_existing_diarised_transcript_completed(
 
 
 def test_evaluation_retry_can_override_telephony_credentials(
-    authenticated_client, db_session, org_id, seed_org
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
     """Retry should pin a new telephony integration on the batch when asked."""
     metric = _make_metric(db_session, org_id)
@@ -1140,6 +1140,15 @@ def test_evaluation_retry_can_override_telephony_credentials(
     eval_row.error_message = "import failed"
     db_session.commit()
 
+    class _GoodClient:
+        def test_connection(self):
+            return None
+
+    monkeypatch.setattr(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        lambda *_args, **_kwargs: _GoodClient(),
+    )
+
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
         json={
@@ -1152,3 +1161,59 @@ def test_evaluation_retry_can_override_telephony_credentials(
     db_session.refresh(call_import)
     assert call_import.telephony_integration_id == right_integration.id
     assert call_import.provider == "exotel"
+
+
+def test_evaluation_retry_rejects_invalid_telephony_credentials(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        name="bad",
+        auth_id="enc-bad",
+        auth_token="enc-bad",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.commit()
+
+    call_import, _rows = _make_call_import(
+        db_session,
+        org_id,
+        rows=1,
+        integration=integration,
+    )
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .first()
+    )
+    eval_row.status = "failed"
+    db_session.commit()
+
+    class _BadClient:
+        def test_connection(self):
+            raise ValueError("Exotel auth failed (HTTP 401): bad token")
+
+    monkeypatch.setattr(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        lambda *_args, **_kwargs: _BadClient(),
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={
+            "provider": "exotel",
+            "telephony_integration_id": str(integration.id),
+        },
+    )
+    assert response.status_code == 400
+    assert "credentials could not be verified" in response.json()["detail"].lower()

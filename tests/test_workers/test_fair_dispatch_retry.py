@@ -101,6 +101,18 @@ def test_workspaces_with_pending_rows_includes_partial_status(db_session):
     assert workspace_id in workspaces
 
 
+def test_workspaces_with_pending_rows_excludes_inactive_workspace(db_session):
+    workspace_id, _evaluation_id = _seed_partial_run_with_pending_retry(db_session)
+
+    ws = db_session.query(Workspace).filter(Workspace.id == workspace_id).one()
+    ws.is_active = False
+    db_session.commit()
+
+    workspaces = fair_dispatch._workspaces_with_pending_rows(db_session)
+
+    assert workspace_id not in workspaces
+
+
 def test_evaluations_with_pending_rows_includes_partial_status(db_session):
     workspace_id, evaluation_id = _seed_partial_run_with_pending_retry(db_session)
 

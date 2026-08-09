@@ -241,3 +241,62 @@ def test_promote_honors_explicit_capture_rationale_false(
     assert response.status_code == 201
     detail = authenticated_client.get(f"/api/v1/metrics/{parent.id}").json()
     assert detail["children"][0]["capture_rationale"] is False
+
+
+def test_org_admin_can_deactivate_and_reactivate_workspace(
+    authenticated_client, db_session, org_id
+):
+    seed_system_workspace_roles(db_session, organization_id=org_id)
+    create = authenticated_client.post(
+        "/api/v1/workspaces", json={"name": "Archive Me"}
+    )
+    assert create.status_code == 201, create.text
+    workspace_id = create.json()["id"]
+
+    deactivate = authenticated_client.patch(
+        f"/api/v1/workspaces/{workspace_id}",
+        json={"is_active": False},
+    )
+    assert deactivate.status_code == 200
+    assert deactivate.json()["is_active"] is False
+
+    reactivate = authenticated_client.patch(
+        f"/api/v1/workspaces/{workspace_id}",
+        json={"is_active": True},
+    )
+    assert reactivate.status_code == 200
+    assert reactivate.json()["is_active"] is True
+
+
+def test_cannot_deactivate_default_workspace(authenticated_client, db_session, org_id):
+    default = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+    )
+    response = authenticated_client.patch(
+        f"/api/v1/workspaces/{default.id}",
+        json={"is_active": False},
+    )
+    assert response.status_code == 400
+    assert "default" in response.json()["detail"].lower()
+
+
+def test_org_admin_list_includes_inactive_workspace(
+    authenticated_client, db_session, org_id
+):
+    inactive_ws = Workspace(
+        id=uuid4(),
+        organization_id=org_id,
+        name="Admin Visible Inactive",
+        slug="admin_visible_inactive",
+        is_default=False,
+        is_active=False,
+    )
+    db_session.add(inactive_ws)
+    db_session.commit()
+
+    listing = authenticated_client.get("/api/v1/workspaces").json()
+    match = next((w for w in listing if w["id"] == str(inactive_ws.id)), None)
+    assert match is not None
+    assert match["is_active"] is False

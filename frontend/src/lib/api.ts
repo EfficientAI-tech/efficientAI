@@ -694,7 +694,7 @@ class ApiClient {
 
   async updateWorkspace(
     workspaceId: string,
-    payload: { name: string },
+    payload: { name?: string; is_active?: boolean },
   ): Promise<Workspace> {
     const response = await this.client.patch(
       `/api/v1/workspaces/${workspaceId}`,
@@ -1952,6 +1952,7 @@ class ApiClient {
     options: {
       dataset: string
       tagIds?: string[]
+      batchName?: string
     },
   ): Promise<CallImportUploadResponse> {
     const formData = new FormData()
@@ -1959,6 +1960,9 @@ class ApiClient {
       formData.append('files', file)
     }
     formData.append('dataset', options.dataset)
+    if (options.batchName?.trim()) {
+      formData.append('batch_name', options.batchName.trim())
+    }
     if (options.tagIds && options.tagIds.length > 0) {
       for (const tagId of options.tagIds) {
         formData.append('tag_ids', tagId)
@@ -1968,6 +1972,118 @@ class ApiClient {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     return response.data
+  }
+
+  async appendCallImportAudio(
+    importId: string,
+    files: File[],
+  ): Promise<CallImportUploadResponse> {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('files', file)
+    }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${importId}/audio-append`,
+      formData,
+      {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      },
+    )
+    return response.data
+  }
+
+  async uploadCallImportAudioChunked(
+    files: File[],
+    options: {
+      dataset: string
+      tagIds?: string[]
+      batchName?: string
+      onProgress?: (progress: CallImportAudioUploadProgress) => void
+    },
+  ): Promise<CallImportUploadResponse> {
+    if (files.length === 0) {
+      throw new Error('At least one audio file is required.')
+    }
+
+    const chunks: File[][] = []
+    for (let i = 0; i < files.length; i += AUDIO_UPLOAD_CHUNK_SIZE) {
+      chunks.push(files.slice(i, i + AUDIO_UPLOAD_CHUNK_SIZE))
+    }
+
+    let result: CallImportUploadResponse | null = null
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex]
+      options.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: chunkIndex * AUDIO_UPLOAD_CHUNK_SIZE,
+        totalFiles: files.length,
+      })
+
+      if (chunkIndex === 0) {
+        result = await this.uploadCallImportAudio(chunk, {
+          dataset: options.dataset,
+          tagIds: options.tagIds,
+          batchName: options.batchName,
+        })
+      } else {
+        result = await this.appendCallImportAudio(result!.id, chunk)
+      }
+
+      options.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: Math.min(
+          (chunkIndex + 1) * AUDIO_UPLOAD_CHUNK_SIZE,
+          files.length,
+        ),
+        totalFiles: files.length,
+      })
+    }
+
+    return result!
+  }
+
+  async uploadCallImportAudioAppendChunked(
+    importId: string,
+    files: File[],
+    options?: {
+      onProgress?: (progress: CallImportAudioUploadProgress) => void
+    },
+  ): Promise<CallImportUploadResponse> {
+    if (files.length === 0) {
+      throw new Error('At least one audio file is required.')
+    }
+
+    const chunks: File[][] = []
+    for (let i = 0; i < files.length; i += AUDIO_UPLOAD_CHUNK_SIZE) {
+      chunks.push(files.slice(i, i + AUDIO_UPLOAD_CHUNK_SIZE))
+    }
+
+    let result: CallImportUploadResponse | null = null
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex]
+      options?.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: chunkIndex * AUDIO_UPLOAD_CHUNK_SIZE,
+        totalFiles: files.length,
+      })
+
+      result = await this.appendCallImportAudio(importId, chunk)
+
+      options?.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: Math.min(
+          (chunkIndex + 1) * AUDIO_UPLOAD_CHUNK_SIZE,
+          files.length,
+        ),
+        totalFiles: files.length,
+      })
+    }
+
+    return result!
   }
 
   /**
@@ -2128,6 +2244,7 @@ class ApiClient {
   async updateCallImport(
     id: string,
     payload: {
+      original_filename?: string | null
       dataset?: string | null
       tag_ids?: string[]
       /**
@@ -5088,6 +5205,15 @@ export interface JudgeOptimizeResponse {
   optimization_run_id: string
   dev_sample_count: number
   test_sample_count: number
+}
+
+export const AUDIO_UPLOAD_CHUNK_SIZE = 25
+
+export interface CallImportAudioUploadProgress {
+  chunkIndex: number
+  totalChunks: number
+  uploadedFiles: number
+  totalFiles: number
 }
 
 // Factory function to create ApiClient instance

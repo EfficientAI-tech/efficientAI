@@ -3029,10 +3029,9 @@ class CallImportSchemaParameterBase(BaseModel):
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
             "datetime / url. Exactly one parameter of type "
-            "'conversation_id' and exactly one of type 'recording_url' "
-            "must be present; at most one each of 'recording_date' and "
-            "'transcript'. Both conversation_id and recording_url are "
-            "forced required."
+            "'conversation_id' must be present; at most one each of "
+            "'recording_url', 'recording_date', and 'transcript'. "
+            "Only conversation_id is forced required."
         ),
     )
     description: Optional[str] = Field(
@@ -3044,9 +3043,8 @@ class CallImportSchemaParameterBase(BaseModel):
         default=False,
         description=(
             "When True, the parameter must be mapped to a CSV column on "
-            "every upload. The ``conversation_id`` and ``recording_url`` "
-            "parameters are always required and are force-set to True by "
-            "the server."
+            "every upload. The ``conversation_id`` parameter is always "
+            "required and is force-set to True by the server."
         ),
     )
 
@@ -3101,19 +3099,15 @@ def _validate_schema_parameters(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
         )
-    if rec_url_count != 1:
+    if rec_url_count > 1:
         raise ValueError(
-            "Schema must contain exactly one parameter of type "
+            "Schema may contain at most one parameter of type "
             "'recording_url'."
         )
     if recording_date_count > 1:
         raise ValueError(
             "Schema may contain at most one parameter of type "
             "'recording_date'."
-        )
-    if rec_url_count > 1:
-        raise ValueError(
-            "Schema may contain at most one parameter of type 'recording_url'."
         )
     if transcript_count > 1:
         raise ValueError(
@@ -3433,6 +3427,12 @@ class CallImportPreviewResponse(BaseModel):
 class CallImportUpdate(BaseModel):
     """Partial update of a call-import batch."""
 
+    original_filename: Optional[str] = Field(
+        None,
+        description=(
+            "User-facing batch label shown in the UI. Pass an empty string to clear."
+        ),
+    )
     dataset: Optional[str] = Field(
         None,
         description=(
@@ -5295,9 +5295,10 @@ class WorkspaceCreate(WorkspaceBase):
 
 
 class WorkspaceUpdate(BaseModel):
-    """Body for PATCH /workspaces/{id} (rename only in v1)."""
+    """Body for PATCH /workspaces/{id} (rename and/or org-admin activation)."""
 
-    name: str = Field(..., min_length=1, max_length=255)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    is_active: Optional[bool] = None
 
 
 class WorkspaceResponse(BaseModel):
@@ -5308,6 +5309,7 @@ class WorkspaceResponse(BaseModel):
     name: str
     slug: str
     is_default: bool
+    is_active: bool = True
     created_at: datetime
     updated_at: datetime
     role_id: Optional[UUID] = None

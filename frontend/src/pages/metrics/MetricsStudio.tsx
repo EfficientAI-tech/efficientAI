@@ -10,6 +10,15 @@ import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import MetricPickerPanel from './components/MetricPickerPanel'
 import MetricsManagement from './MetricsManagement'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
+import {
+  getCallImportBatchLabel,
+  getCallImportRowLabel,
+  getCallImportRowSubtitle,
+  getObservabilityCallLabel,
+  getPlaygroundRecordingLabel,
+  getSimulatedResultLabel,
+  getSimulatedResultSubtitle,
+} from './utils/sourceLabels'
 
 type SourceKind = 'call_import_row' | 'call_recording' | 'evaluator_result'
 
@@ -36,7 +45,6 @@ export default function MetricsStudio() {
 
   const [selectedImportId, setSelectedImportId] = useState<string>('')
   const [selectedImportRowIds, setSelectedImportRowIds] = useState<Set<string>>(new Set())
-  const [importRowLabels, setImportRowLabels] = useState<Record<string, string>>({})
   const [selectedRecordingIds, setSelectedRecordingIds] = useState<Set<string>>(new Set())
   const [selectedSimulatedIds, setSelectedSimulatedIds] = useState<Set<string>>(new Set())
 
@@ -131,12 +139,14 @@ export default function MetricsStudio() {
     () => [
       ...playgroundRecordings.map((r: any) => ({
         id: r.call_short_id,
-        label: r.call_short_id,
+        label: getPlaygroundRecordingLabel(r),
+        subtitle: r.call_short_id,
         kind: 'playground' as const,
       })),
       ...observabilityCalls.map((r: any) => ({
         id: r.call_short_id,
-        label: r.call_short_id,
+        label: getObservabilityCallLabel(r),
+        subtitle: r.call_short_id,
         kind: 'webhook' as const,
       })),
     ],
@@ -153,17 +163,15 @@ export default function MetricsStudio() {
       next.push({
         source_kind: 'call_import_row',
         source_ref: rowId,
-        display_label:
-          row?.conversation_id ??
-          importRowLabels[rowId] ??
-          `Import row ${rowId.slice(0, 8)}`,
+        display_label: row ? getCallImportRowLabel(row) : `Import row ${rowId.slice(0, 8)}`,
       })
     }
     for (const callShortId of selectedRecordingIds) {
+      const rec = recordings.find((r) => r.id === callShortId)
       next.push({
         source_kind: 'call_recording',
         source_ref: callShortId,
-        display_label: callShortId,
+        display_label: rec?.label ?? callShortId,
       })
     }
     for (const resultId of selectedSimulatedIds) {
@@ -173,7 +181,7 @@ export default function MetricsStudio() {
       next.push({
         source_kind: 'evaluator_result',
         source_ref: item?.id ?? resultId,
-        display_label: item?.name ?? item?.result_id ?? resultId.slice(0, 8),
+        display_label: item ? getSimulatedResultLabel(item) : resultId.slice(0, 8),
       })
     }
     return next
@@ -182,7 +190,7 @@ export default function MetricsStudio() {
     selectedRecordingIds,
     selectedSimulatedIds,
     importRows,
-    importRowLabels,
+    recordings,
     simulatedItems,
   ])
 
@@ -290,28 +298,32 @@ export default function MetricsStudio() {
                 <option value="">Select import batch…</option>
                 {(importsData?.items ?? []).map((imp: any) => (
                   <option key={imp.id} value={imp.id}>
-                    {imp.name || imp.id}
+                    {getCallImportBatchLabel(imp)}
                   </option>
                 ))}
               </select>
               <div className="max-h-48 overflow-y-auto space-y-1 border border-gray-100 rounded p-2">
                 {importRows.map((row: any) => (
-                  <label key={row.id} className="flex items-center gap-2 text-sm">
+                  <label key={row.id} className="flex items-start gap-2 text-sm py-1">
                     <input
                       type="checkbox"
+                      className="mt-1"
                       checked={selectedImportRowIds.has(row.id)}
                       onChange={() => {
                         const next = new Set(selectedImportRowIds)
                         if (next.has(row.id)) next.delete(row.id)
                         else next.add(row.id)
                         setSelectedImportRowIds(next)
-                        setImportRowLabels((prev) => ({
-                          ...prev,
-                          [row.id]: row.conversation_id ?? row.id,
-                        }))
                       }}
                     />
-                    <span className="truncate">{row.conversation_id ?? row.id}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-gray-900">
+                        {getCallImportRowLabel(row)}
+                      </span>
+                      <span className="block text-xs text-gray-500 truncate">
+                        {getCallImportRowSubtitle(row)}
+                      </span>
+                    </span>
                   </label>
                 ))}
               </div>
@@ -322,9 +334,10 @@ export default function MetricsStudio() {
             <div className="space-y-3">
               <div className="max-h-48 overflow-y-auto space-y-1 border border-gray-100 rounded p-2">
                 {recordings.map((rec) => (
-                  <label key={rec.id} className="flex items-center gap-2 text-sm">
+                  <label key={rec.id} className="flex items-start gap-2 text-sm py-1">
                     <input
                       type="checkbox"
+                      className="mt-1"
                       checked={selectedRecordingIds.has(rec.id)}
                       onChange={() => {
                         const next = new Set(selectedRecordingIds)
@@ -333,9 +346,11 @@ export default function MetricsStudio() {
                         setSelectedRecordingIds(next)
                       }}
                     />
-                    <span>
-                      {rec.label}{' '}
-                      <span className="text-gray-400 text-xs">({rec.kind})</span>
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-gray-900">{rec.label}</span>
+                      <span className="block text-xs text-gray-500 truncate">
+                        {rec.subtitle} · {rec.kind}
+                      </span>
                     </span>
                   </label>
                 ))}
@@ -347,9 +362,10 @@ export default function MetricsStudio() {
             <div className="space-y-3">
               <div className="max-h-48 overflow-y-auto space-y-1 border border-gray-100 rounded p-2">
                 {simulatedItems.map((item: any) => (
-                  <label key={item.id} className="flex items-center gap-2 text-sm">
+                  <label key={item.id} className="flex items-start gap-2 text-sm py-1">
                     <input
                       type="checkbox"
+                      className="mt-1"
                       checked={selectedSimulatedIds.has(item.id)}
                       onChange={() => {
                         const next = new Set(selectedSimulatedIds)
@@ -358,8 +374,15 @@ export default function MetricsStudio() {
                         setSelectedSimulatedIds(next)
                       }}
                     />
-                    <span className="truncate">
-                      {item.name ?? item.result_id ?? item.id}
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-gray-900">
+                        {getSimulatedResultLabel(item)}
+                      </span>
+                      {getSimulatedResultSubtitle(item) && (
+                        <span className="block text-xs text-gray-500 truncate">
+                          {getSimulatedResultSubtitle(item)}
+                        </span>
+                      )}
                     </span>
                   </label>
                 ))}

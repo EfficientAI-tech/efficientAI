@@ -53,14 +53,59 @@ def _serialize_run(run: MetricStudioRun) -> MetricStudioRunResponse:
     )
 
 
-def _serialize_result(row: MetricStudioRunResult) -> MetricStudioRunResultResponse:
+def _resolve_evaluation_transcript_metadata(
+    db: Session,
+    *,
+    run: MetricStudioRun,
+    row: MetricStudioRunResult,
+) -> Dict[str, Any]:
+    metadata = dict(row.source_metadata or {})
+    if metadata.get("evaluation_transcript"):
+        metadata.setdefault(
+            "transcript_source_used",
+            run.transcript_source or "diarised",
+        )
+        return metadata
+    if row.status != "completed":
+        return metadata
+    try:
+        sample = resolve_source(
+            db,
+            organization_id=run.organization_id,
+            workspace_id=run.workspace_id,
+            source_kind=row.source_kind,
+            source_ref=row.source_ref,
+            display_label=row.display_label,
+        )
+    except HTTPException:
+        return metadata
+    transcript_source = (run.transcript_source or "diarised").lower()
+    if transcript_source == "production":
+        transcript = sample.transcript
+    else:
+        transcript = sample.diarised_transcript or sample.transcript
+    if transcript:
+        metadata["evaluation_transcript"] = transcript
+        metadata["transcript_source_used"] = transcript_source
+    return metadata
+
+
+def _serialize_result(
+    row: MetricStudioRunResult,
+    *,
+    db: Optional[Session] = None,
+    run: Optional[MetricStudioRun] = None,
+) -> MetricStudioRunResultResponse:
+    source_metadata = row.source_metadata
+    if db is not None and run is not None:
+        source_metadata = _resolve_evaluation_transcript_metadata(db, run=run, row=row)
     return MetricStudioRunResultResponse(
         id=row.id,
         run_id=row.run_id,
         source_kind=row.source_kind,
         source_ref=row.source_ref,
         display_label=row.display_label,
-        source_metadata=row.source_metadata,
+        source_metadata=source_metadata,
         status=row.status,
         metric_scores=row.metric_scores or {},
         error_message=row.error_message,
@@ -284,7 +329,7 @@ def list_metric_studio_run_results(
     total = query.count()
     rows = query.offset(skip).limit(limit).all()
     return MetricStudioRunResultListResponse(
-        items=[_serialize_result(row) for row in rows],
+        items=[_serialize_result(row, db=db, run=run) for row in rows],
         total=total,
     )
 

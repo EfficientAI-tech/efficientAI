@@ -979,7 +979,7 @@ export interface CallImportTag {
  * Parameter type tag on a Call Import schema parameter.
  *
  *  - ``conversation_id``: mandatory identifier (one per schema).
- *  - ``recording_url``: feeds ``CallImportRow.recording_url``.
+ *  - ``recording_url``: optional; feeds ``CallImportRow.recording_url``.
  *  - ``recording_date``: date-only call recording date used for reports.
  *  - ``transcript``: feeds ``CallImportRow.transcript``.
  *  - ``text`` / ``number`` / ``boolean`` / ``datetime`` / ``url``:
@@ -1047,6 +1047,7 @@ export interface Workspace {
   name: string
   slug: string
   is_default: boolean
+  is_active: boolean
   created_at: string
   updated_at: string
   role_id?: string | null
@@ -2129,4 +2130,5 @@ export interface ObservabilityCall {
   updated_at?: string | null
   call_data?: ObservabilityCallData | null
   live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
+  display_name?: string | null
 }

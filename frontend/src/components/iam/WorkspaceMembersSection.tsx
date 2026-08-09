@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, FolderKanban, Trash2, UserPlus, Users } from 'lucide-react'
+import { ChevronDown, FolderKanban, Settings, Trash2, UserPlus, Users, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
-import { useCanWrite, useIsReader } from '../../hooks/useRole'
+import { useCanWrite, useIsAdmin, useIsReader } from '../../hooks/useRole'
 import { useToast } from '../../hooks/useToast'
 import { useAuthStore } from '../../store/authStore'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -18,6 +18,7 @@ function workspaceCaps(caps: string[] | undefined) {
   return {
     canViewMembers: list.includes('workspace.members.view'),
     canManageMembers: list.includes('workspace.members.manage'),
+    canManageSettings: list.includes('workspace.settings'),
   }
 }
 
@@ -34,13 +35,18 @@ export default function WorkspaceMembersSection() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const canWrite = useCanWrite()
+  const isAdmin = useIsAdmin()
   const isReader = useIsReader()
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+  const switchWorkspace = useWorkspaceStore((s) => s.switchWorkspace)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [selectedUserId, setSelectedUserId] = useState('')
   const [selectedRoleId, setSelectedRoleId] = useState('')
+  const [editingName, setEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  const [showDeactivateModal, setShowDeactivateModal] = useState(false)
 
   const { data: workspaces = [], isLoading: workspacesLoading } = useQuery({
     queryKey: ['workspaces'],
@@ -63,10 +69,56 @@ export default function WorkspaceMembersSection() {
     [workspaces, selectedWorkspaceId],
   )
 
-  const { canViewMembers, canManageMembers: wsCanManageMembers } = workspaceCaps(
-    selectedWorkspace?.capabilities,
-  )
+  const { canViewMembers, canManageMembers: wsCanManageMembers, canManageSettings } =
+    workspaceCaps(selectedWorkspace?.capabilities)
   const canManageMembers = wsCanManageMembers && canWrite
+  const canEditWorkspaceName = canManageSettings && canWrite && selectedWorkspace?.is_active
+
+  useEffect(() => {
+    if (!selectedWorkspace) return
+    setEditingName(false)
+    setNameDraft(selectedWorkspace.name)
+  }, [selectedWorkspace?.id, selectedWorkspace?.name])
+
+  const renameMutation = useMutation({
+    mutationFn: (name: string) =>
+      apiClient.updateWorkspace(selectedWorkspaceId!, { name }),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+      if (activeWorkspaceId === updated.id) {
+        switchWorkspace(updated.id, updated.capabilities ?? [])
+      }
+      setEditingName(false)
+      showToast('Workspace name updated', 'success')
+    },
+    onError: (error: unknown) => {
+      showToast(getApiErrorMessage(error, 'Failed to update workspace name'), 'error')
+    },
+  })
+
+  const activeStatusMutation = useMutation({
+    mutationFn: (is_active: boolean) =>
+      apiClient.updateWorkspace(selectedWorkspaceId!, { is_active }),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+      if (!updated.is_active && activeWorkspaceId === updated.id) {
+        const fallback =
+          workspaces.find((w) => w.is_default && w.is_active) ??
+          workspaces.find((w) => w.is_active && w.id !== updated.id)
+        if (fallback) {
+          switchWorkspace(fallback.id, fallback.capabilities ?? [])
+        }
+      }
+      setShowDeactivateModal(false)
+      showToast(
+        updated.is_active ? 'Workspace reactivated' : 'Workspace deactivated',
+        'success',
+      )
+    },
+    onError: (error: unknown) => {
+      showToast(getApiErrorMessage(error, 'Failed to update workspace status'), 'error')
+    },
+  })
 
   const {
     data: members = [],
@@ -234,6 +286,7 @@ export default function WorkspaceMembersSection() {
                 <option key={ws.id} value={ws.id}>
                   {ws.name}
                   {ws.is_default ? ' (default)' : ''}
+                  {!ws.is_active ? ' (inactive)' : ''}
                   {ws.role_name ? ` · your role: ${ws.role_name}` : ''}
                 </option>
               ))}
@@ -261,6 +314,126 @@ export default function WorkspaceMembersSection() {
             </p>
           )}
         </div>
+
+        {selectedWorkspace && (
+          <div className="p-4 border border-gray-200 rounded-lg bg-gray-50 space-y-4">
+            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+              <Settings className="h-4 w-4" />
+              Workspace Settings
+            </h3>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                Workspace Name
+              </label>
+              {editingName && canEditWorkspaceName ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    maxLength={255}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  />
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      const trimmed = nameDraft.trim()
+                      if (!trimmed) {
+                        showToast('Workspace name cannot be empty', 'error')
+                        return
+                      }
+                      renameMutation.mutate(trimmed)
+                    }}
+                    disabled={renameMutation.isPending}
+                  >
+                    Save
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setEditingName(false)
+                      setNameDraft(selectedWorkspace.name)
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-gray-900">
+                    {selectedWorkspace.name}
+                  </span>
+                  {canEditWorkspaceName && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNameDraft(selectedWorkspace.name)
+                        setEditingName(true)
+                      }}
+                      className="text-sm text-primary-700 hover:text-primary-800 font-medium"
+                    >
+                      Edit
+                    </button>
+                  )}
+                </div>
+              )}
+              <p className="mt-1 text-xs text-gray-500">
+                Slug stays fixed for links:{' '}
+                <span className="font-mono">{selectedWorkspace.slug}</span>
+              </p>
+            </div>
+
+            {isAdmin && (
+              <div className="pt-2 border-t border-gray-200">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                      Status
+                    </p>
+                    <span
+                      className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                        selectedWorkspace.is_active
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-gray-200 text-gray-700'
+                      }`}
+                    >
+                      {selectedWorkspace.is_active ? 'Active' : 'Inactive'}
+                    </span>
+                    {!selectedWorkspace.is_active && (
+                      <p className="mt-2 text-xs text-gray-600">
+                        Inactive workspaces are fully locked for all non-org-admin
+                        users. Reactivate to restore access.
+                      </p>
+                    )}
+                  </div>
+                  {selectedWorkspace.is_active ? (
+                    <Button
+                      variant="danger"
+                      disabled={selectedWorkspace.is_default || activeStatusMutation.isPending}
+                      onClick={() => setShowDeactivateModal(true)}
+                      title={
+                        selectedWorkspace.is_default
+                          ? 'The default workspace cannot be deactivated'
+                          : 'Deactivate workspace'
+                      }
+                    >
+                      Deactivate
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="primary"
+                      disabled={activeStatusMutation.isPending}
+                      onClick={() => activeStatusMutation.mutate(true)}
+                    >
+                      Reactivate
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {!selectedWorkspaceId ? (
           <div className="text-center py-8 text-gray-500">
@@ -400,6 +573,54 @@ export default function WorkspaceMembersSection() {
           </>
         )}
       </div>
+
+      {showDeactivateModal && selectedWorkspace && (
+        <div
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
+          onClick={() => setShowDeactivateModal(false)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Deactivate Workspace</h3>
+              <button
+                type="button"
+                onClick={() => setShowDeactivateModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-700">
+                Deactivate <span className="font-semibold">{selectedWorkspace.name}</span>?
+                All non-org-admin users will lose access immediately, including read access.
+                Background processing for this workspace will stop.
+              </p>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowDeactivateModal(false)}
+                  disabled={activeStatusMutation.isPending}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => activeStatusMutation.mutate(false)}
+                  isLoading={activeStatusMutation.isPending}
+                  className="flex-1"
+                >
+                  Deactivate
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -157,11 +157,7 @@ export function hydrateMappingFromPersisted(
 export function isRequiredSchemaParameter(
   param: CallImportSchemaParameter,
 ): boolean {
-  return (
-    param.is_required ||
-    param.type === 'conversation_id' ||
-    param.type === 'recording_url'
-  )
+  return param.is_required || param.type === 'conversation_id'
 }
 
 export function validateMapping(

@@ -22,6 +22,14 @@ from app.models.database import (
 )
 
 
+def _basename_from_s3_key(key: Optional[str]) -> Optional[str]:
+    if not key:
+        return None
+    parts = key.strip().split("/")
+    name = parts[-1].strip() if parts else ""
+    return name or None
+
+
 @dataclass
 class ResolvedCallSample:
     source_kind: str
@@ -48,16 +56,25 @@ def _resolve_call_import_row(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid call_import_row id.") from exc
 
+    from app.db_sharding.sessions import is_sharding_enabled
     from app.db_sharding.row_ops import close_row_sessions, locate_call_import_row
 
     row_db = None
     extra_catalog = None
+    close_located_sessions = False
     try:
-        try:
-            row_db, located_catalog, row, _shard_id = locate_call_import_row(row_id)
-            extra_catalog = located_catalog if located_catalog is not row_db else None
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail="Call import row not found.") from exc
+        if is_sharding_enabled():
+            try:
+                row_db, located_catalog, row, _shard_id = locate_call_import_row(row_id)
+                extra_catalog = located_catalog if located_catalog is not row_db else None
+                close_located_sessions = True
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail="Call import row not found.") from exc
+        else:
+            row = db.query(CallImportRow).filter(CallImportRow.id == row_id).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Call import row not found.")
+            row_db = db
 
         if row.organization_id != organization_id:
             raise HTTPException(status_code=404, detail="Call import row not found.")
@@ -74,7 +91,13 @@ def _resolve_call_import_row(
         if not call_import:
             raise HTTPException(status_code=404, detail="Call import row not found.")
 
-        label = display_label or row.conversation_id or f"Import row {row.row_index}"
+        recording_filename = _basename_from_s3_key(row.recording_s3_key)
+        label = (
+            display_label
+            or recording_filename
+            or row.conversation_id
+            or f"Import row {row.row_index}"
+        )
         return ResolvedCallSample(
             source_kind="call_import_row",
             source_ref=str(row.id),
@@ -87,12 +110,14 @@ def _resolve_call_import_row(
             metadata={
                 "call_import_id": str(row.call_import_id),
                 "call_import_name": getattr(call_import, "name", None),
+                "original_filename": getattr(call_import, "original_filename", None),
+                "recording_filename": recording_filename,
                 "row_index": row.row_index,
                 "conversation_id": row.conversation_id,
             },
         )
     finally:
-        if row_db is not None:
+        if close_located_sessions and row_db is not None:
             close_row_sessions(row_db, extra_catalog)
 
 
@@ -120,16 +145,29 @@ def _resolve_call_recording(
     platform = (recording.provider_platform or "").lower()
     transcript_text, _ = extract_transcript_from_call_data(call_data, platform)
     audio_s3_key = None
+    evaluator_result_name = None
     if recording.evaluator_result_id:
         result = (
             db.query(EvaluatorResult)
             .filter(EvaluatorResult.id == recording.evaluator_result_id)
             .first()
         )
-        if result and result.audio_s3_key:
-            audio_s3_key = result.audio_s3_key
+        if result:
+            if result.audio_s3_key:
+                audio_s3_key = result.audio_s3_key
+            evaluator_result_name = result.name or result.result_id
 
-    label = display_label or recording.call_short_id
+    agent_name = None
+    if recording.agent_id:
+        agent = db.query(Agent).filter(Agent.id == recording.agent_id).first()
+        agent_name = agent.name if agent else None
+
+    label = (
+        display_label
+        or evaluator_result_name
+        or agent_name
+        or recording.call_short_id
+    )
     return ResolvedCallSample(
         source_kind="call_recording",
         source_ref=recording.call_short_id,
@@ -143,6 +181,8 @@ def _resolve_call_recording(
             "call_short_id": recording.call_short_id,
             "provider_platform": recording.provider_platform,
             "source": getattr(recording.source, "value", recording.source),
+            "agent_name": agent_name,
+            "evaluator_result_name": evaluator_result_name,
         },
     )
 

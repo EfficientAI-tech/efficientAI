@@ -119,6 +119,7 @@ class Workspace(Base):
     # check + the Default-workspace conftest fixture instead, because
     # SQLite doesn't support partial indexes the same way.
     is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
     # Reusable PDF/report branding metadata scoped to this workspace. Images
     # live in S3. Shape: {"heading": str|null, "images": [{id, s3_key,
     # content_type, filename, size_bytes, updated_at}, ...]}.
@@ -1831,9 +1832,11 @@ class CallImportSchema(Base):
 
     Every schema MUST contain exactly one parameter with
     ``type='conversation_id'`` and ``is_required=True`` - that's the
-    mandatory identity field every imported row needs. The invariant is
-    enforced in app code on create/update (no DB-level CHECK because the
-    parent + children are written across two tables in one transaction).
+    mandatory identity field every imported row needs. A schema may
+    optionally include at most one ``recording_url`` parameter. The
+    invariant is enforced in app code on create/update (no DB-level
+    CHECK because the parent + children are written across two tables in
+    one transaction).
     """
 
     __tablename__ = "call_import_schemas"

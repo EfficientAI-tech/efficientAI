@@ -963,6 +963,33 @@ async def create_call_import_evaluation(
         count_source_rows_with_production_transcript,
     )
 
+    if use_diarised:
+        if call_import.schema_id:
+            from app.api.v1.routes.call_imports import (
+                _resolve_schema,
+                _validate_diarised_eval_recording_ready,
+            )
+
+            diarised_schema = _resolve_schema(
+                db, organization_id, call_import.workspace_id, call_import.schema_id
+            )
+            _validate_diarised_eval_recording_ready(
+                list(diarised_schema.parameters),
+                dict(call_import.parameter_mapping or {}),
+            )
+        else:
+            legacy_recording_column = (
+                (call_import.column_mapping or {}).get("recording_url") or ""
+            ).strip()
+            if not legacy_recording_column:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Diarize then evaluate requires a recording URL column "
+                        "to be mapped."
+                    ),
+                )
+
     starting_from_mapped = False
     if call_import.status == CallImportStatus.MAPPED:
         if not call_import.source_s3_key or not call_import.source_format:
@@ -983,6 +1010,7 @@ async def create_call_import_evaluation(
             _resolve_schema,
             _resolve_telephony_integration,
             _validate_direct_url_import_ready,
+            _validate_telephony_credentials_live,
         )
 
         workspace_id = call_import.workspace_id
@@ -1012,6 +1040,7 @@ async def create_call_import_evaluation(
                 payload.telephony_integration_id,
                 payload.provider or "",
             )
+            _validate_telephony_credentials_live(db, organization_id, integration)
         else:
             _validate_direct_url_import_ready(
                 parameters, dict(call_import.parameter_mapping or {})
@@ -7979,13 +8008,22 @@ def _prepare_source_row_for_retry(
 
     # Re-fetch recordings when a prior import failed or stalled without S3 audio.
     # Mirrors retry_failed_call_import_rows so eval retry can re-enqueue imports.
+    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
+
     if (
         source_row.status
-        in (CallImportRowStatus.FAILED, CallImportRowStatus.PROCESSING)
+        in (
+            CallImportRowStatus.FAILED,
+            CallImportRowStatus.PROCESSING,
+        )
+        and not (source_row.recording_s3_key or "").strip()
+    ) or (
+        _is_stuck_pending_import_row(source_row)
         and not (source_row.recording_s3_key or "").strip()
     ):
         source_row.status = CallImportRowStatus.PENDING
         source_row.error_message = None
+        source_row.attempts = 0
 
     if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
         source_row.diarised_transcript = None
@@ -8127,7 +8165,10 @@ def _apply_telephony_retry_overrides(
     ):
         return
 
-    from app.api.v1.routes.call_imports import _resolve_telephony_integration
+    from app.api.v1.routes.call_imports import (
+        _resolve_telephony_integration,
+        _validate_telephony_credentials_live,
+    )
 
     if payload.telephony_integration_id is not None:
         integration = _resolve_telephony_integration(
@@ -8136,6 +8177,7 @@ def _apply_telephony_retry_overrides(
             payload.telephony_integration_id,
             payload.provider or "",
         )
+        _validate_telephony_credentials_live(db, organization_id, integration)
         call_import.provider = integration.provider
         call_import.telephony_integration_id = integration.id
     else:

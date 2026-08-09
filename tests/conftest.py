@@ -825,6 +825,7 @@ def _build_session_api_app():
         workspaces,
         workspace_iam,
         platform_admin,
+        metric_studio,
     )
 
     app = FastAPI()
@@ -869,6 +870,7 @@ def _build_session_api_app():
     app.include_router(workspaces.router, prefix="/api/v1")
     app.include_router(workspace_iam.router, prefix="/api/v1")
     app.include_router(platform_admin.router, prefix="/api/v1")
+    app.include_router(metric_studio.router, prefix="/api/v1")
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
     app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True

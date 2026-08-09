@@ -108,6 +108,10 @@ def test_resolve_call_import_row_uses_locate_when_sharded(
         "app.db_sharding.row_ops.locate_call_import_row",
         fake_locate,
     )
+    monkeypatch.setattr(
+        "app.db_sharding.sessions.is_sharding_enabled",
+        lambda: True,
+    )
 
     sample = resolve_source(
         db_session,

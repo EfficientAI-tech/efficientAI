@@ -237,6 +237,13 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
 
         result_row.metric_scores = metric_scores
         flag_modified(result_row, "metric_scores")
+        metadata = dict(result_row.source_metadata or sample.metadata or {})
+        metadata.update(sample.metadata or {})
+        if transcript:
+            metadata["evaluation_transcript"] = transcript
+        metadata["transcript_source_used"] = transcript_source
+        result_row.source_metadata = metadata
+        flag_modified(result_row, "source_metadata")
         result_row.status = "completed"
         result_row.error_message = None
         result_row.finished_at = _now_utc()

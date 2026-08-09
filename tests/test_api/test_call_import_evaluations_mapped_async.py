@@ -61,6 +61,59 @@ def _make_mapped_call_import(db_session, org_id, workspace_id):
     return call_import
 
 
+def _make_transcript_only_mapped_call_import(db_session, org_id, workspace_id):
+    """Mapped batch whose schema omits recording_url (conversation_id only)."""
+    schema = CallImportSchema(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        name="Transcript only",
+    )
+    db_session.add(schema)
+    db_session.flush()
+    db_session.add(
+        CallImportSchemaParameter(
+            id=uuid4(),
+            schema_id=schema.id,
+            name="conversation_id",
+            type=CallImportParameterType.CONVERSATION_ID.value,
+            is_required=True,
+            ordering=0,
+        )
+    )
+    db_session.add(
+        CallImportSchemaParameter(
+            id=uuid4(),
+            schema_id=schema.id,
+            name="transcript",
+            type=CallImportParameterType.TRANSCRIPT.value,
+            is_required=False,
+            ordering=1,
+        )
+    )
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        schema_id=schema.id,
+        source_s3_key="org/test/source.csv",
+        source_format="csv",
+        original_filename="source.csv",
+        column_mapping={},
+        parameter_mapping={
+            "conversation_id": "CallID",
+            "transcript": "Transcript",
+        },
+        total_rows=0,
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.MAPPED,
+    )
+    db_session.add(call_import)
+    db_session.commit()
+    return call_import
+
+
 def test_create_evaluation_from_mapped_enqueues_async_materialization(
     authenticated_client,
     db_session,
@@ -117,3 +170,28 @@ def test_create_evaluation_from_mapped_enqueues_async_materialization(
         .first()
     )
     assert refreshed_import.status == CallImportStatus.PROCESSING
+
+
+def test_create_diarised_evaluation_rejects_schema_without_recording_url(
+    authenticated_client,
+    db_session,
+    org_id,
+    seed_org,
+):
+    from tests.test_api.test_call_import_evaluations import (
+        _eval_body,
+        _make_metric,
+    )
+
+    metric = _make_metric(db_session, org_id)
+    workspace = metric.workspace_id
+    call_import = _make_transcript_only_mapped_call_import(
+        db_session, org_id, workspace
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert response.status_code == 409, response.text
+    assert "recording_url" in response.json()["detail"].lower()
