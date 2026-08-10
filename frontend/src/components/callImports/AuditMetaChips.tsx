@@ -1,9 +1,6 @@
 import type { ReactNode } from 'react'
 
-/** Bordered metadata chips for call-import audit fields. */
-
-const CHIP_CLASS =
-  'inline-flex flex-col min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] leading-tight shadow-sm'
+/** Inline audit metadata for call imports and evaluations. */
 
 export function formatMetaDateTime(iso: string | null | undefined): string {
   if (!iso) return '—'
@@ -12,65 +9,49 @@ export function formatMetaDateTime(iso: string | null | undefined): string {
   return parsed.toLocaleString()
 }
 
-type AuditMetaChipProps = {
+type AuditMetaInlineItemProps = {
   label: string
   value: string | null | undefined
-  wide?: boolean
-  /** Tighter chip for horizontal list rows */
+  /** `text-xs` for dense rows (evaluation list); default `text-sm` */
   dense?: boolean
-  /** Fill a grid cell (2×2 activity column on list page) */
-  stacked?: boolean
   className?: string
 }
 
 export function AuditMetaChip({
   label,
   value,
-  wide,
   dense,
-  stacked,
   className = '',
-}: AuditMetaChipProps) {
+}: AuditMetaInlineItemProps) {
   const display = value?.trim() || '—'
-  const sizeClass = dense
-    ? stacked
-      ? 'w-full min-w-0 px-1.5 py-0.5 text-[10px]'
-      : 'shrink-0 px-1.5 py-0.5 text-[10px] min-w-[4.75rem] max-w-[8.5rem]'
-    : wide
-      ? 'min-w-[7.5rem] max-w-[12rem]'
-      : 'min-w-[6.5rem] max-w-[10rem]'
+  const sizeClass = dense ? 'text-xs' : 'text-sm'
   return (
-    <div
-      className={`${CHIP_CLASS} ${sizeClass} ${className}`.trim()}
+    <span
+      className={`inline-flex max-w-full min-w-0 flex-wrap items-baseline gap-x-1 ${sizeClass} ${className}`.trim()}
       title={display === '—' ? `${label}: unknown` : `${label}: ${display}`}
     >
-      <span className="text-gray-500 font-medium">{label}</span>
-      <span className="text-gray-800 truncate font-medium">{display}</span>
-    </div>
+      <span className="text-gray-500 shrink-0">{label}:</span>
+      <span className="font-medium text-gray-800 break-all">{display}</span>
+    </span>
   )
 }
 
-type AuditMetaChipRowProps = {
+type AuditMetaRowProps = {
   className?: string
-  wide?: boolean
-  compact?: boolean
+  dense?: boolean
+  /** Join parent flex row (chips become siblings of status/provider). */
+  inline?: boolean
   children: ReactNode
 }
 
-function AuditMetaChipRow({
-  className = '',
-  wide,
-  compact,
-  children,
-}: AuditMetaChipRowProps) {
+function AuditMetaRow({ className = '', dense, inline, children }: AuditMetaRowProps) {
+  const textClass = dense ? 'text-xs' : 'text-sm'
+  if (inline) {
+    return <div className={`contents ${className}`.trim()}>{children}</div>
+  }
   return (
     <div
-      className={
-        compact
-          ? `flex flex-nowrap items-stretch gap-1.5 overflow-x-auto max-w-full scrollbar-thin ${className}`.trim()
-          : `flex flex-wrap items-stretch gap-1.5 ${className}`.trim()
-      }
-      data-wide={wide ? 'true' : undefined}
+      className={`flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-gray-600 ${textClass} ${className}`.trim()}
     >
       {children}
     </div>
@@ -83,10 +64,8 @@ type CallImportAuditMetaProps = {
   createdByEmail?: string | null
   lastUpdatedByEmail?: string | null
   className?: string
-  wide?: boolean
-  compact?: boolean
-  /** 2×2 grid for table cells (no horizontal scroll) */
-  stacked?: boolean
+  dense?: boolean
+  inline?: boolean
 }
 
 /** Created / updated timestamps + actor emails for a call-import batch. */
@@ -96,48 +75,33 @@ export function CallImportAuditMeta({
   createdByEmail,
   lastUpdatedByEmail,
   className,
-  wide = true,
-  compact,
-  stacked,
+  dense,
+  inline,
 }: CallImportAuditMetaProps) {
-  const chipCommon = { wide, dense: compact, stacked }
-  if (stacked) {
-    return (
-      <div
-        className={`grid grid-cols-2 gap-1.5 w-full min-w-[12rem] max-w-[22rem] ${className ?? ''}`.trim()}
-      >
-        <AuditMetaChip label="Created" value={formatMetaDateTime(createdAt)} {...chipCommon} />
-        <AuditMetaChip label="Updated" value={formatMetaDateTime(updatedAt)} {...chipCommon} />
-        <AuditMetaChip label="Created by" value={createdByEmail} {...chipCommon} />
-        <AuditMetaChip label="Last updated by" value={lastUpdatedByEmail} {...chipCommon} />
-      </div>
-    )
-  }
   return (
-    <AuditMetaChipRow className={className} wide={wide} compact={compact}>
-      <AuditMetaChip label="Created" value={formatMetaDateTime(createdAt)} wide={wide} dense={compact} />
-      <AuditMetaChip label="Updated" value={formatMetaDateTime(updatedAt)} wide={wide} dense={compact} />
-      <AuditMetaChip label="Created by" value={createdByEmail} wide={wide} dense={compact} />
-      <AuditMetaChip label="Last updated by" value={lastUpdatedByEmail} wide={wide} dense={compact} />
-    </AuditMetaChipRow>
+    <AuditMetaRow className={className} dense={dense} inline={inline}>
+      <AuditMetaChip label="Created" value={formatMetaDateTime(createdAt)} dense={dense} />
+      <AuditMetaChip label="Updated" value={formatMetaDateTime(updatedAt)} dense={dense} />
+      <AuditMetaChip label="Created by" value={createdByEmail} dense={dense} />
+      <AuditMetaChip label="Last updated by" value={lastUpdatedByEmail} dense={dense} />
+    </AuditMetaRow>
   )
 }
 
 type EvaluationAuditMetaProps = {
-  createdAt: string | null | undefined
+  createdAt?: string | null | undefined
   updatedAt?: string | null | undefined
   startedAt?: string | null
   finishedAt?: string | null
-  /** User who started this evaluation run (API: created_by_email). */
   runByEmail?: string | null
-  /** @deprecated Use runByEmail */
   createdByEmail?: string | null
   lastUpdatedByEmail?: string | null
   formatDate?: (iso: string | null | undefined) => string
   className?: string
-  wide?: boolean
-  compact?: boolean
+  dense?: boolean
+  inline?: boolean
   showRunTimes?: boolean
+  showTimestamps?: boolean
 }
 
 /** Evaluation run metadata (detail header or list card). */
@@ -151,25 +115,28 @@ export function EvaluationAuditMeta({
   lastUpdatedByEmail,
   formatDate = formatMetaDateTime,
   className,
-  wide = true,
-  compact,
+  dense,
+  inline,
   showRunTimes = true,
+  showTimestamps = false,
 }: EvaluationAuditMetaProps) {
   const runner = runByEmail ?? createdByEmail
   return (
-    <AuditMetaChipRow className={className} wide={wide} compact={compact}>
-      <AuditMetaChip label="Run by" value={runner} wide={wide} dense={compact} />
-      <AuditMetaChip label="Last updated by" value={lastUpdatedByEmail} wide={wide} dense={compact} />
-      <AuditMetaChip label="Created" value={formatDate(createdAt)} wide={wide} dense={compact} />
-      {updatedAt ? (
-        <AuditMetaChip label="Updated" value={formatDate(updatedAt)} wide={wide} dense={compact} />
+    <AuditMetaRow className={className} dense={dense} inline={inline}>
+      <AuditMetaChip label="Run by" value={runner} dense={dense} />
+      <AuditMetaChip label="Last updated by" value={lastUpdatedByEmail} dense={dense} />
+      {showTimestamps && createdAt ? (
+        <AuditMetaChip label="Created" value={formatDate(createdAt)} dense={dense} />
+      ) : null}
+      {showTimestamps && updatedAt ? (
+        <AuditMetaChip label="Updated" value={formatDate(updatedAt)} dense={dense} />
       ) : null}
       {showRunTimes && startedAt ? (
-        <AuditMetaChip label="Started" value={formatDate(startedAt)} wide={wide} dense={compact} />
+        <AuditMetaChip label="Started" value={formatDate(startedAt)} dense={dense} />
       ) : null}
       {showRunTimes && finishedAt ? (
-        <AuditMetaChip label="Finished" value={formatDate(finishedAt)} wide={wide} dense={compact} />
+        <AuditMetaChip label="Finished" value={formatDate(finishedAt)} dense={dense} />
       ) : null}
-    </AuditMetaChipRow>
+    </AuditMetaRow>
   )
 }

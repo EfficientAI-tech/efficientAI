@@ -2650,11 +2650,11 @@ export default function CallImportEvaluationDetail() {
             <div className="mt-1 text-xs text-gray-500 font-mono">
               {evaluation.id}
             </div>
-            <div className="mt-3 flex items-center gap-3 flex-wrap">
+            <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
               <StatusBadge status={evaluation.status} />
               <span
                 className={
-                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ' +
+                  'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ' +
                   (evaluation.transcript_source === 'diarised'
                     ? 'bg-purple-50 text-purple-700'
                     : 'bg-gray-100 text-gray-700')
@@ -2670,8 +2670,8 @@ export default function CallImportEvaluationDetail() {
                   : 'Evaluated on Production transcript'}
               </span>
               <EvaluationAuditMeta
-                createdAt={evaluation.created_at}
-                updatedAt={evaluation.updated_at}
+                inline
+                showTimestamps={false}
                 startedAt={evaluation.started_at}
                 finishedAt={evaluation.finished_at}
                 runByEmail={evaluation.created_by_email}

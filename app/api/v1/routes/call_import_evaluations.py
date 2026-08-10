@@ -5743,6 +5743,7 @@ def _enqueue_prompt_improvements_job(
     credential_id: Optional[UUID] = None,
     force: bool = False,
     db: Optional[Session] = None,
+    principal: Optional[Principal] = None,
 ) -> None:
     current = _prompt_improvements_payload(evaluation)
     if current is not None and current.status == "running" and not force:
@@ -5760,6 +5761,8 @@ def _enqueue_prompt_improvements_job(
         "error_message": None,
     }
     if db is not None:
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "prompt_improvements")
         db.commit()
 
@@ -6577,6 +6580,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         credential_id=body.credential_id,
         force=body.force or body.regenerate,
         db=db,
+        principal=principal,
     )
 
     db.refresh(evaluation)

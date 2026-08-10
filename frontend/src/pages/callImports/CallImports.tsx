@@ -21,7 +21,6 @@ import type { CallImport, CallImportStatus, CallImportTag } from '../../types/ap
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
-import { CallImportAuditMeta } from '../../components/callImports/AuditMetaChips'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import UploadAudioModal from './components/UploadAudioModal'
 import UploadCsvModal from './components/UploadCsvModal'
@@ -364,9 +363,6 @@ export default function CallImports() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[17rem]">
-                    Activity
-                  </th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
                   </th>
@@ -443,16 +439,6 @@ export default function CallImports() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <StatusBadge status={item.status} />
-                    </td>
-                    <td className="px-6 py-4 align-top">
-                      <CallImportAuditMeta
-                        compact
-                        stacked
-                        createdAt={item.created_at}
-                        updatedAt={item.updated_at}
-                        createdByEmail={item.created_by_email}
-                        lastUpdatedByEmail={item.last_updated_by_email}
-                      />
                     </td>
                     <td
                       className="px-6 py-4 whitespace-nowrap text-right text-sm"
