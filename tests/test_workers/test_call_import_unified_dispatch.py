@@ -117,27 +117,25 @@ def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
     source_row = _source_row(
         call_import_id=evaluation.call_import_id,
     )
-    captured = {}
+    captured: dict = {}
 
-    class _AsyncResult:
-        id = "import-task-123"
+    def _fake_apply_async(*args, **kwargs):
+        captured["apply_async_kwargs"] = kwargs
+        result = MagicMock()
+        result.id = kwargs.get("task_id", "import-task-123")
+        return result
 
-    import_task = MagicMock()
-    import_task.apply_async = lambda *a, **kw: captured.update(
-        {"apply_async_kwargs": kw}
-    ) or _AsyncResult()
     monkeypatch.setattr(
-        "app.workers.tasks.process_call_import_row.process_call_import_row_task",
-        import_task,
+        "app.workers.concurrency.eval_dispatch.acquire_eval_slot",
+        lambda **kwargs: True,
     )
-
-    def fake_reserve(**kwargs):
-        kwargs["enqueue_fn"]("reserved-id")
-        return True
-
     monkeypatch.setattr(
-        "app.workers.concurrency.eval_dispatch._reserve_slot_and_enqueue",
-        fake_reserve,
+        "app.workers.tasks.process_call_import_row.process_call_import_row_task.apply_async",
+        _fake_apply_async,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.import_dispatch._peek_authenticated_import_credit",
+        lambda **kwargs: None,
     )
 
     result = _try_dispatch_single_row(
