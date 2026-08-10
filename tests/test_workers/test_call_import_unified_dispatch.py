@@ -1,6 +1,7 @@
 """Unit tests for the unified call-import eval dispatch pipeline."""
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -121,9 +122,13 @@ def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
     class _AsyncResult:
         id = "import-task-123"
 
+    import_task = MagicMock()
+    import_task.apply_async = lambda *a, **kw: captured.update(
+        {"apply_async_kwargs": kw}
+    ) or _AsyncResult()
     monkeypatch.setattr(
-        "app.workers.tasks.process_call_import_row.process_call_import_row_task.apply_async",
-        lambda *a, **kw: captured.update({"apply_async_kwargs": kw}) or _AsyncResult(),
+        "app.workers.tasks.process_call_import_row.process_call_import_row_task",
+        import_task,
     )
 
     def fake_reserve(**kwargs):

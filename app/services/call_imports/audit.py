@@ -38,10 +38,12 @@ def stamp_evaluation_actor(
 def user_ids_from_call_imports(imports: Iterable[CallImport]) -> Set[UUID]:
     ids: Set[UUID] = set()
     for row in imports:
-        if row.created_by_user_id is not None:
-            ids.add(row.created_by_user_id)
-        if row.last_updated_by_user_id is not None:
-            ids.add(row.last_updated_by_user_id)
+        created_by = getattr(row, "created_by_user_id", None)
+        updated_by = getattr(row, "last_updated_by_user_id", None)
+        if created_by is not None:
+            ids.add(created_by)
+        if updated_by is not None:
+            ids.add(updated_by)
     return ids
 
 
@@ -50,10 +52,12 @@ def user_ids_from_evaluations(
 ) -> Set[UUID]:
     ids: Set[UUID] = set()
     for row in evaluations:
-        if row.created_by_user_id is not None:
-            ids.add(row.created_by_user_id)
-        if row.last_updated_by_user_id is not None:
-            ids.add(row.last_updated_by_user_id)
+        created_by = getattr(row, "created_by_user_id", None)
+        updated_by = getattr(row, "last_updated_by_user_id", None)
+        if created_by is not None:
+            ids.add(created_by)
+        if updated_by is not None:
+            ids.add(updated_by)
     return ids
 
 
