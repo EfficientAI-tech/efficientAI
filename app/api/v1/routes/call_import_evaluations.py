@@ -8270,6 +8270,7 @@ async def delete_call_import_evaluation_row(
                 status_code=404, detail="Evaluation row not found in this run"
             )
         _rollup_evaluation_status(evaluation, db)
+        stamp_evaluation_actor(evaluation, principal)
         db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
