@@ -516,6 +516,7 @@ def test_pdf_report_uses_saved_report_branding_logo(
 
     fake_s3 = SimpleNamespace(
         download_file_by_key=lambda key: b"custom-logo",
+        is_enabled=lambda: False,
     )
     monkeypatch.setattr(s3_module, "s3_service", fake_s3)
     captured: dict[str, object] = {}
