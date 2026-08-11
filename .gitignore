@@ -109,3 +109,5 @@ frontend/dist/
 
 # Enterprise license private keys
 enterprise/keys/*.pem
+
+#
