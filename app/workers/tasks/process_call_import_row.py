@@ -715,7 +715,11 @@ def process_call_import_row_task(
                     recover_eval_row_for_eval_chain,
                     source_row_import_blocks_eval,
                 )
+                from app.workers.tasks.evaluate_call_import_row_core import (
+                    EVAL_CANCELLED_BY_USER_ERROR,
+                )
 
+                user_cancelled = False
                 try:
                     cleanup_row_db, cleanup_catalog_db, eval_row, source_row, _ = (
                         locate_call_import_evaluation_row(
@@ -726,7 +730,14 @@ def process_call_import_row_task(
                     pass
                 else:
                     try:
-                        if source_row_import_blocks_eval(source_row):
+                        user_cancelled = (
+                            (eval_row.status or "").lower() == "failed"
+                            and (eval_row.error_message or "")
+                            == EVAL_CANCELLED_BY_USER_ERROR
+                        )
+                        if user_cancelled:
+                            pass
+                        elif source_row_import_blocks_eval(source_row):
                             if eval_row.status == "pending":
                                 _fail_eval_row_for_import(
                                     cleanup_row_db, eval_row, source_row
@@ -753,7 +764,8 @@ def process_call_import_row_task(
                 # Redispatch after local cleanup when import did not chain
                 # transcription — the transcribe worker releases the slot and
                 # schedules fair dispatch when chained transcribe was enqueued.
-                finish_eval_work_and_redispatch(slot_task_id)
+                if not user_cancelled:
+                    finish_eval_work_and_redispatch(slot_task_id)
         else:
             from app.workers.concurrency.limits import slot_registered_for_task
 

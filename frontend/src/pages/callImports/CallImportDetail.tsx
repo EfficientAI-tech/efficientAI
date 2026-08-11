@@ -420,10 +420,6 @@ export default function CallImportDetail() {
   const [retryFailedImportError, setRetryFailedImportError] = useState<string | null>(
     null,
   )
-  const [showForceFailDiarisationConfirm, setShowForceFailDiarisationConfirm] =
-    useState(false)
-  const [forceFailDiarisationError, setForceFailDiarisationError] =
-    useState<string | null>(null)
   const [pendingDeleteRow, setPendingDeleteRow] = useState<CallImportRow | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showRunEval, setShowRunEval] = useState(false)
@@ -677,27 +673,6 @@ export default function CallImportDetail() {
         err?.response?.data?.detail ||
           err?.message ||
           'Failed to retry failed import rows.',
-      )
-    },
-  })
-
-  const forceFailDiarisationMutation = useMutation({
-    mutationFn: () => apiClient.cancelCallImportDiarisation(id!, null),
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
-      setShowForceFailDiarisationConfirm(false)
-      const parts = [`Force-failed ${result.cancelled} diarisation row${result.cancelled === 1 ? '' : 's'}`]
-      if (result.skipped > 0) {
-        parts.push(`skipped ${result.skipped}`)
-      }
-      setForceFailDiarisationError(null)
-      setBulkActionResult(parts.join(' · '))
-    },
-    onError: (err: any) => {
-      setForceFailDiarisationError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to force-fail in-flight diarisation rows.',
       )
     },
   })
@@ -1434,32 +1409,6 @@ export default function CallImportDetail() {
     })
   }
 
-  // Toggle one child while keeping the parent reference in sync: if a
-  // child is the only remaining selected member of its group we drop
-  // the parent id; if every child is selected we add the parent id so
-  // the run modal can show a single chip for the whole group.
-  const toggleChildMetric = (parent: any, childId: string) => {
-    const childIds: string[] = Array.isArray(parent.children)
-      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
-      : []
-    setSelectedMetricIds((prev) => {
-      const set = new Set(prev)
-      if (set.has(childId)) {
-        set.delete(childId)
-      } else {
-        set.add(childId)
-      }
-      const allSelected =
-        childIds.length > 0 && childIds.every((cid) => set.has(cid))
-      if (allSelected) {
-        set.add(parent.id)
-      } else {
-        set.delete(parent.id)
-      }
-      return Array.from(set)
-    })
-  }
-
   const openTranscribeModal = (rows: CallImportRow[]) => {
     setTranscribeTargetRows(rows)
     setTranscribeError(null)
@@ -1662,23 +1611,6 @@ export default function CallImportDetail() {
               }`}
             >
               Retry failed imports ({failedImportRowsCount})
-            </Button>
-          )}
-          {diarisationInFlightCount > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<Square className="h-4 w-4" />}
-              onClick={() => {
-                setForceFailDiarisationError(null)
-                setShowForceFailDiarisationConfirm(true)
-              }}
-              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
-              title={`Force-fail ${diarisationInFlightCount} pending/running diarisation row${
-                diarisationInFlightCount === 1 ? '' : 's'
-              }`}
-            >
-              Force-fail diarisation ({diarisationInFlightCount})
             </Button>
           )}
           <Button
@@ -4080,6 +4012,22 @@ export default function CallImportDetail() {
           (() => {
             const enabledMetrics = metrics.filter((m: any) => m.enabled)
             const disabledMetrics = metrics.filter((m: any) => !m.enabled)
+            const allSelectableIds = enabledMetrics.flatMap((metric: any) => {
+              const children: any[] = Array.isArray(metric.children)
+                ? metric.children.filter((c: any) => c.enabled)
+                : []
+              const isParent =
+                !!metric.selection_mode && children.length > 0
+              if (isParent) {
+                return [metric.id, ...children.map((c: any) => c.id)]
+              }
+              return [metric.id]
+            })
+            const allMetricsSelected =
+              allSelectableIds.length > 0 &&
+              allSelectableIds.every((metricId) =>
+                selectedMetricIds.includes(metricId),
+              )
             // Group the user's selection into "override targets" — one
             // entry per parent categorization metric (regardless of how
             // many of its labels are picked) and one entry per standalone
@@ -4251,17 +4199,36 @@ export default function CallImportDetail() {
                                 *
                               </span>
                             </p>
-                            {selectedMetricIds.length === 0 ? (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
-                                <AlertCircle className="h-3 w-3" />
-                                Pick at least one
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium text-gray-500">
-                                {selectedMetricIds.length} selected
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {enabledMetrics.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="text-[11px] text-primary-600 hover:text-primary-700 disabled:opacity-50"
+                                  disabled={runEvaluationMutation.isPending}
+                                  onClick={() => {
+                                    if (allMetricsSelected) {
+                                      setSelectedMetricIds([])
+                                    } else {
+                                      setSelectedMetricIds(allSelectableIds)
+                                    }
+                                  }}
+                                >
+                                  {allMetricsSelected ? 'Clear all' : 'Select all'}
+                                </button>
+                              )}
+                              {selectedMetricIds.length === 0 ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
+                                  <AlertCircle className="h-3 w-3" />
+                                  Pick at least one
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-medium text-gray-500">
+                                  {selectedMetricIds.length} selected
+                                </span>
+                              )}
+                            </div>
                           </div>
+                          <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
                           {enabledMetrics.map((metric: any) => {
                             const children: any[] = Array.isArray(metric.children)
                               ? metric.children.filter((c: any) => c.enabled)
@@ -4272,21 +4239,17 @@ export default function CallImportDetail() {
                               return (
                                 <label
                                   key={metric.id}
-                                  className="flex items-start gap-2 text-sm cursor-pointer"
+                                  className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
                                 >
                                   <input
                                     type="checkbox"
                                     checked={selectedMetricIds.includes(metric.id)}
                                     onChange={() => toggleMetric(metric.id)}
-                                    className="mt-1"
+                                    disabled={runEvaluationMutation.isPending}
+                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                   />
-                                  <span>
-                                    <span className="font-medium text-gray-900">{metric.name}</span>
-                                    {metric.description ? (
-                                      <span className="block text-xs text-gray-500">
-                                        {metric.description}
-                                      </span>
-                                    ) : null}
+                                  <span className="font-medium text-gray-900 truncate">
+                                    {metric.name}
                                   </span>
                                 </label>
                               )
@@ -4295,75 +4258,42 @@ export default function CallImportDetail() {
                             const selectedChildCount = childIds.filter((cid) =>
                               selectedMetricIds.includes(cid),
                             ).length
-                            const allSelected =
+                            const allChildrenSelected =
                               selectedChildCount === childIds.length &&
                               childIds.length > 0
-                            const someSelected =
-                              selectedChildCount > 0 && !allSelected
+                            const someChildrenSelected =
+                              selectedChildCount > 0 && !allChildrenSelected
                             return (
-                              <div
+                              <label
                                 key={metric.id}
-                                className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1"
+                                className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
                               >
-                                <label className="flex items-start gap-2 text-sm cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    ref={(el) => {
-                                      if (el) el.indeterminate = someSelected
-                                    }}
-                                    checked={allSelected}
-                                    onChange={() => toggleParentMetric(metric)}
-                                    className="mt-1"
-                                  />
-                                  <span className="flex-1">
-                                    <span className="font-medium text-gray-900">
-                                      {metric.name}
-                                    </span>
-                                    <span className="ml-2 inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
-                                      {metric.selection_mode === 'single_choice'
-                                        ? 'pick one'
-                                        : 'multi-label'}
-                                    </span>
-                                    <span className="ml-2 text-[11px] text-gray-500">
-                                      {selectedChildCount}/{childIds.length} selected
-                                    </span>
-                                    {metric.description ? (
-                                      <span className="block text-xs text-gray-500">
-                                        {metric.description}
-                                      </span>
-                                    ) : null}
+                                <input
+                                  type="checkbox"
+                                  ref={(el) => {
+                                    if (el) {
+                                      el.indeterminate = someChildrenSelected
+                                    }
+                                  }}
+                                  checked={allChildrenSelected}
+                                  onChange={() => toggleParentMetric(metric)}
+                                  disabled={runEvaluationMutation.isPending}
+                                  className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                />
+                                <span className="min-w-0 flex-1 flex items-baseline gap-2">
+                                  <span className="font-medium text-gray-900 truncate">
+                                    {metric.name}
                                   </span>
-                                </label>
-                                <div className="ml-6 space-y-1 border-l border-gray-200 pl-3">
-                                  {children.map((child: any) => (
-                                    <label
-                                      key={child.id}
-                                      className="flex items-start gap-2 text-xs cursor-pointer"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedMetricIds.includes(child.id)}
-                                        onChange={() =>
-                                          toggleChildMetric(metric, child.id)
-                                        }
-                                        className="mt-0.5"
-                                      />
-                                      <span>
-                                        <span className="font-medium text-gray-800">
-                                          {child.name}
-                                        </span>
-                                        {child.description ? (
-                                          <span className="block text-[11px] text-gray-500">
-                                            {child.description}
-                                          </span>
-                                        ) : null}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
+                                  {someChildrenSelected ? (
+                                    <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                                      {selectedChildCount}/{childIds.length} labels
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </label>
                             )
                           })}
+                          </div>
                         </div>
 
                         {disabledMetrics.length > 0 && (
@@ -5117,36 +5047,6 @@ export default function CallImportDetail() {
             'success',
           )
           refetch()
-        }}
-      />
-
-      <ConfirmModal
-        isOpen={showForceFailDiarisationConfirm}
-        title={`Force-fail ${diarisationInFlightCount} in-flight diarisation row${
-          diarisationInFlightCount === 1 ? '' : 's'
-        }?`}
-        description={(() => {
-          const lines = [
-            'Any row currently pending/running in diarisation will be marked failed immediately.',
-            'You can then re-diarise those failed rows from the same page.',
-            forceFailDiarisationError ? `Error: ${forceFailDiarisationError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel={`Force-fail ${diarisationInFlightCount} row${
-          diarisationInFlightCount === 1 ? '' : 's'
-        }`}
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={forceFailDiarisationMutation.isPending}
-        onConfirm={() => {
-          if (forceFailDiarisationMutation.isPending) return
-          forceFailDiarisationMutation.mutate()
-        }}
-        onCancel={() => {
-          if (forceFailDiarisationMutation.isPending) return
-          setShowForceFailDiarisationConfirm(false)
-          setForceFailDiarisationError(null)
         }}
       />
 

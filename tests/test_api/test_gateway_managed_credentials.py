@@ -27,6 +27,37 @@ def _reset_gateway_settings():
     ) = original
 
 
+def test_create_aiprovider_gateway_with_credential_base_url_when_org_direct(
+    authenticated_client,
+):
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = False
+    settings.LLM_GATEWAY_BASE_URL = None
+
+    disable_response = authenticated_client.put(
+        "/api/v1/organizations/llm-gateway",
+        json={"mode": "disabled"},
+    )
+    assert disable_response.status_code == 200
+    assert disable_response.json()["effective_routing"] == "direct"
+
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "custom",
+            "name": "Test",
+            "routing_mode": "gateway",
+            "gateway_model": "gpt-oss-120b",
+            "gateway_interface": "native_openai",
+            "gateway_base_url": "http://localhost:8080",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["effective_routing"] == "bifrost"
+    assert data["gateway_model"] == "gpt-oss-120b"
+
+
 def test_create_aiprovider_without_key_when_gateway_routing(
     authenticated_client, db_session, org_id
 ):

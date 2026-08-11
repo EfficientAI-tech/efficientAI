@@ -972,6 +972,145 @@ def test_cancel_row_returns_409_when_bulk_operation_active(
     assert "bulk abort operation" in response.json()["detail"]
 
 
+def _force_diarisation_running(
+    db_session,
+    evaluation_id,
+    *,
+    task_id_prefix="dia-task",
+):
+    """Set linked source rows to in-flight diarisation for cancel cascade tests."""
+    eval_uuid = UUID(evaluation_id)
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .all()
+    )
+    source_ids = [row.call_import_row_id for row in eval_rows]
+    source_rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.id.in_(source_ids))
+        .all()
+    )
+    for idx, row in enumerate(source_rows):
+        row.diarised_transcript_status = "running"
+        row.celery_task_id = f"{task_id_prefix}-{idx}"
+    db_session.commit()
+    return source_rows
+
+
+def test_cancel_evaluation_cascades_diarisation_on_source_rows(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Run-level abort should fail in-flight diarisation on linked source rows."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    _force_running(db_session, created["id"])
+    source_rows = _force_diarisation_running(db_session, created["id"])
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.expire_all()
+    refreshed = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.id.in_([row.id for row in source_rows]))
+        .all()
+    )
+    assert {row.diarised_transcript_status for row in refreshed} == {"failed"}
+    assert all(
+        (row.diarised_transcript_error or "") == "Diarisation cancelled by user"
+        for row in refreshed
+    )
+    assert all(row.celery_task_id is None for row in refreshed)
+
+
+def test_cancel_evaluation_row_cascades_diarisation_on_source_row(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Row-level abort should fail in-flight diarisation on the linked source row."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    eval_rows = _force_running(db_session, created["id"])
+    source_rows = _force_diarisation_running(db_session, created["id"])
+    target = eval_rows[0]
+    target_source = next(
+        row for row in source_rows if row.id == target.call_import_row_id
+    )
+    sibling_source = next(
+        row for row in source_rows if row.id != target.call_import_row_id
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{target.id}/cancel"
+    )
+    assert response.status_code == 200, response.text
+
+    db_session.expire_all()
+    db_session.refresh(target_source)
+    db_session.refresh(sibling_source)
+    assert target_source.diarised_transcript_status == "failed"
+    assert (
+        target_source.diarised_transcript_error or ""
+    ) == "Diarisation cancelled by user"
+    assert target_source.celery_task_id is None
+    assert sibling_source.diarised_transcript_status == "running"
+
+
+def test_cancel_evaluation_sweeps_diarisation_when_eval_row_already_failed(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch,
+):
+    """Final sweep fails in-flight diarisation even if the eval row is already terminal."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .one()
+    )
+    source_row = db_session.get(CallImportRow, eval_row.call_import_row_id)
+    eval_row.status = "failed"
+    eval_row.error_message = "Evaluation cancelled by user"
+    eval_row.celery_task_id = None
+    source_row.diarised_transcript_status = "pending"
+    source_row.celery_task_id = "dia-task-stale"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["target_count"] == 0
+
+    db_session.expire_all()
+    db_session.refresh(source_row)
+    assert source_row.diarised_transcript_status == "failed"
+    assert (
+        source_row.diarised_transcript_error or ""
+    ) == "Diarisation cancelled by user"
+    assert source_row.celery_task_id is None
+
+
 def test_retry_failed_rows_flips_partial_run_back_to_running(
     authenticated_client, db_session, org_id, seed_org
 ):
