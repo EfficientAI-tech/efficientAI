@@ -34,6 +34,10 @@ import {
   singleFormFromMetricClipboard,
 } from './metricClipboardUtils'
 import {
+  buildSingleMetricValuePayload,
+  formatMetricValuePayloadJson,
+} from './metricValuePayloadUtils'
+import {
   categoryChildrenFromPartial,
   createCategoryChildrenFromPartial,
   formatMetricPartialPreview,
@@ -369,6 +373,30 @@ export default function MetricsManagement({
     // supported in this iteration).
     scope: 'workspace' as 'workspace' | 'organization',
   })
+
+  const singleMetricValuePayloadJson = useMemo(() => {
+    return formatMetricValuePayloadJson(
+      buildSingleMetricValuePayload({
+        name: formData.name,
+        description: formData.description,
+        metric_type: formData.metric_type,
+        custom_data_type: formData.custom_data_type,
+        enum_options_csv: formData.enum_options_csv,
+        number_min: formData.number_min,
+        number_max: formData.number_max,
+        capture_rationale: formData.capture_rationale,
+      }),
+    )
+  }, [
+    formData.name,
+    formData.description,
+    formData.metric_type,
+    formData.custom_data_type,
+    formData.enum_options_csv,
+    formData.number_min,
+    formData.number_max,
+    formData.capture_rationale,
+  ])
 
   // --- Prompt-partial import sub-modal --------------------------------------
   // The metric editors carry several "Description (Prompt)" textareas that
@@ -1120,6 +1148,12 @@ export default function MetricsManagement({
     const payload = serializeMetricToClipboard(metric)
     copyTextToClipboard(JSON.stringify(payload, null, 2), () => {
       showToast('Metric copied to clipboard', 'success')
+    })
+  }
+
+  const handleCopyValuePayload = () => {
+    copyTextToClipboard(singleMetricValuePayloadJson, () => {
+      showToast('Value payload copied to clipboard', 'success')
     })
   }
 
@@ -2298,6 +2332,49 @@ export default function MetricsManagement({
                       </label>
                     </div>
                   )}
+
+                  <div className="lg:col-span-2">
+                    <details className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs">
+                      <summary className="cursor-pointer font-medium text-gray-700 list-none flex items-center justify-between gap-2">
+                        <span>Value payload (JSON)</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleCopyValuePayload()
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50"
+                        >
+                          <Copy className="h-3 w-3" />
+                          Copy JSON
+                        </button>
+                      </summary>
+                      <p className="mt-2 text-[11px] text-gray-500">
+                        Example of one row&apos;s score object as stored in{' '}
+                        <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[10px]">
+                          metric_scores
+                        </code>
+                        . Actual{' '}
+                        <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[10px]">
+                          value
+                        </code>{' '}
+                        comes from evaluation.
+                        {editingMetric?.id ? (
+                          <>
+                            {' '}
+                            Metric ID:{' '}
+                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[10px] font-mono">
+                              {editingMetric.id}
+                            </code>
+                          </>
+                        ) : null}
+                      </p>
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-gray-900 p-3 font-mono text-[11px] text-gray-100">
+                        {singleMetricValuePayloadJson}
+                      </pre>
+                    </details>
+                  </div>
 
                   {/*
                     Call Imports configuration: previously housed a
