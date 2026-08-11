@@ -592,6 +592,17 @@ export default function CallImportDetail() {
     queryClient,
   ])
 
+  const runEvaluationStepRef = useRef<HTMLDivElement>(null)
+  const [highlightRunEvaluation, setHighlightRunEvaluation] = useState(false)
+  const [pendingScrollToEvaluation, setPendingScrollToEvaluation] = useState(false)
+
+  const handleMappingSaved = useCallback(() => {
+    showToast('Mapping saved. Continue with Run Evaluation below.', 'success')
+    setHighlightRunEvaluation(true)
+    setPendingScrollToEvaluation(true)
+    window.setTimeout(() => setHighlightRunEvaluation(false), 4000)
+  }, [showToast])
+
   const { data: aiProviders = [] } = useQuery({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
@@ -943,6 +954,17 @@ export default function CallImportDetail() {
     // actions on this page, which already invalidate the query.
     staleTime: 0,
   })
+
+  useEffect(() => {
+    if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
+    setPendingScrollToEvaluation(false)
+    window.setTimeout(() => {
+      runEvaluationStepRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    }, 100)
+  }, [pendingScrollToEvaluation, data?.status])
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, 'agent'],
@@ -1954,10 +1976,18 @@ export default function CallImportDetail() {
       {needsMapping && data.source_s3_key && (
         <>
           {(data.status === 'uploaded' || data.status === 'mapped') && (
-            <MappingPanel callImport={data} />
+            <MappingPanel
+              callImport={data}
+              onMappingSaved={handleMappingSaved}
+            />
           )}
           {data.status === 'mapped' && !isDeleting && (
-            <RunEvaluationStep onRunEvaluation={openRunEvaluationModal} />
+            <div ref={runEvaluationStepRef}>
+              <RunEvaluationStep
+                onRunEvaluation={openRunEvaluationModal}
+                highlighted={highlightRunEvaluation}
+              />
+            </div>
           )}
         </>
       )}

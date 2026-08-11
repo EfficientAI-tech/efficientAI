@@ -2930,6 +2930,18 @@ class ApiClient {
     return response.data
   }
 
+  async downloadCallImportEvaluationPdfReport(
+    callImportId: string,
+    evaluationId: string,
+    reportId: string,
+  ): Promise<Blob> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports/${reportId}/download`,
+      { responseType: 'blob' },
+    )
+    return response.data
+  }
+
   async listCallImportEvaluationBaselineCandidates(
     callImportId: string,
     evaluationId: string,

@@ -59,6 +59,7 @@ import {
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import { downloadBlob } from '../../lib/download'
 import {
   isLLMSelectionComplete,
   resolveLLMModelForSubmit,
@@ -474,6 +475,10 @@ export default function CallImportEvaluationDetail() {
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false)
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
   const [pdfPreviewFilename, setPdfPreviewFilename] = useState('')
+  const [pdfPreviewReportId, setPdfPreviewReportId] = useState<string | null>(
+    null,
+  )
+  const [pdfPreviewDownloading, setPdfPreviewDownloading] = useState(false)
   const [vizBaselineEvaluationId, setVizBaselineEvaluationId] = useState<
     string | null
   >(null)
@@ -1841,6 +1846,7 @@ export default function CallImportEvaluationDetail() {
       }
       setPdfPreviewUrl(report.preview_url)
       setPdfPreviewFilename(report.filename || 'report.pdf')
+      setPdfPreviewReportId(reportId)
       setPdfPreviewOpen(true)
       setPdfReportMenuOpen(false)
     } catch (e: unknown) {
@@ -1871,27 +1877,29 @@ export default function CallImportEvaluationDetail() {
       const defaultFilename = `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`
 
       if (result instanceof Blob) {
-        const url = window.URL.createObjectURL(result)
-        const link = document.createElement('a')
-        link.href = url
-        link.download = defaultFilename
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-        window.URL.revokeObjectURL(url)
+        downloadBlob(result, defaultFilename)
       } else {
-        const downloadUrl = result.download_url
-        if (!downloadUrl) {
-          throw new Error('Download URL is not available.')
+        if (result.id && id && evalId) {
+          const blob = await apiClient.downloadCallImportEvaluationPdfReport(
+            id,
+            evalId,
+            result.id,
+          )
+          downloadBlob(blob, result.filename || defaultFilename)
+        } else {
+          const downloadUrl = result.download_url
+          if (!downloadUrl) {
+            throw new Error('Download URL is not available.')
+          }
+          const response = await fetch(downloadUrl)
+          if (!response.ok) {
+            throw new Error('Failed to download PDF report.')
+          }
+          downloadBlob(
+            await response.blob(),
+            result.filename || defaultFilename,
+          )
         }
-        const link = document.createElement('a')
-        link.href = downloadUrl
-        link.download = result.filename || defaultFilename
-        link.target = '_blank'
-        link.rel = 'noopener noreferrer'
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
         await queryClient.invalidateQueries({
           queryKey: [
             'call-import-evaluation-pdf-reports',
@@ -1942,6 +1950,7 @@ export default function CallImportEvaluationDetail() {
         setPdfPreviewFilename(
           `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
         )
+        setPdfPreviewReportId(null)
       } else {
         if (!result.preview_url) {
           throw new Error('Preview URL is not available.')
@@ -1954,6 +1963,7 @@ export default function CallImportEvaluationDetail() {
           result.filename ||
             `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
         )
+        setPdfPreviewReportId(result.id)
         await queryClient.invalidateQueries({
           queryKey: [
             'call-import-evaluation-pdf-reports',
@@ -1970,6 +1980,43 @@ export default function CallImportEvaluationDetail() {
       showToast(message, 'error')
     } finally {
       setPdfReportLoadingAction(null)
+    }
+  }
+
+  const handlePdfPreviewDownload = async () => {
+    if (!pdfPreviewFilename) return
+    setPdfPreviewDownloading(true)
+    try {
+      if (pdfPreviewReportId && id && evalId) {
+        const blob = await apiClient.downloadCallImportEvaluationPdfReport(
+          id,
+          evalId,
+          pdfPreviewReportId,
+        )
+        downloadBlob(blob, pdfPreviewFilename)
+        return
+      }
+      if (pdfPreviewUrl?.startsWith('blob:')) {
+        downloadBlob(
+          await fetch(pdfPreviewUrl).then((r) => r.blob()),
+          pdfPreviewFilename,
+        )
+        return
+      }
+      if (!pdfPreviewUrl) return
+      const response = await fetch(pdfPreviewUrl)
+      if (!response.ok) {
+        throw new Error('Failed to download PDF report.')
+      }
+      downloadBlob(await response.blob(), pdfPreviewFilename)
+    } catch (e: unknown) {
+      console.error('Failed to download PDF report', e)
+      showToast(
+        getApiErrorMessage(e, 'Failed to download PDF report.'),
+        'error',
+      )
+    } finally {
+      setPdfPreviewDownloading(false)
     }
   }
 
@@ -2105,7 +2152,9 @@ export default function CallImportEvaluationDetail() {
 
   useEffect(() => {
     return () => {
-      if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+      if (pdfPreviewUrl?.startsWith('blob:')) {
+        window.URL.revokeObjectURL(pdfPreviewUrl)
+      }
     }
   }, [pdfPreviewUrl])
 
@@ -5434,23 +5483,20 @@ export default function CallImportEvaluationDetail() {
               <div className="flex items-center gap-2 shrink-0">
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    if (!pdfPreviewUrl) return
-                    const link = document.createElement('a')
-                    link.href = pdfPreviewUrl
-                    link.download = pdfPreviewFilename
-                    document.body.appendChild(link)
-                    link.click()
-                    link.remove()
-                  }}
+                  onClick={handlePdfPreviewDownload}
+                  isLoading={pdfPreviewDownloading}
+                  disabled={pdfPreviewDownloading}
                 >
                   Download
                 </Button>
                 <Button
                   variant="primary"
                   onClick={() => {
-                    if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+                    if (pdfPreviewUrl?.startsWith('blob:')) {
+                      window.URL.revokeObjectURL(pdfPreviewUrl)
+                    }
                     setPdfPreviewUrl(null)
+                    setPdfPreviewReportId(null)
                     setPdfPreviewOpen(false)
                   }}
                 >

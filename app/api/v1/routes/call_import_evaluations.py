@@ -3950,6 +3950,65 @@ async def get_call_import_evaluation_pdf_report(
     return _pdf_report_response_from_row(row)
 
 
+@router.get(
+    "/{eval_id}/pdf-reports/{report_id}/download",
+    operation_id="downloadCallImportEvaluationPdfReport",
+)
+async def download_call_import_evaluation_pdf_report(
+    call_import_id: UUID,
+    eval_id: UUID,
+    report_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    row = (
+        db.query(CallImportEvaluationPdfReport)
+        .filter(
+            CallImportEvaluationPdfReport.id == report_id,
+            CallImportEvaluationPdfReport.evaluation_id == eval_id,
+            CallImportEvaluationPdfReport.call_import_id == call_import_id,
+            CallImportEvaluationPdfReport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="PDF report not found")
+    if not row.s3_key:
+        raise HTTPException(
+            status_code=404,
+            detail="PDF report file is not available in object storage",
+        )
+    from app.services.storage.s3_service import s3_service
+
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Object storage is not enabled or not configured.",
+        )
+    try:
+        file_bytes = s3_service.download_file_by_key(row.s3_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to download PDF report {} for evaluation {}",
+            report_id,
+            eval_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download PDF report: {exc}",
+        ) from exc
+    filename = row.filename or "report.pdf"
+    safe_name = filename.replace('"', "'")
+    return StreamingResponse(
+        iter([file_bytes]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
 @router.patch(
     "/{eval_id}",
     response_model=CallImportEvaluationResponse,
