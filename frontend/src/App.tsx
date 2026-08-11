@@ -11,6 +11,9 @@ import SelectOrganization from './pages/auth/SelectOrganization'
 // Dashboard
 import Dashboard from './pages/dashboard/Dashboard'
 
+// Usage
+import Usage from './pages/usage/Usage'
+
 // Prompt Partials
 import PromptPartials from './pages/promptPartials/PromptPartials'
 
@@ -182,6 +185,7 @@ function App() {
           <Route path="observability/calls" element={<ObservabilityCalls />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
           <Route path="iam" element={<IAM />} />
+          <Route path="usage" element={<Usage />} />
           <Route
             path="workspace-members"
             element={<Navigate to="/iam?tab=workspace-members" replace />}

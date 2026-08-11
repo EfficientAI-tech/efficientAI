@@ -2991,6 +2991,88 @@ class ApiClient {
     return response.data
   }
 
+  async getOrgUsageSummary(params: {
+    start?: string
+    end?: string
+    workspace_id?: string
+    product_section?: string
+    model?: string
+    resource_id?: string
+  }): Promise<{
+    start: string
+    end: string
+    totals: {
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+      cache_read_tokens: number
+      cache_creation_tokens: number
+      reasoning_tokens: number
+      call_count: number
+    }
+    last_updated_at?: string | null
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/summary', {
+      params,
+    })
+    return response.data
+  }
+
+  async getOrgUsageBreakdown(params: {
+    start?: string
+    end?: string
+    group_by?: 'workspace' | 'product_section' | 'model' | 'resource'
+    workspace_id?: string
+    product_section?: string
+    model?: string
+    resource_id?: string
+    limit?: number
+    offset?: number
+  }): Promise<{
+    start: string
+    end: string
+    group_by: string
+    rows: Array<{
+      workspace_id?: string | null
+      workspace_name?: string | null
+      product_section?: string | null
+      product_section_label?: string | null
+      model?: string | null
+      resource_id?: string | null
+      resource_type?: string | null
+      resource_label?: string | null
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+      cache_read_tokens: number
+      cache_creation_tokens: number
+      reasoning_tokens: number
+      call_count: number
+    }>
+    total_count: number
+    last_updated_at?: string | null
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/breakdown', {
+      params,
+    })
+    return response.data
+  }
+
+  async getOrgUsageFilters(params?: {
+    start?: string
+    end?: string
+  }): Promise<{
+    workspaces: Array<{ id: string; name: string }>
+    product_sections: Array<{ id: string; label: string }>
+    models: string[]
+    resources: Array<{ id: string; type?: string; label: string }>
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/filters', {
+      params,
+    })
+    return response.data
+  }
+
   async getAllModels(): Promise<Record<string, ModelConfigEntry>> {
     const response = await this.client.get('/api/v1/model-config/models')
     return response.data

@@ -40,14 +40,29 @@ def generate_evaluation_tldr_insights_task(
         if evaluation is None:
             return {"error": "evaluation_not_found", "status_code": 404}
 
+        from app.services.usage.context import (
+            LLMUsageContext,
+            LLMUsageProductSection,
+            llm_usage_context,
+        )
+
         try:
-            summary = _generate_and_persist_tldr_summary(
-                db,
-                evaluation,
-                organization_id=UUID(organization_id),
-                provider=provider,
-                model=model,
-            )
+            with llm_usage_context(
+                LLMUsageContext(
+                    organization_id=evaluation.organization_id,
+                    workspace_id=evaluation.workspace_id,
+                    product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
+                    resource_id=evaluation.id,
+                    resource_type="call_import_evaluation",
+                )
+            ):
+                summary = _generate_and_persist_tldr_summary(
+                    db,
+                    evaluation,
+                    organization_id=UUID(organization_id),
+                    provider=provider,
+                    model=model,
+                )
         except HTTPException as exc:
             return {"error": exc.detail, "status_code": exc.status_code}
 

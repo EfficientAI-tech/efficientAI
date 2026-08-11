@@ -98,7 +98,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -246,6 +246,15 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             if user_transcript_processor:
                 pipeline_processors.append(user_transcript_processor)
             pipeline_processors.append(llm)
+            from app.services.usage.voice_usage_processor import create_llm_usage_recorder
+
+            usage_recorder = create_llm_usage_recorder(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section="telephony" if telephony_mode else "playground",
+            )
+            if usage_recorder:
+                pipeline_processors.append(usage_recorder)
             if agent_transcript_processor:
                 pipeline_processors.append(agent_transcript_processor)
             pipeline_processors.extend([
@@ -278,18 +287,30 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             # RTVI events for efficientai client UI
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
 
-            pipeline = imports["Pipeline"](
+            from app.services.usage.voice_usage_processor import create_llm_usage_recorder
+
+            usage_recorder = create_llm_usage_recorder(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section="playground",
+            )
+            pipeline_steps = [
+                ws_transport.input(),
+                user_recorder,
+                context_aggregator.user(),
+                rtvi,
+                llm,
+            ]
+            if usage_recorder:
+                pipeline_steps.append(usage_recorder)
+            pipeline_steps.extend(
                 [
-                    ws_transport.input(),
-                    user_recorder,
-                    context_aggregator.user(),
-                    rtvi,
-                    llm,
                     bot_recorder,
                     ws_transport.output(),
                     context_aggregator.assistant(),
                 ]
             )
+            pipeline = imports["Pipeline"](pipeline_steps)
 
             task = imports["PipelineTask"](
                 pipeline,

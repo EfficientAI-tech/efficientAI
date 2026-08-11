@@ -488,6 +488,23 @@ def process_evaluator_result_task(self, result_id: str):
             logger.error(f"[EvaluatorResult {result_id}] Job not found in database")
             return {"error": "Evaluator result not found"}
 
+        from app.services.usage.context import (
+            LLMUsageContext,
+            LLMUsageProductSection,
+            set_usage_context,
+            reset_usage_context,
+        )
+
+        usage_token = set_usage_context(
+            LLMUsageContext(
+                organization_id=result.organization_id,
+                workspace_id=result.workspace_id,
+                product_section=LLMUsageProductSection.EVALUATORS,
+                resource_id=result.id,
+                resource_type="evaluator_result",
+            )
+        )
+
         logger.info(f"[EvaluatorResult {result.result_id}] Starting processing task")
 
         result.celery_task_id = self.request.id
@@ -746,4 +763,9 @@ def process_evaluator_result_task(self, result_id: str):
     except Exception as exc:
         raise self.retry(exc=exc, countdown=60)
     finally:
+        try:
+            if "usage_token" in locals() and usage_token is not None:
+                reset_usage_context(usage_token)
+        except Exception:
+            pass
         db.close()

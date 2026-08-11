@@ -3702,15 +3702,31 @@ async def generate_call_import_evaluation_pdf_report(
             )
             return _pdf_report_response_from_row(cached_pdf_report, cache_hit=True)
 
-    narrative = _generate_report_narrative(
-        db,
-        organization_id,
-        metric_aggregates=metric_aggregates,
-        insight_aggregates=insight_aggregates if is_internal else [],
-        period_delta_by_metric=period_delta_by_metric,
-        evidence_samples=evidence_samples if is_internal else {},
-        report_config=report_config,
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
     )
+
+    with llm_usage_context(
+        LLMUsageContext(
+            organization_id=organization_id,
+            workspace_id=getattr(call_import, "workspace_id", None)
+            or evaluation.workspace_id,
+            product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
+            resource_id=evaluation.id,
+            resource_type="call_import_evaluation",
+        )
+    ):
+        narrative = _generate_report_narrative(
+            db,
+            organization_id,
+            metric_aggregates=metric_aggregates,
+            insight_aggregates=insight_aggregates if is_internal else [],
+            period_delta_by_metric=period_delta_by_metric,
+            evidence_samples=evidence_samples if is_internal else {},
+            report_config=report_config,
+        )
 
     generated_at = datetime.now(timezone.utc)
     try:
@@ -5337,21 +5353,35 @@ def _generate_and_persist_tldr_summary(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.ai.llm_service import llm_service
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
+    )
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider, model
     )
 
     try:
-        llm_result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.4,
-            max_tokens=1400,
-        )
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=evaluation.workspace_id,
+                product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
+                resource_id=evaluation.id,
+                resource_type="call_import_evaluation",
+            )
+        ):
+            llm_result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                temperature=0.4,
+                max_tokens=1400,
+            )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(

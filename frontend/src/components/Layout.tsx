@@ -25,6 +25,7 @@ import {
   Mic,
   Bot,
   Activity,
+  PieChart,
   Bell,
   History,
   Key,
@@ -97,6 +98,13 @@ const navigationSections: NavSection[] = [
     items: [
       { name: 'Overview', href: '/observability', icon: Activity },
       { name: 'Calls', href: '/observability/calls', icon: Phone },
+    ],
+  },
+  {
+    title: 'Usage',
+    icon: PieChart,
+    items: [
+      { name: 'Overview', href: '/usage', icon: PieChart },
     ],
   },
   {

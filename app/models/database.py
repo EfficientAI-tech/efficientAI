@@ -2777,3 +2777,40 @@ class JudgeRun(Base):
     created_by = Column(String, nullable=True)
 
     dataset = relationship("JudgeDataset", back_populates="runs")
+
+
+class LLMUsageDaily(Base):
+    """Daily LLM usage rollups for org-scoped Usage reporting."""
+
+    __tablename__ = "llm_usage_daily"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    product_section = Column(String(64), nullable=False, index=True)
+    model = Column(String(255), nullable=False, index=True)
+    resource_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    resource_type = Column(String(64), nullable=True)
+    usage_date = Column(Date, nullable=False, index=True)
+    prompt_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
+    completion_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
+    cache_read_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
+    cache_creation_tokens = Column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    reasoning_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
+    call_count = Column(BigInteger, nullable=False, default=0, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

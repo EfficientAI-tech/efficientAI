@@ -391,6 +391,11 @@ def _persist_diarization_failure(
 def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     """STT / S3 / LLM diarisation without a long-lived DB session."""
     from app.models.enums import ModelProvider
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
+    )
     from app.workers.tasks.helpers.llm_diarisation import (
         LLMDiarisationError,
         diarize_audio_with_llm,
@@ -406,6 +411,48 @@ def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     llm_credential_uuid = ctx["llm_credential_uuid"]
     effective_prompt = ctx["effective_prompt"]
 
+    with llm_usage_context(
+        LLMUsageContext(
+            organization_id=organization_id,
+            workspace_id=ctx.get("workspace_id"),
+            product_section=LLMUsageProductSection.CALL_IMPORTS,
+            resource_id=ctx.get("call_import_id"),
+            resource_type="call_import",
+        )
+    ):
+        return _run_diarization_pipeline_inner(
+            ctx,
+            row_id=row_id,
+            normalised_mode=normalised_mode,
+            recording_key=recording_key,
+            organization_id=organization_id,
+            llm_provider_value=llm_provider_value,
+            llm_model_value=llm_model_value,
+            llm_credential_uuid=llm_credential_uuid,
+            effective_prompt=effective_prompt,
+            ModelProvider=ModelProvider,
+            LLMDiarisationError=LLMDiarisationError,
+            diarize_audio_with_llm=diarize_audio_with_llm,
+            diarize_transcript_with_llm=diarize_transcript_with_llm,
+        )
+
+
+def _run_diarization_pipeline_inner(
+    ctx: dict[str, Any],
+    *,
+    row_id,
+    normalised_mode,
+    recording_key,
+    organization_id,
+    llm_provider_value,
+    llm_model_value,
+    llm_credential_uuid,
+    effective_prompt,
+    ModelProvider,
+    LLMDiarisationError,
+    diarize_audio_with_llm,
+    diarize_transcript_with_llm,
+) -> dict[str, Any]:
     plain_text: Optional[str] = None
     raw_turns: Optional[List[Dict[str, Any]]] = None
 
@@ -911,6 +958,8 @@ def transcribe_call_import_row_task(
                 "normalised_mode": normalised_mode,
                 "recording_key": recording_key,
                 "organization_id": row.organization_id,
+                "workspace_id": getattr(row, "workspace_id", None),
+                "call_import_id": row.call_import_id,
                 "stt_provider": provider_enum.value if provider_enum else None,
                 "stt_model": stt_model,
                 "credential_uuid": credential_uuid,

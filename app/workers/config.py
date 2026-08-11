@@ -137,4 +137,13 @@ celery_app.conf.task_routes = {
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
+    "flush_usage_counters": {"queue": "celery"},
+}
+
+# Periodic flush of Redis LLM usage counters into catalog rollups.
+celery_app.conf.beat_schedule = {
+    "flush-llm-usage-counters": {
+        "task": "flush_usage_counters",
+        "schedule": 120.0,
+    },
 }

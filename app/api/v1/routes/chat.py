@@ -47,20 +47,32 @@ async def chat_completion(
 ):
     """Generate a chat completion using the specified AI provider and model."""
     try:
-        # Convert ChatMessage to dict format expected by LLM service
-        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-        
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=request.provider,
-            llm_model=request.model,
-            organization_id=organization_id,
-            db=db,
-            llm_config=request.llm_config,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            task_defaults={"temperature": 0.7},
+        from app.services.usage.context import (
+            LLMUsageContext,
+            LLMUsageProductSection,
+            llm_usage_context,
         )
+
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.CHAT,
+            )
+        ):
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=request.provider,
+                llm_model=request.model,
+                organization_id=organization_id,
+                db=db,
+                llm_config=request.llm_config,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                task_defaults={"temperature": 0.7},
+            )
         
         background_tasks.add_task(
             record_chat_completion,

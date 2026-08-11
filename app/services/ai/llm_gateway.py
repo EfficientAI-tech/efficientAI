@@ -705,4 +705,28 @@ def litellm_completion(
         db=db,
         credential=credential,
     )
-    return litellm.completion(**kwargs)
+    response = litellm.completion(**kwargs)
+    try:
+        from app.services.usage.context import (
+            LLMUsageProductSection,
+            ensure_usage_context,
+            reset_usage_context,
+        )
+        from app.services.usage.llm_usage import record_llm_usage
+        from app.services.usage.normalize import normalize_llm_usage
+
+        usage_token = ensure_usage_context(
+            organization_id,
+            product_section=LLMUsageProductSection.OTHER,
+        )
+        try:
+            model_name = str(kwargs.get("model") or "unknown")
+            if "/" in model_name:
+                model_name = model_name.rsplit("/", 1)[-1]
+            record_llm_usage(model_name, normalize_llm_usage(raw_response=response))
+        finally:
+            if usage_token is not None:
+                reset_usage_context(usage_token)
+    except Exception as exc:
+        logger.debug("litellm_completion usage record skipped: {}", exc)
+    return response

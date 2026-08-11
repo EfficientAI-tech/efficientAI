@@ -193,6 +193,22 @@ def get_workspace_context(
         is_org_admin=org_role == RoleEnum.ADMIN,
     )
     request.state.workspace_context = ctx
+
+    from app.services.usage.context import (
+        LLMUsageProductSection,
+        ensure_usage_context,
+    )
+
+    section = getattr(
+        request.state, "usage_product_section", LLMUsageProductSection.OTHER
+    )
+    ensure_usage_context(
+        organization_id,
+        workspace_id=workspace.id,
+        product_section=section
+        if isinstance(section, LLMUsageProductSection)
+        else LLMUsageProductSection.OTHER,
+    )
     return ctx
 
 
