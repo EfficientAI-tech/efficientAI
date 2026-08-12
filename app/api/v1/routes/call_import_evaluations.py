@@ -5364,24 +5364,15 @@ def _generate_and_persist_tldr_summary(
     )
 
     try:
-        with llm_usage_context(
-            LLMUsageContext(
-                organization_id=organization_id,
-                workspace_id=evaluation.workspace_id,
-                product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
-                resource_id=evaluation.id,
-                resource_type="call_import_evaluation",
-            )
-        ):
-            llm_result = llm_service.generate_response(
-                messages=messages,
-                llm_provider=provider_enum,
-                llm_model=model_str,
-                organization_id=organization_id,
-                db=db,
-                temperature=0.4,
-                max_tokens=1400,
-            )
+        llm_result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.4,
+            max_tokens=1400,
+        )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
