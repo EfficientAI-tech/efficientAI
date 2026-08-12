@@ -52,13 +52,19 @@ def generate_agent_flowchart_task(
             )
             return
 
-        graph, provider_enum, model_str = generate_agent_flowchart(
-            prompt_text=partial.content,
-            organization_id=partial.organization_id,
-            db=db,
-            provider=provider,
-            model=model,
+        from app.services.usage.context import (
+            llm_usage_context,
+            usage_context_for_prompt_partial,
         )
+
+        with llm_usage_context(usage_context_for_prompt_partial(partial)):
+            graph, provider_enum, model_str = generate_agent_flowchart(
+                prompt_text=partial.content,
+                organization_id=partial.organization_id,
+                db=db,
+                provider=provider,
+                model=model,
+            )
         partial.agent_flowchart = graph.model_dump(mode="json")
         if isinstance(partial.agent_flowchart, dict):
             generated_at = graph.generated_at
@@ -130,18 +136,24 @@ def map_agent_flowchart_prompt_sections_task(
         ):
             raise ValueError("Generate a flowchart before mapping prompt sections")
 
+        from app.services.usage.context import (
+            llm_usage_context,
+            usage_context_for_prompt_partial,
+        )
+
         graph = apply_prompt_hash_staleness(
             AgentFlowGraph.model_validate(partial.agent_flowchart),
             partial.content,
         )
-        mapped_graph = map_all_flow_nodes_to_prompt(
-            prompt_text=partial.content,
-            graph=graph,
-            organization_id=partial.organization_id,
-            db=db,
-            provider=provider,
-            model=model,
-        )
+        with llm_usage_context(usage_context_for_prompt_partial(partial)):
+            mapped_graph = map_all_flow_nodes_to_prompt(
+                prompt_text=partial.content,
+                graph=graph,
+                organization_id=partial.organization_id,
+                db=db,
+                provider=provider,
+                model=model,
+            )
         partial.agent_flowchart = mapped_graph.model_dump(mode="json")
         if isinstance(partial.agent_flowchart, dict):
             if mapped_graph.generated_at is not None:

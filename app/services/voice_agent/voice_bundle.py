@@ -510,6 +510,7 @@ async def run_voice_bundle_fastapi(
     websocket_client,
     system_instruction: str | None = None,
     organization_id: str | None = None,
+    workspace_id: str | None = None,
     agent_id: str | None = None,
     persona_id: str | None = None,
     scenario_id: str | None = None,
@@ -835,8 +836,27 @@ async def run_voice_bundle_fastapi(
         if telephony_mode and call_short_id and agent_transcript_processor:
             pipeline_processors.append(agent_transcript_processor)
 
+        from app.services.usage.voice_usage_processor import create_llm_usage_recorder
+
+        agent_usage_section = (
+            "agents"
+            if agent_id
+            else ("telephony" if telephony_mode else "voice_playground")
+        )
+        usage_recorder = create_llm_usage_recorder(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            product_section=agent_usage_section,
+            resource_id=agent_id,
+            resource_type="agent" if agent_id else None,
+        )
+
         pipeline_processors.extend([
             tts,
+        ])
+        if usage_recorder:
+            pipeline_processors.append(usage_recorder)
+        pipeline_processors.extend([
             bot_recorder if use_aligned_recorders else audio_buffer_output,
             ws_transport.output(),
             context_aggregator.assistant(),
@@ -865,6 +885,7 @@ async def run_voice_bundle_fastapi(
                 await task.cancel()
         else:
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
+
             rtvi_processors = [ws_transport.input()]
             if silence_hangup_processor:
                 rtvi_processors.append(silence_hangup_processor)
@@ -875,6 +896,17 @@ async def run_voice_bundle_fastapi(
                 rtvi,
                 llm,
                 tts,
+            ])
+            usage_recorder = create_llm_usage_recorder(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section="agents" if agent_id else "voice_playground",
+                resource_id=agent_id,
+                resource_type="agent" if agent_id else None,
+            )
+            if usage_recorder:
+                rtvi_processors.append(usage_recorder)
+            rtvi_processors.extend([
                 audio_buffer_output,
                 ws_transport.output(),
                 context_aggregator.assistant(),

@@ -149,7 +149,10 @@ async def generate_agent_description(
     db: Session = Depends(get_db),
 ):
     """Generate an agent description using AI from a brief description."""
+    from contextlib import nullcontext
+
     from app.services.ai.llm_service import llm_service
+    from app.services.usage.context import llm_usage_context, usage_context_for_agent
     from app.services.testing.test_agent_simulation_prompt import (
         format_scenarios_for_generation_context,
         format_scenarios_reference_appendix,
@@ -202,15 +205,28 @@ async def generate_agent_description(
     ]
 
     try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.7,
-            max_tokens=4000,
-        )
+        usage_ctx = nullcontext()
+        if data.agent_id:
+            agent_for_usage = db.query(Agent).filter(
+                Agent.id == data.agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            ).first()
+            if agent_for_usage:
+                usage_ctx = llm_usage_context(
+                    usage_context_for_agent(agent_for_usage, workspace_id=workspace_id)
+                )
+
+        with usage_ctx:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                temperature=0.7,
+                max_tokens=4000,
+            )
         content = result["text"]
         if data.append_scenarios_to_output and linked_scenarios:
             appendix = format_scenarios_reference_appendix(linked_scenarios)

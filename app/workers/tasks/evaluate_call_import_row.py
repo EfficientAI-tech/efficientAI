@@ -364,19 +364,19 @@ def evaluate_call_import_row_task(
                 row_db.commit()
                 return {"status": "failed", "reason": "evaluation_missing"}
 
-            from app.services.usage.context import (
-                LLMUsageContext,
-                LLMUsageProductSection,
-                set_usage_context,
+            from app.services.usage.call_import_context import (
+                call_import_evaluation_usage_context,
             )
+            from app.services.usage.context import set_usage_context
 
             usage_ctx_token = set_usage_context(
-                LLMUsageContext(
+                call_import_evaluation_usage_context(
                     organization_id=evaluation.organization_id,
                     workspace_id=evaluation.workspace_id,
-                    product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
-                    resource_id=evaluation.id,
-                    resource_type="call_import_evaluation",
+                    evaluation_id=evaluation.id,
+                    call_import_id=evaluation.call_import_id,
+                    evaluation_row_id=eval_row.id,
+                    call_import_row_id=source_row.id,
                 )
             )
 

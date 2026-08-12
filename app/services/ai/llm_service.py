@@ -567,7 +567,9 @@ class LLMService:
                 result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
                 result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
                 result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
-                record_llm_usage(llm_model, snapshot)
+                record_llm_usage(
+                    llm_model, snapshot, organization_id=organization_id
+                )
             finally:
                 if usage_token is not None:
                     reset_usage_context(usage_token)

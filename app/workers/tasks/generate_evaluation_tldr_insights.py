@@ -40,20 +40,18 @@ def generate_evaluation_tldr_insights_task(
         if evaluation is None:
             return {"error": "evaluation_not_found", "status_code": 404}
 
-        from app.services.usage.context import (
-            LLMUsageContext,
-            LLMUsageProductSection,
-            llm_usage_context,
+        from app.services.usage.call_import_context import (
+            call_import_evaluation_usage_context,
         )
+        from app.services.usage.context import llm_usage_context
 
         try:
             with llm_usage_context(
-                LLMUsageContext(
+                call_import_evaluation_usage_context(
                     organization_id=evaluation.organization_id,
                     workspace_id=evaluation.workspace_id,
-                    product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
-                    resource_id=evaluation.id,
-                    resource_type="call_import_evaluation",
+                    evaluation_id=evaluation.id,
+                    call_import_id=evaluation.call_import_id,
                 )
             ):
                 summary = _generate_and_persist_tldr_summary(

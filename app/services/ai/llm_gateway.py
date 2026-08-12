@@ -10,6 +10,7 @@ Platform defaults live in ``config.yml``; per-org overrides are stored in
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional, Tuple
 from urllib.parse import urlparse
@@ -723,10 +724,63 @@ def litellm_completion(
             model_name = str(kwargs.get("model") or "unknown")
             if "/" in model_name:
                 model_name = model_name.rsplit("/", 1)[-1]
-            record_llm_usage(model_name, normalize_llm_usage(raw_response=response))
+            record_llm_usage(
+                model_name,
+                normalize_llm_usage(raw_response=response),
+                organization_id=organization_id,
+            )
         finally:
             if usage_token is not None:
                 reset_usage_context(usage_token)
     except Exception as exc:
         logger.debug("litellm_completion usage record skipped: {}", exc)
     return response
+
+
+@contextmanager
+def litellm_batch_completion_recording(
+    *,
+    organization_id: UUID,
+    db: Session,
+    model: Optional[str] = None,
+    credential: Optional[CredentialRoutingContext] = None,
+):
+    """Temporarily wrap litellm.batch_completion to record usage for each response."""
+    import litellm
+
+    from app.services.usage.llm_usage import record_llm_usage
+    from app.services.usage.normalize import normalize_llm_usage
+
+    original = litellm.batch_completion
+
+    def _recording_batch(**kwargs: Any):
+        kwargs = apply_llm_gateway(
+            kwargs,
+            organization_id=organization_id,
+            db=db,
+            model=model or kwargs.get("model"),
+            credential=credential,
+        )
+        responses = original(**kwargs)
+        model_name = str(kwargs.get("model") or model or "unknown")
+        if "/" in model_name:
+            model_name = model_name.rsplit("/", 1)[-1]
+        items = responses if isinstance(responses, list) else [responses]
+        for resp in items:
+            if resp is None:
+                continue
+            try:
+                record_llm_usage(
+                    model_name,
+                    normalize_llm_usage(raw_response=resp),
+                    organization_id=organization_id,
+                )
+            except Exception as exc:
+                logger.debug("litellm batch usage record skipped: {}", exc)
+        return responses
+
+    litellm.batch_completion = _recording_batch
+    try:
+        yield
+    finally:
+        litellm.batch_completion = original

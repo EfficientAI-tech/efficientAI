@@ -390,12 +390,11 @@ def _persist_diarization_failure(
 
 def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     """STT / S3 / LLM diarisation without a long-lived DB session."""
+    from uuid import UUID
+
     from app.models.enums import ModelProvider
-    from app.services.usage.context import (
-        LLMUsageContext,
-        LLMUsageProductSection,
-        llm_usage_context,
-    )
+    from app.services.usage.call_import_context import call_import_row_usage_context
+    from app.services.usage.context import llm_usage_context
     from app.workers.tasks.helpers.llm_diarisation import (
         LLMDiarisationError,
         diarize_audio_with_llm,
@@ -411,13 +410,20 @@ def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     llm_credential_uuid = ctx["llm_credential_uuid"]
     effective_prompt = ctx["effective_prompt"]
 
+    evaluation_id = ctx.get("evaluation_id")
+    evaluation_row_id = ctx.get("evaluation_row_id")
+    call_import_id = ctx.get("call_import_id")
+    if not call_import_id:
+        raise ValueError("call_import_id missing from transcribe pipeline context")
+
     with llm_usage_context(
-        LLMUsageContext(
+        call_import_row_usage_context(
             organization_id=organization_id,
             workspace_id=ctx.get("workspace_id"),
-            product_section=LLMUsageProductSection.CALL_IMPORTS,
-            resource_id=ctx.get("call_import_id"),
-            resource_type="call_import",
+            call_import_id=call_import_id,
+            call_import_row_id=UUID(str(row_id)),
+            evaluation_id=evaluation_id,
+            evaluation_row_id=evaluation_row_id,
         )
     ):
         return _run_diarization_pipeline_inner(
@@ -960,6 +966,14 @@ def transcribe_call_import_row_task(
                 "organization_id": row.organization_id,
                 "workspace_id": getattr(row, "workspace_id", None),
                 "call_import_id": row.call_import_id,
+                "evaluation_id": (
+                    UUID(evaluation_id_for_dispatch)
+                    if evaluation_id_for_dispatch
+                    else None
+                ),
+                "evaluation_row_id": (
+                    UUID(run_eval_row_id) if run_eval_row_id else None
+                ),
                 "stt_provider": provider_enum.value if provider_enum else None,
                 "stt_model": stt_model,
                 "credential_uuid": credential_uuid,

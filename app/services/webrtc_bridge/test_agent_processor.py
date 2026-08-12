@@ -9,8 +9,9 @@ Receives transcripts from Retell's real-time events (no STT needed).
 import asyncio
 import io
 import os
-from typing import Optional, Callable, Awaitable, List, Dict, Any
+from typing import Optional, Callable, Awaitable, List, Dict, Any, Union
 from dataclasses import dataclass, field
+from uuid import UUID
 from loguru import logger
 
 # TTS service imports
@@ -89,6 +90,9 @@ class TestAgentConfig:
     max_turns: int = 20
     response_delay_ms: int = 500  # Delay before responding (more natural)
     allow_interruptions: bool = False
+
+    organization_id: Optional[Union[UUID, str]] = None
+    workspace_id: Optional[Union[UUID, str]] = None
 
 
 class TestAgentProcessor:
@@ -366,7 +370,9 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 max_tokens=self.config.llm_max_tokens if self.config.llm_max_tokens is not None else 150,
                 temperature=self.config.llm_temperature if self.config.llm_temperature is not None else 0.7,
             )
-            
+
+            self._record_llm_usage(response=response)
+
             return response.choices[0].message.content.strip()
             
         except Exception as e:
@@ -392,6 +398,8 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             else:
                 audio = await self._tts_cartesia(text)
 
+            if audio:
+                self._record_tts_usage(text=text)
             return audio
         except Exception as e:
             logger.error(f"[TestAgent] TTS ({provider}) error: {e}")
@@ -399,6 +407,82 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
 
     def _tts_settings(self) -> Dict[str, Any]:
         return dict(self.config.tts_config or {})
+
+    def _record_tts_usage(self, *, text: str) -> None:
+        if not self.config.organization_id:
+            return
+        try:
+            from app.services.usage.context import (
+                LLMUsageContext,
+                LLMUsageProductSection,
+                llm_usage_context,
+            )
+            from app.services.usage.llm_usage import record_tts_usage
+
+            model = self.config.tts_model or TTS_DEFAULT_MODELS.get(
+                self.config.tts_provider.lower(), "unknown"
+            )
+            org_id = UUID(str(self.config.organization_id))
+            ws_id = (
+                UUID(str(self.config.workspace_id))
+                if self.config.workspace_id
+                else None
+            )
+            with llm_usage_context(
+                LLMUsageContext(
+                    organization_id=org_id,
+                    workspace_id=ws_id,
+                    product_section=LLMUsageProductSection.TEST_AGENT,
+                )
+            ):
+                record_tts_usage(
+                    model,
+                    characters=len(text or ""),
+                    organization_id=org_id,
+                )
+        except Exception as exc:
+            logger.debug("test agent tts usage record skipped: {}", exc)
+
+    def _record_llm_usage(self, *, response: Any) -> None:
+        if not self.config.organization_id:
+            return
+        try:
+            from app.services.usage.context import (
+                LLMUsageContext,
+                LLMUsageProductSection,
+                llm_usage_context,
+            )
+            from app.services.usage.llm_usage import record_llm_usage
+            from app.services.usage.normalize import UsageSnapshot
+
+            usage = getattr(response, "usage", None)
+            if usage is None:
+                return
+            org_id = UUID(str(self.config.organization_id))
+            ws_id = (
+                UUID(str(self.config.workspace_id))
+                if self.config.workspace_id
+                else None
+            )
+            model = self.config.llm_model or "unknown"
+            snapshot = UsageSnapshot(
+                prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            )
+            with llm_usage_context(
+                LLMUsageContext(
+                    organization_id=org_id,
+                    workspace_id=ws_id,
+                    product_section=LLMUsageProductSection.TEST_AGENT,
+                )
+            ):
+                record_llm_usage(
+                    model,
+                    snapshot,
+                    organization_id=org_id,
+                )
+        except Exception as exc:
+            logger.debug("test agent llm usage record skipped: {}", exc)
 
     async def _tts_cartesia(self, text: str) -> Optional[bytes]:
         """Synthesize speech via Cartesia."""

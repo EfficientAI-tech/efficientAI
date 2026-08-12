@@ -19,7 +19,7 @@ from sqlalchemy import (
     select,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
@@ -2780,7 +2780,7 @@ class JudgeRun(Base):
 
 
 class LLMUsageDaily(Base):
-    """Daily LLM usage rollups for org-scoped Usage reporting."""
+    """Daily LLM/STT usage rollups for org-scoped Usage reporting."""
 
     __tablename__ = "llm_usage_daily"
 
@@ -2799,9 +2799,9 @@ class LLMUsageDaily(Base):
     )
     product_section = Column(String(64), nullable=False, index=True)
     model = Column(String(255), nullable=False, index=True)
-    resource_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    resource_type = Column(String(64), nullable=True)
+    context = Column(JSONB, nullable=False, server_default="{}", default=dict)
     usage_date = Column(Date, nullable=False, index=True)
+    usage_kind = Column(String(16), nullable=False, default="llm", server_default="llm")
     prompt_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
     completion_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
     cache_read_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
@@ -2809,6 +2809,8 @@ class LLMUsageDaily(Base):
         BigInteger, nullable=False, default=0, server_default="0"
     )
     reasoning_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
+    audio_seconds = Column(BigInteger, nullable=False, default=0, server_default="0")
+    tts_characters = Column(BigInteger, nullable=False, default=0, server_default="0")
     call_count = Column(BigInteger, nullable=False, default=0, server_default="0")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

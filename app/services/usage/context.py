@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Any
 from uuid import UUID
 
 
@@ -36,6 +36,7 @@ class LLMUsageContext:
     product_section: LLMUsageProductSection = LLMUsageProductSection.OTHER
     resource_id: Optional[UUID] = None
     resource_type: Optional[str] = None
+    extra: Optional[dict[str, str]] = None
 
 
 _usage_context_var: ContextVar[Optional[LLMUsageContext]] = ContextVar(
@@ -128,6 +129,7 @@ def ensure_usage_context(
     product_section: LLMUsageProductSection = LLMUsageProductSection.OTHER,
     resource_id: Optional[UUID] = None,
     resource_type: Optional[str] = None,
+    extra: Optional[dict[str, str]] = None,
 ) -> Token | None:
     """Set or enrich usage context. Returns token to reset, or None if unchanged."""
     resolved_workspace = workspace_id or get_usage_workspace_hint()
@@ -146,6 +148,7 @@ def ensure_usage_context(
                 product_section=resolved_section,
                 resource_id=resource_id,
                 resource_type=resource_type,
+                extra=extra,
             )
         )
 
@@ -158,11 +161,13 @@ def ensure_usage_context(
     )
     upgraded_resource_id = current.resource_id or resource_id
     upgraded_resource_type = current.resource_type or resource_type
+    upgraded_extra = {**(current.extra or {}), **(extra or {})} or None
     if (
         upgraded_workspace == current.workspace_id
         and upgraded_section == current.product_section
         and upgraded_resource_id == current.resource_id
         and upgraded_resource_type == current.resource_type
+        and upgraded_extra == current.extra
     ):
         return None
 
@@ -173,5 +178,109 @@ def ensure_usage_context(
             product_section=upgraded_section,
             resource_id=upgraded_resource_id,
             resource_type=upgraded_resource_type,
+            extra=upgraded_extra,
         )
+    )
+
+
+def usage_context_for_agent(
+    agent: Any,
+    *,
+    workspace_id: Optional[UUID] = None,
+    extra: Optional[dict[str, str]] = None,
+) -> LLMUsageContext:
+    """Usage context for agent-scoped LLM work (simulations, setup, summaries)."""
+    merged: dict[str, str] = dict(extra or {})
+    merged.setdefault("agent_id", str(agent.id))
+    short = getattr(agent, "agent_id", None)
+    if short:
+        merged.setdefault("agent_short_id", str(short))
+    return LLMUsageContext(
+        organization_id=agent.organization_id,
+        workspace_id=workspace_id or agent.workspace_id,
+        product_section=LLMUsageProductSection.AGENTS,
+        resource_id=agent.id,
+        resource_type="agent",
+        extra=merged,
+    )
+
+
+def usage_context_for_evaluator_result(result: Any) -> LLMUsageContext:
+    """Usage context for processing an evaluator result (Vapi / playground runs)."""
+    if result.agent_id:
+        return LLMUsageContext(
+            organization_id=result.organization_id,
+            workspace_id=result.workspace_id,
+            product_section=LLMUsageProductSection.AGENTS,
+            resource_id=result.agent_id,
+            resource_type="agent",
+            extra={"agent_id": str(result.agent_id)},
+        )
+    extra: dict[str, str] = {"evaluator_result_id": str(result.id)}
+    if getattr(result, "result_id", None):
+        extra["result_short_id"] = str(result.result_id)
+    if result.evaluator_id:
+        extra["evaluator_id"] = str(result.evaluator_id)
+    return LLMUsageContext(
+        organization_id=result.organization_id,
+        workspace_id=result.workspace_id,
+        product_section=LLMUsageProductSection.EVALUATORS,
+        resource_id=result.id,
+        resource_type="evaluator_result",
+        extra=extra,
+    )
+
+
+def usage_context_for_prompt_optimization_run(run: Any) -> LLMUsageContext:
+    """Usage context for a GEPA prompt optimization run."""
+    cfg = run.config if isinstance(run.config, dict) else {}
+    is_judge = cfg.get("source") == "judge_alignment"
+    extra: dict[str, str] = {
+        "optimization_run_id": str(run.id),
+        "agent_id": str(run.agent_id),
+    }
+    if run.evaluator_id:
+        extra["evaluator_id"] = str(run.evaluator_id)
+    if is_judge:
+        extra["source"] = "judge_alignment"
+        if cfg.get("judge_dataset_id"):
+            extra["judge_dataset_id"] = str(cfg["judge_dataset_id"])
+    return LLMUsageContext(
+        organization_id=run.organization_id,
+        workspace_id=run.workspace_id,
+        product_section=(
+            LLMUsageProductSection.JUDGE_ALIGNMENT
+            if is_judge
+            else LLMUsageProductSection.PROMPT_OPTIMIZATION
+        ),
+        resource_id=run.agent_id,
+        resource_type="agent",
+        extra=extra,
+    )
+
+
+def usage_context_for_judge_run(run: Any) -> LLMUsageContext:
+    """Usage context for a judge alignment scoring run."""
+    return LLMUsageContext(
+        organization_id=run.organization_id,
+        workspace_id=run.workspace_id,
+        product_section=LLMUsageProductSection.JUDGE_ALIGNMENT,
+        resource_id=run.evaluator_id,
+        resource_type="evaluator",
+        extra={
+            "judge_run_id": str(run.id),
+            "judge_dataset_id": str(run.dataset_id),
+        },
+    )
+
+
+def usage_context_for_prompt_partial(partial: Any) -> LLMUsageContext:
+    """Usage context for prompt partial / agent flowchart LLM work."""
+    return LLMUsageContext(
+        organization_id=partial.organization_id,
+        workspace_id=partial.workspace_id,
+        product_section=LLMUsageProductSection.PROMPT_PARTIALS,
+        resource_id=partial.id,
+        resource_type="prompt_partial",
+        extra={"prompt_partial_id": str(partial.id)},
     )

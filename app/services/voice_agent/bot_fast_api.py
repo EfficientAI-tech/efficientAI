@@ -251,7 +251,9 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             usage_recorder = create_llm_usage_recorder(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
-                product_section="telephony" if telephony_mode else "playground",
+                product_section="agents" if agent_id else ("telephony" if telephony_mode else "playground"),
+                resource_id=agent_id,
+                resource_type="agent" if agent_id else None,
             )
             if usage_recorder:
                 pipeline_processors.append(usage_recorder)
@@ -292,7 +294,9 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             usage_recorder = create_llm_usage_recorder(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
-                product_section="playground",
+                product_section="agents" if agent_id else "playground",
+                resource_id=agent_id,
+                resource_type="agent" if agent_id else None,
             )
             pipeline_steps = [
                 ws_transport.input(),

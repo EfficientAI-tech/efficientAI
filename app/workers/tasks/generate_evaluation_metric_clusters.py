@@ -120,19 +120,23 @@ def generate_evaluation_metric_clusters_task(
             flag_modified(evaluation, "metric_clusters")
             db.commit()
 
-        state = generate_metric_clusters(
-            db,
-            evaluation,
-            evaluation.organization_id,
-            provider_enum,
-            model_str,
-            completed_row_pairs=completed_pairs,
-            metrics=metrics,
-            policies=policies,
-            on_progress=on_progress,
-            max_llm_calls=max_llm_calls,
-            is_cancelled=_reload_cancelled,
-        )
+        from app.services.usage.call_import_context import usage_context_for_evaluation
+        from app.services.usage.context import llm_usage_context
+
+        with llm_usage_context(usage_context_for_evaluation(evaluation)):
+            state = generate_metric_clusters(
+                db,
+                evaluation,
+                evaluation.organization_id,
+                provider_enum,
+                model_str,
+                completed_row_pairs=completed_pairs,
+                metrics=metrics,
+                policies=policies,
+                on_progress=on_progress,
+                max_llm_calls=max_llm_calls,
+                is_cancelled=_reload_cancelled,
+            )
 
         if _reload_cancelled():
             return

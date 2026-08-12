@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -104,6 +105,9 @@ class _FakeRedis:
 
     def smembers(self, key: str) -> set:
         return set(self.sets.get(key, set()))
+
+    def sismember(self, key: str, member: str) -> bool:
+        return member in self.sets.get(key, set())
 
     def exists(self, key: str) -> int:
         return int(key in self.hashes or key in self.sets or key in self.kv)
@@ -210,9 +214,10 @@ def test_record_increments_pending_and_counts_zero_token_calls(fake_redis, org_c
     assert prompt == 10
     assert completion == 5
     assert calls == 2
+    assert any(k.rsplit("|", 1)[0].endswith("|llm") for k in fields)
 
 
-def test_record_skipped_without_context(fake_redis):
+def test_record_skipped_without_organization(fake_redis):
     usage_mod.record_llm_usage(
         "gpt-test",
         UsageSnapshot(prompt_tokens=10, completion_tokens=5),
@@ -221,7 +226,137 @@ def test_record_skipped_without_context(fake_redis):
     assert fake_redis.sets == {}
 
 
-def test_flush_commits_and_acks_claim(fake_redis, org_ctx):
+def test_record_with_organization_id_without_context(fake_redis):
+    org_id = uuid4()
+    usage_mod.record_llm_usage(
+        "gpt-test",
+        UsageSnapshot(prompt_tokens=3, completion_tokens=1),
+        organization_id=org_id,
+        usage_date=date(2026, 8, 11),
+    )
+    pending_key = usage_mod._pending_hash_key(org_id)
+    fields = fake_redis.hgetall(pending_key)
+    assert fields
+    assert sum(int(v) for k, v in fields.items() if k.endswith("|call_count")) == 1
+    assert any("|other|" in k for k in fields)
+
+
+def test_record_call_usage(fake_redis, org_ctx):
+    org_id, _workspace_id, ctx = org_ctx
+    with llm_usage_context(ctx):
+        usage_mod.record_call_usage(
+            "voice-agent-call",
+            audio_seconds=42,
+            usage_date=date(2026, 8, 11),
+        )
+
+    pending_key = usage_mod._pending_hash_key(org_id)
+    fields = fake_redis.hgetall(pending_key)
+    audio = sum(int(v) for k, v in fields.items() if k.endswith("|audio_seconds"))
+    calls = sum(int(v) for k, v in fields.items() if k.endswith("|call_count"))
+    assert audio == 42
+    assert calls == 1
+    assert any(k.rsplit("|", 1)[0].endswith("|llm") for k in fields)
+
+
+def test_agent_usage_context_reuses_single_bucket(fake_redis):
+    """Stable agent context avoids per-call Redis/DB bucket explosion."""
+    from app.services.usage.context import usage_context_for_evaluator_result
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    agent_id = uuid4()
+    prefixes = set()
+    for idx in range(3):
+        result = SimpleNamespace(
+            id=uuid4(),
+            result_id=f"res-{idx}",
+            organization_id=org_id,
+            workspace_id=workspace_id,
+            evaluator_id=uuid4(),
+            agent_id=agent_id,
+        )
+        ctx = usage_context_for_evaluator_result(result)
+        with llm_usage_context(ctx):
+            usage_mod.record_call_usage(
+                "voice-agent-call",
+                audio_seconds=10,
+                usage_date=date(2026, 8, 13),
+            )
+        fields = fake_redis.hgetall(usage_mod._pending_hash_key(org_id))
+        prefixes.update(k.rsplit("|", 1)[0] for k in fields if k.endswith("|call_count"))
+
+    assert len(prefixes) == 1
+    calls = sum(int(v) for k, v in fake_redis.hgetall(usage_mod._pending_hash_key(org_id)).items() if k.endswith("|call_count"))
+    assert calls == 3
+
+
+def test_record_stt_usage(fake_redis, org_ctx):
+    org_id, _workspace_id, ctx = org_ctx
+    with llm_usage_context(ctx):
+        usage_mod.record_stt_usage(
+            "nova-2",
+            audio_seconds=12.2,
+            usage_date=date(2026, 8, 11),
+        )
+
+    pending_key = usage_mod._pending_hash_key(org_id)
+    fields = fake_redis.hgetall(pending_key)
+    audio = sum(int(v) for k, v in fields.items() if k.endswith("|audio_seconds"))
+    calls = sum(int(v) for k, v in fields.items() if k.endswith("|call_count"))
+    assert audio == 13  # ceil
+    assert calls == 1
+    assert any(k.rsplit("|", 1)[0].endswith("|stt") for k in fields)
+
+
+def test_record_tts_usage(fake_redis, org_ctx):
+    org_id, _workspace_id, ctx = org_ctx
+    with llm_usage_context(ctx):
+        usage_mod.record_tts_usage(
+            "eleven_flash_v2_5",
+            characters=142,
+            usage_date=date(2026, 8, 11),
+        )
+
+    pending_key = usage_mod._pending_hash_key(org_id)
+    fields = fake_redis.hgetall(pending_key)
+    chars = sum(int(v) for k, v in fields.items() if k.endswith("|tts_characters"))
+    calls = sum(int(v) for k, v in fields.items() if k.endswith("|call_count"))
+    assert chars == 142
+    assert calls == 1
+    assert any(k.rsplit("|", 1)[0].endswith("|tts") for k in fields)
+
+
+def test_redis_failure_buffers_to_postgres(fake_redis, org_ctx, monkeypatch):
+    org_id, _workspace_id, ctx = org_ctx
+
+    def _boom_pipeline():
+        raise usage_mod.redis.RedisError("redis down")
+
+    monkeypatch.setattr(fake_redis, "pipeline", _boom_pipeline)
+
+    captured = {}
+
+    def _fake_buffer(organization_id, bucket, deltas):
+        captured["organization_id"] = organization_id
+        captured["bucket"] = bucket
+        captured["deltas"] = deltas
+
+    monkeypatch.setattr(usage_mod, "_buffer_to_postgres", _fake_buffer)
+
+    with llm_usage_context(ctx):
+        usage_mod.record_llm_usage(
+            "gpt-test",
+            UsageSnapshot(prompt_tokens=4, completion_tokens=2),
+            usage_date=date(2026, 8, 11),
+        )
+
+    assert captured["organization_id"] == org_id
+    assert captured["deltas"]["prompt_tokens"] == 4
+    assert captured["bucket"]["usage_kind"] == "llm"
+
+
+def test_flush_commits_and_acks_claim(fake_redis, org_ctx, monkeypatch):
     org_id, _workspace_id, ctx = org_ctx
     with llm_usage_context(ctx):
         usage_mod.record_llm_usage(
@@ -232,6 +367,7 @@ def test_flush_commits_and_acks_claim(fake_redis, org_ctx):
 
     db = MagicMock()
     db.execute.return_value = MagicMock(rowcount=1)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 1
@@ -242,7 +378,7 @@ def test_flush_commits_and_acks_claim(fake_redis, org_ctx):
     assert fake_redis.get(usage_mod._flush_lock_key(org_id)) is None
 
 
-def test_flush_restores_redis_when_db_fails(fake_redis, org_ctx):
+def test_flush_restores_redis_when_db_fails(fake_redis, org_ctx, monkeypatch):
     org_id, _workspace_id, ctx = org_ctx
     with llm_usage_context(ctx):
         usage_mod.record_llm_usage(
@@ -253,6 +389,7 @@ def test_flush_restores_redis_when_db_fails(fake_redis, org_ctx):
 
     db = MagicMock()
     db.execute.side_effect = RuntimeError("db down")
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 0
@@ -270,7 +407,7 @@ def test_flush_restores_redis_when_db_fails(fake_redis, org_ctx):
     assert not any(k.startswith("usage:flushing:") for k in fake_redis.hashes)
 
 
-def test_flush_drops_pending_when_organization_missing(fake_redis, org_ctx):
+def test_flush_drops_pending_when_organization_missing(fake_redis, org_ctx, monkeypatch):
     """Unknown org FK must not restore Redis (avoids infinite beat retries)."""
     from sqlalchemy.exc import IntegrityError
 
@@ -291,6 +428,7 @@ def test_flush_drops_pending_when_organization_missing(fake_redis, org_ctx):
             'constraint "llm_usage_daily_organization_id_fkey"'
         ),
     )
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 0
@@ -300,7 +438,7 @@ def test_flush_drops_pending_when_organization_missing(fake_redis, org_ctx):
     assert not any(k.startswith("usage:flushing:") for k in fake_redis.hashes)
 
 
-def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx):
+def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx, monkeypatch):
     org_id, _workspace_id, ctx = org_ctx
     with llm_usage_context(ctx):
         usage_mod.record_llm_usage(
@@ -313,6 +451,7 @@ def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx):
     db_a.execute.return_value = MagicMock(rowcount=0)  # force INSERT path
     db_b = MagicMock()
     db_b.execute.return_value = MagicMock(rowcount=1)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
 
     first = usage_mod.flush_usage_to_catalog(db_a, org_id)
     second = usage_mod.flush_usage_to_catalog(db_b, org_id)
@@ -385,3 +524,64 @@ def test_ensure_uses_workspace_and_section_hints():
     finally:
         reset_usage_hints(hint_tokens)
         reset_usage_context(ctx_token)
+
+
+def test_parse_legacy_resource_bucket_prefix():
+    rid = uuid4()
+    parsed = usage_mod._parse_bucket_prefix(
+        f"{uuid4()}|call_imports|nova-2|{rid}|call_import|2026-08-11|stt"
+    )
+    assert parsed is not None
+    assert parsed["usage_kind"] == "stt"
+    assert parsed["context"]["resource_id"] == str(rid)
+    assert parsed["context"]["resource_type"] == "call_import"
+
+
+def test_parse_context_bucket_prefix():
+    ctx = '{"resource_id":"00000000-0000-0000-0000-000000000001","resource_type":"call_import_evaluation"}'
+    parsed = usage_mod._parse_bucket_prefix(
+        f"{uuid4()}|call_imports|gpt-4|{ctx}|2026-08-11|llm"
+    )
+    assert parsed is not None
+    assert parsed["usage_kind"] == "llm"
+    assert parsed["context"]["resource_id"] == "00000000-0000-0000-0000-000000000001"
+
+
+def test_upsert_bucket_sql_uses_valid_empty_jsonb_literal():
+    """Regression: '{{}}'::jsonb is invalid JSON and breaks catalog flush."""
+    import inspect
+
+    source = inspect.getsource(usage_mod._upsert_bucket)
+    assert "'{{}}'::jsonb" not in source
+    assert "'{}'::jsonb" in source
+
+
+def test_upsert_bucket_matches_legacy_resource_context_key(monkeypatch):
+    """Per-row context must merge into an existing evaluation-level bucket."""
+    org_id = uuid4()
+    evaluation_id = uuid4()
+    bucket = {
+        "workspace_id": uuid4(),
+        "product_section": "call_import_evaluations",
+        "model": "gpt-test",
+        "context": {
+            "resource_id": str(evaluation_id),
+            "resource_type": "call_import_evaluation",
+            "evaluation_row_id": str(uuid4()),
+        },
+        "usage_date": date(2026, 8, 12),
+        "usage_kind": "llm",
+    }
+    deltas = {"prompt_tokens": 10, "completion_tokens": 5, "call_count": 1}
+
+    exact_update = MagicMock(rowcount=0)
+    legacy_update = MagicMock(rowcount=1)
+    db = MagicMock()
+    db.execute.side_effect = [exact_update, legacy_update]
+
+    usage_mod._upsert_bucket(db, org_id, bucket, deltas)
+
+    assert db.execute.call_count == 2
+    legacy_sql = str(db.execute.call_args_list[1][0][0])
+    assert "context->>'resource_id'" in legacy_sql
+    assert "context->>'resource_type'" in legacy_sql

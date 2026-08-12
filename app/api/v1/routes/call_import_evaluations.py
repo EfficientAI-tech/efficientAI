@@ -3702,20 +3702,18 @@ async def generate_call_import_evaluation_pdf_report(
             )
             return _pdf_report_response_from_row(cached_pdf_report, cache_hit=True)
 
-    from app.services.usage.context import (
-        LLMUsageContext,
-        LLMUsageProductSection,
-        llm_usage_context,
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
     )
+    from app.services.usage.context import llm_usage_context
 
     with llm_usage_context(
-        LLMUsageContext(
+        call_import_evaluation_usage_context(
             organization_id=organization_id,
             workspace_id=getattr(call_import, "workspace_id", None)
             or evaluation.workspace_id,
-            product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
-            resource_id=evaluation.id,
-            resource_type="call_import_evaluation",
+            evaluation_id=evaluation.id,
+            call_import_id=evaluation.call_import_id,
         )
     ):
         narrative = _generate_report_narrative(
@@ -5353,11 +5351,10 @@ def _generate_and_persist_tldr_summary(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.ai.llm_service import llm_service
-    from app.services.usage.context import (
-        LLMUsageContext,
-        LLMUsageProductSection,
-        llm_usage_context,
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
     )
+    from app.services.usage.context import llm_usage_context
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider, model
@@ -5365,12 +5362,11 @@ def _generate_and_persist_tldr_summary(
 
     try:
         with llm_usage_context(
-            LLMUsageContext(
+            call_import_evaluation_usage_context(
                 organization_id=organization_id,
                 workspace_id=evaluation.workspace_id,
-                product_section=LLMUsageProductSection.CALL_IMPORT_EVALUATIONS,
-                resource_id=evaluation.id,
-                resource_type="call_import_evaluation",
+                evaluation_id=evaluation.id,
+                call_import_id=evaluation.call_import_id,
             )
         ):
             llm_result = llm_service.generate_response(
@@ -5388,8 +5384,8 @@ def _generate_and_persist_tldr_summary(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
 
-    summary = _parse_insights_response(llm_result.get("text", ""))
     total = int(evaluation.total_rows or 0)
+    summary = _parse_insights_response(llm_result.get("text", ""))
     ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
         evaluation.completed_rows or 0
     )

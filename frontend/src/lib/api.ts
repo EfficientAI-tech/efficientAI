@@ -2994,10 +2994,16 @@ class ApiClient {
   async getOrgUsageSummary(params: {
     start?: string
     end?: string
+    tz?: string
     workspace_id?: string
     product_section?: string
     model?: string
     resource_id?: string
+    usage_kind?: string
+    call_import_id?: string
+    evaluation_id?: string
+    dataset?: string
+    tag_id?: string
   }): Promise<{
     start: string
     end: string
@@ -3008,6 +3014,8 @@ class ApiClient {
       cache_read_tokens: number
       cache_creation_tokens: number
       reasoning_tokens: number
+      audio_seconds: number
+      tts_characters: number
       call_count: number
     }
     last_updated_at?: string | null
@@ -3021,11 +3029,17 @@ class ApiClient {
   async getOrgUsageBreakdown(params: {
     start?: string
     end?: string
-    group_by?: 'workspace' | 'product_section' | 'model' | 'resource'
+    tz?: string
+    group_by?: 'workspace' | 'product_section' | 'model' | 'resource' | 'usage_kind' | 'call_import'
     workspace_id?: string
     product_section?: string
     model?: string
     resource_id?: string
+    usage_kind?: string
+    call_import_id?: string
+    evaluation_id?: string
+    dataset?: string
+    tag_id?: string
     limit?: number
     offset?: number
   }): Promise<{
@@ -3041,15 +3055,21 @@ class ApiClient {
       resource_id?: string | null
       resource_type?: string | null
       resource_label?: string | null
+      call_import_id?: string | null
+      call_import_label?: string | null
+      usage_kind?: string | null
       prompt_tokens: number
       completion_tokens: number
       total_tokens: number
       cache_read_tokens: number
       cache_creation_tokens: number
       reasoning_tokens: number
+      audio_seconds: number
+      tts_characters: number
       call_count: number
     }>
     total_count: number
+    truncated_at_limit?: boolean
     last_updated_at?: string | null
   }> {
     const response = await this.client.get('/api/v1/organizations/usage/breakdown', {
@@ -3061,11 +3081,27 @@ class ApiClient {
   async getOrgUsageFilters(params?: {
     start?: string
     end?: string
+    tz?: string
+    workspace_id?: string
+    product_section?: string
+    model?: string
+    resource_id?: string
+    evaluation_id?: string
+    usage_kind?: string
+    call_import_id?: string
+    q?: string
+    dataset?: string
+    tag_id?: string
   }): Promise<{
     workspaces: Array<{ id: string; name: string }>
     product_sections: Array<{ id: string; label: string }>
+    call_imports: Array<{ id: string; label: string }>
+    evaluations: Array<{ id: string; label: string }>
     models: string[]
-    resources: Array<{ id: string; type?: string; label: string }>
+    resources: Array<{ id: string; type?: string; label: string; product_section?: string }>
+    usage_kinds: Array<{ id: string; label: string }>
+    datasets: string[]
+    tags: Array<{ id: string; label: string }>
   }> {
     const response = await this.client.get('/api/v1/organizations/usage/filters', {
       params,
@@ -3237,7 +3273,7 @@ class ApiClient {
   }): Promise<{
     call_type: string
     access_token?: string
-    call_id: string
+    call_id?: string
     agent_id: string
     agent_version?: number
     call_status?: string

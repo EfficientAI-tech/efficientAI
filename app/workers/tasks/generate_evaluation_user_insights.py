@@ -81,21 +81,25 @@ def generate_evaluation_user_insights_task(
             flag_modified(evaluation, "user_insights")
             db.commit()
 
-        state = generate_user_insights(
-            db,
-            evaluation,
-            evaluation.organization_id,
-            provider_enum,
-            model_str,
-            completed_row_pairs=completed_pairs,
-            metrics=metrics,
-            aggregate=aggregate,
-            on_progress=on_progress,
-            max_llm_calls=max_llm_calls,
-        )
-        evaluation.user_insights = user_insights_state_to_db(state)
-        flag_modified(evaluation, "user_insights")
-        db.commit()
+        from app.services.usage.call_import_context import usage_context_for_evaluation
+        from app.services.usage.context import llm_usage_context
+
+        with llm_usage_context(usage_context_for_evaluation(evaluation)):
+            state = generate_user_insights(
+                db,
+                evaluation,
+                evaluation.organization_id,
+                provider_enum,
+                model_str,
+                completed_row_pairs=completed_pairs,
+                metrics=metrics,
+                aggregate=aggregate,
+                on_progress=on_progress,
+                max_llm_calls=max_llm_calls,
+            )
+            evaluation.user_insights = user_insights_state_to_db(state)
+            flag_modified(evaluation, "user_insights")
+            db.commit()
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "User insights generation failed for evaluation {}: {}",

@@ -152,6 +152,30 @@ def transcribe_google(
             f"Gemini transcription failed for {litellm_model}: {e}"
         )
 
+    if organization_id is not None:
+        try:
+            from app.services.usage.llm_usage import record_llm_usage
+            from app.services.usage.normalize import normalize_llm_usage
+
+            gemini_model = _strip_stt_suffix(model)
+            record_llm_usage(
+                gemini_model,
+                normalize_llm_usage(raw_response=response),
+                organization_id=organization_id,
+            )
+            from app.services.usage.llm_usage import probe_audio_seconds, record_stt_usage
+
+            audio_seconds = probe_audio_seconds(audio_file_path)
+            if audio_seconds > 0:
+                record_stt_usage(
+                    gemini_model,
+                    audio_seconds=audio_seconds,
+                    organization_id=organization_id,
+                    count_call=False,
+                )
+        except Exception as exc:
+            logger.debug("[transcribe_google] llm usage record skipped: %s", exc)
+
     text = ""
     try:
         text = (response.choices[0].message.content or "").strip()

@@ -1,7 +1,8 @@
-"""Voice pipeline processor that records LLM token usage from MetricsFrames."""
+"""Voice pipeline processor that records LLM/TTS usage from MetricsFrames."""
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 from uuid import UUID
 
@@ -16,7 +17,7 @@ def create_llm_usage_recorder(
     resource_id: UUID | str | None = None,
     resource_type: Optional[str] = None,
 ):
-    """Build a FrameProcessor that records LLM usage from MetricsFrames.
+    """Build a FrameProcessor that records LLM/TTS usage from MetricsFrames.
 
     Returns None when organization_id is missing or efficientai is unavailable.
     """
@@ -25,15 +26,22 @@ def create_llm_usage_recorder(
 
     try:
         from efficientai.frames.frames import Frame, MetricsFrame
-        from efficientai.metrics.metrics import LLMUsageMetricsData
+        from efficientai.metrics.metrics import (
+            LLMUsageMetricsData,
+            ProcessingMetricsData,
+            TTSUsageMetricsData,
+        )
         from efficientai.processors.frame_processor import FrameDirection, FrameProcessor
 
         from app.services.usage.context import (
             LLMUsageContext,
             LLMUsageProductSection,
-            set_usage_context,
         )
-        from app.services.usage.llm_usage import record_llm_usage
+        from app.services.usage.llm_usage import (
+            record_llm_usage,
+            record_stt_usage,
+            record_tts_usage,
+        )
         from app.services.usage.normalize import UsageSnapshot
     except Exception as exc:
         logger.debug("voice usage recorder unavailable: {}", exc)
@@ -48,14 +56,12 @@ def create_llm_usage_recorder(
     ws_uuid = UUID(str(workspace_id)) if workspace_id else None
     res_uuid = UUID(str(resource_id)) if resource_id else None
 
-    set_usage_context(
-        LLMUsageContext(
-            organization_id=org_uuid,
-            workspace_id=ws_uuid,
-            product_section=section,
-            resource_id=res_uuid,
-            resource_type=resource_type,
-        )
+    usage_ctx = LLMUsageContext(
+        organization_id=org_uuid,
+        workspace_id=ws_uuid,
+        product_section=section,
+        resource_id=res_uuid,
+        resource_type=resource_type,
     )
 
     class LLMUsageRecorderProcessor(FrameProcessor):
@@ -74,7 +80,29 @@ def create_llm_usage_recorder(
                             ),
                             reasoning_tokens=int(tokens.reasoning_tokens or 0),
                         )
-                        record_llm_usage(item.model or "unknown", snapshot)
+                        record_llm_usage(
+                            item.model or "unknown",
+                            snapshot,
+                            organization_id=org_uuid,
+                            ctx=usage_ctx,
+                        )
+                    elif isinstance(item, TTSUsageMetricsData):
+                        record_tts_usage(
+                            item.model or "unknown",
+                            characters=int(item.value or 0),
+                            organization_id=org_uuid,
+                            ctx=usage_ctx,
+                        )
+                    elif isinstance(item, ProcessingMetricsData):
+                        processor_name = (item.processor or "").lower()
+                        if "stt" in processor_name and item.value is not None:
+                            seconds = max(1, int(math.ceil(float(item.value))))
+                            record_stt_usage(
+                                item.model or "unknown",
+                                audio_seconds=seconds,
+                                organization_id=org_uuid,
+                                ctx=usage_ctx,
+                            )
             await self.push_frame(frame, direction)
 
     return LLMUsageRecorderProcessor()

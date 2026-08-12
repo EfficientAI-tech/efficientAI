@@ -1,5 +1,6 @@
 """Celery task: process evaluator result (transcribe and evaluate metrics)."""
 
+import math
 import time
 import uuid as _uuid
 from uuid import UUID
@@ -24,6 +25,11 @@ from app.workers.tasks.helpers.llm_evaluation import (
     handle_llm_evaluation_error,
 )
 from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
+from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
+
+
+class EvaluatorInputUnavailableError(ValueError):
+    """Permanent failure: no audio or transcript available for evaluation."""
 
 
 def _commit_evaluator_result(db, result) -> None:
@@ -288,6 +294,98 @@ def _evaluate_llm_metrics_grouped(
     return metric_scores, evaluation_time
 
 
+_PERMANENT_VAPI_ENDED_REASONS = frozenset(
+    {
+        "call.in-progress.error-assistant-did-not-receive-customer-audio",
+        "call.in-progress.error-assistant-did-not-receive-customer-media",
+        "customer-did-not-give-microphone-permission",
+        "customer-did-not-answer",
+    }
+)
+
+
+def _call_data_for_transcript_extraction(result, db) -> tuple[dict, str]:
+    """Resolve provider payload and platform for transcript extraction."""
+    platform = _normalize_platform(result.provider_platform)
+    recording = _playground_call_recording(db, result) if db is not None else None
+    if recording:
+        if not result.provider_call_id and recording.provider_call_id:
+            result.provider_call_id = recording.provider_call_id
+        if not result.provider_platform and recording.provider_platform:
+            result.provider_platform = recording.provider_platform
+        platform = _normalize_platform(result.provider_platform or recording.provider_platform)
+
+    result_data = result.call_data if isinstance(result.call_data, dict) else {}
+    recording_data = (
+        recording.call_data
+        if recording and isinstance(recording.call_data, dict)
+        else {}
+    )
+
+    if not result_data and not recording_data:
+        return {}, platform
+
+    merged = dict(recording_data)
+    merged.update(result_data)
+    for key in ("endedReason", "messages", "transcript", "transcript_object"):
+        if not merged.get(key) and recording_data.get(key):
+            merged[key] = recording_data[key]
+    return merged, platform
+
+
+def _hydrate_transcript_from_call_data(result, db) -> bool:
+    """Copy transcript from provider call_data onto the result row when missing."""
+    if (result.transcription or "").strip():
+        return True
+
+    call_data, platform = _call_data_for_transcript_extraction(result, db)
+    if not call_data or not platform:
+        return False
+
+    transcript_text, speaker_segments = extract_transcript_from_call_data(
+        call_data, platform
+    )
+    if not (transcript_text or "").strip():
+        return False
+
+    result.transcription = transcript_text.strip()
+    if speaker_segments:
+        result.speaker_segments = speaker_segments
+
+    if isinstance(result.call_data, dict) and result.call_data:
+        result.call_data = slim_call_data_for_evaluator_result(result.call_data)
+
+    _commit_evaluator_result(db, result)
+    logger.info(
+        f"[EvaluatorResult {result.result_id}] Hydrated transcript from provider call_data"
+    )
+    return True
+
+
+def _permanent_input_failure_message(result, db) -> str:
+    """Return a user-facing error when retrying cannot succeed."""
+    call_data, platform = _call_data_for_transcript_extraction(result, db)
+    if not isinstance(call_data, dict):
+        call_data = {}
+
+    ended_reason = str(
+        call_data.get("endedReason") or call_data.get("ended_reason") or ""
+    ).strip()
+    if not platform and ended_reason.startswith("call."):
+        platform = "vapi"
+
+    if platform == "vapi":
+        if ended_reason in _PERMANENT_VAPI_ENDED_REASONS:
+            return (
+                "Call ended before customer audio was available "
+                f"({ended_reason}). Check microphone permissions and try again."
+            )
+        if ended_reason:
+            return f"Call ended without usable audio or transcript ({ended_reason})."
+
+    return "No audio or transcript available for evaluation."
+
+
 def _normalize_platform(platform: object) -> str:
     """Normalize provider platform enum/string into lowercase string."""
     if not platform:
@@ -394,7 +492,11 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
         )
         return False
 
-    headers = {"xi-api-key": decrypted_key} if platform == "elevenlabs" and decrypted_key else None
+    headers = None
+    if platform == "elevenlabs" and decrypted_key:
+        headers = {"xi-api-key": decrypted_key}
+    elif platform == "vapi" and decrypted_key:
+        headers = {"Authorization": f"Bearer {decrypted_key}"}
     try:
         response = _http.get(audio_url, headers=headers, timeout=120)
     except Exception as download_err:
@@ -458,6 +560,71 @@ def _playground_call_recording(db, result):
     )
 
 
+_EXTERNAL_VOICE_PROVIDER_PLATFORMS = frozenset(
+    {"vapi", "retell", "elevenlabs", "smallest"}
+)
+
+
+def _should_record_external_agent_call_usage(result) -> bool:
+    """Only bill completed calls that ran on an external voice provider.
+
+    Internal voice-bundle / WebSocket calls already emit LLM/STT/TTS usage
+    from the live pipeline; recording again here would double-count.
+    """
+    if not result.agent_id:
+        return False
+    platform = (getattr(result, "provider_platform", None) or "").strip().lower()
+    return platform in _EXTERNAL_VOICE_PROVIDER_PLATFORMS
+
+
+def _resolve_call_duration_seconds(result) -> int:
+    if result.duration_seconds:
+        try:
+            return max(0, int(math.ceil(float(result.duration_seconds))))
+        except (TypeError, ValueError):
+            pass
+    call_data = result.call_data if isinstance(result.call_data, dict) else {}
+    for key in ("duration_seconds", "duration"):
+        raw = call_data.get(key)
+        if raw is not None:
+            try:
+                return max(0, int(math.ceil(float(raw))))
+            except (TypeError, ValueError):
+                continue
+    started_at = call_data.get("startedAt") or call_data.get("start_timestamp")
+    ended_at = call_data.get("endedAt") or call_data.get("end_timestamp")
+    if started_at and ended_at:
+        try:
+            from datetime import datetime
+
+            start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+            return max(0, int(math.ceil((end - start).total_seconds())))
+        except Exception:
+            return 0
+    return 0
+
+
+def _record_agent_call_usage(result, *, usage_ctx) -> None:
+    if not _should_record_external_agent_call_usage(result):
+        return
+    try:
+        from app.services.usage.llm_usage import record_call_usage
+
+        record_call_usage(
+            "voice-agent-call",
+            organization_id=result.organization_id,
+            ctx=usage_ctx,
+            audio_seconds=_resolve_call_duration_seconds(result),
+        )
+    except Exception as exc:
+        logger.debug(
+            "[EvaluatorResult {}] agent call usage record skipped: {}",
+            result.result_id,
+            exc,
+        )
+
+
 @celery_app.task(name="process_evaluator_result", bind=True, max_retries=3)
 def process_evaluator_result_task(self, result_id: str):
     """
@@ -489,283 +656,295 @@ def process_evaluator_result_task(self, result_id: str):
             return {"error": "Evaluator result not found"}
 
         from app.services.usage.context import (
-            LLMUsageContext,
-            LLMUsageProductSection,
-            set_usage_context,
-            reset_usage_context,
+            llm_usage_context,
+            usage_context_for_evaluator_result,
         )
 
-        usage_token = set_usage_context(
-            LLMUsageContext(
-                organization_id=result.organization_id,
-                workspace_id=result.workspace_id,
-                product_section=LLMUsageProductSection.EVALUATORS,
-                resource_id=result.id,
-                resource_type="evaluator_result",
-            )
-        )
+        usage_ctx = usage_context_for_evaluator_result(result)
+        with llm_usage_context(usage_ctx):
+            logger.info(f"[EvaluatorResult {result.result_id}] Starting processing task")
 
-        logger.info(f"[EvaluatorResult {result.result_id}] Starting processing task")
+            result.celery_task_id = self.request.id
+            db.commit()
 
-        result.celery_task_id = self.request.id
-        db.commit()
+            try:
+                if not result.audio_s3_key:
+                    _recover_missing_audio_for_result(result, db, refresh_call_data=True)
 
-        try:
-            if not result.audio_s3_key:
-                _recover_missing_audio_for_result(result, db, refresh_call_data=True)
+                _hydrate_transcript_from_call_data(result, db)
 
-            has_existing_transcript = bool(result.transcription)
-            if not result.audio_s3_key and not has_existing_transcript:
-                raise ValueError("No audio S3 key or existing transcript found")
+                has_existing_transcript = bool((result.transcription or "").strip())
+                if not result.audio_s3_key and not has_existing_transcript:
+                    raise EvaluatorInputUnavailableError(
+                        _permanent_input_failure_message(result, db)
+                    )
 
-            evaluator, agent, persona, scenario = _load_related_entities(db, result)
-            is_custom_evaluator = evaluator and (
-                bool(evaluator.custom_prompt)
-                or evaluator.agent_id is None
-            )
-
-            if not is_custom_evaluator and not agent:
-                raise ValueError("Agent not found and no custom prompt available")
-
-            ai_providers = db.query(AIProvider).filter(
-                AIProvider.organization_id == result.organization_id,
-                AIProvider.is_active == True,
-            ).all()
-
-            # Step 1: Transcription
-            if has_existing_transcript:
-                transcription = result.transcription
-                speaker_segments = result.speaker_segments or []
-                transcription_time = 0.0
-            else:
-                result.status = EvaluatorResultStatus.TRANSCRIBING.value
-                db.commit()
-
-                transcription, speaker_segments, transcription_time = _transcribe_audio(
-                    result, ai_providers, db
+                evaluator, agent, persona, scenario = _load_related_entities(db, result)
+                is_custom_evaluator = evaluator and (
+                    bool(evaluator.custom_prompt)
+                    or evaluator.agent_id is None
                 )
-                result.transcription = transcription
-                # Avoid duplicating transcript structure when provider call_data already carries it.
-                if not result.call_data:
-                    result.speaker_segments = speaker_segments if speaker_segments else None
-                db.commit()
 
-            # Step 2: Load and categorize metrics
-            # Include metrics that have "agent" in their enabled_surfaces so users can
-            # restrict metrics to specific surfaces from the metrics page. Legacy rows
-            # (created before the surfaces column existed, or via fixtures that don't
-            # set the field) keep the original behavior: an enabled=True metric with
-            # an empty enabled_surfaces list is treated as agent-enabled.
-            enabled_metrics = db.query(Metric).filter(
-                Metric.organization_id == result.organization_id,
-                Metric.enabled == True,
-            ).all()
-            enabled_metrics = [
-                m for m in enabled_metrics
-                if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
-                and (
-                    "agent" in (m.enabled_surfaces or [])
-                    or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
-                )
-            ]
+                if not is_custom_evaluator and not agent:
+                    raise ValueError("Agent not found and no custom prompt available")
 
-            # Explicit metric selection on the evaluator/suite. Categorization
-            # parents are stored as a single ID and expanded to child labels here.
-            from app.services.evaluators.evaluator_helpers import expand_metric_ids_for_evaluation
+                ai_providers = db.query(AIProvider).filter(
+                    AIProvider.organization_id == result.organization_id,
+                    AIProvider.is_active == True,
+                ).all()
 
-            selected_metric_ids = {
-                str(mid) for mid in (getattr(evaluator, "metric_ids", None) or [])
-            }
-            if selected_metric_ids:
-                expanded_ids = expand_metric_ids_for_evaluation(
-                    db,
-                    result.organization_id,
-                    list(selected_metric_ids),
-                ) or set()
+                # Step 1: Transcription
+                if has_existing_transcript:
+                    transcription = result.transcription
+                    speaker_segments = result.speaker_segments or []
+                    transcription_time = 0.0
+                else:
+                    result.status = EvaluatorResultStatus.TRANSCRIBING.value
+                    db.commit()
+
+                    transcription, speaker_segments, transcription_time = _transcribe_audio(
+                        result, ai_providers, db
+                    )
+                    result.transcription = transcription
+                    # Avoid duplicating transcript structure when provider call_data already carries it.
+                    if not result.call_data:
+                        result.speaker_segments = speaker_segments if speaker_segments else None
+                    db.commit()
+
+                # Step 2: Load and categorize metrics
+                # Include metrics that have "agent" in their enabled_surfaces so users can
+                # restrict metrics to specific surfaces from the metrics page. Legacy rows
+                # (created before the surfaces column existed, or via fixtures that don't
+                # set the field) keep the original behavior: an enabled=True metric with
+                # an empty enabled_surfaces list is treated as agent-enabled.
+                enabled_metrics = db.query(Metric).filter(
+                    Metric.organization_id == result.organization_id,
+                    Metric.enabled == True,
+                ).all()
                 enabled_metrics = [
-                    m for m in enabled_metrics if str(m.id) in expanded_ids
+                    m for m in enabled_metrics
+                    if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
+                    and (
+                        "agent" in (m.enabled_surfaces or [])
+                        or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
+                    )
                 ]
 
-            has_audio = bool(result.audio_s3_key)
-            llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)
-            selected_metric_count = len(llm_metrics) + len(audio_metrics)
+                # Explicit metric selection on the evaluator/suite. Categorization
+                # parents are stored as a single ID and expanded to child labels here.
+                from app.services.evaluators.evaluator_helpers import expand_metric_ids_for_evaluation
 
-            call_recording = _playground_call_recording(db, result)
-            if call_recording:
-                from app.services.billing.flexprice_service import (
-                    record_playground_call_evaluated,
-                )
+                selected_metric_ids = {
+                    str(mid) for mid in (getattr(evaluator, "metric_ids", None) or [])
+                }
+                if selected_metric_ids:
+                    expanded_ids = expand_metric_ids_for_evaluation(
+                        db,
+                        result.organization_id,
+                        list(selected_metric_ids),
+                    ) or set()
+                    enabled_metrics = [
+                        m for m in enabled_metrics if str(m.id) in expanded_ids
+                    ]
 
-                evaluation_attempt_id = f"{result.id}:{self.request.id}"
-                record_playground_call_evaluated(
-                    result.organization_id,
-                    evaluation_attempt_id,
-                    evaluator_result_id=result.id,
-                    workspace_id=result.workspace_id,
-                    call_short_id=call_recording.call_short_id,
-                    metric_count=selected_metric_count,
-                )
+                has_audio = bool(result.audio_s3_key)
+                llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)
+                selected_metric_count = len(llm_metrics) + len(audio_metrics)
 
-            evaluation_time = None
-
-            # Step 3: Audio metrics evaluation
-            if audio_metrics and has_audio:
-                try:
-                    audio_scores = evaluate_audio_metrics(
-                        audio_s3_key=result.audio_s3_key,
-                        audio_metrics=audio_metrics,
-                        result_id=result.result_id,
+                call_recording = _playground_call_recording(db, result)
+                if call_recording:
+                    from app.services.billing.flexprice_service import (
+                        record_playground_call_evaluated,
                     )
 
-                    if _all_audio_scores_download_failed(audio_scores):
-                        logger.warning(
-                            f"[EvaluatorResult {result.result_id}] Existing S3 audio unavailable; "
-                            "attempting provider audio recovery"
+                    evaluation_attempt_id = f"{result.id}:{self.request.id}"
+                    record_playground_call_evaluated(
+                        result.organization_id,
+                        evaluation_attempt_id,
+                        evaluator_result_id=result.id,
+                        workspace_id=result.workspace_id,
+                        call_short_id=call_recording.call_short_id,
+                        metric_count=selected_metric_count,
+                    )
+
+                evaluation_time = None
+
+                # Step 3: Audio metrics evaluation
+                if audio_metrics and has_audio:
+                    try:
+                        audio_scores = evaluate_audio_metrics(
+                            audio_s3_key=result.audio_s3_key,
+                            audio_metrics=audio_metrics,
+                            result_id=result.result_id,
                         )
-                        recovered = _recover_missing_audio_for_result(result, db, refresh_call_data=True)
-                        if recovered and result.audio_s3_key:
-                            audio_scores = evaluate_audio_metrics(
-                                audio_s3_key=result.audio_s3_key,
-                                audio_metrics=audio_metrics,
-                                result_id=result.result_id,
+
+                        if _all_audio_scores_download_failed(audio_scores):
+                            logger.warning(
+                                f"[EvaluatorResult {result.result_id}] Existing S3 audio unavailable; "
+                                "attempting provider audio recovery"
                             )
+                            recovered = _recover_missing_audio_for_result(result, db, refresh_call_data=True)
+                            if recovered and result.audio_s3_key:
+                                audio_scores = evaluate_audio_metrics(
+                                    audio_s3_key=result.audio_s3_key,
+                                    audio_metrics=audio_metrics,
+                                    result_id=result.result_id,
+                                )
 
-                    metric_scores.update(audio_scores)
-                except Exception as audio_err:
-                    logger.error(
-                        f"[EvaluatorResult {result.result_id}] Audio analysis failed: {audio_err}",
-                        exc_info=True,
-                    )
-                    metric_scores.update(handle_audio_evaluation_error(audio_metrics, audio_err))
+                        metric_scores.update(audio_scores)
+                    except Exception as audio_err:
+                        logger.error(
+                            f"[EvaluatorResult {result.result_id}] Audio analysis failed: {audio_err}",
+                            exc_info=True,
+                        )
+                        metric_scores.update(handle_audio_evaluation_error(audio_metrics, audio_err))
 
-            # Step 4: LLM metrics evaluation
-            if llm_metrics and transcription:
-                result.status = EvaluatorResultStatus.EVALUATING.value
-                db.commit()
-
-                try:
-                    llm_scores, evaluation_time = _evaluate_llm_metrics_grouped(
-                        transcription=transcription,
-                        llm_metrics=llm_metrics,
-                        ai_providers=ai_providers,
-                        organization_id=result.organization_id,
-                        result_id=result.result_id,
-                        db=db,
-                        evaluator=evaluator,
-                        agent=agent,
-                        persona=persona,
-                        scenario=scenario,
-                    )
-                    metric_scores.update(llm_scores)
-                except Exception as llm_err:
-                    error_msg = str(llm_err).replace("{", "{{").replace("}", "}}")
-                    logger.error(
-                        f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {error_msg}",
-                        exc_info=True,
-                    )
-                    metric_scores.update(handle_llm_evaluation_error(llm_metrics, llm_err))
-            else:
-                if not llm_metrics:
-                    logger.warning(
-                        f"[EvaluatorResult {result.result_id}] No LLM-evaluable metrics found "
-                        "(audio-only metrics were skipped), skipping evaluation"
-                    )
-                if not transcription:
-                    logger.warning(
-                        f"[EvaluatorResult {result.result_id}] No transcription available, "
-                        "skipping evaluation"
-                    )
-
-            # Step 5: Call Analysis
-            if transcription and not (result.call_data and result.call_data.get("call_analysis")):
-                try:
-                    call_analysis = _generate_call_analysis(
-                        transcription=transcription,
-                        ai_providers=ai_providers,
-                        organization_id=result.organization_id,
-                        result_id=result.result_id,
-                        db=db,
-                        agent=agent,
-                        scenario=scenario,
-                    )
-                    if call_analysis:
-                        existing_call_data = dict(result.call_data) if isinstance(result.call_data, dict) else {}
-                        existing_call_data["call_analysis"] = call_analysis
-                        result.call_data = slim_call_data_for_evaluator_result(existing_call_data)
-                except Exception as analysis_err:
-                    logger.warning(
-                        f"[EvaluatorResult {result.result_id}] Call analysis failed (non-fatal): {analysis_err}"
-                    )
-
-            # Step 6: Complete
-            from sqlalchemy.orm.attributes import flag_modified
-
-            result.metric_scores = _make_json_serializable(metric_scores)
-            flag_modified(result, "metric_scores")
-            if isinstance(result.call_data, dict):
-                result.call_data = slim_call_data_for_evaluator_result(result.call_data)
-            if isinstance(result.call_data, (dict, list)):
-                result.call_data = _make_json_serializable(result.call_data)
-                flag_modified(result, "call_data")
-            result.status = EvaluatorResultStatus.COMPLETED.value
-            result.error_message = None
-            _commit_evaluator_result(db, result)
-
-            from app.services.billing.flexprice_service import (
-                record_playground_evaluation_completed,
-            )
-
-            call_recording = _playground_call_recording(db, result)
-            if call_recording:
-                record_playground_evaluation_completed(
-                    result.organization_id,
-                    f"{result.id}:{self.request.id}",
-                    evaluator_result_id=result.id,
-                    workspace_id=result.workspace_id,
-                    call_short_id=call_recording.call_short_id,
-                    duration_seconds=result.duration_seconds,
-                    metric_count=len(metric_scores) or selected_metric_count,
-                )
-
-            total_time = time.time() - task_start_time
-            logger.info(
-                f"[EvaluatorResult {result.result_id}] Completed in {total_time:.2f}s, "
-                f"{len(metric_scores)} metrics evaluated"
-            )
-
-            return {
-                "result_id": result_id,
-                "status": "completed",
-                "transcription": transcription,
-                "metrics_evaluated": len(metric_scores),
-                "processing_time": total_time,
-                "transcription_time": transcription_time,
-                "evaluation_time": evaluation_time,
-            }
-
-        except Exception as e:
-            db.rollback()
-            logger.error(f"[EvaluatorResult {result_id}] Processing failed: {e}", exc_info=True)
-            try:
-                failed_result = db.query(EvaluatorResult).filter(EvaluatorResult.id == result_uuid).first()
-                if failed_result:
-                    failed_result.status = EvaluatorResultStatus.FAILED.value
-                    failed_result.error_message = str(e)
+                # Step 4: LLM metrics evaluation
+                if llm_metrics and transcription:
+                    result.status = EvaluatorResultStatus.EVALUATING.value
                     db.commit()
-            except Exception as persist_err:
-                db.rollback()
-                logger.error(
-                    f"[EvaluatorResult {result_id}] Failed to persist FAILED status: {persist_err}",
-                    exc_info=True,
-                )
-            raise
 
+                    try:
+                        llm_scores, evaluation_time = _evaluate_llm_metrics_grouped(
+                            transcription=transcription,
+                            llm_metrics=llm_metrics,
+                            ai_providers=ai_providers,
+                            organization_id=result.organization_id,
+                            result_id=result.result_id,
+                            db=db,
+                            evaluator=evaluator,
+                            agent=agent,
+                            persona=persona,
+                            scenario=scenario,
+                        )
+                        metric_scores.update(llm_scores)
+                    except Exception as llm_err:
+                        error_msg = str(llm_err).replace("{", "{{").replace("}", "}}")
+                        logger.error(
+                            f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {error_msg}",
+                            exc_info=True,
+                        )
+                        metric_scores.update(handle_llm_evaluation_error(llm_metrics, llm_err))
+                else:
+                    if not llm_metrics:
+                        logger.warning(
+                            f"[EvaluatorResult {result.result_id}] No LLM-evaluable metrics found "
+                            "(audio-only metrics were skipped), skipping evaluation"
+                        )
+                    if not transcription:
+                        logger.warning(
+                            f"[EvaluatorResult {result.result_id}] No transcription available, "
+                            "skipping evaluation"
+                        )
+
+                # Step 5: Call Analysis
+                if transcription and not (result.call_data and result.call_data.get("call_analysis")):
+                    try:
+                        call_analysis = _generate_call_analysis(
+                            transcription=transcription,
+                            ai_providers=ai_providers,
+                            organization_id=result.organization_id,
+                            result_id=result.result_id,
+                            db=db,
+                            agent=agent,
+                            scenario=scenario,
+                        )
+                        if call_analysis:
+                            existing_call_data = dict(result.call_data) if isinstance(result.call_data, dict) else {}
+                            existing_call_data["call_analysis"] = call_analysis
+                            result.call_data = slim_call_data_for_evaluator_result(existing_call_data)
+                    except Exception as analysis_err:
+                        logger.warning(
+                            f"[EvaluatorResult {result.result_id}] Call analysis failed (non-fatal): {analysis_err}"
+                        )
+
+                # Step 6: Complete
+                from sqlalchemy.orm.attributes import flag_modified
+
+                result.metric_scores = _make_json_serializable(metric_scores)
+                flag_modified(result, "metric_scores")
+                if isinstance(result.call_data, dict):
+                    result.call_data = slim_call_data_for_evaluator_result(result.call_data)
+                if isinstance(result.call_data, (dict, list)):
+                    result.call_data = _make_json_serializable(result.call_data)
+                    flag_modified(result, "call_data")
+                result.status = EvaluatorResultStatus.COMPLETED.value
+                result.error_message = None
+                _record_agent_call_usage(result, usage_ctx=usage_ctx)
+                _commit_evaluator_result(db, result)
+
+                from app.services.billing.flexprice_service import (
+                    record_playground_evaluation_completed,
+                )
+
+                call_recording = _playground_call_recording(db, result)
+                if call_recording:
+                    record_playground_evaluation_completed(
+                        result.organization_id,
+                        f"{result.id}:{self.request.id}",
+                        evaluator_result_id=result.id,
+                        workspace_id=result.workspace_id,
+                        call_short_id=call_recording.call_short_id,
+                        duration_seconds=result.duration_seconds,
+                        metric_count=len(metric_scores) or selected_metric_count,
+                    )
+
+                total_time = time.time() - task_start_time
+                logger.info(
+                    f"[EvaluatorResult {result.result_id}] Completed in {total_time:.2f}s, "
+                    f"{len(metric_scores)} metrics evaluated"
+                )
+
+                return {
+                    "result_id": result_id,
+                    "status": "completed",
+                    "transcription": transcription,
+                    "metrics_evaluated": len(metric_scores),
+                    "processing_time": total_time,
+                    "transcription_time": transcription_time,
+                    "evaluation_time": evaluation_time,
+                }
+
+            except EvaluatorInputUnavailableError:
+                db.rollback()
+                raise
+            except Exception as e:
+                db.rollback()
+                logger.error(f"[EvaluatorResult {result_id}] Processing failed: {e}", exc_info=True)
+                try:
+                    failed_result = db.query(EvaluatorResult).filter(EvaluatorResult.id == result_uuid).first()
+                    if failed_result:
+                        failed_result.status = EvaluatorResultStatus.FAILED.value
+                        failed_result.error_message = str(e)
+                        db.commit()
+                except Exception as persist_err:
+                    db.rollback()
+                    logger.error(
+                        f"[EvaluatorResult {result_id}] Failed to persist FAILED status: {persist_err}",
+                        exc_info=True,
+                    )
+                raise
+
+    except EvaluatorInputUnavailableError as exc:
+        logger.warning(f"[EvaluatorResult {result_id}] Input unavailable: {exc}")
+        try:
+            from app.models.database import EvaluatorResult, EvaluatorResultStatus
+
+            failed_result = db.query(EvaluatorResult).filter(
+                EvaluatorResult.id == result_uuid
+            ).first()
+            if failed_result:
+                failed_result.status = EvaluatorResultStatus.FAILED.value
+                failed_result.error_message = str(exc)
+                db.commit()
+        except Exception as persist_err:
+            db.rollback()
+            logger.error(
+                f"[EvaluatorResult {result_id}] Failed to persist FAILED status: {persist_err}",
+                exc_info=True,
+            )
+        return {"error": str(exc), "status": "failed"}
     except Exception as exc:
         raise self.retry(exc=exc, countdown=60)
     finally:
-        try:
-            if "usage_token" in locals() and usage_token is not None:
-                reset_usage_context(usage_token)
-        except Exception:
-            pass
         db.close()
