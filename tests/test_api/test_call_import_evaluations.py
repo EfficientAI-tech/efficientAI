@@ -1152,3 +1152,43 @@ def test_evaluation_retry_can_override_telephony_credentials(
     db_session.refresh(call_import)
     assert call_import.telephony_integration_id == right_integration.id
     assert call_import.provider == "exotel"
+
+
+def test_create_evaluation_sets_actor_emails(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=2)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["created_by_email"] == "owner@example.com"
+    assert body["last_updated_by_email"] == "owner@example.com"
+
+
+def test_update_evaluation_name_stamps_last_updated_by_email(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=1)
+
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert created.status_code == 202, created.text
+    eval_id = created.json()["id"]
+
+    patched = authenticated_client.patch(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_id}",
+        json={"name": "Renamed run"},
+    )
+    assert patched.status_code == 200, patched.text
+    body = patched.json()
+    assert body["name"] == "Renamed run"
+    assert body["created_by_email"] == "owner@example.com"
+    assert body["last_updated_by_email"] == "owner@example.com"

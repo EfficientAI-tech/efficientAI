@@ -1176,6 +1176,8 @@ export interface CallImport {
   error_message: string | null
   created_at: string
   updated_at: string
+  created_by_email?: string | null
+  last_updated_by_email?: string | null
 }
 
 export interface CallImportDetail extends CallImport {
@@ -1312,6 +1314,8 @@ export interface CallImportEvaluation {
   finished_at: string | null
   created_at: string
   updated_at: string
+  created_by_email?: string | null
+  last_updated_by_email?: string | null
   /**
    * Cached LLM-generated TLDR rendered above the Visualizations tab.
    * Populated lazily via ``POST /evaluations/{id}/insights``; null on
@@ -1695,6 +1699,35 @@ export interface CallImportEvaluationBaselineCandidate {
 export interface CallImportEvaluationBaselineCandidatesResponse {
   items: CallImportEvaluationBaselineCandidate[]
   default_evaluation_id: string | null
+}
+
+export interface CallImportEvaluationPdfReport {
+  id: string
+  filename: string
+  preview_url?: string | null
+  download_url?: string | null
+  created_at: string
+  created_by?: string | null
+  report_type: string
+  vendor_name: string
+  config_summary?: string | null
+  storage_available?: boolean
+  cache_hit?: boolean
+}
+
+export interface CallImportEvaluationPdfReportListItem {
+  id: string
+  filename?: string | null
+  vendor_name: string
+  report_type: string
+  created_by?: string | null
+  created_at: string
+  config_summary?: string | null
+  cache_fingerprint?: string | null
+}
+
+export interface CallImportEvaluationPdfReportListResponse {
+  items: CallImportEvaluationPdfReportListItem[]
 }
 
 export interface CallImportEvaluationRow {

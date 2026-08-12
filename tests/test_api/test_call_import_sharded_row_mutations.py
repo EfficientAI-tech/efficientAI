@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.core.auth.principal import AuthMethod, Principal
 from app.api.v1.routes.call_imports import (
     cancel_call_import_row_diarisation,
     toggle_call_import_row_speaker_swap,
@@ -30,6 +31,14 @@ def _fake_catalog_db(call_import):
     catalog_db = MagicMock()
     catalog_db.query.return_value.filter.return_value.first.return_value = call_import
     return catalog_db
+
+
+def _test_principal(organization_id):
+    return Principal(
+        organization_id=organization_id,
+        auth_method=AuthMethod.LOCAL_PASSWORD,
+        user_id=uuid4(),
+    )
 
 
 def _fake_shard_row(
@@ -97,6 +106,7 @@ async def test_toggle_speaker_swap_commits_on_shard_session(monkeypatch):
         row_id=row_id,
         api_key="",
         organization_id=organization_id,
+        principal=_test_principal(organization_id),
         db=_fake_catalog_db(_fake_call_import(call_import_id, organization_id)),
     )
 
@@ -128,6 +138,7 @@ async def test_toggle_speaker_swap_not_found_on_shard(monkeypatch):
             row_id=row_id,
             api_key="",
             organization_id=organization_id,
+            principal=_test_principal(organization_id),
             db=_fake_catalog_db(_fake_call_import(call_import_id, organization_id)),
         )
 
@@ -175,6 +186,7 @@ async def test_cancel_diarisation_commits_on_shard_session(monkeypatch):
         row_id=row_id,
         api_key="",
         organization_id=organization_id,
+        principal=_test_principal(organization_id),
         db=_fake_catalog_db(_fake_call_import(call_import_id, organization_id)),
     )
 

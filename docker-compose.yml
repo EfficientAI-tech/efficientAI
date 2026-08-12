@@ -47,6 +47,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile.api
     container_name: efficientai_api
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -95,6 +97,8 @@ services:
       args:
         INSTALL_EXTRAS: "qualitative-voice"
     container_name: efficientai_media
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -126,6 +130,8 @@ services:
       args:
         INSTALL_EXTRAS: "qualitative-voice"
     container_name: efficientai_worker
+    env_file:
+      - .env
     environment:
       # Worker uses Docker network, so it reaches DB/Redis via service names
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
@@ -162,6 +168,8 @@ services:
       args:
         INSTALL_EXTRAS: ""
     container_name: efficientai_worker_imports
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0

@@ -4,6 +4,7 @@ import Button from '../../../components/Button'
 interface RunEvaluationStepProps {
   onRunEvaluation: () => void
   disabled?: boolean
+  highlighted?: boolean
 }
 
 /**
@@ -14,9 +15,16 @@ interface RunEvaluationStepProps {
 export default function RunEvaluationStep({
   onRunEvaluation,
   disabled = false,
+  highlighted = false,
 }: RunEvaluationStepProps) {
   return (
-    <div className="bg-white shadow rounded-lg p-6 border-2 border-primary-100">
+    <div
+      className={`bg-white shadow rounded-lg p-6 border-2 transition-all duration-500 ${
+        highlighted
+          ? 'border-primary-500 ring-2 ring-primary-200 shadow-md'
+          : 'border-primary-100'
+      }`}
+    >
       <div className="flex items-start gap-4">
         <div className="h-10 w-10 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center flex-shrink-0">
           <PlayCircle className="h-5 w-5" />

@@ -1,9 +1,8 @@
 """Unit tests for the unified call-import eval dispatch pipeline."""
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
-
-import pytest
 
 from app.models.enums import CallImportRowStatus
 from app.workers.concurrency.eval_dispatch import (
@@ -11,6 +10,7 @@ from app.workers.concurrency.eval_dispatch import (
     _needs_import_for_eval,
     _needs_transcribe_for_eval,
     _try_dispatch_single_row,
+    build_eval_chain_import_apply_async,
 )
 
 
@@ -99,11 +99,51 @@ def test_needs_transcribe_after_recording_ready():
     )
 
 
-def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
+@patch("app.workers.tasks.process_call_import_row.process_call_import_row_task")
+def test_build_eval_chain_import_apply_async_passes_run_eval_row_id(mock_task):
+    source_row = _source_row()
+    eval_row = SimpleNamespace(id=uuid4())
+    reserved_task_id = "reserved-import-task"
+
+    async_result = MagicMock()
+    async_result.id = reserved_task_id
+    mock_task.apply_async.return_value = async_result
+
+    result = build_eval_chain_import_apply_async(
+        source_row=source_row,
+        eval_row=eval_row,
+        reserved_task_id=reserved_task_id,
+    )
+
+    assert result is async_result
+    mock_task.apply_async.assert_called_once_with(
+        args=(str(source_row.id),),
+        kwargs={
+            "_eval_slot_task_id": reserved_task_id,
+            "run_eval_row_id": str(eval_row.id),
+        },
+        queue="imports",
+        task_id=reserved_task_id,
+    )
+
+
+@patch("app.workers.concurrency.eval_dispatch.build_eval_chain_import_apply_async")
+def test_try_dispatch_enqueues_import_for_pending_row(
+    mock_build_import_apply_async, monkeypatch
+):
     monkeypatch.setattr(
         "app.db_sharding.sessions.is_sharding_enabled",
         lambda: False,
     )
+    monkeypatch.setattr(
+        "app.services.call_imports.evaluation_bulk_op.get_evaluation_bulk_operation",
+        lambda _evaluation_id: None,
+    )
+    monkeypatch.setattr(
+        "app.workers.concurrency.import_dispatch._peek_authenticated_import_credit",
+        lambda **kwargs: None,
+    )
+
     evaluation = _evaluation()
     eval_row = SimpleNamespace(id=uuid4(), celery_task_id=None, status="pending")
     call_import = SimpleNamespace(
@@ -116,15 +156,10 @@ def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
     source_row = _source_row(
         call_import_id=evaluation.call_import_id,
     )
-    captured = {}
 
-    class _AsyncResult:
-        id = "import-task-123"
-
-    monkeypatch.setattr(
-        "app.workers.tasks.process_call_import_row.process_call_import_row_task.apply_async",
-        lambda *a, **kw: captured.update({"apply_async_kwargs": kw}) or _AsyncResult(),
-    )
+    async_result = MagicMock()
+    async_result.id = "import-task-123"
+    mock_build_import_apply_async.return_value = async_result
 
     def fake_reserve(**kwargs):
         kwargs["enqueue_fn"]("reserved-id")
@@ -144,7 +179,8 @@ def test_try_dispatch_enqueues_import_for_pending_row(monkeypatch):
     )
 
     assert result == EvalDispatchOutcome("dispatched")
-    assert captured["apply_async_kwargs"]["kwargs"]["run_eval_row_id"] == str(
-        eval_row.id
+    mock_build_import_apply_async.assert_called_once_with(
+        source_row=source_row,
+        eval_row=eval_row,
+        reserved_task_id="reserved-id",
     )
-    assert captured["apply_async_kwargs"]["queue"] == "imports"

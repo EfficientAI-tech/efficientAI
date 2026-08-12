@@ -128,8 +128,18 @@ class BlobStorageService:
     ) -> str:
         return self._backend().generate_presigned_url(file_id, file_format, expiration)
 
-    def generate_presigned_url_by_key(self, key: str, expiration: int = 3600) -> str:
-        return self._backend().generate_presigned_url_by_key(key, expiration)
+    def generate_presigned_url_by_key(
+        self,
+        key: str,
+        expiration: int = 3600,
+        *,
+        response_content_disposition: str | None = None,
+    ) -> str:
+        return self._backend().generate_presigned_url_by_key(
+            key,
+            expiration,
+            response_content_disposition=response_content_disposition,
+        )
 
 
 blob_storage_service = BlobStorageService()

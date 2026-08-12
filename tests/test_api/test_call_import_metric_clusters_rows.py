@@ -147,6 +147,46 @@ def test_generate_metric_clusters_row_limit(
     assert len(captured["evaluation_row_ids"]) == 2
 
 
+def test_generate_metric_clusters_stamps_last_updated_by_email(
+    authenticated_client,
+    db_session,
+    org_id,
+    seed_org,
+    make_ai_provider,
+    monkeypatch,
+):
+    make_ai_provider(provider="openai", is_active=True)
+    call_import, evaluation, _ = _seed_eval_with_rows(
+        db_session,
+        org_id,
+        rows=[
+            {"conversation_id": "c0", "status": "completed", "score_value": 0.2},
+        ],
+    )
+    evaluation.last_updated_by_user_id = None
+    db_session.commit()
+
+    def fake_apply_async(*, kwargs=None, **_kw):
+        return types.SimpleNamespace(id="cluster-task-1")
+
+    monkeypatch.setattr(
+        "app.workers.tasks.generate_evaluation_metric_clusters.generate_evaluation_metric_clusters_task.apply_async",
+        fake_apply_async,
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/metric-clusters",
+        json={"row_limit": 1},
+    )
+    assert response.status_code == 200, response.text
+
+    detail = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["last_updated_by_email"] == "owner@example.com"
+
+
 def test_cancel_preserves_selected_row_ids_in_state(
     authenticated_client, db_session, org_id, seed_org, make_ai_provider, monkeypatch
 ):
