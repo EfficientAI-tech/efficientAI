@@ -1,4 +1,4 @@
-﻿"""Evaluation routes scoped to a Call Import batch."""
+"""Evaluation routes scoped to a Call Import batch."""
 
 from __future__ import annotations
 
@@ -476,7 +476,7 @@ def _expand_metric_selection(
         if m is None:
             continue
         if m.selection_mode and not m.parent_metric_id:
-            # Parent row itself is not scored ΓÇö only its children.
+            # Parent row itself is not scored — only its children.
             for child in parent_to_children.get(m.id, []):
                 if child.id in seen or not child.enabled:
                     continue
@@ -831,7 +831,7 @@ async def create_call_import_evaluation(
             if metric_id in valid_metric_id_strs:
                 target_leaf_ids = [metric_id]
             else:
-                # Maybe it's a parent id ΓÇö expand to the children that
+                # Maybe it's a parent id — expand to the children that
                 # are part of THIS run.
                 try:
                     parent_uuid = UUID(metric_id)
@@ -878,7 +878,7 @@ async def create_call_import_evaluation(
                     )
                 override_dict["model"] = override.model.strip()
             elif override.model:
-                # Model without provider doesn't make sense ΓÇö treat as 400
+                # Model without provider doesn't make sense — treat as 400
                 # so the UI can fix it instead of silently falling back.
                 raise HTTPException(
                     status_code=400,
@@ -953,7 +953,7 @@ async def create_call_import_evaluation(
                     status_code=400, detail="stt_model cannot be empty."
                 )
         else:
-            # llm_only ΓÇö explicitly reject lingering STT inputs so the
+            # llm_only — explicitly reject lingering STT inputs so the
             # contract is unambiguous (the worker would ignore them but
             # silent acceptance hides accidental misconfiguration).
             if (payload.stt_provider or "").strip() or (
@@ -1124,7 +1124,7 @@ async def create_call_import_evaluation(
     if use_diarised:
         total_row_count = count_completed_source_rows(db, call_import.id)
     else:
-        # Production runs score CSV text ΓÇö rows need not wait for
+        # Production runs score CSV text — rows need not wait for
         # recording fetch to finish before they are evaluable.
         total_row_count = count_source_rows_with_production_transcript(
             db, call_import.id
@@ -1396,7 +1396,7 @@ async def list_call_import_evaluation_rows(
             "when omitted), ``conversation_id``, ``status`` (the "
             "evaluation-row status), or ``metric:<metric_uuid>`` to sort "
             "by ``metric_scores[<uuid>].value``. Metric sorts compare "
-            "the extracted JSON text ΓÇö adequate for booleans, enum "
+            "the extracted JSON text — adequate for booleans, enum "
             "labels, and 0-1 ratings; large integer values may sort "
             "lexicographically (10 before 2)."
         ),
@@ -1455,7 +1455,7 @@ async def list_call_import_evaluation_rows(
         # ``metric_scores`` is a JSONB column shaped like
         # ``{"<metric_id>": {"value": <X>, "type": "boolean", ...}}``. We
         # extract the nested ``value`` as text and compare to the user
-        # input as a string ΓÇö that handles bool/int/enum without needing
+        # input as a string — that handles bool/int/enum without needing
         # per-type casts. ``metric_value`` is matched case-insensitively
         # so chart clicks on labels like "True" survive any casing drift
         # between worker output and the chart label.
@@ -1470,7 +1470,7 @@ async def list_call_import_evaluation_rows(
     # Translates a clicked node (or edge) on the flow chart into a
     # SQL filter against ``metric_scores[<parent>].sequence``. The
     # frontend sends either a child UUID, a ``disc:<slug>`` discovered
-    # node id, or a raw slug ΓÇö we normalize all three to the slug that
+    # node id, or a raw slug — we normalize all three to the slug that
     # actually appears in stored ``sequence`` arrays.
     if flow_parent_id is not None and flow_node and flow_node.strip():
         parent_id_str_local = str(flow_parent_id)
@@ -1518,7 +1518,7 @@ async def list_call_import_evaluation_rows(
             # from the model (rather than the migration) the physical
             # type is ``json``, not ``jsonb``. The JSONB-only operators
             # below (``jsonb_exists``, ``jsonb_array_elements_text``,
-            # ``@>``) require a JSONB input ΓÇö we cast once up front so
+            # ``@>``) require a JSONB input — we cast once up front so
             # the same SQL works regardless of which path created the
             # table.
             scores_jsonb = (
@@ -1581,7 +1581,7 @@ async def list_call_import_evaluation_rows(
     # Surfaces "which calls produced THIS LLM-discovered label" and the
     # broader "which calls produced ANY LLM-discovered label". Both
     # operate on ``metric_scores[<parent>].discovered_labels`` (a list
-    # of dicts) plus the same ``sequence`` array ΓÇö covering both legacy
+    # of dicts) plus the same ``sequence`` array — covering both legacy
     # rows where the slug only made it into ``sequence`` and newer
     # rows where it landed in both.
     if discovered_parent_id is not None and (
@@ -1626,7 +1626,7 @@ async def list_call_import_evaluation_rows(
                 )
                 query = query.filter(disc_filter_sql)
         elif has_discovered:
-            # No specific slug ΓÇö just rows that surfaced any candidate
+            # No specific slug — just rows that surfaced any candidate
             # under this parent. We coalesce missing paths to ``[]`` so
             # ``jsonb_array_length`` always sees an array (it raises on
             # non-array inputs, but our shape guarantees a list when
@@ -1648,7 +1648,7 @@ async def list_call_import_evaluation_rows(
     # paging stays stable when the user clears the sort. We always add a
     # secondary ``row_index`` tiebreaker so duplicate sort keys (e.g.
     # many rows with ``status = 'completed'``) keep a deterministic
-    # order across page boundaries ΓÇö without this, pagination can
+    # order across page boundaries — without this, pagination can
     # double-show or skip rows when Postgres picks a different physical
     # order on each query.
     direction_desc = (sort_dir or "asc").strip().lower() == "desc"
@@ -1669,7 +1669,7 @@ async def list_call_import_evaluation_rows(
     if sort_by_clean == "row_index":
         sort_recognized = True
         # Falls through to the default ``order_by`` below with
-        # ``primary_sort`` still None ΓÇö but ``sort_recognized=True``
+        # ``primary_sort`` still None — but ``sort_recognized=True``
         # tells the fallback branch to apply the requested direction.
     elif sort_by_clean == "conversation_id":
         sort_recognized = True
@@ -1689,10 +1689,10 @@ async def list_call_import_evaluation_rows(
             # for path extraction differ between Postgres (production)
             # and SQLite (default test backend). Branch on the active
             # dialect so we can use the right primitive:
-            #   * Postgres ΓåÆ ``json_extract_path_text(col, key, "value")``
+            #   * Postgres → ``json_extract_path_text(col, key, "value")``
             #     which returns the value as TEXT for both ``json`` and
             #     ``jsonb`` columns.
-            #   * SQLite   ΓåÆ ``json_extract(col, '$."<uuid>".value')``
+            #   * SQLite   → ``json_extract(col, '$."<uuid>".value')``
             #     using JSONPath syntax. ``metric_uuid`` is already
             #     validated above (``UUID(raw_metric_id)``), so the
             #     interpolated path is safe from injection.
@@ -1723,10 +1723,10 @@ async def list_call_import_evaluation_rows(
     if primary_sort is not None:
         query = query.order_by(primary_sort, CallImportRow.row_index.asc())
     elif sort_recognized:
-        # Explicit ``sort_by=row_index`` request ΓÇö honour direction.
+        # Explicit ``sort_by=row_index`` request — honour direction.
         query = query.order_by(_apply_direction(CallImportRow.row_index))
     else:
-        # No sort requested OR unrecognized column ΓÇö safe default of
+        # No sort requested OR unrecognized column — safe default of
         # ``row_index ASC``. We deliberately ignore ``sort_dir`` here
         # so a typo'd / stale ``sort_by`` doesn't quietly invert the
         # default order.
@@ -1952,7 +1952,7 @@ async def export_call_import_evaluation_csv(
     # Build the metric columns: each parent (if any) gets a value column
     # and (when capture_rationale=true) a "<Parent> - LLM Rationale"
     # column. The per-child boolean columns are intentionally suppressed
-    # ΓÇö categorization metrics now collapse to exactly two columns in
+    # — categorization metrics now collapse to exactly two columns in
     # the export, mirroring the in-app table.
     child_ids_in_groups: set[str] = set()
     for parent_str, child_strs in groups_raw.items():
@@ -1968,7 +1968,7 @@ async def export_call_import_evaluation_csv(
         mid_str = str(metric.id)
         if mid_str in seen_metric_ids:
             return
-        # Skip any child whose parent is part of this run ΓÇö the parent
+        # Skip any child whose parent is part of this run — the parent
         # column above already shows the chosen child name as its
         # value.
         if mid_str in child_ids_in_groups:
@@ -1985,7 +1985,7 @@ async def export_call_import_evaluation_csv(
         parent = metrics_by_id.get(parent_str)
         if parent:
             _add_metric_column(parent)
-        # Children of an in-run parent are deliberately not emitted ΓÇö
+        # Children of an in-run parent are deliberately not emitted —
         # the ``child_ids_in_groups`` guard inside ``_add_metric_column``
         # is what enforces this. We still iterate the keys above (not
         # ``.items()``) so the parent-only emission is explicit.
@@ -2058,7 +2058,7 @@ async def export_call_import_evaluation_csv(
             # Live transcripts pulled from the row, NOT from raw_columns,
             # so re-diarised values are always reflected in the export.
             # Both transcript columns are flattened to a single line so the
-            # spreadsheet cell doesn't balloon vertically ΓÇö the in-app
+            # spreadsheet cell doesn't balloon vertically — the in-app
             # ``TranscriptView`` still has the DB copy with line breaks
             # intact for chat-bubble rendering.
             row_out[PRODUCTION_TRANSCRIPT_HEADER] = _flatten_transcript(
@@ -2172,7 +2172,7 @@ async def export_call_import_evaluation_csv(
 
     # Excel on Windows defaults to the system ANSI codepage (Windows-1252)
     # when a CSV has no encoding marker, which turns UTF-8 Hindi/Devanagari
-    # / any non-ASCII text into mojibake (e.g. ``αñáαÑÇαñò`` ΓåÆ ``├á┬ñ ├á┬ÑΓé¼├á┬ñΓÇó``).
+    # / any non-ASCII text into mojibake (e.g. ``ठीक`` → ``à¤ à¥€à¤•``).
     # A UTF-8 BOM tells Excel to switch to UTF-8 decoding and is silently
     # skipped by every other UTF-8-aware reader (pandas, LibreOffice,
     # Google Sheets, etc.), so the data round-trips correctly everywhere.
@@ -3244,7 +3244,7 @@ def _report_period_from_rows(
         week_range = (
             f"{week_start.strftime('%b %d, %Y')}ΓÇô{week_end.strftime('%b %d, %Y')}"
         )
-    display = f"W{iso_week:02d} ┬╖ {week_range}"
+    display = f"W{iso_week:02d} · {week_range}"
     return start, end, label, display
 
 
@@ -4114,7 +4114,7 @@ def _revoke_pending_tasks(evaluation: CallImportEvaluation) -> None:
         if pending_task_ids:
             celery_app.control.revoke(pending_task_ids, terminate=False)
     except Exception:
-        # Best effort ΓÇö DB delete remains the source of truth.
+        # Best effort — DB delete remains the source of truth.
         pass
 
 
@@ -4125,7 +4125,7 @@ def _revoke_pending_tasks(evaluation: CallImportEvaluation) -> None:
 # Evaluation rows can sit in ``running`` for many minutes when the underlying
 # LLM / audio metric call is slow or wedged (the worker carries an 8 min
 # soft / 10 min hard time limit). Without a cancel affordance the operator's
-# only recourse is to wait for Celery's time limit to fire ΓÇö or to manually
+# only recourse is to wait for Celery's time limit to fire — or to manually
 # mutate the DB. These helpers + the two endpoints below give the UI a
 # first-class "Abort" button mirroring the diarisation cancel pattern at
 # ``app.api.v1.routes.call_imports`` (``_apply_diarisation_cancel`` etc.).
@@ -4158,7 +4158,7 @@ def _cancellable_eval_states() -> Tuple[str, ...]:
 def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
     """Best-effort revoke of a single eval row's Celery task.
 
-    Always swallows control-plane exceptions ΓÇö Celery's control bus is
+    Always swallows control-plane exceptions — Celery's control bus is
     inherently best-effort and a missed revoke is not catastrophic
     because the DB row is already flipped to ``failed`` by the caller
     before this runs (so the UI immediately reflects the cancel; if
@@ -4179,7 +4179,7 @@ def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
             task_id,
             eval_row.id,
         )
-    except Exception as exc:  # noqa: BLE001 ΓÇö revoke is best-effort
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
         logger.warning(
             "Failed to revoke evaluation task {} for eval row {}: {}",
             task_id,
@@ -4237,7 +4237,7 @@ def _apply_evaluation_cancel(
 
     Returns ``(cancelled, skipped)`` so the caller can build a typed
     response without re-querying the DB. The caller is responsible for
-    ``db.commit()`` after this returns ΓÇö we deliberately don't commit
+    ``db.commit()`` after this returns — we deliberately don't commit
     here so a batch endpoint can flush all rows in one transaction.
     """
     cancellable_states = _cancellable_eval_states()
@@ -4278,7 +4278,7 @@ def _revoke_eval_task_by_id(task_id: str, *, eval_row_id: UUID) -> None:
             cleaned,
             eval_row_id,
         )
-    except Exception as exc:  # noqa: BLE001 ΓÇö revoke is best-effort
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
         logger.warning(
             "Failed to revoke evaluation task {} for eval row {}: {}",
             cleaned,
@@ -4633,7 +4633,7 @@ async def bulk_delete_call_import_evaluations(
 
     Mirrors :func:`delete_call_import_evaluation` but in bulk so the UI
     can clear out a multi-select. Unknown ids (already deleted, or
-    belonging to a different org/import) are silently skipped ΓÇö the
+    belonging to a different org/import) are silently skipped — the
     response just reports how many actually went away.
     """
 
@@ -4667,7 +4667,7 @@ async def bulk_delete_call_import_evaluations(
 # Designed to be cheap enough to call on every page load: we read each
 # evaluation row once, bucket numeric values into a fixed 10-bin
 # histogram, and tally the top categorical values. Scaling concerns
-# (millions of rows) are deferred ΓÇö at that point we'd push this into a
+# (millions of rows) are deferred — at that point we'd push this into a
 # Postgres aggregate query, but for typical CSV imports (<10k rows) the
 # Python pass is fast enough and dramatically simpler.
 # ---------------------------------------------------------------------------
@@ -4708,7 +4708,7 @@ def _coerce_category(value: Any) -> Optional[str]:
         text = value.strip()
         return text or None
     # Lists / dicts: stringify so they still group sensibly without
-    # exploding the cardinality (worst case: everything is "[ΓÇª]" once).
+    # exploding the cardinality (worst case: everything is "[…]" once).
     return str(value)
 
 
@@ -4721,7 +4721,7 @@ def _build_histogram(
     lo = min(values)
     hi = max(values)
     if lo == hi:
-        # All values identical ΓÇö render a single bucket so the UI shows a
+        # All values identical — render a single bucket so the UI shows a
         # spike rather than empty space.
         return [
             CallImportMetricHistogramBucket(x0=lo, x1=hi, count=len(values))
@@ -4795,7 +4795,7 @@ def _compute_metric_aggregates(
     metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
 
     # Default to selected metrics, but also include any metric ids that
-    # surface in row scores even if missing from the metric registry ΓÇö
+    # surface in row scores even if missing from the metric registry —
     # otherwise renaming/deleting a metric mid-run would silently drop
     # results from the chart.
     discovered_ids: List[str] = list(metric_meta.keys())
@@ -4818,7 +4818,7 @@ def _compute_metric_aggregates(
         # Unordered pair tally for the co-occurrence heatmap. Keys are
         # ``(label_a, label_b)`` with ``a < b`` so we never double-count
         # the same unordered pair. Only populated for multi-label
-        # parents ΓÇö every other metric leaves this empty.
+        # parents — every other metric leaves this empty.
         multi_label_pair_counts: Dict[Tuple[str, str], int] = {}
         skipped = 0
         errored = 0
@@ -4897,7 +4897,7 @@ def _compute_metric_aggregates(
         # metrics that's the same as ``len(numeric) + sum(categories)``
         # because each scored row contributes exactly one observation.
         # Multi-label parents however contribute one observation per
-        # selected child, so summing ``category_counts`` over-counts ΓÇö
+        # selected child, so summing ``category_counts`` over-counts —
         # we tracked rows-scored separately above and use it here.
         rows_scored = (
             multi_label_rows_scored
@@ -6060,7 +6060,7 @@ def _resolve_metric_cluster_row_selection(
             detail=(
                 "One or more evaluation_row_ids are missing or not completed: "
                 + ", ".join(unknown[:5])
-                + ("ΓÇª" if len(unknown) > 5 else "")
+                + ("…" if len(unknown) > 5 else "")
             ),
         )
     not_eligible = sorted(requested - eligible_id_set)
@@ -6071,7 +6071,7 @@ def _resolve_metric_cluster_row_selection(
                 "Each selected row must have at least one flagged quality metric. "
                 "Ineligible row(s): "
                 + ", ".join(not_eligible[:5])
-                + ("ΓÇª" if len(not_eligible) > 5 else "")
+                + ("…" if len(not_eligible) > 5 else "")
             ),
         )
     selected_ids = sorted(requested)
@@ -6528,7 +6528,7 @@ async def generate_call_import_evaluation_metric_clusters(
                 detail=(
                     "One or more evaluation_row_ids are missing or not completed: "
                     + ", ".join(unknown[:5])
-                    + ("ΓÇª" if len(unknown) > 5 else "")
+                    + ("…" if len(unknown) > 5 else "")
                 ),
             )
 
@@ -6561,7 +6561,7 @@ async def generate_call_import_evaluation_metric_clusters(
             detail=(
                 "No calls match any failure policy. Select failure values on "
                 "metrics that have matching rows, or leave metrics with no "
-                "failures unchecked ΓÇö they are skipped automatically."
+                "failures unchecked — they are skipped automatically."
             ),
         )
 
@@ -6794,7 +6794,7 @@ _DISCOVERED_NODE_PREFIX = "disc:"
 def _slug_label(value: Any) -> str:
     """Lowercase + whitespace-collapse + underscore-join.
 
-    Used everywhere we need a stable key for a metric/label name ΓÇö
+    Used everywhere we need a stable key for a metric/label name —
     matching the same convention the worker uses when emitting
     ``sequence`` entries and discovered keys.
     """
@@ -6809,7 +6809,7 @@ def _resolve_alias(alias_map: Dict[str, str], key: str) -> str:
     The merge endpoint stores ``from_slug -> to_slug`` pairs. The delete
     endpoint stores ``from_slug -> ""`` (empty string sentinel) to mark
     a slug as tombstoned. Chains can accumulate when the user merges
-    AΓåÆB and later merges BΓåÆC; this helper collapses them so callers
+    A→B and later merges B→C; this helper collapses them so callers
     always land on the final canonical slug.
 
     Returns:
@@ -6837,7 +6837,7 @@ def _resolve_alias(alias_map: Dict[str, str], key: str) -> str:
         if nxt == current:
             return current
         if nxt == "":
-            # Deletion sentinel ΓÇö the user has explicitly retired this
+            # Deletion sentinel — the user has explicitly retired this
             # slug. Propagate the empty string up so callers drop it.
             return ""
         current = nxt
@@ -6846,7 +6846,7 @@ def _resolve_alias(alias_map: Dict[str, str], key: str) -> str:
 
 # Reserved JSON key under which the worker stores top-level metric
 # discoveries on each row's ``metric_scores`` dict. Mirrors the constant
-# in ``app/workers/tasks/helpers/llm_evaluation.py`` ΓÇö kept local here to
+# in ``app/workers/tasks/helpers/llm_evaluation.py`` — kept local here to
 # avoid a worker import cycle from the routes module.
 DISCOVERED_METRICS_KEY = "__discovered_metrics__"
 
@@ -6936,7 +6936,7 @@ def normalize_scores_with_aliases(
 
         # Rewrite sequence: alias-resolve every entry; collapse adjacent
         # duplicates that result. We DON'T drop slugs that match
-        # promoted children ΓÇö the promoted child slug is still a valid
+        # promoted children — the promoted child slug is still a valid
         # sequence entry; the flow chart will resolve it to the real
         # child node.
         seq = entry.get("sequence")
@@ -6989,7 +6989,7 @@ def normalize_scores_with_aliases(
         if kept_metrics:
             metric_scores[DISCOVERED_METRICS_KEY] = kept_metrics
         else:
-            # No survivors ΓÇö drop the empty array so empty-discovery rows
+            # No survivors — drop the empty array so empty-discovery rows
             # keep their pre-feature payload shape.
             metric_scores.pop(DISCOVERED_METRICS_KEY, None)
 
@@ -7024,7 +7024,7 @@ def _promoted_child_slugs(
     """Slugs of every real child currently sitting under the parent.
 
     The Discovered Labels panel hides any candidate whose slug already
-    matches a real child ΓÇö that covers both freshly-promoted candidates
+    matches a real child — that covers both freshly-promoted candidates
     and legacy children the LLM happened to re-discover. We pull from
     the live ``metrics`` table rather than the eval's
     ``selected_metric_groups`` snapshot so newly-promoted children take
@@ -7054,7 +7054,7 @@ def _promoted_top_level_metric_slugs(
 
     Used to suppress discovered-metric candidates whose slug already
     matches a real standalone metric. We intentionally include both
-    standalone metrics AND parent category metrics ΓÇö a top-level
+    standalone metrics AND parent category metrics — a top-level
     discovery that collides with either name is a duplicate by
     definition.
     """
@@ -7093,7 +7093,7 @@ def _get_running_discovered_labels(
 
     Powers two callers:
       * The worker prompt builder ("REUSE the existing key if it fits")
-        ΓÇö invoked just before each row's LLM call to feed the model the
+        — invoked just before each row's LLM call to feed the model the
         running list of previously-discovered labels in this evaluation.
       * The ``/discovered-labels`` API surface used by the frontend
         Discovered Labels panel to render candidates with counts +
@@ -7102,7 +7102,7 @@ def _get_running_discovered_labels(
     Non-completed rows are skipped: an in-flight row's discoveries are
     not yet reliable (the row could fail and never produce final
     metric_scores). We accept the tradeoff that rows running
-    concurrently won't see each other's labels ΓÇö slug-collision dedup
+    concurrently won't see each other's labels — slug-collision dedup
     catches identical re-inventions, and near-paraphrases surface in
     the UI panel where the user can manually merge.
     """
@@ -7121,7 +7121,7 @@ def _get_running_discovered_labels(
     #  * been promoted to a real child of the parent (so the panel doesn't
     #    keep nagging the user about a candidate they've already
     #    accepted), or
-    #  * been merged INTO another slug (the "from" side of a merge) ΓÇö
+    #  * been merged INTO another slug (the "from" side of a merge) —
     #    those occurrences fold into the canonical target instead.
     promoted_slugs: set[str] = set()
     if organization_id is not None:
@@ -7340,7 +7340,7 @@ def _build_flow_graph(
         slug = _slug_label(child.name)
         child_lookup[slug] = child
         child_lookup[str(child.id)] = child
-    # ``extra_children`` are resolved-only ΓÇö they shouldn't add legend
+    # ``extra_children`` are resolved-only — they shouldn't add legend
     # nodes (those come from the explicit ``children`` argument), but
     # they need to be in ``child_lookup`` so a sequence step that
     # matches a freshly-promoted child resolves to the real child UUID
@@ -7359,7 +7359,7 @@ def _build_flow_graph(
     # Discovered nodes get a ``disc:`` prefixed id so they can't collide
     # with real child UUIDs in the node/edge graph. We apply
     # ``alias_map`` first so merged-out source slugs fold into their
-    # canonical target ΓÇö preserving the user's "merge" intent on still-
+    # canonical target — preserving the user's "merge" intent on still-
     # in-flight rows whose JSON wasn't rewritten by the merge endpoint.
     discovered_lookup: Dict[str, Dict[str, Any]] = {}
     for row in eval_rows:
@@ -7484,7 +7484,7 @@ def _build_flow_graph(
         emitted_child_ids.add(cid)
         _emit_child_node(child)
     # Extra children (promoted after the eval was created) only get
-    # legend nodes if they actually appear in the data ΓÇö otherwise we'd
+    # legend nodes if they actually appear in the data — otherwise we'd
     # pollute the diagram with every standalone promotion the user has
     # ever made under this parent.
     if extra_children:
@@ -7762,7 +7762,7 @@ async def merge_call_import_evaluation_discovered_labels(
 ) -> DiscoveredLabelsResponse:
     """Rewrite every row's ``discovered_labels`` entry from from_key -> to_key.
 
-    Idempotent ΓÇö re-merging the same pair is a no-op. Discovered slugs
+    Idempotent — re-merging the same pair is a no-op. Discovered slugs
     inside per-row ``sequence`` arrays are also rewritten so the flow
     chart stays consistent with the panel. When a row already has
     ``to_key`` and we're merging ``from_key`` into it, we drop the
@@ -7902,7 +7902,7 @@ async def merge_call_import_evaluation_discovered_labels(
     # call (e.g. retries, in-flight workers) will go through the
     # alias map in the API surface even if the per-row JSON they
     # write still mentions ``from_key``. We chain through any existing
-    # alias so merging AΓåÆB and then BΓåÆC resolves AΓåÆC in the panel.
+    # alias so merging A→B and then B→C resolves A→C in the panel.
     raw_aliases = (
         evaluation.discovered_label_aliases
         if isinstance(evaluation.discovered_label_aliases, dict)
@@ -7914,8 +7914,8 @@ async def merge_call_import_evaluation_discovered_labels(
     # something else, point from_key at the canonical end-of-chain.
     canonical_to = _resolve_alias(parent_aliases, to_key)
     parent_aliases[from_key] = canonical_to
-    # Re-target any earlier aliases that pointed AT from_key ΓÇö without
-    # this, AΓåÆB and then BΓåÆC would leave A still pointing to B (now a
+    # Re-target any earlier aliases that pointed AT from_key — without
+    # this, A→B and then B→C would leave A still pointing to B (now a
     # broken pointer because B is gone). Rewriting them keeps the
     # alias map self-consistent.
     for k, v in list(parent_aliases.items()):
@@ -8070,7 +8070,7 @@ async def delete_call_import_evaluation_discovered_label(
 
     # 3. Persist the tombstone on the evaluation so workers that finish
     # later don't re-surface the deleted slug. We also retarget any
-    # existing aliases whose ``to_key`` was the deleted slug ΓÇö without
+    # existing aliases whose ``to_key`` was the deleted slug — without
     # this, a previous merge that pointed at this slug would leave a
     # dangling pointer.
     raw_aliases = (
@@ -8196,10 +8196,10 @@ async def merge_call_import_evaluation_discovered_metrics(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredMetricsResponse:
-    """Rewrite every row's ``__discovered_metrics__`` entry fromΓåÆto.
+    """Rewrite every row's ``__discovered_metrics__`` entry from→to.
 
     Mirrors the discovered-labels merge endpoint but operates on the
-    flat top-level metric list. Idempotent ΓÇö re-merging is a no-op.
+    flat top-level metric list. Idempotent — re-merging is a no-op.
     """
 
     del api_key
@@ -8430,7 +8430,7 @@ async def delete_call_import_evaluation_row(
     """Delete a single per-row scoring entry within an evaluation run.
 
     Useful when the user wants to drop a noisy row before re-exporting
-    the CSV ΓÇö e.g. a row whose audio was corrupt and skewed the
+    the CSV — e.g. a row whose audio was corrupt and skewed the
     aggregate. Counters on the parent are recomputed so the rolled-up
     status stays accurate.
     """
@@ -8500,13 +8500,13 @@ async def delete_call_import_evaluation_row(
 # ---------------------------------------------------------------------------
 #
 # The create endpoint enqueues every row of a fresh run; these endpoints
-# let the user re-enqueue a *subset* of rows in an existing run ΓÇö most
+# let the user re-enqueue a *subset* of rows in an existing run — most
 # commonly the ones that failed. We keep the worker contract identical
 # (``evaluate_call_import_row_task(eval_row_id)``), so the retry path
 # only has to reset row state and re-fan-out. When a row is missing its
 # diarised transcript and the run was configured for diarised
 # transcripts, we chain through ``transcribe_call_import_row_task`` the
-# same way the create endpoint does ΓÇö that's what makes "retry" feel
+# same way the create endpoint does — that's what makes "retry" feel
 # like "just fix it" instead of "fail again immediately".
 
 
@@ -8581,7 +8581,7 @@ def _reset_eval_row_for_retry(
             from app.workers.celery_app import celery_app
 
             celery_app.control.revoke(eval_row.celery_task_id, terminate=False)
-        except Exception:  # noqa: BLE001 ΓÇö revoke is best-effort
+        except Exception:  # noqa: BLE001 — revoke is best-effort
             pass
     eval_row.status = "pending"
     eval_row.error_message = None
@@ -8707,7 +8707,7 @@ def _apply_retry_overrides(
     """Validate + persist the LLM/STT override fields on the run.
 
     Mirrors the validation in ``create_call_import_evaluation`` but
-    only touches the fields the caller actually sent ΓÇö leaving any
+    only touches the fields the caller actually sent — leaving any
     field ``None`` preserves the run's existing value. Raises
     ``HTTPException(400)`` on bad input so the route handler can let
     FastAPI turn it into a clean 400 response.
@@ -8929,7 +8929,7 @@ def _gather_retry_targets(
     """Resolve which rows to retry + reasons for any we refuse.
 
     When ``requested_ids`` is None we retry every row whose status is
-    ``failed`` (or every row when ``include_completed`` is also set ΓÇö
+    ``failed`` (or every row when ``include_completed`` is also set —
     used by the metric-subset retry path which legitimately wants to
     recompute a metric on already-successful rows). When the caller
     passes ids explicitly we still filter out rows that are currently
@@ -9048,7 +9048,7 @@ async def retry_call_import_evaluation(
 
     When ``metric_ids`` is set in the payload, this is a **metric-
     subset retry**: only the listed metrics are recomputed (and merged
-    into the row's existing ``metric_scores`` ΓÇö other metrics' values
+    into the row's existing ``metric_scores`` — other metrics' values
     are preserved). The route auto-flips ``include_completed=True`` in
     that case so previously-successful rows are eligible for re-
     scoring; without it the call would no-op because every row would
@@ -9058,7 +9058,7 @@ async def retry_call_import_evaluation(
     ``evaluate_call_import_row_task(eval_row_id, [restricted_metric_ids])``.
     When the run is configured for diarised transcripts and the row's
     diarised transcript is missing, we chain through
-    ``transcribe_call_import_row_task`` first ΓÇö matching the
+    ``transcribe_call_import_row_task`` first — matching the
     auto-transcribe behavior of POST ``/evaluations``.
     """
     del api_key
@@ -9080,11 +9080,11 @@ async def retry_call_import_evaluation(
 
     requested_ids = payload.eval_row_ids if payload else None
     # Metric-subset retry: validate that every metric is something this
-    # run actually scored. Empty list is rejected too ΓÇö callers that
+    # run actually scored. Empty list is rejected too — callers that
     # want a full re-run should omit the field entirely.
     #
     # ``selected_metric_ids`` holds the LEAVES only (children for
-    # hierarchical / category metrics, standalone metrics otherwise) ΓÇö
+    # hierarchical / category metrics, standalone metrics otherwise) —
     # see ``leaf_metric_ids`` in :func:`create_call_import_evaluation`.
     # Parent IDs for hierarchical metrics live separately in
     # ``selected_metric_groups`` (``{parent_id: [child_ids]}``) so the
@@ -9120,7 +9120,7 @@ async def retry_call_import_evaluation(
         # ``selected_metric_groups`` is a dict ``{parent_id_str:
         # [child_id_str, ...]}`` (see line ~487 in
         # ``create_call_import_evaluation``). We tolerate stale data
-        # (string / UUID / non-dict) without crashing the retry path ΓÇö
+        # (string / UUID / non-dict) without crashing the retry path —
         # if it's malformed we just treat it as "no parents" and fall
         # back to the leaf-only check.
         groups_raw = (
@@ -9159,7 +9159,7 @@ async def retry_call_import_evaluation(
         #     under each child's ID (see
         #     ``app/workers/tasks/helpers/llm_evaluation.py`` lines
         #     1584 and 1649).
-        #   * ``_enqueue_eval_rows_with_optional_transcribe`` ΓåÆ
+        #   * ``_enqueue_eval_rows_with_optional_transcribe`` →
         #     ``evaluate_call_import_row_task`` filters the work-list
         #     off ``selected_metric_ids`` (leaves), so we MUST hand it
         #     the child IDs for the parent to actually get re-scored.
@@ -9351,7 +9351,7 @@ async def retry_call_import_evaluation_row(
         raise HTTPException(
             status_code=409,
             detail=(
-                "This row is still in progress ΓÇö wait for it to finish "
+                "This row is still in progress — wait for it to finish "
                 "before retrying."
             ),
         )

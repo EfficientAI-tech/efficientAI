@@ -1,4 +1,4 @@
-﻿"""API tests for the per-call-import evaluation routes.
+"""API tests for the per-call-import evaluation routes.
 
 Covers ``POST/GET/DELETE /call-imports/{id}/evaluations`` plus the
 ``/rows`` listing and CSV ``/export`` endpoints. Both the row-import

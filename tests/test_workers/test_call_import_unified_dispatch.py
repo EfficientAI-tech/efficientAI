@@ -1,4 +1,4 @@
-﻿"""Unit tests for the unified call-import eval dispatch pipeline."""
+"""Unit tests for the unified call-import eval dispatch pipeline."""
 
 import importlib
 from types import SimpleNamespace

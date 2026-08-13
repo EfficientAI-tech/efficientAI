@@ -1,4 +1,4 @@
-﻿// API Types matching the backend schemas
+// API Types matching the backend schemas
 
 export type { LLMGenerationConfig } from '../config/llmGenerationParams'
 import type { LLMGenerationConfig } from '../config/llmGenerationParams'

@@ -1,4 +1,4 @@
-﻿"""CSV-driven call import routes.
+"""CSV-driven call import routes.
 
 Users upload a CSV plus a per-batch column mapping (CSV header -> system
 field). The backend persists a CallImport batch + one CallImportRow per
@@ -140,8 +140,6 @@ def _normalize_import_display_name(raw: Optional[str]) -> Optional[str]:
         return None
     return cleaned[:512]
 
-
-def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportResponse:
 
 def _serialize_call_import(
     db: Session,
@@ -727,7 +725,7 @@ def _apply_schema_mapping(
 
     ``validate_only=True`` runs the header / mapping / skipped-column
     checks (every check that doesn't need to read row data) and then
-    returns an empty list ΓÇö used by the MAP stage to validate a
+    returns an empty list — used by the MAP stage to validate a
     mapping payload against the cached sheet snapshot without
     re-fetching the source bytes from S3.
     """
@@ -1084,7 +1082,7 @@ def _xlsx_sheet_headers_and_rows(
     for cell in header_row:
         name = _xlsx_cell_to_str(cell).strip()
         if not name:
-            # Stop at the first blank header ΓÇö treats trailing empty
+            # Stop at the first blank header — treats trailing empty
             # columns as not part of the table (matches typical Excel
             # workbook conventions).
             break
@@ -1727,7 +1725,7 @@ async def preview_call_import_file(
     """Inspect an uploaded CSV / Excel file and return its sheets + headers.
 
     Drives the column-mapping UI without forcing the frontend to parse
-    CSV / xlsx itself ΓÇö keeps client and server in lockstep on quoted
+    CSV / xlsx itself — keeps client and server in lockstep on quoted
     fields, encodings, and Excel cell coercion. CSVs return a single
     synthetic sheet named after the filename; Excel workbooks return one
     entry per worksheet (in workbook order).
@@ -1798,7 +1796,7 @@ async def create_call_import(
     """UPLOAD stage of the staged call-import flow.
 
     Persists the source file to S3 and creates a ``CallImport`` row with
-    ``status='uploaded'``. No mapping, no provider, no rows yet ΓÇö the
+    ``status='uploaded'``. No mapping, no provider, no rows yet — the
     user moves through MAP and IMPORT as separate idempotent steps.
 
     Dataset is collected here (rather than at IMPORT) so the batch is
@@ -2016,7 +2014,7 @@ async def update_call_import_mapping(
 
     # Run the same per-column validation as the parse path so the user
     # gets an immediate 400 if a required parameter is left unmapped or
-    # a header is neither mapped nor skipped ΓÇö without needing to read
+    # a header is neither mapped nor skipped — without needing to read
     # the file. ``validate_only`` skips the row loop (and the empty-rows
     # guard) since the row data lives in S3, not in this request.
     if headers:
@@ -2068,7 +2066,7 @@ async def start_call_import(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
-    """Deprecated IMPORT stage ΓÇö use Run Evaluation for new batches.
+    """Deprecated IMPORT stage — use Run Evaluation for new batches.
 
     Recording fetch is part of the unified evaluation pipeline. This
     endpoint remains available only with ``?legacy=true`` for backward
@@ -2080,7 +2078,7 @@ async def start_call_import(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Standalone import is deprecated. Use Run Evaluation ΓÇö "
+                "Standalone import is deprecated. Use Run Evaluation — "
                 "recording fetch is part of the evaluation pipeline. "
                 "Append ?legacy=true to use the import-only path."
             ),
@@ -2272,7 +2270,7 @@ async def upload_call_import_csv(
     """Legacy one-shot upload kept for backward compatibility.
 
     DEPRECATED: prefer the staged flow
-    (``POST /`` ΓåÆ ``PATCH /{id}/mapping`` ΓåÆ ``POST /{id}/import``) so
+    (``POST /`` → ``PATCH /{id}/mapping`` → ``POST /{id}/import``) so
     each step is idempotent and resumable. This endpoint runs all three
     stages inline in a single transaction so existing scripts /
     integrations keep working unchanged.
@@ -2838,7 +2836,7 @@ async def get_call_import_diarisation_prompt_default(
     can pre-fill the prompt textarea. Returning the constant from the
     backend (rather than hard-coding it in the frontend) keeps the
     fallback used by the worker and the placeholder shown in the UI
-    in lock-step ΓÇö operators always see the *actual* default they'd
+    in lock-step — operators always see the *actual* default they'd
     get if they leave the field blank.
 
     Registered before ``GET /{call_import_id}`` so the static path is
@@ -2874,7 +2872,7 @@ async def update_call_import(
     assignments. Fields omitted from the body are left untouched.
 
     ``schema_id`` is only honoured while the batch is in
-    ``uploaded`` / ``mapped`` state ΓÇö once rows have been materialised
+    ``uploaded`` / ``mapped`` state — once rows have been materialised
     the schema is locked. Changing the schema resets any persisted
     mapping (the user must re-MAP) and rewinds status to ``uploaded``.
     """
@@ -2923,7 +2921,7 @@ async def update_call_import(
             db, organization_id, workspace_id, body["schema_id"]
         )
         if call_import.schema_id != new_schema.id:
-            # Switching schemas invalidates the persisted mapping ΓÇö
+            # Switching schemas invalidates the persisted mapping —
             # parameter names won't line up with the new schema, so
             # reset to UPLOADED and force a fresh MAP.
             call_import.schema_id = new_schema.id
@@ -3075,7 +3073,7 @@ async def get_call_import_detail(
         )
 
     # Batch-wide diarisation status aggregate. One ``GROUP BY`` query
-    # across the whole batch ΓÇö much cheaper than paging through every
+    # across the whole batch — much cheaper than paging through every
     # row to recount on the client and lets the UI render a
     # transcribe/diarise progress bar without a separate roundtrip.
     if is_sharding_enabled():
@@ -3135,7 +3133,7 @@ async def list_call_import_row_ids(
 ) -> CallImportRowIdsResponse:
     """Return every matching ``CallImportRow.id`` for cross-page bulk select.
 
-    Lightweight companion to ``GET /{call_import_id}`` ΓÇö the detail
+    Lightweight companion to ``GET /{call_import_id}`` — the detail
     endpoint caps ``row_limit`` at 5000 and ships the entire row body
     on each page, so harvesting ids that way is wasteful when the
     user just wants to bulk-delete or bulk-transcribe everything that
@@ -3194,7 +3192,7 @@ async def list_call_import_row_ids(
 def _revoke_pending_tasks(rows: List[CallImportRow]) -> None:
     """Best-effort revoke of in-flight Celery tasks for the given rows.
 
-    Failures are logged and swallowed ΓÇö Celery's control plane is async and
+    Failures are logged and swallowed — Celery's control plane is async and
     best-effort by design, and we always do an idempotent S3 cleanup
     afterwards so a missed revoke can't leak storage.
     """
@@ -3224,11 +3222,11 @@ def _delete_s3_objects(
     """Delete every recording associated with ``rows`` plus a prefix sweep.
 
     The prefix sweep also cleans up the staged source file written at
-    UPLOAD time (``ΓÇª/call_imports/{id}/source.{csv,xlsx}``) ΓÇö both the
+    UPLOAD time (``…/call_imports/{id}/source.{csv,xlsx}``) — both the
     per-row recording keys and the source artefact share the same
     organization-scoped prefix, so a single sweep covers them all.
 
-    Returns ``(deleted_count, error_count)``. Never raises ΓÇö callers proceed
+    Returns ``(deleted_count, error_count)``. Never raises — callers proceed
     with the DB delete regardless; orphans, if any, can be cleaned up by
     re-running the same delete (it's idempotent).
     """
@@ -3424,7 +3422,7 @@ async def delete_call_import_row(
         if row.recording_s3_key and s3_service.is_enabled():
             try:
                 s3_service.delete_file_by_key(row.recording_s3_key)
-            except Exception as exc:  # noqa: BLE001 ΓÇö best-effort, DB is source of truth
+            except Exception as exc:  # noqa: BLE001 — best-effort, DB is source of truth
                 logger.warning(
                     "Failed to delete S3 object {} for row {}: {}",
                     row.recording_s3_key,
@@ -3623,7 +3621,7 @@ async def bulk_delete_call_import_rows(
 ) -> CallImportRowBulkDeleteResponse:
     """Delete multiple ``CallImportRow`` rows in one request.
 
-    Unknown / cross-tenant row ids are silently skipped ΓÇö the response
+    Unknown / cross-tenant row ids are silently skipped — the response
     reports how many actually went away so a UI that holds onto stale
     ids (e.g. after another tab already deleted a row) doesn't 404
     the entire bulk action.
@@ -3765,7 +3763,7 @@ async def transcribe_call_import_row(
 
     Thin wrapper over the batch endpoint that hard-codes a single
     ``row_ids`` filter. Skip counts still surface so the UI can render
-    "Skipped ΓÇö transcript present" diagnostics consistently.
+    "Skipped — transcript present" diagnostics consistently.
     """
 
     del api_key
@@ -3816,8 +3814,8 @@ async def transcribe_call_import_row(
 # Long-running multimodal LLM diarisation calls (especially LLM-only mode on
 # slow audio) can sit in ``pending`` / ``running`` for tens of minutes when an
 # upstream provider stalls. Without an abort affordance the operator's only
-# recourse is to wait for Celery's ``time_limit`` to fire ΓÇö which can be
-# several minutes ΓÇö or to manually mutate the DB. These helpers + the two
+# recourse is to wait for Celery's ``time_limit`` to fire — which can be
+# several minutes — or to manually mutate the DB. These helpers + the two
 # endpoints below give the UI a first-class "Stop diarisation" button.
 #
 # Why ``terminate=True``: the legacy ``_revoke_pending_tasks`` helper uses
@@ -3848,7 +3846,7 @@ def _cancellable_diarisation_states() -> Tuple[str, ...]:
 def _revoke_diarisation_task(row: CallImportRow) -> None:
     """Best-effort revoke of a single row's diarisation Celery task.
 
-    Always swallows control-plane exceptions ΓÇö Celery's control bus is
+    Always swallows control-plane exceptions — Celery's control bus is
     inherently best-effort and a missed revoke is not catastrophic
     because the DB row is already flipped to ``failed`` by the caller
     before this runs (so the UI immediately reflects the cancel; if
@@ -3869,7 +3867,7 @@ def _revoke_diarisation_task(row: CallImportRow) -> None:
             task_id,
             row.id,
         )
-    except Exception as exc:  # noqa: BLE001 ΓÇö revoke is best-effort
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
         logger.warning(
             "Failed to revoke diarisation task {} for row {}: {}",
             task_id,
@@ -3883,7 +3881,7 @@ def _apply_diarisation_cancel(rows: List[CallImportRow]) -> Tuple[int, int]:
 
     Returns ``(cancelled, skipped)`` so the caller can build a typed
     response without re-querying the DB. The caller is responsible for
-    ``db.commit()`` after this returns ΓÇö we deliberately don't commit
+    ``db.commit()`` after this returns — we deliberately don't commit
     here so a batch endpoint can flush all rows in one transaction.
     """
     cancellable_states = _cancellable_diarisation_states()
@@ -3990,11 +3988,11 @@ async def cancel_call_import_diarisation(
 
     Default body (no ``row_ids``) cancels every row in this import
     whose ``diarised_transcript_status`` is ``pending`` or
-    ``running`` ΓÇö the "stop everything" button. Pass ``row_ids`` to
+    ``running`` — the "stop everything" button. Pass ``row_ids`` to
     scope the cancel to the rows the operator has selected.
 
     Returns ``(cancelled, skipped)`` so the UI can render a tight
-    toast ("Cancelled 3 rows ┬╖ 1 skipped (already completed)").
+    toast ("Cancelled 3 rows · 1 skipped (already completed)").
     """
     del api_key
 
@@ -4021,7 +4019,7 @@ async def cancel_call_import_diarisation(
     )
     if requested_ids is not None:
         if not requested_ids:
-            # Empty list is "no rows requested" ΓÇö treat as a no-op
+            # Empty list is "no rows requested" — treat as a no-op
             # 200 rather than 400 so the UI can pass through an empty
             # selection without a special-case.
             return CallImportCancelDiarisationResponse(cancelled=0, skipped=0)
@@ -4060,7 +4058,7 @@ def _render_diarised_segments_text(
     Mirrors the worker's ``_render_turns_as_text`` (kept duplicated so
     the route doesn't need to import a Celery task module just to
     rebuild the rendered transcript). Only ``agent`` and ``user`` are
-    swapped ΓÇö multi-party calls keep their ``speaker_N`` labels through
+    swapped — multi-party calls keep their ``speaker_N`` labels through
     a swap so we don't silently collapse a third speaker into the user
     side.
     """
@@ -4142,7 +4140,7 @@ async def toggle_call_import_row_speaker_swap(
         )
         if not segments:
             # Without structured turns the swap toggle would have nothing to
-            # re-render ΓÇö surface a clear error rather than silently
+            # re-render — surface a clear error rather than silently
             # flipping a flag the UI never read.
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -4220,7 +4218,7 @@ async def get_call_import_insights(
         .all()
     )
     # A row "has a transcript" if EITHER the production (CSV) or the
-    # diarised (worker) column is populated ΓÇö the insights tile reports
+    # diarised (worker) column is populated — the insights tile reports
     # the union so users see total coverage regardless of which source
     # produced the value.
     rows_with_transcript = sum(
@@ -4276,7 +4274,7 @@ async def get_call_import_insights(
                 # without a matching ``Metric`` row (e.g. a metric the
                 # user deleted mid-run, or LLM-discovered slugs). Those
                 # are not valid UUIDs, so coerce defensively and skip
-                # the metric registry lookup when the cast fails ΓÇö the
+                # the metric registry lookup when the cast fails — the
                 # ``meta is None`` branch below already handles the
                 # display via the values stored on ``agg`` itself.
                 try:
