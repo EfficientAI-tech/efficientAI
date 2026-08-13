@@ -179,6 +179,28 @@ def recover_eval_row_for_eval_chain(eval_row: CallImportEvaluationRow) -> None:
     eval_row.finished_at = None
 
 
+def build_eval_chain_import_apply_async(
+    *,
+    source_row: CallImportRow,
+    eval_row: CallImportEvaluationRow,
+    reserved_task_id: str,
+):
+    """Build a Celery ``apply_async`` for eval-chain recording import."""
+    from app.workers.tasks.process_call_import_row import (
+        process_call_import_row_task,
+    )
+
+    return process_call_import_row_task.apply_async(
+        args=(str(source_row.id),),
+        kwargs={
+            "_eval_slot_task_id": reserved_task_id,
+            "run_eval_row_id": str(eval_row.id),
+        },
+        queue=IMPORTS_QUEUE,
+        task_id=reserved_task_id,
+    )
+
+
 def build_eval_chain_transcribe_apply_async(
     *,
     evaluation: CallImportEvaluation,
@@ -399,10 +421,6 @@ def _try_dispatch_single_row(
     from app.workers.tasks.evaluate_call_import_row_core import (
         row_needs_audio_phase,
     )
-    from app.workers.tasks.process_call_import_row import (
-        process_call_import_row_task,
-    )
-
     attached = _attach_sharded_eval_dispatch_rows(
         db,
         evaluation,
@@ -465,14 +483,10 @@ def _try_dispatch_single_row(
             def _enqueue_import(reserved_task_id: str):
                 source_row.celery_task_id = reserved_task_id
                 mutate_db.flush()
-                return process_call_import_row_task.apply_async(
-                    args=(str(source_row.id),),
-                    kwargs={
-                        "_eval_slot_task_id": reserved_task_id,
-                        "run_eval_row_id": str(eval_row.id),
-                    },
-                    queue=IMPORTS_QUEUE,
-                    task_id=reserved_task_id,
+                return build_eval_chain_import_apply_async(
+                    source_row=source_row,
+                    eval_row=eval_row,
+                    reserved_task_id=reserved_task_id,
                 )
 
             if _reserve_slot_and_enqueue(

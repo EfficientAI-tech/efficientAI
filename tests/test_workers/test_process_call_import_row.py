@@ -274,6 +274,9 @@ def _wrap_bind_task_for_tests(task):
             def retry(self, exc=None, countdown=None):
                 raise RetryCalled((exc, countdown))
 
+            def apply_async(self, *args, **kwargs):
+                return types.SimpleNamespace(id="test-task-id")
+
         return _FakeBindTask()
 
     class _CeleryDelegate:

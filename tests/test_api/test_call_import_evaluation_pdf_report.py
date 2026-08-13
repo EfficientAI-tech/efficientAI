@@ -516,6 +516,7 @@ def test_pdf_report_uses_saved_report_branding_logo(
 
     fake_s3 = SimpleNamespace(
         download_file_by_key=lambda key: b"custom-logo",
+        is_enabled=lambda: False,
     )
     monkeypatch.setattr(s3_module, "s3_service", fake_s3)
     captured: dict[str, object] = {}
@@ -1496,3 +1497,134 @@ def test_pdf_report_denied_for_workspace_viewer(db_session, org_id, seed_org, mo
     assert response.status_code == 403
     assert "Editor role" in response.json()["detail"]
     assert "Viewer" in response.json()["detail"]
+
+
+def _enable_mock_blob_storage(monkeypatch):
+    from app.services.storage.blob_storage_service import blob_storage_service
+
+    stored: dict[str, bytes] = {}
+
+    def upload_file_by_key(file_content, key, content_type="audio/mpeg"):
+        stored[key] = file_content
+        return key
+
+    monkeypatch.setattr(blob_storage_service._s3, "is_enabled", lambda: True)
+    monkeypatch.setattr(blob_storage_service, "upload_file_by_key", upload_file_by_key)
+    monkeypatch.setattr(
+        blob_storage_service,
+        "generate_presigned_url_by_key",
+        lambda key, expiration=3600, **kwargs: f"https://storage.example/{key}",
+    )
+    return stored
+
+
+def test_pdf_report_returns_json_and_stores_when_storage_enabled(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    from app.models.database import CallImportEvaluationPdfReport
+
+    monkeypatch.setattr(
+        call_import_evaluation_pdf_report_service,
+        "_render_weasyprint",
+        lambda _html, **_kwargs: None,
+    )
+    stored = _enable_mock_blob_storage(monkeypatch)
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/pdf-report",
+        json={"vendor_name": "Acme Vendor", "report_type": "external"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["vendor_name"] == "Acme Vendor"
+    assert body["report_type"] == "external"
+    assert body["preview_url"].startswith("https://storage.example/")
+    assert body["download_url"].startswith("https://storage.example/")
+
+    row = (
+        db_session.query(CallImportEvaluationPdfReport)
+        .filter(CallImportEvaluationPdfReport.evaluation_id == evaluation.id)
+        .one()
+    )
+    assert row.s3_key
+    assert row.s3_key in stored
+    assert stored[row.s3_key].startswith(b"%PDF")
+
+
+def test_pdf_report_reuses_cached_report_when_unchanged(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    render_calls = {"count": 0}
+
+    def counting_render(*_args, **_kwargs):
+        render_calls["count"] += 1
+        return None
+
+    monkeypatch.setattr(
+        call_import_evaluation_pdf_report_service,
+        "_render_weasyprint",
+        counting_render,
+    )
+    stored = _enable_mock_blob_storage(monkeypatch)
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    base = f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}"
+    payload = {"vendor_name": "Acme Vendor", "report_type": "external"}
+
+    first = authenticated_client.post(f"{base}/pdf-report", json=payload)
+    second = authenticated_client.post(f"{base}/pdf-report", json=payload)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["id"] == second.json()["id"]
+    assert second.json().get("cache_hit") is True
+    assert render_calls["count"] == 1
+    assert len(stored) == 1
+
+
+def test_pdf_report_list_and_get_stored_versions(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    monkeypatch.setattr(
+        call_import_evaluation_pdf_report_service,
+        "_render_weasyprint",
+        lambda _html, **_kwargs: None,
+    )
+    _enable_mock_blob_storage(monkeypatch)
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    base = f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}"
+
+    first = authenticated_client.post(
+        f"{base}/pdf-report",
+        json={
+            "vendor_name": "Acme Vendor",
+            "report_type": "external",
+            "report_config": {"quality_metric_ids": ["a"]},
+        },
+    )
+    second = authenticated_client.post(
+        f"{base}/pdf-report",
+        json={
+            "vendor_name": "Acme Vendor",
+            "report_type": "internal",
+            "report_config": {"quality_metric_ids": ["b"]},
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_id = first.json()["id"]
+    second_id = second.json()["id"]
+    assert first_id != second_id
+
+    listed = authenticated_client.get(f"{base}/pdf-reports")
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert len(items) == 2
+    listed_ids = {item["id"] for item in items}
+    assert listed_ids == {first_id, second_id}
+
+    detail = authenticated_client.get(f"{base}/pdf-reports/{first_id}")
+    assert detail.status_code == 200
+    assert detail.json()["id"] == first_id
+    assert detail.json()["preview_url"].startswith("https://storage.example/")

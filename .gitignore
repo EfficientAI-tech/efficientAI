@@ -26,6 +26,7 @@ MANIFEST
 secrets/
 *.json
 !package.json
+.cursorrules
 
 # Virtual environments
 venv/
@@ -35,7 +36,6 @@ ENV/
 .venv
 .pptx_venv
 config.yml
-config.docker.yml
 # uv
 .python-version
 uv.lock
@@ -110,3 +110,5 @@ frontend/dist/
 
 # Enterprise license private keys
 enterprise/keys/*.pem
+
+#

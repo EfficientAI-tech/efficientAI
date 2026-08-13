@@ -191,6 +191,32 @@ def test_post_user_insights_enqueues_task(
     assert response.json()["max_llm_calls"] == 100
 
 
+def test_post_user_insights_stamps_last_updated_by_email(
+    authenticated_client,
+    db_session,
+    org_id,
+    seed_org,
+    make_ai_provider,
+    stub_user_insights_worker,
+):
+    make_ai_provider(provider="openai", is_active=True)
+    call_import, evaluation = _seed_evaluation(db_session, org_id)
+    evaluation.last_updated_by_user_id = None
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/user-insights",
+        json={"regenerate": True, "force": True},
+    )
+    assert response.status_code == 200, response.text
+
+    detail = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}"
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["last_updated_by_email"] == "owner@example.com"
+
+
 def test_post_user_insights_requires_completed_rows(
     authenticated_client, db_session, org_id, seed_org
 ):

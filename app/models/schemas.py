@@ -3289,6 +3289,8 @@ class CallImportResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    created_by_email: Optional[str] = None
+    last_updated_by_email: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -4108,6 +4110,8 @@ class CallImportEvaluationResponse(BaseModel):
     finished_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    created_by_email: Optional[str] = None
+    last_updated_by_email: Optional[str] = None
     # Cached LLM-generated TLDR for the Visualizations tab. Lazily
     # populated by ``POST /evaluations/{eval_id}/insights``; ``None``
     # for runs the user has not summarised yet. ``is_stale`` on the

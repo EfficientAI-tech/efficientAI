@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Layers, Save } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Layers, Save } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
 import { useWorkspaceStore } from '../../../store/workspaceStore'
@@ -20,6 +20,7 @@ import ParameterMappingTable, {
 
 interface MappingPanelProps {
   callImport: CallImport
+  onMappingSaved?: () => void
 }
 
 /** True when the UI's schema/sheet selection matches what the server persisted. */
@@ -46,9 +47,15 @@ function persistedMappingContextMatches(
  * Idempotent: the user can come back later and re-submit to edit the
  * mapping as long as the batch hasn't been imported yet.
  */
-export default function MappingPanel({ callImport }: MappingPanelProps) {
+export default function MappingPanel({
+  callImport,
+  onMappingSaved,
+}: MappingPanelProps) {
   const queryClient = useQueryClient()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
+  const isMapped = callImport.status === 'mapped'
+  const [collapsed, setCollapsed] = useState(isMapped)
+  const [justSaved, setJustSaved] = useState(false)
 
   const isXlsx = callImport.source_format === 'xlsx'
   const sheets: CallImportPreviewSheet[] = callImport.available_sheets ?? []
@@ -69,6 +76,15 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
     skipped: {},
   })
   const [submitError, setSubmitError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (isMapped) {
+      setCollapsed(true)
+    } else {
+      setCollapsed(false)
+      setJustSaved(false)
+    }
+  }, [isMapped])
 
   const { data: schemasResponse } = useQuery({
     queryKey: ['call-import-schemas', activeWorkspaceId],
@@ -170,14 +186,19 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
     },
     onSuccess: (updated) => {
       setSubmitError(null)
+      setCollapsed(true)
+      setJustSaved(true)
       const cacheKey = ['call-import', activeWorkspaceId, callImport.id]
       queryClient.setQueriesData(
         { queryKey: cacheKey },
         (old: CallImportDetail | undefined) =>
-          old ? { ...old, ...updated } : old,
+          old
+            ? { ...old, ...updated, status: updated.status ?? 'mapped' }
+            : old,
       )
       queryClient.invalidateQueries({ queryKey: cacheKey })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      onMappingSaved?.()
     },
     onError: (err: any) => {
       setSubmitError(
@@ -188,26 +209,93 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
     },
   })
 
-  const isAlreadyMapped = callImport.status === 'mapped'
+  const mappedParamCount = Object.values(mappingState.parameterMapping).filter(
+    (header) => header && header.trim(),
+  ).length
+  const skippedCount = Object.values(mappingState.skipped).filter(Boolean).length
   const canSubmit =
     !!selectedSchema &&
     !!selectedSheet &&
     !!validation?.isValid &&
     !mappingMutation.isPending
 
+  const mappingSummary = selectedSchema
+    ? `${selectedSchema.name} · ${mappedParamCount} mapped · ${skippedCount} skipped`
+    : 'Mapping saved'
+
   return (
-    <div className="bg-white shadow rounded-lg p-6 space-y-5">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-          <Layers className="h-5 w-5 text-primary-600" />
-          {isAlreadyMapped ? 'Edit mapping' : 'Configure mapping'}
-        </h2>
-        <p className="text-sm text-gray-600 mt-1">
-          Pick the Input Parameter schema this batch maps against, then
-          assign each schema parameter to a source column. Columns you
-          don't want imported must be explicitly skipped.
-        </p>
-      </div>
+    <div
+      className={`bg-white shadow rounded-lg overflow-hidden ${
+        isMapped ? 'border border-green-200' : ''
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => isMapped && setCollapsed((prev) => !prev)}
+        className={`w-full flex items-start justify-between gap-3 p-6 text-left ${
+          isMapped ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default'
+        }`}
+        aria-expanded={!collapsed}
+      >
+        <div className="flex items-start gap-3 min-w-0">
+          <div
+            className={`h-10 w-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+              isMapped ? 'bg-green-100 text-green-700' : 'bg-primary-50 text-primary-700'
+            }`}
+          >
+            {isMapped ? (
+              <CheckCircle2 className="h-5 w-5" />
+            ) : (
+              <Layers className="h-5 w-5" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-gray-900">
+              2. {isMapped ? 'Mapping saved' : 'Configure mapping'}
+            </h2>
+            {collapsed && isMapped ? (
+              <p
+                className={`text-sm mt-1 truncate ${
+                  justSaved ? 'text-green-700 font-medium' : 'text-gray-600'
+                }`}
+              >
+                {justSaved
+                  ? 'Saved — continue to Run Evaluation below.'
+                  : mappingSummary}
+              </p>
+            ) : (
+              <p className="text-sm text-gray-600 mt-1">
+                Pick the Input Parameter schema this batch maps against, then
+                assign each schema parameter to a source column. Columns you
+                don't want imported must be explicitly skipped.
+              </p>
+            )}
+          </div>
+        </div>
+        {isMapped && (
+          <span className="text-gray-400 flex-shrink-0 mt-1">
+            {collapsed ? (
+              <ChevronRight className="h-5 w-5" />
+            ) : (
+              <ChevronDown className="h-5 w-5" />
+            )}
+          </span>
+        )}
+      </button>
+
+      {!collapsed && (
+        <div className="px-6 pb-6 space-y-5 border-t border-gray-100 pt-5">
+      {justSaved && (
+        <div className="rounded-md bg-green-50 border border-green-200 p-3">
+          <div className="flex items-start gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-green-800">
+              Mapping saved. Continue to <strong>Run Evaluation</strong> below to
+              fetch recordings, diarize transcripts, and score each row.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
@@ -300,9 +388,11 @@ export default function MappingPanel({ callImport }: MappingPanelProps) {
           isLoading={mappingMutation.isPending}
           disabled={!canSubmit}
         >
-          {isAlreadyMapped ? 'Save mapping' : 'Save and continue'}
+          {isMapped ? 'Save mapping' : 'Save and continue'}
         </Button>
       </div>
+        </div>
+      )}
     </div>
   )
 }

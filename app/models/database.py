@@ -1,4 +1,4 @@
-"""SQLAlchemy database models."""
+﻿"""SQLAlchemy database models."""
 
 from sqlalchemy import (
     BigInteger,
@@ -610,7 +610,7 @@ class Integration(Base):
     # A partial unique index in migration 028 enforces at most one default
     # per (org, platform) at the DB level.
     is_default = Column(Boolean, default=False, nullable=False)
-    # inherit | gateway | direct — per-credential LLM routing override
+    # inherit | gateway | direct ΓÇö per-credential LLM routing override
     routing_mode = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -686,11 +686,11 @@ class AIProvider(Base):
     # marks the row resolved when no explicit credential id is selected.
     # A partial unique index in migration 028 enforces at most one default.
     is_default = Column(Boolean, default=False, nullable=False)
-    # inherit | gateway | direct — per-credential LLM routing override
+    # inherit | gateway | direct ΓÇö per-credential LLM routing override
     routing_mode = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     # Bifrost custom model ID used when routing via gateway
     gateway_model = Column(String(255), nullable=True)
-    # inherit | litellm_shim | native_openai — Bifrost API surface override
+    # inherit | litellm_shim | native_openai ΓÇö Bifrost API surface override
     gateway_interface = Column(String(20), nullable=False, default="inherit", server_default="inherit")
     # Optional per-credential Bifrost/gateway base URL override
     gateway_base_url = Column(String(512), nullable=True)
@@ -816,7 +816,7 @@ class TestAgentConversation(Base):
 
 
 class EvaluatorSuite(Base):
-    """Evaluator suite — one agent + one persona + N scenario combinations."""
+    """Evaluator suite ΓÇö one agent + one persona + N scenario combinations."""
 
     __tablename__ = "evaluator_suites"
 
@@ -920,10 +920,10 @@ class Metric(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     # Workspace isolation: two-shape column.
     #
-    #   * ``workspace_id = <uuid>`` — workspace-scoped metric. Only
+    #   * ``workspace_id = <uuid>`` ΓÇö workspace-scoped metric. Only
     #     visible inside that workspace (the default behavior; existing
     #     rows all look like this).
-    #   * ``workspace_id IS NULL`` — org-shared metric. Surfaces in
+    #   * ``workspace_id IS NULL`` ΓÇö org-shared metric. Surfaces in
     #     every workspace's listing under this org so users don't have
     #     to recreate the same metric per workspace.
     #
@@ -985,7 +985,7 @@ class Metric(Base):
     # candidates surface in a "Discovered labels" panel where the user
     # manually promotes them into real child Metric rows. For
     # ``single_choice`` parents the discovered entries are
-    # supplemental — the chosen child is still picked from the
+    # supplemental ΓÇö the chosen child is still picked from the
     # predefined children so the exactly-one-true invariant holds.
     # The validator rejects this flag on standalone / child metrics.
     allow_discovery = Column(
@@ -999,7 +999,7 @@ class Metric(Base):
     # produced by the STT/diarisation pipeline) to the LLM as a
     # labeled pair instead of feeding one transcript. The parent
     # evaluation's ``CallImportEvaluation.transcript_source`` is
-    # ignored for these metrics — they always read both columns.
+    # ignored for these metrics ΓÇö they always read both columns.
     # Rows where either transcript is missing are skipped per-metric
     # with ``skipped="comparison_missing_transcript"`` so the rest of
     # the row's metrics still produce scores. The Pydantic validator
@@ -1933,6 +1933,9 @@ class CallImport(Base):
         index=True,
     )
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    last_updated_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Telephony provider key (e.g. ``'exotel'``, ``'plivo'``). In the
     # legacy one-shot ``POST /upload`` endpoint this is supplied with the
@@ -2102,7 +2105,7 @@ class CallImportRow(Base):
     # for historical report comparisons without timezone/time ambiguity.
     recording_date = Column(Date, nullable=True, index=True)
     # The "production" transcript: the value supplied via the CSV
-    # upload mapping. Never overwritten by the diarisation worker —
+    # upload mapping. Never overwritten by the diarisation worker ΓÇö
     # the worker writes its output into ``diarised_transcript`` so
     # the user keeps both versions side by side.
     transcript = Column(Text, nullable=True)
@@ -2161,7 +2164,7 @@ class CallImportRow(Base):
     diarised_transcript_error = Column(Text, nullable=True)
     diarised_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Structured speaker turns produced by the diarisation worker —
+    # Structured speaker turns produced by the diarisation worker ΓÇö
     # ``[{ "speaker": "agent"|"user"|"speaker_3", "text": "...",
     #      "start": float, "end": float, "raw_speaker": "Speaker 1" }, ...]``
     # The plain-text ``diarised_transcript`` above is a rendered view
@@ -2192,15 +2195,15 @@ class CallImportRow(Base):
     diarised_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
     diarised_prompt = Column(Text, nullable=True)
     # Which diarisation pipeline produced this row's turns.
-    #   * ``"stt_llm"`` (default) — two-stage: STT then LLM diariser.
+    #   * ``"stt_llm"`` (default) ΓÇö two-stage: STT then LLM diariser.
     #     ``diarised_transcript_provider``/``_model`` describe the STT
     #     side; ``diarised_llm_provider``/``_model`` the LLM side.
-    #   * ``"llm_only"`` — single-stage: audio fed straight to a
+    #   * ``"llm_only"`` ΓÇö single-stage: audio fed straight to a
     #     multimodal LLM. ``diarised_transcript_provider`` is stamped
     #     with the sentinel ``"llm_only"``; the real model is on
     #     ``diarised_llm_*``.
     # Persisting it on the row (not just the run) lets the row detail
-    # panel render the right "Diarised via …" label even for ad-hoc
+    # panel render the right "Diarised via ΓÇª" label even for ad-hoc
     # standalone transcribes (no parent evaluation).
     transcribe_mode = Column(
         String(20),
@@ -2323,6 +2326,9 @@ class CallImportEvaluation(Base):
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
+    last_updated_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
 
     # Optional user-supplied label for this run. Lets the UI surface
     # something more meaningful than the UUID prefix (e.g. "March QA pass").
@@ -2337,7 +2343,7 @@ class CallImportEvaluation(Base):
     # Captures which children belong to which parent for THIS run so the UI
     # / aggregator can reconstruct the tree even when the user selected
     # only a subset of children, or after metrics are deleted / renamed.
-    # NULL on legacy rows means "no hierarchy" → fall back to flat
+    # NULL on legacy rows means "no hierarchy" ΓåÆ fall back to flat
     # ``selected_metric_ids`` semantics.
     selected_metric_groups = Column(JSON, nullable=True)
     # User-driven merges of LLM-discovered candidate sub-labels for
@@ -2364,7 +2370,7 @@ class CallImportEvaluation(Base):
     )
     # Flat slug-to-slug redirect map for user merges + tombstones of
     # discovered top-level metric candidates. Mirrors
-    # ``discovered_label_aliases`` but is NOT nested per parent —
+    # ``discovered_label_aliases`` but is NOT nested per parent ΓÇö
     # top-level metric discovery is not scoped to any parent. Shape::
     #
     #     {"<from_slug>": "<to_slug>", ...}
@@ -2376,7 +2382,7 @@ class CallImportEvaluation(Base):
     )
 
     # Run-level LLM config picked from the Run Evaluation modal. NULL on
-    # legacy rows means "use the historical OpenAI/gpt-4o default" — the
+    # legacy rows means "use the historical OpenAI/gpt-4o default" ΓÇö the
     # worker checks for this and falls back accordingly. ``llm_credential_id``
     # pins a specific AIProvider row when the org has multiple credentials
     # for the same provider.
@@ -2399,7 +2405,7 @@ class CallImportEvaluation(Base):
     # STT provider/model used so the UI can show "Auto-transcribed via
     # deepgram/nova-2" on the evaluation header. ``stt_credential_id`` is
     # untyped (no FK) because STT keys may live in either ``aiproviders``
-    # (OpenAI) or ``integrations`` (Deepgram, ElevenLabs) — the
+    # (OpenAI) or ``integrations`` (Deepgram, ElevenLabs) ΓÇö the
     # transcription service handles the lookup.
     stt_provider = Column(String(50), nullable=True)
     stt_model = Column(String(100), nullable=True)
@@ -2416,7 +2422,7 @@ class CallImportEvaluation(Base):
     diarisation_prompt = Column(Text, nullable=True)
     # Mode the run was *created* with for its auto-transcribe step.
     # Retry chains read this to decide whether to enqueue an STT+LLM
-    # transcribe or a single-stage multimodal LLM transcribe — without
+    # transcribe or a single-stage multimodal LLM transcribe ΓÇö without
     # it we'd have to infer the mode from "stt_provider is NULL", which
     # would silently break legacy rows that simply never configured
     # auto-transcribe. See migration 041 for the column DDL.
@@ -2432,7 +2438,7 @@ class CallImportEvaluation(Base):
     # (the CSV-supplied value); ``'diarised'`` reads
     # ``CallImportRow.diarised_transcript`` (the worker output). When
     # the user ticks both checkboxes in the Run Evaluation modal we
-    # create two ``CallImportEvaluation`` rows — one per source — so
+    # create two ``CallImportEvaluation`` rows ΓÇö one per source ΓÇö so
     # the two scorings can be compared side-by-side. Defaults to
     # ``'production'`` so legacy runs (which always read the single
     # historical ``transcript`` column) keep their semantics.
@@ -2454,11 +2460,11 @@ class CallImportEvaluation(Base):
 
     # Cached LLM-generated user insights for External Audit PDF section 03.
     # Populated by a background Celery job triggered alongside TLDR generation.
-    # Shape: EvaluationUserInsightsState JSON (status, insights[], progress, …).
+    # Shape: EvaluationUserInsightsState JSON (status, insights[], progress, ΓÇª).
     user_insights = Column(JSON, nullable=True)
 
     # Cached per-metric failure clustering for internal diagnostics PDF/UI.
-    # Shape: EvaluationMetricClustersState JSON (status, groups[], …).
+    # Shape: EvaluationMetricClustersState JSON (status, groups[], ΓÇª).
     metric_clusters = Column(JSON, nullable=True)
 
     # Cached LLM-generated prompt improvement suggestions keyed to an
@@ -2702,6 +2708,50 @@ class CallImportEvaluationReportSnapshot(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class CallImportEvaluationPdfReport(Base):
+    """Stored PDF artifact for a call import evaluation report generation."""
+
+    __tablename__ = "call_import_evaluation_pdf_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluation_report_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    vendor_name = Column(String(120), nullable=False)
+    report_type = Column(String(20), nullable=False, default="external")
+    filename = Column(String(255), nullable=True)
+    s3_key = Column(String(512), nullable=True)
+    report_config = Column(JSON, nullable=False, default=dict, server_default="{}")
+    cache_fingerprint = Column(String(64), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_by_user_id = Column(UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------

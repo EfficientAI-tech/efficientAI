@@ -1,4 +1,4 @@
-"""API tests for the per-call-import evaluation routes.
+﻿"""API tests for the per-call-import evaluation routes.
 
 Covers ``POST/GET/DELETE /call-imports/{id}/evaluations`` plus the
 ``/rows`` listing and CSV ``/export`` endpoints. Both the row-import
@@ -378,7 +378,7 @@ def test_create_evaluation_requires_stt_provider_and_model(
 ):
     """Every evaluation auto-diarises rows that don't already have a
     diarised transcript, so the STT provider+model are mandatory on
-    every request — even when auto_transcribe is not explicitly
+    every request ΓÇö even when auto_transcribe is not explicitly
     passed."""
     metric = _make_metric(db_session, org_id)
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
@@ -573,7 +573,7 @@ def test_evaluations_unknown_import_returns_404(authenticated_client, seed_org):
 # 1. Each cancellable row flips to ``failed`` with the
 #    ``"Evaluation cancelled by user"`` sentinel + cleared ``celery_task_id``.
 # 2. The parent rollup picks the new state up (``failed``/``partial``).
-# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` —
+# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` ΓÇö
 #    that's the contract that lets the worker actually interrupt an in-flight
 #    LLM/audio call rather than waiting up to 10 minutes for the time limit.
 
@@ -826,7 +826,7 @@ def test_cancel_evaluation_row_flips_only_target_row(
     refreshed_sibling = db_session.get(CallImportEvaluationRow, sibling.id)
     assert refreshed_target.status == "failed"
     assert refreshed_target.celery_task_id is None
-    # Sibling untouched — only the targeted row was cancelled.
+    # Sibling untouched ΓÇö only the targeted row was cancelled.
     assert refreshed_sibling.status == "running"
     assert refreshed_sibling.celery_task_id is not None
 
@@ -845,7 +845,7 @@ def test_cancel_evaluation_row_flips_only_target_row(
 def test_cancel_evaluation_row_idempotent_when_terminal(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
-    """A row already in a terminal state is returned unchanged with a 200 —
+    """A row already in a terminal state is returned unchanged with a 200 ΓÇö
     no DB flip, no revoke."""
     metric = _make_metric(db_session, org_id)
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
@@ -870,7 +870,7 @@ def test_cancel_evaluation_row_idempotent_when_terminal(
     )
     assert response.status_code == 200
     body = response.json()
-    # Row is unchanged — still completed, scores still attached.
+    # Row is unchanged ΓÇö still completed, scores still attached.
     assert body["status"] == "completed"
     assert body["metric_scores"][str(metric.id)]["value"] == 4
     revoke.assert_not_called()
@@ -1356,3 +1356,41 @@ def test_evaluation_retry_rejects_invalid_telephony_credentials(
     )
     assert response.status_code == 400
     assert "credentials could not be verified" in response.json()["detail"].lower()
+def test_create_evaluation_sets_actor_emails(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=2)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["created_by_email"] == "owner@example.com"
+    assert body["last_updated_by_email"] == "owner@example.com"
+
+
+def test_update_evaluation_name_stamps_last_updated_by_email(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=1)
+
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert created.status_code == 202, created.text
+    eval_id = created.json()["id"]
+
+    patched = authenticated_client.patch(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_id}",
+        json={"name": "Renamed run"},
+    )
+    assert patched.status_code == 200, patched.text
+    body = patched.json()
+    assert body["name"] == "Renamed run"
+    assert body["created_by_email"] == "owner@example.com"
+    assert body["last_updated_by_email"] == "owner@example.com"

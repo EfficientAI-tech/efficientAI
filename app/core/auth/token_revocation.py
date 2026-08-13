@@ -34,7 +34,7 @@ def revoke_access_jti(jti: str, ttl_seconds: int) -> None:
     """Blacklist an access token until its natural expiry."""
     ttl = max(int(ttl_seconds), 1)
     try:
-        _get_redis().setex(f"revoked:jti:{jti}", ttl, "1")
+        _get_redis().set(f"revoked:jti:{jti}", "1", ex=ttl)
     except redis.RedisError as exc:
         logger.warning("Redis unavailable for token revocation; using in-memory fallback: %s", exc)
         _in_memory_revoked[jti] = time.time() + ttl

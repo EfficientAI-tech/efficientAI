@@ -58,6 +58,9 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
+import {
+  CallImportAuditMeta,
+} from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
@@ -595,6 +598,17 @@ export default function CallImportDetail() {
     queryClient,
   ])
 
+  const runEvaluationStepRef = useRef<HTMLDivElement>(null)
+  const [highlightRunEvaluation, setHighlightRunEvaluation] = useState(false)
+  const [pendingScrollToEvaluation, setPendingScrollToEvaluation] = useState(false)
+
+  const handleMappingSaved = useCallback(() => {
+    showToast('Mapping saved. Continue with Run Evaluation below.', 'success')
+    setHighlightRunEvaluation(true)
+    setPendingScrollToEvaluation(true)
+    window.setTimeout(() => setHighlightRunEvaluation(false), 4000)
+  }, [showToast])
+
   const { data: aiProviders = [] } = useQuery({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
@@ -930,6 +944,17 @@ export default function CallImportDetail() {
     staleTime: 0,
   })
 
+  useEffect(() => {
+    if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
+    setPendingScrollToEvaluation(false)
+    window.setTimeout(() => {
+      runEvaluationStepRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    }, 100)
+  }, [pendingScrollToEvaluation, data?.status])
+
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, 'agent'],
     queryFn: () => apiClient.listMetrics('agent'),
@@ -1223,9 +1248,6 @@ export default function CallImportDetail() {
     },
   })
 
-  // Tracks which evaluation run is currently being aborted so we can show
-  // a tiny spinner inline on its Abort button without blocking the rest
-  // of the evaluations list. Cleared on success or error.
   const [cancellingEvalId, setCancellingEvalId] = useState<string | null>(null)
 
   const cancelEvaluationMutation = useMutation({
@@ -1240,12 +1262,7 @@ export default function CallImportDetail() {
       }
       queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
     },
-    onError: (err: any) => {
-      // Cancel is idempotent on the server — the most likely failure
-      // is a 404 because the run was just deleted, in which case the
-      // refetch above will reconcile state. Surface a console.error
-      // so dev-tools shows it without breaking the layout.
-      // eslint-disable-next-line no-console
+    onError: (err: unknown) => {
       console.error('cancelEvaluationMutation failed:', err)
     },
     onSettled: () => {
@@ -1253,12 +1270,7 @@ export default function CallImportDetail() {
     },
   })
 
-  // Bulk-abort companion to ``cancelEvaluationMutation`` — fires the
-  // single-run cancel endpoint per selected run in parallel. We
-  // deliberately keep this client-side fan-out (rather than a new
-  // bulk endpoint) so the UI surface stays small; cancel is cheap
-  // server-side because each call only revokes the rows that are
-  // still in-flight.
+  // Bulk-abort — fires the single-run cancel endpoint per selected run in parallel.
   const bulkCancelEvalsMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const results = await Promise.allSettled(
@@ -1636,24 +1648,25 @@ export default function CallImportDetail() {
               {data.original_filename || '(unnamed import)'}
             </h1>
             <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
-            <div className="mt-3 flex items-center gap-3 flex-wrap">
+            <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
               <StatusBadge status={data.status} />
-              <span className="text-sm text-gray-600 capitalize">
+              <span className="capitalize shrink-0">
                 Provider:{' '}
-                <span className="font-medium">
+                <span className="font-medium text-gray-800">
                   {data.provider || (
-                    <span className="text-gray-400 italic normal-case">
+                    <span className="text-gray-400 italic normal-case font-normal">
                       not selected yet
                     </span>
                   )}
                 </span>
               </span>
-              <span className="text-sm text-gray-600">
-                Created: {new Date(data.created_at).toLocaleString()}
-              </span>
-              <span className="text-sm text-gray-600">
-                Updated: {new Date(data.updated_at).toLocaleString()}
-              </span>
+              <CallImportAuditMeta
+                inline
+                createdAt={data.created_at}
+                updatedAt={data.updated_at}
+                createdByEmail={data.created_by_email}
+                lastUpdatedByEmail={data.last_updated_by_email}
+              />
             </div>
           </div>
 
@@ -1967,10 +1980,18 @@ export default function CallImportDetail() {
       {needsMapping && data.source_s3_key && (
         <>
           {(data.status === 'uploaded' || data.status === 'mapped') && (
-            <MappingPanel callImport={data} />
+            <MappingPanel
+              callImport={data}
+              onMappingSaved={handleMappingSaved}
+            />
           )}
           {data.status === 'mapped' && !isDeleting && (
-            <RunEvaluationStep onRunEvaluation={openRunEvaluationModal} />
+            <div ref={runEvaluationStepRef}>
+              <RunEvaluationStep
+                onRunEvaluation={openRunEvaluationModal}
+                highlighted={highlightRunEvaluation}
+              />
+            </div>
           )}
         </>
       )}
@@ -3136,32 +3157,51 @@ export default function CallImportDetail() {
             No evaluations have been run for this dataset yet.
           </p>
         ) : (
-          <div className="space-y-2">
-            {(() => {
-              const items = evaluationsData?.items ?? []
-              const allSelected =
-                items.length > 0 &&
-                items.every((row) => selectedEvalIds.has(row.id))
-              return (
-                <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all evaluations"
-                    checked={allSelected}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedEvalIds(new Set(items.map((row) => row.id)))
-                      } else {
-                        setSelectedEvalIds(new Set())
-                      }
-                    }}
-                  />
-                  <span className="text-xs text-gray-600">
-                    Select all ({items.length})
-                  </span>
-                </div>
-              )
-            })()}
+          <div className="overflow-x-auto border border-gray-200 rounded-lg">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="w-10 px-3 py-3">
+                    {(() => {
+                      const items = evaluationsData?.items ?? []
+                      const allSelected =
+                        items.length > 0 &&
+                        items.every((row) => selectedEvalIds.has(row.id))
+                      return (
+                        <input
+                          type="checkbox"
+                          aria-label="Select all evaluations"
+                          checked={allSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedEvalIds(new Set(items.map((row) => row.id)))
+                            } else {
+                              setSelectedEvalIds(new Set())
+                            }
+                          }}
+                        />
+                      )
+                    })()}
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Evaluation
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Run by
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last updated by
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Progress
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="w-0 px-2 py-3" aria-hidden />
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
             {evaluationsData?.items.map((evaluation: CallImportEvaluation) => {
               const isSelected = selectedEvalIds.has(evaluation.id)
               const bulkOperationActive = evaluationHasActiveBulkOperation(
@@ -3170,91 +3210,118 @@ export default function CallImportDetail() {
               const headerLabel = evaluation.name?.trim()
                 ? evaluation.name
                 : `Evaluation ${evaluation.id.slice(0, 8)}`
+              const runBy = evaluation.created_by_email?.trim() || '—'
+              const lastUpdatedBy = evaluation.last_updated_by_email?.trim() || '—'
               return (
-                <div
+                <tr
                   key={evaluation.id}
-                  className={`flex items-center gap-3 border rounded-lg px-3 py-2.5 bg-white transition ${
-                    isSelected
-                      ? 'border-primary-400 bg-primary-50/40'
-                      : 'border-gray-200 hover:border-gray-300'
+                  role="link"
+                  tabIndex={0}
+                  onClick={() =>
+                    navigate(
+                      `/call-imports/${id}/evaluations/${evaluation.id}`,
+                    )
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      navigate(
+                        `/call-imports/${id}/evaluations/${evaluation.id}`,
+                      )
+                    }
+                  }}
+                  className={`cursor-pointer group hover:bg-gray-50 ${
+                    isSelected ? 'bg-primary-50/40' : ''
                   }`}
                 >
-                  <input
-                    type="checkbox"
-                    aria-label={`Select ${headerLabel}`}
-                    checked={isSelected}
-                    onChange={(e) => {
-                      setSelectedEvalIds((prev) => {
-                        const next = new Set(prev)
-                        if (e.target.checked) next.add(evaluation.id)
-                        else next.delete(evaluation.id)
-                        return next
-                      })
-                    }}
-                  />
-                  <Link
-                    to={`/call-imports/${id}/evaluations/${evaluation.id}`}
-                    className="flex-1 min-w-0 flex items-center justify-between gap-3"
+                  <td
+                    className="px-3 py-4 align-middle"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">
-                        {headerLabel}
-                      </p>
-                      <p className="text-[11px] text-gray-400 mt-0.5">
-                        Created {new Date(evaluation.created_at).toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <StatusBadge status={evaluation.status} size="sm" />
-                      {evaluation.bulk_operation && (
-                        <p className="text-[11px] text-amber-700 mt-1 flex items-center justify-end gap-1">
-                          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                          {evaluationBulkOperationLabel(evaluation.bulk_operation)}
-                        </p>
-                      )}
-                      <p className="text-xs text-gray-500 mt-1">
-                        {evaluation.completed_rows}/{evaluation.total_rows} rows
-                      </p>
-                    </div>
-                  </Link>
-                  {(evaluation.status === 'pending' ||
-                    evaluation.status === 'running') && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      leftIcon={<XCircle className="h-4 w-4" />}
-                      isLoading={
-                        bulkOperationActive ||
-                        (cancellingEvalId === evaluation.id &&
-                          cancelEvaluationMutation.isPending)
-                      }
-                      disabled={
-                        bulkOperationActive ||
-                        (cancellingEvalId === evaluation.id &&
-                          cancelEvaluationMutation.isPending)
-                      }
-                      onClick={(e) => {
-                        // Stop the click from bubbling into the parent
-                        // Link (which would navigate to the evaluation
-                        // detail page mid-cancel).
-                        e.preventDefault()
-                        e.stopPropagation()
-                        if (bulkOperationActive) return
-                        cancelEvaluationMutation.mutate(evaluation.id)
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${headerLabel}`}
+                      checked={isSelected}
+                      onChange={(e) => {
+                        setSelectedEvalIds((prev) => {
+                          const next = new Set(prev)
+                          if (e.target.checked) next.add(evaluation.id)
+                          else next.delete(evaluation.id)
+                          return next
+                        })
                       }}
-                      className="flex-shrink-0 text-amber-700 hover:text-amber-800 hover:bg-amber-50"
-                      title={
-                        bulkOperationActive
-                          ? 'Wait for the current bulk operation to finish'
-                          : 'Abort this evaluation run'
-                      }
-                    >
-                      Abort
-                    </Button>
-                  )}
-                </div>
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </td>
+                  <td className="px-4 py-4 align-top min-w-[10rem]">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-700">
+                        {headerLabel}
+                      </div>
+                      <div className="text-xs text-gray-400 font-mono mt-0.5">
+                        {evaluation.id.slice(0, 8)}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 align-top text-sm text-gray-700 max-w-[12rem]">
+                    <span className="break-all">{runBy}</span>
+                  </td>
+                  <td className="px-4 py-4 align-top text-sm text-gray-700 max-w-[12rem]">
+                    <span className="break-all">{lastUpdatedBy}</span>
+                  </td>
+                  <td className="px-4 py-4 align-top whitespace-nowrap text-sm text-gray-600">
+                    {evaluation.completed_rows}/{evaluation.total_rows} rows
+                  </td>
+                  <td className="px-4 py-4 align-top whitespace-nowrap">
+                    <StatusBadge status={evaluation.status} size="sm" />
+                    {evaluation.bulk_operation && (
+                      <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
+                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                        {evaluationBulkOperationLabel(evaluation.bulk_operation)}
+                      </p>
+                    )}
+                  </td>
+                  <td
+                    className="px-2 py-4 align-top text-right whitespace-nowrap"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {(evaluation.status === 'pending' ||
+                      evaluation.status === 'running') && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leftIcon={<XCircle className="h-4 w-4" />}
+                        isLoading={
+                          bulkOperationActive ||
+                          (cancellingEvalId === evaluation.id &&
+                            cancelEvaluationMutation.isPending)
+                        }
+                        disabled={
+                          bulkOperationActive ||
+                          (cancellingEvalId === evaluation.id &&
+                            cancelEvaluationMutation.isPending)
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (bulkOperationActive) return
+                          cancelEvaluationMutation.mutate(evaluation.id)
+                        }}
+                        className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                        title={
+                          bulkOperationActive
+                            ? 'Wait for the current bulk operation to finish'
+                            : 'Abort this evaluation run'
+                        }
+                      >
+                        Abort
+                      </Button>
+                    )}
+                  </td>
+                </tr>
               )
             })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
