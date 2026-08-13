@@ -4561,9 +4561,9 @@ export default function CallImportDetail() {
                               Transcript for evaluation
                             </p>
                             <p className="text-[11px] text-gray-500 mt-0.5">
-                              Choose whether to score the CSV production
-                              transcript or diarize first, then score the
-                              diarized output.
+                              {isManualAudioImport
+                                ? 'Recordings are already uploaded to this batch. Diarization uses the stored audio files — no CSV recording URL column is needed.'
+                                : 'Choose whether to score the CSV production transcript or diarize first, then score the diarized output.'}
                             </p>
                           </div>
                           <div

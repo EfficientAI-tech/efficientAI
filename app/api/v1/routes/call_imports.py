@@ -1,4 +1,4 @@
-"""CSV-driven call import routes.
+﻿"""CSV-driven call import routes.
 
 Users upload a CSV plus a per-batch column mapping (CSV header -> system
 field). The backend persists a CallImport batch + one CallImportRow per
@@ -1384,6 +1384,11 @@ def _validate_exotel_import_ready(
                 "be mapped to a source column."
             ),
         )
+
+
+def _is_manual_audio_call_import(call_import: CallImport) -> bool:
+    """True for batches created via manual audio upload (recordings already in S3)."""
+    return (call_import.source_format or "").lower() == "audio"
 
 
 def _validate_diarised_eval_recording_ready(

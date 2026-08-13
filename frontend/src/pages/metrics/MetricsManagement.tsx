@@ -693,7 +693,14 @@ export default function MetricsManagement({
     onSuccess: (metric) => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
       onMetricCreated?.(metric)
+      showToast(
+        draftMode ? 'Draft metric created' : 'Metric created',
+        'success',
+      )
       closeModal()
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to create metric'), 'error')
     },
   })
 
@@ -702,8 +709,11 @@ export default function MetricsManagement({
       apiClient.updateMetric(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
-      setEditingMetric(null)
-      resetForm()
+      showToast('Metric updated', 'success')
+      closeModal()
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to update metric'), 'error')
     },
   })
 
@@ -1126,7 +1136,7 @@ export default function MetricsManagement({
 
   const handleCreate = () => {
     if (!formData.name.trim()) {
-      alert('Please enter a metric name')
+      showToast('Please enter a metric name', 'error')
       return
     }
     createMutation.mutate(buildPayload() as any)
@@ -1281,7 +1291,7 @@ export default function MetricsManagement({
   const handleUpdate = () => {
     if (!editingMetric) return
     if (!formData.name.trim()) {
-      alert('Please enter a metric name')
+      showToast('Please enter a metric name', 'error')
       return
     }
     updateMutation.mutate({ id: editingMetric.id, data: buildPayload() as any })

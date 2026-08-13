@@ -254,6 +254,54 @@ def _make_call_import(
     return call_import, row_models
 
 
+def _make_manual_audio_call_import(
+    db_session,
+    org_id,
+    *,
+    rows=2,
+):
+    """Manual audio upload batch: recordings already in S3, no column mapping."""
+    workspace = _ensure_default_workspace(db_session, org_id)
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        provider=None,
+        telephony_integration_id=None,
+        original_filename="Manual recordings",
+        source_format="audio",
+        column_mapping=None,
+        total_rows=rows,
+        completed_rows=rows,
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+
+    row_models = []
+    for idx in range(rows):
+        row = CallImportRow(
+            id=uuid4(),
+            call_import_id=call_import.id,
+            organization_id=org_id,
+            workspace_id=workspace.id,
+            row_index=idx,
+            conversation_id=f"manual-{idx}",
+            transcript=None,
+            recording_url=None,
+            raw_columns={"conversation_id": f"manual-{idx}"},
+            status=CallImportRowStatus.COMPLETED,
+            recording_s3_key=f"org/{org_id}/call-imports/{call_import.id}/{uuid4()}.wav",
+            recording_content_type="audio/wav",
+            recording_size_bytes=1024,
+        )
+        db_session.add(row)
+        row_models.append(row)
+    db_session.commit()
+    return call_import, row_models
+
+
 # Every Run Evaluation request now requires STT provider+model (the
 # diarised transcript is the only supported source and auto-diarise is
 # mandatory). Centralizing the minimum-valid payload here keeps the test
@@ -352,6 +400,23 @@ def test_create_evaluation_accepts_production_transcript_source(
     assert body["transcript_source"] == "production"
     assert body["stt_provider"] is None
     assert body.get("diarisation_llm_provider") is None
+
+
+def test_create_evaluation_accepts_manual_audio_without_recording_url_column(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Manual audio batches diarise from stored S3 recordings, not CSV URLs."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_manual_audio_call_import(db_session, org_id, rows=2)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["transcript_source"] == "diarised"
+    assert body["total_rows"] == 2
 
 
 def test_create_evaluation_defaults_to_diarised_source(

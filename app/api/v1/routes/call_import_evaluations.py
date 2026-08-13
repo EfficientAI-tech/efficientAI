@@ -1019,31 +1019,34 @@ async def create_call_import_evaluation(
     )
 
     if use_diarised:
-        if call_import.schema_id:
-            from app.api.v1.routes.call_imports import (
-                _resolve_schema,
-                _validate_diarised_eval_recording_ready,
-            )
+        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
 
-            diarised_schema = _resolve_schema(
-                db, organization_id, call_import.workspace_id, call_import.schema_id
-            )
-            _validate_diarised_eval_recording_ready(
-                list(diarised_schema.parameters),
-                dict(call_import.parameter_mapping or {}),
-            )
-        else:
-            legacy_recording_column = (
-                (call_import.column_mapping or {}).get("recording_url") or ""
-            ).strip()
-            if not legacy_recording_column:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        "Diarize then evaluate requires a recording URL column "
-                        "to be mapped."
-                    ),
+        if not _is_manual_audio_call_import(call_import):
+            if call_import.schema_id:
+                from app.api.v1.routes.call_imports import (
+                    _resolve_schema,
+                    _validate_diarised_eval_recording_ready,
                 )
+
+                diarised_schema = _resolve_schema(
+                    db, organization_id, call_import.workspace_id, call_import.schema_id
+                )
+                _validate_diarised_eval_recording_ready(
+                    list(diarised_schema.parameters),
+                    dict(call_import.parameter_mapping or {}),
+                )
+            else:
+                legacy_recording_column = (
+                    (call_import.column_mapping or {}).get("recording_url") or ""
+                ).strip()
+                if not legacy_recording_column:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Diarize then evaluate requires a recording URL column "
+                            "to be mapped."
+                        ),
+                    )
 
     starting_from_mapped = False
     if call_import.status == CallImportStatus.MAPPED:
