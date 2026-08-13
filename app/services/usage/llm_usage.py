@@ -522,60 +522,104 @@ def _restore_buckets_to_pending(
 
 
 _CLAIM_COMMITTED_TTL_SECONDS = 24 * 60 * 60
-_CLAIM_COMMITTED_REDIS_RETRIES = 5
+_CLAIM_COMMITTED_REDIS_RETRIES = 3
+_ORPHAN_RECOVERY_INTERVAL_SEC = 30
+_COMMITTED_CLAIMS_PRUNE_INTERVAL_SEC = 3600
+_COMMITTED_CLAIMS_RETENTION_DAYS = 2
 
 
 def _claim_committed_key(claim_key: str) -> str:
     return f"usage:claim_done:{claim_key}"
 
 
+def _redis_interval_gate(key: str, interval_sec: int) -> bool:
+    """Return True when the gated work should run (interval lock acquired)."""
+    try:
+        return bool(_client().set(key, "1", nx=True, ex=interval_sec))
+    except redis.RedisError:
+        return False
+
+
 def _record_claim_committed_pg(
     db: Session, claim_key: str, organization_id: UUID
 ) -> None:
-    try:
-        db.execute(
-            text(
-                """
-                INSERT INTO usage_committed_claims (claim_key, organization_id)
-                VALUES (:claim_key, CAST(:organization_id AS uuid))
-                ON CONFLICT (claim_key) DO NOTHING
-                """
-            ),
-            {
-                "claim_key": claim_key,
-                "organization_id": str(organization_id),
-            },
-        )
-    except Exception as exc:
-        logger.debug("usage committed claim pg write skipped: {}", exc)
+    db.execute(
+        text(
+            """
+            INSERT INTO usage_committed_claims (claim_key, organization_id)
+            VALUES (:claim_key, CAST(:organization_id AS uuid))
+            ON CONFLICT (claim_key) DO NOTHING
+            """
+        ),
+        {
+            "claim_key": claim_key,
+            "organization_id": str(organization_id),
+        },
+    )
 
 
-def _is_claim_committed_pg(claim_key: str) -> bool:
+def _committed_claim_keys_in_pg(claim_keys: List[str]) -> set[str]:
+    if not claim_keys:
+        return set()
     try:
         from app.database import SessionLocal
 
         db = SessionLocal()
         try:
-            return (
-                db.execute(
-                    text(
-                        """
-                        SELECT 1 FROM usage_committed_claims
-                        WHERE claim_key = :claim_key
-                        """
-                    ),
-                    {"claim_key": claim_key},
-                ).first()
-                is not None
-            )
+            rows = db.execute(
+                text(
+                    """
+                    SELECT claim_key
+                    FROM usage_committed_claims
+                    WHERE claim_key = ANY(CAST(:claim_keys AS text[]))
+                    """
+                ),
+                {"claim_keys": claim_keys},
+            ).all()
+            return {row[0] for row in rows}
         finally:
             db.close()
     except Exception:
-        return False
+        return set()
 
 
-def _mark_claim_committed(claim_key: str) -> bool:
-    for attempt in range(_CLAIM_COMMITTED_REDIS_RETRIES):
+def _prune_old_committed_claims() -> None:
+    try:
+        from app.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(
+                text(
+                    f"""
+                    DELETE FROM usage_committed_claims
+                    WHERE committed_at < now() - interval '{_COMMITTED_CLAIMS_RETENTION_DAYS} days'
+                    """
+                )
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.debug("usage committed claim prune skipped: {}", exc)
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
+def _discard_committed_claim(claim_key: str, organization_id: UUID) -> None:
+    """Best-effort Redis cleanup when usage was not (or must not be) persisted."""
+    _mark_claim_committed(claim_key, fast=True)
+    _ack_claim(claim_key, organization_id)
+
+
+def _is_claim_committed_pg(claim_key: str) -> bool:
+    return claim_key in _committed_claim_keys_in_pg([claim_key])
+
+
+def _mark_claim_committed(claim_key: str, *, fast: bool = False) -> bool:
+    max_attempts = 2 if fast else _CLAIM_COMMITTED_REDIS_RETRIES
+    for attempt in range(max_attempts):
         try:
             _client().set(
                 _claim_committed_key(claim_key),
@@ -584,7 +628,7 @@ def _mark_claim_committed(claim_key: str) -> bool:
             )
             return True
         except redis.RedisError:
-            if attempt + 1 < _CLAIM_COMMITTED_REDIS_RETRIES:
+            if attempt + 1 < max_attempts and not fast:
                 time.sleep(0.05 * (attempt + 1))
     return False
 
@@ -596,14 +640,6 @@ def _is_claim_committed(claim_key: str) -> bool:
     except redis.RedisError:
         pass
     return _is_claim_committed_pg(claim_key)
-
-
-def _finalize_committed_claim(
-    db: Session, claim_key: str, organization_id: UUID
-) -> None:
-    _record_claim_committed_pg(db, claim_key, organization_id)
-    _mark_claim_committed(claim_key)
-    _ack_claim(claim_key, organization_id)
 
 
 def _has_pending_usage(organization_id: UUID) -> bool:
@@ -973,10 +1009,14 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
                                 exc,
                             )
                             if claim_key:
-                                _finalize_committed_claim(
-                                    db, claim_key, organization_id
-                                )
-                                db.commit()
+                                try:
+                                    _record_claim_committed_pg(
+                                        db, claim_key, organization_id
+                                    )
+                                    db.commit()
+                                except Exception:
+                                    db.rollback()
+                                _discard_committed_claim(claim_key, organization_id)
                             claim_key = None
                             buckets = {}
                         else:
@@ -993,11 +1033,11 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
                                 except redis.RedisError:
                                     pass
                             claim_key = None
-                            return flushed + _flush_pending_buffer(db, organization_id)
+                            return _flush_pending_buffer(db, organization_id)
                     if skipped:
                         _restore_buckets_to_pending(organization_id, skipped)
                     if claim_key:
-                        _mark_claim_committed(claim_key)
+                        _mark_claim_committed(claim_key, fast=True)
                         _ack_claim(claim_key, organization_id)
                         claim_key = None
         finally:
@@ -1009,8 +1049,13 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
 
 
 def _recover_orphaned_claims() -> None:
+    if not _redis_interval_gate(
+        "usage:orphan_recovery:due", _ORPHAN_RECOVERY_INTERVAL_SEC
+    ):
+        return
     try:
         client = _client()
+        candidates: List[Tuple[str, UUID]] = []
         for claim_key in client.scan_iter(match="usage:flushing:*", count=100):
             parts = claim_key.split(":")
             if len(parts) < 4:
@@ -1021,13 +1066,37 @@ def _recover_orphaned_claims() -> None:
                 continue
             if client.exists(_flush_lock_key(org_id)):
                 continue
-            if _is_claim_committed(claim_key):
+            candidates.append((claim_key, org_id))
+
+        if not candidates:
+            return
+
+        pipe = client.pipeline()
+        for claim_key, _org_id in candidates:
+            pipe.exists(_claim_committed_key(claim_key))
+        redis_committed_flags = pipe.execute()
+
+        needs_pg: List[Tuple[str, UUID]] = []
+        for index, (claim_key, org_id) in enumerate(candidates):
+            if redis_committed_flags[index]:
+                client.delete(claim_key)
+                continue
+            needs_pg.append((claim_key, org_id))
+
+        pg_committed = _committed_claim_keys_in_pg([key for key, _ in needs_pg])
+        for claim_key, org_id in needs_pg:
+            if claim_key in pg_committed:
                 client.delete(claim_key)
                 continue
             buckets = _read_hash_buckets(claim_key)
             if buckets:
                 _restore_buckets_to_pending(org_id, buckets)
             client.delete(claim_key)
+
+        if _redis_interval_gate(
+            "usage:committed_claims:prune", _COMMITTED_CLAIMS_PRUNE_INTERVAL_SEC
+        ):
+            _prune_old_committed_claims()
     except redis.RedisError as exc:
         logger.warning("llm usage orphan claim recovery failed: {}", exc)
 

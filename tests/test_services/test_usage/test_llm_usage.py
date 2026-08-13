@@ -41,6 +41,10 @@ class _FakePipeline:
         self._ops.append(("expire", key, ttl))
         return self
 
+    def exists(self, key: str):
+        self._ops.append(("exists", key))
+        return self
+
     def execute(self):
         results = []
         for op in self._ops:
@@ -51,6 +55,8 @@ class _FakePipeline:
                 results.append(self._client.sadd(op[1], *op[2]))
             elif kind == "expire":
                 results.append(self._client.expire(op[1], op[2]))
+            elif kind == "exists":
+                results.append(self._client.exists(op[1]))
         self._ops.clear()
         return results
 
@@ -128,6 +134,9 @@ class _FakeRedis:
 
     def expire(self, key: str, ttl: int) -> bool:
         return self.exists(key) == 1
+
+    def pipeline(self):
+        return _FakePipeline(self)
 
     def set(self, key: str, value: str, nx: bool = False, ex: Optional[int] = None) -> Optional[bool]:
         if nx and key in self.kv:
@@ -407,6 +416,39 @@ def test_flush_restores_redis_when_db_fails(fake_redis, org_ctx, monkeypatch):
     assert not any(k.startswith("usage:flushing:") for k in fake_redis.hashes)
 
 
+def test_flush_restores_redis_when_committed_claim_insert_fails(
+    fake_redis, org_ctx, monkeypatch
+):
+    """Committed-claim insert must share the usage transaction; failure rolls back."""
+    org_id, _workspace_id, ctx = org_ctx
+    with llm_usage_context(ctx):
+        usage_mod.record_llm_usage(
+            "gpt-test",
+            UsageSnapshot(prompt_tokens=5, completion_tokens=2),
+            usage_date=date(2026, 8, 11),
+        )
+
+    db = MagicMock()
+
+    def _execute_side_effect(statement, *_args, **_kwargs):
+        if "usage_committed_claims" in str(statement):
+            raise RuntimeError("usage_committed_claims unavailable")
+        return MagicMock(rowcount=0)
+
+    db.execute.side_effect = _execute_side_effect
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+
+    flushed = usage_mod.flush_usage_to_catalog(db, org_id)
+    assert flushed == 0
+    db.rollback.assert_called()
+    db.commit.assert_not_called()
+
+    pending = fake_redis.hgetall(usage_mod._pending_hash_key(org_id))
+    prompt = sum(int(v) for k, v in pending.items() if k.endswith("|prompt_tokens"))
+    assert prompt == 5
+    assert str(org_id) in fake_redis.smembers("usage:pending:orgs")
+
+
 def test_flush_drops_pending_when_organization_missing(fake_redis, org_ctx, monkeypatch):
     """Unknown org FK must not restore Redis (avoids infinite beat retries)."""
     from sqlalchemy.exc import IntegrityError
@@ -585,3 +627,24 @@ def test_upsert_bucket_matches_legacy_resource_context_key(monkeypatch):
     legacy_sql = str(db.execute.call_args_list[1][0][0])
     assert "context->>'resource_id'" in legacy_sql
     assert "context->>'resource_type'" in legacy_sql
+
+
+def test_orphan_recovery_runs_at_most_once_per_interval(fake_redis, monkeypatch):
+    org_id = uuid4()
+    claim_key = f"usage:flushing:{org_id}:{uuid4()}"
+    fake_redis.hashes[claim_key] = {"bucket|prompt_tokens": 3}
+
+    pg_lookups = 0
+
+    def _count_pg_lookup(keys):
+        nonlocal pg_lookups
+        pg_lookups += 1
+        return set()
+
+    monkeypatch.setattr(usage_mod, "_committed_claim_keys_in_pg", _count_pg_lookup)
+    monkeypatch.setattr(usage_mod, "_prune_old_committed_claims", lambda: None)
+
+    usage_mod._recover_orphaned_claims()
+    usage_mod._recover_orphaned_claims()
+
+    assert pg_lookups == 1
