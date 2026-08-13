@@ -522,24 +522,88 @@ def _restore_buckets_to_pending(
 
 
 _CLAIM_COMMITTED_TTL_SECONDS = 24 * 60 * 60
+_CLAIM_COMMITTED_REDIS_RETRIES = 5
 
 
 def _claim_committed_key(claim_key: str) -> str:
     return f"usage:claim_done:{claim_key}"
 
 
-def _mark_claim_committed(claim_key: str) -> None:
+def _record_claim_committed_pg(
+    db: Session, claim_key: str, organization_id: UUID
+) -> None:
     try:
-        _client().set(_claim_committed_key(claim_key), "1", ex=_CLAIM_COMMITTED_TTL_SECONDS)
-    except redis.RedisError:
-        pass
+        db.execute(
+            text(
+                """
+                INSERT INTO usage_committed_claims (claim_key, organization_id)
+                VALUES (:claim_key, CAST(:organization_id AS uuid))
+                ON CONFLICT (claim_key) DO NOTHING
+                """
+            ),
+            {
+                "claim_key": claim_key,
+                "organization_id": str(organization_id),
+            },
+        )
+    except Exception as exc:
+        logger.debug("usage committed claim pg write skipped: {}", exc)
+
+
+def _is_claim_committed_pg(claim_key: str) -> bool:
+    try:
+        from app.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            return (
+                db.execute(
+                    text(
+                        """
+                        SELECT 1 FROM usage_committed_claims
+                        WHERE claim_key = :claim_key
+                        """
+                    ),
+                    {"claim_key": claim_key},
+                ).first()
+                is not None
+            )
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
+def _mark_claim_committed(claim_key: str) -> bool:
+    for attempt in range(_CLAIM_COMMITTED_REDIS_RETRIES):
+        try:
+            _client().set(
+                _claim_committed_key(claim_key),
+                "1",
+                ex=_CLAIM_COMMITTED_TTL_SECONDS,
+            )
+            return True
+        except redis.RedisError:
+            if attempt + 1 < _CLAIM_COMMITTED_REDIS_RETRIES:
+                time.sleep(0.05 * (attempt + 1))
+    return False
 
 
 def _is_claim_committed(claim_key: str) -> bool:
     try:
-        return bool(_client().exists(_claim_committed_key(claim_key)))
+        if _client().exists(_claim_committed_key(claim_key)):
+            return True
     except redis.RedisError:
-        return False
+        pass
+    return _is_claim_committed_pg(claim_key)
+
+
+def _finalize_committed_claim(
+    db: Session, claim_key: str, organization_id: UUID
+) -> None:
+    _record_claim_committed_pg(db, claim_key, organization_id)
+    _mark_claim_committed(claim_key)
+    _ack_claim(claim_key, organization_id)
 
 
 def _has_pending_usage(organization_id: UUID) -> bool:
@@ -897,6 +961,8 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
                                 deltas,
                             )
                             flushed += 1
+                        if claim_key:
+                            _record_claim_committed_pg(db, claim_key, organization_id)
                         db.commit()
                     except Exception as exc:
                         db.rollback()
@@ -907,8 +973,10 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
                                 exc,
                             )
                             if claim_key:
-                                _mark_claim_committed(claim_key)
-                                _ack_claim(claim_key, organization_id)
+                                _finalize_committed_claim(
+                                    db, claim_key, organization_id
+                                )
+                                db.commit()
                             claim_key = None
                             buckets = {}
                         else:

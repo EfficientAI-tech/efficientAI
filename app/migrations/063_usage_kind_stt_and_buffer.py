@@ -146,11 +146,32 @@ def _ensure_unique_bucket_index(db: Session) -> None:
     )
 
 
+def _ensure_llm_usage_daily_base_columns(db: Session) -> None:
+    """Align pre-062 tables with the 062 schema before dedupe/index steps."""
+    if not _column_exists(db, "llm_usage_daily", "resource_id"):
+        db.execute(text("ALTER TABLE llm_usage_daily ADD COLUMN resource_id UUID"))
+    if not _column_exists(db, "llm_usage_daily", "resource_type"):
+        db.execute(
+            text("ALTER TABLE llm_usage_daily ADD COLUMN resource_type VARCHAR(64)")
+        )
+    if not _column_exists(db, "llm_usage_daily", "updated_at"):
+        db.execute(
+            text(
+                """
+                ALTER TABLE llm_usage_daily
+                ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                """
+            )
+        )
+
+
 def upgrade(db: Session):
     if not _table_exists(db, "llm_usage_daily"):
         print("llm_usage_daily missing; run 062 first — skipping 063")
         db.commit()
         return
+
+    _ensure_llm_usage_daily_base_columns(db)
 
     if not _column_exists(db, "llm_usage_daily", "usage_kind"):
         db.execute(
@@ -223,10 +244,33 @@ def upgrade(db: Session):
         )
         print("Created usage_pending_buffer")
 
+    if not _table_exists(db, "usage_committed_claims"):
+        db.execute(
+            text(
+                """
+                CREATE TABLE usage_committed_claims (
+                    claim_key TEXT PRIMARY KEY,
+                    organization_id UUID NOT NULL,
+                    committed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_usage_committed_claims_committed_at
+                ON usage_committed_claims (committed_at)
+                """
+            )
+        )
+        print("Created usage_committed_claims")
+
     db.commit()
 
 
 def downgrade(db: Session):
+    db.execute(text("DROP TABLE IF EXISTS usage_committed_claims"))
     db.execute(text("DROP TABLE IF EXISTS usage_pending_buffer"))
     db.execute(text("DROP INDEX IF EXISTS ix_llm_usage_daily_org_kind_date"))
     # Keep usage_kind/audio_seconds columns on downgrade to avoid data loss.

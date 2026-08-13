@@ -460,8 +460,8 @@ def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx, monkeypatch
     assert second == 0
     assert db_a.commit.call_count == 1
     assert db_b.commit.call_count == 0
-    # INSERT once for the claimed bucket; second flusher never upserts.
-    assert db_a.execute.call_count == 2  # UPDATE miss + INSERT
+    # One bucket upsert (2 UPDATE misses + SAVEPOINT/INSERT/RELEASE) plus committed-claim row.
+    assert db_a.execute.call_count == 6
     assert db_b.execute.call_count == 0
 
 
