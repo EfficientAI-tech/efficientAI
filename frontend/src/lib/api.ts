@@ -3017,6 +3017,26 @@ class ApiClient {
       audio_seconds: number
       tts_characters: number
       call_count: number
+      input_cost_micro_usd?: number
+      output_cost_micro_usd?: number
+      cache_read_cost_micro_usd?: number
+      cache_creation_cost_micro_usd?: number
+      reasoning_cost_micro_usd?: number
+      audio_cost_micro_usd?: number
+      tts_cost_micro_usd?: number
+      total_cost_micro_usd?: number
+      costs?: {
+        input_cost_usd: number
+        output_cost_usd: number
+        cache_read_cost_usd: number
+        cache_write_cost_usd: number
+        reasoning_cost_usd: number
+        audio_cost_usd: number
+        tts_cost_usd: number
+        total_cost_usd: number
+        currency: string
+        has_unpriced_usage: boolean
+      }
     }
     last_updated_at?: string | null
   }> {
@@ -3067,6 +3087,26 @@ class ApiClient {
       audio_seconds: number
       tts_characters: number
       call_count: number
+      input_cost_micro_usd?: number
+      output_cost_micro_usd?: number
+      cache_read_cost_micro_usd?: number
+      cache_creation_cost_micro_usd?: number
+      reasoning_cost_micro_usd?: number
+      audio_cost_micro_usd?: number
+      tts_cost_micro_usd?: number
+      total_cost_micro_usd?: number
+      costs?: {
+        input_cost_usd: number
+        output_cost_usd: number
+        cache_read_cost_usd: number
+        cache_write_cost_usd: number
+        reasoning_cost_usd: number
+        audio_cost_usd: number
+        tts_cost_usd: number
+        total_cost_usd: number
+        currency: string
+        has_unpriced_usage: boolean
+      }
     }>
     total_count: number
     truncated_at_limit?: boolean
@@ -3075,6 +3115,135 @@ class ApiClient {
     const response = await this.client.get('/api/v1/organizations/usage/breakdown', {
       params,
     })
+    return response.data
+  }
+
+  async listUsagePricingOverrides(params?: {
+    model?: string
+    usage_kind?: string
+  }): Promise<
+    Array<{
+      id: string
+      organization_id: string
+      model: string
+      usage_kind: string
+      effective_from: string
+      effective_to?: string | null
+      rates: {
+        input_per_1m?: number | null
+        output_per_1m?: number | null
+        cache_read_per_1m?: number | null
+        cache_write_per_1m?: number | null
+        reasoning_per_1m?: number | null
+        audio_per_minute?: number | null
+        tts_per_1m_characters?: number | null
+      }
+      recompute_enqueued?: boolean
+      recompute_job_id?: string | null
+    }>
+  > {
+    const response = await this.client.get('/api/v1/organizations/usage/pricing/overrides', {
+      params,
+    })
+    return response.data
+  }
+
+  async upsertUsagePricingOverride(
+    model: string,
+    body: {
+      usage_kind?: string
+      effective_from: string
+      effective_to?: string
+      rates: {
+        input_per_1m?: number
+        output_per_1m?: number
+        cache_read_per_1m?: number
+        cache_write_per_1m?: number
+        reasoning_per_1m?: number
+        audio_per_minute?: number
+        tts_per_1m_characters?: number
+      }
+      recompute?: boolean
+    }
+  ): Promise<{
+    id: string
+    model: string
+    usage_kind: string
+    effective_from: string
+    effective_to?: string | null
+    rates: Record<string, number | null | undefined>
+    recompute_enqueued?: boolean
+    recompute_job_id?: string | null
+  }> {
+    const response = await this.client.put(
+      `/api/v1/organizations/usage/pricing/overrides/${encodeURIComponent(model)}`,
+      body
+    )
+    return response.data
+  }
+
+  async deleteUsagePricingOverride(
+    model: string,
+    params?: { usage_kind?: string; effective_from?: string; recompute?: boolean }
+  ): Promise<{
+    deleted: boolean
+    model: string
+    usage_kind: string
+    recompute_enqueued?: boolean
+    recompute_job_id?: string | null
+  }> {
+    const response = await this.client.delete(
+      `/api/v1/organizations/usage/pricing/overrides/${encodeURIComponent(model)}`,
+      { params }
+    )
+    return response.data
+  }
+
+  async triggerUsageCostRecompute(body?: {
+    start_date?: string
+    end_date?: string
+    model?: string
+    usage_kind?: string
+  }): Promise<{
+    id: string
+    organization_id: string
+    status: string
+    model?: string | null
+    usage_kind?: string | null
+    start_date?: string | null
+    end_date?: string | null
+    updated_rows: number
+    error_message?: string | null
+    celery_task_id?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+    completed_at?: string | null
+  }> {
+    const response = await this.client.post(
+      '/api/v1/organizations/usage/pricing/recompute',
+      body ?? {}
+    )
+    return response.data
+  }
+
+  async getUsageCostRecomputeJob(jobId: string): Promise<{
+    id: string
+    organization_id: string
+    status: string
+    model?: string | null
+    usage_kind?: string | null
+    start_date?: string | null
+    end_date?: string | null
+    updated_rows: number
+    error_message?: string | null
+    celery_task_id?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+    completed_at?: string | null
+  }> {
+    const response = await this.client.get(
+      `/api/v1/organizations/usage/pricing/recompute/${jobId}`
+    )
     return response.data
   }
 

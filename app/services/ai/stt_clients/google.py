@@ -83,6 +83,28 @@ def _build_transcription_prompt(language: Optional[str]) -> str:
     )
 
 
+def _gemini_stt_usage_ctx(config_model: str):
+    """Merge Gemini multimodal STT tags into the active usage context."""
+    from app.services.usage.context import LLMUsageContext, get_usage_context
+
+    tags = {
+        "stt_backend": "gemini_multimodal",
+        "config_model": (config_model or "").strip(),
+        "usage_split": "llm_tokens_and_stt_seconds",
+    }
+    base = get_usage_context()
+    if base is None:
+        return None
+    return LLMUsageContext(
+        organization_id=base.organization_id,
+        workspace_id=base.workspace_id,
+        product_section=base.product_section,
+        resource_id=base.resource_id,
+        resource_type=base.resource_type,
+        extra={**(base.extra or {}), **tags},
+    )
+
+
 def transcribe_google(
     audio_file_path: str,
     model: str,
@@ -158,10 +180,12 @@ def transcribe_google(
             from app.services.usage.normalize import normalize_llm_usage
 
             gemini_model = _strip_stt_suffix(model)
+            usage_ctx = _gemini_stt_usage_ctx(model)
             record_llm_usage(
                 gemini_model,
                 normalize_llm_usage(raw_response=response),
                 organization_id=organization_id,
+                ctx=usage_ctx,
             )
             from app.services.usage.llm_usage import probe_audio_seconds, record_stt_usage
 
@@ -171,6 +195,7 @@ def transcribe_google(
                     gemini_model,
                     audio_seconds=audio_seconds,
                     organization_id=organization_id,
+                    ctx=usage_ctx,
                     count_call=False,
                 )
         except Exception as exc:

@@ -46,6 +46,7 @@ from app.api.v1.routes import (
     dashboard,
     llm_gateway,
     org_usage,
+    usage_pricing,
 )
 
 api_router = APIRouter()
@@ -95,3 +96,4 @@ api_router.include_router(workspace_iam.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(llm_gateway.router)
 api_router.include_router(org_usage.router)
+api_router.include_router(usage_pricing.router)

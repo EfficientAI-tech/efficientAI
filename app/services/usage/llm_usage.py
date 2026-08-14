@@ -240,14 +240,18 @@ def _buffer_to_postgres(
         logger.warning("usage postgres fallback unavailable: {}", exc)
         return
 
+    usage_date = bucket["usage_date"]
+    if isinstance(usage_date, str):
+        usage_date = date.fromisoformat(usage_date)
+    usage_kind = bucket.get("usage_kind") or USAGE_KIND_LLM
     params = {
         "organization_id": str(organization_id),
         "workspace_id": str(bucket["workspace_id"]) if bucket.get("workspace_id") else None,
         "product_section": bucket["product_section"],
         "model": bucket["model"],
         "context": json.dumps(bucket.get("context") or {}),
-        "usage_date": bucket["usage_date"].isoformat(),
-        "usage_kind": bucket.get("usage_kind") or USAGE_KIND_LLM,
+        "usage_date": usage_date.isoformat(),
+        "usage_kind": usage_kind,
         "prompt_tokens": int(deltas.get("prompt_tokens", 0)),
         "completion_tokens": int(deltas.get("completion_tokens", 0)),
         "cache_read_tokens": int(deltas.get("cache_read_tokens", 0)),
@@ -259,6 +263,18 @@ def _buffer_to_postgres(
     }
     db = SessionLocal()
     try:
+        from app.services.usage.pricing import cost_fields_from_deltas
+
+        params.update(
+            cost_fields_from_deltas(
+                deltas,
+                organization_id=organization_id,
+                model=bucket["model"],
+                usage_kind=usage_kind,
+                usage_date=usage_date,
+                db=db,
+            )
+        )
         db.execute(
             text(
                 """
@@ -267,7 +283,12 @@ def _buffer_to_postgres(
                     context, usage_date, usage_kind,
                     prompt_tokens, completion_tokens, cache_read_tokens,
                     cache_creation_tokens, reasoning_tokens, audio_seconds,
-                    tts_characters, call_count, created_at
+                    tts_characters, call_count,
+                    input_cost_micro_usd, output_cost_micro_usd,
+                    cache_read_cost_micro_usd, cache_creation_cost_micro_usd,
+                    reasoning_cost_micro_usd, audio_cost_micro_usd, tts_cost_micro_usd,
+                    total_cost_micro_usd, pricing_rate_source, pricing_rate_id,
+                    created_at
                 ) VALUES (
                     gen_random_uuid(), CAST(:organization_id AS uuid),
                     CAST(:workspace_id AS uuid), :product_section, :model,
@@ -275,7 +296,13 @@ def _buffer_to_postgres(
                     CAST(:usage_date AS date), :usage_kind,
                     :prompt_tokens, :completion_tokens, :cache_read_tokens,
                     :cache_creation_tokens, :reasoning_tokens, :audio_seconds,
-                    :tts_characters, :call_count, now()
+                    :tts_characters, :call_count,
+                    :input_cost_micro_usd, :output_cost_micro_usd,
+                    :cache_read_cost_micro_usd, :cache_creation_cost_micro_usd,
+                    :reasoning_cost_micro_usd, :audio_cost_micro_usd, :tts_cost_micro_usd,
+                    :total_cost_micro_usd, :pricing_rate_source,
+                    CAST(:pricing_rate_id AS uuid),
+                    now()
                 )
                 """
             ),
@@ -715,6 +742,8 @@ def _upsert_bucket(
     organization_id: UUID,
     bucket: Dict[str, Any],
     deltas: Dict[str, int],
+    *,
+    pricing_resolver: Any = None,
 ) -> None:
     context = bucket.get("context") or {}
     params = {
@@ -772,64 +801,75 @@ def _upsert_bucket(
         text(f"UPDATE llm_usage_daily SET {update_set} {exact_context_where}"),
         params,
     )
-    if result.rowcount:
-        return
-
-    result = db.execute(
-        text(f"UPDATE llm_usage_daily SET {update_set} {legacy_context_where}"),
-        params,
-    )
-    if result.rowcount:
-        return
-
-    db.execute(text("SAVEPOINT llm_usage_bucket_insert"))
-    try:
-        db.execute(
-            text(
-                """
-            INSERT INTO llm_usage_daily (
-                id, organization_id, workspace_id, product_section, model,
-                context, usage_date, usage_kind,
-                prompt_tokens, completion_tokens, cache_read_tokens,
-                cache_creation_tokens, reasoning_tokens, audio_seconds,
-                tts_characters, call_count,
-                created_at, updated_at
-            ) VALUES (
-                gen_random_uuid(), CAST(:organization_id AS uuid),
-                CAST(:workspace_id AS uuid), :product_section, :model,
-                CAST(:context AS jsonb), CAST(:usage_date AS date),
-                :usage_kind,
-                :prompt_tokens, :completion_tokens, :cache_read_tokens,
-                :cache_creation_tokens, :reasoning_tokens, :audio_seconds,
-                :tts_characters, :call_count,
-                now(), now()
-            )
-            """
-            ),
-            params,
-        )
-        db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
-    except IntegrityError as exc:
-        if not _is_unique_violation(exc):
-            db.execute(text("ROLLBACK TO SAVEPOINT llm_usage_bucket_insert"))
-            db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
-            raise
-        db.execute(text("ROLLBACK TO SAVEPOINT llm_usage_bucket_insert"))
+    if not result.rowcount:
         result = db.execute(
             text(f"UPDATE llm_usage_daily SET {update_set} {legacy_context_where}"),
             params,
         )
         if not result.rowcount:
-            result = db.execute(
-                text(f"UPDATE llm_usage_daily SET {update_set} {exact_context_where}"),
-                params,
-            )
-        db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
-        if not result.rowcount:
-            logger.warning(
-                "llm usage upsert unique conflict but no matching bucket for org {}",
-                organization_id,
-            )
+            db.execute(text("SAVEPOINT llm_usage_bucket_insert"))
+            try:
+                db.execute(
+                    text(
+                        """
+                    INSERT INTO llm_usage_daily (
+                        id, organization_id, workspace_id, product_section, model,
+                        context, usage_date, usage_kind,
+                        prompt_tokens, completion_tokens, cache_read_tokens,
+                        cache_creation_tokens, reasoning_tokens, audio_seconds,
+                        tts_characters, call_count,
+                        created_at, updated_at
+                    ) VALUES (
+                        gen_random_uuid(), CAST(:organization_id AS uuid),
+                        CAST(:workspace_id AS uuid), :product_section, :model,
+                        CAST(:context AS jsonb), CAST(:usage_date AS date),
+                        :usage_kind,
+                        :prompt_tokens, :completion_tokens, :cache_read_tokens,
+                        :cache_creation_tokens, :reasoning_tokens, :audio_seconds,
+                        :tts_characters, :call_count,
+                        now(), now()
+                    )
+                    """
+                    ),
+                    params,
+                )
+                db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
+            except IntegrityError as exc:
+                if not _is_unique_violation(exc):
+                    db.execute(text("ROLLBACK TO SAVEPOINT llm_usage_bucket_insert"))
+                    db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
+                    raise
+                db.execute(text("ROLLBACK TO SAVEPOINT llm_usage_bucket_insert"))
+                result = db.execute(
+                    text(f"UPDATE llm_usage_daily SET {update_set} {legacy_context_where}"),
+                    params,
+                )
+                if not result.rowcount:
+                    result = db.execute(
+                        text(f"UPDATE llm_usage_daily SET {update_set} {exact_context_where}"),
+                        params,
+                    )
+                db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
+                if not result.rowcount:
+                    logger.warning(
+                        "llm usage upsert unique conflict but no matching bucket for org {}",
+                        organization_id,
+                    )
+
+    try:
+        from app.services.usage.pricing import PricingResolver, apply_cost_to_bucket
+
+        resolver = pricing_resolver
+        if resolver is None:
+            resolver = PricingResolver(db)
+        apply_cost_to_bucket(
+            db,
+            organization_id=organization_id,
+            bucket=bucket,
+            resolver=resolver,
+        )
+    except Exception as exc:
+        logger.warning("usage cost apply failed: {}", exc)
 
 
 def _is_unique_violation(exc: BaseException) -> bool:
@@ -854,8 +894,13 @@ def _is_missing_organization_fk(exc: BaseException) -> bool:
     return "llm_usage_daily_organization_id_fkey" in text_blob
 
 
-def _flush_pending_buffer(db: Session, organization_id: UUID) -> int:
+def _flush_pending_buffer(
+    db: Session, organization_id: UUID, *, pricing_resolver: Any = None
+) -> int:
     """Drain Postgres write-ahead rows into llm_usage_daily."""
+    from app.services.usage.pricing import PricingResolver
+
+    resolver = pricing_resolver or PricingResolver(db)
     try:
         rows = db.execute(
             text(
@@ -910,6 +955,7 @@ def _flush_pending_buffer(db: Session, organization_id: UUID) -> int:
                 organization_id,
                 bucket,
                 deltas,
+                pricing_resolver=resolver,
             )
             ids.append(str(row["id"]))
             flushed += 1
@@ -966,11 +1012,14 @@ def _catalog_flush_recently(organization_id: UUID) -> bool:
 
 def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = False) -> int:
     """Claim Redis deltas + drain PG buffer into llm_usage_daily."""
+    from app.services.usage.pricing import PricingResolver
+
     _recover_orphaned_claims()
     skip_redis_flush = not force and _catalog_flush_recently(organization_id)
     if skip_redis_flush and _has_pending_usage(organization_id):
         skip_redis_flush = False
     flushed = 0
+    pricing_resolver = PricingResolver(db)
     if not skip_redis_flush:
         redis_locked = _acquire_flush_lock(organization_id)
         claim_key = None
@@ -995,6 +1044,7 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
                                 organization_id,
                                 parsed,
                                 deltas,
+                                pricing_resolver=pricing_resolver,
                             )
                             flushed += 1
                         if claim_key:
@@ -1032,8 +1082,8 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
                                     _client().delete(claim_key)
                                 except redis.RedisError:
                                     pass
-                            claim_key = None
-                            return _flush_pending_buffer(db, organization_id)
+                                claim_key = None
+                                return _flush_pending_buffer(db, organization_id)
                     if skipped:
                         _restore_buckets_to_pending(organization_id, skipped)
                     if claim_key:

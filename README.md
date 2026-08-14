@@ -54,8 +54,21 @@ There are two ways to run the application:
    
    This will automatically:
    - Pull pre-built images from GitHub Container Registry (no build required!)
-   - Start all services (database, Redis, API, worker)
+   - Start all services: `db`, `redis`, `api`, `media`, `worker`, `worker-imports`, `worker-usage`, `beat`
    - Run database migrations automatically on startup
+
+   | Service | Purpose |
+   |---------|---------|
+   | `db` | PostgreSQL |
+   | `redis` | Redis (Celery broker + usage counters) |
+   | `api` | HTTP API + frontend |
+   | `media` | Live voice WebSocket media server |
+   | `worker` | Celery: `celery`, `audio-metrics` queues |
+   | `worker-imports` | Celery: `imports`, `diarization`, `eval-control`, `evaluations` |
+   | `worker-usage` | Celery: `usage` queue (flush Redis counters + cost recompute) |
+   | `beat` | Celery Beat scheduler (periodic `flush_usage_counters`; requires `worker-usage`) |
+
+   **Usage costs:** token/cost rollups stay stale without `worker-usage` and `beat` (or the equivalent processes from `eai start-all`).
    
    **Using a specific version:**
    ```bash
@@ -137,20 +150,29 @@ docker compose up -d
      url: "redis://localhost:6379/0"
    ```
 
-4. **Start the application and worker**
+4. **Start the application and workers**
 
-   **Option A: Start both together (Recommended)**
+   **Infra only (optional):** if Postgres/Redis run in Docker but the app runs locally:
+   ```bash
+   docker compose up -d db redis
+   ```
+
+   **Option A: Start everything together (Recommended)**
    ```bash
    eai start-all --config config.yml
    ```
    
-   This single command will:
-   - Start the API server
-   - Start the Celery worker (for background task processing)
-   - Run database migrations automatically
-   - Build the frontend (if needed)
+   This single command spawns:
+   - API server (uvicorn)
+   - Telephony media server (`media` port, default 8001)
+   - Celery worker (`celery`, `audio-metrics`)
+   - Celery worker (`imports`, `diarization`, `eval-control`, `evaluations`)
+   - Celery worker (`usage` — flush + cost recompute)
+   - Celery Beat (periodic usage flush)
    
-   Press `Ctrl+C` to stop both services together.
+   It also runs database migrations and builds the frontend when needed.
+   
+   Press `Ctrl+C` to stop all processes.
    
    **Option B: Start separately (for advanced use)**
    
@@ -247,7 +269,7 @@ make test-docker-db TEST_DB_HOST=localhost TEST_DB_PORT=5432 TEST_DB_NAME=effici
 
 ### Start Application and Worker Together (Recommended)
 ```bash
-# Start both app and worker with default config.yml
+# Start API + all workers + beat with default config.yml
 eai start-all
 
 # Start with custom config
@@ -264,9 +286,17 @@ eai start-all --no-reload --no-build-frontend
 
 # Customize worker log level
 eai start-all --worker-loglevel debug
+
+# Skip dedicated workers (not recommended for production)
+eai start-all --no-imports-worker
+eai start-all --no-usage-worker
+eai start-all --no-telephony-worker
+
+# Tune usage worker concurrency (default: 4, thread pool)
+eai start-all --usage-worker-concurrency 8
 ```
 
-**Note:** This is the recommended way to run EfficientAI. It starts both the API server and Celery worker in a single command. Press `Ctrl+C` to stop both services.
+**Note:** This is the recommended local-dev workflow. One command spawns the API, telephony media server, three Celery workers (`celery,audio-metrics` · `imports,…` · `usage`), and Celery Beat. Press `Ctrl+C` to stop all processes. For Docker deployments, use `docker compose up -d` instead (separate containers per role; see Quick Start).
 
 ### Start Application Only
 ```bash
@@ -340,7 +370,37 @@ eai worker --loglevel debug
 celery -A app.workers.celery_app worker --loglevel=info
 ```
 
-**Note:** The worker is required for processing background tasks (transcription, evaluation, etc.). If you use `eai start-all`, the worker starts automatically. Only use this command if you need to run the worker separately.
+**Note:** Workers are required for background tasks (transcription, evaluation, usage cost flush, etc.). If you use `eai start-all`, they start automatically. Only use `eai worker` if you need to run a worker separately (e.g. `eai worker --queues usage` for the usage queue only).
+
+### Usage Pricing Ops
+Manage model pricing rates and backfill stored usage costs on `llm_usage_daily` rollups.
+
+```bash
+# Upsert model_pricing_rates from app/config/models.json
+eai usage seed-rates --config config.yml
+
+# Compare models.json pricing vs Postgres
+eai usage diff-rates --config config.yml
+
+# Backfill / recompute costs (sync, runs in this process)
+eai usage recompute --config config.yml --sync
+
+# Enqueue Celery recompute on the usage queue (requires --organization-id)
+eai usage recompute --config config.yml --organization-id <org-uuid>
+
+# Optional: fetch LiteLLM prices into pricing_catalog.json
+eai usage sync-litellm --local
+eai usage sync-litellm --local --write-models
+```
+
+**After migrations or catalog changes:**
+```bash
+eai migrate
+eai usage seed-rates --config config.yml
+eai usage recompute --config config.yml --sync
+```
+
+Requires `worker-usage` (or `eai start-all`) for async recompute; Beat + `worker-usage` keep Redis usage counters flushed into Postgres on a schedule (`USAGE_FLUSH_BEAT_SECONDS`, default 120).
 
 ### Generate Config File
 ```bash

@@ -494,6 +494,10 @@ def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx, monkeypatch
     db_b = MagicMock()
     db_b.execute.return_value = MagicMock(rowcount=1)
     monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+    monkeypatch.setattr(
+        "app.services.usage.pricing.apply_cost_to_bucket",
+        lambda *args, **kwargs: False,
+    )
 
     first = usage_mod.flush_usage_to_catalog(db_a, org_id)
     second = usage_mod.flush_usage_to_catalog(db_b, org_id)
@@ -600,6 +604,10 @@ def test_upsert_bucket_sql_uses_valid_empty_jsonb_literal():
 
 def test_upsert_bucket_matches_legacy_resource_context_key(monkeypatch):
     """Per-row context must merge into an existing evaluation-level bucket."""
+    monkeypatch.setattr(
+        "app.services.usage.pricing.apply_cost_to_bucket",
+        lambda *args, **kwargs: False,
+    )
     org_id = uuid4()
     evaluation_id = uuid4()
     bucket = {
@@ -627,6 +635,30 @@ def test_upsert_bucket_matches_legacy_resource_context_key(monkeypatch):
     legacy_sql = str(db.execute.call_args_list[1][0][0])
     assert "context->>'resource_id'" in legacy_sql
     assert "context->>'resource_type'" in legacy_sql
+
+
+def test_upsert_bucket_applies_cost_after_update(monkeypatch):
+    org_id = uuid4()
+    bucket = {
+        "workspace_id": uuid4(),
+        "product_section": "chat",
+        "model": "gpt-test",
+        "context": {},
+        "usage_date": date(2026, 8, 12),
+        "usage_kind": "llm",
+    }
+    deltas = {"prompt_tokens": 10, "completion_tokens": 5}
+    db = MagicMock()
+    db.execute.return_value = MagicMock(rowcount=1)
+    called: list[bool] = []
+    monkeypatch.setattr(
+        "app.services.usage.pricing.apply_cost_to_bucket",
+        lambda *args, **kwargs: called.append(True) or True,
+    )
+
+    usage_mod._upsert_bucket(db, org_id, bucket, deltas)
+
+    assert called
 
 
 def test_orphan_recovery_runs_at_most_once_per_interval(fake_redis, monkeypatch):

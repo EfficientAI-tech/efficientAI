@@ -45,3 +45,6 @@ export const PRODUCT_SECTION_HINTS: Record<string, string> = {
 
 export const CALL_IMPORT_HINT =
   'Call import batch — CSV upload or manual audio recordings'
+
+/** Prefix for product-area rows in the Source filter (not a resource UUID). */
+export const USAGE_SECTION_SOURCE_PREFIX = 'section:'

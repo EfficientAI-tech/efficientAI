@@ -13,6 +13,7 @@ import Dashboard from './pages/dashboard/Dashboard'
 
 // Usage
 import Usage from './pages/usage/Usage'
+import UsagePricing from './pages/usage/UsagePricing'
 
 // Prompt Partials
 import PromptPartials from './pages/promptPartials/PromptPartials'
@@ -186,6 +187,7 @@ function App() {
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<Usage />} />
+          <Route path="usage/pricing" element={<UsagePricing />} />
           <Route
             path="workspace-members"
             element={<Navigate to="/iam?tab=workspace-members" replace />}

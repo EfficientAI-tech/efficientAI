@@ -1,11 +1,13 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Card, CardBody, Spinner } from '@heroui/react'
-import { Activity, ChevronRight } from 'lucide-react'
+import { Activity, ChevronRight, CircleDollarSign } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { useIsAdmin } from '../../hooks/useRole'
 import UsageFiltersBar from './UsageFiltersBar'
 import UsageDrillPath from './UsageDrillPath'
+import UsageCostBreakdownModal from './UsageCostBreakdownModal'
 import { defaultUsageDateRange } from './UsageDateRangePicker'
 import { getUsageTimezone } from './usageTimezone'
 import {
@@ -14,6 +16,7 @@ import {
   CALL_IMPORT_PRODUCT_SECTIONS,
   PRODUCT_SECTION_HEADLINES,
   PRODUCT_SECTION_HINTS,
+  USAGE_SECTION_SOURCE_PREFIX,
 } from './usageProductHints'
 
 type DrillGroupBy =
@@ -37,6 +40,19 @@ type FilterOptions = {
   tags?: Array<{ id: string; label: string }>
 }
 
+type UsageCosts = {
+  input_cost_usd: number
+  output_cost_usd: number
+  cache_read_cost_usd: number
+  cache_write_cost_usd: number
+  reasoning_cost_usd: number
+  audio_cost_usd: number
+  tts_cost_usd: number
+  total_cost_usd: number
+  currency: string
+  has_unpriced_usage: boolean
+}
+
 type BreakdownRow = {
   workspace_id?: string | null
   workspace_name?: string | null
@@ -58,6 +74,15 @@ type BreakdownRow = {
   audio_seconds: number
   tts_characters: number
   call_count: number
+  input_cost_micro_usd?: number
+  output_cost_micro_usd?: number
+  cache_read_cost_micro_usd?: number
+  cache_creation_cost_micro_usd?: number
+  reasoning_cost_micro_usd?: number
+  audio_cost_micro_usd?: number
+  tts_cost_micro_usd?: number
+  total_cost_micro_usd?: number
+  costs?: UsageCosts
 }
 
 type WorkspaceSourceRow = BreakdownRow & {
@@ -82,6 +107,26 @@ const EMPTY_METRICS = {
   audio_seconds: 0,
   tts_characters: 0,
   call_count: 0,
+  input_cost_micro_usd: 0,
+  output_cost_micro_usd: 0,
+  cache_read_cost_micro_usd: 0,
+  cache_creation_cost_micro_usd: 0,
+  reasoning_cost_micro_usd: 0,
+  audio_cost_micro_usd: 0,
+  tts_cost_micro_usd: 0,
+  total_cost_micro_usd: 0,
+  costs: {
+    input_cost_usd: 0,
+    output_cost_usd: 0,
+    cache_read_cost_usd: 0,
+    cache_write_cost_usd: 0,
+    reasoning_cost_usd: 0,
+    audio_cost_usd: 0,
+    tts_cost_usd: 0,
+    total_cost_usd: 0,
+    currency: 'USD',
+    has_unpriced_usage: false,
+  },
 }
 
 function compositeRowHeadline(row: WorkspaceSourceRow): string {
@@ -121,6 +166,22 @@ function sortRows(rows: BreakdownRow[]): BreakdownRow[] {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value || 0)
+}
+
+function formatCostUsd(usd?: number | null): string {
+  const amount = Number(usd || 0)
+  if (!amount) return '—'
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(amount)
+}
+
+function rowCostUsd(row: Pick<BreakdownRow, 'costs' | 'total_cost_micro_usd'>): number {
+  if (row.costs?.total_cost_usd != null) return row.costs.total_cost_usd
+  return Number(row.total_cost_micro_usd || 0) / 1_000_000
 }
 
 function formatAudio(seconds: number): string {
@@ -342,6 +403,15 @@ function tableRowLabel(
   return rowLabel(groupBy, row, options)
 }
 
+function idInOptions(
+  id: string,
+  options: Array<{ id: string }> | undefined,
+): boolean {
+  if (!id || !options?.length) return false
+  const key = idKey(id)
+  return options.some((o) => idKey(o.id) === key)
+}
+
 function idKey(id: string | null | undefined): string {
   return id ? String(id).toLowerCase() : ''
 }
@@ -490,6 +560,8 @@ export default function Usage() {
   const model = searchParams.get('model') || ''
   const usageKind = (searchParams.get('usage_kind') as Kind) || ''
   const productSection = searchParams.get('product_section') || ''
+  const isAdmin = useIsAdmin()
+  const [costBreakdownOpen, setCostBreakdownOpen] = useState(false)
 
   const showWorkspaceComposite =
     Boolean(workspaceId) &&
@@ -526,11 +598,11 @@ export default function Usage() {
     usage_kind: usageKind || undefined,
     model: model || undefined,
     resource_id: evaluationId || undefined,
-    evaluation_id: evaluationId || undefined,
   }
 
   const dataParams = {
     ...scopeParams,
+    evaluation_id: callImportId ? evaluationId || undefined : undefined,
   }
 
   const usageQueryDefaults = {
@@ -613,24 +685,28 @@ export default function Usage() {
     const updates: Record<string, string | null> = {}
     if (
       workspaceId &&
-      !filterOptions.workspaces?.some((w) => w.id === workspaceId)
+      !idInOptions(workspaceId, filterOptions.workspaces)
     ) {
       updates.workspace_id = null
       updates.call_import_id = null
       updates.resource_id = null
+      updates.product_section = null
     }
     if (
       callImportId &&
-      !filterOptions.call_imports?.some((c) => c.id === callImportId)
+      !idInOptions(callImportId, filterOptions.call_imports)
     ) {
       updates.call_import_id = null
       updates.resource_id = null
+      updates.product_section = null
     }
     if (
       evaluationId &&
-      !filterOptions.evaluations?.some((e) => e.id === evaluationId)
+      !idInOptions(evaluationId, filterOptions.evaluations) &&
+      !idInOptions(evaluationId, filterOptions.resources)
     ) {
       updates.resource_id = null
+      updates.product_section = null
     }
     if (model && !filterOptions.models?.includes(model)) {
       updates.model = null
@@ -650,7 +726,7 @@ export default function Usage() {
     if (dataset && !filterOptions.datasets?.includes(dataset)) {
       updates.dataset = null
     }
-    if (tagId && !filterOptions.tags?.some((t) => t.id === tagId)) {
+    if (tagId && !idInOptions(tagId, filterOptions.tags)) {
       updates.tag_id = null
     }
     if (Object.keys(updates).length > 0) setParams(updates)
@@ -728,6 +804,10 @@ export default function Usage() {
     ? importBreakdownFetching || resourceBreakdownFetching
     : breakdownFetching
   const totals = summary?.totals
+  const estimatedTotalCost =
+    totals?.costs?.total_cost_usd ?? (totals?.total_cost_micro_usd || 0) / 1_000_000
+  const showCostBreakdown =
+    estimatedTotalCost > 0 || Boolean(totals?.costs?.has_unpriced_usage)
   const showAudio = Boolean(totals?.audio_seconds)
   const showTts =
     Boolean(totals?.tts_characters) ||
@@ -743,12 +823,12 @@ export default function Usage() {
       ))
 
   const workspaceLabel =
-    filterOptions?.workspaces?.find((w) => w.id === workspaceId)?.name
+    filterOptions?.workspaces?.find((w) => idKey(w.id) === idKey(workspaceId))?.name
   const callImportLabel =
-    filterOptions?.call_imports?.find((c) => c.id === callImportId)?.label
+    filterOptions?.call_imports?.find((c) => idKey(c.id) === idKey(callImportId))?.label
   const evaluationLabel =
-    filterOptions?.resources?.find((r) => r.id === evaluationId)?.label ||
-    filterOptions?.evaluations?.find((e) => e.id === evaluationId)?.label
+    filterOptions?.resources?.find((r) => idKey(r.id) === idKey(evaluationId))?.label ||
+    filterOptions?.evaluations?.find((e) => idKey(e.id) === idKey(evaluationId))?.label
 
   const productSectionLabel =
     filterOptions?.product_sections?.find((s) => s.id === productSection)?.label
@@ -974,9 +1054,9 @@ export default function Usage() {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Activity className="h-6 w-6 text-primary-600" />
+            <Activity className="h-6 w-6 text-primary-600 shrink-0" />
             Usage
           </h1>
           <p className="text-sm text-gray-500 mt-1">
@@ -984,59 +1064,82 @@ export default function Usage() {
             Drill down: workspaces → call imports or product areas → evaluations / models.
           </p>
         </div>
-        {summary?.last_updated_at ? (
-          <p className="text-xs text-gray-400 whitespace-nowrap">
-            Updated {new Date(summary.last_updated_at).toLocaleString()}
-          </p>
-        ) : null}
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          <div className="flex items-center gap-3">
+            {showCostBreakdown ? (
+              <button
+                type="button"
+                onClick={() => setCostBreakdownOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+                title={formatCostUsd(estimatedTotalCost)}
+              >
+                <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
+                <span className="whitespace-nowrap">Cost breakdown</span>
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <Link
+                to="/usage/pricing"
+                className="text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap"
+              >
+                Pricing overrides
+              </Link>
+            ) : null}
+          </div>
+          {summary?.last_updated_at ? (
+            <p className="text-[11px] text-gray-400 whitespace-nowrap">
+              Updated {new Date(summary.last_updated_at).toLocaleString()}
+            </p>
+          ) : null}
+        </div>
       </div>
 
       <div
-        className={`grid grid-cols-2 md:grid-cols-4 gap-2 transition-opacity ${
-          summaryFetching ? 'opacity-70' : ''
-        }`}
+        className={`space-y-3 transition-opacity ${summaryFetching ? 'opacity-70' : ''}`}
       >
-        <StatCard label="Input tokens" value={totals?.prompt_tokens} loading={summaryLoading} />
-        <StatCard label="Output tokens" value={totals?.completion_tokens} loading={summaryLoading} />
-        <StatCard label="Total tokens" value={totals?.total_tokens} loading={summaryLoading} />
-        <StatCard label="LLM calls" value={totals?.call_count} loading={summaryLoading} />
-      </div>
-
-      {(showAudio ||
-        showTts ||
-        totals?.cache_read_tokens ||
-        totals?.cache_creation_tokens ||
-        totals?.reasoning_tokens) ? (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          {showAudio ? (
-            <StatCard
-              label="STT audio"
-              valueLabel={formatAudio(totals?.audio_seconds || 0)}
-              loading={summaryLoading}
-            />
-          ) : null}
-          {showTts ? (
-            <StatCard
-              label="TTS characters"
-              value={totals?.tts_characters}
-              loading={summaryLoading}
-            />
-          ) : null}
-          {(totals?.cache_read_tokens || 0) > 0 ? (
-            <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={summaryLoading} />
-          ) : null}
-          {(totals?.cache_creation_tokens || 0) > 0 ? (
-            <StatCard
-              label="Cache write"
-              value={totals?.cache_creation_tokens}
-              loading={summaryLoading}
-            />
-          ) : null}
-          {(totals?.reasoning_tokens || 0) > 0 ? (
-            <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={summaryLoading} />
-          ) : null}
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatCard label="Input tokens" value={totals?.prompt_tokens} loading={summaryLoading} />
+          <StatCard label="Output tokens" value={totals?.completion_tokens} loading={summaryLoading} />
+          <StatCard label="Total tokens" value={totals?.total_tokens} loading={summaryLoading} />
+          <StatCard label="LLM calls" value={totals?.call_count} loading={summaryLoading} />
         </div>
-      ) : null}
+
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:items-stretch">
+          <div className="col-span-2 grid grid-cols-2 gap-3 sm:grid-cols-3 md:col-span-3">
+            {showAudio ? (
+              <StatCard
+                label="STT audio"
+                valueLabel={formatAudio(totals?.audio_seconds || 0)}
+                loading={summaryLoading}
+              />
+            ) : null}
+            {showTts ? (
+              <StatCard label="TTS characters" value={totals?.tts_characters} loading={summaryLoading} />
+            ) : null}
+            {(totals?.cache_read_tokens || 0) > 0 ? (
+              <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={summaryLoading} />
+            ) : null}
+            {(totals?.cache_creation_tokens || 0) > 0 ? (
+              <StatCard
+                label="Cache write"
+                value={totals?.cache_creation_tokens}
+                loading={summaryLoading}
+              />
+            ) : null}
+            {(totals?.reasoning_tokens || 0) > 0 ? (
+              <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={summaryLoading} />
+            ) : null}
+          </div>
+          <div className="col-span-2 md:col-span-1">
+            <StatCard
+              label="Estimated cost"
+              valueLabel={formatCostUsd(estimatedTotalCost)}
+              loading={summaryLoading}
+              emphasize
+            />
+          </div>
+        </div>
+      </div>
 
       <UsageFiltersBar
         start={start}
@@ -1048,6 +1151,7 @@ export default function Usage() {
         tagId={tagId}
         usageKind={usageKind}
         model={model}
+        productSection={productSection}
         options={filterOptions}
         filtersLoading={filtersLoading}
         onDateApply={(s, e) => setParams({ start: s, end: e })}
@@ -1068,7 +1172,20 @@ export default function Usage() {
           })
         }
         onEvaluationChange={(id) => {
-          const resource = filterOptions?.resources?.find((r) => r.id === id)
+          if (id.startsWith(USAGE_SECTION_SOURCE_PREFIX)) {
+            const section = id.slice(USAGE_SECTION_SOURCE_PREFIX.length)
+            setParams({
+              product_section: section || null,
+              resource_id: null,
+              call_import_id: null,
+              model: null,
+              usage_kind: null,
+            })
+            return
+          }
+          const resource = filterOptions?.resources?.find(
+            (r) => idKey(r.id) === idKey(id),
+          )
           setParams({
             resource_id: id || null,
             product_section: id ? resource?.product_section || null : null,
@@ -1122,6 +1239,7 @@ export default function Usage() {
                   <th className="px-4 py-3 font-semibold text-right">Input tokens</th>
                   <th className="px-4 py-3 font-semibold text-right">Output tokens</th>
                   <th className="px-4 py-3 font-semibold text-right">Total tokens</th>
+                  <th className="px-4 py-3 font-semibold text-right">Est. cost</th>
                   <th className="px-4 py-3 font-semibold text-right">STT audio</th>
                   <th className="px-4 py-3 font-semibold text-right">TTS chars</th>
                   <th className="px-4 py-3 font-semibold text-right">Cache read</th>
@@ -1189,6 +1307,9 @@ export default function Usage() {
                       <td className="px-4 py-3 text-right tabular-nums font-medium">
                         {formatNumber(row.total_tokens)}
                       </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-gray-700">
+                        {formatCostUsd(rowCostUsd(row))}
+                      </td>
                       <td className="px-4 py-3 text-right tabular-nums text-gray-500">
                         {row.audio_seconds ? formatAudio(row.audio_seconds) : '—'}
                       </td>
@@ -1207,28 +1328,46 @@ export default function Usage() {
           )}
         </CardBody>
       </Card>
+
+      <UsageCostBreakdownModal
+        isOpen={costBreakdownOpen}
+        onClose={() => setCostBreakdownOpen(false)}
+        costs={totals?.costs}
+        scopeLabel={scopeSubtitle}
+      />
     </div>
   )
 }
+
+const statCardClass = 'border border-gray-200 ring-1 ring-[#fde047]/25 shadow-sm'
 
 function StatCard({
   label,
   value,
   valueLabel,
   loading,
+  emphasize = false,
+  className = '',
 }: {
   label: string
   value?: number
   valueLabel?: string
   loading?: boolean
+  emphasize?: boolean
+  className?: string
 }) {
   return (
-    <Card shadow="sm" className="border border-gray-200 ring-1 ring-[#fde047]/25">
+    <Card
+      shadow="sm"
+      className={`${statCardClass}${emphasize ? ' ring-2 ring-[#facc15]/50 bg-[#fefce8]/40' : ''} h-full w-full ${className}`}
+    >
       <CardBody className="p-3">
-        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-          {label}
-        </p>
-        <p className="mt-0.5 text-xl font-semibold text-gray-900 tabular-nums">
+        <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
+        <p
+          className={`mt-0.5 text-xl font-semibold tabular-nums ${
+            emphasize ? 'text-[#854d0e]' : 'text-gray-900'
+          }`}
+        >
           {loading ? '—' : valueLabel ?? formatNumber(value || 0)}
         </p>
       </CardBody>

@@ -27,7 +27,9 @@ export default function SearchableSelect({
   const [search, setSearch] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
 
-  const selected = options.find((o) => o.id === value)
+  const selected = options.find(
+    (o) => o.id === value || o.id.toLowerCase() === value.toLowerCase(),
+  )
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -102,7 +104,8 @@ export default function SearchableSelect({
                   <button
                     type="button"
                     className={`w-full px-3 py-2 text-left text-sm hover:bg-[#fefce8] ${
-                      opt.id === value
+                      opt.id === value ||
+                      opt.id.toLowerCase() === value.toLowerCase()
                         ? usageTheme.selectHighlight
                         : 'text-gray-800'
                     }`}

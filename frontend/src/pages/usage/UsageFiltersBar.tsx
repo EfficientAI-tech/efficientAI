@@ -4,6 +4,7 @@ import { ChevronDown, Filter, SlidersHorizontal } from 'lucide-react'
 import SearchableSelect from './SearchableSelect'
 import UsageDateRangePicker from './UsageDateRangePicker'
 import { usageTheme } from './usageTheme'
+import { CALL_IMPORT_PRODUCT_SECTIONS, USAGE_SECTION_SOURCE_PREFIX } from './usageProductHints'
 
 type Kind = '' | 'llm' | 'stt' | 'tts'
 
@@ -12,6 +13,7 @@ type FilterOptions = {
   call_imports: Array<{ id: string; label: string }>
   evaluations: Array<{ id: string; label: string }>
   resources?: Array<{ id: string; label: string; type?: string; product_section?: string }>
+  product_sections?: Array<{ id: string; label: string }>
   models: string[]
   usage_kinds: Array<{ id: string; label: string }>
   datasets?: string[]
@@ -30,6 +32,7 @@ type UsageFiltersBarProps = {
   tagId: string
   usageKind: Kind
   model: string
+  productSection?: string
   options?: FilterOptions
   filtersLoading?: boolean
   onDateApply: (start: string, end: string) => void
@@ -60,6 +63,7 @@ export default function UsageFiltersBar({
   tagId,
   usageKind,
   model,
+  productSection = '',
   options,
   filtersLoading,
   onDateApply,
@@ -86,7 +90,20 @@ export default function UsageFiltersBar({
     [options?.usage_kinds],
   )
 
-  const sourceOptions = callImportId ? evaluations : resources
+  const sectionSourceOptions = useMemo(() => {
+    if (callImportId) return []
+    return (options?.product_sections ?? [])
+      .filter((s) => !CALL_IMPORT_PRODUCT_SECTIONS.has(s.id))
+      .map((s) => ({
+        id: `${USAGE_SECTION_SOURCE_PREFIX}${s.id}`,
+        label: s.label,
+      }))
+  }, [callImportId, options?.product_sections])
+
+  const sourceOptions = callImportId ? evaluations : [...sectionSourceOptions, ...resources]
+  const sourceSelectValue =
+    evaluationId ||
+    (productSection ? `${USAGE_SECTION_SOURCE_PREFIX}${productSection}` : '')
 
   const activeChips = useMemo((): ActiveChip[] => {
     const chips: ActiveChip[] = []
@@ -124,10 +141,10 @@ export default function UsageFiltersBar({
       }
     }
     const sourceLabel =
-      sourceOptions.find((e) => e.id === evaluationId)?.label ||
+      sourceOptions.find((e) => e.id === sourceSelectValue)?.label ||
       evaluations.find((e) => e.id === evaluationId)?.label ||
       resources.find((r) => r.id === evaluationId)?.label
-    if (evaluationId && sourceLabel) {
+    if ((evaluationId || productSection) && sourceLabel) {
       chips.push({
         key: 'evaluation',
         label: sourceLabel,
@@ -158,6 +175,8 @@ export default function UsageFiltersBar({
     tagId,
     tags,
     evaluationId,
+    productSection,
+    sourceSelectValue,
     sourceOptions,
     evaluations,
     resources,
@@ -286,7 +305,7 @@ export default function UsageFiltersBar({
                   ? 'All evaluations for import'
                   : 'Agents, voice sims, telephony, …'
               }
-              value={evaluationId}
+              value={sourceSelectValue}
               options={sourceOptions}
               onChange={onEvaluationChange}
               emptyMessage="No matching usage in this range"

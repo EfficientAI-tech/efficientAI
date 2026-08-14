@@ -3028,9 +3028,18 @@ def _explain_period_deltas(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.call_import_user_insights import _call_llm, _parse_json_object
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
+    )
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider_hint, model_hint
+    )
+    usage_ctx = call_import_evaluation_usage_context(
+        organization_id=organization_id,
+        workspace_id=evaluation.workspace_id,
+        evaluation_id=evaluation.id,
+        call_import_id=evaluation.call_import_id,
     )
     try:
         text = _call_llm(
@@ -3051,6 +3060,7 @@ def _explain_period_deltas(
             ],
             temperature=0.3,
             max_tokens=900,
+            usage_ctx=usage_ctx,
         )
     except Exception as exc:
         logger.warning("[PeriodDeltaExplain] LLM call failed: {}", exc)

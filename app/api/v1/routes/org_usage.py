@@ -27,6 +27,7 @@ from app.models.database import (
     Workspace,
 )
 from app.services.usage.llm_usage import flush_usage_to_catalog
+from app.services.usage.usage_costs import costs_from_micro
 from app.services.usage.usage_labels import (
     labels_for_call_import_ids,
     labels_for_resource_buckets,
@@ -87,6 +88,19 @@ def _label_row_order():
     )
 
 
+class UsageCosts(BaseModel):
+    input_cost_usd: float = 0
+    output_cost_usd: float = 0
+    cache_read_cost_usd: float = 0
+    cache_write_cost_usd: float = 0
+    reasoning_cost_usd: float = 0
+    audio_cost_usd: float = 0
+    tts_cost_usd: float = 0
+    total_cost_usd: float = 0
+    currency: str = "USD"
+    has_unpriced_usage: bool = False
+
+
 class UsageTotals(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -97,6 +111,15 @@ class UsageTotals(BaseModel):
     audio_seconds: int = 0
     tts_characters: int = 0
     call_count: int = 0
+    input_cost_micro_usd: int = 0
+    output_cost_micro_usd: int = 0
+    cache_read_cost_micro_usd: int = 0
+    cache_creation_cost_micro_usd: int = 0
+    reasoning_cost_micro_usd: int = 0
+    audio_cost_micro_usd: int = 0
+    tts_cost_micro_usd: int = 0
+    total_cost_micro_usd: int = 0
+    costs: UsageCosts = Field(default_factory=UsageCosts)
 
 
 class UsageSummaryResponse(BaseModel):
@@ -127,6 +150,15 @@ class UsageBreakdownRow(BaseModel):
     audio_seconds: int = 0
     tts_characters: int = 0
     call_count: int = 0
+    input_cost_micro_usd: int = 0
+    output_cost_micro_usd: int = 0
+    cache_read_cost_micro_usd: int = 0
+    cache_creation_cost_micro_usd: int = 0
+    reasoning_cost_micro_usd: int = 0
+    audio_cost_micro_usd: int = 0
+    tts_cost_micro_usd: int = 0
+    total_cost_micro_usd: int = 0
+    costs: UsageCosts = Field(default_factory=UsageCosts)
 
 
 class UsageBreakdownResponse(BaseModel):
@@ -438,7 +470,7 @@ def _apply_filters(
             query = query.filter(
                 LLMUsageDaily.context["call_import_id"].astext == str(call_import_id)
             )
-    if evaluation_id is not None:
+    if evaluation_id is not None and evaluation_id != resource_id:
         if db is not None:
             query = query.filter(
                 _evaluation_scope_filter(evaluation_id, organization_id, db)
@@ -847,6 +879,123 @@ def _evaluation_label_map(
     return labels
 
 
+def _unpriced_usage_condition():
+    return and_(
+        LLMUsageDaily.pricing_rate_id.is_(None),
+        _usage_row_weight() > 0,
+    )
+
+
+def _has_unpriced_usage_column():
+    return func.coalesce(func.bool_or(_unpriced_usage_condition()), False).label(
+        "has_unpriced_usage"
+    )
+
+
+def _usage_cost_sum_columns():
+    return (
+        func.coalesce(func.sum(LLMUsageDaily.input_cost_micro_usd), 0).label(
+            "input_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.output_cost_micro_usd), 0).label(
+            "output_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.cache_read_cost_micro_usd), 0).label(
+            "cache_read_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.cache_creation_cost_micro_usd), 0).label(
+            "cache_creation_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.reasoning_cost_micro_usd), 0).label(
+            "reasoning_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.audio_cost_micro_usd), 0).label(
+            "audio_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.tts_cost_micro_usd), 0).label(
+            "tts_cost_micro_usd"
+        ),
+        func.coalesce(func.sum(LLMUsageDaily.total_cost_micro_usd), 0).label(
+            "total_cost_micro_usd"
+        ),
+    )
+
+
+def _attach_costs(metrics: dict, *, has_unpriced_usage: bool = False) -> dict:
+    costs = costs_from_micro(
+        input_cost_micro_usd=metrics.get("input_cost_micro_usd", 0),
+        output_cost_micro_usd=metrics.get("output_cost_micro_usd", 0),
+        cache_read_cost_micro_usd=metrics.get("cache_read_cost_micro_usd", 0),
+        cache_creation_cost_micro_usd=metrics.get("cache_creation_cost_micro_usd", 0),
+        reasoning_cost_micro_usd=metrics.get("reasoning_cost_micro_usd", 0),
+        audio_cost_micro_usd=metrics.get("audio_cost_micro_usd", 0),
+        tts_cost_micro_usd=metrics.get("tts_cost_micro_usd", 0),
+        total_cost_micro_usd=metrics.get("total_cost_micro_usd", 0),
+        has_unpriced_usage=has_unpriced_usage,
+    )
+    return {**metrics, "costs": costs}
+
+
+def _usage_totals_from_row(row) -> dict:
+    prompt = int(row.prompt_tokens)
+    completion = int(row.completion_tokens)
+    metrics = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "cache_read_tokens": int(row.cache_read_tokens),
+        "cache_creation_tokens": int(row.cache_creation_tokens),
+        "reasoning_tokens": int(row.reasoning_tokens),
+        "audio_seconds": int(row.audio_seconds),
+        "tts_characters": int(row.tts_characters),
+        "call_count": int(row.call_count),
+        "input_cost_micro_usd": int(getattr(row, "input_cost_micro_usd", 0) or 0),
+        "output_cost_micro_usd": int(getattr(row, "output_cost_micro_usd", 0) or 0),
+        "cache_read_cost_micro_usd": int(
+            getattr(row, "cache_read_cost_micro_usd", 0) or 0
+        ),
+        "cache_creation_cost_micro_usd": int(
+            getattr(row, "cache_creation_cost_micro_usd", 0) or 0
+        ),
+        "reasoning_cost_micro_usd": int(
+            getattr(row, "reasoning_cost_micro_usd", 0) or 0
+        ),
+        "audio_cost_micro_usd": int(getattr(row, "audio_cost_micro_usd", 0) or 0),
+        "tts_cost_micro_usd": int(getattr(row, "tts_cost_micro_usd", 0) or 0),
+        "total_cost_micro_usd": int(getattr(row, "total_cost_micro_usd", 0) or 0),
+    }
+    return _attach_costs(
+        metrics,
+        has_unpriced_usage=bool(getattr(row, "has_unpriced_usage", False)),
+    )
+
+
+def _breakdown_metrics_from_tuple(metrics: tuple) -> dict:
+    prompt = int(metrics[0])
+    completion = int(metrics[1])
+    base = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "cache_read_tokens": int(metrics[2]),
+        "cache_creation_tokens": int(metrics[3]),
+        "reasoning_tokens": int(metrics[4]),
+        "audio_seconds": int(metrics[5]),
+        "tts_characters": int(metrics[6]),
+        "call_count": int(metrics[7]),
+        "input_cost_micro_usd": int(metrics[8]),
+        "output_cost_micro_usd": int(metrics[9]),
+        "cache_read_cost_micro_usd": int(metrics[10]),
+        "cache_creation_cost_micro_usd": int(metrics[11]),
+        "reasoning_cost_micro_usd": int(metrics[12]),
+        "audio_cost_micro_usd": int(metrics[13]),
+        "tts_cost_micro_usd": int(metrics[14]),
+        "total_cost_micro_usd": int(metrics[15]),
+    }
+    has_unpriced = bool(metrics[16]) if len(metrics) > 16 else False
+    return _attach_costs(base, has_unpriced_usage=has_unpriced)
+
+
 def _last_updated(db: Session, organization_id: UUID) -> Optional[datetime]:
     return (
         db.query(func.max(LLMUsageDaily.updated_at))
@@ -890,6 +1039,8 @@ def _summary_aggregate_query(
             func.coalesce(func.sum(LLMUsageDaily.audio_seconds), 0).label("audio_seconds"),
             func.coalesce(func.sum(LLMUsageDaily.tts_characters), 0).label("tts_characters"),
             func.coalesce(func.sum(LLMUsageDaily.call_count), 0).label("call_count"),
+            *_usage_cost_sum_columns(),
+            _has_unpriced_usage_column(),
         ),
         organization_id=organization_id,
         start=start,
@@ -953,19 +1104,7 @@ def get_usage_summary(
         dataset=dataset,
         tag_id=tag_id,
     ).one()
-    prompt = int(row.prompt_tokens)
-    completion = int(row.completion_tokens)
-    totals = {
-        "prompt_tokens": prompt,
-        "completion_tokens": completion,
-        "total_tokens": prompt + completion,
-        "cache_read_tokens": int(row.cache_read_tokens),
-        "cache_creation_tokens": int(row.cache_creation_tokens),
-        "reasoning_tokens": int(row.reasoning_tokens),
-        "audio_seconds": int(row.audio_seconds),
-        "tts_characters": int(row.tts_characters),
-        "call_count": int(row.call_count),
-    }
+    totals = _usage_totals_from_row(row)
     return UsageSummaryResponse(
         start=display_start,
         end=display_end,
@@ -1032,6 +1171,8 @@ def get_usage_breakdown(
         func.coalesce(func.sum(LLMUsageDaily.audio_seconds), 0).label("audio_seconds"),
         func.coalesce(func.sum(LLMUsageDaily.tts_characters), 0).label("tts_characters"),
         func.coalesce(func.sum(LLMUsageDaily.call_count), 0).label("call_count"),
+        *_usage_cost_sum_columns(),
+        _has_unpriced_usage_column(),
     ]
 
     select_cols = [dim]
@@ -1124,15 +1265,7 @@ def get_usage_breakdown(
                 UsageBreakdownRow(
                     workspace_id=ws_id,
                     workspace_name=workspace_names.get(ws_id) if ws_id else "Unknown",
-                    prompt_tokens=int(metrics[0]),
-                    completion_tokens=int(metrics[1]),
-                    total_tokens=int(metrics[0]) + int(metrics[1]),
-                    cache_read_tokens=int(metrics[2]),
-                    cache_creation_tokens=int(metrics[3]),
-                    reasoning_tokens=int(metrics[4]),
-                    audio_seconds=int(metrics[5]),
-                    tts_characters=int(metrics[6]),
-                    call_count=int(metrics[7]),
+                    **_breakdown_metrics_from_tuple(metrics),
                 )
             )
         elif group_by == "product_section":
@@ -1142,15 +1275,7 @@ def get_usage_breakdown(
                 UsageBreakdownRow(
                     product_section=section,
                     product_section_label=SECTION_LABELS.get(section or "", section),
-                    prompt_tokens=int(metrics[0]),
-                    completion_tokens=int(metrics[1]),
-                    total_tokens=int(metrics[0]) + int(metrics[1]),
-                    cache_read_tokens=int(metrics[2]),
-                    cache_creation_tokens=int(metrics[3]),
-                    reasoning_tokens=int(metrics[4]),
-                    audio_seconds=int(metrics[5]),
-                    tts_characters=int(metrics[6]),
-                    call_count=int(metrics[7]),
+                    **_breakdown_metrics_from_tuple(metrics),
                 )
             )
         elif group_by == "model":
@@ -1159,15 +1284,7 @@ def get_usage_breakdown(
             rows.append(
                 UsageBreakdownRow(
                     model=model_name,
-                    prompt_tokens=int(metrics[0]),
-                    completion_tokens=int(metrics[1]),
-                    total_tokens=int(metrics[0]) + int(metrics[1]),
-                    cache_read_tokens=int(metrics[2]),
-                    cache_creation_tokens=int(metrics[3]),
-                    reasoning_tokens=int(metrics[4]),
-                    audio_seconds=int(metrics[5]),
-                    tts_characters=int(metrics[6]),
-                    call_count=int(metrics[7]),
+                    **_breakdown_metrics_from_tuple(metrics),
                 )
             )
         elif group_by == "usage_kind":
@@ -1176,15 +1293,7 @@ def get_usage_breakdown(
             rows.append(
                 UsageBreakdownRow(
                     usage_kind=kind,
-                    prompt_tokens=int(metrics[0]),
-                    completion_tokens=int(metrics[1]),
-                    total_tokens=int(metrics[0]) + int(metrics[1]),
-                    cache_read_tokens=int(metrics[2]),
-                    cache_creation_tokens=int(metrics[3]),
-                    reasoning_tokens=int(metrics[4]),
-                    audio_seconds=int(metrics[5]),
-                    tts_characters=int(metrics[6]),
-                    call_count=int(metrics[7]),
+                    **_breakdown_metrics_from_tuple(metrics),
                 )
             )
         elif group_by == "call_import":
@@ -1205,15 +1314,7 @@ def get_usage_breakdown(
                 UsageBreakdownRow(
                     call_import_id=cid,
                     call_import_label=label,
-                    prompt_tokens=int(metrics[0]),
-                    completion_tokens=int(metrics[1]),
-                    total_tokens=int(metrics[0]) + int(metrics[1]),
-                    cache_read_tokens=int(metrics[2]),
-                    cache_creation_tokens=int(metrics[3]),
-                    reasoning_tokens=int(metrics[4]),
-                    audio_seconds=int(metrics[5]),
-                    tts_characters=int(metrics[6]),
-                    call_count=int(metrics[7]),
+                    **_breakdown_metrics_from_tuple(metrics),
                 )
             )
         else:
@@ -1241,15 +1342,7 @@ def get_usage_breakdown(
                     ),
                     product_section=section,
                     product_section_label=SECTION_LABELS.get(section or "", section),
-                    prompt_tokens=int(metrics[0]),
-                    completion_tokens=int(metrics[1]),
-                    total_tokens=int(metrics[0]) + int(metrics[1]),
-                    cache_read_tokens=int(metrics[2]),
-                    cache_creation_tokens=int(metrics[3]),
-                    reasoning_tokens=int(metrics[4]),
-                    audio_seconds=int(metrics[5]),
-                    tts_characters=int(metrics[6]),
-                    call_count=int(metrics[7]),
+                    **_breakdown_metrics_from_tuple(metrics),
                 )
             )
 
@@ -1278,6 +1371,7 @@ def get_usage_filters(
     resource_id: Optional[UUID] = Query(None),
     usage_kind: Optional[str] = Query(None),
     call_import_id: Optional[UUID] = Query(None),
+    evaluation_id: Optional[UUID] = Query(None),
     dataset: Optional[str] = Query(None),
     tag_id: Optional[UUID] = Query(None),
     q: Optional[str] = Query(None, description="Optional resource label search"),
@@ -1287,6 +1381,8 @@ def get_usage_filters(
     _, _, filter_start, filter_end = _parse_usage_range(start, end, tz)
 
     flush_usage_to_catalog(db, organization_id)
+
+    scoped_resource_id = resource_id or evaluation_id
 
     workspace_base = _filtered_query(
         db,
@@ -1312,7 +1408,9 @@ def get_usage_filters(
         end=filter_end,
         workspace_id=workspace_id,
         product_section=product_section,
+        resource_id=scoped_resource_id,
         call_import_id=call_import_id,
+        evaluation_id=evaluation_id,
         dataset=dataset,
         tag_id=tag_id,
     )
@@ -1323,8 +1421,10 @@ def get_usage_filters(
         end=filter_end,
         workspace_id=workspace_id,
         product_section=product_section,
+        resource_id=scoped_resource_id,
         usage_kind=usage_kind,
         call_import_id=call_import_id,
+        evaluation_id=evaluation_id,
         dataset=dataset,
         tag_id=tag_id,
     )

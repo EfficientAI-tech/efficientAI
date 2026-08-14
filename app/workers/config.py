@@ -74,6 +74,7 @@ log_startup_status(component="celery-worker")
 # Queues consumed by the dedicated call-import / evaluation worker.
 IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
 EVAL_CONTROL_QUEUE = "eval-control"
+USAGE_WORKER_QUEUE = "usage"
 
 # Create Celery app
 celery_app = Celery(
@@ -137,13 +138,16 @@ celery_app.conf.task_routes = {
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
-    "flush_usage_counters": {"queue": "celery"},
+    "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
+    "recompute_usage_costs": {"queue": USAGE_WORKER_QUEUE},
 }
 
-# Periodic flush of Redis LLM usage counters into catalog rollups.
+# Periodic flush of Redis usage counters into catalog rollups (usage queue).
+_flush_interval = float(os.environ.get("USAGE_FLUSH_BEAT_SECONDS", "120"))
 celery_app.conf.beat_schedule = {
     "flush-llm-usage-counters": {
         "task": "flush_usage_counters",
-        "schedule": 120.0,
+        "schedule": _flush_interval,
+        "options": {"queue": USAGE_WORKER_QUEUE},
     },
 }

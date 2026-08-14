@@ -193,5 +193,62 @@ services:
     # (each task may hold catalog + shard connections for tens of seconds).
     command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations --pool threads --concurrency 12
 
+  # Low-priority usage pricing: Redis flush + cost recompute/backfill.
+  worker-usage:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: ""
+    container_name: efficientai_worker_usage
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info --queues usage --pool threads --concurrency 4
+
+  beat:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: ""
+    container_name: efficientai_beat
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker-usage:
+        condition: service_started
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: celery -A app.workers.celery_app beat --loglevel info
+
 volumes:
   postgres_data:

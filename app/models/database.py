@@ -2779,6 +2779,31 @@ class JudgeRun(Base):
     dataset = relationship("JudgeDataset", back_populates="runs")
 
 
+class UsageCostRecomputeJob(Base):
+    """Async job tracking for retroactive usage cost recompute."""
+
+    __tablename__ = "usage_cost_recompute_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String(32), nullable=False, default="pending", server_default="pending")
+    model = Column(String(255), nullable=True)
+    usage_kind = Column(String(16), nullable=True)
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    updated_rows = Column(BigInteger, nullable=False, default=0, server_default="0")
+    error_message = Column(String, nullable=True)
+    celery_task_id = Column(String(255), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
 class LLMUsageDaily(Base):
     """Daily LLM/STT usage rollups for org-scoped Usage reporting."""
 
@@ -2812,6 +2837,22 @@ class LLMUsageDaily(Base):
     audio_seconds = Column(BigInteger, nullable=False, default=0, server_default="0")
     tts_characters = Column(BigInteger, nullable=False, default=0, server_default="0")
     call_count = Column(BigInteger, nullable=False, default=0, server_default="0")
+    input_cost_micro_usd = Column(BigInteger, nullable=False, default=0, server_default="0")
+    output_cost_micro_usd = Column(BigInteger, nullable=False, default=0, server_default="0")
+    cache_read_cost_micro_usd = Column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    cache_creation_cost_micro_usd = Column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    reasoning_cost_micro_usd = Column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    audio_cost_micro_usd = Column(BigInteger, nullable=False, default=0, server_default="0")
+    tts_cost_micro_usd = Column(BigInteger, nullable=False, default=0, server_default="0")
+    total_cost_micro_usd = Column(BigInteger, nullable=False, default=0, server_default="0")
+    pricing_rate_source = Column(String(16), nullable=True)
+    pricing_rate_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
