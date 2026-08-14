@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import time
 import uuid
-import json
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
@@ -34,7 +35,10 @@ _redis: redis.Redis | None = None
 
 _NONE = "__none__"
 _PENDING_TTL_SECONDS = 14 * 24 * 60 * 60
-_FLUSH_LOCK_TTL_SECONDS = 45
+_DEFAULT_FLUSH_BUCKET_BATCH_SIZE = 500
+_DEFAULT_FLUSH_MAX_BATCHES_PER_RUN = 30
+_DEFAULT_FLUSH_LOCK_TTL_SECONDS = 300
+_DEFAULT_API_FLUSH_COOLDOWN_SECONDS = 60
 _FLUSH_LOCK_WAIT_SECONDS = 3.0
 USAGE_KIND_LLM = "llm"
 USAGE_KIND_STT = "stt"
@@ -57,6 +61,63 @@ end
 redis.call('RENAME', KEYS[1], KEYS[2])
 return 1
 """
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except (TypeError, ValueError):
+        logger.warning("invalid {}={!r}; using default {}", name, raw, default)
+        return default
+
+
+def flush_bucket_batch_size() -> int:
+    """Max rollup buckets persisted per DB transaction during Redis flush."""
+    return _env_int(
+        "USAGE_FLUSH_BUCKET_BATCH_SIZE",
+        _DEFAULT_FLUSH_BUCKET_BATCH_SIZE,
+    )
+
+
+def flush_max_batches_per_run() -> int:
+    """Max Redis flush batches per org per flush_usage_to_catalog invocation."""
+    return _env_int(
+        "USAGE_FLUSH_MAX_BATCHES_PER_RUN",
+        _DEFAULT_FLUSH_MAX_BATCHES_PER_RUN,
+    )
+
+
+def _flush_lock_ttl_seconds() -> int:
+    return _env_int(
+        "USAGE_FLUSH_LOCK_TTL_SECONDS",
+        _DEFAULT_FLUSH_LOCK_TTL_SECONDS,
+    )
+
+
+def api_flush_cooldown_seconds() -> int:
+    """Min seconds between API-triggered catalog syncs per org (0 = no cooldown)."""
+    return _env_int(
+        "USAGE_API_FLUSH_COOLDOWN_SECONDS",
+        _DEFAULT_API_FLUSH_COOLDOWN_SECONDS,
+        minimum=0,
+    )
+
+
+def _split_buckets_for_flush(
+    buckets: Dict[str, Dict[str, int]],
+    batch_size: int,
+) -> Tuple[Dict[str, Dict[str, int]], Dict[str, Dict[str, int]]]:
+    if batch_size <= 0 or len(buckets) <= batch_size:
+        return buckets, {}
+    prefixes = sorted(buckets.keys())[:batch_size]
+    batch = {prefix: buckets[prefix] for prefix in prefixes}
+    remainder = {
+        prefix: metrics for prefix, metrics in buckets.items() if prefix not in batch
+    }
+    return batch, remainder
 
 
 def _client() -> redis.Redis:
@@ -683,12 +744,13 @@ def _acquire_flush_lock(organization_id: UUID) -> bool:
     try:
         client = _client()
         lock_key = _flush_lock_key(organization_id)
-        if client.set(lock_key, "1", nx=True, ex=_FLUSH_LOCK_TTL_SECONDS):
+        lock_ttl = _flush_lock_ttl_seconds()
+        if client.set(lock_key, "1", nx=True, ex=lock_ttl):
             return True
         deadline = time.monotonic() + _FLUSH_LOCK_WAIT_SECONDS
         while time.monotonic() < deadline:
             time.sleep(0.05)
-            if client.set(lock_key, "1", nx=True, ex=_FLUSH_LOCK_TTL_SECONDS):
+            if client.set(lock_key, "1", nx=True, ex=lock_ttl):
                 return True
             if client.get(lock_key) is None:
                 continue
@@ -872,6 +934,104 @@ def _upsert_bucket(
         logger.warning("usage cost apply failed: {}", exc)
 
 
+def _upsert_claimed_buckets(
+    db: Session,
+    organization_id: UUID,
+    buckets: Dict[str, Dict[str, int]],
+    *,
+    pricing_resolver: Any,
+) -> Tuple[int, Dict[str, Dict[str, int]]]:
+    """Persist claimed Redis buckets; return flushed count and unparseable buckets."""
+    flushed = 0
+    skipped: Dict[str, Dict[str, int]] = {}
+    for prefix, deltas in buckets.items():
+        parsed = _parse_bucket_prefix(prefix)
+        if not parsed:
+            skipped[prefix] = deltas
+            logger.warning(
+                "llm usage skipped unparseable bucket prefix for org {}",
+                organization_id,
+            )
+            continue
+        _upsert_bucket(
+            db,
+            organization_id,
+            parsed,
+            deltas,
+            pricing_resolver=pricing_resolver,
+        )
+        flushed += 1
+    return flushed, skipped
+
+
+def _flush_redis_pending_to_catalog(
+    db: Session,
+    organization_id: UUID,
+    *,
+    pricing_resolver: Any,
+) -> int:
+    """Drain Redis pending hash into llm_usage_daily in bounded batches."""
+    batch_size = flush_bucket_batch_size()
+    max_batches = flush_max_batches_per_run()
+    flushed = 0
+
+    for _ in range(max_batches):
+        if not _has_pending_usage(organization_id):
+            break
+
+        claim_key, claimed_buckets = _claim_pending(organization_id)
+        if not claim_key or not claimed_buckets:
+            break
+
+        batch, remainder = _split_buckets_for_flush(claimed_buckets, batch_size)
+        skipped: Dict[str, Dict[str, int]] = {}
+        try:
+            batch_flushed, skipped = _upsert_claimed_buckets(
+                db,
+                organization_id,
+                batch,
+                pricing_resolver=pricing_resolver,
+            )
+            if claim_key:
+                _record_claim_committed_pg(db, claim_key, organization_id)
+            db.commit()
+            flushed += batch_flushed
+            if remainder:
+                _restore_buckets_to_pending(organization_id, remainder)
+            if skipped:
+                _restore_buckets_to_pending(organization_id, skipped)
+            if claim_key:
+                _mark_claim_committed(claim_key, fast=True)
+                _ack_claim(claim_key, organization_id)
+        except Exception as exc:
+            db.rollback()
+            if _is_missing_organization_fk(exc):
+                logger.warning(
+                    "llm usage flush dropped for unknown organization {}: {}",
+                    organization_id,
+                    exc,
+                )
+                if claim_key:
+                    try:
+                        _record_claim_committed_pg(db, claim_key, organization_id)
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                    _discard_committed_claim(claim_key, organization_id)
+                return flushed
+            logger.warning("llm usage catalog flush failed, restoring redis: {}", exc)
+            restore_buckets = dict(claimed_buckets)
+            _restore_buckets_to_pending(organization_id, restore_buckets)
+            if claim_key:
+                try:
+                    _client().delete(claim_key)
+                except redis.RedisError:
+                    pass
+            return flushed
+
+    return flushed
+
+
 def _is_unique_violation(exc: BaseException) -> bool:
     text_blob = " ".join(
         str(part)
@@ -913,10 +1073,13 @@ def _flush_pending_buffer(
                 FROM usage_pending_buffer
                 WHERE organization_id = CAST(:organization_id AS uuid)
                 ORDER BY created_at ASC
-                LIMIT 2000
+                LIMIT :batch_limit
                 """
             ),
-            {"organization_id": str(organization_id)},
+            {
+                "organization_id": str(organization_id),
+                "batch_limit": flush_bucket_batch_size(),
+            },
         ).mappings().all()
     except Exception as exc:
         db.rollback()
@@ -997,15 +1160,15 @@ def _flush_pending_buffer(
         return 0
 
 
-_CATALOG_FLUSH_COOLDOWN_SEC = 20
-
-
 def _catalog_flush_recently(organization_id: UUID) -> bool:
     """Skip flush if another request flushed this org within the cooldown window."""
+    cooldown = api_flush_cooldown_seconds()
+    if cooldown <= 0:
+        return False
     try:
         client = _client()
         key = f"usage:catalog_flush:{organization_id}"
-        return not client.set(key, "1", nx=True, ex=_CATALOG_FLUSH_COOLDOWN_SEC)
+        return not client.set(key, "1", nx=True, ex=cooldown)
     except redis.RedisError:
         return False
 
@@ -1022,79 +1185,18 @@ def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = 
     pricing_resolver = PricingResolver(db)
     if not skip_redis_flush:
         redis_locked = _acquire_flush_lock(organization_id)
-        claim_key = None
-        buckets: Dict[str, Dict[str, int]] = {}
         try:
             if redis_locked:
-                claim_key, buckets = _claim_pending(organization_id)
-                if claim_key and buckets:
-                    skipped: Dict[str, Dict[str, int]] = {}
-                    try:
-                        for prefix, deltas in buckets.items():
-                            parsed = _parse_bucket_prefix(prefix)
-                            if not parsed:
-                                skipped[prefix] = deltas
-                                logger.warning(
-                                    "llm usage skipped unparseable bucket prefix for org {}",
-                                    organization_id,
-                                )
-                                continue
-                            _upsert_bucket(
-                                db,
-                                organization_id,
-                                parsed,
-                                deltas,
-                                pricing_resolver=pricing_resolver,
-                            )
-                            flushed += 1
-                        if claim_key:
-                            _record_claim_committed_pg(db, claim_key, organization_id)
-                        db.commit()
-                    except Exception as exc:
-                        db.rollback()
-                        if _is_missing_organization_fk(exc):
-                            logger.warning(
-                                "llm usage flush dropped for unknown organization {}: {}",
-                                organization_id,
-                                exc,
-                            )
-                            if claim_key:
-                                try:
-                                    _record_claim_committed_pg(
-                                        db, claim_key, organization_id
-                                    )
-                                    db.commit()
-                                except Exception:
-                                    db.rollback()
-                                _discard_committed_claim(claim_key, organization_id)
-                            claim_key = None
-                            buckets = {}
-                        else:
-                            logger.warning(
-                                "llm usage catalog flush failed, restoring redis: {}", exc
-                            )
-                            restore_buckets = dict(buckets)
-                            if skipped:
-                                restore_buckets.update(skipped)
-                            _restore_buckets_to_pending(organization_id, restore_buckets)
-                            if claim_key:
-                                try:
-                                    _client().delete(claim_key)
-                                except redis.RedisError:
-                                    pass
-                                claim_key = None
-                                return _flush_pending_buffer(db, organization_id)
-                    if skipped:
-                        _restore_buckets_to_pending(organization_id, skipped)
-                    if claim_key:
-                        _mark_claim_committed(claim_key, fast=True)
-                        _ack_claim(claim_key, organization_id)
-                        claim_key = None
+                flushed += _flush_redis_pending_to_catalog(
+                    db,
+                    organization_id,
+                    pricing_resolver=pricing_resolver,
+                )
         finally:
             if redis_locked:
                 _release_flush_lock(organization_id)
 
-    flushed += _flush_pending_buffer(db, organization_id)
+    flushed += _flush_pending_buffer(db, organization_id, pricing_resolver=pricing_resolver)
     return flushed
 
 

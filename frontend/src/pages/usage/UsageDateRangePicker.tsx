@@ -9,6 +9,7 @@ type UsageDateRangePickerProps = {
   start: string
   end: string
   onApply: (start: string, end: string) => void
+  maxHistoryDays?: number | null
 }
 
 function toDateInput(d: Date): string {
@@ -23,11 +24,16 @@ function formatDisplay(start: string, end: string): string {
   return `${start} → ${end}`
 }
 
-function rangeForDays(days: number): { start: string; end: string } {
+export function rangeForDays(days: number): { start: string; end: string } {
   const end = new Date()
   const start = new Date()
   start.setDate(start.getDate() - (days - 1))
   return { start: toDateInput(start), end: toDateInput(end) }
+}
+
+export function isRangeWithinMaxDays(start: string, end: string, maxDays: number): boolean {
+  const r = rangeForDays(maxDays)
+  return start >= r.start && end <= r.end
 }
 
 const QUICK_RANGES = [
@@ -44,6 +50,7 @@ export default function UsageDateRangePicker({
   start,
   end,
   onApply,
+  maxHistoryDays = null,
 }: UsageDateRangePickerProps) {
   const [open, setOpen] = useState(false)
   const [mode, setMode] = useState<Mode>('relative')
@@ -52,13 +59,25 @@ export default function UsageDateRangePicker({
   const [relDays, setRelDays] = useState(1)
   const rootRef = useRef<HTMLDivElement>(null)
 
+  const quickRanges = useMemo(() => {
+    if (!maxHistoryDays) return QUICK_RANGES
+    return QUICK_RANGES.filter((q) => q.days <= maxHistoryDays)
+  }, [maxHistoryDays])
+
+  const minStartDate = useMemo(() => {
+    if (!maxHistoryDays) return null
+    return rangeForDays(maxHistoryDays).start
+  }, [maxHistoryDays])
+
+  const maxRelDays = maxHistoryDays ?? 365
+
   const activeQuick = useMemo(() => {
-    for (const q of QUICK_RANGES) {
+    for (const q of quickRanges) {
       const r = rangeForDays(q.days)
       if (r.start === start && r.end === end) return q.label
     }
     return null
-  }, [start, end])
+  }, [start, end, quickRanges])
 
   useEffect(() => {
     if (open) {
@@ -96,7 +115,7 @@ export default function UsageDateRangePicker({
   return (
     <div ref={rootRef} className="relative flex flex-wrap items-center gap-2 flex-1 min-w-0">
       <div className="flex items-center gap-0.5 rounded-lg border border-[#fde047]/50 bg-white/80 p-0.5">
-        {QUICK_RANGES.map((q) => (
+        {quickRanges.map((q) => (
           <button
             key={q.label}
             type="button"
@@ -193,9 +212,11 @@ export default function UsageDateRangePicker({
                   <input
                     type="number"
                     min={1}
-                    max={365}
+                    max={maxRelDays}
                     value={relDays}
-                    onChange={(e) => setRelDays(Math.max(1, Number(e.target.value) || 1))}
+                    onChange={(e) =>
+                      setRelDays(Math.min(maxRelDays, Math.max(1, Number(e.target.value) || 1)))
+                    }
                     className="w-24 rounded-lg border border-gray-200 px-3 py-2 text-sm"
                   />
                 </label>
@@ -212,6 +233,7 @@ export default function UsageDateRangePicker({
                   <input
                     type="date"
                     value={draftStart}
+                    min={minStartDate ?? undefined}
                     onChange={(e) => setDraftStart(e.target.value)}
                     className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
                   />

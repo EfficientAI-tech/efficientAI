@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import Principal, get_principal  # noqa: F401 - re-exported
 from app.core.auth.rbac import get_org_role
 from app.core.license import is_feature_enabled
+from app.core.usage_entitlement import has_enterprise_entitlement
 from app.database import get_db
 from app.models.database import RoleEnum, Workspace, WorkspaceMember
 from app.core.auth.capabilities import capability_denied_message
@@ -286,6 +287,29 @@ def require_enterprise_feature(feature: str):
                         f"'{feature}' is an EfficientAI Enterprise feature. "
                         "Please set EFFICIENTAI_LICENSE in your environment to unlock it. "
                         "Contact sales@efficientai.com to get an enterprise license key."
+                    ),
+                },
+            )
+
+    return _check
+
+
+def require_enterprise_entitlement():
+    """
+    FastAPI dependency: valid enterprise license with any catalog feature.
+    Distinct from require_enterprise_feature (per-feature product gates).
+    """
+
+    def _check(organization_id: UUID = Depends(get_organization_id)):
+        if not has_enterprise_entitlement(organization_id):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "enterprise_license_required",
+                    "message": (
+                        "This capability requires a valid EfficientAI Enterprise license. "
+                        "Set EFFICIENTAI_LICENSE in your environment with any enterprise "
+                        "feature enabled. Contact sales@efficientai.com for a license key."
                     ),
                 },
             )

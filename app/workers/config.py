@@ -140,14 +140,21 @@ celery_app.conf.task_routes = {
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
     "recompute_usage_costs": {"queue": USAGE_WORKER_QUEUE},
+    "prune_oss_usage_history": {"queue": USAGE_WORKER_QUEUE},
 }
 
 # Periodic flush of Redis usage counters into catalog rollups (usage queue).
 _flush_interval = float(os.environ.get("USAGE_FLUSH_BEAT_SECONDS", "120"))
+_prune_interval = float(os.environ.get("USAGE_PRUNE_BEAT_SECONDS", "86400"))
 celery_app.conf.beat_schedule = {
     "flush-llm-usage-counters": {
         "task": "flush_usage_counters",
         "schedule": _flush_interval,
+        "options": {"queue": USAGE_WORKER_QUEUE},
+    },
+    "prune-oss-usage-history": {
+        "task": "prune_oss_usage_history",
+        "schedule": _prune_interval,
         "options": {"queue": USAGE_WORKER_QUEUE},
     },
 }

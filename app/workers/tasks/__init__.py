@@ -24,6 +24,7 @@ from . import finalize_telephony_recording
 from . import call_import_bulk_ops
 from . import flush_usage_counters
 from . import recompute_usage_costs
+from . import prune_oss_usage_history
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch
@@ -119,3 +120,4 @@ materialize_call_import_evaluation_task = (
 )
 flush_usage_counters_task = flush_usage_counters.flush_usage_counters_task
 recompute_usage_costs_task = recompute_usage_costs.recompute_usage_costs_task
+prune_oss_usage_history_task = prune_oss_usage_history.prune_oss_usage_history_task

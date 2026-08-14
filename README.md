@@ -373,7 +373,7 @@ celery -A app.workers.celery_app worker --loglevel=info
 **Note:** Workers are required for background tasks (transcription, evaluation, usage cost flush, etc.). If you use `eai start-all`, they start automatically. Only use `eai worker` if you need to run a worker separately (e.g. `eai worker --queues usage` for the usage queue only).
 
 ### Usage Pricing Ops
-Manage model pricing rates and backfill stored usage costs on `llm_usage_daily` rollups.
+Manage model pricing rates and backfill stored usage costs on `llm_usage_daily` rollups. Requires `worker-usage` + `beat` (or `eai start-all`).
 
 ```bash
 # Upsert model_pricing_rates from app/config/models.json
@@ -382,11 +382,13 @@ eai usage seed-rates --config config.yml
 # Compare models.json pricing vs Postgres
 eai usage diff-rates --config config.yml
 
-# Backfill / recompute costs (sync, runs in this process)
+# Backfill costs in-process (all orgs; use after migrate or catalog change)
 eai usage recompute --config config.yml --sync
 
-# Enqueue Celery recompute on the usage queue (requires --organization-id)
+# Async recompute via usage queue (requires --organization-id)
 eai usage recompute --config config.yml --organization-id <org-uuid>
+
+# Optional scopes: --model, --usage-kind, --start-date, --end-date
 
 # Optional: fetch LiteLLM prices into pricing_catalog.json
 eai usage sync-litellm --local
@@ -400,7 +402,17 @@ eai usage seed-rates --config config.yml
 eai usage recompute --config config.yml --sync
 ```
 
-Requires `worker-usage` (or `eai start-all`) for async recompute; Beat + `worker-usage` keep Redis usage counters flushed into Postgres on a schedule (`USAGE_FLUSH_BEAT_SECONDS`, default 120).
+**Flush / Usage UI tuning** — set in `.env` (see `env.example`):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `USAGE_FLUSH_BUCKET_BATCH_SIZE` | `500` | Buckets per DB transaction |
+| `USAGE_FLUSH_MAX_BATCHES_PER_RUN` | `30` | Batches per flush tick (≤ **15,000** buckets/run) |
+| `USAGE_FLUSH_BEAT_SECONDS` | `120` | Beat interval (~2 min lag vs Redis) |
+| `USAGE_FLUSH_LOCK_TTL_SECONDS` | `300` | Per-org flush lock TTL |
+| `USAGE_API_FLUSH_COOLDOWN_SECONDS` | `60` | Min gap between Usage page catalog syncs |
+
+Usage UI calls `POST /api/v1/organizations/usage/catalog/sync` once per visit; summary/breakdown/filters are read-only. If Redis backlog grows, lower `USAGE_FLUSH_BEAT_SECONDS` or raise `USAGE_FLUSH_MAX_BATCHES_PER_RUN`.
 
 ### Generate Config File
 ```bash
@@ -514,6 +526,10 @@ POSTGRES_USER=efficientai
 POSTGRES_PASSWORD=password
 POSTGRES_DB=efficientai
 SECRET_KEY=your-secret-key-here
+
+# Usage cost flush (see README "Usage Pricing Ops"; full list in env.example)
+# USAGE_FLUSH_BEAT_SECONDS=120
+# USAGE_FLUSH_MAX_BATCHES_PER_RUN=30
 
 # Optional: GCS blob storage (also set storage.blob_provider: gcs in config.yml)
 BLOB_STORAGE_PROVIDER=gcs

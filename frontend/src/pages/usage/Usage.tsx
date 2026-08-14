@@ -8,8 +8,9 @@ import { useIsAdmin } from '../../hooks/useRole'
 import UsageFiltersBar from './UsageFiltersBar'
 import UsageDrillPath from './UsageDrillPath'
 import UsageCostBreakdownModal from './UsageCostBreakdownModal'
-import { defaultUsageDateRange } from './UsageDateRangePicker'
+import { defaultUsageDateRange, isRangeWithinMaxDays, rangeForDays } from './UsageDateRangePicker'
 import { getUsageTimezone } from './usageTimezone'
+import { useLicenseStore } from '../../store/licenseStore'
 import {
   CALL_IMPORT_BATCH_HEADLINE,
   CALL_IMPORT_HINT,
@@ -561,7 +562,34 @@ export default function Usage() {
   const usageKind = (searchParams.get('usage_kind') as Kind) || ''
   const productSection = searchParams.get('product_section') || ''
   const isAdmin = useIsAdmin()
+  const { usagePolicy, isLoaded: licenseLoaded, fetchLicense } = useLicenseStore()
+  const showOssUsageNotice = licenseLoaded && !usagePolicy.extended_history
+  const maxHistoryDays = !licenseLoaded
+    ? null
+    : usagePolicy.extended_history
+      ? null
+      : usagePolicy.max_history_days ?? 7
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false)
+
+  useEffect(() => {
+    if (!licenseLoaded) {
+      void fetchLicense()
+    }
+  }, [licenseLoaded, fetchLicense])
+
+  useEffect(() => {
+    if (!licenseLoaded || usagePolicy.extended_history) return
+    const maxDays = usagePolicy.max_history_days ?? 7
+    if (!isRangeWithinMaxDays(start, end, maxDays)) {
+      const r = rangeForDays(maxDays)
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        next.set('start', r.start)
+        next.set('end', r.end)
+        return next
+      })
+    }
+  }, [licenseLoaded, usagePolicy.extended_history, usagePolicy.max_history_days, start, end, setSearchParams])
 
   const showWorkspaceComposite =
     Boolean(workspaceId) &&
@@ -609,12 +637,24 @@ export default function Usage() {
     staleTime: 60 * 1000,
   }
 
+  const catalogSync = useQuery({
+    queryKey: ['org-usage', 'catalog-sync'],
+    queryFn: () => apiClient.syncOrgUsageCatalog(),
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: false,
+  })
+
+  const usageReadsReady = catalogSync.isSuccess || catalogSync.isError
+
   const { data: summary, isLoading: summaryLoading, isFetching: summaryFetching } = useQuery({
     queryKey: ['org-usage', 'summary', dataParams],
     queryFn: () => apiClient.getOrgUsageSummary(dataParams),
+    enabled: usageReadsReady,
     ...usageQueryDefaults,
     placeholderData: keepPreviousData,
   })
+
+  const usageStatsLoading = catalogSync.isLoading || summaryLoading
 
   const {
     data: breakdown,
@@ -628,7 +668,7 @@ export default function Usage() {
         group_by: groupBy,
         limit: 100,
       }),
-    enabled: !showWorkspaceComposite,
+    enabled: usageReadsReady && !showWorkspaceComposite,
     ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery || previousQuery.queryKey[2] !== groupBy) return undefined
@@ -648,7 +688,7 @@ export default function Usage() {
         group_by: 'call_import',
         limit: 100,
       }),
-    enabled: showWorkspaceComposite,
+    enabled: usageReadsReady && showWorkspaceComposite,
     ...usageQueryDefaults,
   })
 
@@ -664,13 +704,14 @@ export default function Usage() {
         group_by: 'resource',
         limit: 100,
       }),
-    enabled: showWorkspaceComposite,
+    enabled: usageReadsReady && showWorkspaceComposite,
     ...usageQueryDefaults,
   })
 
   const { data: filterOptions, isFetching: filtersLoading } = useQuery({
     queryKey: ['org-usage', 'filters', scopeParams],
     queryFn: () => apiClient.getOrgUsageFilters(scopeParams),
+    enabled: usageReadsReady,
     staleTime: 60 * 1000,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery) return undefined
@@ -1077,7 +1118,7 @@ export default function Usage() {
                 <span className="whitespace-nowrap">Cost breakdown</span>
               </button>
             ) : null}
-            {isAdmin ? (
+            {isAdmin && licenseLoaded && usagePolicy.extended_history ? (
               <Link
                 to="/usage/pricing"
                 className="text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap"
@@ -1094,14 +1135,24 @@ export default function Usage() {
         </div>
       </div>
 
+      {showOssUsageNotice ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Showing the last {maxHistoryDays} days of usage history. Set{' '}
+          <code className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-mono">
+            EFFICIENTAI_LICENSE
+          </code>{' '}
+          on your server with any enterprise feature to unlock extended history.
+        </div>
+      ) : null}
+
       <div
         className={`space-y-3 transition-opacity ${summaryFetching ? 'opacity-70' : ''}`}
       >
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard label="Input tokens" value={totals?.prompt_tokens} loading={summaryLoading} />
-          <StatCard label="Output tokens" value={totals?.completion_tokens} loading={summaryLoading} />
-          <StatCard label="Total tokens" value={totals?.total_tokens} loading={summaryLoading} />
-          <StatCard label="LLM calls" value={totals?.call_count} loading={summaryLoading} />
+          <StatCard label="Input tokens" value={totals?.prompt_tokens} loading={usageStatsLoading} />
+          <StatCard label="Output tokens" value={totals?.completion_tokens} loading={usageStatsLoading} />
+          <StatCard label="Total tokens" value={totals?.total_tokens} loading={usageStatsLoading} />
+          <StatCard label="LLM calls" value={totals?.call_count} loading={usageStatsLoading} />
         </div>
 
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:items-stretch">
@@ -1110,31 +1161,31 @@ export default function Usage() {
               <StatCard
                 label="STT audio"
                 valueLabel={formatAudio(totals?.audio_seconds || 0)}
-                loading={summaryLoading}
+                loading={usageStatsLoading}
               />
             ) : null}
             {showTts ? (
-              <StatCard label="TTS characters" value={totals?.tts_characters} loading={summaryLoading} />
+              <StatCard label="TTS characters" value={totals?.tts_characters} loading={usageStatsLoading} />
             ) : null}
             {(totals?.cache_read_tokens || 0) > 0 ? (
-              <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={summaryLoading} />
+              <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={usageStatsLoading} />
             ) : null}
             {(totals?.cache_creation_tokens || 0) > 0 ? (
               <StatCard
                 label="Cache write"
                 value={totals?.cache_creation_tokens}
-                loading={summaryLoading}
+                loading={usageStatsLoading}
               />
             ) : null}
             {(totals?.reasoning_tokens || 0) > 0 ? (
-              <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={summaryLoading} />
+              <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={usageStatsLoading} />
             ) : null}
           </div>
           <div className="col-span-2 md:col-span-1">
             <StatCard
               label="Estimated cost"
               valueLabel={formatCostUsd(estimatedTotalCost)}
-              loading={summaryLoading}
+              loading={usageStatsLoading}
               emphasize
             />
           </div>
@@ -1196,6 +1247,7 @@ export default function Usage() {
         onUsageKindChange={(k) => setParams({ usage_kind: k || null })}
         onModelChange={(v) => setParams({ model: v || null })}
         onClearAll={handleClearAll}
+        maxHistoryDays={maxHistoryDays}
       />
 
       <Card shadow="sm" className="border border-gray-200 ring-1 ring-[#fde047]/25">

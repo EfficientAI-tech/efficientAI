@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth.rbac import require_admin
 from app.database import get_db
-from app.dependencies import get_organization_id
+from app.dependencies import get_organization_id, require_enterprise_entitlement
 from app.services.usage.pricing_jobs import (
     create_recompute_job,
     enqueue_recompute_job,
@@ -27,10 +27,12 @@ from app.services.usage.pricing_overrides import (
     upsert_override,
 )
 
+from app.services.usage.access import UsageAccessPolicy
+
 router = APIRouter(
     prefix="/organizations/usage/pricing",
     tags=["Usage"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_enterprise_entitlement())],
 )
 
 
@@ -218,13 +220,25 @@ def trigger_usage_cost_recompute(
     ):
         raise HTTPException(status_code=400, detail="end_date must be >= start_date")
 
+    clamped_start = body.start_date
+    clamped_end = body.end_date
+    if body.start_date is not None or body.end_date is not None:
+        access = UsageAccessPolicy.resolve(
+            organization_id,
+            body.start_date,
+            body.end_date,
+            None,
+        )
+        clamped_start = access.display_start if body.start_date is not None else None
+        clamped_end = access.display_end if body.end_date is not None else None
+
     job = create_recompute_job(
         db,
         organization_id=organization_id,
         model=body.model,
         usage_kind=body.usage_kind,
-        start_date=body.start_date,
-        end_date=body.end_date,
+        start_date=clamped_start,
+        end_date=clamped_end,
     )
     enqueue_recompute_job(db, job)
     db.refresh(job)

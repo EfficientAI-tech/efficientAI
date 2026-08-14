@@ -100,12 +100,18 @@ export interface VoicePlaygroundBlindTestPair {
   y: VoicePlaygroundBlindTestAudioRef
 }
 
+export interface UsagePolicy {
+  extended_history: boolean
+  max_history_days: number | null
+}
+
 export interface LicenseInfoResponse {
   is_enterprise: boolean
   enabled_features: string[]
   all_enterprise_features: string[]
   feature_catalog?: EnterpriseFeatureCatalog
   organization?: string
+  usage_policy?: UsagePolicy
 }
 
 export interface ReportBranding {
@@ -2988,6 +2994,11 @@ class ApiClient {
   // Model Config endpoints
   async getDashboardSummary(): Promise<DashboardSummary> {
     const response = await this.client.get('/api/v1/dashboard/summary')
+    return response.data
+  }
+
+  async syncOrgUsageCatalog(): Promise<{ flushed_buckets: number }> {
+    const response = await this.client.post('/api/v1/organizations/usage/catalog/sync')
     return response.data
   }
 

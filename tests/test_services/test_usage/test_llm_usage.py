@@ -376,7 +376,7 @@ def test_flush_commits_and_acks_claim(fake_redis, org_ctx, monkeypatch):
 
     db = MagicMock()
     db.execute.return_value = MagicMock(rowcount=1)
-    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 1
@@ -398,7 +398,7 @@ def test_flush_restores_redis_when_db_fails(fake_redis, org_ctx, monkeypatch):
 
     db = MagicMock()
     db.execute.side_effect = RuntimeError("db down")
-    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 0
@@ -436,7 +436,7 @@ def test_flush_restores_redis_when_committed_claim_insert_fails(
         return MagicMock(rowcount=0)
 
     db.execute.side_effect = _execute_side_effect
-    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 0
@@ -470,7 +470,7 @@ def test_flush_drops_pending_when_organization_missing(fake_redis, org_ctx, monk
             'constraint "llm_usage_daily_organization_id_fkey"'
         ),
     )
-    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
     assert flushed == 0
@@ -493,7 +493,7 @@ def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx, monkeypatch
     db_a.execute.return_value = MagicMock(rowcount=0)  # force INSERT path
     db_b = MagicMock()
     db_b.execute.return_value = MagicMock(rowcount=1)
-    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda _db, _org: 0)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(
         "app.services.usage.pricing.apply_cost_to_bucket",
         lambda *args, **kwargs: False,
@@ -509,6 +509,53 @@ def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx, monkeypatch
     # One bucket upsert (2 UPDATE misses + SAVEPOINT/INSERT/RELEASE) plus committed-claim row.
     assert db_a.execute.call_count == 6
     assert db_b.execute.call_count == 0
+
+
+def test_split_buckets_for_flush():
+    buckets = {f"prefix-{idx}": {"prompt_tokens": idx} for idx in range(5)}
+    batch, remainder = usage_mod._split_buckets_for_flush(buckets, 2)
+    assert len(batch) == 2
+    assert len(remainder) == 3
+    assert set(batch) | set(remainder) == set(buckets)
+
+
+def test_flush_redis_processes_multiple_batches_in_one_run(
+    fake_redis, org_ctx, monkeypatch
+):
+    org_id, workspace_id, base_ctx = org_ctx
+    monkeypatch.setenv("USAGE_FLUSH_BUCKET_BATCH_SIZE", "2")
+    monkeypatch.setenv("USAGE_FLUSH_MAX_BATCHES_PER_RUN", "10")
+
+    for idx in range(5):
+        ctx = LLMUsageContext(
+            organization_id=base_ctx.organization_id,
+            workspace_id=workspace_id,
+            product_section=base_ctx.product_section,
+            resource_id=uuid4(),
+            resource_type="call_import_evaluation",
+        )
+        with llm_usage_context(ctx):
+            usage_mod.record_llm_usage(
+                "gpt-test",
+                UsageSnapshot(prompt_tokens=idx + 1, completion_tokens=1),
+                usage_date=date(2026, 8, 11),
+            )
+
+    db = MagicMock()
+    db.execute.return_value = MagicMock(rowcount=1)
+    monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        "app.services.usage.pricing.apply_cost_to_bucket",
+        lambda *args, **kwargs: False,
+    )
+
+    flushed = usage_mod.flush_usage_to_catalog(db, org_id)
+
+    assert flushed == 5
+    assert db.commit.call_count == 3
+    assert usage_mod._pending_hash_key(org_id) not in fake_redis.hashes
+    assert not any(k.startswith("usage:flushing:") for k in fake_redis.hashes)
+    assert str(org_id) not in fake_redis.smembers("usage:pending:orgs")
 
 
 def test_ensure_usage_context_and_path_inference():

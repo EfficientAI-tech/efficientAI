@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from app.services.usage.access import UsageAccessPolicy
 from app.services.usage.dates import usage_date_filter_bounds, usage_local_today
 from typing import List, Literal, Optional
 from uuid import UUID
@@ -122,10 +123,21 @@ class UsageTotals(BaseModel):
     costs: UsageCosts = Field(default_factory=UsageCosts)
 
 
+class UsageCatalogSyncResponse(BaseModel):
+    flushed_buckets: int = 0
+
+
+class UsagePolicyMeta(BaseModel):
+    extended_history: bool
+    max_history_days: Optional[int] = None
+    range_clamped: bool = False
+
+
 class UsageSummaryResponse(BaseModel):
     start: date
     end: date
     totals: UsageTotals
+    usage_policy: UsagePolicyMeta
     last_updated_at: Optional[datetime] = None
 
 
@@ -168,6 +180,7 @@ class UsageBreakdownResponse(BaseModel):
     rows: List[UsageBreakdownRow]
     total_count: int
     truncated_at_limit: bool = False
+    usage_policy: UsagePolicyMeta
     last_updated_at: Optional[datetime] = None
 
 
@@ -196,6 +209,14 @@ def _parse_usage_range(
         display_start, display_end, tz
     )
     return display_start, display_end, filter_start, filter_end
+
+
+def _usage_policy_meta(access) -> UsagePolicyMeta:
+    return UsagePolicyMeta(
+        extended_history=access.policy.extended_history,
+        max_history_days=access.policy.max_history_days,
+        range_clamped=access.range_clamped,
+    )
 
 
 def _evaluation_id_expr():
@@ -418,6 +439,7 @@ def _apply_filters(
     organization_id: UUID,
     start: date,
     end: date,
+    enforced_floor: Optional[date] = None,
     workspace_id: Optional[UUID],
     product_section: Optional[str],
     model: Optional[str],
@@ -430,9 +452,12 @@ def _apply_filters(
     tag_id: Optional[UUID] = None,
     db: Optional[Session] = None,
 ):
+    effective_start = start
+    if enforced_floor is not None and effective_start < enforced_floor:
+        effective_start = enforced_floor
     query = query.filter(
         LLMUsageDaily.organization_id == organization_id,
-        LLMUsageDaily.usage_date >= start,
+        LLMUsageDaily.usage_date >= effective_start,
         LLMUsageDaily.usage_date <= end,
     )
     if workspace_id is not None:
@@ -506,6 +531,7 @@ def _filtered_query(
     organization_id: UUID,
     start: date,
     end: date,
+    enforced_floor: Optional[date] = None,
     workspace_id: Optional[UUID] = None,
     product_section: Optional[str] = None,
     model: Optional[str] = None,
@@ -522,6 +548,7 @@ def _filtered_query(
         organization_id=organization_id,
         start=start,
         end=end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         model=model,
@@ -1010,6 +1037,7 @@ def _summary_aggregate_query(
     organization_id: UUID,
     start: date,
     end: date,
+    enforced_floor: Optional[date] = None,
     workspace_id: Optional[UUID],
     product_section: Optional[str],
     model: Optional[str],
@@ -1045,6 +1073,7 @@ def _summary_aggregate_query(
         organization_id=organization_id,
         start=start,
         end=end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         model=model,
@@ -1057,6 +1086,16 @@ def _summary_aggregate_query(
         tag_id=tag_id,
         db=db,
     )
+
+
+@router.post("/catalog/sync", response_model=UsageCatalogSyncResponse)
+def sync_usage_catalog(
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Drain Redis usage counters into Postgres (rate-limited per org via Redis)."""
+    flushed = flush_usage_to_catalog(db, organization_id)
+    return UsageCatalogSyncResponse(flushed_buckets=flushed)
 
 
 @router.get("/summary", response_model=UsageSummaryResponse)
@@ -1080,19 +1119,18 @@ def get_usage_summary(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    display_start, display_end, filter_start, filter_end = _parse_usage_range(
-        start, end, tz
-    )
+    access = UsageAccessPolicy.resolve(organization_id, start, end, tz)
+    display_start = access.display_start
+    display_end = access.display_end
     if display_end < display_start:
         raise HTTPException(status_code=400, detail="end must be >= start")
-
-    flush_usage_to_catalog(db, organization_id)
 
     row = _summary_aggregate_query(
         db,
         organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
+        start=access.filter_start,
+        end=access.filter_end,
+        enforced_floor=access.enforced_filter_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         model=model,
@@ -1109,6 +1147,7 @@ def get_usage_summary(
         start=display_start,
         end=display_end,
         totals=UsageTotals(**totals),
+        usage_policy=_usage_policy_meta(access),
         last_updated_at=_last_updated(db, organization_id),
     )
 
@@ -1137,13 +1176,11 @@ def get_usage_breakdown(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    display_start, display_end, filter_start, filter_end = _parse_usage_range(
-        start, end, tz
-    )
+    access = UsageAccessPolicy.resolve(organization_id, start, end, tz)
+    display_start = access.display_start
+    display_end = access.display_end
     if display_end < display_start:
         raise HTTPException(status_code=400, detail="end must be >= start")
-
-    flush_usage_to_catalog(db, organization_id)
 
     dim = {
         "workspace": LLMUsageDaily.workspace_id,
@@ -1186,8 +1223,9 @@ def get_usage_breakdown(
     query = _apply_filters(
         db.query(*select_cols, *aggregates),
         organization_id=organization_id,
-        start=filter_start,
-        end=filter_end,
+        start=access.filter_start,
+        end=access.filter_end,
+        enforced_floor=access.enforced_filter_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         model=model,
@@ -1227,8 +1265,9 @@ def get_usage_breakdown(
         label_query = _filtered_query(
             db,
             organization_id=organization_id,
-            start=filter_start,
-            end=filter_end,
+            start=access.filter_start,
+            end=access.filter_end,
+            enforced_floor=access.enforced_filter_floor,
             workspace_id=workspace_id,
             product_section=product_section,
             model=model,
@@ -1243,8 +1282,9 @@ def get_usage_breakdown(
         label_query = _filtered_query(
             db,
             organization_id=organization_id,
-            start=filter_start,
-            end=filter_end,
+            start=access.filter_start,
+            end=access.filter_end,
+            enforced_floor=access.enforced_filter_floor,
             workspace_id=workspace_id,
             product_section=product_section,
             model=model,
@@ -1353,6 +1393,7 @@ def get_usage_breakdown(
         rows=rows,
         total_count=len(rows),
         truncated_at_limit=len(rows) >= limit,
+        usage_policy=_usage_policy_meta(access),
         last_updated_at=_last_updated(db, organization_id),
     )
 
@@ -1378,9 +1419,10 @@ def get_usage_filters(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    _, _, filter_start, filter_end = _parse_usage_range(start, end, tz)
-
-    flush_usage_to_catalog(db, organization_id)
+    access = UsageAccessPolicy.resolve(organization_id, start, end, tz)
+    filter_start = access.filter_start
+    filter_end = access.filter_end
+    enforced_floor = access.enforced_filter_floor
 
     scoped_resource_id = resource_id or evaluation_id
 
@@ -1389,6 +1431,7 @@ def get_usage_filters(
         organization_id=organization_id,
         start=filter_start,
         end=filter_end,
+        enforced_floor=enforced_floor,
         dataset=dataset,
         tag_id=tag_id,
     )
@@ -1397,6 +1440,7 @@ def get_usage_filters(
         organization_id=organization_id,
         start=filter_start,
         end=filter_end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         dataset=dataset,
         tag_id=tag_id,
@@ -1406,6 +1450,7 @@ def get_usage_filters(
         organization_id=organization_id,
         start=filter_start,
         end=filter_end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         resource_id=scoped_resource_id,
@@ -1419,6 +1464,7 @@ def get_usage_filters(
         organization_id=organization_id,
         start=filter_start,
         end=filter_end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         resource_id=scoped_resource_id,
@@ -1433,6 +1479,7 @@ def get_usage_filters(
         organization_id=organization_id,
         start=filter_start,
         end=filter_end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         dataset=dataset,
@@ -1443,6 +1490,7 @@ def get_usage_filters(
         organization_id=organization_id,
         start=filter_start,
         end=filter_end,
+        enforced_floor=enforced_floor,
         workspace_id=workspace_id,
         product_section=product_section,
         model=model,

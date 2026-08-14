@@ -44,6 +44,7 @@ type UsageFiltersBarProps = {
   onUsageKindChange: (v: Kind) => void
   onModelChange: (v: string) => void
   onClearAll: () => void
+  maxHistoryDays?: number | null
 }
 
 const KIND_OPTIONS: Array<{ id: Kind; label: string }> = [
@@ -75,6 +76,7 @@ export default function UsageFiltersBar({
   onUsageKindChange,
   onModelChange,
   onClearAll,
+  maxHistoryDays = null,
 }: UsageFiltersBarProps) {
   const [expanded, setExpanded] = useState(false)
 
@@ -216,7 +218,12 @@ export default function UsageFiltersBar({
 
         <div className="h-5 w-px bg-[#fde047]/60 hidden sm:block" />
 
-        <UsageDateRangePicker start={start} end={end} onApply={onDateApply} />
+        <UsageDateRangePicker
+          start={start}
+          end={end}
+          onApply={onDateApply}
+          maxHistoryDays={maxHistoryDays}
+        />
 
         {filtersLoading ? (
           <span className="text-xs text-gray-400 ml-1">Updating options…</span>
