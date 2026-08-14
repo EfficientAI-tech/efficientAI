@@ -8,6 +8,7 @@ import { getApiErrorMessage } from '../../lib/apiErrors'
 import Button from '../../components/Button'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import MetricPickerPanel from './components/MetricPickerPanel'
+import { formatStudioModelLabel } from './components/MetricsStudioRunHeader'
 import MetricsManagement from './MetricsManagement'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
@@ -509,12 +510,19 @@ export default function MetricsStudio() {
           </div>
         ) : (
           <div className="divide-y divide-gray-100">
-            {(runsData?.items ?? []).map((run: any) => (
+            {(runsData?.items ?? []).map((run: any) => {
+              const progress =
+                run.total_items > 0
+                  ? Math.round((run.completed_items / run.total_items) * 100)
+                  : 0
+              const inProgress = run.status === 'running' || run.status === 'pending'
+
+              return (
               <div
                 key={run.id}
                 role="link"
                 tabIndex={0}
-                className="px-4 py-3 flex items-center justify-between gap-4 hover:bg-gray-50 cursor-pointer group"
+                className="px-4 py-3 hover:bg-gray-50 cursor-pointer group"
                 onClick={() => navigate(`/metrics-management/studio/runs/${run.id}`)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -523,28 +531,44 @@ export default function MetricsStudio() {
                   }
                 }}
               >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900 group-hover:text-primary-800">
-                    {run.name || `Run ${run.id.slice(0, 8)}`}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {format(new Date(run.created_at), 'MMM d, yyyy HH:mm')} ·{' '}
-                    {run.completed_items}/{run.total_items} completed · {run.status}
-                  </p>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 group-hover:text-primary-800 truncate">
+                      {run.name || `Run ${run.id.slice(0, 8)}`}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {format(new Date(run.created_at), 'MMM d, yyyy HH:mm')} ·{' '}
+                      {run.completed_items}/{run.total_items} completed · {run.status}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-0.5 truncate">
+                      {formatStudioModelLabel(run)}
+                    </p>
+                    {inProgress && (
+                      <div className="mt-2 flex items-center gap-2 max-w-xs">
+                        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary-600 rounded-full transition-all"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] tabular-nums text-gray-500">{progress}%</span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="text-gray-400 hover:text-red-600 shrink-0 mt-0.5"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      deleteRunMutation.mutate(run.id)
+                    }}
+                    aria-label="Delete run"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="text-gray-400 hover:text-red-600 shrink-0"
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    deleteRunMutation.mutate(run.id)
-                  }}
-                  aria-label="Delete run"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
               </div>
-            ))}
+            )})}
           </div>
         )}
       </section>

@@ -127,20 +127,25 @@ export default function MetricsStudioRunDetail() {
 
       {retryError && <p className="text-sm text-red-600">{retryError}</p>}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <MetricsStudioSourceList
-          results={results}
-          selectedResultId={selectedResultId ?? selectedResult?.id ?? null}
-          onSelect={setSelectedResultId}
-        />
-        <MetricsStudioScorePanel
-          result={selectedResult}
-          transcriptSource={run.transcript_source ?? 'diarised'}
-          metricNameById={metricNameById}
-          childMetricIds={childMetricIds}
-          draftMetricIds={draftMetricIds}
-          onPromoteDraft={(metricId) => promoteMutation.mutate(metricId)}
-        />
+      <div className="flex flex-col lg:flex-row gap-5 lg:items-start">
+        <aside className="lg:w-72 xl:w-80 shrink-0">
+          <MetricsStudioSourceList
+            results={results}
+            selectedResultId={selectedResultId ?? selectedResult?.id ?? null}
+            onSelect={setSelectedResultId}
+          />
+        </aside>
+        <main className="flex-1 min-w-0">
+          <MetricsStudioScorePanel
+            result={selectedResult}
+            run={run}
+            transcriptSource={run.transcript_source ?? 'diarised'}
+            metricNameById={metricNameById}
+            childMetricIds={childMetricIds}
+            draftMetricIds={draftMetricIds}
+            onPromoteDraft={(metricId) => promoteMutation.mutate(metricId)}
+          />
+        </main>
       </div>
     </div>
   )
