@@ -45,11 +45,13 @@ export default function WorkspaceSwitcher() {
   useEffect(() => {
     if (!workspaces.length) return
     const stored = activeId
-    const isValid = stored && workspaces.some((w) => w.id === stored)
+    const activeWorkspaces = workspaces.filter((w) => w.is_active)
+    const selectable = activeWorkspaces.length > 0 ? activeWorkspaces : workspaces
+    const isValid = stored && selectable.some((w) => w.id === stored)
     const fallback =
-      (isValid ? workspaces.find((w) => w.id === stored) : null) ??
-      workspaces.find((w) => w.is_default) ??
-      workspaces[0]
+      (isValid ? selectable.find((w) => w.id === stored) : null) ??
+      selectable.find((w) => w.is_default) ??
+      selectable[0]
 
     if (!fallback) return
 
@@ -58,7 +60,7 @@ export default function WorkspaceSwitcher() {
       return
     }
 
-    const current = workspaces.find((w) => w.id === stored)
+    const current = selectable.find((w) => w.id === stored)
     if (!current) return
 
     const nextCaps = current.capabilities ?? []
@@ -78,6 +80,9 @@ export default function WorkspaceSwitcher() {
   )
 
   const handleSelect = async (workspace: Workspace) => {
+    if (!workspace.is_active) {
+      return
+    }
     if (workspace.id === activeId) {
       setOpen(false)
       return
@@ -152,14 +157,18 @@ export default function WorkspaceSwitcher() {
                 )}
                 {workspaces.map((ws) => {
                   const isCurrent = ws.id === activeId
+                  const isInactive = !ws.is_active
                   return (
                     <button
                       key={ws.id}
                       type="button"
                       onClick={() => handleSelect(ws)}
-                      className={`w-full px-4 py-2.5 text-left hover:bg-gray-50 transition-colors flex items-center justify-between gap-2 ${
-                        isCurrent ? 'bg-primary-50' : ''
-                      }`}
+                      disabled={isInactive}
+                      className={`w-full px-4 py-2.5 text-left transition-colors flex items-center justify-between gap-2 ${
+                        isInactive
+                          ? 'opacity-60 cursor-not-allowed'
+                          : 'hover:bg-gray-50'
+                      } ${isCurrent ? 'bg-primary-50' : ''}`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-medium text-gray-900 truncate">
@@ -169,12 +178,17 @@ export default function WorkspaceSwitcher() {
                               (default)
                             </span>
                           )}
+                          {isInactive && (
+                            <span className="ml-2 text-xs font-normal text-gray-500">
+                              (inactive)
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-gray-500 truncate">
                           {ws.role_name ? `${ws.role_name} · ${ws.slug}` : ws.slug}
                         </div>
                       </div>
-                      {isCurrent && (
+                      {isCurrent && !isInactive && (
                         <Check className="h-4 w-4 text-primary-600 flex-shrink-0" />
                       )}
                     </button>

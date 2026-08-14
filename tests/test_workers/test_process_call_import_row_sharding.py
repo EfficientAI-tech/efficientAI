@@ -131,7 +131,7 @@ def test_eval_chain_loads_evaluation_from_catalog_session(
 def test_production_eval_chain_skips_transcribe_and_redispatches(
     db_session, monkeypatch
 ):
-    """Production-transcript evals should import recordings then evaluate, not diarise."""
+    """Production-transcript eval chains skip diarisation after import completes."""
     org, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
     row.transcript = "Agent: hello\nUser: hi"

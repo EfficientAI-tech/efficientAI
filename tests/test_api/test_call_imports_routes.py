@@ -9,6 +9,8 @@ new mapping flow stays exercised in lockstep with the route code.
 
 import io
 import sys
+import threading
+import time
 import types
 from contextlib import contextmanager
 from datetime import datetime
@@ -21,9 +23,12 @@ from fastapi import HTTPException
 
 from app.api.v1.routes.call_imports import (
     _delete_s3_objects,
+    _is_stuck_pending_import_row,
     _parse_csv,
     _parse_xlsx,
     _revoke_pending_tasks,
+    _upload_manual_audio_blobs_parallel,
+    _validate_telephony_credentials_live,
 )
 from app.config import settings
 from app.models.database import (
@@ -35,7 +40,11 @@ from app.models.database import (
     TelephonyIntegration,
     Workspace,
 )
-from app.models.enums import CallImportParameterType, CallImportRowStatus
+from app.models.enums import (
+    CallImportParameterType,
+    CallImportRowStatus,
+    CallImportStatus,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +268,26 @@ def test_parse_csv_skips_row_missing_recording_url():
     assert len(result.skipped) == 1
     assert result.skipped[0].reason == "missing_recording_url"
     assert result.skipped[0].source_row == 2
+
+
+def test_parse_csv_allows_empty_recording_url_when_optional():
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,,Transcript only\n"
+    )
+    params = _standard_params()
+    rec_param = next(p for p in params if p.type == CallImportParameterType.RECORDING_URL.value)
+    rec_param.is_required = False
+    result = _parse_csv(
+        _csv_bytes(csv_text),
+        params,
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(result.rows) == 1
+    assert result.rows[0]["conversation_id"] == "abc-1"
+    assert result.rows[0]["recording_url"] is None
+    assert len(result.skipped) == 0
 
 
 def test_parse_csv_skips_row_invalid_recording_url():
@@ -874,6 +903,35 @@ def _patched_s3(fake_s3):
         yield
 
 
+def test_upload_manual_audio_blobs_parallel_runs_concurrently():
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    uploaded_keys: list[str] = []
+
+    def _slow_upload(_contents, key, content_type="audio/mpeg"):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        uploaded_keys.append(key)
+
+    fake_s3 = SimpleNamespace(upload_file_by_key=_slow_upload)
+    specs = [(f"audio/key-{index}.mp3", b"body", "audio/mpeg") for index in range(8)]
+
+    with _patched_s3(fake_s3):
+        started = time.monotonic()
+        _upload_manual_audio_blobs_parallel(specs)
+        elapsed = time.monotonic() - started
+
+    assert len(uploaded_keys) == 8
+    assert max_active > 1
+    assert elapsed < 0.35
+
+
 def test_audio_upload_single_file_creates_completed_import(
     authenticated_client, db_session, org_id, seed_org
 ):
@@ -924,6 +982,77 @@ def test_audio_upload_single_file_creates_completed_import(
     assert row.recording_size_bytes == len(b"RIFFfake-wav")
     assert row.recording_s3_key.endswith(f"/{row.id}.wav")
     fake_s3.upload_file_by_key.assert_called_once()
+
+
+def test_audio_upload_accepts_custom_batch_name(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files=[
+                ("files", ("a.wav", b"a", "audio/wav")),
+                ("files", ("b.wav", b"b", "audio/wav")),
+            ],
+            data={
+                "dataset": "Manual recordings",
+                "batch_name": "October support calls",
+            },
+        )
+
+    assert response.status_code == 201, response.text
+    call_import = db_session.query(CallImport).filter(
+        CallImport.id == UUID(response.json()["id"])
+    ).one()
+    assert call_import.original_filename == "October support calls"
+
+
+def test_audio_upload_multi_file_default_name_is_generic(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files=[
+                ("files", ("a.wav", b"a", "audio/wav")),
+                ("files", ("b.wav", b"b", "audio/wav")),
+            ],
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert response.status_code == 201, response.text
+    call_import = db_session.query(CallImport).filter(
+        CallImport.id == UUID(response.json()["id"])
+    ).one()
+    assert call_import.original_filename == "Manual recordings"
+
+
+def test_update_call_import_original_filename(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        create_response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"wav", "audio/wav")},
+            data={"dataset": "Manual recordings"},
+        )
+    assert create_response.status_code == 201, create_response.text
+    call_import_id = create_response.json()["id"]
+
+    patch_response = authenticated_client.patch(
+        f"/api/v1/call-imports/{call_import_id}",
+        json={"original_filename": "Renamed batch"},
+    )
+    assert patch_response.status_code == 200, patch_response.text
+    assert patch_response.json()["original_filename"] == "Renamed batch"
+
+    call_import = db_session.query(CallImport).filter(
+        CallImport.id == UUID(call_import_id)
+    ).one()
+    assert call_import.original_filename == "Renamed batch"
 
 
 def test_audio_upload_uses_shard_insert_when_sharding_enabled(
@@ -1001,6 +1130,188 @@ def test_audio_upload_multiple_files_dedupes_filename_call_ids(
         "support_flac",
     ]
     assert fake_s3.upload_file_by_key.call_count == 3
+
+
+def test_audio_append_adds_rows_to_existing_batch(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        with patch(
+            "app.api.v1.routes.call_imports.is_sharding_enabled",
+            return_value=False,
+        ):
+            create_response = authenticated_client.post(
+                "/api/v1/call-imports/audio-upload",
+                files={"files": ("call.wav", b"chunk-a", "audio/wav")},
+                data={"dataset": "Manual recordings"},
+            )
+            assert create_response.status_code == 201, create_response.text
+            call_import_id = create_response.json()["id"]
+
+            append_response = authenticated_client.post(
+                f"/api/v1/call-imports/{call_import_id}/audio-append",
+                files=[
+                    ("files", ("call.wav", b"chunk-b", "audio/wav")),
+                    ("files", ("support.m4a", b"chunk-c", "audio/mp4")),
+                ],
+            )
+
+    assert append_response.status_code == 200, append_response.text
+    body = append_response.json()
+    assert body["total_rows"] == 3
+    rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == UUID(call_import_id))
+        .order_by(CallImportRow.row_index)
+        .all()
+    )
+    assert [row.row_index for row in rows] == [0, 1, 2]
+    assert [row.conversation_id for row in rows] == ["call", "call-2", "support"]
+    assert fake_s3.upload_file_by_key.call_count == 3
+
+
+def test_audio_append_continues_row_index_when_sharding_enabled(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    fake_s3 = _fake_enabled_s3()
+    inserted: list = []
+    registered: list = []
+
+    monkeypatch.setattr(
+        "app.api.v1.routes.call_imports.is_sharding_enabled",
+        lambda: True,
+    )
+
+    def _fake_bulk_insert(_db, call_import_id, mappings):
+        inserted.extend(mappings)
+        return len(mappings)
+
+    def _fake_register_slices(_db, call_import_id, total_rows):
+        registered.append((call_import_id, total_rows))
+
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.bulk_insert_mappings_on_shards",
+        _fake_bulk_insert,
+    )
+    monkeypatch.setattr(
+        "app.db_sharding.row_ops.register_shard_slices",
+        _fake_register_slices,
+    )
+
+    with _patched_s3(fake_s3):
+        create_response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files=[
+                ("files", ("a.wav", b"a", "audio/wav")),
+                ("files", ("b.wav", b"b", "audio/wav")),
+            ],
+            data={"dataset": "Manual recordings"},
+        )
+        assert create_response.status_code == 201, create_response.text
+        call_import_id = UUID(create_response.json()["id"])
+        assert [mapping["row_index"] for mapping in inserted] == [0, 1]
+        inserted.clear()
+
+        append_response = authenticated_client.post(
+            f"/api/v1/call-imports/{call_import_id}/audio-append",
+            files={"files": ("c.wav", b"c", "audio/wav")},
+        )
+
+    assert append_response.status_code == 200, append_response.text
+    assert [mapping["row_index"] for mapping in inserted] == [2]
+    assert registered == [(call_import_id, 2), (call_import_id, 3)]
+
+
+def test_validate_telephony_credentials_live_rejects_bad_client(db_session, org_id, seed_org):
+    integration = _seed_integration(db_session, org_id, provider="exotel")
+
+    class _BadClient:
+        def test_connection(self):
+            raise ValueError("Exotel auth failed (HTTP 401): bad token")
+
+    with patch(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        return_value=_BadClient(),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            _validate_telephony_credentials_live(db_session, org_id, integration)
+
+    assert exc.value.status_code == 400
+    assert "credentials could not be verified" in exc.value.detail.lower()
+
+
+def test_is_stuck_pending_import_row_detects_credential_errors():
+    row = SimpleNamespace(
+        status=CallImportRowStatus.PENDING,
+        attempts=0,
+        error_message="Transient: Recording URL rejected credentials (HTTP 401)",
+    )
+    assert _is_stuck_pending_import_row(row) is True
+
+    fresh = SimpleNamespace(
+        status=CallImportRowStatus.PENDING,
+        attempts=0,
+        error_message=None,
+    )
+    assert _is_stuck_pending_import_row(fresh) is False
+
+
+def test_retry_failed_requeues_stuck_pending_rows(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    workspace_id = _default_workspace_id(db_session, org_id)
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        provider=integration.provider,
+        telephony_integration_id=integration.id,
+        original_filename="batch.csv",
+        source_format="csv",
+        total_rows=1,
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.PROCESSING,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+    row = CallImportRow(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=org_id,
+        workspace_id=workspace_id,
+        row_index=0,
+        conversation_id="call-1",
+        recording_url="https://example.com/rec.mp3",
+        status=CallImportRowStatus.PENDING,
+        attempts=2,
+        error_message="Transient: Recording URL rejected credentials (HTTP 401)",
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    scheduled = {"called": False}
+
+    def _schedule(*_args, **_kwargs):
+        scheduled["called"] = True
+
+    with patch(
+        "app.workers.concurrency.fair_import_dispatch.schedule_fair_import_dispatch",
+        _schedule,
+    ):
+        response = authenticated_client.post(
+            f"/api/v1/call-imports/{call_import.id}/retry-failed",
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["requeued"] == 1
+    assert scheduled["called"] is True
+    db_session.refresh(row)
+    assert row.status == CallImportRowStatus.PENDING
+    assert row.error_message is None
+    assert row.attempts == 0
 
 
 def test_audio_upload_rejects_invalid_inputs(

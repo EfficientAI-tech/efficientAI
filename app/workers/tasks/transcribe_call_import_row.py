@@ -780,16 +780,28 @@ def transcribe_call_import_row_task(
         )
 
         row_db = catalog_db = None
+        eval_row_for_chain = None
         try:
             if run_eval_row_id:
                 try:
                     _er_db, _cat, eval_row_for_chain, _, _ = (
                         locate_call_import_evaluation_row(UUID(run_eval_row_id))
                     )
+                    from app.workers.tasks.evaluate_call_import_row_core import (
+                        was_cancelled_externally,
+                    )
+
+                    if was_cancelled_externally(_er_db, eval_row_for_chain):
+                        close_row_sessions(_er_db, _cat)
+                        return {
+                            "status": "skipped",
+                            "reason": "eval_cancelled_by_user",
+                        }
                     evaluation_id_for_dispatch = str(
                         eval_row_for_chain.evaluation_id
                     )
                     close_row_sessions(_er_db, _cat)
+                    eval_row_for_chain = None
                 except LookupError:
                     pass
 

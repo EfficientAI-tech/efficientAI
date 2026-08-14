@@ -254,6 +254,54 @@ def _make_call_import(
     return call_import, row_models
 
 
+def _make_manual_audio_call_import(
+    db_session,
+    org_id,
+    *,
+    rows=2,
+):
+    """Manual audio upload batch: recordings already in S3, no column mapping."""
+    workspace = _ensure_default_workspace(db_session, org_id)
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        provider=None,
+        telephony_integration_id=None,
+        original_filename="Manual recordings",
+        source_format="audio",
+        column_mapping=None,
+        total_rows=rows,
+        completed_rows=rows,
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+
+    row_models = []
+    for idx in range(rows):
+        row = CallImportRow(
+            id=uuid4(),
+            call_import_id=call_import.id,
+            organization_id=org_id,
+            workspace_id=workspace.id,
+            row_index=idx,
+            conversation_id=f"manual-{idx}",
+            transcript=None,
+            recording_url=None,
+            raw_columns={"conversation_id": f"manual-{idx}"},
+            status=CallImportRowStatus.COMPLETED,
+            recording_s3_key=f"org/{org_id}/call-imports/{call_import.id}/{uuid4()}.wav",
+            recording_content_type="audio/wav",
+            recording_size_bytes=1024,
+        )
+        db_session.add(row)
+        row_models.append(row)
+    db_session.commit()
+    return call_import, row_models
+
+
 # Every Run Evaluation request now requires STT provider+model (the
 # diarised transcript is the only supported source and auto-diarise is
 # mandatory). Centralizing the minimum-valid payload here keeps the test
@@ -354,6 +402,23 @@ def test_create_evaluation_accepts_production_transcript_source(
     assert body.get("diarisation_llm_provider") is None
 
 
+def test_create_evaluation_accepts_manual_audio_without_recording_url_column(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Manual audio batches diarise from stored S3 recordings, not CSV URLs."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_manual_audio_call_import(db_session, org_id, rows=2)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["transcript_source"] == "diarised"
+    assert body["total_rows"] == 2
+
+
 def test_create_evaluation_defaults_to_diarised_source(
     authenticated_client, db_session, org_id, seed_org
 ):
@@ -378,7 +443,7 @@ def test_create_evaluation_requires_stt_provider_and_model(
 ):
     """Every evaluation auto-diarises rows that don't already have a
     diarised transcript, so the STT provider+model are mandatory on
-    every request — even when auto_transcribe is not explicitly
+    every request ΓÇö even when auto_transcribe is not explicitly
     passed."""
     metric = _make_metric(db_session, org_id)
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
@@ -573,7 +638,7 @@ def test_evaluations_unknown_import_returns_404(authenticated_client, seed_org):
 # 1. Each cancellable row flips to ``failed`` with the
 #    ``"Evaluation cancelled by user"`` sentinel + cleared ``celery_task_id``.
 # 2. The parent rollup picks the new state up (``failed``/``partial``).
-# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` —
+# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` ΓÇö
 #    that's the contract that lets the worker actually interrupt an in-flight
 #    LLM/audio call rather than waiting up to 10 minutes for the time limit.
 
@@ -826,7 +891,7 @@ def test_cancel_evaluation_row_flips_only_target_row(
     refreshed_sibling = db_session.get(CallImportEvaluationRow, sibling.id)
     assert refreshed_target.status == "failed"
     assert refreshed_target.celery_task_id is None
-    # Sibling untouched — only the targeted row was cancelled.
+    # Sibling untouched ΓÇö only the targeted row was cancelled.
     assert refreshed_sibling.status == "running"
     assert refreshed_sibling.celery_task_id is not None
 
@@ -845,7 +910,7 @@ def test_cancel_evaluation_row_flips_only_target_row(
 def test_cancel_evaluation_row_idempotent_when_terminal(
     authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
-    """A row already in a terminal state is returned unchanged with a 200 —
+    """A row already in a terminal state is returned unchanged with a 200 ΓÇö
     no DB flip, no revoke."""
     metric = _make_metric(db_session, org_id)
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
@@ -870,7 +935,7 @@ def test_cancel_evaluation_row_idempotent_when_terminal(
     )
     assert response.status_code == 200
     body = response.json()
-    # Row is unchanged — still completed, scores still attached.
+    # Row is unchanged ΓÇö still completed, scores still attached.
     assert body["status"] == "completed"
     assert body["metric_scores"][str(metric.id)]["value"] == 4
     revoke.assert_not_called()
@@ -970,6 +1035,145 @@ def test_cancel_row_returns_409_when_bulk_operation_active(
     )
     assert response.status_code == 409
     assert "bulk abort operation" in response.json()["detail"]
+
+
+def _force_diarisation_running(
+    db_session,
+    evaluation_id,
+    *,
+    task_id_prefix="dia-task",
+):
+    """Set linked source rows to in-flight diarisation for cancel cascade tests."""
+    eval_uuid = UUID(evaluation_id)
+    eval_rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .all()
+    )
+    source_ids = [row.call_import_row_id for row in eval_rows]
+    source_rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.id.in_(source_ids))
+        .all()
+    )
+    for idx, row in enumerate(source_rows):
+        row.diarised_transcript_status = "running"
+        row.celery_task_id = f"{task_id_prefix}-{idx}"
+    db_session.commit()
+    return source_rows
+
+
+def test_cancel_evaluation_cascades_diarisation_on_source_rows(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Run-level abort should fail in-flight diarisation on linked source rows."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    _force_running(db_session, created["id"])
+    source_rows = _force_diarisation_running(db_session, created["id"])
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 202, response.text
+
+    db_session.expire_all()
+    refreshed = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.id.in_([row.id for row in source_rows]))
+        .all()
+    )
+    assert {row.diarised_transcript_status for row in refreshed} == {"failed"}
+    assert all(
+        (row.diarised_transcript_error or "") == "Diarisation cancelled by user"
+        for row in refreshed
+    )
+    assert all(row.celery_task_id is None for row in refreshed)
+
+
+def test_cancel_evaluation_row_cascades_diarisation_on_source_row(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Row-level abort should fail in-flight diarisation on the linked source row."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    eval_rows = _force_running(db_session, created["id"])
+    source_rows = _force_diarisation_running(db_session, created["id"])
+    target = eval_rows[0]
+    target_source = next(
+        row for row in source_rows if row.id == target.call_import_row_id
+    )
+    sibling_source = next(
+        row for row in source_rows if row.id != target.call_import_row_id
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{target.id}/cancel"
+    )
+    assert response.status_code == 200, response.text
+
+    db_session.expire_all()
+    db_session.refresh(target_source)
+    db_session.refresh(sibling_source)
+    assert target_source.diarised_transcript_status == "failed"
+    assert (
+        target_source.diarised_transcript_error or ""
+    ) == "Diarisation cancelled by user"
+    assert target_source.celery_task_id is None
+    assert sibling_source.diarised_transcript_status == "running"
+
+
+def test_cancel_evaluation_sweeps_diarisation_when_eval_row_already_failed(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch,
+):
+    """Final sweep fails in-flight diarisation even if the eval row is already terminal."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    _stub_celery_revoke(monkeypatch)
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .one()
+    )
+    source_row = db_session.get(CallImportRow, eval_row.call_import_row_id)
+    eval_row.status = "failed"
+    eval_row.error_message = "Evaluation cancelled by user"
+    eval_row.celery_task_id = None
+    source_row.diarised_transcript_status = "pending"
+    source_row.celery_task_id = "dia-task-stale"
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["target_count"] == 0
+
+    db_session.expire_all()
+    db_session.refresh(source_row)
+    assert source_row.diarised_transcript_status == "failed"
+    assert (
+        source_row.diarised_transcript_error or ""
+    ) == "Diarisation cancelled by user"
+    assert source_row.celery_task_id is None
 
 
 def test_retry_failed_rows_flips_partial_run_back_to_running(
@@ -1093,7 +1297,7 @@ def test_retry_marks_existing_diarised_transcript_completed(
 
 
 def test_evaluation_retry_can_override_telephony_credentials(
-    authenticated_client, db_session, org_id, seed_org
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
 ):
     """Retry should pin a new telephony integration on the batch when asked."""
     metric = _make_metric(db_session, org_id)
@@ -1140,6 +1344,15 @@ def test_evaluation_retry_can_override_telephony_credentials(
     eval_row.error_message = "import failed"
     db_session.commit()
 
+    class _GoodClient:
+        def test_connection(self):
+            return None
+
+    monkeypatch.setattr(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        lambda *_args, **_kwargs: _GoodClient(),
+    )
+
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
         json={
@@ -1154,6 +1367,60 @@ def test_evaluation_retry_can_override_telephony_credentials(
     assert call_import.provider == "exotel"
 
 
+def test_evaluation_retry_rejects_invalid_telephony_credentials(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    metric = _make_metric(db_session, org_id)
+    integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        name="bad",
+        auth_id="enc-bad",
+        auth_token="enc-bad",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.commit()
+
+    call_import, _rows = _make_call_import(
+        db_session,
+        org_id,
+        rows=1,
+        integration=integration,
+    )
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+    eval_uuid = UUID(created["id"])
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .first()
+    )
+    eval_row.status = "failed"
+    db_session.commit()
+
+    class _BadClient:
+        def test_connection(self):
+            raise ValueError("Exotel auth failed (HTTP 401): bad token")
+
+    monkeypatch.setattr(
+        "app.services.telephony.telephony_service.telephony_service.get_provider_client",
+        lambda *_args, **_kwargs: _BadClient(),
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{eval_uuid}/retry",
+        json={
+            "provider": "exotel",
+            "telephony_integration_id": str(integration.id),
+        },
+    )
+    assert response.status_code == 400
+    assert "credentials could not be verified" in response.json()["detail"].lower()
 def test_create_evaluation_sets_actor_emails(
     authenticated_client, db_session, org_id, seed_org
 ):

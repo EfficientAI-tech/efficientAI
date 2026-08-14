@@ -1966,6 +1966,9 @@ class MetricResponse(BaseModel):
     # render a "Compare transcripts" badge in the metric picker and
     # know to skip the run's transcript_source toggle for this metric.
     compare_transcripts: bool = False
+    lifecycle: str = "active"
+    promoted_from_draft_at: Optional[datetime] = None
+    studio_notes: Optional[str] = None
     children: List["MetricResponse"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -2025,6 +2028,130 @@ class MetricResponse(BaseModel):
 
 
 MetricResponse.model_rebuild()
+
+
+class MetricDraftCreate(MetricCreate):
+    """Create a draft metric for Metrics Studio experimentation."""
+
+    studio_notes: Optional[str] = Field(
+        default=None,
+        description="Optional notes about what this draft is testing.",
+    )
+
+
+class MetricDraftCreateWithChildren(MetricCreateWithChildren):
+    """Atomically create a draft parent category metric plus its children."""
+
+    studio_notes: Optional[str] = Field(
+        default=None,
+        description="Optional notes about what this draft category is testing.",
+    )
+
+
+class MetricPromoteResponse(BaseModel):
+    """Response after promoting a draft metric to active."""
+
+    metric: MetricResponse
+    promoted_at: datetime
+
+
+MetricStudioSourceKind = Literal[
+    "call_import_row", "call_recording", "evaluator_result"
+]
+
+
+class MetricStudioSourceItem(BaseModel):
+    """One call source selected for a Studio run."""
+
+    source_kind: MetricStudioSourceKind
+    source_ref: str = Field(
+        ...,
+        min_length=1,
+        description="UUID for import rows / evaluator results; call_short_id for recordings.",
+    )
+    display_label: Optional[str] = Field(
+        default=None,
+        max_length=512,
+        description="Optional UI label; resolved server-side when omitted.",
+    )
+
+
+class MetricStudioRunCreate(BaseModel):
+    """Request body for triggering a Metrics Studio evaluation run."""
+
+    metric_ids: List[UUID] = Field(..., min_length=1)
+    sources: List[MetricStudioSourceItem] = Field(..., min_length=1)
+    name: Optional[str] = Field(default=None, max_length=255)
+    transcript_source: Literal["production", "diarised"] = "diarised"
+    llm_provider: Optional[str] = Field(default=None, max_length=50)
+    llm_model: Optional[str] = Field(default=None, max_length=100)
+    llm_credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    metric_llm_overrides: Optional[Dict[str, Any]] = None
+
+
+class MetricStudioRunRetryRequest(BaseModel):
+    """Retry failed or selected Studio run results."""
+
+    result_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description="When omitted, retry all failed results in the run.",
+    )
+
+
+class MetricStudioRunResultResponse(BaseModel):
+    """Per-source result row for a Studio run."""
+
+    id: UUID
+    run_id: UUID
+    source_kind: str
+    source_ref: str
+    display_label: Optional[str] = None
+    source_metadata: Optional[Dict[str, Any]] = None
+    status: str
+    metric_scores: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MetricStudioRunResponse(BaseModel):
+    """Metrics Studio run summary."""
+
+    id: UUID
+    organization_id: UUID
+    workspace_id: UUID
+    name: Optional[str] = None
+    selected_metric_ids: List[str] = Field(default_factory=list)
+    selected_metric_groups: Optional[Dict[str, List[str]]] = None
+    transcript_source: str
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    status: str
+    total_items: int
+    completed_items: int
+    failed_items: int
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MetricStudioRunListResponse(BaseModel):
+    items: List[MetricStudioRunResponse]
+    total: int
+
+
+class MetricStudioRunResultListResponse(BaseModel):
+    items: List[MetricStudioRunResultResponse]
+    total: int
 
 
 # Evaluator Result Schemas
@@ -2902,10 +3029,9 @@ class CallImportSchemaParameterBase(BaseModel):
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
             "datetime / url. Exactly one parameter of type "
-            "'conversation_id' and exactly one of type 'recording_url' "
-            "must be present; at most one each of 'recording_date' and "
-            "'transcript'. Both conversation_id and recording_url are "
-            "forced required."
+            "'conversation_id' must be present; at most one each of "
+            "'recording_url', 'recording_date', and 'transcript'. "
+            "Only conversation_id is forced required."
         ),
     )
     description: Optional[str] = Field(
@@ -2917,9 +3043,8 @@ class CallImportSchemaParameterBase(BaseModel):
         default=False,
         description=(
             "When True, the parameter must be mapped to a CSV column on "
-            "every upload. The ``conversation_id`` and ``recording_url`` "
-            "parameters are always required and are force-set to True by "
-            "the server."
+            "every upload. The ``conversation_id`` parameter is always "
+            "required and is force-set to True by the server."
         ),
     )
 
@@ -2974,19 +3099,15 @@ def _validate_schema_parameters(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
         )
-    if rec_url_count != 1:
+    if rec_url_count > 1:
         raise ValueError(
-            "Schema must contain exactly one parameter of type "
+            "Schema may contain at most one parameter of type "
             "'recording_url'."
         )
     if recording_date_count > 1:
         raise ValueError(
             "Schema may contain at most one parameter of type "
             "'recording_date'."
-        )
-    if rec_url_count > 1:
-        raise ValueError(
-            "Schema may contain at most one parameter of type 'recording_url'."
         )
     if transcript_count > 1:
         raise ValueError(
@@ -3308,6 +3429,12 @@ class CallImportPreviewResponse(BaseModel):
 class CallImportUpdate(BaseModel):
     """Partial update of a call-import batch."""
 
+    original_filename: Optional[str] = Field(
+        None,
+        description=(
+            "User-facing batch label shown in the UI. Pass an empty string to clear."
+        ),
+    )
     dataset: Optional[str] = Field(
         None,
         description=(
@@ -5172,9 +5299,10 @@ class WorkspaceCreate(WorkspaceBase):
 
 
 class WorkspaceUpdate(BaseModel):
-    """Body for PATCH /workspaces/{id} (rename only in v1)."""
+    """Body for PATCH /workspaces/{id} (rename and/or org-admin activation)."""
 
-    name: str = Field(..., min_length=1, max_length=255)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    is_active: Optional[bool] = None
 
 
 class WorkspaceResponse(BaseModel):
@@ -5185,6 +5313,7 @@ class WorkspaceResponse(BaseModel):
     name: str
     slug: str
     is_default: bool
+    is_active: bool = True
     created_at: datetime
     updated_at: datetime
     role_id: Optional[UUID] = None

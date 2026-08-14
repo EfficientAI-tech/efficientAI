@@ -68,12 +68,12 @@ function makeRecordingUrlParameter(): EditableParameter {
     name: 'recording_url',
     type: 'recording_url',
     description: 'URL of the call recording for each imported row.',
-    is_required: true,
+    is_required: false,
   }
 }
 
 function isSystemRequiredParameter(param: EditableParameter): boolean {
-  return param.type === 'conversation_id' || param.type === 'recording_url'
+  return param.type === 'conversation_id'
 }
 
 function parametersFromSchema(
@@ -109,14 +109,11 @@ function validateParameters(params: EditableParameter[]): string | null {
   if (convCount !== 1) {
     return 'Exactly one parameter must be of type "conversation_id".'
   }
-  if (recordingCount !== 1) {
-    return 'Exactly one parameter must be of type "recording_url".'
+  if (recordingCount > 1) {
+    return 'At most one parameter can be of type "recording_url".'
   }
   if (recordingDateCount > 1) {
     return 'At most one parameter can be of type "recording_date".'
-  }
-  if (recordingCount > 1) {
-    return 'At most one parameter can be of type "recording_url".'
   }
   if (transcriptCount > 1) {
     return 'At most one parameter can be of type "transcript".'
@@ -160,7 +157,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
       setParameters(
         schema
           ? parametersFromSchema(schema.parameters)
-          : [makeConversationIdParameter(), makeRecordingUrlParameter()],
+          : [makeConversationIdParameter()],
       )
       setErrorMsg(null)
     }
@@ -243,10 +240,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   const removeParameter = (idx: number) => {
     setParameters((prev) => {
       const param = prev[idx]
-      if (
-        param?.type === 'conversation_id' ||
-        param?.type === 'recording_url'
-      ) {
+      if (param?.type === 'conversation_id') {
         return prev
       }
       return prev.filter((_, i) => i !== idx)
@@ -258,19 +252,23 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
       const next = [...prev]
       const target = direction === 'up' ? idx - 1 : idx + 1
       if (target < 0 || target >= next.length) return prev
-      // Keep the system rows pinned — conversation_id at the top and
-      // recording_url immediately after it.
-      const pinnedTypes = new Set(['conversation_id', 'recording_url'])
+      // Keep conversation_id pinned at the top.
       if (
-        pinnedTypes.has(next[idx].type) ||
-        pinnedTypes.has(next[target].type) ||
-        target <= conversationIdIdx ||
-        (recordingUrlIdx >= 0 && target <= recordingUrlIdx)
+        next[idx].type === 'conversation_id' ||
+        next[target].type === 'conversation_id' ||
+        target <= conversationIdIdx
       ) {
         return prev
       }
       ;[next[idx], next[target]] = [next[target], next[idx]]
       return next
+    })
+  }
+
+  const addRecordingUrlParameter = () => {
+    setParameters((prev) => {
+      if (prev.some((p) => p.type === 'recording_url')) return prev
+      return [...prev, makeRecordingUrlParameter()]
     })
   }
 
@@ -328,15 +326,27 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               <p className="text-sm font-medium text-gray-700">
                 Parameters <span className="text-red-500">*</span>
               </p>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<Plus className="h-4 w-4" />}
-                onClick={addParameter}
-                disabled={isSubmitting}
-              >
-                Add parameter
-              </Button>
+              <div className="flex items-center gap-2">
+                {recordingUrlIdx < 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={addRecordingUrlParameter}
+                    disabled={isSubmitting}
+                  >
+                    Add recording URL
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leftIcon={<Plus className="h-4 w-4" />}
+                  onClick={addParameter}
+                  disabled={isSubmitting}
+                >
+                  Add parameter
+                </Button>
+              </div>
             </div>
             <div className="border border-gray-200 rounded-lg overflow-hidden">
               <div className="grid grid-cols-[24px_1fr_1fr_2fr_auto_auto] gap-2 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 border-b border-gray-200">
@@ -424,8 +434,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                               updateParameter(idx, {
                                 type: nextType,
                                 is_required:
-                                  nextType === 'conversation_id' ||
-                                  nextType === 'recording_url'
+                                  nextType === 'conversation_id'
                                     ? true
                                     : p.is_required,
                               })
@@ -471,7 +480,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                         />
                       </div>
                       <div>
-                        {!typeLocked && (
+                        {!isConversationId && (
                           <button
                             type="button"
                             onClick={() => removeParameter(idx)}
@@ -491,10 +500,9 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
             <p className="mt-1 text-xs text-gray-500">
               Every schema must include exactly one{' '}
               <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
-              and one{' '}
-              <code className="bg-gray-100 px-1 rounded">recording_url</code>{' '}
-              parameter (both required). Add{' '}
-              <code className="bg-gray-100 px-1 rounded">recording_date</code> or{' '}
+              parameter (required). Optionally add{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_url</code>,{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_date</code>, or{' '}
               <code className="bg-gray-100 px-1 rounded">transcript</code> when
               your uploads include those columns.
             </p>

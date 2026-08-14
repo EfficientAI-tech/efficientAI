@@ -9,7 +9,7 @@ import {
   UploadCloud,
   X,
 } from 'lucide-react'
-import { apiClient } from '../../../lib/api'
+import { apiClient, type CallImportAudioUploadProgress } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { useWorkspaceStore } from '../../../store/workspaceStore'
 import type { CallImportTag } from '../../../types/api'
@@ -17,6 +17,10 @@ import type { CallImportTag } from '../../../types/api'
 interface UploadAudioModalProps {
   open: boolean
   onClose: () => void
+  /** When set, append recordings to an existing manual-audio import batch. */
+  appendToImportId?: string
+  appendToImportName?: string
+  onAppendSuccess?: (response: { id: string; total_rows: number; message?: string }) => void
 }
 
 const MAX_BYTES = 500 * 1024 * 1024
@@ -56,38 +60,51 @@ function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(1)} GB`
 }
 
-export default function UploadAudioModal({ open, onClose }: UploadAudioModalProps) {
+export default function UploadAudioModal({
+  open,
+  onClose,
+  appendToImportId,
+  appendToImportName,
+  onAppendSuccess,
+}: UploadAudioModalProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const isAppendMode = !!appendToImportId
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [fileErrors, setFileErrors] = useState<string[]>([])
+  const [batchName, setBatchName] = useState('')
   const [dataset, setDataset] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([])
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<CallImportAudioUploadProgress | null>(
+    null,
+  )
   const [isDragOver, setIsDragOver] = useState(false)
 
   const { data: existingDatasets = [] } = useQuery({
     queryKey: ['call-import-datasets', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportDatasets(),
-    enabled: open,
+    enabled: open && !isAppendMode,
   })
 
   const { data: allTags = [] } = useQuery({
     queryKey: ['call-import-tags', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportTags(),
-    enabled: open,
+    enabled: open && !isAppendMode,
   })
 
   useEffect(() => {
     if (!open) return
     setSelectedFiles([])
     setFileErrors([])
+    setBatchName('')
     setDataset('')
     setSelectedTagIds([])
     setSubmitError(null)
+    setUploadProgress(null)
     setIsDragOver(false)
   }, [open])
 
@@ -114,18 +131,35 @@ export default function UploadAudioModal({ open, onClose }: UploadAudioModalProp
   }
 
   const uploadMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (selectedFiles.length === 0) {
         throw new Error('Pick at least one audio file first.')
       }
-      return apiClient.uploadCallImportAudio(selectedFiles, {
+      setUploadProgress(null)
+      if (isAppendMode) {
+        return apiClient.uploadCallImportAudioAppendChunked(
+          appendToImportId!,
+          selectedFiles,
+          { onProgress: setUploadProgress },
+        )
+      }
+      return apiClient.uploadCallImportAudioChunked(selectedFiles, {
         dataset: dataset.trim(),
         tagIds: selectedTagIds,
+        batchName: batchName.trim() || undefined,
+        onProgress: setUploadProgress,
       })
     },
     onSuccess: (created) => {
       setSubmitError(null)
+      setUploadProgress(null)
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      queryClient.invalidateQueries({ queryKey: ['call-import'] })
+      if (isAppendMode) {
+        onAppendSuccess?.(created)
+        onClose()
+        return
+      }
       queryClient.invalidateQueries({ queryKey: ['call-import-datasets'] })
       onClose()
       navigate(`/call-imports/${created.id}`)
@@ -141,7 +175,7 @@ export default function UploadAudioModal({ open, onClose }: UploadAudioModalProp
   const canSubmit =
     selectedFiles.length > 0 &&
     fileErrors.length === 0 &&
-    !!dataset.trim() &&
+    (isAppendMode || !!dataset.trim()) &&
     !uploadMutation.isPending
 
   if (!open) return null
@@ -152,10 +186,14 @@ export default function UploadAudioModal({ open, onClose }: UploadAudioModalProp
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">
-              Upload Call Audio
+              {isAppendMode ? 'Add Recordings' : 'Upload Call Audio'}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Add one or more recordings directly. File names become call IDs.
+              {isAppendMode
+                ? `Append more recordings to ${
+                    appendToImportName?.trim() || 'this import batch'
+                  }. File names become call IDs.`
+                : 'Add one or more recordings directly. File names become call IDs.'}
             </p>
           </div>
           <button
@@ -251,78 +289,103 @@ export default function UploadAudioModal({ open, onClose }: UploadAudioModalProp
             )}
           </div>
 
-          <div>
-            <label
-              htmlFor="audio-upload-dataset"
-              className="block text-sm font-medium text-gray-700 mb-1"
-            >
-              Dataset <span className="text-red-500">*</span>
-            </label>
-            <input
-              id="audio-upload-dataset"
-              type="text"
-              list="audio-upload-dataset-suggestions"
-              value={dataset}
-              onChange={(e) => setDataset(e.target.value)}
-              placeholder="e.g. October prod calls"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            />
-            <datalist id="audio-upload-dataset-suggestions">
-              {existingDatasets.map((d) => (
-                <option key={d} value={d} />
-              ))}
-            </datalist>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Tags
-            </label>
-            {allTags.length === 0 ? (
-              <p className="text-xs text-gray-500">
-                No tags created yet.{' '}
-                <Link
-                  to="/call-imports/tags"
-                  className="text-primary-600 hover:text-primary-700 underline"
-                  onClick={onClose}
+          {!isAppendMode && (
+            <>
+              <div>
+                <label
+                  htmlFor="audio-upload-batch-name"
+                  className="block text-sm font-medium text-gray-700 mb-1"
                 >
-                  Create tags
-                </Link>
-                .
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {allTags.map((tag: CallImportTag) => {
-                  const active = selectedTagIds.includes(tag.id)
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      onClick={() =>
-                        setSelectedTagIds((prev) =>
-                          prev.includes(tag.id)
-                            ? prev.filter((t) => t !== tag.id)
-                            : [...prev, tag.id],
-                        )
-                      }
-                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                        active
-                          ? 'bg-primary-600 border-primary-600 text-white'
-                          : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
-                      }`}
-                      style={
-                        !active && tag.color
-                          ? { borderColor: tag.color, color: tag.color }
-                          : undefined
-                      }
-                    >
-                      {tag.name}
-                    </button>
-                  )
-                })}
+                  Batch name
+                </label>
+                <input
+                  id="audio-upload-batch-name"
+                  type="text"
+                  value={batchName}
+                  onChange={(e) => setBatchName(e.target.value)}
+                  placeholder="e.g. October support calls"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  Optional label for this import. Recommended for large uploads split
+                  across multiple chunks.
+                </p>
               </div>
-            )}
-          </div>
+
+              <div>
+                <label
+                  htmlFor="audio-upload-dataset"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Dataset <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="audio-upload-dataset"
+                  type="text"
+                  list="audio-upload-dataset-suggestions"
+                  value={dataset}
+                  onChange={(e) => setDataset(e.target.value)}
+                  placeholder="e.g. October prod calls"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                />
+                <datalist id="audio-upload-dataset-suggestions">
+                  {existingDatasets.map((d) => (
+                    <option key={d} value={d} />
+                  ))}
+                </datalist>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Tags
+                </label>
+                {allTags.length === 0 ? (
+                  <p className="text-xs text-gray-500">
+                    No tags created yet.{' '}
+                    <Link
+                      to="/call-imports/tags"
+                      className="text-primary-600 hover:text-primary-700 underline"
+                      onClick={onClose}
+                    >
+                      Create tags
+                    </Link>
+                    .
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {allTags.map((tag: CallImportTag) => {
+                      const active = selectedTagIds.includes(tag.id)
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={() =>
+                            setSelectedTagIds((prev) =>
+                              prev.includes(tag.id)
+                                ? prev.filter((t) => t !== tag.id)
+                                : [...prev, tag.id],
+                            )
+                          }
+                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                            active
+                              ? 'bg-primary-600 border-primary-600 text-white'
+                              : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                          }`}
+                          style={
+                            !active && tag.color
+                              ? { borderColor: tag.color, color: tag.color }
+                              : undefined
+                          }
+                        >
+                          {tag.name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
 
           {submitError && (
             <div className="rounded-md bg-red-50 border border-red-200 p-3">
@@ -330,6 +393,13 @@ export default function UploadAudioModal({ open, onClose }: UploadAudioModalProp
                 <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
                 <p className="text-sm text-red-800">{submitError}</p>
               </div>
+            </div>
+          )}
+
+          {uploadProgress && uploadMutation.isPending && (
+            <div className="rounded-md bg-primary-50 border border-primary-200 p-3 text-sm text-primary-900">
+              Uploading chunk {uploadProgress.chunkIndex} of {uploadProgress.totalChunks} (
+              {uploadProgress.uploadedFiles}/{uploadProgress.totalFiles} files)
             </div>
           )}
         </div>
@@ -349,7 +419,7 @@ export default function UploadAudioModal({ open, onClose }: UploadAudioModalProp
             isLoading={uploadMutation.isPending}
             disabled={!canSubmit}
           >
-            Upload audio
+            {isAppendMode ? 'Add recordings' : 'Upload audio'}
           </Button>
         </div>
       </div>

@@ -97,7 +97,7 @@ export default function TelephonyCredentialPicker({
         <p className="text-sm text-gray-600">
           {useDirectUrl
             ? 'Recordings will be downloaded directly from each row’s recording URL.'
-            : 'Pick the telephony provider and credential to use when fetching recordings.'}
+            : 'Pick the telephony provider and credential to use when fetching recordings. Credentials are verified when you start Run Evaluation.'}
         </p>
       )}
 

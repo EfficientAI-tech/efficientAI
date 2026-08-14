@@ -56,6 +56,7 @@ def _workspace_response(
         name=workspace.name,
         slug=workspace.slug,
         is_default=workspace.is_default,
+        is_active=workspace.is_active,
         created_at=workspace.created_at,
         updated_at=workspace.updated_at,
         role_id=role.id if role else None,
@@ -84,6 +85,7 @@ def list_workspaces(
         if not member_ws_ids:
             return []
         query = query.filter(Workspace.id.in_(member_ws_ids))
+        query = query.filter(Workspace.is_active.is_(True))
 
     workspaces = query.order_by(Workspace.is_default.desc(), Workspace.name.asc()).all()
     return [_workspace_response(db, workspace=ws, principal=principal) for ws in workspaces]
@@ -168,7 +170,13 @@ def update_workspace(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """Rename a workspace (slug stays put to keep deep-links stable)."""
+    """Rename a workspace or change active status (org admin only for the latter)."""
+    if payload.name is None and payload.is_active is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of name or is_active must be provided.",
+        )
+
     workspace = (
         db.query(Workspace)
         .filter(
@@ -180,22 +188,58 @@ def update_workspace(
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found.")
 
+    org_role = get_org_role(principal, db)
+    is_org_admin = org_role == RoleEnum.ADMIN
+
     caps, _, role = resolve_workspace_capabilities(
         db,
         principal=principal,
         workspace_id=workspace_id,
         organization_id=organization_id,
     )
-    if WORKSPACE_SETTINGS not in caps:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=capability_denied_message(
-                WORKSPACE_SETTINGS,
-                role_name=role.name if role else None,
-            ),
-        )
 
-    workspace.name = payload.name.strip()
+    if payload.is_active is not None:
+        if not is_org_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only organization admins can change workspace active status.",
+            )
+        if payload.is_active is False:
+            if workspace.is_default:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The default workspace cannot be deactivated.",
+                )
+            if not workspace.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Workspace is already inactive.",
+                )
+            workspace.is_active = False
+        else:
+            if workspace.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Workspace is already active.",
+                )
+            workspace.is_active = True
+
+    if payload.name is not None:
+        if not workspace.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot rename an inactive workspace. Reactivate it first.",
+            )
+        if WORKSPACE_SETTINGS not in caps:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=capability_denied_message(
+                    WORKSPACE_SETTINGS,
+                    role_name=role.name if role else None,
+                ),
+            )
+        workspace.name = payload.name.strip()
+
     db.commit()
     db.refresh(workspace)
     return _workspace_response(db, workspace=workspace, principal=principal)

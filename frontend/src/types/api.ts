@@ -892,7 +892,7 @@ export interface CallImportRow {
   conversation_id: string
   recording_url: string | null
   recording_date: string | null
-  /** Production transcript — the value supplied via the CSV upload. */
+  /** Production transcript ΓÇö the value supplied via the CSV upload. */
   transcript: string | null
   /** Provenance of the stored production transcript (csv = CSV upload, edited = manual edit). */
   transcript_source: CallImportTranscriptSource
@@ -902,7 +902,7 @@ export interface CallImportRow {
   transcript_status: CallImportTranscriptStatus
   transcript_error: string | null
   transcribed_at: string | null
-  /** Diarised transcript — produced by the post-hoc diarisation worker. */
+  /** Diarised transcript ΓÇö produced by the post-hoc diarisation worker. */
   diarised_transcript: string | null
   /** Provider used by the diarisation worker (e.g. "deepgram"). */
   diarised_transcript_provider: string | null
@@ -943,14 +943,14 @@ export interface CallImportRow {
   diarised_prompt: string | null
   /**
    * Diarisation pipeline that produced this row's turns.
-   * - `stt_llm` (default) — two-stage STT then LLM diariser.
-   * - `llm_only` — single-stage multimodal LLM (audio in).
+   * - `stt_llm` (default) ΓÇö two-stage STT then LLM diariser.
+   * - `llm_only` ΓÇö single-stage multimodal LLM (audio in).
    * Read-only; written by the worker on each diarisation.
    */
   transcribe_mode?: 'stt_llm' | 'llm_only'
   /**
    * Per-row preservation of the mapped source cells. Values land here
-   * as whatever type the schema parameter coerced them to —
+   * as whatever type the schema parameter coerced them to ΓÇö
    * strings (text / url / conversation_id / recording_url /
    * recording_date / transcript / datetime), numbers, booleans, or
    * ``null`` for blanks. Always
@@ -979,7 +979,7 @@ export interface CallImportTag {
  * Parameter type tag on a Call Import schema parameter.
  *
  *  - ``conversation_id``: mandatory identifier (one per schema).
- *  - ``recording_url``: feeds ``CallImportRow.recording_url``.
+ *  - ``recording_url``: optional; feeds ``CallImportRow.recording_url``.
  *  - ``recording_date``: date-only call recording date used for reports.
  *  - ``transcript``: feeds ``CallImportRow.transcript``.
  *  - ``text`` / ``number`` / ``boolean`` / ``datetime`` / ``url``:
@@ -1047,6 +1047,7 @@ export interface Workspace {
   name: string
   slug: string
   is_default: boolean
+  is_active: boolean
   created_at: string
   updated_at: string
   role_id?: string | null
@@ -1184,7 +1185,7 @@ export interface CallImportDetail extends CallImport {
   rows: CallImportRow[]
   /**
    * Total row count *after* applying the optional ``q`` search filter.
-   * ``null`` when no filter is active — paginate against ``total_rows``
+   * ``null`` when no filter is active ΓÇö paginate against ``total_rows``
    * in that case.
    */
   filtered_total_rows: number | null
@@ -1294,8 +1295,8 @@ export interface CallImportEvaluation {
   diarisation_prompt?: string | null
   /**
    * Diarisation pipeline shape this run was created with.
-   * - `stt_llm` (default) — STT then an LLM diariser over the text.
-   * - `llm_only` — audio fed directly to a multimodal diariser LLM.
+   * - `stt_llm` (default) ΓÇö STT then an LLM diariser over the text.
+   * - `llm_only` ΓÇö audio fed directly to a multimodal diariser LLM.
    * Surfaced so the retry / re-run UI can preselect the right mode.
    */
   transcribe_mode?: 'stt_llm' | 'llm_only'
@@ -1743,7 +1744,7 @@ export interface CallImportEvaluationRow {
   recording_date: string | null
   /**
    * S3 object key for the downloaded recording. Prefer this over
-   * ``recording_url`` for playback — we resolve it to a presigned URL
+   * ``recording_url`` for playback ΓÇö we resolve it to a presigned URL
    * so audio plays from our storage instead of the (often expired)
    * provider URL.
    */
@@ -1779,7 +1780,7 @@ export interface CallImportEvaluationRetryRequest {
   /**
    * Optional LLM overrides. When provided, persisted onto the run so
    * future retries default to the new config. ``llm_provider`` and
-   * ``llm_model`` must be sent together — the backend 400s on
+   * ``llm_model`` must be sent together ΓÇö the backend 400s on
    * half-configured input.
    */
   llm_provider?: string
@@ -1835,9 +1836,9 @@ export interface CallImportEvaluationBulkActionResponse {
 export interface CallImportTranscribeRequest {
   /**
    * Diarisation pipeline shape.
-   * - `stt_llm` (default) — STT produces plain text, then an LLM
+   * - `stt_llm` (default) ΓÇö STT produces plain text, then an LLM
    *   diariser splits it into agent/user turns. STT fields required.
-   * - `llm_only` — skip STT entirely and feed the audio bytes
+   * - `llm_only` ΓÇö skip STT entirely and feed the audio bytes
    *   directly to a multimodal `diarization_llm_*` model along with
    *   `diarization_prompt`. STT fields MUST be omitted in this mode.
    */
@@ -2025,7 +2026,7 @@ export interface MetricSummary {
    * transcript and the diarised transcript to the LLM as a labeled
    * pair, and the run's transcript_source toggle is ignored for this
    * metric. Mutually exclusive with parent_metric_id and selection_mode
-   * — comparison metrics stay standalone.
+   * ΓÇö comparison metrics stay standalone.
    */
   compare_transcripts?: boolean
   children?: MetricSummary[]
@@ -2101,8 +2102,8 @@ export interface DiscoveredLabelsResponse {
 /**
  * One LLM-discovered candidate TOP-LEVEL metric aggregated across all
  * rows of an evaluation. Mirrors :class:`DiscoveredLabel` but adds a
- * ``suggested_type`` field — the LLM's guess at the best shape for
- * the new metric — that the promote modal can pre-fill the type radio
+ * ``suggested_type`` field ΓÇö the LLM's guess at the best shape for
+ * the new metric ΓÇö that the promote modal can pre-fill the type radio
  * with.
  */
 export interface DiscoveredMetric {
@@ -2162,4 +2163,5 @@ export interface ObservabilityCall {
   updated_at?: string | null
   call_data?: ObservabilityCallData | null
   live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
+  display_name?: string | null
 }

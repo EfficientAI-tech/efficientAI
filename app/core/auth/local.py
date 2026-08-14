@@ -17,6 +17,7 @@ from uuid import UUID
 from jose import JWTError
 from sqlalchemy.orm import Session
 
+from app.core.auth.org_access import ensure_organization_active
 from app.core.auth.principal import AuthMethod, Principal
 from app.core.auth.providers import AuthError, AuthProvider, RawCredential
 from app.core.auth.tokens import ISSUER, decode_access_token
@@ -76,6 +77,8 @@ class LocalPasswordProvider(AuthProvider):
         )
         if not member:
             raise AuthError("User is not a member of this organization")
+
+        ensure_organization_active(db, org_id)
 
         return Principal(
             organization_id=org_id,

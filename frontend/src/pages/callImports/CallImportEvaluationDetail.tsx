@@ -433,7 +433,6 @@ export default function CallImportEvaluationDetail() {
   const [pendingDeleteRow, setPendingDeleteRow] =
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
-  const [forceFailPendingOpen, setForceFailPendingOpen] = useState(false)
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportMenuOpen, setPdfReportMenuOpen] = useState(false)
@@ -1068,15 +1067,16 @@ export default function CallImportEvaluationDetail() {
   // persists them onto the run so the next retry defaults to them.
   const retryAllFailedMutation = useMutation({
     mutationFn: () => {
-      // Only forward LLM overrides when the user actually picked
-      // BOTH provider and model — backend 400s on half-configured
-      // input, and "did the user touch the picker" is fuzzy anyway
-      // because it gets seeded from the run's saved values.
+      // Forward LLM overrides only when the picker resolves to a
+      // complete selection (catalog model, gateway credential, etc.).
       const llmChanged =
         retryLLM.provider !== (evaluation?.llm_provider ?? null) ||
         retryLLM.model !== (evaluation?.llm_model ?? null) ||
         (retryLLM.credential_id ?? null) !==
-          (evaluation?.llm_credential_id ?? null)
+          (evaluation?.llm_credential_id ?? null) ||
+        JSON.stringify(retryLLM.llm_config ?? null) !==
+          JSON.stringify(evaluation?.llm_config ?? null)
+      const llmComplete = isLLMSelectionComplete(retryLLM, aiProviders)
       const sttChanged =
         retrySTT.provider !== (evaluation?.stt_provider ?? null) ||
         retrySTT.model !== (evaluation?.stt_model ?? null) ||
@@ -1089,6 +1089,10 @@ export default function CallImportEvaluationDetail() {
           (evaluation?.diarisation_llm_model ?? null) ||
         (retryDiariserLLM.credential_id ?? null) !==
           (evaluation?.diarisation_llm_credential_id ?? null)
+      const diariserComplete = isLLMSelectionComplete(
+        retryDiariserLLM,
+        aiProviders,
+      )
       const transcribeModeChanged =
         retryTranscribeMode !== (evaluation?.transcribe_mode ?? 'stt_llm')
       const diarisationPromptChanged =
@@ -1107,17 +1111,16 @@ export default function CallImportEvaluationDetail() {
 
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         llmProvider:
-          llmChanged && retryLLM.provider && retryLLM.model
-            ? retryLLM.provider
-            : undefined,
+          llmChanged && llmComplete ? retryLLM.provider ?? undefined : undefined,
         llmModel:
-          llmChanged && retryLLM.provider && retryLLM.model
-            ? retryLLM.model
+          llmChanged && llmComplete
+            ? resolveLLMModelForSubmit(retryLLM, aiProviders) ??
+              retryLLM.model ??
+              undefined
             : undefined,
         llmCredentialId:
-          llmChanged && retryLLM.provider && retryLLM.model
-            ? retryLLM.credential_id ?? null
-            : undefined,
+          llmChanged && llmComplete ? retryLLM.credential_id ?? null : undefined,
+        llmConfig: llmChanged ? retryLLM.llm_config ?? null : undefined,
         sttProvider:
           sttChanged && retrySTT.provider && retrySTT.model
             ? retrySTT.provider
@@ -1134,16 +1137,17 @@ export default function CallImportEvaluationDetail() {
           ? retryTranscribeMode
           : undefined,
         diarizationLlmProvider:
-          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
-            ? retryDiariserLLM.provider
+          diariserChanged && diariserComplete
+            ? retryDiariserLLM.provider ?? undefined
             : undefined,
         diarizationLlmModel:
-          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+          diariserChanged && diariserComplete
             ? resolveLLMModelForSubmit(retryDiariserLLM, aiProviders) ??
-              retryDiariserLLM.model
+              retryDiariserLLM.model ??
+              undefined
             : undefined,
         diarizationLlmCredentialId:
-          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+          diariserChanged && diariserComplete
             ? retryDiariserLLM.credential_id ?? null
             : undefined,
         diarizationPrompt: diarisationPromptChanged
@@ -1252,21 +1256,20 @@ export default function CallImportEvaluationDetail() {
           (evaluation?.llm_credential_id ?? null) ||
         JSON.stringify(rerunLLM.llm_config ?? null) !==
           JSON.stringify(evaluation?.llm_config ?? null)
+      const llmComplete = isLLMSelectionComplete(rerunLLM, aiProviders)
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         metricIds,
         includeCompleted: true,
         llmProvider:
-          llmChanged && rerunLLM.provider && rerunLLM.model
-            ? rerunLLM.provider
-            : undefined,
+          llmChanged && llmComplete ? rerunLLM.provider ?? undefined : undefined,
         llmModel:
-          llmChanged && rerunLLM.model && rerunLLM.provider
-            ? rerunLLM.model
+          llmChanged && llmComplete
+            ? resolveLLMModelForSubmit(rerunLLM, aiProviders) ??
+              rerunLLM.model ??
+              undefined
             : undefined,
         llmCredentialId:
-          llmChanged && rerunLLM.provider && rerunLLM.model
-            ? rerunLLM.credential_id ?? null
-            : undefined,
+          llmChanged && llmComplete ? rerunLLM.credential_id ?? null : undefined,
         llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
       })
     },
@@ -1356,29 +1359,6 @@ export default function CallImportEvaluationDetail() {
           : err?.response?.data?.detail ||
               err?.message ||
               'Failed to abort this evaluation run.',
-      )
-    },
-  })
-
-  const forceFailPendingMutation = useMutation({
-    mutationFn: () => apiClient.forceFailCallImportEvaluationPending(id!, evalId!),
-    onMutate: () => {
-      setCancelError(null)
-    },
-    onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
-      if (data.target_count > 0) {
-        setEvaluationBulkOperationOptimistic('force_fail_pending')
-      }
-      setForceFailPendingOpen(false)
-      invalidateEvaluationQueries()
-    },
-    onError: (err: any) => {
-      setCancelError(
-        err?.response?.status === 409
-          ? err?.response?.data?.detail || bulkOperationConflictMessage
-          : err?.response?.data?.detail ||
-              err?.message ||
-              'Failed to force-fail pending rows.',
       )
     },
   })
@@ -2357,12 +2337,6 @@ export default function CallImportEvaluationDetail() {
     : `Evaluation ${evaluation.id.slice(0, 8)}`
   const bulkOperation = evaluation.bulk_operation ?? null
   const bulkOperationActive = bulkOperation !== null
-  const pendingRowCount = Math.max(
-    0,
-    (evaluation.total_rows ?? 0) -
-      (evaluation.completed_rows ?? 0) -
-      (evaluation.failed_rows ?? 0),
-  )
   const getMetricLlmLabel = (metricId: string): string => {
     const override = evaluation.metric_llm_overrides?.[metricId]
     const overrideProvider = override?.provider?.trim()
@@ -2416,36 +2390,6 @@ export default function CallImportEvaluationDetail() {
               title="Abort every in-flight or queued row in this run"
             >
               Abort run
-            </Button>
-          )}
-          {pendingRowCount > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<AlertTriangle className="h-4 w-4" />}
-              onClick={() => {
-                if (
-                  forceFailPendingMutation.isPending ||
-                  bulkOperationActive
-                ) {
-                  return
-                }
-                setCancelError(null)
-                setForceFailPendingOpen(true)
-              }}
-              isLoading={
-                forceFailPendingMutation.isPending ||
-                bulkOperation === 'force_fail_pending'
-              }
-              disabled={
-                bulkOperationActive || forceFailPendingMutation.isPending
-              }
-              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
-              title={`Mark ${pendingRowCount} pending row${
-                pendingRowCount === 1 ? '' : 's'
-              } as failed without aborting running rows`}
-            >
-              Force-fail pending ({pendingRowCount})
             </Button>
           )}
           {evaluation.failed_rows > 0 && (
@@ -4128,30 +4072,6 @@ export default function CallImportEvaluationDetail() {
           setRowDeleteError(null)
         }}
       />
-      <ConfirmModal
-        isOpen={forceFailPendingOpen}
-        title={`Force-fail ${pendingRowCount} pending row${
-          pendingRowCount === 1 ? '' : 's'
-        }?`}
-        description={`This marks ${pendingRowCount} pending row${
-          pendingRowCount === 1 ? '' : 's'
-        } as failed immediately.\n\nThis won't affect rows currently running.`}
-        confirmLabel={`Force-fail ${pendingRowCount} pending row${
-          pendingRowCount === 1 ? '' : 's'
-        }`}
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={forceFailPendingMutation.isPending}
-        onConfirm={() => {
-          if (!forceFailPendingMutation.isPending) {
-            forceFailPendingMutation.mutate()
-          }
-        }}
-        onCancel={() => {
-          if (forceFailPendingMutation.isPending) return
-          setForceFailPendingOpen(false)
-        }}
-      />
 
       {retryConfirmOpen &&
         createPortal(
@@ -4403,8 +4323,7 @@ export default function CallImportEvaluationDetail() {
                   isLoading={retryAllFailedMutation.isPending}
                   disabled={
                     retryAllFailedMutation.isPending ||
-                    !retryLLM.provider ||
-                    !retryLLM.model ||
+                    !isLLMSelectionComplete(retryLLM, aiProviders) ||
                     !isCredentialSelectionValid(
                       retryTelephonyProvider,
                       retryTelephonyIntegrationId,
@@ -4597,8 +4516,7 @@ export default function CallImportEvaluationDetail() {
                       disabled={
                         rerunMetricsMutation.isPending ||
                         noneSelected ||
-                        !rerunLLM.provider ||
-                        !rerunLLM.model
+                        !isLLMSelectionComplete(rerunLLM, aiProviders)
                       }
                     >
                       Re-run {selectedCount > 0 ? `${selectedCount} ` : ''}

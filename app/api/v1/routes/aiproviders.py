@@ -67,12 +67,12 @@ def _scrub_for_response(
     effective_routing = get_credential_effective_routing_label(
         organization_id,
         db,
-        instance.routing_mode,
+        instance,
     )
     effective_gateway_interface = get_credential_effective_gateway_interface(
         organization_id,
         db,
-        getattr(instance, "gateway_interface", None),
+        instance,
     )
     has_gateway_auth_secret = bool(getattr(instance, "gateway_auth_secret", None))
     db.expunge(instance)

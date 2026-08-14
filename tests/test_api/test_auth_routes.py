@@ -120,6 +120,7 @@ def enable_local_password(monkeypatch):
     """Enable the local_password provider + self-service signup for a test."""
     monkeypatch.setattr(settings, "AUTH_PROVIDERS", ["api_key", "local_password"])
     monkeypatch.setattr(settings, "AUTH_LOCAL_ALLOW_SIGNUP", True)
+    monkeypatch.setattr(settings, "AUTH_GATED_SIGNUP_ENABLED", False)
     return settings
 
 
@@ -363,7 +364,7 @@ def test_login_rejects_user_without_membership_with_403(
     )
 
     assert response.status_code == 403
-    assert "not a member of any organization" in response.json()["detail"].lower()
+    assert "not a member of any active organization" in response.json()["detail"].lower()
 
 
 def _seed_user_with_multiple_orgs(db_session, email, password):

@@ -547,27 +547,38 @@ def resolve_llm_gateway(
     return config
 
 
+def _credential_routing_context(credential: Any) -> CredentialRoutingContext:
+    """Build a full routing context from a row, enum, or context object."""
+    if isinstance(credential, CredentialRoutingContext):
+        return credential
+    if hasattr(credential, "provider"):
+        return routing_context_from_ai_provider(credential)
+    if hasattr(credential, "platform"):
+        return routing_context_from_integration(credential)
+    return CredentialRoutingContext(
+        routing_mode=_normalize_routing_mode(credential),
+    )
+
+
 def get_credential_effective_gateway_interface(
     organization_id: UUID,
     db: Session,
-    gateway_interface: Optional[str],
+    credential: Any,
 ) -> GatewayInterface:
     """Resolved Bifrost API surface for a credential (for API responses)."""
-    credential = CredentialRoutingContext(
-        gateway_interface=_normalize_gateway_interface(gateway_interface or "inherit"),
-    )
+    ctx = _credential_routing_context(credential)
     org = _get_org_raw_settings(organization_id, db)
     platform = _platform_config()
-    return _resolve_gateway_interface(credential, org, platform)
+    return _resolve_gateway_interface(ctx, org, platform)
 
 
 def get_credential_effective_routing_label(
     organization_id: UUID,
     db: Session,
-    routing_mode: Any,
+    credential: Any,
 ) -> EffectiveRouting:
     """Resolved routing label for API responses."""
-    ctx = CredentialRoutingContext(routing_mode=_normalize_routing_mode(routing_mode))
+    ctx = _credential_routing_context(credential)
     _, effective = resolve_effective_routing(organization_id, db, ctx)
     return effective
 
