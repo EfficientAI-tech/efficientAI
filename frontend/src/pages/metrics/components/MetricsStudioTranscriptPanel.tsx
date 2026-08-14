@@ -28,7 +28,7 @@ export default function MetricsStudioTranscriptPanel({
         </span>
       </div>
       <div className="max-h-64 overflow-y-auto rounded-md border border-gray-100 bg-white p-3">
-        <TranscriptView transcript={transcript} />
+        <TranscriptView transcript={transcript} compact embedded />
       </div>
     </div>
   )

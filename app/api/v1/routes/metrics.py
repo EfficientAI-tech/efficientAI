@@ -138,6 +138,26 @@ def _validate_hierarchy_fields(
         )
 
 
+def _filter_enabled_metric_trees(
+    trees: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Keep enabled standalones and category parents with enabled children."""
+    filtered: List[Dict[str, Any]] = []
+    for tree in trees:
+        if tree.get("selection_mode"):
+            enabled_children = [
+                child
+                for child in (tree.get("children") or [])
+                if child.get("enabled")
+            ]
+            if not enabled_children:
+                continue
+            filtered.append({**tree, "children": enabled_children})
+        elif tree.get("enabled"):
+            filtered.append(tree)
+    return filtered
+
+
 def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
     """Convert a Metric ORM row into a dict shaped for ``MetricResponse``.
 
@@ -1021,6 +1041,13 @@ def list_metrics(
         False,
         description="When true, return only draft metrics.",
     ),
+    enabled_only: bool = Query(
+        False,
+        description=(
+            "When true, return only metrics enabled in the active workspace. "
+            "Category parents are included when at least one child is enabled."
+        ),
+    ),
     include_children: bool = Query(
         True,
         description=(
@@ -1075,7 +1102,10 @@ def list_metrics(
         ]
 
     if not include_children:
-        return [_serialize_metric_tree(m) for m in metrics]
+        payload = [_serialize_metric_tree(m) for m in metrics]
+        if enabled_only:
+            return _filter_enabled_metric_trees(payload)
+        return payload
 
     # Top-level rows = anything without a parent, OR a child whose parent
     # is not visible at this surface (so users still see "orphaned"
@@ -1086,7 +1116,10 @@ def list_metrics(
         for m in metrics
         if m.parent_metric_id is None or m.parent_metric_id not in visible_ids
     ]
-    return [_serialize_metric_tree(m) for m in top_level]
+    payload = [_serialize_metric_tree(m) for m in top_level]
+    if enabled_only:
+        return _filter_enabled_metric_trees(payload)
+    return payload
 
 
 @router.get("/{metric_id}", response_model=MetricResponse)

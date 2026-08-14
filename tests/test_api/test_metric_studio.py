@@ -52,6 +52,26 @@ def test_promote_metric_draft(authenticated_client):
     assert promoted["promoted_at"]
 
 
+def test_list_metrics_enabled_only_excludes_disabled(authenticated_client, make_metric):
+    enabled = make_metric(name="Studio Enabled Metric", enabled=True)
+    disabled = make_metric(name="Studio Disabled Metric", enabled=False)
+
+    all_response = authenticated_client.get("/api/v1/metrics")
+    assert all_response.status_code == 200
+    all_ids = {m["id"] for m in all_response.json()}
+    assert str(enabled.id) in all_ids
+    assert str(disabled.id) in all_ids
+
+    enabled_only_response = authenticated_client.get(
+        "/api/v1/metrics",
+        params={"enabled_only": True},
+    )
+    assert enabled_only_response.status_code == 200
+    enabled_ids = {m["id"] for m in enabled_only_response.json()}
+    assert str(enabled.id) in enabled_ids
+    assert str(disabled.id) not in enabled_ids
+
+
 def test_create_metric_studio_run_requires_sources(authenticated_client, make_metric):
     metric = make_metric(name="Studio Run Metric", metric_type="rating")
     response = authenticated_client.post(

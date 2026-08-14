@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import MetricScoreGrid from './MetricScoreGrid'
+import MetricsStudioAudioPlayer from './MetricsStudioAudioPlayer'
 import MetricsStudioTranscriptPanel from './MetricsStudioTranscriptPanel'
 
 type StudioRunResult = {
@@ -114,21 +115,34 @@ export default function MetricsStudioScorePanel({
       )}
 
       {result.status === 'completed' && (
+        <>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            Analysis results
+          </h4>
+          <div className="max-h-[28rem] overflow-y-auto pr-1">
+            <MetricScoreGrid
+              metricScores={result.metric_scores ?? {}}
+              metricNameById={metricNameById}
+              childMetricIds={childMetricIds}
+              draftMetricIds={draftMetricIds}
+              onPromoteDraft={onPromoteDraft}
+            />
+          </div>
+        </>
+      )}
+
+      <MetricsStudioAudioPlayer
+        sourceKind={result.source_kind}
+        sourceRef={result.source_ref}
+        metadata={metadata}
+      />
+
+      {result.status === 'completed' && (
         <MetricsStudioTranscriptPanel
           transcript={evaluationTranscript}
           transcriptSource={transcriptSourceUsed}
         />
       )}
-
-      <div className="max-h-[36rem] overflow-y-auto pr-1">
-        <MetricScoreGrid
-          metricScores={result.metric_scores ?? {}}
-          metricNameById={metricNameById}
-          childMetricIds={childMetricIds}
-          draftMetricIds={draftMetricIds}
-          onPromoteDraft={onPromoteDraft}
-        />
-      </div>
     </div>
   )
 }

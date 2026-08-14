@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
 import { Play, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
@@ -9,6 +9,7 @@ import Button from '../../components/Button'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import MetricPickerPanel from './components/MetricPickerPanel'
 import MetricsManagement from './MetricsManagement'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import {
   getCallImportBatchLabel,
@@ -33,6 +34,7 @@ type SourceTab = 'imports' | 'recordings' | 'simulated'
 export default function MetricsStudio() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [metricTab, setMetricTab] = useState<'active' | 'drafts'>('active')
   const [sourceTab, setSourceTab] = useState<SourceTab>('imports')
   const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
@@ -49,12 +51,16 @@ export default function MetricsStudio() {
   const [selectedSimulatedIds, setSelectedSimulatedIds] = useState<Set<string>>(new Set())
 
   const { data: activeMetrics = [] } = useQuery({
-    queryKey: ['metrics', 'studio', 'active'],
-    queryFn: () => apiClient.listMetrics(undefined, true, { includeDrafts: false }),
+    queryKey: ['metrics', 'studio', 'active', activeWorkspaceId],
+    queryFn: () =>
+      apiClient.listMetrics(undefined, true, {
+        includeDrafts: false,
+        enabledOnly: true,
+      }),
   })
 
   const { data: draftMetrics = [] } = useQuery({
-    queryKey: ['metrics', 'studio', 'drafts'],
+    queryKey: ['metrics', 'studio', 'drafts', activeWorkspaceId],
     queryFn: () => apiClient.listMetrics(undefined, true, { draftsOnly: true }),
   })
 
@@ -238,7 +244,7 @@ export default function MetricsStudio() {
             emptyMessage={
               metricTab === 'drafts'
                 ? 'No draft metrics yet. Create one to experiment.'
-                : 'No active metrics found.'
+                : 'No enabled metrics in this workspace. Enable metrics on the Manage tab first.'
             }
           />
           {metricTab === 'drafts' && draftMetrics.length > 0 && (
@@ -506,15 +512,21 @@ export default function MetricsStudio() {
             {(runsData?.items ?? []).map((run: any) => (
               <div
                 key={run.id}
-                className="px-4 py-3 flex items-center justify-between gap-4 hover:bg-gray-50"
+                role="link"
+                tabIndex={0}
+                className="px-4 py-3 flex items-center justify-between gap-4 hover:bg-gray-50 cursor-pointer group"
+                onClick={() => navigate(`/metrics-management/studio/runs/${run.id}`)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    navigate(`/metrics-management/studio/runs/${run.id}`)
+                  }
+                }}
               >
-                <div>
-                  <Link
-                    to={`/metrics-management/studio/runs/${run.id}`}
-                    className="text-sm font-medium text-gray-900 hover:text-primary-800"
-                  >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900 group-hover:text-primary-800">
                     {run.name || `Run ${run.id.slice(0, 8)}`}
-                  </Link>
+                  </p>
                   <p className="text-xs text-gray-500 mt-0.5">
                     {format(new Date(run.created_at), 'MMM d, yyyy HH:mm')} ·{' '}
                     {run.completed_items}/{run.total_items} completed · {run.status}
@@ -522,8 +534,11 @@ export default function MetricsStudio() {
                 </div>
                 <button
                   type="button"
-                  className="text-gray-400 hover:text-red-600"
-                  onClick={() => deleteRunMutation.mutate(run.id)}
+                  className="text-gray-400 hover:text-red-600 shrink-0"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    deleteRunMutation.mutate(run.id)
+                  }}
                   aria-label="Delete run"
                 >
                   <Trash2 className="h-4 w-4" />

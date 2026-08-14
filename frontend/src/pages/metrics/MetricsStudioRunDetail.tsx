@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import MetricsStudioRunHeader from './components/MetricsStudioRunHeader'
 import MetricsStudioSourceList from './components/MetricsStudioSourceList'
 import MetricsStudioScorePanel from './components/MetricsStudioScorePanel'
@@ -22,6 +23,7 @@ function flattenMetricNames(metrics: any[]): Record<string, string> {
 export default function MetricsStudioRunDetail() {
   const { runId = '' } = useParams<{ runId: string }>()
   const queryClient = useQueryClient()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [selectedResultId, setSelectedResultId] = useState<string | null>(null)
 
   const { data: run, isLoading: runLoading } = useQuery({
@@ -40,12 +42,16 @@ export default function MetricsStudioRunDetail() {
   })
 
   const { data: activeMetrics = [] } = useQuery({
-    queryKey: ['metrics', 'studio', 'active'],
-    queryFn: () => apiClient.listMetrics(undefined, true, { includeDrafts: false }),
+    queryKey: ['metrics', 'studio', 'active', activeWorkspaceId],
+    queryFn: () =>
+      apiClient.listMetrics(undefined, true, {
+        includeDrafts: false,
+        enabledOnly: true,
+      }),
   })
 
   const { data: draftMetrics = [] } = useQuery({
-    queryKey: ['metrics', 'studio', 'drafts'],
+    queryKey: ['metrics', 'studio', 'drafts', activeWorkspaceId],
     queryFn: () => apiClient.listMetrics(undefined, true, { draftsOnly: true }),
   })
 

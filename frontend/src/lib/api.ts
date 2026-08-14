@@ -3943,7 +3943,7 @@ class ApiClient {
   async listMetrics(
     surface?: string,
     includeChildren: boolean = true,
-    options?: { includeDrafts?: boolean; draftsOnly?: boolean },
+    options?: { includeDrafts?: boolean; draftsOnly?: boolean; enabledOnly?: boolean },
   ): Promise<any[]> {
     const response = await this.client.get('/api/v1/metrics', {
       params: {
@@ -3951,6 +3951,7 @@ class ApiClient {
         include_children: includeChildren,
         ...(options?.includeDrafts ? { include_drafts: true } : {}),
         ...(options?.draftsOnly ? { drafts_only: true } : {}),
+        ...(options?.enabledOnly ? { enabled_only: true } : {}),
       },
     })
     return response.data

@@ -112,6 +112,7 @@ def _resolve_call_import_row(
                 "call_import_name": getattr(call_import, "name", None),
                 "original_filename": getattr(call_import, "original_filename", None),
                 "recording_filename": recording_filename,
+                "recording_s3_key": (row.recording_s3_key or "").strip() or None,
                 "row_index": row.row_index,
                 "conversation_id": row.conversation_id,
             },
@@ -168,6 +169,12 @@ def _resolve_call_recording(
         or agent_name
         or recording.call_short_id
     )
+    recording_url = None
+    if isinstance(call_data, dict):
+        recording_url = call_data.get("recording_url")
+        if not recording_url and isinstance(call_data.get("recording_urls"), dict):
+            urls = call_data["recording_urls"]
+            recording_url = urls.get("combined_url") or urls.get("mono_url")
     return ResolvedCallSample(
         source_kind="call_recording",
         source_ref=recording.call_short_id,
@@ -183,6 +190,8 @@ def _resolve_call_recording(
             "source": getattr(recording.source, "value", recording.source),
             "agent_name": agent_name,
             "evaluator_result_name": evaluator_result_name,
+            "audio_s3_key": audio_s3_key,
+            "recording_url": recording_url,
         },
     )
 
@@ -253,6 +262,7 @@ def _resolve_evaluator_result(
             "scenario_id": str(result.scenario_id) if result.scenario_id else None,
             "scenario_name": scenario_name,
             "agent_id": str(result.agent_id) if result.agent_id else None,
+            "audio_s3_key": (result.audio_s3_key or "").strip() or None,
         },
     )
 
