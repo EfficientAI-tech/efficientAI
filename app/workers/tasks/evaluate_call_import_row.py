@@ -375,8 +375,6 @@ def evaluate_call_import_row_task(
                     workspace_id=evaluation.workspace_id,
                     evaluation_id=evaluation.id,
                     call_import_id=evaluation.call_import_id,
-                    evaluation_row_id=eval_row.id,
-                    call_import_row_id=source_row.id,
                 )
             )
 

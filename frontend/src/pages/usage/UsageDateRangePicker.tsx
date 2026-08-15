@@ -269,6 +269,5 @@ export default function UsageDateRangePicker({
 }
 
 export function defaultUsageDateRange(): { start: string; end: string } {
-  const today = toDateInput(new Date())
-  return { start: today, end: today }
+  return rangeForDays(7)
 }

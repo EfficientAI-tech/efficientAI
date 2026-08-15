@@ -41,11 +41,28 @@ def _access() -> UsageAccessResult:
     )
 
 
+def test_usage_read_cache_skips_empty_summary(fake_redis, monkeypatch):
+    org_id = uuid4()
+    access = _access()
+    key = cache_key_for(access)
+    empty = {
+        "start": "2026-08-15",
+        "end": "2026-08-15",
+        "totals": {"prompt_tokens": 0, "completion_tokens": 0, "call_count": 0},
+    }
+    set_cached_response(org_id, "summary", key, empty)
+    assert get_cached_response(org_id, "summary", key) is None
+
+
 def test_usage_read_cache_round_trip(fake_redis, monkeypatch):
     org_id = uuid4()
     access = _access()
     key = cache_key_for(access, workspace_id=None)
-    payload = {"start": "2026-08-01", "end": "2026-08-07", "totals": {}}
+    payload = {
+        "start": "2026-08-01",
+        "end": "2026-08-07",
+        "totals": {"prompt_tokens": 10, "completion_tokens": 5, "call_count": 1},
+    }
 
     set_cached_response(org_id, "summary", key, payload)
     cached = get_cached_response(org_id, "summary", key)
@@ -58,9 +75,14 @@ def test_usage_read_cache_invalidate_org(fake_redis, monkeypatch):
     other_org = uuid4()
     access = _access()
     key = cache_key_for(access)
+    payload = {
+        "start": "2026-08-01",
+        "end": "2026-08-07",
+        "totals": {"prompt_tokens": 10, "completion_tokens": 5, "call_count": 1},
+    }
 
-    set_cached_response(org_id, "summary", key, {"x": 1})
-    set_cached_response(other_org, "summary", key, {"x": 2})
+    set_cached_response(org_id, "summary", key, payload)
+    set_cached_response(other_org, "summary", key, payload)
 
     deleted = invalidate_org_usage_read_cache(org_id)
 

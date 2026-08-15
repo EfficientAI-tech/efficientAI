@@ -641,10 +641,18 @@ export default function Usage() {
   }
 
   const usageQueryDefaults = {
-    staleTime: 60 * 1000,
+    staleTime: 0,
+    refetchOnMount: 'always' as const,
+    refetchOnWindowFocus: true,
   }
 
-  const { data: summary, isLoading: summaryLoading, isFetching: summaryFetching } = useQuery({
+  const {
+    data: summary,
+    isLoading: summaryLoading,
+    isFetching: summaryFetching,
+    isError: summaryError,
+    error: summaryQueryError,
+  } = useQuery({
     queryKey: ['org-usage', 'summary', dataParams],
     queryFn: () => apiClient.getOrgUsageSummary(dataParams),
     ...usageQueryDefaults,
@@ -708,8 +716,7 @@ export default function Usage() {
   const { data: filterOptions, isFetching: filtersLoading } = useQuery({
     queryKey: ['org-usage', 'filters', scopeParams],
     queryFn: () => apiClient.getOrgUsageFilters(scopeParams),
-    enabled: true,
-    staleTime: 60 * 1000,
+    ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery) return undefined
       const prevScope = previousQuery.queryKey[2] as typeof scopeParams
@@ -1154,6 +1161,16 @@ export default function Usage() {
           ) : null}
         </div>
       </div>
+
+      {summaryError ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          Could not load usage data
+          {summaryQueryError instanceof Error && summaryQueryError.message
+            ? `: ${summaryQueryError.message}`
+            : '.'}{' '}
+          Try refreshing the page.
+        </div>
+      ) : null}
 
       {showOssUsageNotice ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">

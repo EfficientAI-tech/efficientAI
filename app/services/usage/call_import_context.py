@@ -134,18 +134,12 @@ def call_import_evaluation_usage_context(
     workspace_id: Optional[UUID],
     evaluation_id: UUID,
     call_import_id: UUID,
-    evaluation_row_id: Optional[UUID] = None,
-    call_import_row_id: Optional[UUID] = None,
 ) -> LLMUsageContext:
-    """Full attribution for eval-run LLM/STT/TTS inside a call import evaluation."""
+    """Usage rollup for an eval run (model-level drilldown; not per recording)."""
     extra: dict[str, str] = {
         "call_import_id": str(call_import_id),
         "evaluation_id": str(evaluation_id),
     }
-    if evaluation_row_id is not None:
-        extra["evaluation_row_id"] = str(evaluation_row_id)
-    if call_import_row_id is not None:
-        extra["call_import_row_id"] = str(call_import_row_id)
     return LLMUsageContext(
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -161,19 +155,15 @@ def call_import_row_usage_context(
     organization_id: UUID,
     workspace_id: Optional[UUID],
     call_import_id: UUID,
-    call_import_row_id: UUID,
     evaluation_id: Optional[UUID] = None,
-    evaluation_row_id: Optional[UUID] = None,
 ) -> LLMUsageContext:
-    """Attribution for diarisation / STT on a single call-import row."""
+    """Usage rollup for diarisation / STT (call-import level, not per recording)."""
     if evaluation_id is not None:
         return call_import_evaluation_usage_context(
             organization_id=organization_id,
             workspace_id=workspace_id,
             evaluation_id=evaluation_id,
             call_import_id=call_import_id,
-            evaluation_row_id=evaluation_row_id,
-            call_import_row_id=call_import_row_id,
         )
     return LLMUsageContext(
         organization_id=organization_id,
@@ -181,10 +171,7 @@ def call_import_row_usage_context(
         product_section=LLMUsageProductSection.CALL_IMPORTS,
         resource_id=call_import_id,
         resource_type="call_import",
-        extra={
-            "call_import_id": str(call_import_id),
-            "call_import_row_id": str(call_import_row_id),
-        },
+        extra={"call_import_id": str(call_import_id)},
     )
 
 

@@ -9,33 +9,26 @@ from app.services.usage.call_import_context import (
     call_import_row_usage_context,
     enrich_usage_context_workspace,
 )
+from app.services.usage.llm_usage import _bucket_prefix
 
 
-def test_evaluation_row_gets_distinct_bucket_context():
+def test_evaluation_rows_share_bucket_context():
     org_id = uuid4()
     ws_id = uuid4()
     eval_id = uuid4()
     import_id = uuid4()
-    row_a = uuid4()
-    row_b = uuid4()
-    source_a = uuid4()
-    source_b = uuid4()
 
     ctx_a = call_import_evaluation_usage_context(
         organization_id=org_id,
         workspace_id=ws_id,
         evaluation_id=eval_id,
         call_import_id=import_id,
-        evaluation_row_id=row_a,
-        call_import_row_id=source_a,
     )
     ctx_b = call_import_evaluation_usage_context(
         organization_id=org_id,
         workspace_id=ws_id,
         evaluation_id=eval_id,
         call_import_id=import_id,
-        evaluation_row_id=row_b,
-        call_import_row_id=source_b,
     )
 
     bucket_a = build_bucket_context(
@@ -48,45 +41,75 @@ def test_evaluation_row_gets_distinct_bucket_context():
         resource_type=ctx_b.resource_type,
         extra=ctx_b.extra,
     )
-    assert bucket_a != bucket_b
-    assert bucket_a["evaluation_row_id"] == str(row_a)
+    assert bucket_a == bucket_b
+    assert bucket_a["evaluation_id"] == str(eval_id)
     assert bucket_a["call_import_id"] == str(import_id)
+    assert "evaluation_row_id" not in bucket_a
+    assert "call_import_row_id" not in bucket_a
 
 
-def test_row_only_transcribe_context():
+def test_evaluation_rows_share_redis_bucket_prefix():
+    from datetime import date
+
+    org_id = uuid4()
+    ws_id = uuid4()
+    eval_id = uuid4()
+    import_id = uuid4()
+    model = "gpt-test"
+    usage_date = date(2026, 8, 15)
+
+    def prefix_for(_row_id: object) -> str:
+        ctx = call_import_evaluation_usage_context(
+            organization_id=org_id,
+            workspace_id=ws_id,
+            evaluation_id=eval_id,
+            call_import_id=import_id,
+        )
+        context = build_bucket_context(
+            resource_id=ctx.resource_id,
+            resource_type=ctx.resource_type,
+            extra=ctx.extra,
+        )
+        return _bucket_prefix(
+            workspace_id=ws_id,
+            product_section=ctx.product_section.value,
+            model=model,
+            context=context,
+            usage_date=usage_date,
+            usage_kind="llm",
+        )
+
+    assert prefix_for(uuid4()) == prefix_for(uuid4())
+
+
+def test_row_only_transcribe_context_rolls_up_to_call_import():
     org_id = uuid4()
     import_id = uuid4()
-    row_id = uuid4()
     ctx = call_import_row_usage_context(
         organization_id=org_id,
         workspace_id=None,
         call_import_id=import_id,
-        call_import_row_id=row_id,
     )
-    assert ctx.extra is not None
-    assert ctx.extra["call_import_row_id"] == str(row_id)
+    assert ctx.extra == {"call_import_id": str(import_id)}
     assert ctx.resource_type == "call_import"
+    assert "call_import_row_id" not in (ctx.extra or {})
 
 
 def test_call_import_ids_from_evaluation_context():
     org_id = uuid4()
     eval_id = uuid4()
     import_id = uuid4()
-    row_id = uuid4()
-    source_id = uuid4()
     ctx = call_import_evaluation_usage_context(
         organization_id=org_id,
         workspace_id=uuid4(),
         evaluation_id=eval_id,
         call_import_id=import_id,
-        evaluation_row_id=row_id,
-        call_import_row_id=source_id,
     )
     ids = call_import_ids_from_usage_context(ctx)
     assert ids["call_import_id"] == import_id
     assert ids["evaluation_id"] == eval_id
-    assert ids["evaluation_row_id"] == row_id
-    assert ids["call_import_row_id"] == source_id
+    assert ids["evaluation_row_id"] is None
+    assert ids["call_import_row_id"] is None
 
 
 def test_enrich_usage_context_workspace_noop_when_set():

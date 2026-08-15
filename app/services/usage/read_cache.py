@@ -63,6 +63,34 @@ def _redis_key(organization_id: UUID, endpoint: str, cache_key: str) -> str:
     return f"usage:read:{organization_id}:{endpoint}:{cache_key}"
 
 
+def _is_empty_usage_payload(endpoint: str, payload: dict[str, Any]) -> bool:
+    if endpoint == "summary":
+        totals = payload.get("totals") or {}
+        if int(totals.get("call_count") or 0) > 0:
+            return False
+        return not any(
+            int(totals.get(field) or 0) > 0
+            for field in (
+                "prompt_tokens",
+                "completion_tokens",
+                "audio_seconds",
+                "tts_characters",
+            )
+        )
+    if endpoint == "breakdown":
+        rows = payload.get("rows") or []
+        if not rows:
+            return True
+        return not any(
+            int(row.get("call_count") or 0) > 0
+            or int(row.get("total_tokens") or 0) > 0
+            or int(row.get("audio_seconds") or 0) > 0
+            or int(row.get("tts_characters") or 0) > 0
+            for row in rows
+        )
+    return False
+
+
 def get_cached_response(
     organization_id: UUID,
     endpoint: str,
@@ -75,7 +103,10 @@ def get_cached_response(
         raw = _client().get(_redis_key(organization_id, endpoint, cache_key))
         if not raw:
             return None
-        return json.loads(raw)
+        payload = json.loads(raw)
+        if _is_empty_usage_payload(endpoint, payload):
+            return None
+        return payload
     except (redis.RedisError, json.JSONDecodeError) as exc:
         logger.debug("usage read cache miss/error org={} endpoint={}: {}", organization_id, endpoint, exc)
         return None
@@ -89,6 +120,8 @@ def set_cached_response(
 ) -> None:
     ttl = cache_ttl_seconds()
     if ttl <= 0:
+        return
+    if _is_empty_usage_payload(endpoint, payload):
         return
     try:
         _client().set(

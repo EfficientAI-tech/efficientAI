@@ -1151,7 +1151,10 @@ def get_usage_summary(
     )
     cached = get_cached_response(organization_id, "summary", cache_key)
     if cached is not None:
-        return UsageSummaryResponse.model_validate(cached)
+        try:
+            return UsageSummaryResponse.model_validate(cached)
+        except Exception:
+            pass
 
     row = _summary_aggregate_query(
         db,
@@ -1235,7 +1238,10 @@ def get_usage_breakdown(
     )
     cached = get_cached_response(organization_id, "breakdown", cache_key)
     if cached is not None:
-        return UsageBreakdownResponse.model_validate(cached)
+        try:
+            return UsageBreakdownResponse.model_validate(cached)
+        except Exception:
+            pass
 
     dim = {
         "workspace": LLMUsageDaily.workspace_id,
@@ -1501,7 +1507,10 @@ def get_usage_filters(
     )
     cached = get_cached_response(organization_id, "filters", cache_key)
     if cached is not None:
-        return UsageFiltersResponse.model_validate(cached)
+        try:
+            return UsageFiltersResponse.model_validate(cached)
+        except Exception:
+            pass
 
     scoped_resource_id = resource_id or evaluation_id
 

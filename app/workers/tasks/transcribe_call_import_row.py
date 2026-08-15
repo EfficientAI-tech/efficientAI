@@ -390,8 +390,6 @@ def _persist_diarization_failure(
 
 def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     """STT / S3 / LLM diarisation without a long-lived DB session."""
-    from uuid import UUID
-
     from app.models.enums import ModelProvider
     from app.services.usage.call_import_context import call_import_row_usage_context
     from app.services.usage.context import llm_usage_context
@@ -411,7 +409,6 @@ def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     effective_prompt = ctx["effective_prompt"]
 
     evaluation_id = ctx.get("evaluation_id")
-    evaluation_row_id = ctx.get("evaluation_row_id")
     call_import_id = ctx.get("call_import_id")
     if not call_import_id:
         raise ValueError("call_import_id missing from transcribe pipeline context")
@@ -421,9 +418,7 @@ def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
             organization_id=organization_id,
             workspace_id=ctx.get("workspace_id"),
             call_import_id=call_import_id,
-            call_import_row_id=UUID(str(row_id)),
             evaluation_id=evaluation_id,
-            evaluation_row_id=evaluation_row_id,
         )
     ):
         return _run_diarization_pipeline_inner(

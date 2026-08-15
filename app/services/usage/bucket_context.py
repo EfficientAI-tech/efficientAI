@@ -9,6 +9,7 @@ from uuid import UUID
 _NONE = "__none__"
 
 # Stable keys stored in llm_usage_daily.context (extend without new columns).
+# evaluation_row_id / call_import_row_id may appear on legacy rows only.
 KNOWN_CONTEXT_KEYS = frozenset(
     {
         "resource_id",
