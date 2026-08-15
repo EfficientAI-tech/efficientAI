@@ -2997,8 +2997,14 @@ class ApiClient {
     return response.data
   }
 
-  async syncOrgUsageCatalog(): Promise<{ flushed_buckets: number }> {
-    const response = await this.client.post('/api/v1/organizations/usage/catalog/sync')
+  async getOrgUsageFxRate(): Promise<{
+    base: string
+    quote: string
+    rate: number
+    as_of: string
+    source: string
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/fx-rate')
     return response.data
   }
 

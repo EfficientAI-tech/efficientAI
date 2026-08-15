@@ -17,9 +17,10 @@ type Props = {
   onClose: () => void
   costs?: UsageCosts | null
   scopeLabel?: string
+  formatCost?: (usd?: number | null) => string
 }
 
-function formatCostUsd(usd?: number | null): string {
+function defaultFormatCostUsd(usd?: number | null): string {
   const amount = Number(usd || 0)
   if (!amount) return '$0.00'
   return new Intl.NumberFormat(undefined, {
@@ -45,6 +46,7 @@ export default function UsageCostBreakdownModal({
   onClose,
   costs,
   scopeLabel,
+  formatCost = defaultFormatCostUsd,
 }: Props) {
   if (!isOpen) return null
 
@@ -93,7 +95,7 @@ export default function UsageCostBreakdownModal({
             <div className="flex items-center justify-between bg-gray-50 px-4 py-3 border-b border-gray-200">
               <span className="text-sm font-medium text-gray-700">Estimated total</span>
               <span className="text-base font-semibold text-gray-900 tabular-nums">
-                {formatCostUsd(costs?.total_cost_usd)}
+                {formatCost(costs?.total_cost_usd)}
               </span>
             </div>
             {rows.length > 0 ? (
@@ -105,7 +107,7 @@ export default function UsageCostBreakdownModal({
                   >
                     <span className="text-gray-600">{item.label}</span>
                     <span className="font-medium text-gray-900 tabular-nums">
-                      {formatCostUsd(costs?.[item.key] as number)}
+                      {formatCost(costs?.[item.key] as number)}
                     </span>
                   </li>
                 ))}

@@ -70,6 +70,10 @@ def recompute_usage_costs_task(
             mark_job_completed(db, progress_job_id, updated)
         if updated:
             logger.info("Recomputed usage costs for {} rollup row(s)", updated)
+        if org_uuid is not None and updated:
+            from app.services.usage.read_cache import invalidate_org_usage_read_cache
+
+            invalidate_org_usage_read_cache(org_uuid)
         return {"updated_rows": updated, "job_id": job_id}
     except Exception as exc:
         if job_id:

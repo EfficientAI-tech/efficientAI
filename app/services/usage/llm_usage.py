@@ -38,7 +38,6 @@ _PENDING_TTL_SECONDS = 14 * 24 * 60 * 60
 _DEFAULT_FLUSH_BUCKET_BATCH_SIZE = 500
 _DEFAULT_FLUSH_MAX_BATCHES_PER_RUN = 30
 _DEFAULT_FLUSH_LOCK_TTL_SECONDS = 300
-_DEFAULT_API_FLUSH_COOLDOWN_SECONDS = 60
 _FLUSH_LOCK_WAIT_SECONDS = 3.0
 USAGE_KIND_LLM = "llm"
 USAGE_KIND_STT = "stt"
@@ -94,15 +93,6 @@ def _flush_lock_ttl_seconds() -> int:
     return _env_int(
         "USAGE_FLUSH_LOCK_TTL_SECONDS",
         _DEFAULT_FLUSH_LOCK_TTL_SECONDS,
-    )
-
-
-def api_flush_cooldown_seconds() -> int:
-    """Min seconds between API-triggered catalog syncs per org (0 = no cooldown)."""
-    return _env_int(
-        "USAGE_API_FLUSH_COOLDOWN_SECONDS",
-        _DEFAULT_API_FLUSH_COOLDOWN_SECONDS,
-        minimum=0,
     )
 
 
@@ -1160,43 +1150,28 @@ def _flush_pending_buffer(
         return 0
 
 
-def _catalog_flush_recently(organization_id: UUID) -> bool:
-    """Skip flush if another request flushed this org within the cooldown window."""
-    cooldown = api_flush_cooldown_seconds()
-    if cooldown <= 0:
-        return False
-    try:
-        client = _client()
-        key = f"usage:catalog_flush:{organization_id}"
-        return not client.set(key, "1", nx=True, ex=cooldown)
-    except redis.RedisError:
-        return False
-
-
-def flush_usage_to_catalog(db: Session, organization_id: UUID, *, force: bool = False) -> int:
+def flush_usage_to_catalog(db: Session, organization_id: UUID) -> int:
     """Claim Redis deltas + drain PG buffer into llm_usage_daily."""
     from app.services.usage.pricing import PricingResolver
+    from app.services.usage.read_cache import invalidate_org_usage_read_cache
 
     _recover_orphaned_claims()
-    skip_redis_flush = not force and _catalog_flush_recently(organization_id)
-    if skip_redis_flush and _has_pending_usage(organization_id):
-        skip_redis_flush = False
     flushed = 0
     pricing_resolver = PricingResolver(db)
-    if not skip_redis_flush:
-        redis_locked = _acquire_flush_lock(organization_id)
-        try:
-            if redis_locked:
-                flushed += _flush_redis_pending_to_catalog(
-                    db,
-                    organization_id,
-                    pricing_resolver=pricing_resolver,
-                )
-        finally:
-            if redis_locked:
-                _release_flush_lock(organization_id)
+    redis_locked = _acquire_flush_lock(organization_id)
+    try:
+        if redis_locked:
+            flushed += _flush_redis_pending_to_catalog(
+                db,
+                organization_id,
+                pricing_resolver=pricing_resolver,
+            )
+    finally:
+        if redis_locked:
+            _release_flush_lock(organization_id)
 
     flushed += _flush_pending_buffer(db, organization_id, pricing_resolver=pricing_resolver)
+    invalidate_org_usage_read_cache(organization_id)
     return flushed
 
 

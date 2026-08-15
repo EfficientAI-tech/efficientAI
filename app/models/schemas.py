@@ -2464,6 +2464,8 @@ class CronJobResponse(BaseModel):
     id: UUID
     organization_id: UUID
     name: str
+    job_type: str = "evaluator_run"
+    is_system: bool = False
     cron_expression: str
     timezone: str
     max_runs: int

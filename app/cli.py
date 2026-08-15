@@ -709,7 +709,6 @@ def start_all(
     worker_process = None
     worker_imports_process = None
     worker_usage_process = None
-    beat_process = None
     telephony_process = None
 
     def _terminate(proc, label: str):
@@ -729,9 +728,8 @@ def start_all(
 
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process, worker_imports_process, worker_usage_process, beat_process, telephony_process
+        nonlocal worker_process, worker_imports_process, worker_usage_process, telephony_process
         _terminate(telephony_process, "Telephony media server")
-        _terminate(beat_process, "Celery beat")
         _terminate(worker_process, "Celery worker (default)")
         _terminate(worker_imports_process, "Celery worker (imports)")
         _terminate(worker_usage_process, "Celery worker (usage)")
@@ -912,17 +910,6 @@ def start_all(
                 prefix="[WORKER-USAGE]",
             )
 
-        beat_process = _spawn_worker(
-            [
-                "celery",
-                "-A",
-                "app.workers.celery_app",
-                "beat",
-                f"--loglevel={worker_loglevel}",
-            ],
-            label="Celery beat (periodic flush_usage_counters)",
-            prefix="[BEAT]",
-        )
     except FileNotFoundError:
         click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
         sys.exit(1)

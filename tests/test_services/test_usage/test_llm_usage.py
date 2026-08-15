@@ -162,7 +162,7 @@ class _FakeRedis:
 
     def scan_iter(self, match: str = "*", count: int = 100):
         prefix = match.rstrip("*")
-        for key in list(self.hashes.keys()):
+        for key in list(self.hashes.keys()) + list(self.kv.keys()):
             if key.startswith(prefix):
                 yield key
 
@@ -172,6 +172,9 @@ def fake_redis(monkeypatch):
     """Always use in-memory Redis for this module — never touch real REDIS_URL."""
     client = _FakeRedis()
     usage_mod._redis = client
+    import app.services.usage.read_cache as read_cache_mod
+
+    read_cache_mod._redis = client
 
     def _forbid_real_redis(*_args, **_kwargs):
         raise AssertionError(
@@ -179,8 +182,10 @@ def fake_redis(monkeypatch):
         )
 
     monkeypatch.setattr(usage_mod.redis, "from_url", _forbid_real_redis)
+    monkeypatch.setattr(read_cache_mod.redis, "from_url", _forbid_real_redis)
     yield client
     usage_mod._redis = None
+    read_cache_mod._redis = None
 
 
 @pytest.fixture

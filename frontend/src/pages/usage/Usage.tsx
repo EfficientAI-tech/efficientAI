@@ -10,6 +10,12 @@ import UsageDrillPath from './UsageDrillPath'
 import UsageCostBreakdownModal from './UsageCostBreakdownModal'
 import { defaultUsageDateRange, isRangeWithinMaxDays, rangeForDays } from './UsageDateRangePicker'
 import { getUsageTimezone } from './usageTimezone'
+import {
+  formatUsageCostUsd,
+  getUsageDisplayCurrency,
+  setUsageDisplayCurrency,
+  type UsageDisplayCurrency,
+} from '../../lib/usageCurrency'
 import { useLicenseStore } from '../../store/licenseStore'
 import {
   CALL_IMPORT_BATCH_HEADLINE,
@@ -167,17 +173,6 @@ function sortRows(rows: BreakdownRow[]): BreakdownRow[] {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value || 0)
-}
-
-function formatCostUsd(usd?: number | null): string {
-  const amount = Number(usd || 0)
-  if (!amount) return '—'
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(amount)
 }
 
 function rowCostUsd(row: Pick<BreakdownRow, 'costs' | 'total_cost_micro_usd'>): number {
@@ -570,6 +565,18 @@ export default function Usage() {
       ? null
       : usagePolicy.max_history_days ?? 7
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false)
+  const [displayCurrency, setDisplayCurrency] = useState<UsageDisplayCurrency>(() =>
+    getUsageDisplayCurrency(),
+  )
+
+  const { data: fxRate } = useQuery({
+    queryKey: ['org-usage', 'fx-rate'],
+    queryFn: () => apiClient.getOrgUsageFxRate(),
+    staleTime: 60 * 60 * 1000,
+  })
+  const inrRate = fxRate?.rate ?? 83
+  const formatCostUsd = (usd?: number | null) =>
+    formatUsageCostUsd(usd, displayCurrency, inrRate)
 
   useEffect(() => {
     if (!licenseLoaded) {
@@ -637,24 +644,14 @@ export default function Usage() {
     staleTime: 60 * 1000,
   }
 
-  const catalogSync = useQuery({
-    queryKey: ['org-usage', 'catalog-sync'],
-    queryFn: () => apiClient.syncOrgUsageCatalog(),
-    staleTime: 60 * 1000,
-    refetchOnWindowFocus: false,
-  })
-
-  const usageReadsReady = catalogSync.isSuccess || catalogSync.isError
-
   const { data: summary, isLoading: summaryLoading, isFetching: summaryFetching } = useQuery({
     queryKey: ['org-usage', 'summary', dataParams],
     queryFn: () => apiClient.getOrgUsageSummary(dataParams),
-    enabled: usageReadsReady,
     ...usageQueryDefaults,
     placeholderData: keepPreviousData,
   })
 
-  const usageStatsLoading = catalogSync.isLoading || summaryLoading
+  const usageStatsLoading = summaryLoading
 
   const {
     data: breakdown,
@@ -668,7 +665,7 @@ export default function Usage() {
         group_by: groupBy,
         limit: 100,
       }),
-    enabled: usageReadsReady && !showWorkspaceComposite,
+    enabled: !showWorkspaceComposite,
     ...usageQueryDefaults,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery || previousQuery.queryKey[2] !== groupBy) return undefined
@@ -688,7 +685,7 @@ export default function Usage() {
         group_by: 'call_import',
         limit: 100,
       }),
-    enabled: usageReadsReady && showWorkspaceComposite,
+    enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
 
@@ -704,14 +701,14 @@ export default function Usage() {
         group_by: 'resource',
         limit: 100,
       }),
-    enabled: usageReadsReady && showWorkspaceComposite,
+    enabled: showWorkspaceComposite,
     ...usageQueryDefaults,
   })
 
   const { data: filterOptions, isFetching: filtersLoading } = useQuery({
     queryKey: ['org-usage', 'filters', scopeParams],
     queryFn: () => apiClient.getOrgUsageFilters(scopeParams),
-    enabled: usageReadsReady,
+    enabled: true,
     staleTime: 60 * 1000,
     placeholderData: (previousData, previousQuery) => {
       if (!previousQuery) return undefined
@@ -1107,6 +1104,29 @@ export default function Usage() {
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
           <div className="flex items-center gap-3">
+            <div
+              className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs font-medium"
+              role="group"
+              aria-label="Display currency"
+            >
+              {(['USD', 'INR'] as const).map((currency) => (
+                <button
+                  key={currency}
+                  type="button"
+                  onClick={() => {
+                    setDisplayCurrency(currency)
+                    setUsageDisplayCurrency(currency)
+                  }}
+                  className={`rounded-md px-2 py-1 transition-colors ${
+                    displayCurrency === currency
+                      ? 'bg-gray-900 text-white'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {currency}
+                </button>
+              ))}
+            </div>
             {showCostBreakdown ? (
               <button
                 type="button"
@@ -1386,6 +1406,7 @@ export default function Usage() {
         onClose={() => setCostBreakdownOpen(false)}
         costs={totals?.costs}
         scopeLabel={scopeSubtitle}
+        formatCost={formatCostUsd}
       />
     </div>
   )

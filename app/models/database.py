@@ -1207,10 +1207,13 @@ class CronJob(Base):
     __tablename__ = "cron_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True, index=True)
     
     # Basic information
     name = Column(String(255), nullable=False)
+    job_type = Column(String(64), nullable=False, default="evaluator_run")
+    is_system = Column(Boolean, nullable=False, default=False)
+    config = Column(JSON, nullable=False, default=dict)
     cron_expression = Column(String(100), nullable=False)  # e.g., "0 9 * * 1-5"
     timezone = Column(String(100), nullable=False, default="UTC")
     

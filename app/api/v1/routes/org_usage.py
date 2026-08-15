@@ -27,7 +27,12 @@ from app.models.database import (
     LLMUsageDaily,
     Workspace,
 )
-from app.services.usage.llm_usage import flush_usage_to_catalog
+from app.services.usage.read_cache import (
+    cache_key_for,
+    get_cached_response,
+    set_cached_response,
+)
+from app.services.usage.fx_rates import get_usd_inr_rate
 from app.services.usage.usage_costs import costs_from_micro
 from app.services.usage.usage_labels import (
     labels_for_call_import_ids,
@@ -123,8 +128,12 @@ class UsageTotals(BaseModel):
     costs: UsageCosts = Field(default_factory=UsageCosts)
 
 
-class UsageCatalogSyncResponse(BaseModel):
-    flushed_buckets: int = 0
+class UsageFxRateResponse(BaseModel):
+    base: str = "USD"
+    quote: str = "INR"
+    rate: float
+    as_of: datetime
+    source: str
 
 
 class UsagePolicyMeta(BaseModel):
@@ -1088,14 +1097,16 @@ def _summary_aggregate_query(
     )
 
 
-@router.post("/catalog/sync", response_model=UsageCatalogSyncResponse)
-def sync_usage_catalog(
-    organization_id: UUID = Depends(get_organization_id),
-    db: Session = Depends(get_db),
-):
-    """Drain Redis usage counters into Postgres (rate-limited per org via Redis)."""
-    flushed = flush_usage_to_catalog(db, organization_id)
-    return UsageCatalogSyncResponse(flushed_buckets=flushed)
+@router.get("/fx-rate", response_model=UsageFxRateResponse)
+def get_usage_fx_rate():
+    payload = get_usd_inr_rate()
+    return UsageFxRateResponse(
+        base=payload["base"],
+        quote=payload["quote"],
+        rate=float(payload["rate"]),
+        as_of=datetime.fromisoformat(payload["as_of"]),
+        source=payload["source"],
+    )
 
 
 @router.get("/summary", response_model=UsageSummaryResponse)
@@ -1125,6 +1136,23 @@ def get_usage_summary(
     if display_end < display_start:
         raise HTTPException(status_code=400, detail="end must be >= start")
 
+    cache_key = cache_key_for(
+        access,
+        workspace_id=workspace_id,
+        product_section=product_section,
+        model=model,
+        resource_id=resource_id,
+        usage_kind=usage_kind,
+        call_import_id=call_import_id,
+        evaluation_id=evaluation_id,
+        evaluation_row_id=evaluation_row_id,
+        dataset=dataset,
+        tag_id=tag_id,
+    )
+    cached = get_cached_response(organization_id, "summary", cache_key)
+    if cached is not None:
+        return UsageSummaryResponse.model_validate(cached)
+
     row = _summary_aggregate_query(
         db,
         organization_id=organization_id,
@@ -1143,13 +1171,20 @@ def get_usage_summary(
         tag_id=tag_id,
     ).one()
     totals = _usage_totals_from_row(row)
-    return UsageSummaryResponse(
+    response = UsageSummaryResponse(
         start=display_start,
         end=display_end,
         totals=UsageTotals(**totals),
         usage_policy=_usage_policy_meta(access),
         last_updated_at=_last_updated(db, organization_id),
     )
+    set_cached_response(
+        organization_id,
+        "summary",
+        cache_key,
+        response.model_dump(mode="json"),
+    )
+    return response
 
 
 @router.get("/breakdown", response_model=UsageBreakdownResponse)
@@ -1181,6 +1216,26 @@ def get_usage_breakdown(
     display_end = access.display_end
     if display_end < display_start:
         raise HTTPException(status_code=400, detail="end must be >= start")
+
+    cache_key = cache_key_for(
+        access,
+        group_by=group_by,
+        workspace_id=workspace_id,
+        product_section=product_section,
+        model=model,
+        resource_id=resource_id,
+        usage_kind=usage_kind,
+        call_import_id=call_import_id,
+        evaluation_id=evaluation_id,
+        evaluation_row_id=evaluation_row_id,
+        dataset=dataset,
+        tag_id=tag_id,
+        limit=limit,
+        offset=offset,
+    )
+    cached = get_cached_response(organization_id, "breakdown", cache_key)
+    if cached is not None:
+        return UsageBreakdownResponse.model_validate(cached)
 
     dim = {
         "workspace": LLMUsageDaily.workspace_id,
@@ -1386,7 +1441,7 @@ def get_usage_breakdown(
                 )
             )
 
-    return UsageBreakdownResponse(
+    response = UsageBreakdownResponse(
         start=display_start,
         end=display_end,
         group_by=group_by,
@@ -1396,6 +1451,13 @@ def get_usage_breakdown(
         usage_policy=_usage_policy_meta(access),
         last_updated_at=_last_updated(db, organization_id),
     )
+    set_cached_response(
+        organization_id,
+        "breakdown",
+        cache_key,
+        response.model_dump(mode="json"),
+    )
+    return response
 
 
 @router.get("/filters", response_model=UsageFiltersResponse)
@@ -1423,6 +1485,23 @@ def get_usage_filters(
     filter_start = access.filter_start
     filter_end = access.filter_end
     enforced_floor = access.enforced_filter_floor
+
+    cache_key = cache_key_for(
+        access,
+        workspace_id=workspace_id,
+        product_section=product_section,
+        model=model,
+        resource_id=resource_id,
+        usage_kind=usage_kind,
+        call_import_id=call_import_id,
+        evaluation_id=evaluation_id,
+        dataset=dataset,
+        tag_id=tag_id,
+        q=q,
+    )
+    cached = get_cached_response(organization_id, "filters", cache_key)
+    if cached is not None:
+        return UsageFiltersResponse.model_validate(cached)
 
     scoped_resource_id = resource_id or evaluation_id
 
@@ -1606,7 +1685,7 @@ def get_usage_filters(
         )
     ]
 
-    return UsageFiltersResponse(
+    response = UsageFiltersResponse(
         workspaces=workspaces,
         product_sections=[
             {"id": s, "label": SECTION_LABELS.get(s, s)} for s in sections
@@ -1619,4 +1698,11 @@ def get_usage_filters(
         datasets=datasets,
         tags=tags,
     )
+    set_cached_response(
+        organization_id,
+        "filters",
+        cache_key,
+        response.model_dump(mode="json"),
+    )
+    return response
 

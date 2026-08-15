@@ -9,6 +9,12 @@ import { useToast } from '../../hooks/useToast'
 import Button from '../../components/Button'
 import SearchableSelect from './SearchableSelect'
 import { usageTheme } from './usageTheme'
+import {
+  formatUsageCostUsd,
+  getUsageDisplayCurrency,
+  setUsageDisplayCurrency,
+  type UsageDisplayCurrency,
+} from '../../lib/usageCurrency'
 
 type UsageKind = 'llm' | 'stt' | 'tts'
 
@@ -74,15 +80,6 @@ function FormField({
   )
 }
 
-function formatUsd(value?: number | null): string {
-  if (value == null || Number.isNaN(value)) return '—'
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
-  }).format(value)
-}
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
@@ -92,6 +89,18 @@ export default function UsagePricing() {
   const isAdmin = useIsAdmin()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+
+  const [displayCurrency, setDisplayCurrency] = useState<UsageDisplayCurrency>(() =>
+    getUsageDisplayCurrency(),
+  )
+  const { data: fxRate } = useQuery({
+    queryKey: ['org-usage', 'fx-rate'],
+    queryFn: () => apiClient.getOrgUsageFxRate(),
+    staleTime: 60 * 60 * 1000,
+  })
+  const inrRate = fxRate?.rate ?? 83
+  const formatDisplayRate = (value?: number | null) =>
+    formatUsageCostUsd(value, displayCurrency, inrRate)
 
   const [model, setModel] = useState('')
   const [usageKind, setUsageKind] = useState<UsageKind>('llm')
@@ -197,6 +206,29 @@ export default function UsagePricing() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-semibold text-gray-900">Pricing overrides</h1>
+              <div
+                className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs font-medium"
+                role="group"
+                aria-label="Display currency"
+              >
+                {(['USD', 'INR'] as const).map((currency) => (
+                  <button
+                    key={currency}
+                    type="button"
+                    onClick={() => {
+                      setDisplayCurrency(currency)
+                      setUsageDisplayCurrency(currency)
+                    }}
+                    className={`rounded-md px-2 py-1 transition-colors ${
+                      displayCurrency === currency
+                        ? 'bg-gray-900 text-white'
+                        : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {currency}
+                  </button>
+                ))}
+              </div>
               <div className="relative group">
                 <button
                   type="button"
@@ -358,16 +390,16 @@ export default function UsagePricing() {
                         {row.effective_to ? ` → ${row.effective_to}` : ''}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
-                        {formatUsd(row.rates.input_per_1m)}
+                        {formatDisplayRate(row.rates.input_per_1m)}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
-                        {formatUsd(row.rates.output_per_1m)}
+                        {formatDisplayRate(row.rates.output_per_1m)}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
-                        {formatUsd(row.rates.audio_per_minute)}
+                        {formatDisplayRate(row.rates.audio_per_minute)}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
-                        {formatUsd(row.rates.tts_per_1m_characters)}
+                        {formatDisplayRate(row.rates.tts_per_1m_characters)}
                       </td>
                       <td className="px-4 py-2.5 text-right">
                         <button
