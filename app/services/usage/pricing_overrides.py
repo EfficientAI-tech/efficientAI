@@ -54,9 +54,21 @@ def _known_models(db: Session) -> Set[str]:
     return models
 
 
-def validate_model_name(db: Session, model: str) -> None:
-    if model not in _known_models(db):
-        raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
+def validate_model_name(
+    db: Session,
+    model: str,
+    *,
+    organization_id: Optional[UUID] = None,
+) -> None:
+    from app.services.usage.enabled_models import org_pricing_eligible_models
+
+    if organization_id is not None:
+        eligible = set(org_pricing_eligible_models(db, organization_id))
+        if model in eligible:
+            return
+    if model in _known_models(db):
+        return
+    raise HTTPException(status_code=400, detail=f"Unknown model: {model}")
 
 
 def _validate_usage_kind(usage_kind: str) -> str:
@@ -185,7 +197,7 @@ def get_effective_rate(
     usage_kind: str,
     as_of: date,
 ) -> Dict[str, Any]:
-    validate_model_name(db, model)
+    validate_model_name(db, model, organization_id=organization_id)
     kind = _validate_usage_kind(usage_kind)
     resolver = PricingResolver(db)
     effective = resolver.resolve_rate(
@@ -301,7 +313,7 @@ def upsert_override(
     rates: Dict[str, Any],
     recompute: bool = True,
 ) -> Dict[str, Any]:
-    validate_model_name(db, model)
+    validate_model_name(db, model, organization_id=organization_id)
     kind = _validate_usage_kind(usage_kind)
     if effective_to is not None and effective_to < effective_from:
         raise HTTPException(status_code=400, detail="effective_to must be >= effective_from")
@@ -406,7 +418,7 @@ def delete_override(
     effective_from: Optional[date] = None,
     recompute: bool = True,
 ) -> Dict[str, Any]:
-    validate_model_name(db, model)
+    validate_model_name(db, model, organization_id=organization_id)
     kind = _validate_usage_kind(usage_kind)
     filters = [
         "organization_id = CAST(:organization_id AS uuid)",

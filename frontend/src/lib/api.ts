@@ -3443,6 +3443,37 @@ class ApiClient {
     return response.data
   }
 
+  async listUsagePricingAvailableModels(): Promise<{ models: string[] }> {
+    const response = await this.client.get(
+      '/api/v1/organizations/usage/pricing/available-models',
+    )
+    return response.data
+  }
+
+  async getUsagePricingEffective(
+    model: string,
+    params?: { usage_kind?: string; as_of?: string },
+  ): Promise<{
+    model: string
+    usage_kind: string
+    as_of: string
+    catalog_rates?: Record<string, number | null> | null
+    effective_rates?: Record<string, number | null> | null
+    effective_source?: string | null
+    has_override: boolean
+    override?: {
+      effective_from: string
+      effective_to?: string | null
+      rates: Record<string, number | null>
+    } | null
+  }> {
+    const response = await this.client.get(
+      `/api/v1/organizations/usage/pricing/overrides/${encodeURIComponent(model)}`,
+      { params },
+    )
+    return response.data
+  }
+
   async listUsagePricingOverrides(params?: {
     model?: string
     usage_kind?: string

@@ -112,6 +112,22 @@ class UsageRecomputeJobResponse(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class AvailableModelsResponse(BaseModel):
+    models: List[str]
+
+
+@router.get("/available-models", response_model=AvailableModelsResponse)
+def list_pricing_available_models(
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    from app.services.usage.enabled_models import org_pricing_eligible_models
+
+    return AvailableModelsResponse(
+        models=org_pricing_eligible_models(db, organization_id),
+    )
+
+
 @router.get("", response_model=List[EffectivePricingResponse])
 def list_effective_usage_pricing(
     usage_kind: Optional[str] = Query(None),

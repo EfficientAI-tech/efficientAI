@@ -63,6 +63,15 @@ export function resolveLLMModelsForCredential(
   ) {
     return { mode: 'gateway_direct', model: gatewayModel }
   }
+  const allowlist = credential?.enabled_models?.filter((m) => m?.trim()) ?? []
+  if (allowlist.length > 0) {
+    const allowed = new Set(allowlist)
+    const filtered = catalogModels.filter((m) => allowed.has(m))
+    if (gatewayModel && !filtered.includes(gatewayModel)) {
+      return { mode: 'catalog', models: [gatewayModel, ...filtered] }
+    }
+    return { mode: 'catalog', models: filtered }
+  }
   return { mode: 'catalog', models: catalogModels }
 }
 

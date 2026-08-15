@@ -406,6 +406,7 @@ export interface AIProvider {
   gateway_auth_secret_env?: string | null
   has_gateway_auth_secret?: boolean
   gateway_extra_headers?: Record<string, string> | null
+  enabled_models?: string[] | null
   /** True when provider secrets are resolved by the Bifrost gateway. */
   gateway_managed?: boolean
   effective_routing?: EffectiveCredentialRouting
@@ -428,6 +429,7 @@ export interface AIProviderCreate {
   gateway_auth_secret_env?: string | null
   gateway_auth_secret?: string | null
   gateway_extra_headers?: Record<string, string> | null
+  enabled_models?: string[] | null
   /** Mark the new credential as the default for (org, provider). */
   is_default?: boolean
 }
@@ -446,6 +448,7 @@ export interface AIProviderUpdate {
   gateway_auth_secret?: string | null
   clear_gateway_auth_secret?: boolean
   gateway_extra_headers?: Record<string, string> | null
+  enabled_models?: string[] | null
 }
 
 export enum VoiceBundleType {

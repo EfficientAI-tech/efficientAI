@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import { Card, CardBody, Spinner } from '@heroui/react'
-import { Activity, ChevronRight, CircleDollarSign } from 'lucide-react'
+import { ChevronRight, CircleDollarSign } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import { useIsAdmin } from '../../hooks/useRole'
 import UsageFiltersBar from './UsageFiltersBar'
 import UsageDrillPath from './UsageDrillPath'
 import UsageCostBreakdownModal from './UsageCostBreakdownModal'
 import { defaultUsageDateRange, isRangeWithinMaxDays, rangeForDays } from './UsageDateRangePicker'
 import { getUsageTimezone } from './usageTimezone'
 import {
+  formatFxRateHint,
   formatUsageCostUsd,
   getUsageDisplayCurrency,
   setUsageDisplayCurrency,
@@ -556,7 +556,6 @@ export default function Usage() {
   const model = searchParams.get('model') || ''
   const usageKind = (searchParams.get('usage_kind') as Kind) || ''
   const productSection = searchParams.get('product_section') || ''
-  const isAdmin = useIsAdmin()
   const { usagePolicy, isLoaded: licenseLoaded, fetchLicense } = useLicenseStore()
   const showOssUsageNotice = licenseLoaded && !usagePolicy.extended_history
   const maxHistoryDays = !licenseLoaded
@@ -573,8 +572,10 @@ export default function Usage() {
     queryKey: ['org-usage', 'fx-rate'],
     queryFn: () => apiClient.getOrgUsageFxRate(),
     staleTime: 60 * 60 * 1000,
+    refetchOnMount: 'always',
   })
-  const inrRate = fxRate?.rate ?? 83
+  const inrRate = fxRate?.rate ?? 95
+  const fxRateHint = formatFxRateHint(inrRate, fxRate?.as_of, fxRate?.source)
   const formatCostUsd = (usd?: number | null) =>
     formatUsageCostUsd(usd, displayCurrency, inrRate)
 
@@ -1097,69 +1098,48 @@ export default function Usage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Activity className="h-6 w-6 text-primary-600 shrink-0" />
-            Usage
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Cards show usage for <span className="font-medium text-gray-700">{scopeSubtitle}</span>.
-            Drill down: workspaces → call imports or product areas → evaluations / models.
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1.5 shrink-0">
-          <div className="flex items-center gap-3">
-            <div
-              className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs font-medium"
-              role="group"
-              aria-label="Display currency"
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <div
+          className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 text-xs font-medium"
+          role="group"
+          aria-label="Display currency"
+        >
+          {(['USD', 'INR'] as const).map((currency) => (
+            <button
+              key={currency}
+              type="button"
+              title={currency === 'INR' ? fxRateHint : undefined}
+              onClick={() => {
+                setDisplayCurrency(currency)
+                setUsageDisplayCurrency(currency)
+              }}
+              className={`rounded-md px-2.5 py-1 transition-colors ${
+                displayCurrency === currency
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-600 hover:bg-gray-50'
+              }`}
             >
-              {(['USD', 'INR'] as const).map((currency) => (
-                <button
-                  key={currency}
-                  type="button"
-                  onClick={() => {
-                    setDisplayCurrency(currency)
-                    setUsageDisplayCurrency(currency)
-                  }}
-                  className={`rounded-md px-2 py-1 transition-colors ${
-                    displayCurrency === currency
-                      ? 'bg-gray-900 text-white'
-                      : 'text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {currency}
-                </button>
-              ))}
-            </div>
-            {showCostBreakdown ? (
-              <button
-                type="button"
-                onClick={() => setCostBreakdownOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
-                title={formatCostUsd(estimatedTotalCost)}
-              >
-                <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
-                <span className="whitespace-nowrap">Cost breakdown</span>
-              </button>
-            ) : null}
-            {isAdmin && licenseLoaded && usagePolicy.extended_history ? (
-              <Link
-                to="/usage/pricing"
-                className="text-sm text-primary-600 hover:text-primary-700 whitespace-nowrap"
-              >
-                Pricing overrides
-              </Link>
-            ) : null}
-          </div>
-          {summary?.last_updated_at ? (
-            <p className="text-[11px] text-gray-400 whitespace-nowrap">
-              Updated {new Date(summary.last_updated_at).toLocaleString()}
-            </p>
-          ) : null}
+              {currency}
+            </button>
+          ))}
         </div>
+        {showCostBreakdown ? (
+          <button
+            type="button"
+            onClick={() => setCostBreakdownOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 hover:text-gray-900"
+            title={formatCostUsd(estimatedTotalCost)}
+          >
+            <CircleDollarSign className="h-4 w-4 shrink-0 text-gray-500" />
+            <span className="whitespace-nowrap">Cost breakdown</span>
+          </button>
+        ) : null}
+        {summary?.last_updated_at ? (
+          <p className="text-[11px] text-gray-400 whitespace-nowrap">
+            Updated {new Date(summary.last_updated_at).toLocaleString()}
+          </p>
+        ) : null}
       </div>
 
       {summaryError ? (

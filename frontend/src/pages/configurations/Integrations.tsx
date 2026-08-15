@@ -21,6 +21,7 @@ import {
   getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
 
@@ -65,6 +66,8 @@ export default function Integrations() {
   const [gatewayAuthSecret, setGatewayAuthSecret] = useState('')
   const [clearGatewayAuthSecret, setClearGatewayAuthSecret] = useState(false)
   const [gatewayExtraHeadersJson, setGatewayExtraHeadersJson] = useState('')
+  const [aiProviderWizardStep, setAiProviderWizardStep] = useState<1 | 2>(1)
+  const [enabledModels, setEnabledModels] = useState<string[]>([])
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDeleteAIProviderModal, setShowDeleteAIProviderModal] = useState(false)
   const [showDeleteTelephonyModal, setShowDeleteTelephonyModal] = useState(false)
@@ -363,6 +366,7 @@ export default function Integrations() {
     setCredentialRoutingMode('inherit'); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
     setGatewayAuthHeader(''); setGatewayAuthSecretEnv(''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson('')
+    setAiProviderWizardStep(1); setEnabledModels([])
     setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonyVoiceAppId(''); setTelephonySipDomain('')
     setEditingTelephonyConfigId(null); setTelephonyName('')
   }
@@ -387,6 +391,8 @@ export default function Integrations() {
     setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
     setGatewayAuthSecretEnv(provider.gateway_auth_secret_env || ''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson(formatGatewayExtraHeadersJson(provider.gateway_extra_headers))
+    setEnabledModels(provider.enabled_models || [])
+    setAiProviderWizardStep(1)
     setShowProviderDropdown(false); setIsEditMode(true); setShowModal(true)
   }
 
@@ -434,8 +440,29 @@ export default function Integrations() {
         return
       }
 
+      const resolvedEnabledModels = enabledModels.length > 0 ? enabledModels : null
+
+      if (aiProviderWizardStep === 1) {
+        if (!isEditMode && !selectedProvider) {
+          showToast('Please select a provider', 'error')
+          return
+        }
+        if (!isEditMode && aiProviderRequiresApiKey && !apiKey.trim()) {
+          showToast('Please enter an API key', 'error')
+          return
+        }
+        if (!isEditMode && selectedProvider === ModelProvider.AZURE && !azureEndpointUrl.trim()) {
+          showToast('Please enter your Azure OpenAI endpoint URL', 'error')
+          return
+        }
+        setAiProviderWizardStep(2)
+        return
+      }
+
       if (isEditMode && selectedAIProvider) {
-        const updateData: Partial<AIProviderUpdate> = {}
+        const updateData: Partial<AIProviderUpdate> = {
+          enabled_models: resolvedEnabledModels,
+        }
         if (apiKey.trim()) updateData.api_key = apiKey
         if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
         const trimmedAzureEndpointUrl = azureEndpointUrl.trim()
@@ -475,7 +502,6 @@ export default function Integrations() {
         if (gatewayExtraHeadersJson.trim() !== existingExtraHeadersJson.trim()) {
           updateData.gateway_extra_headers = parsedGatewayExtraHeaders
         }
-        if (Object.keys(updateData).length === 0) { resetForm(); return }
         updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
       } else {
         if (!selectedProvider) {
@@ -503,6 +529,7 @@ export default function Integrations() {
           gateway_auth_secret_env: gatewayAuthSecretEnv.trim() || undefined,
           gateway_auth_secret: gatewayAuthSecret.trim() || undefined,
           gateway_extra_headers: parsedGatewayExtraHeaders || undefined,
+          enabled_models: resolvedEnabledModels || undefined,
         })
       }
     } else if (integrationType === 'telephony_provider') {
@@ -799,6 +826,14 @@ export default function Integrations() {
                             {provider.gateway_model && (
                               <span className="px-2 py-0.5 text-xs font-medium bg-violet-100 text-violet-700 rounded truncate max-w-[180px]" title={provider.gateway_model}>
                                 {provider.gateway_model}
+                              </span>
+                            )}
+                            {provider.enabled_models && provider.enabled_models.length > 0 && (
+                              <span
+                                className="px-2 py-0.5 text-xs font-medium bg-sky-100 text-sky-700 rounded"
+                                title={provider.enabled_models.join(', ')}
+                              >
+                                {provider.enabled_models.length} model{provider.enabled_models.length === 1 ? '' : 's'}
                               </span>
                             )}
                             {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
@@ -1119,9 +1154,25 @@ export default function Integrations() {
 
       {showModal && renderModal(
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto">
+          <div className={`bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-y-auto ${integrationType === 'ai_provider' && aiProviderWizardStep === 2 ? 'max-w-2xl' : 'max-w-md'}`}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">{isEditMode ? (integrationType === 'ai_provider' ? 'Edit AI Provider' : integrationType === 'telephony_provider' ? 'Edit Telephony Provider' : 'Edit Integration') : 'Add Integration'}</h3>
+              <div>
+                <h3 className="text-lg font-semibold">
+                  {isEditMode
+                    ? integrationType === 'ai_provider'
+                      ? 'Edit AI Provider'
+                      : integrationType === 'telephony_provider'
+                        ? 'Edit Telephony Provider'
+                        : 'Edit Integration'
+                    : 'Add Integration'}
+                </h3>
+                {integrationType === 'ai_provider' ? (
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Step {aiProviderWizardStep} of 2 —{' '}
+                    {aiProviderWizardStep === 1 ? 'Credentials' : 'Enabled models'}
+                  </p>
+                ) : null}
+              </div>
               <button onClick={resetForm} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -1140,6 +1191,7 @@ export default function Integrations() {
                         setIntegrationType('ai_provider')
                         setSelectedPlatform(null)
                         setSelectedProvider(null)
+                        setAiProviderWizardStep(1)
                       }}
                       className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'ai_provider'
                         ? 'border-primary-500 bg-primary-50'
@@ -1237,7 +1289,7 @@ export default function Integrations() {
                 </>
               )}
 
-              {integrationType === 'ai_provider' && (
+              {integrationType === 'ai_provider' && aiProviderWizardStep === 1 && (
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Provider *</label>
@@ -1448,6 +1500,15 @@ export default function Integrations() {
                 </>
               )}
 
+              {integrationType === 'ai_provider' && aiProviderWizardStep === 2 && (selectedProvider || selectedAIProvider) && (
+                <AIProviderEnabledModelsStep
+                  provider={(selectedProvider || selectedAIProvider!.provider) as ModelProvider}
+                  enabledModels={enabledModels}
+                  onChange={setEnabledModels}
+                  gatewayModel={gatewayModel}
+                />
+              )}
+
               {integrationType === 'telephony_provider' && (
                 <>
                   <div>
@@ -1546,11 +1607,58 @@ export default function Integrations() {
 
               <div className="flex gap-3 pt-4">
                 <Button type="button" variant="outline" onClick={resetForm} className="flex-1">Cancel</Button>
-                <Button type="submit" variant="primary"
-                  isLoading={integrationType === 'voice_platform' ? (isEditMode ? updateIntegrationMutation.isPending : createIntegrationMutation.isPending) : integrationType === 'ai_provider' ? (isEditMode ? updateAIProviderMutation.isPending : createAIProviderMutation.isPending) : saveTelephonyConfigMutation.isPending}
-                  disabled={!integrationType} className="flex-1">
-                  {isEditMode ? (integrationType === 'ai_provider' ? 'Update Provider' : integrationType === 'telephony_provider' ? 'Update Telephony' : 'Update Integration') : (integrationType === 'ai_provider' ? 'Configure Provider' : integrationType === 'telephony_provider' ? 'Configure Telephony' : 'Add Integration')}
-                </Button>
+                {integrationType === 'ai_provider' && aiProviderWizardStep === 2 ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setAiProviderWizardStep(1)}
+                      className="flex-1"
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      isLoading={
+                        isEditMode
+                          ? updateAIProviderMutation.isPending
+                          : createAIProviderMutation.isPending
+                      }
+                      className="flex-1"
+                    >
+                      {isEditMode ? 'Save provider' : 'Configure provider'}
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    isLoading={
+                      integrationType === 'voice_platform'
+                        ? isEditMode
+                          ? updateIntegrationMutation.isPending
+                          : createIntegrationMutation.isPending
+                        : integrationType === 'ai_provider'
+                          ? false
+                          : integrationType === 'telephony_provider'
+                            ? saveTelephonyConfigMutation.isPending
+                            : false
+                    }
+                    disabled={!integrationType}
+                    className="flex-1"
+                  >
+                    {integrationType === 'ai_provider'
+                      ? 'Continue'
+                      : isEditMode
+                        ? integrationType === 'telephony_provider'
+                          ? 'Update Telephony'
+                          : 'Update Integration'
+                        : integrationType === 'telephony_provider'
+                          ? 'Configure Telephony'
+                          : 'Add Integration'}
+                  </Button>
+                )}
               </div>
             </form>
           </div>

@@ -14,8 +14,7 @@ import PlatformAdmin from './pages/platform/PlatformAdmin'
 import Dashboard from './pages/dashboard/Dashboard'
 
 // Usage
-import Usage from './pages/usage/Usage'
-import UsagePricing from './pages/usage/UsagePricing'
+import UsagePage, { UsagePricingRedirect } from './pages/usage/UsagePage'
 
 // Prompt Partials
 import PromptPartials from './pages/promptPartials/PromptPartials'
@@ -136,24 +135,6 @@ function EnterpriseGate({ feature, children }: { feature: string; children: Reac
   return <>{children}</>
 }
 
-function EnterpriseLicenseGate({ children }: { children: React.ReactNode }) {
-  const { hasExtendedUsageHistory, isLoaded } = useLicenseStore()
-
-  if (!isLoaded) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
-      </div>
-    )
-  }
-
-  if (!hasExtendedUsageHistory()) {
-    return <EnterpriseUpgrade />
-  }
-
-  return <>{children}</>
-}
-
 function App() {
   return (
     <BrowserRouter>
@@ -214,15 +195,8 @@ function App() {
           <Route path="observability/calls" element={<ObservabilityCalls />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
           <Route path="iam" element={<IAM />} />
-          <Route path="usage" element={<Usage />} />
-          <Route
-            path="usage/pricing"
-            element={
-              <EnterpriseLicenseGate>
-                <UsagePricing />
-              </EnterpriseLicenseGate>
-            }
-          />
+          <Route path="usage" element={<UsagePage />} />
+          <Route path="usage/pricing" element={<UsagePricingRedirect />} />
           <Route
             path="workspace-members"
             element={<Navigate to="/iam?tab=workspace-members" replace />}

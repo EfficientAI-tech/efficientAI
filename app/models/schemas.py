@@ -970,6 +970,13 @@ class AIProviderCreate(BaseModel):
         None,
         description="Arbitrary HTTP headers sent with gateway-routed LiteLLM calls.",
     )
+    enabled_models: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Allowlisted model names for this credential. "
+            "Null or empty means all catalog models for the provider."
+        ),
+    )
     is_default: Optional[bool] = Field(
         None,
         description=(
@@ -1053,6 +1060,21 @@ class AIProviderCreate(BaseModel):
     def validate_gateway_extra_headers(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
         return _validate_gateway_extra_headers(v)
 
+    @field_validator("enabled_models")
+    @classmethod
+    def validate_enabled_models_create(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in v:
+            name = str(item).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        return out or None
+
 
 class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
@@ -1069,6 +1091,7 @@ class AIProviderUpdate(BaseModel):
     gateway_auth_secret: Optional[str] = None
     clear_gateway_auth_secret: bool = False
     gateway_extra_headers: Optional[Dict[str, str]] = None
+    enabled_models: Optional[List[str]] = None
 
     @field_validator("gateway_model")
     @classmethod
@@ -1127,6 +1150,21 @@ class AIProviderUpdate(BaseModel):
     ) -> Optional[Dict[str, str]]:
         return _validate_gateway_extra_headers(v)
 
+    @field_validator("enabled_models")
+    @classmethod
+    def validate_enabled_models_update(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in v:
+            name = str(item).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        return out or None
+
 
 class AIProviderResponse(BaseModel):
     """Schema for AI Provider response."""
@@ -1145,6 +1183,7 @@ class AIProviderResponse(BaseModel):
     gateway_auth_secret_env: Optional[str] = None
     has_gateway_auth_secret: bool = False
     gateway_extra_headers: Optional[Dict[str, str]] = None
+    enabled_models: Optional[List[str]] = None
     gateway_managed: bool = False
     effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     effective_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"

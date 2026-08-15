@@ -702,6 +702,8 @@ class AIProvider(Base):
     gateway_auth_secret = Column(String, nullable=True)
     # Arbitrary HTTP headers sent with gateway-routed LiteLLM calls
     gateway_extra_headers = Column(JSON, nullable=True)
+    # Non-empty list restricts model pickers; null/empty = all catalog models for provider.
+    enabled_models = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
