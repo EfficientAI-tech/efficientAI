@@ -17,6 +17,12 @@ from app.services.reporting.call_import_evaluation_pdf_report import (
 )
 
 
+def _disable_pdf_report_storage(monkeypatch):
+    """Force pdf-report to stream bytes instead of the S3-backed JSON response."""
+    s3_module = import_module("app.services.storage.s3_service")
+    monkeypatch.setattr(s3_module.s3_service, "is_enabled", lambda: False)
+
+
 def _default_workspace_id(db_session, org_id) -> UUID:
     workspace = (
         db_session.query(Workspace)
@@ -132,6 +138,7 @@ def test_pdf_report_generates_selected_external_pdf(
         "_render_weasyprint",
         lambda _html, **_kwargs: None,
     )
+    _disable_pdf_report_storage(monkeypatch)
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
 
     response = authenticated_client.post(
@@ -167,6 +174,7 @@ def test_pdf_report_generates_selected_internal_pdf(
         "_render_weasyprint",
         lambda _html, **_kwargs: None,
     )
+    _disable_pdf_report_storage(monkeypatch)
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
 
     response = authenticated_client.post(
@@ -887,6 +895,7 @@ def test_external_pdf_renders_generated_user_insights(
         "_render_weasyprint",
         lambda _html, **_kwargs: None,
     )
+    _disable_pdf_report_storage(monkeypatch)
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
     evaluation.user_insights = {
         "status": "completed",

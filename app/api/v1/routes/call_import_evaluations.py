@@ -712,6 +712,20 @@ async def create_call_import_evaluation(
                 "Refresh the metrics list and try again."
             ),
         )
+    draft_metrics = [
+        metric
+        for metric in org_metrics
+        if (getattr(metric, "lifecycle", None) or "active") == "draft"
+    ]
+    if draft_metrics:
+        names = ", ".join(metric.name for metric in draft_metrics)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Draft metrics cannot be used in call import evaluations: {names}. "
+                "Promote them in Metrics Studio first."
+            ),
+        )
     # Parents themselves are containers, not scored rows, so a disabled
     # parent shouldn't block the run as long as it has enabled children.
     # We only reject disabled rows that the worker will actually try to
@@ -1004,6 +1018,36 @@ async def create_call_import_evaluation(
         count_source_rows_with_production_transcript,
     )
 
+    if use_diarised:
+        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
+
+        if not _is_manual_audio_call_import(call_import):
+            if call_import.schema_id:
+                from app.api.v1.routes.call_imports import (
+                    _resolve_schema,
+                    _validate_diarised_eval_recording_ready,
+                )
+
+                diarised_schema = _resolve_schema(
+                    db, organization_id, call_import.workspace_id, call_import.schema_id
+                )
+                _validate_diarised_eval_recording_ready(
+                    list(diarised_schema.parameters),
+                    dict(call_import.parameter_mapping or {}),
+                )
+            else:
+                legacy_recording_column = (
+                    (call_import.column_mapping or {}).get("recording_url") or ""
+                ).strip()
+                if not legacy_recording_column:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Diarize then evaluate requires a recording URL column "
+                            "to be mapped."
+                        ),
+                    )
+
     starting_from_mapped = False
     if call_import.status == CallImportStatus.MAPPED:
         if not call_import.source_s3_key or not call_import.source_format:
@@ -1024,6 +1068,7 @@ async def create_call_import_evaluation(
             _resolve_schema,
             _resolve_telephony_integration,
             _validate_direct_url_import_ready,
+            _validate_telephony_credentials_live,
         )
 
         workspace_id = call_import.workspace_id
@@ -1053,6 +1098,7 @@ async def create_call_import_evaluation(
                 payload.telephony_integration_id,
                 payload.provider or "",
             )
+            _validate_telephony_credentials_live(db, organization_id, integration)
         else:
             _validate_direct_url_import_ready(
                 parameters, dict(call_import.parameter_mapping or {})
@@ -3206,10 +3252,10 @@ def _report_period_from_rows(
     iso_year, iso_week, _ = week_anchor.isocalendar()
     label = f"{iso_year}-W{iso_week:02d}"
     if week_start.year == week_end.year:
-        week_range = f"{week_start.strftime('%b %d')}–{week_end.strftime('%b %d, %Y')}"
+        week_range = f"{week_start.strftime('%b %d')}ΓÇô{week_end.strftime('%b %d, %Y')}"
     else:
         week_range = (
-            f"{week_start.strftime('%b %d, %Y')}–{week_end.strftime('%b %d, %Y')}"
+            f"{week_start.strftime('%b %d, %Y')}ΓÇô{week_end.strftime('%b %d, %Y')}"
         )
     display = f"W{iso_week:02d} · {week_range}"
     return start, end, label, display
@@ -4169,8 +4215,50 @@ def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
         )
 
 
+def _cancel_eval_row_with_source_diarisation(
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow | None,
+    *,
+    cascade_diarisation: bool,
+    now: datetime | None = None,
+) -> list[str]:
+    """Mark an eval row cancelled; optionally fail in-flight diarisation.
+
+    Returns Celery task ids to revoke (deduped). The caller may batch-revoke
+    them; when ``cascade_diarisation`` is true, diarisation revoke also runs
+    inside :func:`_apply_diarisation_cancel` for the source row's task id.
+    """
+    cancellable_states = _cancellable_eval_states()
+    if (eval_row.status or "").lower() not in cancellable_states:
+        return []
+
+    stamp = now or datetime.now(timezone.utc)
+    task_ids: list[str] = []
+    eval_task_id = (eval_row.celery_task_id or "").strip()
+    if eval_task_id:
+        task_ids.append(eval_task_id)
+
+    eval_row.status = "failed"
+    eval_row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+    eval_row.finished_at = stamp
+    eval_row.celery_task_id = None
+
+    if cascade_diarisation and source_row is not None:
+        from app.api.v1.routes.call_imports import _apply_diarisation_cancel
+
+        source_task_id = (source_row.celery_task_id or "").strip()
+        if source_task_id and source_task_id not in task_ids:
+            task_ids.append(source_task_id)
+        _apply_diarisation_cancel([source_row])
+
+    return list(dict.fromkeys(task_ids))
+
+
 def _apply_evaluation_cancel(
     eval_rows: List[CallImportEvaluationRow],
+    *,
+    source_rows: dict[UUID, CallImportRow] | None = None,
+    cascade_diarisation: bool = False,
 ) -> Tuple[int, int]:
     """Cancel every cancellable row in ``eval_rows``.
 
@@ -4183,22 +4271,47 @@ def _apply_evaluation_cancel(
     cancelled = 0
     skipped = 0
     now = datetime.now(timezone.utc)
+    source_rows = source_rows or {}
     for eval_row in eval_rows:
         if (eval_row.status or "").lower() not in cancellable_states:
             skipped += 1
             continue
-        # Flip the row state BEFORE we revoke so the UI's next poll
-        # already shows the cancel, even if Celery's control plane is
-        # slow to ack.
-        eval_row.status = "failed"
-        eval_row.error_message = EVAL_CANCELLED_BY_USER_ERROR
-        eval_row.finished_at = now
-        _revoke_eval_task(eval_row)
-        # Drop the task id so a follow-up retry (or a stale poll) can't
-        # accidentally re-revoke or get confused.
-        eval_row.celery_task_id = None
+        source_row = source_rows.get(eval_row.call_import_row_id)
+        task_ids = _cancel_eval_row_with_source_diarisation(
+            eval_row,
+            source_row,
+            cascade_diarisation=cascade_diarisation,
+            now=now,
+        )
+        for task_id in task_ids:
+            _revoke_eval_task_by_id(task_id, eval_row_id=eval_row.id)
         cancelled += 1
     return cancelled, skipped
+
+
+def _revoke_eval_task_by_id(task_id: str, *, eval_row_id: UUID) -> None:
+    """Best-effort revoke when the task id is known outside the ORM row."""
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(
+            cleaned, terminate=True, signal="SIGTERM"
+        )
+        logger.info(
+            "Revoked evaluation task {} for eval row {}",
+            cleaned,
+            eval_row_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
+        logger.warning(
+            "Failed to revoke evaluation task {} for eval row {}: {}",
+            cleaned,
+            eval_row_id,
+            exc,
+        )
 
 
 def _claim_evaluation_bulk_operation(
@@ -4285,6 +4398,13 @@ async def cancel_call_import_evaluation(
 
     target_count = count_evaluation_cancel_targets(db, eval_id, mode="abort")
     if target_count == 0:
+        from app.services.call_imports.bulk_ops import (
+            _sweep_evaluation_diarisation_cancel,
+        )
+
+        swept = _sweep_evaluation_diarisation_cancel(db, eval_id)
+        if swept:
+            db.commit()
         return CallImportEvaluationBulkActionResponse(
             accepted=True,
             target_count=0,
@@ -4437,7 +4557,11 @@ async def cancel_call_import_evaluation_row(
                         status_code=404,
                         detail="Evaluation row not found in this run",
                     )
-                _apply_evaluation_cancel([eval_row])
+                _apply_evaluation_cancel(
+                    [eval_row],
+                    source_rows={source_row.id: source_row},
+                    cascade_diarisation=True,
+                )
                 row_db.commit()
                 _rollup_evaluation_status(evaluation, db)
                 stamp_evaluation_actor(evaluation, principal)
@@ -4462,18 +4586,24 @@ async def cancel_call_import_evaluation_row(
             status_code=404, detail="Evaluation row not found in this run"
         )
 
-    _apply_evaluation_cancel([eval_row])
-    db.flush()
-    _rollup_evaluation_status(evaluation, db)
-    stamp_evaluation_actor(evaluation, principal)
-    db.commit()
-    db.refresh(eval_row)
-
     source_row = (
         db.query(CallImportRow)
         .filter(CallImportRow.id == eval_row.call_import_row_id)
         .first()
     )
+    source_rows = (
+        {source_row.id: source_row} if source_row is not None else None
+    )
+    _apply_evaluation_cancel(
+        [eval_row],
+        source_rows=source_rows,
+        cascade_diarisation=True,
+    )
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(eval_row)
 
     return _to_evaluation_row_response(eval_row, source_row, evaluation)
 
@@ -8429,13 +8559,22 @@ def _prepare_source_row_for_retry(
 
     # Re-fetch recordings when a prior import failed or stalled without S3 audio.
     # Mirrors retry_failed_call_import_rows so eval retry can re-enqueue imports.
+    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
+
     if (
         source_row.status
-        in (CallImportRowStatus.FAILED, CallImportRowStatus.PROCESSING)
+        in (
+            CallImportRowStatus.FAILED,
+            CallImportRowStatus.PROCESSING,
+        )
+        and not (source_row.recording_s3_key or "").strip()
+    ) or (
+        _is_stuck_pending_import_row(source_row)
         and not (source_row.recording_s3_key or "").strip()
     ):
         source_row.status = CallImportRowStatus.PENDING
         source_row.error_message = None
+        source_row.attempts = 0
 
     if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
         source_row.diarised_transcript = None
@@ -8577,7 +8716,10 @@ def _apply_telephony_retry_overrides(
     ):
         return
 
-    from app.api.v1.routes.call_imports import _resolve_telephony_integration
+    from app.api.v1.routes.call_imports import (
+        _resolve_telephony_integration,
+        _validate_telephony_credentials_live,
+    )
 
     if payload.telephony_integration_id is not None:
         integration = _resolve_telephony_integration(
@@ -8586,6 +8728,7 @@ def _apply_telephony_retry_overrides(
             payload.telephony_integration_id,
             payload.provider or "",
         )
+        _validate_telephony_credentials_live(db, organization_id, integration)
         call_import.provider = integration.provider
         call_import.telephony_integration_id = integration.id
     else:
@@ -8990,7 +9133,7 @@ async def retry_call_import_evaluation(
     # The Re-run-metrics modal surfaces PARENTS for hierarchical
     # metrics (it suppresses individual children via
     # ``childrenInGroups`` in ``CallImportEvaluationDetail.tsx``), so a
-    # naive ``metric_ids ⊆ selected_metric_ids`` check rejects every
+    # naive ``metric_ids Γèå selected_metric_ids`` check rejects every
     # parent-ID request with a misleading "unknown ids" 400. We accept
     # both shapes here and then EXPAND any parent IDs into
     # ``{parent_id, *child_ids}`` so the downstream helpers see the

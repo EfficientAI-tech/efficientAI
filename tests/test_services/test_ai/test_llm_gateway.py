@@ -10,6 +10,7 @@ from app.services.ai import llm_gateway as gateway_module
 from app.services.ai.llm_gateway import (
     apply_llm_gateway,
     CredentialRoutingContext,
+    get_credential_effective_routing_label,
     LITELLM_GATEWAY_PLACEHOLDER_API_KEY,
     normalize_bifrost_native_url,
     resolve_effective_routing,
@@ -389,6 +390,23 @@ def test_credential_gateway_raises_when_no_base_url():
     ctx = CredentialRoutingContext(routing_mode="gateway")
     with pytest.raises(RuntimeError, match="no base_url"):
         resolve_effective_routing(org_id, db, ctx)
+
+
+def test_effective_routing_label_uses_credential_gateway_base_url():
+    _set_platform_gateway(enabled=False)
+    org_id, db = _org_db({"enabled": False})
+    provider = SimpleNamespace(
+        provider="custom",
+        routing_mode="gateway",
+        gateway_interface="native_openai",
+        gateway_base_url="http://localhost:8080/v1",
+        gateway_model="gpt-oss-120b",
+        gateway_auth_header=None,
+        gateway_auth_secret_env=None,
+        gateway_auth_secret=None,
+        gateway_extra_headers=None,
+    )
+    assert get_credential_effective_routing_label(org_id, db, provider) == "bifrost"
 
 
 def test_resolve_litellm_model_uses_gateway_model_when_active():

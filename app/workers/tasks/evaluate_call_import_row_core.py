@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, update
+from sqlalchemy import case, func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -51,6 +51,11 @@ def was_cancelled_externally(db, eval_row: CallImportEvaluationRow) -> bool:
         db.refresh(eval_row, attribute_names=["status", "error_message"])
     except Exception:  # noqa: BLE001
         return False
+    return is_eval_row_user_cancelled(eval_row)
+
+
+def is_eval_row_user_cancelled(eval_row: CallImportEvaluationRow) -> bool:
+    """True when the row was aborted by the operator."""
     return (
         (eval_row.status or "").lower() == "failed"
         and (eval_row.error_message or "") == EVAL_CANCELLED_BY_USER_ERROR
@@ -324,6 +329,18 @@ def _apply_parent_status_from_counters(
     failed = int(evaluation.failed_rows or 0)
     in_progress = total - completed - failed
 
+    if (evaluation.status or "").strip().lower() == "cancelled":
+        if in_progress > 0:
+            return
+        evaluation.finished_at = now_utc()
+        if total == 0 or failed == 0:
+            evaluation.status = "completed"
+        elif completed == 0:
+            evaluation.status = "failed"
+        else:
+            evaluation.status = "partial"
+        return
+
     if in_progress > 0:
         evaluation.status = "running"
         if not evaluation.started_at:
@@ -489,6 +506,7 @@ def load_enabled_metrics(
             Metric.organization_id == evaluation.organization_id,
             Metric.id.in_(metric_ids),
             Metric.enabled.is_(True),
+            or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
         )
         .all()
     )

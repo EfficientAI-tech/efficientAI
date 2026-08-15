@@ -102,21 +102,59 @@ class ExotelClient:
             retry_after_seconds=retry_after_seconds,
         )
 
-    def test_connection(self) -> bool:
-        """Make a trivial authenticated call to confirm credentials work."""
-        url = f"{self._api_base}/v1/Accounts/{self._account_sid}/Calls?PageSize=1"
+    def _test_connection_on_base(self, api_base: str) -> Optional[Tuple[int, str]]:
+        """Return None on success, else (status_code, message)."""
+        url = (
+            f"{api_base.rstrip('/')}/v1/Accounts/{self._account_sid}/Calls.json"
+            f"?PageSize=1"
+        )
         try:
             with httpx.Client(timeout=self._timeout) as client:
                 resp = client.get(url, auth=self._auth)
-            if resp.status_code in (401, 403):
-                raise ExotelAuthError(
-                    f"Exotel auth failed (HTTP {resp.status_code}): {resp.text[:200]}"
-                )
-            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            return (0, str(exc))
+
+        if resp.status_code in (401, 403):
+            return (
+                resp.status_code,
+                f"Exotel auth failed (HTTP {resp.status_code}): {resp.text[:200]}",
+            )
+        if resp.status_code == 404:
+            return (
+                404,
+                f"Exotel account not found (HTTP 404) at {api_base}: {resp.text[:200]}",
+            )
+        if resp.status_code >= 400:
+            return (
+                resp.status_code,
+                f"Exotel request failed (HTTP {resp.status_code}): {resp.text[:200]}",
+            )
+        return None
+
+    def test_connection(self) -> bool:
+        """Make a trivial authenticated call to confirm credentials work."""
+        failure = self._test_connection_on_base(self._api_base)
+        if failure is None:
             return True
-        except (ExotelAuthError, httpx.HTTPError) as e:
-            logger.exception("Exotel test_connection failed")
-            raise ValueError(f"Failed to connect to Exotel: {str(e)}")
+
+        status_code, message = failure
+        if status_code in (401, 403, 404) and self._api_base.rstrip("/") == DEFAULT_API_BASE:
+            india_base = "https://api.in.exotel.com"
+            if self._test_connection_on_base(india_base) is None:
+                raise ValueError(
+                    "Exotel credentials are valid on api.in.exotel.com (India) but "
+                    "this integration uses the default Singapore API host "
+                    "(api.exotel.com). Set API Host to api.in.exotel.com in "
+                    "Integrations and retry."
+                )
+
+        if status_code in (401, 403):
+            logger.warning("Exotel test_connection auth failed: {}", message)
+            raise ExotelAuthError(
+                f"{message} (API host: {self._api_base})"
+            )
+        logger.warning("Exotel test_connection failed: {}", message)
+        raise ValueError(f"Failed to connect to Exotel at {self._api_base}: {message}")
 
     def list_incoming_phone_numbers(self) -> List[Dict[str, Any]]:
         """List incoming phone numbers (ExoPhones) on the account."""

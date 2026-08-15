@@ -175,11 +175,14 @@ interface TranscriptViewProps {
   transcript: string | null | undefined
   /** When true, renders a tighter version suitable for inline expansion. */
   compact?: boolean
+  /** When true, the parent owns scrolling — omit inner max-height. */
+  embedded?: boolean
 }
 
 export default function TranscriptView({
   transcript,
   compact = false,
+  embedded = false,
 }: TranscriptViewProps) {
   if (!transcript || !transcript.trim()) {
     return (
@@ -203,8 +206,12 @@ export default function TranscriptView({
   return (
     <div
       className={`space-y-2 ${
-        compact ? 'max-h-96' : 'max-h-[480px]'
-      } overflow-y-auto pr-1`}
+        embedded
+          ? ''
+          : compact
+            ? 'max-h-96 overflow-y-auto pr-1'
+            : 'max-h-[480px] overflow-y-auto pr-1'
+      }`}
     >
       {turns.map((turn, idx) => {
         const isUser = turn.side === 'user'

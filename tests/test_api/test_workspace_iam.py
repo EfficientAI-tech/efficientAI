@@ -15,6 +15,7 @@ from app.core.auth.capabilities import (
     SYSTEM_ROLE_ADMIN,
     SYSTEM_ROLE_VIEWER,
     WORKSPACE_MEMBERS_MANAGE,
+    WORKSPACE_SETTINGS,
 )
 from app.core.auth.principal import AuthMethod, Principal
 from app.core.auth.dependency import get_principal
@@ -490,6 +491,152 @@ def test_update_workspace_missing_returns_404_not_403(
         )
 
     assert response.status_code == 404
+
+
+def _workspaces_test_app(db_session, rbac_org, user_id):
+    app = FastAPI()
+    app.include_router(workspaces.router, prefix="/api/v1")
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        organization_id=rbac_org.id,
+        auth_method=AuthMethod.LOCAL_PASSWORD,
+        user_id=user_id,
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+    return app
+
+
+def test_workspace_admin_can_rename_workspace(db_session, rbac_org, rbac_users, rbac_workspace):
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    add_workspace_member(
+        db_session,
+        workspace_id=rbac_workspace.id,
+        user_id=rbac_users["writer"].id,
+        role_id=roles[SYSTEM_ROLE_ADMIN].id,
+    )
+    db_session.commit()
+
+    app = _workspaces_test_app(db_session, rbac_org, rbac_users["writer"].id)
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/workspaces/{rbac_workspace.id}",
+            json={"name": "Project Alpha"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Project Alpha"
+    assert body["slug"] == "project_a"
+    assert WORKSPACE_SETTINGS in body["capabilities"]
+
+
+def test_workspace_viewer_cannot_rename_workspace(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    app = _workspaces_test_app(db_session, rbac_org, rbac_users["viewer"].id)
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/workspaces/{rbac_workspace.id}",
+            json={"name": "Renamed"},
+        )
+
+    assert response.status_code == 403
+    assert "Workspace Admin role" in response.json()["detail"]
+    db_session.refresh(rbac_workspace)
+    assert rbac_workspace.name == "Project A"
+
+
+def test_inactive_workspace_blocks_non_admin_access(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    rbac_workspace.is_active = False
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(metrics.router, prefix="/api/v1")
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        organization_id=rbac_org.id,
+        auth_method=AuthMethod.LOCAL_PASSWORD,
+        user_id=rbac_users["viewer"].id,
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/metrics",
+            headers={"X-Workspace-Id": str(rbac_workspace.id)},
+        )
+
+    assert response.status_code == 403
+    assert "inactive" in response.json()["detail"].lower()
+
+
+def test_inactive_workspace_hidden_from_member_list(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    inactive_ws = Workspace(
+        id=uuid4(),
+        organization_id=rbac_org.id,
+        name="Hidden WS",
+        slug="hidden_ws",
+        is_default=False,
+        is_active=False,
+    )
+    db_session.add(inactive_ws)
+    db_session.flush()
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    add_workspace_member(
+        db_session,
+        workspace_id=inactive_ws.id,
+        user_id=rbac_users["writer"].id,
+        role_id=roles[SYSTEM_ROLE_VIEWER].id,
+    )
+    db_session.commit()
+
+    app = _workspaces_test_app(db_session, rbac_org, rbac_users["writer"].id)
+    with TestClient(app) as client:
+        listing = client.get("/api/v1/workspaces").json()
+
+    ids = {w["id"] for w in listing}
+    assert str(inactive_ws.id) not in ids
+
+
+def test_org_admin_can_access_inactive_workspace(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    rbac_workspace.is_active = False
+    db_session.commit()
+
+    app = FastAPI()
+    app.include_router(metrics.router, prefix="/api/v1")
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        organization_id=rbac_org.id,
+        auth_method=AuthMethod.LOCAL_PASSWORD,
+        user_id=rbac_users["admin"].id,
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/metrics",
+            headers={"X-Workspace-Id": str(rbac_workspace.id)},
+        )
+
+    assert response.status_code == 200
 
 
 def test_require_capability_missing_capability_returns_403():

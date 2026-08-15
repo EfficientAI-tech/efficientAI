@@ -34,6 +34,7 @@ newenv/
 env/
 ENV/
 .venv
+.pptx_venv
 config.yml
 # uv
 .python-version

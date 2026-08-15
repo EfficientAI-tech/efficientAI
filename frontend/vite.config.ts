@@ -30,5 +30,8 @@ export default defineConfig({
     // Use relative paths for assets when building for production
     base: './',
   },
+  test: {
+    environment: 'node',
+  },
 })
 

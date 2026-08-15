@@ -98,8 +98,18 @@ def _diarisation_in_flight(source_row: CallImportRow) -> bool:
     return bool((source_row.celery_task_id or "").strip())
 
 
-def _needs_import_for_eval(source_row: CallImportRow) -> bool:
+def _needs_import_for_eval(
+    source_row: CallImportRow,
+    evaluation: CallImportEvaluation | None = None,
+) -> bool:
     """True when the eval pipeline must fetch a recording before later stages."""
+    if evaluation is not None and (
+        (getattr(evaluation, "transcript_source", None) or "")
+        .strip()
+        .lower()
+        == "production"
+    ):
+        return False
     if source_row.status in (
         CallImportRowStatus.COMPLETED,
         CallImportRowStatus.FAILED,
@@ -156,7 +166,13 @@ def source_row_import_blocks_eval(source_row: CallImportRow) -> bool:
 
 def recover_eval_row_for_eval_chain(eval_row: CallImportEvaluationRow) -> None:
     """Undo a premature eval-row failure so the eval chain can continue."""
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        EVAL_CANCELLED_BY_USER_ERROR,
+    )
+
     if eval_row.status != "failed":
+        return
+    if (eval_row.error_message or "") == EVAL_CANCELLED_BY_USER_ERROR:
         return
     eval_row.status = "pending"
     eval_row.error_message = None
@@ -251,6 +267,13 @@ def enqueue_eval_chain_transcribe_after_import(
     from app.db_sharding.row_ops import shard_row_write_context
 
     recover_eval_row_for_eval_chain(eval_row)
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        is_eval_row_user_cancelled,
+    )
+
+    if is_eval_row_user_cancelled(eval_row):
+        return False
 
     with shard_row_write_context(db):
         source_row.diarised_transcript_status = "pending"
@@ -437,7 +460,7 @@ def _try_dispatch_single_row(
             if not (source_row.recording_s3_key or "").strip():
                 return EvalDispatchOutcome("skip")
 
-        if _needs_import_for_eval(source_row):
+        if _needs_import_for_eval(source_row, evaluation):
             from app.workers.concurrency.import_dispatch import (
                 _peek_authenticated_import_credit,
             )
@@ -481,6 +504,13 @@ def _try_dispatch_single_row(
             transcribe_overwrite=transcribe_overwrite,
             auto_transcribe=auto_transcribe,
         ):
+            from app.workers.tasks.evaluate_call_import_row_core import (
+                is_eval_row_user_cancelled,
+            )
+
+            if is_eval_row_user_cancelled(eval_row):
+                return EvalDispatchOutcome("skip")
+
             if _diarisation_in_flight(source_row):
                 return EvalDispatchOutcome("skip")
 

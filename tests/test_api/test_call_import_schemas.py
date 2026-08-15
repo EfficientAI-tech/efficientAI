@@ -105,8 +105,8 @@ def test_create_schema_happy_path(authenticated_client, db_session, org_id, seed
 def test_create_schema_forces_system_required_parameters(
     authenticated_client, db_session, org_id, seed_org
 ):
-    """Even if the client sends is_required=False for conversation_id or
-    recording_url, the server stamps them back to True."""
+    """Even if the client sends is_required=False for conversation_id, the
+    server stamps it back to True. recording_url respects the client flag."""
     payload = _minimal_payload()
     payload["parameters"][0]["is_required"] = False
     payload["parameters"][1]["is_required"] = False
@@ -125,7 +125,7 @@ def test_create_schema_forces_system_required_parameters(
         p for p in body["parameters"] if p["type"] == "recording_date"
     )
     assert conv_param["is_required"] is True
-    assert rec_param["is_required"] is True
+    assert rec_param["is_required"] is False
     assert date_param["is_required"] is False
 
 
@@ -145,7 +145,7 @@ def test_create_schema_rejects_missing_conversation_id(
     assert "conversation_id" in response.text.lower()
 
 
-def test_create_schema_rejects_missing_recording_url(
+def test_create_schema_accepts_missing_recording_url(
     authenticated_client, db_session, org_id, seed_org
 ):
     payload = _minimal_payload()
@@ -153,8 +153,9 @@ def test_create_schema_rejects_missing_recording_url(
         p for p in payload["parameters"] if p["type"] != "recording_url"
     ]
     response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
-    assert response.status_code == 422
-    assert "recording_url" in response.text.lower()
+    assert response.status_code == 201, response.text
+    names = [p["name"] for p in response.json()["parameters"]]
+    assert "recording_url" not in names
 
 
 def test_create_schema_accepts_missing_recording_date(
@@ -441,7 +442,7 @@ def test_update_schema_accepts_dropping_recording_date(
     assert names == ["conversation_id", "recording_url", "agent_name"]
 
 
-def test_update_schema_rejects_dropping_recording_url(
+def test_update_schema_accepts_dropping_recording_url(
     authenticated_client, db_session, org_id, seed_org
 ):
     created = authenticated_client.post(
@@ -458,8 +459,9 @@ def test_update_schema_rejects_dropping_recording_url(
             ]
         },
     )
-    assert response.status_code == 422
-    assert "recording_url" in response.text.lower()
+    assert response.status_code == 200, response.text
+    names = [p["name"] for p in response.json()["parameters"]]
+    assert "recording_url" not in names
 
 
 # ---------------------------------------------------------------------------

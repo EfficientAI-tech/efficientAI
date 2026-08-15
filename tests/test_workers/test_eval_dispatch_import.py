@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.models.database import (
@@ -165,3 +166,17 @@ def test_recover_eval_row_for_eval_chain_clears_stale_import_failure(db_session)
     assert eval_row.status == "pending"
     assert eval_row.error_message is None
     assert eval_row.finished_at is None
+
+
+def test_recover_eval_row_for_eval_chain_preserves_user_abort(db_session):
+    _, _, eval_row, _ = _seed_eval_row(db_session)
+    eval_row.status = "failed"
+    eval_row.error_message = "Evaluation cancelled by user"
+    eval_row.finished_at = datetime.now(timezone.utc)
+    db_session.commit()
+
+    recover_eval_row_for_eval_chain(eval_row)
+
+    assert eval_row.status == "failed"
+    assert eval_row.error_message == "Evaluation cancelled by user"
+    assert eval_row.finished_at is not None

@@ -40,6 +40,16 @@ def stub_worker_task_modules():
 
     fake_core = types.ModuleType("app.workers.tasks.evaluate_call_import_row_core")
     fake_core.row_needs_audio_phase = lambda *_a, **_kw: False
+    fake_core.EVAL_CANCELLED_BY_USER_ERROR = "Evaluation cancelled by user"
+
+    def _is_eval_row_user_cancelled(eval_row):
+        return (
+            (getattr(eval_row, "status", "") or "").lower() == "failed"
+            and (getattr(eval_row, "error_message", "") or "")
+            == fake_core.EVAL_CANCELLED_BY_USER_ERROR
+        )
+
+    fake_core.is_eval_row_user_cancelled = _is_eval_row_user_cancelled
 
     fake_process_import = types.ModuleType("app.workers.tasks.process_call_import_row")
     fake_process_import.process_call_import_row_task = MagicMock()

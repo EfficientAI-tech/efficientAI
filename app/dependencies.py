@@ -110,6 +110,14 @@ def _resolve_workspace_row(
                     status_code=403,
                     detail="You don't have access to this workspace.",
                 )
+        if not workspace.is_active and not is_org_admin:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "This workspace is inactive. Contact an organization admin "
+                    "to reactivate it."
+                ),
+            )
         return workspace
 
     if is_org_admin or principal.user_id is None:

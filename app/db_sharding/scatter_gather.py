@@ -779,6 +779,84 @@ def count_call_import_rows(
     return total
 
 
+def max_call_import_row_index(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> int:
+    """Highest ``row_index`` for an import, or ``-1`` when no rows exist."""
+    if not is_sharding_enabled():
+        result = (
+            catalog_db.query(func.max(CallImportRow.row_index))
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .scalar()
+        )
+        return int(result) if result is not None else -1
+
+    max_index = -1
+
+    def max_on_shard(db: Session, _shard_id: str) -> int:
+        result = (
+            db.query(func.max(CallImportRow.row_index))
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .scalar()
+        )
+        return int(result) if result is not None else -1
+
+    for part in scatter_gather_on_shards(
+        shard_ids_for_import(catalog_db, call_import_id),
+        max_on_shard,
+    ):
+        max_index = max(max_index, part)
+
+    if max_index < 0:
+        result = (
+            catalog_db.query(func.max(CallImportRow.row_index))
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .scalar()
+        )
+        return int(result) if result is not None else -1
+    return max_index
+
+
+def load_call_import_conversation_ids(
+    catalog_db: Session,
+    call_import_id: UUID,
+) -> List[Optional[str]]:
+    """All conversation ids for an import (shard-aware)."""
+    if not is_sharding_enabled():
+        return [
+            row[0]
+            for row in catalog_db.query(CallImportRow.conversation_id)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        ]
+
+    conversation_ids: List[Optional[str]] = []
+
+    def load_shard(db: Session, _shard_id: str) -> List[Optional[str]]:
+        return [
+            row[0]
+            for row in db.query(CallImportRow.conversation_id)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        ]
+
+    for part in scatter_gather_on_shards(
+        shard_ids_for_import(catalog_db, call_import_id),
+        load_shard,
+    ):
+        conversation_ids.extend(part)
+
+    if not conversation_ids:
+        conversation_ids = [
+            row[0]
+            for row in catalog_db.query(CallImportRow.conversation_id)
+            .filter(CallImportRow.call_import_id == call_import_id)
+            .all()
+        ]
+    return conversation_ids
+
+
 def _non_empty_production_transcript_filter():
     """Rows whose CSV ``transcript`` column has non-whitespace content."""
     return (

@@ -6,6 +6,7 @@ import uuid as _uuid
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import or_
 
 from app.database import SessionLocal
 from app.models.database import ModelProvider
@@ -711,24 +712,25 @@ def process_evaluator_result_task(self, result_id: str):
                         result.speaker_segments = speaker_segments if speaker_segments else None
                     db.commit()
 
-                # Step 2: Load and categorize metrics
-                # Include metrics that have "agent" in their enabled_surfaces so users can
-                # restrict metrics to specific surfaces from the metrics page. Legacy rows
-                # (created before the surfaces column existed, or via fixtures that don't
-                # set the field) keep the original behavior: an enabled=True metric with
-                # an empty enabled_surfaces list is treated as agent-enabled.
-                enabled_metrics = db.query(Metric).filter(
-                    Metric.organization_id == result.organization_id,
-                    Metric.enabled == True,
-                ).all()
-                enabled_metrics = [
-                    m for m in enabled_metrics
-                    if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
-                    and (
-                        "agent" in (m.enabled_surfaces or [])
-                        or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
-                    )
-                ]
+            # Step 2: Load and categorize metrics
+            # Include metrics that have "agent" in their enabled_surfaces so users can
+            # restrict metrics to specific surfaces from the metrics page. Legacy rows
+            # (created before the surfaces column existed, or via fixtures that don't
+            # set the field) keep the original behavior: an enabled=True metric with
+            # an empty enabled_surfaces list is treated as agent-enabled.
+            enabled_metrics = db.query(Metric).filter(
+                Metric.organization_id == result.organization_id,
+                Metric.enabled == True,
+                or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
+            ).all()
+            enabled_metrics = [
+                m for m in enabled_metrics
+                if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
+                and (
+                    "agent" in (m.enabled_surfaces or [])
+                    or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
+                )
+            ]
 
                 # Explicit metric selection on the evaluator/suite. Categorization
                 # parents are stored as a single ID and expanded to child labels here.

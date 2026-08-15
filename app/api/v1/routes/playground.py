@@ -576,14 +576,31 @@ async def list_call_recordings(
                 "status": r.status,
                 "metric_scores": r.metric_scores,
                 "result_id": r.result_id,
+                "name": r.name,
             }
             for r in results
         }
-    
+
+    agent_ids = [cr.agent_id for cr in call_recordings if cr.agent_id]
+    agents_by_id = {}
+    if agent_ids:
+        agents = db.query(Agent).filter(Agent.id.in_(agent_ids)).all()
+        agents_by_id = {a.id: a for a in agents}
+
+    def _display_name(cr: CallRecording) -> str:
+        linked = result_info.get(str(cr.evaluator_result_id), {}) if cr.evaluator_result_id else {}
+        if linked.get("name"):
+            return linked["name"]
+        agent = agents_by_id.get(cr.agent_id) if cr.agent_id else None
+        if agent and agent.name:
+            return agent.name
+        return cr.call_short_id
+
     return [
         {
             "id": str(cr.id),
             "call_short_id": cr.call_short_id,
+            "display_name": _display_name(cr),
             "status": cr.status if cr.status else None,
             "provider_platform": cr.provider_platform,
             "provider_call_id": cr.provider_call_id,
