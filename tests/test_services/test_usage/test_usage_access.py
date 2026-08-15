@@ -9,7 +9,7 @@ from app.services.usage.access import UsageAccessPolicy, oss_usage_min_local_dat
 
 def test_oss_min_local_date_seven_inclusive(monkeypatch):
     monkeypatch.setattr(
-        "app.services.usage.dates.usage_local_today",
+        "app.services.usage.access.usage_local_today",
         lambda tz: date(2026, 8, 14),
     )
     assert oss_usage_min_local_date(None) == date(2026, 8, 8)
@@ -26,7 +26,7 @@ def test_resolve_clamps_old_start(monkeypatch):
         lambda _oid: ue.UsagePolicySnapshot(False, 7),
     )
     monkeypatch.setattr(
-        "app.services.usage.dates.usage_local_today",
+        "app.services.usage.access.usage_local_today",
         lambda tz: date(2026, 8, 14),
     )
 
@@ -52,7 +52,7 @@ def test_resolve_full_range_when_entitled(monkeypatch):
         lambda _oid: ue.UsagePolicySnapshot(True, None),
     )
     monkeypatch.setattr(
-        "app.services.usage.dates.usage_local_today",
+        "app.services.usage.access.usage_local_today",
         lambda tz: date(2026, 8, 14),
     )
 
