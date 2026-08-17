@@ -182,8 +182,13 @@ def upgrade(db: Session):
     _strip_org_extras(db)
     db.commit()
 
-    from app.services.usage.pricing import DEFAULT_RATES_EFFECTIVE_FROM, seed_pricing_rates
+    from app.services.usage.pricing import (
+        DEFAULT_RATES_EFFECTIVE_FROM,
+        clear_rates_table_cache,
+        seed_pricing_rates,
+    )
 
+    clear_rates_table_cache()
     seeded = seed_pricing_rates(db, effective_from=DEFAULT_RATES_EFFECTIVE_FROM)
     db.commit()
     if seeded:

@@ -209,3 +209,18 @@ def test_resolve_rate_ignores_stale_negative_cache(monkeypatch):
     assert card.rate_id == rate_id
     assert card.source == RATE_SOURCE_CATALOG
     assert fake_redis.store[redis_key] != "__null__"
+
+
+def test_rates_table_recovers_from_stale_cache_after_rename():
+    import app.services.usage.pricing as pricing_mod
+
+    pricing_mod._RATES_TABLE_CACHE = "model_pricing_catalog"
+
+    db = MagicMock()
+    db.execute.side_effect = [
+        MagicMock(scalar=MagicMock(return_value=None)),
+        MagicMock(scalar=MagicMock(return_value="model_pricing_rates")),
+    ]
+
+    assert pricing_mod._rates_table(db) == "model_pricing_rates"
+    assert pricing_mod._RATES_TABLE_CACHE == "model_pricing_rates"

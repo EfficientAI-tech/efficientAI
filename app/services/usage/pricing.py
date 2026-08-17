@@ -38,10 +38,21 @@ _RATES_TABLE = "model_pricing_rates"
 _RATES_TABLE_CACHE: Optional[str] = None
 
 
+def clear_rates_table_cache() -> None:
+    global _RATES_TABLE_CACHE
+    _RATES_TABLE_CACHE = None
+
+
 def _rates_table(db: Session) -> str:
     global _RATES_TABLE_CACHE
     if _RATES_TABLE_CACHE:
-        return _RATES_TABLE_CACHE
+        exists = db.execute(
+            text("SELECT to_regclass(:table_name)"),
+            {"table_name": f"public.{_RATES_TABLE_CACHE}"},
+        ).scalar()
+        if exists:
+            return _RATES_TABLE_CACHE
+        clear_rates_table_cache()
     row = db.execute(text("SELECT to_regclass('public.model_pricing_rates')")).scalar()
     if row:
         _RATES_TABLE_CACHE = "model_pricing_rates"
