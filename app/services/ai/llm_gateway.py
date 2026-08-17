@@ -578,10 +578,15 @@ def get_credential_effective_routing_label(
     db: Session,
     credential: Any,
 ) -> EffectiveRouting:
-    """Resolved routing label for API responses."""
+    """Resolved routing label for API responses (never raises on misconfigured gateway)."""
     ctx = _credential_routing_context(credential)
-    _, effective = resolve_effective_routing(organization_id, db, ctx)
-    return effective
+    try:
+        _, effective = resolve_effective_routing(organization_id, db, ctx)
+        return effective
+    except RuntimeError:
+        if ctx.routing_mode == "gateway":
+            return "gateway"
+        raise
 
 
 # Gateways speak OpenAI-compatible ``/v1/chat/completions``. LiteLLM

@@ -392,6 +392,23 @@ def test_credential_gateway_raises_when_no_base_url():
         resolve_effective_routing(org_id, db, ctx)
 
 
+def test_effective_routing_label_gateway_without_base_url_does_not_raise():
+    _set_platform_gateway(enabled=False)
+    org_id, db = _org_db({"enabled": False})
+    provider = SimpleNamespace(
+        provider="custom",
+        routing_mode="gateway",
+        gateway_interface="native_openai",
+        gateway_base_url=None,
+        gateway_model="gpt-oss-120b",
+        gateway_auth_header=None,
+        gateway_auth_secret_env=None,
+        gateway_auth_secret=None,
+        gateway_extra_headers=None,
+    )
+    assert get_credential_effective_routing_label(org_id, db, provider) == "gateway"
+
+
 def test_effective_routing_label_uses_credential_gateway_base_url():
     _set_platform_gateway(enabled=False)
     org_id, db = _org_db({"enabled": False})

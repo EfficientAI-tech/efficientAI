@@ -53,6 +53,7 @@ for _var in (
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from celery import Celery  # noqa: E402  (env vars must be set first)
+from celery.schedules import crontab  # noqa: E402
 from loguru import logger  # noqa: E402
 
 from app.config import settings, load_config_from_file  # noqa: E402
@@ -75,6 +76,38 @@ log_startup_status(component="celery-worker")
 IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
+PLATFORM_WORKER_QUEUE = "platform"
+
+
+def _usage_flush_beat_seconds() -> float:
+    raw = os.environ.get("USAGE_FLUSH_BEAT_SECONDS", "120")
+    try:
+        return max(30.0, float(raw))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _platform_beat_schedule() -> dict:
+    """Periodic platform tasks — run from dedicated ``celery beat`` (single replica)."""
+    return {
+        "flush-usage-counters": {
+            "task": "flush_usage_counters",
+            "schedule": _usage_flush_beat_seconds(),
+        },
+        "evaluate-alerts": {
+            "task": "evaluate_alerts",
+            "schedule": crontab(minute="*/5"),
+        },
+        "refresh-fx-rates": {
+            "task": "refresh_fx_rates",
+            "schedule": crontab(hour=6, minute=0),
+        },
+        "prune-oss-usage-history": {
+            "task": "prune_oss_usage_history",
+            "schedule": crontab(hour=3, minute=0),
+        },
+    }
+
 
 # Create Celery app
 celery_app = Celery(
@@ -107,6 +140,7 @@ celery_app.conf.update(
     # any leaked OMP threads, and HuggingFace tokenizer state, and prevents
     # slow drift from accumulating over hours of import processing.
     worker_max_tasks_per_child=20,
+    beat_schedule=_platform_beat_schedule(),
 )
 
 # Route call-import recording fetch to the imports queue (preferred by workers
@@ -141,10 +175,10 @@ celery_app.conf.task_routes = {
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
     "recompute_usage_costs": {"queue": USAGE_WORKER_QUEUE},
-    "prune_oss_usage_history": {"queue": USAGE_WORKER_QUEUE},
+    "evaluate_alerts": {"queue": PLATFORM_WORKER_QUEUE},
+    "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
+    "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": "celery"},
-    "evaluate_alerts": {"queue": "celery"},
-    "refresh_fx_rates": {"queue": "celery"},
     "run_cron_evaluator_job": {"queue": "celery"},
 }
 

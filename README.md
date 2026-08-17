@@ -54,7 +54,7 @@ There are two ways to run the application:
    
    This will automatically:
    - Pull pre-built images from GitHub Container Registry (no build required!)
-   - Start all services: `db`, `redis`, `api`, `media`, `worker`, `worker-imports`, `worker-usage`
+   - Start all services: `db`, `redis`, `api`, `media`, `worker`, `beat`, `worker-imports`, `worker-usage`
    - Run database migrations automatically on startup
 
    | Service | Purpose |
@@ -63,11 +63,12 @@ There are two ways to run the application:
    | `redis` | Redis (Celery broker + usage counters) |
    | `api` | HTTP API + frontend |
    | `media` | Live voice WebSocket media server |
-   | `worker` | Celery: `celery` (cron dispatch, alerts, FX), `audio-metrics` queues |
+   | `worker` | Celery: `celery` (evaluator cron dispatch), `audio-metrics` queues |
+   | `beat` | Celery Beat scheduler + `platform` queue worker (alerts, FX, OSS prune) — **single replica** |
    | `worker-imports` | Celery: `imports`, `diarization`, `eval-control`, `evaluations` |
    | `worker-usage` | Celery: `usage` queue (flush Redis counters + cost recompute) |
 
-   **Usage costs:** token/cost rollups stay stale without `worker-usage` and the default `worker` (cron dispatcher; or `eai start-all`).
+   **Usage costs:** token/cost rollups stay stale without `beat`, `worker-usage`, and default `worker` (evaluator crons; or `eai start-all`).
    
    **Using a specific version:**
    ```bash
@@ -167,7 +168,7 @@ docker compose up -d
    - Celery worker (`celery`, `audio-metrics`)
    - Celery worker (`imports`, `diarization`, `eval-control`, `evaluations`)
    - Celery worker (`usage` — flush + cost recompute)
-   - Celery Beat (periodic usage flush)
+   - Celery Beat (platform schedules: usage flush, alerts, FX refresh, OSS prune)
    
    It also runs database migrations and builds the frontend when needed.
    
@@ -183,6 +184,11 @@ docker compose up -d
    In another terminal, start the Celery worker:
    ```bash
    eai worker --config config.yml
+   ```
+
+   For platform periodic tasks (usage flush, alerts, etc.), start Celery Beat in a separate terminal (single replica):
+   ```bash
+   eai beat --config config.yml
    ```
    
    Or use the Celery command directly:
@@ -372,7 +378,7 @@ celery -A app.workers.celery_app worker --loglevel=info
 **Note:** Workers are required for background tasks (transcription, evaluation, usage cost flush, etc.). If you use `eai start-all`, they start automatically. Only use `eai worker` if you need to run a worker separately (e.g. `eai worker --queues usage` for the usage queue only).
 
 ### Usage Pricing Ops
-Manage model pricing rates and backfill stored usage costs on `llm_usage_daily` rollups. Requires `worker-usage` + default `worker` (or `eai start-all`).
+Manage model pricing rates and backfill stored usage costs on `llm_usage_daily` rollups. Requires `beat`, `worker-usage`, and default `worker` (or `eai start-all`).
 
 ```bash
 # Upsert model_pricing_rates from app/config/models.json
@@ -407,12 +413,12 @@ eai usage recompute --config config.yml --sync
 |----------|---------|---------|
 | `USAGE_FLUSH_BUCKET_BATCH_SIZE` | `500` | Buckets per DB transaction |
 | `USAGE_FLUSH_MAX_BATCHES_PER_RUN` | `30` | Batches per flush tick (≤ **15,000** buckets/run) |
-| `USAGE_FLUSH_BEAT_SECONDS` | `120` | System cron flush interval (~2 min lag vs Redis) |
+| `USAGE_FLUSH_BEAT_SECONDS` | `120` | Celery Beat flush interval (~2 min lag vs Redis) |
 | `USAGE_FLUSH_LOCK_TTL_SECONDS` | `300` | Per-org flush lock TTL |
 | `USAGE_READ_CACHE_TTL_SECONDS` | `90` | Redis cache TTL for usage summary/breakdown/filters |
-| `CRON_DISPATCH_INTERVAL_SECONDS` | `30` | Self-scheduling cron dispatcher tick |
+| `CRON_DISPATCH_INTERVAL_SECONDS` | `30` | Evaluator cron dispatcher tick (default worker) |
 
-Usage UI reads Postgres only (summary/breakdown/filters); Redis counters flush on the system cron schedule (~2 min eventual consistency). If Redis backlog grows, lower `USAGE_FLUSH_BEAT_SECONDS` or raise `USAGE_FLUSH_MAX_BATCHES_PER_RUN`.
+Usage UI reads Postgres only (summary/breakdown/filters); Redis counters flush on the Celery Beat schedule (~2 min eventual consistency). If Redis backlog grows, lower `USAGE_FLUSH_BEAT_SECONDS` or raise `USAGE_FLUSH_MAX_BATCHES_PER_RUN`.
 
 ### Generate Config File
 ```bash

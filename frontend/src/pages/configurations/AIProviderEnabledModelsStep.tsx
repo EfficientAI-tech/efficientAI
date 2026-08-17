@@ -79,6 +79,29 @@ export default function AIProviderEnabledModelsStep({
   const catalog = (options || {}) as ModelOptions
   const selected = useMemo(() => new Set(enabledModels), [enabledModels])
 
+  const catalogModelSet = useMemo(() => {
+    const models = new Set<string>()
+    for (const { key } of SECTIONS) {
+      for (const model of catalog[key] || []) {
+        models.add(model)
+      }
+    }
+    return models
+  }, [catalog])
+
+  const catalogIsEmpty = useMemo(
+    () => SECTIONS.every(({ key }) => (catalog[key] || []).length === 0),
+    [catalog],
+  )
+
+  const isCustomProvider = String(provider).toLowerCase() === 'custom'
+  const showManualAdd = isCustomProvider || (!isLoading && catalogIsEmpty)
+
+  const customModels = useMemo(
+    () => enabledModels.filter((model) => !catalogModelSet.has(model)),
+    [enabledModels, catalogModelSet],
+  )
+
   const toggle = (model: string) => {
     const next = new Set(enabledModels)
     if (next.has(model)) next.delete(model)
@@ -124,6 +147,13 @@ export default function AIProviderEnabledModelsStep({
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
           Gateway model <span className="font-medium break-all">{gateway}</span> stays available
           when configured.
+        </div>
+      ) : null}
+
+      {isCustomProvider && !gateway && enabledModels.length === 0 && !isLoading ? (
+        <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+          Add custom model IDs below, or set a <span className="font-medium">Gateway model</span> on
+          the previous step for a single pinned Bifrost model.
         </div>
       ) : null}
 
@@ -175,38 +205,63 @@ export default function AIProviderEnabledModelsStep({
         })
       )}
 
-      <div className={`${usageTheme.panel} p-3`}>
-        <label className="block text-sm font-medium text-gray-900 mb-2">
-          Custom deployment name
-        </label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={customModel}
-            onChange={(e) => setCustomModel(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                addCustomModel()
-              }
-            }}
-            className={`flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none ${usageTheme.focusRing}`}
-            placeholder="e.g. accounts/fireworks/models/gpt-oss-120b"
-          />
-          <button
-            type="button"
-            onClick={addCustomModel}
-            className={usageTheme.applyBtn}
-          >
-            Add
-          </button>
+      {customModels.length > 0 ? (
+        <div className={`${usageTheme.panel} overflow-hidden`}>
+          <div className={`px-3 py-2 ${usageTheme.panelHeader}`}>
+            <span className="text-sm font-semibold text-gray-900">Enabled models</span>
+            <span className="ml-2 text-xs text-gray-500">
+              {customModels.filter((m) => selected.has(m)).length}/{customModels.length} selected
+            </span>
+          </div>
+          <div className="grid max-h-52 grid-cols-1 gap-2 overflow-y-auto p-3 sm:grid-cols-2">
+            {customModels.map((model) => (
+              <ModelChip
+                key={model}
+                model={model}
+                selected={selected.has(model)}
+                onToggle={() => toggle(model)}
+              />
+            ))}
+          </div>
         </div>
-      </div>
+      ) : null}
+
+      {showManualAdd ? (
+        <div className={`${usageTheme.panel} p-3`}>
+          <label className="block text-sm font-medium text-gray-900 mb-2">
+            {isCustomProvider ? 'Custom model ID' : 'Add deployment / model name'}
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={customModel}
+              onChange={(e) => setCustomModel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  addCustomModel()
+                }
+              }}
+              className={`flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none ${usageTheme.focusRing}`}
+              placeholder={
+                isCustomProvider
+                  ? 'e.g. openai/gpt-4o or production-gpt4'
+                  : 'e.g. accounts/fireworks/models/gpt-oss-120b'
+              }
+            />
+            <button type="button" onClick={addCustomModel} className={usageTheme.applyBtn}>
+              Add
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <p className="text-xs text-gray-500">
         {enabledModels.length > 0
           ? `${enabledModels.length} model${enabledModels.length === 1 ? '' : 's'} enabled`
-          : 'No restriction — full catalog allowed'}
+          : isCustomProvider
+            ? 'No models enabled yet — add model IDs above or set a gateway model on step 1'
+            : 'No restriction — full catalog allowed'}
       </p>
     </div>
   )

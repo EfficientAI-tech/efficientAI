@@ -57,6 +57,8 @@ def filter_models_by_credential(
         return catalog_models
     allowed = set(allowlist)
     filtered = [m for m in catalog_models if m in allowed]
+    if not filtered:
+        filtered = list(allowlist)
     gateway = (credential.gateway_model or "").strip()
     if gateway and gateway not in filtered:
         filtered = [gateway, *filtered]

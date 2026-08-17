@@ -21,6 +21,7 @@ def list_due_cron_jobs(db: Session, *, now: datetime | None = None) -> List[Cron
         db.query(CronJob)
         .filter(
             CronJob.status == CronJobStatus.ACTIVE.value,
+            CronJob.is_system.is_(False),
             CronJob.next_run_at.isnot(None),
             CronJob.next_run_at <= moment,
         )
@@ -43,32 +44,6 @@ def advance_cron_job(db: Session, job: CronJob, *, now: datetime | None = None) 
 
 def enqueue_cron_job(job: CronJob) -> Dict[str, Any]:
     job_type = (job.job_type or "evaluator_run").strip()
-
-    if job_type == "usage_flush":
-        from app.workers.tasks.flush_usage_counters import flush_usage_counters_task
-
-        result = flush_usage_counters_task.delay()
-        return {"task": "flush_usage_counters", "celery_task_id": result.id}
-
-    if job_type == "alert_evaluate":
-        from app.workers.tasks.evaluate_alerts import evaluate_alerts_task
-
-        result = evaluate_alerts_task.delay()
-        return {"task": "evaluate_alerts", "celery_task_id": result.id}
-
-    if job_type == "oss_usage_prune":
-        from app.workers.tasks.prune_oss_usage_history import (
-            prune_oss_usage_history_task,
-        )
-
-        result = prune_oss_usage_history_task.delay()
-        return {"task": "prune_oss_usage_history", "celery_task_id": result.id}
-
-    if job_type == "fx_rate_refresh":
-        from app.workers.tasks.refresh_fx_rates import refresh_fx_rates_task
-
-        result = refresh_fx_rates_task.delay()
-        return {"task": "refresh_fx_rates", "celery_task_id": result.id}
 
     if job_type == "evaluator_run":
         from app.workers.tasks.run_cron_evaluator_job import run_cron_evaluator_job_task

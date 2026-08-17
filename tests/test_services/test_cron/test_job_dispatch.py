@@ -27,22 +27,33 @@ def test_advance_cron_job_marks_completed_when_max_runs_reached():
     assert job.next_run_at is None
 
 
-def test_enqueue_usage_flush_routes_to_usage_task(monkeypatch):
+def test_enqueue_unknown_job_type_returns_unknown():
     job = MagicMock()
     job.job_type = "usage_flush"
     job.id = uuid4()
 
+    meta = enqueue_cron_job(job)
+
+    assert meta["task"] == "unknown"
+    assert meta["job_type"] == "usage_flush"
+
+
+def test_enqueue_evaluator_run_routes_to_evaluator_task(monkeypatch):
+    job = MagicMock()
+    job.job_type = "evaluator_run"
+    job.id = uuid4()
+
     delayed = MagicMock()
-    delayed.id = "task-123"
+    delayed.id = "task-456"
     task = MagicMock()
     task.delay.return_value = delayed
     monkeypatch.setattr(
-        "app.workers.tasks.flush_usage_counters.flush_usage_counters_task",
+        "app.workers.tasks.run_cron_evaluator_job.run_cron_evaluator_job_task",
         task,
     )
 
     meta = enqueue_cron_job(job)
 
-    assert meta["task"] == "flush_usage_counters"
-    assert meta["celery_task_id"] == "task-123"
-    task.delay.assert_called_once_with()
+    assert meta["task"] == "run_cron_evaluator_job"
+    assert meta["celery_task_id"] == "task-456"
+    task.delay.assert_called_once_with(str(job.id))

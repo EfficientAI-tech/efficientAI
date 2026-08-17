@@ -617,9 +617,14 @@ export default function Integrations() {
     aiIntegrationProviders.length > 0 ||
     hasTelephony
 
+  const activeAIProvider =
+    selectedProvider ||
+    (selectedAIProvider?.provider as ModelProvider | undefined) ||
+    null
   const showGatewayModelField =
     integrationType === 'ai_provider' &&
-    (credentialRoutingMode === 'gateway' ||
+    (activeAIProvider === ModelProvider.CUSTOM ||
+      credentialRoutingMode === 'gateway' ||
       (credentialRoutingMode === 'inherit' &&
         llmGatewaySettings?.effective_routing &&
         llmGatewaySettings.effective_routing !== 'direct'))

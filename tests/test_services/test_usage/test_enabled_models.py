@@ -35,6 +35,20 @@ def test_filter_models_unrestricted_when_allowlist_empty():
     assert filter_models_by_credential(cred, ["a", "b"]) == ["a", "b"]
 
 
+def test_filter_models_by_credential_uses_allowlist_when_catalog_empty():
+    cred = _Credential(enabled_models=["openai/gpt-4o", "production-gpt4"], provider="custom")
+    assert filter_models_by_credential(cred, []) == ["openai/gpt-4o", "production-gpt4"]
+
+
+def test_filter_models_by_credential_empty_catalog_includes_gateway_model():
+    cred = _Credential(
+        enabled_models=["openai/gpt-4o"],
+        gateway_model="pinned-model",
+        provider="custom",
+    )
+    assert filter_models_by_credential(cred, []) == ["pinned-model", "openai/gpt-4o"]
+
+
 def test_org_pricing_eligible_models_includes_usage_and_overrides(monkeypatch):
     org_id = uuid4()
 

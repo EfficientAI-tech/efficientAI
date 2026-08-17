@@ -423,6 +423,91 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         sys.exit(1)
 
 
+@main.command("beat")
+@click.option(
+    "--config",
+    "-c",
+    default="config.yml",
+    help="Path to configuration file",
+)
+@click.option(
+    "--loglevel",
+    "-l",
+    default="info",
+    type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
+    help="Log level for Celery beat",
+)
+@click.option(
+    "--platform-worker-concurrency",
+    default=2,
+    type=int,
+    help="Concurrency for the co-located platform task worker (default: 2; thread pool).",
+)
+def beat(config: str, loglevel: str, platform_worker_concurrency: int):
+    """Start Celery Beat + platform task worker (alerts, FX, prune) — single replica only."""
+    from app.config import load_config_from_file
+
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+
+    try:
+        load_config_from_file(str(config_path))
+        click.echo(f"✅ Loaded configuration from {config_path}")
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}", err=True)
+        sys.exit(1)
+
+    from app.workers.config import PLATFORM_WORKER_QUEUE
+
+    click.echo(
+        "🚀 Starting Celery Beat + platform worker "
+        f"(queue={PLATFORM_WORKER_QUEUE}, concurrency={platform_worker_concurrency})"
+    )
+    platform_proc = None
+    try:
+        import subprocess
+
+        platform_proc = subprocess.Popen(
+            [
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                f"--queues={PLATFORM_WORKER_QUEUE}",
+                "--pool=threads",
+                f"--concurrency={platform_worker_concurrency}",
+                f"--loglevel={loglevel}",
+            ],
+        )
+        subprocess.run(
+            [
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "beat",
+                f"--loglevel={loglevel}",
+            ],
+            check=True,
+        )
+    except KeyboardInterrupt:
+        click.echo("\n👋 Celery Beat stopped")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"❌ Celery Beat failed: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError:
+        click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
+        sys.exit(1)
+    finally:
+        if platform_proc is not None and platform_proc.poll() is None:
+            platform_proc.terminate()
+            try:
+                platform_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                platform_proc.kill()
+
+
 @main.command("telephony-worker")
 @click.option(
     "--config",
@@ -638,6 +723,20 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     help="Concurrency for the usage worker (default: 4; thread pool).",
 )
 @click.option(
+    "--beat/--no-beat",
+    default=True,
+    help=(
+        "Start Celery Beat for platform periodic tasks (usage flush, alerts, etc.; "
+        "default: True — single replica only in production)."
+    ),
+)
+@click.option(
+    "--beat-loglevel",
+    default=None,
+    type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
+    help="Log level for Celery Beat (defaults to --worker-loglevel).",
+)
+@click.option(
     "--telephony-worker/--no-telephony-worker",
     default=True,
     help="Spawn telephony media server for live voice WebSockets (default: on).",
@@ -662,6 +761,8 @@ def start_all(
     imports_worker_concurrency: int,
     usage_worker: bool,
     usage_worker_concurrency: int,
+    beat: bool,
+    beat_loglevel: Optional[str],
     telephony_worker: bool,
     media_port: Optional[int],
 ):
@@ -709,6 +810,8 @@ def start_all(
     worker_process = None
     worker_imports_process = None
     worker_usage_process = None
+    beat_process = None
+    platform_worker_process = None
     telephony_process = None
 
     def _terminate(proc, label: str):
@@ -728,8 +831,10 @@ def start_all(
 
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process, worker_imports_process, worker_usage_process, telephony_process
+        nonlocal worker_process, worker_imports_process, worker_usage_process, beat_process, platform_worker_process, telephony_process
         _terminate(telephony_process, "Telephony media server")
+        _terminate(beat_process, "Celery Beat")
+        _terminate(platform_worker_process, "Celery platform worker")
         _terminate(worker_process, "Celery worker (default)")
         _terminate(worker_imports_process, "Celery worker (imports)")
         _terminate(worker_usage_process, "Celery worker (usage)")
@@ -910,6 +1015,39 @@ def start_all(
                 prefix="[WORKER-USAGE]",
             )
 
+        if beat:
+            from app.workers.config import PLATFORM_WORKER_QUEUE
+
+            beat_level = beat_loglevel or worker_loglevel
+            platform_worker_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "worker",
+                    f"--loglevel={beat_level}",
+                    "-Q",
+                    PLATFORM_WORKER_QUEUE,
+                    "-P",
+                    "threads",
+                    "-c",
+                    "2",
+                ],
+                label=f"Celery platform worker ({PLATFORM_WORKER_QUEUE} queue)",
+                prefix="[BEAT-WORKER]",
+            )
+            beat_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "beat",
+                    f"--loglevel={beat_level}",
+                ],
+                label=f"Celery Beat (scheduler, loglevel={beat_level})",
+                prefix="[BEAT]",
+            )
+
     except FileNotFoundError:
         click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
         sys.exit(1)
@@ -958,6 +1096,10 @@ def start_all(
             )
         else:
             click.echo("   Usage worker: disabled (--no-usage-worker)")
+        if beat:
+            click.echo("   Celery Beat: scheduler + platform worker (alerts, FX, prune); flush on worker-usage")
+        else:
+            click.echo("   Celery Beat: disabled (--no-beat)")
         if telephony_worker:
             telephony_public = (settings.VOBIZ_WEBHOOK_BASE_URL or "").strip()
             click.echo(f"   Telephony edge: http://localhost:{bind_media_port} (local)")
