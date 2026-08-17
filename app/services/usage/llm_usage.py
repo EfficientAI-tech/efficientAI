@@ -312,6 +312,63 @@ def _deltas_from_tts(characters: int) -> Dict[str, int]:
     }
 
 
+def _cost_fields_for_pending_deltas(
+    organization_id: UUID,
+    bucket: Dict[str, Any],
+    deltas: Dict[str, int],
+    *,
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    if not _has_billable_usage_deltas(deltas):
+        return {}
+    try:
+        from app.services.usage.pricing import cost_fields_from_deltas
+    except Exception as exc:
+        logger.debug("usage pending cost stamp skipped: {}", exc)
+        return {}
+
+    usage_date = bucket["usage_date"]
+    if isinstance(usage_date, str):
+        usage_date = date.fromisoformat(usage_date)
+    usage_kind = bucket.get("usage_kind") or USAGE_KIND_LLM
+
+    if db is not None:
+        try:
+            return cost_fields_from_deltas(
+                deltas,
+                organization_id=organization_id,
+                model=bucket["model"],
+                usage_kind=usage_kind,
+                usage_date=usage_date,
+                db=db,
+            )
+        except Exception as exc:
+            logger.debug("usage pending cost stamp failed: {}", exc)
+            return {}
+
+    try:
+        from app.database import SessionLocal
+    except Exception as exc:
+        logger.debug("usage pending cost stamp skipped: {}", exc)
+        return {}
+
+    session = SessionLocal()
+    try:
+        return cost_fields_from_deltas(
+            deltas,
+            organization_id=organization_id,
+            model=bucket["model"],
+            usage_kind=usage_kind,
+            usage_date=usage_date,
+            db=session,
+        )
+    except Exception as exc:
+        logger.debug("usage pending cost stamp failed: {}", exc)
+        return {}
+    finally:
+        session.close()
+
+
 def _buffer_to_postgres(
     organization_id: UUID,
     bucket: Dict[str, Any],
@@ -347,16 +404,9 @@ def _buffer_to_postgres(
     }
     db = SessionLocal()
     try:
-        from app.services.usage.pricing import cost_fields_from_deltas
-
         params.update(
-            cost_fields_from_deltas(
-                deltas,
-                organization_id=organization_id,
-                model=bucket["model"],
-                usage_kind=usage_kind,
-                usage_date=usage_date,
-                db=db,
+            _cost_fields_for_pending_deltas(
+                organization_id, bucket, deltas, db=db
             )
         )
         db.execute(
