@@ -97,3 +97,13 @@ def normalize_llm_usage(raw_response: Any = None, *, usage: Any = None) -> Usage
         cache_creation_tokens=cache_creation,
         reasoning_tokens=reasoning_tokens,
     )
+
+
+def usage_snapshot_is_billable(snapshot: UsageSnapshot) -> bool:
+    return (
+        snapshot.prompt_tokens > 0
+        or snapshot.completion_tokens > 0
+        or snapshot.cache_read_tokens > 0
+        or snapshot.cache_creation_tokens > 0
+        or snapshot.reasoning_tokens > 0
+    )

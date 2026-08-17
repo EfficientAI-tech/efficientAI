@@ -1170,42 +1170,35 @@ export default function Usage() {
           <StatCard label="Output tokens" value={totals?.completion_tokens} loading={usageStatsLoading} />
           <StatCard label="Total tokens" value={totals?.total_tokens} loading={usageStatsLoading} />
           <StatCard label="LLM calls" value={totals?.call_count} loading={usageStatsLoading} />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:items-stretch">
-          <div className="col-span-2 grid grid-cols-2 gap-3 sm:grid-cols-3 md:col-span-3">
-            {showAudio ? (
-              <StatCard
-                label="STT audio"
-                valueLabel={formatAudio(totals?.audio_seconds || 0)}
-                loading={usageStatsLoading}
-              />
-            ) : null}
-            {showTts ? (
-              <StatCard label="TTS characters" value={totals?.tts_characters} loading={usageStatsLoading} />
-            ) : null}
-            {(totals?.cache_read_tokens || 0) > 0 ? (
-              <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={usageStatsLoading} />
-            ) : null}
-            {(totals?.cache_creation_tokens || 0) > 0 ? (
-              <StatCard
-                label="Cache write"
-                value={totals?.cache_creation_tokens}
-                loading={usageStatsLoading}
-              />
-            ) : null}
-            {(totals?.reasoning_tokens || 0) > 0 ? (
-              <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={usageStatsLoading} />
-            ) : null}
-          </div>
-          <div className="col-span-2 md:col-span-1">
+          {showAudio ? (
             <StatCard
-              label="Estimated cost"
-              valueLabel={formatCostUsd(estimatedTotalCost)}
+              label="STT audio"
+              valueLabel={formatAudio(totals?.audio_seconds || 0)}
               loading={usageStatsLoading}
-              emphasize
             />
-          </div>
+          ) : null}
+          {showTts ? (
+            <StatCard label="TTS characters" value={totals?.tts_characters} loading={usageStatsLoading} />
+          ) : null}
+          {(totals?.cache_read_tokens || 0) > 0 ? (
+            <StatCard label="Cache read" value={totals?.cache_read_tokens} loading={usageStatsLoading} />
+          ) : null}
+          {(totals?.cache_creation_tokens || 0) > 0 ? (
+            <StatCard
+              label="Cache write"
+              value={totals?.cache_creation_tokens}
+              loading={usageStatsLoading}
+            />
+          ) : null}
+          {(totals?.reasoning_tokens || 0) > 0 ? (
+            <StatCard label="Reasoning" value={totals?.reasoning_tokens} loading={usageStatsLoading} />
+          ) : null}
+          <StatCard
+            label="Estimated cost"
+            valueLabel={formatCostUsd(estimatedTotalCost)}
+            loading={usageStatsLoading}
+            emphasize
+          />
         </div>
       </div>
 
@@ -1429,7 +1422,7 @@ function StatCard({
   return (
     <Card
       shadow="sm"
-      className={`${statCardClass}${emphasize ? ' ring-2 ring-[#facc15]/50 bg-[#fefce8]/40' : ''} h-full w-full ${className}`}
+      className={`${statCardClass}${emphasize ? ' ring-2 ring-[#facc15]/50 bg-[#fefce8]/40' : ''} w-full ${className}`}
     >
       <CardBody className="p-3">
         <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>

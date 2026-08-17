@@ -193,9 +193,11 @@ def test_resolve_rate_ignores_stale_negative_cache(monkeypatch):
     override_result.mappings.return_value.first.return_value = None
     catalog_result = MagicMock()
     catalog_result.mappings.return_value.first.return_value = row
+    cache_table_exists = MagicMock()
+    cache_table_exists.scalar.return_value = "model_pricing_rates"
 
     db = MagicMock()
-    db.execute.side_effect = [override_result, catalog_result]
+    db.execute.side_effect = [override_result, cache_table_exists, catalog_result]
 
     resolver = PricingResolver(db)
     card = resolver.resolve_rate(

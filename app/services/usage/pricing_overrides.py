@@ -311,7 +311,7 @@ def upsert_override(
     effective_from: date,
     effective_to: Optional[date] = None,
     rates: Dict[str, Any],
-    recompute: bool = True,
+    recompute: bool = False,
 ) -> Dict[str, Any]:
     validate_model_name(db, model, organization_id=organization_id)
     kind = _validate_usage_kind(usage_kind)
@@ -416,7 +416,7 @@ def delete_override(
     model: str,
     usage_kind: str,
     effective_from: Optional[date] = None,
-    recompute: bool = True,
+    recompute: bool = False,
 ) -> Dict[str, Any]:
     validate_model_name(db, model, organization_id=organization_id)
     kind = _validate_usage_kind(usage_kind)

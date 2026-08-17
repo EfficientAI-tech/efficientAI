@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card, CardBody, Spinner } from '@heroui/react'
-import { Plus, Trash2, Info } from 'lucide-react'
+import { Plus, Pencil, Trash2, Info } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { useIsAdmin } from '../../hooks/useRole'
 import { useToast } from '../../hooks/useToast'
@@ -109,7 +109,7 @@ const FIELD_HINTS = {
   usageKind:
     'Choose LLM, STT, or TTS first — this filters which models appear. Rate fields below match the kind.',
   effectiveFrom:
-    'First calendar day this override applies. Saving recalculates historical usage for this model from this date.',
+    'First calendar day this override applies. Changes apply to new usage only; past stamped costs are not rewritten.',
   ratesSection:
     'Enter USD rates only. Leave a field empty to inherit the platform catalog. At least one rate is required to save.',
 } as const
@@ -197,6 +197,7 @@ export default function UsagePricing() {
   const [effectiveFrom, setEffectiveFrom] = useState(todayIso())
   const [rates, setRates] = useState<PricingRatesUsd>(EMPTY_RATES)
   const [ratePrefillSource, setRatePrefillSource] = useState<'catalog' | 'override' | null>(null)
+  const [editingOverrideId, setEditingOverrideId] = useState<string | null>(null)
   const selectionRef = useRef({ model: '', usageKind: '' as UsageKind })
 
   const { data: aiProviders = [] } = useQuery({
@@ -268,11 +269,45 @@ export default function UsagePricing() {
     [selectedCredential, providerCatalog, usageKind, eligibleModelSet, overrides],
   )
 
+  const resetForm = () => {
+    setRates(EMPTY_RATES)
+    setModel('')
+    setCredentialId('')
+    setEffectiveFrom(todayIso())
+    setEditingOverrideId(null)
+    setRatePrefillSource(null)
+    selectionRef.current = { model: '', usageKind: 'llm' }
+  }
+
   const resetModelAndRates = () => {
     setModel('')
     setRates(EMPTY_RATES)
     setRatePrefillSource(null)
-    selectionRef.current = { model: '', usageKind: 'llm' }
+    setEditingOverrideId(null)
+    selectionRef.current = { model: '', usageKind: usageKind }
+  }
+
+  const findCredentialForModel = (modelName: string, kind: UsageKind): string => {
+    for (const credential of activeCredentials) {
+      const allowlist = credential.enabled_models?.map((m) => m.trim()).filter(Boolean) ?? []
+      if (allowlist.includes(modelName)) return credential.id
+      if (kind === 'llm' && credential.gateway_model?.trim() === modelName) {
+        return credential.id
+      }
+    }
+    return activeCredentials[0]?.id ?? ''
+  }
+
+  const loadOverrideForEdit = (row: PricingOverride) => {
+    const kind = row.usage_kind as UsageKind
+    setEditingOverrideId(row.id)
+    setUsageKind(kind)
+    setCredentialId(findCredentialForModel(row.model, kind))
+    setModel(row.model)
+    setEffectiveFrom(row.effective_from)
+    setRates(ratesFromApi(row.rates))
+    setRatePrefillSource('override')
+    selectionRef.current = { model: row.model, usageKind: kind }
   }
 
   useEffect(() => {
@@ -281,6 +316,7 @@ export default function UsagePricing() {
   }, [activeCredentials, credentialId])
 
   useEffect(() => {
+    if (editingOverrideId) return
     if (!model) {
       setRates(EMPTY_RATES)
       setRatePrefillSource(null)
@@ -308,7 +344,7 @@ export default function UsagePricing() {
     }
 
     selectionRef.current = { model, usageKind }
-  }, [model, usageKind, effectivePricing])
+  }, [model, usageKind, effectivePricing, editingOverrideId])
 
   const handleCredentialChange = (nextId: string) => {
     setCredentialId(nextId)
@@ -337,18 +373,15 @@ export default function UsagePricing() {
         usage_kind: usageKind,
         effective_from: effectiveFrom,
         rates: payloadRates,
-        recompute: true,
+        recompute: false,
       })
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['usage-pricing'] })
       queryClient.invalidateQueries({ queryKey: ['org-usage'] })
-      setRates(EMPTY_RATES)
-      setRatePrefillSource(null)
+      resetForm()
       showToast(
-        data.recompute_enqueued
-          ? 'Override saved; cost recompute started'
-          : 'Override saved (recompute already running)',
+        editingOverrideId ? 'Override updated' : 'Override saved',
         'success'
       )
     },
@@ -388,10 +421,12 @@ export default function UsagePricing() {
       <Card className={`${usageTheme.panel} shrink-0`}>
         <CardBody className="gap-5 overflow-visible p-5">
           <div>
-            <h2 className="text-base font-semibold text-gray-900">Add or update override</h2>
+            <h2 className="text-base font-semibold text-gray-900">
+              {editingOverrideId ? 'Edit override' : 'Add or update override'}
+            </h2>
             <p className="mt-0.5 text-xs text-gray-500">
-              Per-model rates for this org. Leave blank to use the default catalog. Saving triggers
-              a scoped cost recompute.
+              Per-model rates for this org. Leave blank to use the default catalog. Changes apply
+              to new usage only; previously recorded costs are kept.
             </p>
           </div>
 
@@ -442,6 +477,7 @@ export default function UsagePricing() {
                 type="date"
                 className={CONTROL_CLASS}
                 value={effectiveFrom}
+                disabled={Boolean(editingOverrideId)}
                 onChange={(e) => setEffectiveFrom(e.target.value)}
               />
             </FormField>
@@ -521,11 +557,7 @@ export default function UsagePricing() {
             <button
               type="button"
               className="text-sm text-gray-500 hover:text-gray-700"
-              onClick={() => {
-                setRates(EMPTY_RATES)
-                setModel('')
-                setCredentialId('')
-              }}
+              onClick={() => resetForm()}
             >
               Clear form
             </button>
@@ -536,7 +568,7 @@ export default function UsagePricing() {
               isLoading={saveMutation.isPending}
               onClick={() => saveMutation.mutate()}
             >
-              Save override
+              {editingOverrideId ? 'Update override' : 'Save override'}
             </Button>
           </div>
         </CardBody>
@@ -577,7 +609,7 @@ export default function UsagePricing() {
                     <th className="px-4 py-2.5 text-right">Output</th>
                     <th className="px-4 py-2.5 text-right">Audio</th>
                     <th className="px-4 py-2.5 text-right">TTS</th>
-                    <th className="px-4 py-2.5 w-12" />
+                    <th className="px-4 py-2.5 w-20" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 bg-white">
@@ -604,15 +636,25 @@ export default function UsagePricing() {
                         {formatRateUsd(row.rates.tts_per_1m_characters)}
                       </td>
                       <td className="px-4 py-2.5 text-right">
-                        <button
-                          type="button"
-                          className="rounded p-1 text-red-600 hover:bg-red-50 hover:text-red-800"
-                          onClick={() => deleteMutation.mutate(row)}
-                          disabled={deleteMutation.isPending}
-                          aria-label={`Delete override for ${row.model}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            className="rounded p-1 text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                            onClick={() => loadOverrideForEdit(row)}
+                            aria-label={`Edit override for ${row.model}`}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded p-1 text-red-600 hover:bg-red-50 hover:text-red-800"
+                            onClick={() => deleteMutation.mutate(row)}
+                            disabled={deleteMutation.isPending}
+                            aria-label={`Delete override for ${row.model}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

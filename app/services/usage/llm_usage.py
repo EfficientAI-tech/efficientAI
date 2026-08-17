@@ -240,7 +240,40 @@ def _resolve_context(
     return None
 
 
+_USAGE_METRIC_KEYS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_tokens",
+    "audio_seconds",
+    "tts_characters",
+)
+
+
+def _has_billable_usage_deltas(deltas: Dict[str, int]) -> bool:
+    return any(int(deltas.get(key, 0) or 0) > 0 for key in _USAGE_METRIC_KEYS)
+
+
 def _deltas_from_usage(usage: UsageSnapshot) -> Dict[str, int]:
+    billable = (
+        usage.prompt_tokens > 0
+        or usage.completion_tokens > 0
+        or usage.cache_read_tokens > 0
+        or usage.cache_creation_tokens > 0
+        or usage.reasoning_tokens > 0
+    )
+    if not billable:
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "reasoning_tokens": 0,
+            "audio_seconds": 0,
+            "tts_characters": 0,
+            "call_count": 0,
+        }
     return {
         "prompt_tokens": usage.prompt_tokens,
         "completion_tokens": usage.completion_tokens,
@@ -418,7 +451,7 @@ def record_llm_usage(
         return
 
     deltas = _deltas_from_usage(usage)
-    if not any(deltas.values()):
+    if not _has_billable_usage_deltas(deltas):
         return
 
     day = usage_date or datetime.now(timezone.utc).date()
@@ -450,6 +483,8 @@ def record_stt_usage(
         return
 
     seconds = int(max(0, math.ceil(float(audio_seconds or 0))))
+    if seconds <= 0:
+        return
     deltas = _deltas_from_stt(seconds, count_call=count_call)
     day = usage_date or datetime.now(timezone.utc).date()
     bucket = _bucket_from_context(
@@ -521,6 +556,8 @@ def record_tts_usage(
         return
 
     chars = max(0, int(characters or 0))
+    if chars <= 0:
+        return
     deltas = _deltas_from_tts(chars)
     day = usage_date or datetime.now(timezone.utc).date()
     bucket = _bucket_from_context(
@@ -789,6 +826,52 @@ def _ack_claim(claim_key: str, organization_id: UUID) -> None:
         pass
 
 
+def _stamp_cost_params(
+    db: Session,
+    organization_id: UUID,
+    bucket: Dict[str, Any],
+    deltas: Dict[str, int],
+    *,
+    pricing_resolver: Any = None,
+    stamped_costs: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if stamped_costs is not None:
+        return {
+            "input_cost_micro_usd": int(stamped_costs.get("input_cost_micro_usd") or 0),
+            "output_cost_micro_usd": int(stamped_costs.get("output_cost_micro_usd") or 0),
+            "cache_read_cost_micro_usd": int(
+                stamped_costs.get("cache_read_cost_micro_usd") or 0
+            ),
+            "cache_creation_cost_micro_usd": int(
+                stamped_costs.get("cache_creation_cost_micro_usd") or 0
+            ),
+            "reasoning_cost_micro_usd": int(
+                stamped_costs.get("reasoning_cost_micro_usd") or 0
+            ),
+            "audio_cost_micro_usd": int(stamped_costs.get("audio_cost_micro_usd") or 0),
+            "tts_cost_micro_usd": int(stamped_costs.get("tts_cost_micro_usd") or 0),
+            "total_cost_micro_usd": int(stamped_costs.get("total_cost_micro_usd") or 0),
+            "pricing_rate_source": stamped_costs.get("pricing_rate_source"),
+            "pricing_rate_id": stamped_costs.get("pricing_rate_id"),
+        }
+
+    from app.services.usage.pricing import cost_fields_from_deltas, PricingResolver
+
+    usage_date = bucket["usage_date"]
+    if isinstance(usage_date, str):
+        usage_date = date.fromisoformat(usage_date)
+    resolver = pricing_resolver or PricingResolver(db)
+    return cost_fields_from_deltas(
+        deltas,
+        organization_id=organization_id,
+        model=bucket["model"],
+        usage_kind=bucket.get("usage_kind") or USAGE_KIND_LLM,
+        usage_date=usage_date,
+        db=db,
+        resolver=resolver,
+    )
+
+
 def _upsert_bucket(
     db: Session,
     organization_id: UUID,
@@ -796,6 +879,7 @@ def _upsert_bucket(
     deltas: Dict[str, int],
     *,
     pricing_resolver: Any = None,
+    stamped_costs: Optional[Dict[str, Any]] = None,
 ) -> None:
     context = bucket.get("context") or {}
     params = {
@@ -817,7 +901,56 @@ def _upsert_bucket(
         "tts_characters": int(deltas.get("tts_characters", 0)),
         "call_count": int(deltas.get("call_count", 0)),
     }
-    update_set = """
+    apply_cost_increment = stamped_costs is not None or _has_billable_usage_deltas(deltas)
+    if apply_cost_increment:
+        cost_fields = _stamp_cost_params(
+            db,
+            organization_id,
+            bucket,
+            deltas,
+            pricing_resolver=pricing_resolver,
+            stamped_costs=stamped_costs,
+        )
+        params.update(
+            {
+                "input_cost_micro_usd": int(cost_fields["input_cost_micro_usd"]),
+                "output_cost_micro_usd": int(cost_fields["output_cost_micro_usd"]),
+                "cache_read_cost_micro_usd": int(
+                    cost_fields["cache_read_cost_micro_usd"]
+                ),
+                "cache_creation_cost_micro_usd": int(
+                    cost_fields["cache_creation_cost_micro_usd"]
+                ),
+                "reasoning_cost_micro_usd": int(
+                    cost_fields["reasoning_cost_micro_usd"]
+                ),
+                "audio_cost_micro_usd": int(cost_fields["audio_cost_micro_usd"]),
+                "tts_cost_micro_usd": int(cost_fields["tts_cost_micro_usd"]),
+                "total_cost_micro_usd": int(cost_fields["total_cost_micro_usd"]),
+                "pricing_rate_source": cost_fields.get("pricing_rate_source"),
+                "pricing_rate_id": cost_fields.get("pricing_rate_id"),
+            }
+        )
+    cost_update_set = ""
+    if apply_cost_increment:
+        cost_update_set = """
+                input_cost_micro_usd = input_cost_micro_usd + :input_cost_micro_usd,
+                output_cost_micro_usd = output_cost_micro_usd + :output_cost_micro_usd,
+                cache_read_cost_micro_usd = cache_read_cost_micro_usd + :cache_read_cost_micro_usd,
+                cache_creation_cost_micro_usd = cache_creation_cost_micro_usd + :cache_creation_cost_micro_usd,
+                reasoning_cost_micro_usd = reasoning_cost_micro_usd + :reasoning_cost_micro_usd,
+                audio_cost_micro_usd = audio_cost_micro_usd + :audio_cost_micro_usd,
+                tts_cost_micro_usd = tts_cost_micro_usd + :tts_cost_micro_usd,
+                total_cost_micro_usd = total_cost_micro_usd + :total_cost_micro_usd,
+                pricing_rate_source = COALESCE(:pricing_rate_source, pricing_rate_source),
+                pricing_rate_id = CASE
+                    WHEN CAST(:pricing_rate_id AS text) IS NOT NULL
+                    THEN CAST(:pricing_rate_id AS uuid)
+                    ELSE pricing_rate_id
+                END,
+        """
+    update_set = (
+        """
                 prompt_tokens = prompt_tokens + :prompt_tokens,
                 completion_tokens = completion_tokens + :completion_tokens,
                 cache_read_tokens = cache_read_tokens + :cache_read_tokens,
@@ -826,12 +959,16 @@ def _upsert_bucket(
                 audio_seconds = audio_seconds + :audio_seconds,
                 tts_characters = tts_characters + :tts_characters,
                 call_count = call_count + :call_count,
+        """
+        + cost_update_set
+        + """
                 context = CASE
                     WHEN context = '{}'::jsonb THEN CAST(:context AS jsonb)
                     ELSE context || CAST(:context AS jsonb)
                 END,
                 updated_at = now()
     """
+    )
     where_base = """
             WHERE organization_id = CAST(:organization_id AS uuid)
               AND product_section = :product_section
@@ -861,9 +998,44 @@ def _upsert_bucket(
         if not result.rowcount:
             db.execute(text("SAVEPOINT llm_usage_bucket_insert"))
             try:
-                db.execute(
-                    text(
-                        """
+                if apply_cost_increment:
+                    db.execute(
+                        text(
+                            """
+                    INSERT INTO llm_usage_daily (
+                        id, organization_id, workspace_id, product_section, model,
+                        context, usage_date, usage_kind,
+                        prompt_tokens, completion_tokens, cache_read_tokens,
+                        cache_creation_tokens, reasoning_tokens, audio_seconds,
+                        tts_characters, call_count,
+                        input_cost_micro_usd, output_cost_micro_usd,
+                        cache_read_cost_micro_usd, cache_creation_cost_micro_usd,
+                        reasoning_cost_micro_usd, audio_cost_micro_usd, tts_cost_micro_usd,
+                        total_cost_micro_usd, pricing_rate_source, pricing_rate_id,
+                        created_at, updated_at
+                    ) VALUES (
+                        gen_random_uuid(), CAST(:organization_id AS uuid),
+                        CAST(:workspace_id AS uuid), :product_section, :model,
+                        CAST(:context AS jsonb), CAST(:usage_date AS date),
+                        :usage_kind,
+                        :prompt_tokens, :completion_tokens, :cache_read_tokens,
+                        :cache_creation_tokens, :reasoning_tokens, :audio_seconds,
+                        :tts_characters, :call_count,
+                        :input_cost_micro_usd, :output_cost_micro_usd,
+                        :cache_read_cost_micro_usd, :cache_creation_cost_micro_usd,
+                        :reasoning_cost_micro_usd, :audio_cost_micro_usd, :tts_cost_micro_usd,
+                        :total_cost_micro_usd, :pricing_rate_source,
+                        CAST(:pricing_rate_id AS uuid),
+                        now(), now()
+                    )
+                    """
+                        ),
+                        params,
+                    )
+                else:
+                    db.execute(
+                        text(
+                            """
                     INSERT INTO llm_usage_daily (
                         id, organization_id, workspace_id, product_section, model,
                         context, usage_date, usage_kind,
@@ -882,9 +1054,9 @@ def _upsert_bucket(
                         now(), now()
                     )
                     """
-                    ),
-                    params,
-                )
+                        ),
+                        params,
+                    )
                 db.execute(text("RELEASE SAVEPOINT llm_usage_bucket_insert"))
             except IntegrityError as exc:
                 if not _is_unique_violation(exc):
@@ -907,21 +1079,6 @@ def _upsert_bucket(
                         "llm usage upsert unique conflict but no matching bucket for org {}",
                         organization_id,
                     )
-
-    try:
-        from app.services.usage.pricing import PricingResolver, apply_cost_to_bucket
-
-        resolver = pricing_resolver
-        if resolver is None:
-            resolver = PricingResolver(db)
-        apply_cost_to_bucket(
-            db,
-            organization_id=organization_id,
-            bucket=bucket,
-            resolver=resolver,
-        )
-    except Exception as exc:
-        logger.warning("usage cost apply failed: {}", exc)
 
 
 def _upsert_claimed_buckets(
@@ -1059,7 +1216,11 @@ def _flush_pending_buffer(
                        usage_date, usage_kind,
                        prompt_tokens, completion_tokens, cache_read_tokens,
                        cache_creation_tokens, reasoning_tokens, audio_seconds,
-                       tts_characters, call_count
+                       tts_characters, call_count,
+                       input_cost_micro_usd, output_cost_micro_usd,
+                       cache_read_cost_micro_usd, cache_creation_cost_micro_usd,
+                       reasoning_cost_micro_usd, audio_cost_micro_usd, tts_cost_micro_usd,
+                       total_cost_micro_usd, pricing_rate_source, pricing_rate_id
                 FROM usage_pending_buffer
                 WHERE organization_id = CAST(:organization_id AS uuid)
                 ORDER BY created_at ASC
@@ -1103,12 +1264,27 @@ def _flush_pending_buffer(
                 "tts_characters": int(row.get("tts_characters") or 0),
                 "call_count": int(row["call_count"] or 0),
             }
+            stamped_costs = {
+                "input_cost_micro_usd": row.get("input_cost_micro_usd"),
+                "output_cost_micro_usd": row.get("output_cost_micro_usd"),
+                "cache_read_cost_micro_usd": row.get("cache_read_cost_micro_usd"),
+                "cache_creation_cost_micro_usd": row.get("cache_creation_cost_micro_usd"),
+                "reasoning_cost_micro_usd": row.get("reasoning_cost_micro_usd"),
+                "audio_cost_micro_usd": row.get("audio_cost_micro_usd"),
+                "tts_cost_micro_usd": row.get("tts_cost_micro_usd"),
+                "total_cost_micro_usd": row.get("total_cost_micro_usd"),
+                "pricing_rate_source": row.get("pricing_rate_source"),
+                "pricing_rate_id": (
+                    str(row["pricing_rate_id"]) if row.get("pricing_rate_id") else None
+                ),
+            }
             _upsert_bucket(
                 db,
                 organization_id,
                 bucket,
                 deltas,
                 pricing_resolver=resolver,
+                stamped_costs=stamped_costs,
             )
             ids.append(str(row["id"]))
             flushed += 1

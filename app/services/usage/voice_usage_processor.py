@@ -42,7 +42,7 @@ def create_llm_usage_recorder(
             record_stt_usage,
             record_tts_usage,
         )
-        from app.services.usage.normalize import UsageSnapshot
+        from app.services.usage.normalize import UsageSnapshot, usage_snapshot_is_billable
     except Exception as exc:
         logger.debug("voice usage recorder unavailable: {}", exc)
         return None
@@ -80,6 +80,8 @@ def create_llm_usage_recorder(
                             ),
                             reasoning_tokens=int(tokens.reasoning_tokens or 0),
                         )
+                        if not usage_snapshot_is_billable(snapshot):
+                            continue
                         record_llm_usage(
                             item.model or "unknown",
                             snapshot,

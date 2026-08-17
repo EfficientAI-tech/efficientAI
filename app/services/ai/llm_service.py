@@ -555,7 +555,10 @@ class LLMService:
                 ensure_usage_context,
                 reset_usage_context,
             )
-            from app.services.usage.normalize import normalize_llm_usage
+            from app.services.usage.normalize import (
+                normalize_llm_usage,
+                usage_snapshot_is_billable,
+            )
             from app.services.usage.llm_usage import record_llm_usage
 
             usage_token = ensure_usage_context(
@@ -567,9 +570,10 @@ class LLMService:
                 result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
                 result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
                 result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
-                record_llm_usage(
-                    llm_model, snapshot, organization_id=organization_id
-                )
+                if usage_snapshot_is_billable(snapshot):
+                    record_llm_usage(
+                        llm_model, snapshot, organization_id=organization_id
+                    )
             finally:
                 if usage_token is not None:
                     reset_usage_context(usage_token)

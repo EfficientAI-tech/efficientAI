@@ -65,7 +65,7 @@ class PricingOverrideUpsertRequest(BaseModel):
     effective_from: date
     effective_to: Optional[date] = None
     rates: PricingRatesUsd
-    recompute: bool = True
+    recompute: bool = False
 
 
 class EffectivePricingResponse(BaseModel):
@@ -205,7 +205,7 @@ def delete_usage_pricing_override(
     model: str,
     usage_kind: str = Query("llm"),
     effective_from: Optional[date] = Query(None),
-    recompute: bool = Query(True),
+    recompute: bool = Query(False),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):

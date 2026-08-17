@@ -24,6 +24,26 @@ from app.services.usage.context import (
 from app.services.usage.normalize import UsageSnapshot
 
 
+def _stub_stamp_cost_params(*_args, **_kwargs) -> Dict[str, Any]:
+    return {
+        "input_cost_micro_usd": 0,
+        "output_cost_micro_usd": 0,
+        "cache_read_cost_micro_usd": 0,
+        "cache_creation_cost_micro_usd": 0,
+        "reasoning_cost_micro_usd": 0,
+        "audio_cost_micro_usd": 0,
+        "tts_cost_micro_usd": 0,
+        "total_cost_micro_usd": 0,
+        "pricing_rate_source": None,
+        "pricing_rate_id": None,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _stub_usage_cost_stamp(monkeypatch):
+    monkeypatch.setattr(usage_mod, "_stamp_cost_params", _stub_stamp_cost_params)
+
+
 class _FakePipeline:
     def __init__(self, client: "_FakeRedis"):
         self._client = client
@@ -202,7 +222,7 @@ def org_ctx():
     return org_id, workspace_id, ctx
 
 
-def test_record_increments_pending_and_counts_zero_token_calls(fake_redis, org_ctx):
+def test_record_increments_pending_and_ignores_zero_token_calls(fake_redis, org_ctx):
     org_id, _workspace_id, ctx = org_ctx
     with llm_usage_context(ctx):
         usage_mod.record_llm_usage(
@@ -227,7 +247,7 @@ def test_record_increments_pending_and_counts_zero_token_calls(fake_redis, org_c
     calls = sum(int(v) for k, v in fields.items() if k.endswith("|call_count"))
     assert prompt == 10
     assert completion == 5
-    assert calls == 2
+    assert calls == 1
     assert any(k.rsplit("|", 1)[0].endswith("|llm") for k in fields)
 
 
@@ -499,10 +519,7 @@ def test_concurrent_flush_does_not_double_count(fake_redis, org_ctx, monkeypatch
     db_b = MagicMock()
     db_b.execute.return_value = MagicMock(rowcount=1)
     monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr(
-        "app.services.usage.pricing.apply_cost_to_bucket",
-        lambda *args, **kwargs: False,
-    )
+    monkeypatch.setattr(usage_mod, "_stamp_cost_params", _stub_stamp_cost_params)
 
     first = usage_mod.flush_usage_to_catalog(db_a, org_id)
     second = usage_mod.flush_usage_to_catalog(db_b, org_id)
@@ -549,10 +566,7 @@ def test_flush_redis_processes_multiple_batches_in_one_run(
     db = MagicMock()
     db.execute.return_value = MagicMock(rowcount=1)
     monkeypatch.setattr(usage_mod, "_flush_pending_buffer", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr(
-        "app.services.usage.pricing.apply_cost_to_bucket",
-        lambda *args, **kwargs: False,
-    )
+    monkeypatch.setattr(usage_mod, "_stamp_cost_params", _stub_stamp_cost_params)
 
     flushed = usage_mod.flush_usage_to_catalog(db, org_id)
 
@@ -656,10 +670,6 @@ def test_upsert_bucket_sql_uses_valid_empty_jsonb_literal():
 
 def test_upsert_bucket_matches_legacy_resource_context_key(monkeypatch):
     """Per-row context must merge into an existing evaluation-level bucket."""
-    monkeypatch.setattr(
-        "app.services.usage.pricing.apply_cost_to_bucket",
-        lambda *args, **kwargs: False,
-    )
     org_id = uuid4()
     evaluation_id = uuid4()
     bucket = {
@@ -689,7 +699,7 @@ def test_upsert_bucket_matches_legacy_resource_context_key(monkeypatch):
     assert "context->>'resource_type'" in legacy_sql
 
 
-def test_upsert_bucket_applies_cost_after_update(monkeypatch):
+def test_upsert_bucket_increments_cost_on_update(monkeypatch):
     org_id = uuid4()
     bucket = {
         "workspace_id": uuid4(),
@@ -699,18 +709,46 @@ def test_upsert_bucket_applies_cost_after_update(monkeypatch):
         "usage_date": date(2026, 8, 12),
         "usage_kind": "llm",
     }
-    deltas = {"prompt_tokens": 10, "completion_tokens": 5}
+    deltas = {"prompt_tokens": 10, "completion_tokens": 5, "call_count": 1}
     db = MagicMock()
     db.execute.return_value = MagicMock(rowcount=1)
-    called: list[bool] = []
     monkeypatch.setattr(
-        "app.services.usage.pricing.apply_cost_to_bucket",
-        lambda *args, **kwargs: called.append(True) or True,
+        usage_mod,
+        "_stamp_cost_params",
+        lambda *args, **kwargs: {
+            "input_cost_micro_usd": 100,
+            "output_cost_micro_usd": 200,
+            "cache_read_cost_micro_usd": 0,
+            "cache_creation_cost_micro_usd": 0,
+            "reasoning_cost_micro_usd": 0,
+            "audio_cost_micro_usd": 0,
+            "tts_cost_micro_usd": 0,
+            "total_cost_micro_usd": 300,
+            "pricing_rate_source": "catalog",
+            "pricing_rate_id": str(uuid4()),
+        },
     )
 
     usage_mod._upsert_bucket(db, org_id, bucket, deltas)
 
-    assert called
+    update_sql = str(db.execute.call_args[0][0])
+    assert "input_cost_micro_usd = input_cost_micro_usd + :input_cost_micro_usd" in update_sql
+    assert "total_cost_micro_usd = total_cost_micro_usd + :total_cost_micro_usd" in update_sql
+
+
+def test_record_llm_usage_skips_zero_token_snapshot(fake_redis, monkeypatch):
+    org_id = uuid4()
+    monkeypatch.setattr(usage_mod, "_client", lambda: fake_redis)
+    usage_mod.record_llm_usage(
+        "gpt-test",
+        UsageSnapshot(prompt_tokens=0, completion_tokens=0),
+        organization_id=org_id,
+        ctx=LLMUsageContext(
+            organization_id=org_id,
+            product_section=LLMUsageProductSection.CHAT,
+        ),
+    )
+    assert not fake_redis.hgetall(usage_mod._pending_hash_key(org_id))
 
 
 def test_orphan_recovery_runs_at_most_once_per_interval(fake_redis, monkeypatch):

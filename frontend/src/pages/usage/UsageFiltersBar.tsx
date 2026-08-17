@@ -109,19 +109,19 @@ export default function UsageFiltersBar({
 
   const activeChips = useMemo((): ActiveChip[] => {
     const chips: ActiveChip[] = []
-    const wsLabel = workspaces.find((w) => w.id === workspaceId)?.name
-    if (workspaceId && wsLabel) {
+    if (workspaceId) {
+      const wsLabel = workspaces.find((w) => w.id === workspaceId)?.name
       chips.push({
         key: 'workspace',
-        label: wsLabel,
+        label: wsLabel || 'Workspace',
         onClear: () => onWorkspaceChange(''),
       })
     }
-    const importLabel = callImports.find((c) => c.id === callImportId)?.label
-    if (callImportId && importLabel) {
+    if (callImportId) {
+      const importLabel = callImports.find((c) => c.id === callImportId)?.label
       chips.push({
         key: 'call_import',
-        label: importLabel,
+        label: importLabel || 'Call import',
         onClear: () => onCallImportChange(''),
       })
     }
@@ -134,22 +134,20 @@ export default function UsageFiltersBar({
     }
     if (tagId) {
       const tagLabel = tags.find((t) => t.id === tagId)?.label
-      if (tagLabel) {
-        chips.push({
-          key: 'tag',
-          label: tagLabel,
-          onClear: () => onTagChange(''),
-        })
-      }
+      chips.push({
+        key: 'tag',
+        label: tagLabel || 'Tag',
+        onClear: () => onTagChange(''),
+      })
     }
-    const sourceLabel =
-      sourceOptions.find((e) => e.id === sourceSelectValue)?.label ||
-      evaluations.find((e) => e.id === evaluationId)?.label ||
-      resources.find((r) => r.id === evaluationId)?.label
-    if ((evaluationId || productSection) && sourceLabel) {
+    if (evaluationId || productSection) {
+      const sourceLabel =
+        sourceOptions.find((e) => e.id === sourceSelectValue)?.label ||
+        evaluations.find((e) => e.id === evaluationId)?.label ||
+        resources.find((r) => r.id === evaluationId)?.label
       chips.push({
         key: 'evaluation',
-        label: sourceLabel,
+        label: sourceLabel || 'Source',
         onClear: () => onEvaluationChange(''),
       })
     }
@@ -193,6 +191,16 @@ export default function UsageFiltersBar({
     onModelChange,
   ])
 
+  const hasActiveScope = Boolean(
+    workspaceId ||
+      callImportId ||
+      dataset ||
+      tagId ||
+      evaluationId ||
+      model ||
+      usageKind ||
+      productSection,
+  )
   const hasScopeFilters = activeChips.length > 0
 
   const kindHint = (kind: Kind): string | undefined => {
@@ -229,7 +237,7 @@ export default function UsageFiltersBar({
           <span className="text-xs text-gray-400 ml-1">Updating options…</span>
         ) : null}
 
-        {hasScopeFilters ? (
+        {hasActiveScope ? (
           <button
             type="button"
             onClick={onClearAll}

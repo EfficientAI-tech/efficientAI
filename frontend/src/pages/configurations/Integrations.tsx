@@ -209,7 +209,10 @@ export default function Integrations() {
       (credentialRoutingMode === 'inherit' &&
         llmGatewaySettings?.effective_routing &&
         llmGatewaySettings.effective_routing !== 'direct'))
-  const aiProviderRequiresApiKey = credentialRoutingMode === 'direct'
+  const showGatewayOptionalApiKeyUi = isCustomAIProvider
+  const aiProviderRequiresApiKey = isCustomAIProvider
+    ? credentialRoutingMode === 'direct'
+    : !isEditMode
 
   const showLlmGatewayConfigOptions = llmGatewayMode !== 'disabled'
 
@@ -1487,10 +1490,16 @@ export default function Integrations() {
                       API Key{' '}
                       {isEditMode ? (
                         <span className="text-gray-500 font-normal">(leave empty to keep current)</span>
-                      ) : aiProviderRequiresApiKey ? (
-                        '*'
+                      ) : showGatewayOptionalApiKeyUi ? (
+                        aiProviderRequiresApiKey ? (
+                          '*'
+                        ) : (
+                          <span className="text-gray-500 font-normal">
+                            (optional — not needed for gateway routing)
+                          </span>
+                        )
                       ) : (
-                        <span className="text-gray-500 font-normal">(optional — not needed for gateway routing)</span>
+                        '*'
                       )}
                     </label>
                     <input
@@ -1502,16 +1511,24 @@ export default function Integrations() {
                       placeholder={
                         isEditMode
                           ? 'Enter new API key (optional)'
-                          : aiProviderRequiresApiKey
-                            ? 'Enter API key'
-                            : 'Leave blank when routing via Bifrost/gateway'
+                          : showGatewayOptionalApiKeyUi
+                            ? aiProviderRequiresApiKey
+                              ? 'Enter API key'
+                              : 'Leave blank when routing via Bifrost/gateway'
+                            : 'Enter API key'
                       }
                     />
-                    <p className="mt-1 text-xs text-gray-500">
-                      {credentialRoutingMode === 'direct'
-                        ? 'Direct routing always requires a provider API key.'
-                        : 'Gateway routing does not require a provider API key — Bifrost handles the model call. Add one only if you want to pass a provider secret through the gateway.'}
-                    </p>
+                    {showGatewayOptionalApiKeyUi ? (
+                      <p className="mt-1 text-xs text-gray-500">
+                        {credentialRoutingMode === 'direct'
+                          ? 'Direct routing always requires a provider API key.'
+                          : 'Gateway routing does not require a provider API key — Bifrost handles the model call. Add one only if you want to pass a provider secret through the gateway.'}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Your API key will be encrypted and stored securely
+                      </p>
+                    )}
                   </div>
                 </>
               )}
