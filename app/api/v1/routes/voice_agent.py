@@ -139,25 +139,50 @@ async def websocket_endpoint(
 
         use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
 
-        def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
-            """Resolve API key from AIProvider (preferred) or Integration for given provider."""
-            from sqlalchemy import func
-            # 1) AIProvider (handle both string and enum comparisons)
-            provider_value = provider.value if hasattr(provider, 'value') else provider
-            
-            ai_provider_rec = db.query(AIProvider).filter(
-                AIProvider.organization_id == organization_id,
-                AIProvider.provider == provider_value,
-                AIProvider.is_active == True,
-            ).first()
-            
-            # If not found, try case-insensitive match
-            if not ai_provider_rec:
-                ai_provider_rec = db.query(AIProvider).filter(
-                    AIProvider.organization_id == organization_id,
-                    func.lower(AIProvider.provider) == provider_value.lower(),
-                    AIProvider.is_active == True,
-                ).first()
+        from app.services.credentials import resolve_ai_provider, resolve_integration
+
+        _LLM_ENV_KEYS = {
+            ModelProvider.OPENAI: "OPENAI_API_KEY",
+            ModelProvider.ANTHROPIC: "ANTHROPIC_API_KEY",
+            ModelProvider.GOOGLE: "GOOGLE_API_KEY",
+            ModelProvider.XAI: "XAI_API_KEY",
+            ModelProvider.FIREWORKS: "FIREWORKS_API_KEY",
+            ModelProvider.TOGETHER: "TOGETHER_API_KEY",
+            ModelProvider.MISTRAL: "MISTRAL_API_KEY",
+            ModelProvider.PERPLEXITY: "PERPLEXITY_API_KEY",
+            ModelProvider.OPENROUTER: "OPENROUTER_API_KEY",
+            ModelProvider.AZURE: "AZURE_OPENAI_API_KEY",
+            ModelProvider.AWS: "AWS_ACCESS_KEY_ID",
+            ModelProvider.SARVAM: "SARVAM_API_KEY",
+            ModelProvider.COHERE: "COHERE_API_KEY",
+            ModelProvider.CUSTOM: "CUSTOM_LLM_API_KEY",
+        }
+
+        _INTEGRATION_PLATFORM_MAP = {
+            ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
+            ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
+            ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
+            ModelProvider.MURF: IntegrationPlatform.MURF,
+            ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
+            ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
+            ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
+        }
+
+        def resolve_api_key_for_provider(
+            provider: ModelProvider,
+            credential_id: Optional[UUID] = None,
+        ) -> str | None:
+            """Resolve API key from AIProvider (preferred), Integration, or env."""
+            import os
+
+            provider_value = provider.value if hasattr(provider, "value") else provider
+
+            ai_provider_rec = resolve_ai_provider(
+                provider_value,
+                db,
+                organization_id,
+                credential_id=credential_id,
+            )
             if ai_provider_rec:
                 try:
                     key = decrypt_api_key(ai_provider_rec.api_key)
@@ -167,72 +192,135 @@ async def websocket_endpoint(
                     )
                     return key
                 except Exception as e:
-                    logger.error(f"Failed to decrypt AIProvider key for {provider}: {e}", exc_info=True)
+                    logger.error(
+                        f"Failed to decrypt AIProvider key for {provider}: {e}",
+                        exc_info=True,
+                    )
             else:
-                logger.debug(f"[resolve_api_key] No AIProvider record found for '{provider_value}'")
+                logger.debug(
+                    f"[resolve_api_key] No AIProvider record found for '{provider_value}'"
+                )
 
-            # 2) Integration mapping (only for platforms that exist in IntegrationPlatform)
-            platform_map = {
-                ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
-                ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
-                ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
-                ModelProvider.MURF: IntegrationPlatform.MURF,
-                ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
-                ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
-                ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
-            }
-            plat = platform_map.get(provider)
+            plat = _INTEGRATION_PLATFORM_MAP.get(provider)
             if plat:
-                # Handle both string and enum comparisons for platform
-                plat_value = plat.value if hasattr(plat, 'value') else plat
-                integ = db.query(Integration).filter(
-                    Integration.organization_id == organization_id,
-                    Integration.platform == plat_value,
-                    Integration.is_active == True,
-                ).first()
-                
-                # If not found, try case-insensitive match
-                if not integ:
-                    integ = db.query(Integration).filter(
-                        Integration.organization_id == organization_id,
-                        func.lower(Integration.platform) == plat_value.lower(),
-                        Integration.is_active == True,
-                    ).first()
-                
+                plat_value = plat.value if hasattr(plat, "value") else plat
+                integ = resolve_integration(
+                    plat_value,
+                    db,
+                    organization_id,
+                    credential_id=credential_id,
+                )
                 if integ:
                     try:
                         key = decrypt_api_key(integ.api_key)
                         logger.debug(
-                            f"[resolve_api_key] Found Integration key for '{provider_value}' (platform={plat_value}): "
-                            f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
+                            f"[resolve_api_key] Found Integration key for '{provider_value}' "
+                            f"(platform={plat_value}): starts={key[:6]}... len={len(key)}"
                         )
                         return key
                     except Exception as e:
-                        logger.error(f"Failed to decrypt Integration key for {provider}: {e}", exc_info=True)
+                        logger.error(
+                            f"Failed to decrypt Integration key for {provider}: {e}",
+                            exc_info=True,
+                        )
                 else:
-                    logger.debug(f"[resolve_api_key] No Integration record found for platform '{plat_value}'")
-            else:
-                logger.debug(f"[resolve_api_key] No platform mapping for provider '{provider_value}'")
+                    logger.debug(
+                        f"[resolve_api_key] No Integration record found for platform '{plat_value}'"
+                    )
 
-            logger.warning(f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'")
+            env_var = _LLM_ENV_KEYS.get(provider)
+            if env_var:
+                env_key = os.getenv(env_var)
+                if env_key:
+                    logger.debug(
+                        f"[resolve_api_key] Found env key for '{provider_value}' via {env_var}"
+                    )
+                    return env_key
+
+            logger.warning(
+                f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'"
+            )
             return None
 
-        def resolve_azure_endpoint_for_provider(provider: ModelProvider) -> str | None:
-            """Resolve Azure OpenAI endpoint URL from the org's AIProvider credential."""
-            from sqlalchemy import func
+        def resolve_llm_gateway_for_provider(
+            provider: ModelProvider,
+            credential_id: Optional[UUID] = None,
+        ) -> tuple[str | None, str | None, str | None]:
+            """Return (api_key, gateway_base_url, gateway_model) when gateway routing is active."""
+            from app.services.ai.llm_gateway import (
+                LITELLM_GATEWAY_PLACEHOLDER_API_KEY,
+                resolve_effective_routing,
+                resolve_litellm_api_key,
+                routing_context_from_ai_provider,
+                routing_context_from_integration,
+            )
 
+            provider_value = provider.value if hasattr(provider, "value") else str(provider)
+
+            ai_provider_rec = resolve_ai_provider(
+                provider_value,
+                db,
+                organization_id,
+                credential_id=credential_id,
+            )
+            if ai_provider_rec:
+                ctx = routing_context_from_ai_provider(ai_provider_rec)
+                gateway_config, effective = resolve_effective_routing(
+                    organization_id, db, ctx
+                )
+                if effective != "direct" and gateway_config:
+                    api_key = resolve_litellm_api_key(
+                        organization_id,
+                        db,
+                        ai_provider_rec,
+                        credential=ctx,
+                    )
+                    return (
+                        api_key or LITELLM_GATEWAY_PLACEHOLDER_API_KEY,
+                        gateway_config.api_base,
+                        ctx.gateway_model,
+                    )
+                return None, None, None
+
+            plat = _INTEGRATION_PLATFORM_MAP.get(provider)
+            if plat:
+                plat_value = plat.value if hasattr(plat, "value") else plat
+                integ = resolve_integration(
+                    plat_value,
+                    db,
+                    organization_id,
+                    credential_id=credential_id,
+                )
+                if integ:
+                    ctx = routing_context_from_integration(integ)
+                    gateway_config, effective = resolve_effective_routing(
+                        organization_id, db, ctx
+                    )
+                    if effective != "direct" and gateway_config:
+                        try:
+                            api_key = decrypt_api_key(integ.api_key)
+                        except Exception:
+                            api_key = LITELLM_GATEWAY_PLACEHOLDER_API_KEY
+                        return (
+                            api_key or LITELLM_GATEWAY_PLACEHOLDER_API_KEY,
+                            gateway_config.api_base,
+                            None,
+                        )
+
+            return None, None, None
+
+        def resolve_azure_endpoint_for_provider(
+            provider: ModelProvider,
+            credential_id: Optional[UUID] = None,
+        ) -> str | None:
+            """Resolve Azure OpenAI endpoint URL from the org's AIProvider credential."""
             provider_value = provider.value if hasattr(provider, "value") else provider
-            ai_provider_rec = db.query(AIProvider).filter(
-                AIProvider.organization_id == organization_id,
-                AIProvider.provider == provider_value,
-                AIProvider.is_active == True,
-            ).first()
-            if not ai_provider_rec:
-                ai_provider_rec = db.query(AIProvider).filter(
-                    AIProvider.organization_id == organization_id,
-                    func.lower(AIProvider.provider) == provider_value.lower(),
-                    AIProvider.is_active == True,
-                ).first()
+            ai_provider_rec = resolve_ai_provider(
+                provider_value,
+                db,
+                organization_id,
+                credential_id=credential_id,
+            )
             if not ai_provider_rec:
                 return None
             return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
@@ -487,15 +575,56 @@ async def websocket_endpoint(
                 stt_provider = voice_bundle.stt_provider if voice_bundle else None
                 tts_provider = voice_bundle.tts_provider if voice_bundle else None
                 llm_provider = voice_bundle.llm_provider if voice_bundle else None
+                llm_credential_id = (
+                    getattr(voice_bundle, "llm_credential_id", None) if voice_bundle else None
+                )
+                stt_credential_id = (
+                    getattr(voice_bundle, "stt_credential_id", None) if voice_bundle else None
+                )
+                tts_credential_id = (
+                    getattr(voice_bundle, "tts_credential_id", None) if voice_bundle else None
+                )
 
-                stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
-                tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
-                llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+                stt_api_key = (
+                    resolve_api_key_for_provider(stt_provider, credential_id=stt_credential_id)
+                    if stt_provider
+                    else None
+                )
+                tts_api_key = (
+                    resolve_api_key_for_provider(tts_provider, credential_id=tts_credential_id)
+                    if tts_provider
+                    else None
+                )
+                llm_gateway_base_url = None
+                llm_gateway_model = None
+                if llm_provider:
+                    (
+                        llm_api_key,
+                        llm_gateway_base_url,
+                        llm_gateway_model,
+                    ) = resolve_llm_gateway_for_provider(
+                        llm_provider,
+                        credential_id=llm_credential_id,
+                    )
+                    if not llm_gateway_base_url:
+                        llm_api_key = resolve_api_key_for_provider(
+                            llm_provider,
+                            credential_id=llm_credential_id,
+                        )
+                else:
+                    llm_api_key = None
                 llm_endpoint_url = (
-                    resolve_azure_endpoint_for_provider(llm_provider)
-                    if llm_provider and (
-                        llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
-                    ).lower() == "azure"
+                    resolve_azure_endpoint_for_provider(
+                        llm_provider,
+                        credential_id=llm_credential_id,
+                    )
+                    if llm_provider
+                    and (
+                        llm_provider.value
+                        if hasattr(llm_provider, "value")
+                        else str(llm_provider)
+                    ).lower()
+                    == "azure"
                     else None
                 )
 
@@ -528,6 +657,8 @@ async def websocket_endpoint(
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
+                    llm_gateway_base_url=llm_gateway_base_url,
+                    llm_gateway_model=llm_gateway_model,
                     silence_hangup_secs=agent_silence_hangup_secs,
                 )
             else:

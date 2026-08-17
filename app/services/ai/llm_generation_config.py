@@ -116,4 +116,26 @@ def build_efficientai_input_params(provider: str, config: Optional[Dict[str, Any
 
         return AnthropicLLMService.InputParams(**params_dict)
 
+    # OpenAI-compatible streaming providers share the same InputParams shape.
+    _OPENAI_COMPATIBLE_LLM_PROVIDERS = {
+        "openai",
+        "azure",
+        "xai",
+        "fireworks",
+        "together",
+        "mistral",
+        "perplexity",
+        "openrouter",
+        "sarvam",
+        "custom",
+        "cohere",
+        "meta",
+    }
+    if provider_key in _OPENAI_COMPATIBLE_LLM_PROVIDERS:
+        from efficientai.services.openai.llm import OpenAILLMService
+
+        openai_params = dict(params_dict)
+        openai_params.pop("top_k", None)
+        return OpenAILLMService.InputParams(**openai_params)
+
     return None

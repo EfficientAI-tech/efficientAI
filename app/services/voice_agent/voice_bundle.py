@@ -153,6 +153,30 @@ def _get_service(service_name: str):
     elif service_name == "AzureLLMService":
         from efficientai.services.azure.llm import AzureLLMService
         service_class = AzureLLMService
+    elif service_name == "AnthropicLLMService":
+        from efficientai.services.anthropic.llm import AnthropicLLMService
+        service_class = AnthropicLLMService
+    elif service_name == "FireworksLLMService":
+        from efficientai.services.fireworks.llm import FireworksLLMService
+        service_class = FireworksLLMService
+    elif service_name == "TogetherLLMService":
+        from efficientai.services.together.llm import TogetherLLMService
+        service_class = TogetherLLMService
+    elif service_name == "GrokLLMService":
+        from efficientai.services.grok.llm import GrokLLMService
+        service_class = GrokLLMService
+    elif service_name == "MistralLLMService":
+        from efficientai.services.mistral.llm import MistralLLMService
+        service_class = MistralLLMService
+    elif service_name == "PerplexityLLMService":
+        from efficientai.services.perplexity.llm import PerplexityLLMService
+        service_class = PerplexityLLMService
+    elif service_name == "OpenRouterLLMService":
+        from efficientai.services.openrouter.llm import OpenRouterLLMService
+        service_class = OpenRouterLLMService
+    elif service_name == "AWSBedrockLLMService":
+        from efficientai.services.aws.llm import AWSBedrockLLMService
+        service_class = AWSBedrockLLMService
     
     # Optional: Smart Turn Analyzer
     elif service_name == "LocalSmartTurnAnalyzerV3":
@@ -346,41 +370,197 @@ def _instantiate_tts_service(
     raise ValueError(f"Unsupported TTS provider '{provider}'")
 
 
+# Mirror _LLM_CAPABLE_PROVIDERS from model_catalog.py (kept local to avoid
+# importing judge_alignment → llm_service at voice-agent startup).
+_LLM_CAPABLE_PROVIDERS = frozenset({
+    "openai",
+    "anthropic",
+    "google",
+    "xai",
+    "fireworks",
+    "cohere",
+    "mistral",
+    "meta",
+    "together",
+    "perplexity",
+    "azure",
+    "aws",
+    "openrouter",
+    "custom",
+    "sarvam",
+})
+
+# Providers that only work through a gateway-routed OpenAI-compatible endpoint.
+_GATEWAY_ONLY_LLM_PROVIDERS = frozenset({"cohere", "meta", "custom"})
+
+_SARVAM_LLM_BASE_URL = "https://api.sarvam.ai/v1"
+
+# env_key, default_model, service_name (None = special instantiation)
+_LLM_PROVIDER_SPECS: dict[str, tuple[str, str, str | None]] = {
+    "openai": ("OPENAI_API_KEY", "gpt-4.1", "OpenAILLMService"),
+    "anthropic": ("ANTHROPIC_API_KEY", "claude-sonnet-4.6", "AnthropicLLMService"),
+    "google": ("GOOGLE_API_KEY", "gemini-2.5-flash", "GoogleLLMService"),
+    "xai": ("XAI_API_KEY", "grok-4.3", "GrokLLMService"),
+    "fireworks": ("FIREWORKS_API_KEY", "firefunction-v2", "FireworksLLMService"),
+    "together": ("TOGETHER_API_KEY", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", "TogetherLLMService"),
+    "mistral": ("MISTRAL_API_KEY", "mistral-small-latest", "MistralLLMService"),
+    "perplexity": ("PERPLEXITY_API_KEY", "sonar", "PerplexityLLMService"),
+    "openrouter": ("OPENROUTER_API_KEY", "openai/gpt-4o-2024-11-20", "OpenRouterLLMService"),
+    "azure": ("AZURE_OPENAI_API_KEY", "gpt-4.1", None),
+    "aws": ("AWS_ACCESS_KEY_ID", "aws-bedrock-claude", None),
+    "sarvam": ("SARVAM_API_KEY", "sarvam-30b", None),
+    "cohere": ("COHERE_API_KEY", "command-r-plus", None),
+    "meta": ("META_API_KEY", "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", None),
+    "custom": ("CUSTOM_LLM_API_KEY", "gpt-4o-mini", None),
+}
+
+
+def _normalize_fireworks_model(model: str) -> str:
+    """Prefix bare Fireworks catalog names with the accounts path."""
+    if not model.startswith("accounts/"):
+        return f"accounts/fireworks/models/{model}"
+    return model
+
+
+def _parse_aws_credentials(api_key: str) -> dict:
+    """Parse AWS Bedrock credentials from a JSON blob or bare access key."""
+    import json
+
+    try:
+        data = json.loads(api_key)
+    except (json.JSONDecodeError, TypeError):
+        return {"aws_access_key": api_key}
+
+    if not isinstance(data, dict):
+        return {"aws_access_key": api_key}
+
+    return {
+        k: v
+        for k, v in {
+            "aws_access_key": data.get("access_key_id") or data.get("aws_access_key_id"),
+            "aws_secret_key": data.get("secret_access_key") or data.get("aws_secret_access_key"),
+            "aws_session_token": data.get("session_token") or data.get("aws_session_token"),
+            "aws_region": data.get("region") or data.get("aws_region") or "us-east-1",
+        }.items()
+        if v is not None
+    }
+
+
 def _get_llm_providers():
     """Get LLM provider registry with truly lazy-loaded service classes.
-    
+
     Each provider's SDK is only loaded when that provider is actually used.
+    Provider keys mirror ``_LLM_CAPABLE_PROVIDERS``.
     """
-    return {
-        "openai": {
-            "env_key": "OPENAI_API_KEY",
-            "default_model": "gpt-4.1",
-            "factory": lambda api_key, model, params=None: _get_service("OpenAILLMService")(
+    registry: dict[str, dict] = {}
+    for provider in sorted(_LLM_CAPABLE_PROVIDERS):
+        spec = _LLM_PROVIDER_SPECS.get(provider)
+        if spec is None:
+            continue
+        env_key, default_model, service_name = spec
+        entry: dict = {
+            "env_key": env_key,
+            "default_model": default_model,
+        }
+        if service_name:
+            entry["service_name"] = service_name
+        registry[provider] = entry
+    return registry
+
+
+def _instantiate_llm_service(
+    provider: str,
+    llm_cfg: dict,
+    *,
+    api_key: str,
+    model: str,
+    params=None,
+    llm_endpoint_url: str | None = None,
+    llm_gateway_base_url: str | None = None,
+    llm_gateway_model: str | None = None,
+):
+    """Build a streaming LLM service for the voice bundle pipeline."""
+    provider = provider.strip().lower()
+    params_kw = {"params": params} if params else {}
+
+    if llm_gateway_base_url:
+        gateway_model = llm_gateway_model or model
+        return _get_service("OpenAILLMService")(
+            api_key=api_key,
+            model=gateway_model,
+            base_url=llm_gateway_base_url,
+            **params_kw,
+        )
+
+    if provider in _GATEWAY_ONLY_LLM_PROVIDERS:
+        raise ValueError(
+            f"LLM provider '{provider}' requires gateway routing for voice calls. "
+            "Configure gateway routing on the AI provider credential "
+            "(routing mode = gateway with a gateway model), or choose a direct provider."
+        )
+
+    if provider == "azure":
+        from app.services.ai.llm_service import (
+            _azure_deployment_name,
+            _azure_openai_v1_api_base,
+            _azure_uses_openai_v1_routing,
+            _normalize_azure_endpoint,
+        )
+
+        if not llm_endpoint_url:
+            raise ValueError(
+                "Azure LLM requires an endpoint URL on the AI provider credential "
+                "(Integrations → AI Provider → Azure → Azure Endpoint URL)."
+            )
+        api_base, version_hint = _normalize_azure_endpoint(llm_endpoint_url)
+        deployment_model = _azure_deployment_name(model)
+        if _azure_uses_openai_v1_routing(None, version_hint):
+            return _get_service("OpenAILLMService")(
                 api_key=api_key,
-                model=model,
-                **({"params": params} if params else {}),
-            ),
-        },
-        "google": {
-            "env_key": "GOOGLE_API_KEY",
-            "default_model": "gemini-2.5-flash",
-            "factory": lambda api_key, model, params=None: _get_service("GoogleLLMService")(
-                api_key=api_key,
-                model=model,
-                **({"params": params} if params else {}),
-            ),
-        },
-        "azure": {
-            "env_key": "AZURE_OPENAI_API_KEY",
-            "default_model": "gpt-4.1",
-            # Azure is instantiated with endpoint metadata in run_voice_bundle_fastapi.
-            "factory": lambda api_key, model, params=None: _get_service("OpenAILLMService")(
-                api_key=api_key,
-                model=model,
-                **({"params": params} if params else {}),
-            ),
-        },
-    }
+                model=deployment_model,
+                base_url=_azure_openai_v1_api_base(api_base),
+                **params_kw,
+            )
+        return _get_service("AzureLLMService")(
+            api_key=api_key,
+            endpoint=api_base,
+            model=deployment_model,
+            api_version=version_hint or "2024-08-01-preview",
+            **params_kw,
+        )
+
+    if provider == "fireworks":
+        return _get_service("FireworksLLMService")(
+            api_key=api_key,
+            model=_normalize_fireworks_model(model),
+            **params_kw,
+        )
+
+    if provider == "sarvam":
+        return _get_service("OpenAILLMService")(
+            api_key=api_key,
+            model=model,
+            base_url=_SARVAM_LLM_BASE_URL,
+            **params_kw,
+        )
+
+    if provider == "aws":
+        aws_creds = _parse_aws_credentials(api_key)
+        return _get_service("AWSBedrockLLMService")(
+            model=model,
+            **aws_creds,
+            **params_kw,
+        )
+
+    service_name = llm_cfg.get("service_name")
+    if not service_name:
+        raise ValueError(f"Unsupported LLM provider '{provider}'")
+
+    return _get_service(service_name)(
+        api_key=api_key,
+        model=model,
+        **params_kw,
+    )
 
 
 DEFAULT_STT_PROVIDER = None
@@ -521,6 +701,8 @@ async def run_voice_bundle_fastapi(
     tts_api_key: str | None = None,
     llm_api_key: str | None = None,
     llm_endpoint_url: str | None = None,
+    llm_gateway_base_url: str | None = None,
+    llm_gateway_model: str | None = None,
     serializer=None,
     telephony_mode: bool = False,
     call_short_id: str | None = None,
@@ -656,12 +838,6 @@ async def run_voice_bundle_fastapi(
             build_efficientai_input_params,
             merge_llm_config,
         )
-        from app.services.ai.llm_service import (
-            _azure_deployment_name,
-            _azure_openai_v1_api_base,
-            _azure_uses_openai_v1_routing,
-            _normalize_azure_endpoint,
-        )
 
         llm_params = build_efficientai_input_params(
             llm_provider_value,
@@ -671,31 +847,16 @@ async def run_voice_bundle_fastapi(
                 legacy_max_tokens=getattr(voice_bundle, "llm_max_tokens", None),
             ),
         )
-        if llm_provider_value == "azure":
-            if not llm_endpoint_url:
-                raise ValueError(
-                    "Azure LLM requires an endpoint URL on the AI provider credential "
-                    "(Integrations → AI Provider → Azure → Azure Endpoint URL)."
-                )
-            api_base, version_hint = _normalize_azure_endpoint(llm_endpoint_url)
-            deployment_model = _azure_deployment_name(llm_model)
-            if _azure_uses_openai_v1_routing(None, version_hint):
-                llm = _get_service("OpenAILLMService")(
-                    api_key=llm_api_key,
-                    model=deployment_model,
-                    base_url=_azure_openai_v1_api_base(api_base),
-                    params=llm_params,
-                )
-            else:
-                llm = _get_service("AzureLLMService")(
-                    api_key=llm_api_key,
-                    endpoint=api_base,
-                    model=deployment_model,
-                    api_version=version_hint or "2024-08-01-preview",
-                    params=llm_params,
-                )
-        else:
-            llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model, params=llm_params)
+        llm = _instantiate_llm_service(
+            llm_provider_value,
+            llm_cfg,
+            api_key=llm_api_key,
+            model=llm_model,
+            params=llm_params,
+            llm_endpoint_url=llm_endpoint_url,
+            llm_gateway_base_url=llm_gateway_base_url,
+            llm_gateway_model=llm_gateway_model,
+        )
 
         # Build context with provided system instruction or a default
         base_instruction = (
