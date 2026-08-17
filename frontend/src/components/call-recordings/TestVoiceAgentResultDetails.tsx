@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import {
-  Clock, MessageSquare, TrendingUp, Download, Server, BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
+  Clock, MessageSquare, TrendingUp, Server, BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
 } from 'lucide-react'
+import DualTrackRecordingPlayer from './DualTrackRecordingPlayer'
+import type { RecordingDownloadTrack } from '../../hooks/useRecordingDownloadTracks'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -217,6 +219,10 @@ interface TestVoiceAgentResultData {
   }
   audio_s3_key?: string | null
   audioUrl?: string
+  waveformUrl?: string
+  recordingFormat?: string | null
+  downloadTracks?: RecordingDownloadTrack[]
+  downloadTracksLoading?: boolean
   agent?: {
     id?: string
     name?: string
@@ -236,6 +242,7 @@ interface TestVoiceAgentResultDetailsProps {
 
 export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAgentResultDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript' | 'debug'>('overview')
+  const [seekToTime, setSeekToTime] = useState<number | null>(null)
 
   const formatDuration = (seconds?: number | null) => {
     if (!seconds) return 'N/A'
@@ -620,20 +627,34 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
           <MessageSquare className="h-5 w-5 text-indigo-600" />
           Transcript
         </h3>
-        {resultData.audioUrl && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-            <audio controls src={resultData.audioUrl} className="h-8 w-64" />
-            <a href={resultData.audioUrl} download className="text-gray-500 hover:text-indigo-600 p-1">
-              <Download className="h-4 w-4" />
-            </a>
-          </div>
-        )}
       </div>
+
+      {resultData.audioUrl && (
+        <div className="mb-4 flex-shrink-0">
+          <DualTrackRecordingPlayer
+            audioUrl={resultData.audioUrl}
+            waveformAudioUrl={resultData.waveformUrl}
+            speakerSegments={resultData.speaker_segments}
+            recordingFormat={resultData.recordingFormat}
+            downloadTracks={resultData.downloadTracks}
+            downloadTracksLoading={resultData.downloadTracksLoading}
+            userLabel="You"
+            agentLabel="Agent"
+            compact
+            seekToTime={seekToTime}
+            onSeekToTimeHandled={() => setSeekToTime(null)}
+          />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
         {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
           resultData.speaker_segments.map((segment, idx) => (
-            <div key={idx} className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'}`}>
+            <div
+              key={idx}
+              className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'} cursor-pointer`}
+              onClick={() => setSeekToTime(segment.start)}
+            >
               <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
                 isUserSpeaker(segment.speaker)
                   ? 'bg-indigo-600 text-white rounded-br-none'

@@ -3,7 +3,6 @@ import {
   MessageSquare,
   Clock,
   Globe,
-  Download,
   Loader,
   TrendingUp,
   CheckCircle,
@@ -13,6 +12,8 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import DualTrackRecordingPlayer from './DualTrackRecordingPlayer'
+import { useRecordingDownloadTracks } from '../../hooks/useRecordingDownloadTracks'
 
 interface SpeakerSegment {
   speaker: string
@@ -28,6 +29,12 @@ interface CustomWSCallData {
   transcript?: string
   speaker_segments?: SpeakerSegment[]
   recording_s3_key?: string | null
+  stereo_recording_s3_key?: string | null
+  mono_recording_s3_key?: string | null
+  user_recording_s3_key?: string | null
+  bot_recording_s3_key?: string | null
+  recording_format?: string | null
+  recording_source?: string | null
   started_at?: string | null
   ended_at?: string | null
   duration_seconds?: number
@@ -60,6 +67,9 @@ const getSpeakerLabel = (speaker: string) =>
   isUserSpeaker(speaker) ? 'You' : 'Agent'
 
 export default function CustomWebSocketCallDetails({ callData, callShortId }: Props) {
+  const downloadTracksState = useRecordingDownloadTracks(callData)
+  const downloadTracks = downloadTracksState.tracks
+  const downloadTracksLoading = downloadTracksState.isLoading
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null)
   const [audioLoading, setAudioLoading] = useState(false)
@@ -77,7 +87,13 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
   const [summaryError, setSummaryError] = useState<string | null>(null)
   const summaryFetched = useRef(false)
 
-  const hasAudio = !!callData.recording_s3_key
+  const [seekToTime, setSeekToTime] = useState<number | null>(null)
+
+  const hasAudio = !!(
+    callData.recording_s3_key ||
+    callData.stereo_recording_s3_key ||
+    callData.mono_recording_s3_key
+  )
   const duration = callData.duration_seconds || 0
   const segments = callData.speaker_segments || []
   const messages = callData.messages || []
@@ -260,28 +276,38 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
         </h3>
         <div className="flex items-center gap-3">
           {audioLoading && <Loader className="h-4 w-4 text-gray-400 animate-spin" />}
-          {audioBlobUrl && (
-            <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-              <audio controls src={audioBlobUrl} className="h-8 w-64" />
-              <a
-                href={audioBlobUrl}
-                download={`call_${callShortId || 'recording'}.webm`}
-                className="text-gray-500 hover:text-indigo-600 p-1"
-              >
-                <Download className="h-4 w-4" />
-              </a>
-            </div>
-          )}
           {audioError && hasAudio && (
             <span className="text-xs text-gray-400">Audio unavailable</span>
           )}
         </div>
       </div>
 
+      {audioBlobUrl && (
+        <div className="mb-4 flex-shrink-0">
+          <DualTrackRecordingPlayer
+            audioUrl={audioBlobUrl}
+            waveformAudioUrl={audioBlobUrl}
+            speakerSegments={segments}
+            recordingFormat={callData.recording_format}
+            downloadTracks={downloadTracks}
+            downloadTracksLoading={downloadTracksLoading}
+            userLabel="You"
+            agentLabel="Agent"
+            compact
+            seekToTime={seekToTime}
+            onSeekToTimeHandled={() => setSeekToTime(null)}
+          />
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto space-y-4 pr-2">
         {segments.length > 0 ? (
           segments.map((seg, idx) => (
-            <div key={idx} className={`flex ${isUserSpeaker(seg.speaker) ? 'justify-end' : 'justify-start'}`}>
+            <div
+              key={idx}
+              className={`flex ${isUserSpeaker(seg.speaker) ? 'justify-end' : 'justify-start'} cursor-pointer`}
+              onClick={() => setSeekToTime(seg.start)}
+            >
               <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
                 isUserSpeaker(seg.speaker)
                   ? 'bg-indigo-600 text-white rounded-br-none'
@@ -342,6 +368,22 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
             <p className="text-gray-700">{messages.length}</p>
           </div>
         </div>
+        {(callData.recording_format || callData.recording_source) && (
+          <div className="grid grid-cols-2 gap-3">
+            {callData.recording_format && (
+              <div>
+                <p className="text-gray-500 mb-1">Recording format</p>
+                <p className="text-gray-700 capitalize">{callData.recording_format}</p>
+              </div>
+            )}
+            {callData.recording_source && (
+              <div>
+                <p className="text-gray-500 mb-1">Recording source</p>
+                <p className="text-gray-700 capitalize">{callData.recording_source}</p>
+              </div>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div>
             <p className="text-gray-500 mb-1 flex items-center gap-1">

@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../../../components/Button'
 import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
@@ -10,9 +10,13 @@ import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
 import VobizCallDetails from '../../../components/call-recordings/VobizCallDetails'
 import { useToast } from '../../../hooks/useToast'
-import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
+import {
+  useCallRecordingAudioUrls,
+  useRecordingDownloadTracks,
+} from '../../../hooks/useRecordingDownloadTracks'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
+import DualTrackRecordingPlayer from '../../../components/call-recordings/DualTrackRecordingPlayer'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -40,7 +44,14 @@ function getVobizPhoneNumbers(callData: any): { from: string | null; to: string 
 }
 
 function getResultAudioS3Key(result: any): string | null {
-  return result?.audio_s3_key || result?.call_data?.recording_s3_key || null
+  const callData = result?.call_data
+  return (
+    callData?.stereo_recording_s3_key ||
+    result?.audio_s3_key ||
+    callData?.recording_s3_key ||
+    callData?.mono_recording_s3_key ||
+    null
+  )
 }
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -354,12 +365,10 @@ export default function EvaluatorResultDetailPage({
   const location = window.location.pathname
   const isFromPlayground = location.includes('/playground/test-agent-results')
   const { showToast, ToastContainer } = useToast()
-  const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const [audioDuration, setAudioDuration] = useState(0)
   const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [reEvalInProgress, setReEvalInProgress] = useState(false)
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const [seekToTime, setSeekToTime] = useState<number | null>(null)
 
   const { data: result, isLoading, error, refetch: refetchResult } = useQuery({
     queryKey: ['evaluator-result', id],
@@ -439,8 +448,17 @@ export default function EvaluatorResultDetailPage({
 
   const audioS3Key = getResultAudioS3Key(result)
   const observabilityCallShortId = result?.call_data?.call_short_id as string | undefined
-
-  const { data: presignedUrl } = useRecordingPresignedUrl(audioS3Key)
+  const providerRecordingUrl = result?.call_data?.recording_url as string | undefined
+  const { playbackUrl, waveformUrl } = useCallRecordingAudioUrls({
+    callShortId: observabilityCallShortId,
+    storageKey: audioS3Key,
+    providerRecordingUrl,
+    hasStorageRecording: !!audioS3Key,
+  })
+  const audioUrl = providerRecordingUrl || playbackUrl
+  const { tracks: downloadTracks, isLoading: downloadTracksLoading } = useRecordingDownloadTracks(
+    result?.call_data,
+  )
 
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
@@ -471,70 +489,17 @@ export default function EvaluatorResultDetailPage({
     }
   }, [result?.status, queryClient])
 
-  useEffect(() => {
-    const providerRecordingUrl = result?.call_data?.recording_url
-    if (providerRecordingUrl) {
-      setAudioUrl(providerRecordingUrl)
+  const handlePlaybackTimeUpdate = useCallback((currentTime: number) => {
+    const resultData = result as EvaluatorResultDetail | undefined
+    if (!resultData?.speaker_segments) {
+      setActiveSegmentIndex(null)
       return
     }
-    if (presignedUrl?.url) {
-      setAudioUrl(presignedUrl.url)
-      return
-    }
-    setAudioUrl(null)
-  }, [presignedUrl, result?.call_data?.recording_url])
-
-  useEffect(() => {
-    const callShortId = observabilityCallShortId
-    const hasS3Recording = !!audioS3Key
-    if (!callShortId || !hasS3Recording || result?.call_data?.recording_url) {
-      return
-    }
-
-    let cancelled = false
-    apiClient.getObservabilityCallAudioUrl(callShortId)
-      .then((url) => {
-        if (!cancelled) setAudioUrl(url)
-      })
-      .catch(() => {
-        if (!cancelled && presignedUrl?.url) setAudioUrl(presignedUrl.url)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [observabilityCallShortId, audioS3Key, result?.call_data?.recording_url, presignedUrl?.url])
-
-  useEffect(() => {
-    const audio = audioRef.current
-    if (!audio || !audioUrl) return
-
-    const handleLoadedMetadata = () => {
-      if (audio.duration && audio.duration !== Infinity) {
-        setAudioDuration(audio.duration)
-      }
-    }
-
-    const handleTimeUpdate = () => {
-      if (result && 'speaker_segments' in result) {
-        const resultData = result as EvaluatorResultDetail
-        if (resultData.speaker_segments) {
-          const activeIndex = resultData.speaker_segments.findIndex(
-            (seg) => audio.currentTime >= seg.start && audio.currentTime <= seg.end
-          )
-          setActiveSegmentIndex(activeIndex >= 0 ? activeIndex : null)
-        }
-      }
-    }
-
-    audio.addEventListener('loadedmetadata', handleLoadedMetadata)
-    audio.addEventListener('timeupdate', handleTimeUpdate)
-    
-    return () => {
-      audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
-      audio.removeEventListener('timeupdate', handleTimeUpdate)
-    }
-  }, [result, audioUrl])
+    const activeIndex = resultData.speaker_segments.findIndex(
+      (seg) => currentTime >= seg.start && currentTime <= seg.end,
+    )
+    setActiveSegmentIndex(activeIndex >= 0 ? activeIndex : null)
+  }, [result])
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60)
@@ -543,10 +508,7 @@ export default function EvaluatorResultDetailPage({
   }
 
   const handleSegmentClick = (startTime: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = startTime
-      audioRef.current.play()
-    }
+    setSeekToTime(startTime)
   }
 
   const formatDuration = (seconds: number | null): string => {
@@ -571,9 +533,6 @@ export default function EvaluatorResultDetailPage({
       if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs) {
         return (endMs - startMs) / 1000
       }
-    }
-    if (audioDuration && audioDuration > 0) {
-      return audioDuration
     }
     return result?.duration_seconds ?? null
   }
@@ -1144,6 +1103,24 @@ export default function EvaluatorResultDetailPage({
       {/* Unified Transcript & Call Details Section */}
       {hasCallMediaOrTranscript ? (
         <div className="bg-white shadow rounded-lg overflow-hidden">
+          {audioUrl && (
+            <div className="px-6 pt-6">
+              <DualTrackRecordingPlayer
+                audioUrl={audioUrl}
+                waveformAudioUrl={waveformUrl}
+                speakerSegments={resultData.speaker_segments}
+                recordingFormat={resultData.call_data?.recording_format}
+                downloadTracks={downloadTracks}
+                downloadTracksLoading={downloadTracksLoading}
+                userLabel="Caller"
+                agentLabel={resultData.agent?.name || 'Agent'}
+                onTimeUpdate={handlePlaybackTimeUpdate}
+                seekToTime={seekToTime}
+                onSeekToTimeHandled={() => setSeekToTime(null)}
+              />
+            </div>
+          )}
+
           {/* Tab Navigation */}
           <div className="px-6 border-b border-gray-100 flex items-center gap-0">
             <button
@@ -1185,18 +1162,6 @@ export default function EvaluatorResultDetailPage({
                           </span>
                         )}
                       </div>
-                      {audioUrl && (
-                        <div className="flex items-center gap-2">
-                          <audio controls src={audioUrl} className="h-8 w-56" />
-                          <a 
-                            href={audioUrl} 
-                            download 
-                            className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                          >
-                            <Download className="h-4 w-4" />
-                          </a>
-                        </div>
-                      )}
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -1395,18 +1360,6 @@ export default function EvaluatorResultDetailPage({
                     <MessageSquare className="h-4 w-4 text-indigo-500" />
                     <span className="text-sm font-medium text-gray-900">Full Transcript</span>
                   </div>
-                  {audioUrl && (
-                    <div className="flex items-center gap-2">
-                      <audio controls src={audioUrl} className="h-8 w-56" />
-                      <a 
-                        href={audioUrl} 
-                        download 
-                        className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                      >
-                        <Download className="h-4 w-4" />
-                      </a>
-                    </div>
-                  )}
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -1453,19 +1406,6 @@ export default function EvaluatorResultDetailPage({
               </div>
             )}
 
-            {/* Hidden audio element */}
-            <audio
-              ref={audioRef}
-              src={audioUrl || ''}
-              preload="metadata"
-              onEnded={() => setActiveSegmentIndex(null)}
-              onLoadedMetadata={() => {
-                if (audioRef.current?.duration && audioRef.current.duration !== Infinity) {
-                  setAudioDuration(audioRef.current.duration)
-                }
-              }}
-              className="hidden"
-            />
           </div>
         </div>
       ) : null}

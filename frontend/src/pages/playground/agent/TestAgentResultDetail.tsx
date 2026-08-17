@@ -5,6 +5,21 @@ import { ArrowLeft } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import TestVoiceAgentResultDetails from '../../../components/call-recordings/TestVoiceAgentResultDetails'
+import {
+  useCallRecordingAudioUrls,
+  useRecordingDownloadTracks,
+} from '../../../hooks/useRecordingDownloadTracks'
+
+function getResultAudioS3Key(result: any): string | null {
+  const callData = result?.call_data
+  return (
+    callData?.stereo_recording_s3_key ||
+    result?.audio_s3_key ||
+    callData?.recording_s3_key ||
+    callData?.mono_recording_s3_key ||
+    null
+  )
+}
 
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
@@ -17,14 +32,16 @@ export default function TestAgentResultDetail() {
     enabled: !!id,
   })
 
-  const { data: presignedUrl } = useQuery({
-    queryKey: ['audio-presigned-url', result?.audio_s3_key],
-    queryFn: () => {
-      if (!result?.audio_s3_key) return null
-      return apiClient.getAudioPresignedUrl(result.audio_s3_key)
-    },
-    enabled: !!result?.audio_s3_key,
+  const audioS3Key = getResultAudioS3Key(result)
+  const callShortId = result?.call_data?.call_short_id as string | undefined
+  const { playbackUrl, waveformUrl } = useCallRecordingAudioUrls({
+    callShortId,
+    storageKey: audioS3Key,
+    hasStorageRecording: !!audioS3Key,
   })
+  const { tracks: downloadTracks, isLoading: downloadTracksLoading } = useRecordingDownloadTracks(
+    result?.call_data,
+  )
 
   if (isLoading) {
     return (
@@ -52,7 +69,11 @@ export default function TestAgentResultDetail() {
   const resultData = {
     ...result,
     call_analysis: result.call_data?.call_analysis || undefined,
-    audioUrl: presignedUrl?.url || undefined,
+    audioUrl: playbackUrl || undefined,
+    waveformUrl: waveformUrl || undefined,
+    downloadTracks,
+    downloadTracksLoading,
+    recordingFormat: result.call_data?.recording_format || null,
   }
 
   return (

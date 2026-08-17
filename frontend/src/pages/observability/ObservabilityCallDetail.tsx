@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
   ArrowLeft, Phone, Clock, PhoneIncoming, PhoneOutgoing,
-  MessageSquare, Trash2, Download, Tag,
+  MessageSquare, Trash2, Tag,
   Loader, XCircle, Sparkles, X,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -16,8 +16,12 @@ import VapiCallDetails from '../../components/call-recordings/VapiCallDetails'
 import VobizCallDetails from '../../components/call-recordings/VobizCallDetails'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../config/providers'
 import { IntegrationPlatform, ObservabilityCall } from '../../types/api'
-import { useRecordingPresignedUrl } from '../../hooks/useRecordingPresignedUrl'
+import {
+  useCallRecordingAudioUrls,
+  useRecordingDownloadTracks,
+} from '../../hooks/useRecordingDownloadTracks'
 import { CallAgentLink } from './CallAgentLink'
+import DualTrackRecordingPlayer from '../../components/call-recordings/DualTrackRecordingPlayer'
 
 export default function ObservabilityCallDetail() {
   const navigate = useNavigate()
@@ -91,14 +95,27 @@ export default function ObservabilityCallDetail() {
     }
   }, [callShortId, callRecording?.call_event, callRecording?.is_live])
 
-  const storageKey = callRecording?.call_data?.recording_s3_key ?? undefined
+  const storageKey =
+    callRecording?.call_data?.stereo_recording_s3_key ||
+    callRecording?.call_data?.recording_s3_key ||
+    callRecording?.call_data?.mono_recording_s3_key ||
+    undefined
   const providerRecordingUrl = callRecording?.call_data?.recording_url ?? null
   const hasStorageRecording = !!storageKey
 
   const {
-    data: presignedRecording,
-    isLoading: presignedLoading,
-  } = useRecordingPresignedUrl(storageKey)
+    playbackUrl: proxyPlaybackUrl,
+    waveformUrl,
+    isLoading: observabilityAudioLoading,
+  } = useCallRecordingAudioUrls({
+    callShortId,
+    storageKey,
+    providerRecordingUrl,
+    hasStorageRecording,
+  })
+  const { tracks: downloadTracks, isLoading: downloadTracksLoading } = useRecordingDownloadTracks(
+    callRecording?.call_data,
+  )
 
   const { data: evaluators = [] } = useQuery({
     queryKey: ['evaluators'],
@@ -171,8 +188,8 @@ export default function ObservabilityCallDetail() {
     : messagesFromLive.length > 0
       ? messagesFromLive
       : undefined
-  const playbackUrl = presignedRecording?.url || providerRecordingUrl
-  const audioLoading = hasStorageRecording && presignedLoading && !playbackUrl
+  const playbackUrl = proxyPlaybackUrl || providerRecordingUrl
+  const audioLoading = hasStorageRecording && observabilityAudioLoading && !playbackUrl
 
   const isLiveCall = callRecording.is_live || liveEvents.has((callRecording.call_event || '').toLowerCase())
 
@@ -193,6 +210,23 @@ export default function ObservabilityCallDetail() {
 
   const transcriptTurns = isLiveCall && liveTurns.length > 0 ? liveTurns : persistedTurns
   const hasTranscript = transcriptTurns.length > 0
+  const speakerSegments = (() => {
+    if (Array.isArray(callData?.speaker_segments) && callData.speaker_segments.length > 0) {
+      return callData.speaker_segments
+    }
+    let elapsed = 0
+    return transcriptTurns.map((turn) => {
+      const turnDuration = Math.max(1, turn.content.split(/\s+/).length * 0.4)
+      const segment = {
+        speaker: turn.role === 'user' ? 'user' : 'assistant',
+        text: turn.content,
+        start: elapsed,
+        end: elapsed + turnDuration,
+      }
+      elapsed += turnDuration
+      return segment
+    })
+  })()
 
   const computeDuration = (): string | null => {
     const started = callData?.startedAt || callData?.started_at
@@ -365,28 +399,23 @@ export default function ObservabilityCallDetail() {
       )}
 
       {(hasStorageRecording || providerRecordingUrl) && !isLiveCall && (
-        <div className="mb-6 bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-            <Phone className="w-5 h-5 mr-2" />
-            Call Recording
-          </h2>
+        <div className="mb-6">
           {audioLoading ? (
-            <div className="flex items-center gap-2 text-sm text-gray-500">
+            <div className="bg-white rounded-lg shadow p-6 flex items-center gap-2 text-sm text-gray-500">
               <Loader className="w-4 h-4 animate-spin" />
               Loading recording...
             </div>
           ) : playbackUrl ? (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-              <audio controls src={playbackUrl} preload="metadata" className="w-full max-w-xl" />
-              <a
-                href={playbackUrl}
-                download={`call_${callRecording.call_short_id}.wav`}
-                className="inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800"
-              >
-                <Download className="w-4 h-4" />
-                Download recording
-              </a>
-            </div>
+            <DualTrackRecordingPlayer
+              audioUrl={playbackUrl}
+              waveformAudioUrl={waveformUrl}
+              speakerSegments={speakerSegments}
+              recordingFormat={callData?.recording_format}
+              downloadTracks={downloadTracks}
+              downloadTracksLoading={downloadTracksLoading}
+              userLabel="Caller"
+              agentLabel="Agent"
+            />
           ) : null}
         </div>
       )}
@@ -412,9 +441,7 @@ export default function ObservabilityCallDetail() {
                   </span>
                 </div>
                 {(hasStorageRecording || providerRecordingUrl) && isLiveCall && playbackUrl && (
-                  <div className="flex items-center gap-2">
-                    <audio controls src={playbackUrl} preload="metadata" className="h-8 w-56" />
-                  </div>
+                  <span className="text-xs text-gray-400">Recording available after call ends</span>
                 )}
               </div>
 

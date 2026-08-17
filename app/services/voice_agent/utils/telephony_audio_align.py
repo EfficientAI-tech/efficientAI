@@ -17,6 +17,7 @@ from app.config import settings
 class TelephonyMergeStrategy(str, Enum):
     USER_ONLY = "user_only"
     ALIGNED_MIX = "aligned_mix"
+    STEREO = "stereo"
 
 
 @dataclass
@@ -100,7 +101,7 @@ def analyze_dual_tracks(
     sample_rate: int,
 ) -> TelephonyTrackAnalysis:
     corr_lag, peak = estimate_bot_lag_samples(user_samples, bot_samples, sample_rate=sample_rate)
-    threshold = float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT", 0.35))
+    threshold = float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT", 0.20))
 
     if len(bot_samples) < sample_rate // 20:
         return TelephonyTrackAnalysis(
@@ -153,13 +154,35 @@ def mix_aligned_mono(
     bot_samples: np.ndarray,
     *,
     bot_delay_samples: int,
+    normalize: bool = True,
 ) -> np.ndarray:
     bot_shifted = _shift_pad(bot_samples, bot_delay_samples)
     max_len = max(len(user_samples), len(bot_shifted))
     user_padded = np.pad(user_samples, (0, max_len - len(user_samples)), mode="constant")
     bot_padded = np.pad(bot_shifted, (0, max_len - len(bot_shifted)), mode="constant")
+    if normalize:
+        mixed = (user_padded.astype(np.float32) * 0.5) + (bot_padded.astype(np.float32) * 0.5)
+        return np.clip(mixed, -32768, 32767).astype(np.int16)
     mixed = user_padded.astype(np.int32) + bot_padded.astype(np.int32)
     return np.clip(mixed, -32768, 32767).astype(np.int16)
+
+
+def write_wav_stereo(path: str, user_samples: np.ndarray, bot_samples: np.ndarray, sample_rate: int) -> None:
+    left = user_samples.astype(np.int16)
+    right = bot_samples.astype(np.int16)
+    max_len = max(len(left), len(right))
+    if len(left) < max_len:
+        left = np.pad(left, (0, max_len - len(left)), mode="constant")
+    if len(right) < max_len:
+        right = np.pad(right, (0, max_len - len(right)), mode="constant")
+    interleaved = np.empty(max_len * 2, dtype=np.int16)
+    interleaved[0::2] = left
+    interleaved[1::2] = right
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(interleaved.tobytes())
 
 
 def write_wav_mono(path: str, samples: np.ndarray, sample_rate: int) -> None:
@@ -170,12 +193,10 @@ def write_wav_mono(path: str, samples: np.ndarray, sample_rate: int) -> None:
         wf.writeframes(samples.astype(np.int16).tobytes())
 
 
-def merge_telephony_tracks_to_mono(
+def _load_aligned_tracks(
     user_audio_path: str,
     bot_audio_path: str,
-    *,
-    output_path: str,
-) -> Tuple[TelephonyTrackAnalysis, float]:
+) -> Tuple[np.ndarray, np.ndarray, int, TelephonyTrackAnalysis]:
     user, user_rate = read_wav_mono(user_audio_path)
     bot, bot_rate = read_wav_mono(bot_audio_path)
     if user_rate != bot_rate and len(bot) > 0:
@@ -194,7 +215,6 @@ def merge_telephony_tracks_to_mono(
         ).astype(np.int16)
 
     analysis = analyze_dual_tracks(user, bot, sample_rate=user_rate)
-
     logger.info(
         "Telephony merge analysis strategy={} reason={} corr_peak={:.3f} corr_lag_samples={} "
         "bot_delay_samples={} user_samples={} bot_samples={}",
@@ -206,6 +226,145 @@ def merge_telephony_tracks_to_mono(
         analysis.user_duration_samples,
         analysis.bot_duration_samples,
     )
+    return user, bot, user_rate, analysis
+
+
+def merge_telephony_tracks_to_stereo(
+    user_audio_path: str,
+    bot_audio_path: str,
+    *,
+    output_path: str,
+) -> Tuple[TelephonyTrackAnalysis, float]:
+    user, bot, sample_rate, analysis = _load_aligned_tracks(user_audio_path, bot_audio_path)
+    bot_shifted = _shift_pad(bot, analysis.bot_delay_samples)
+    write_wav_stereo(output_path, user, bot_shifted, sample_rate)
+    duration = max(len(user), len(bot_shifted)) / float(sample_rate) if sample_rate else 0.0
+    return analysis, duration
+
+
+def merge_wall_clock_tracks_to_stereo(
+    user_audio_path: str,
+    bot_audio_path: str,
+    *,
+    output_path: str,
+) -> Tuple[TelephonyTrackAnalysis, float]:
+    """Interleave wall-clock aligned tracks without extra telephony playback delay."""
+    user, user_rate = read_wav_mono(user_audio_path)
+    bot, bot_rate = read_wav_mono(bot_audio_path)
+    if user_rate != bot_rate and len(bot) > 0:
+        ratio = user_rate / bot_rate
+        new_len = int(len(bot) * ratio)
+        bot = np.interp(
+            np.linspace(0, len(bot) - 1, new_len),
+            np.arange(len(bot)),
+            bot.astype(np.float32),
+        ).astype(np.int16)
+
+    corr_lag, peak = estimate_bot_lag_samples(user, bot, sample_rate=user_rate)
+    analysis = TelephonyTrackAnalysis(
+        strategy=TelephonyMergeStrategy.STEREO,
+        bot_delay_samples=0,
+        correlation_peak=peak,
+        correlation_lag_samples=corr_lag,
+        user_sample_rate=user_rate,
+        user_duration_samples=len(user),
+        bot_duration_samples=len(bot),
+        reason="wall_clock_stereo",
+    )
+    write_wav_stereo(output_path, user, bot, user_rate)
+    duration = max(len(user), len(bot)) / float(user_rate) if user_rate else 0.0
+    logger.info(
+        "Wall-clock stereo merge user_samples={} bot_samples={} corr_peak={:.3f}",
+        len(user),
+        len(bot),
+        peak,
+    )
+    return analysis, duration
+
+
+def merge_wall_clock_tracks_to_mono(
+    user_audio_path: str,
+    bot_audio_path: str,
+    *,
+    output_path: str,
+) -> Tuple[TelephonyTrackAnalysis, float]:
+    """Mix wall-clock aligned tracks; echo detection only, no playback delay padding."""
+    user, user_rate = read_wav_mono(user_audio_path)
+    bot, bot_rate = read_wav_mono(bot_audio_path)
+    if user_rate != bot_rate and len(bot) > 0:
+        ratio = user_rate / bot_rate
+        new_len = int(len(bot) * ratio)
+        bot = np.interp(
+            np.linspace(0, len(bot) - 1, new_len),
+            np.arange(len(bot)),
+            bot.astype(np.float32),
+        ).astype(np.int16)
+
+    corr_lag, peak = estimate_bot_lag_samples(user, bot, sample_rate=user_rate)
+    threshold = float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT", 0.20))
+
+    if len(bot) < user_rate // 20:
+        merged = user
+        analysis = TelephonyTrackAnalysis(
+            strategy=TelephonyMergeStrategy.USER_ONLY,
+            bot_delay_samples=0,
+            correlation_peak=peak,
+            correlation_lag_samples=corr_lag,
+            user_sample_rate=user_rate,
+            user_duration_samples=len(user),
+            bot_duration_samples=len(bot),
+            reason="bot_track_too_short",
+        )
+    elif peak >= threshold:
+        merged = user
+        analysis = TelephonyTrackAnalysis(
+            strategy=TelephonyMergeStrategy.USER_ONLY,
+            bot_delay_samples=0,
+            correlation_peak=peak,
+            correlation_lag_samples=corr_lag,
+            user_sample_rate=user_rate,
+            user_duration_samples=len(user),
+            bot_duration_samples=len(bot),
+            reason="bot_energy_on_inbound_leg",
+        )
+    else:
+        merged = mix_aligned_mono(user, bot, bot_delay_samples=0)
+        analysis = TelephonyTrackAnalysis(
+            strategy=TelephonyMergeStrategy.ALIGNED_MIX,
+            bot_delay_samples=0,
+            correlation_peak=peak,
+            correlation_lag_samples=corr_lag,
+            user_sample_rate=user_rate,
+            user_duration_samples=len(user),
+            bot_duration_samples=len(bot),
+            reason="wall_clock_mix",
+        )
+
+    write_wav_mono(output_path, merged, user_rate)
+    duration = len(merged) / float(user_rate) if user_rate else 0.0
+    return analysis, duration
+
+
+def merge_track_bytes_to_mono(
+    user_audio_path: str,
+    bot_audio_path: str,
+    *,
+    output_path: str,
+) -> Tuple[TelephonyTrackAnalysis, float]:
+    return merge_telephony_tracks_to_mono(
+        user_audio_path,
+        bot_audio_path,
+        output_path=output_path,
+    )
+
+
+def merge_telephony_tracks_to_mono(
+    user_audio_path: str,
+    bot_audio_path: str,
+    *,
+    output_path: str,
+) -> Tuple[TelephonyTrackAnalysis, float]:
+    user, bot, user_rate, analysis = _load_aligned_tracks(user_audio_path, bot_audio_path)
 
     if analysis.strategy == TelephonyMergeStrategy.USER_ONLY:
         merged = user

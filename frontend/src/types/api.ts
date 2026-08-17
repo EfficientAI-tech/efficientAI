@@ -2136,8 +2136,15 @@ export interface ObservabilityCallData {
   to_phone_number?: string
   endedReason?: string
   recording_s3_key?: string
+  stereo_recording_s3_key?: string
+  mono_recording_s3_key?: string
+  user_recording_s3_key?: string
+  bot_recording_s3_key?: string
+  recording_format?: string
+  recording_source?: string
   recording_url?: string
   duration_seconds?: number
+  speaker_segments?: Array<{ speaker: string; text: string; start: number; end: number }>
   agent_name?: string
   _agent_ref?: string | number
   direction?: string

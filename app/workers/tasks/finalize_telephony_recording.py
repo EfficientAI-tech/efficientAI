@@ -29,7 +29,7 @@ def finalize_telephony_recording_task(
 ) -> dict:
     """Merge dual-track WAVs, upload to S3, persist CallRecording, queue evaluator."""
     try:
-        s3_key, merged_duration = merge_and_upload_audio(
+        s3_key, merged_duration, merge_metadata = merge_and_upload_audio(
             user_audio_path=user_audio_path,
             bot_audio_path=bot_audio_path,
             call_start_time=call_start_time,
@@ -48,6 +48,7 @@ def finalize_telephony_recording_task(
                 transcript_text=transcript_text,
                 s3_key=s3_key,
                 duration=effective_duration,
+                recording_metadata=merge_metadata,
             )
         finally:
             db.close()

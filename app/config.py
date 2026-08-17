@@ -212,7 +212,7 @@ class Settings(BaseSettings):
 
     # Live telephony pipeline recording merge (dual-track → natural mono)
     TELEPHONY_BOT_PLAYBACK_DELAY_MS: int = 400
-    TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT: float = 0.35
+    TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT: float = 0.20
 
     # Judge Alignment (AlignEval-style hybrid integration).
     # Operator-only knobs. Per-org thresholds and judge model selection

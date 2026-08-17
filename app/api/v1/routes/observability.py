@@ -608,7 +608,11 @@ async def stream_observability_call_audio(
     if recording_url:
         return RedirectResponse(recording_url)
 
-    s3_key = call_data.get("recording_s3_key")
+    s3_key = (
+        call_data.get("stereo_recording_s3_key")
+        or call_data.get("recording_s3_key")
+        or call_data.get("mono_recording_s3_key")
+    )
     if not s3_key:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available")
 

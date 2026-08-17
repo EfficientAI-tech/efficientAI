@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Volume2 } from 'lucide-react'
+import DualTrackRecordingPlayer from '../../../components/call-recordings/DualTrackRecordingPlayer'
 import { apiClient } from '../../../lib/api'
 
 type MetricsStudioAudioPlayerProps = {
@@ -94,12 +94,13 @@ export default function MetricsStudioAudioPlayer({
   if (error || !audioUrl) return null
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50/60 p-4 space-y-2">
-      <div className="flex items-center gap-2">
-        <Volume2 className="h-4 w-4 text-gray-500" />
-        <h4 className="text-sm font-semibold text-gray-900">Call recording</h4>
-      </div>
-      <audio controls src={audioUrl} className="w-full" preload="metadata" />
-    </div>
+    <DualTrackRecordingPlayer
+      audioUrl={audioUrl}
+      recordingFormat={
+        typeof metadata.recording_format === 'string' ? metadata.recording_format : null
+      }
+      compact
+      className="bg-gray-50/60"
+    />
   )
 }

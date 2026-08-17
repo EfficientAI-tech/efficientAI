@@ -222,6 +222,10 @@ judge_alignment:
 #   # Public telephony edge (media service). Vobiz webhooks + carrier WS use this host.
 #   # Local split dev: ngrok http 8001, set this to the tunnel URL (no media_ws_base_url needed for Vobiz).
 #   webhook_verify: true   # set false ONLY on local dev (never in sandbox/prod)
+# Live telephony pipeline recording merge (dual-track → stereo playback + mono fallback)
+# telephony_bot_playback_delay_ms: 400
+# telephony_merge_correlation_double_count: 0.20  # lower = more aggressive echo detection on inbound leg
+#
 #   carrier_session_recording: false  # true = Vobiz <Record> + download MP3 from media.vobiz.ai
 #   # Optional override for browser voice-agent WS when telephony host differs from API.
 #   # Vobiz ignores this when webhook_base_url already points at telephony (https→wss fallback).

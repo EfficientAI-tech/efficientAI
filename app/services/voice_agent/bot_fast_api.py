@@ -10,28 +10,20 @@ This module defers importing efficientai services until run_bot() is actually ca
 allowing the API/worker to start without loading Google AI SDKs at import time.
 """
 
-import os
 import sys
-import tempfile
 import time
 
 from loguru import logger
 
-from app.services.voice_agent.audio_recorder import get_audio_recorder_class
-from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
-
 
 def _get_lazy_imports():
     """Lazy import all efficientai dependencies when needed.
-    
+
     Returns a dict with all required classes/functions for the bot.
     This avoids loading heavy AI SDKs at module import time.
     """
     from efficientai.audio.vad.silero import SileroVADAnalyzer
-    from efficientai.frames.frames import (
-        LLMRunFrame, Frame, AudioRawFrame, OutputAudioRawFrame, 
-        TTSAudioRawFrame, EndFrame, StartFrame, CancelFrame
-    )
+    from efficientai.frames.frames import LLMRunFrame
     from efficientai.pipeline.pipeline import Pipeline
     from efficientai.pipeline.runner import PipelineRunner
     from efficientai.pipeline.task import PipelineParams, PipelineTask
@@ -44,18 +36,10 @@ def _get_lazy_imports():
         FastAPIWebsocketParams,
         FastAPIWebsocketTransport,
     )
-    from efficientai.processors.frame_processor import FrameProcessor
-    
+
     return {
         "SileroVADAnalyzer": SileroVADAnalyzer,
         "LLMRunFrame": LLMRunFrame,
-        "Frame": Frame,
-        "AudioRawFrame": AudioRawFrame,
-        "OutputAudioRawFrame": OutputAudioRawFrame,
-        "TTSAudioRawFrame": TTSAudioRawFrame,
-        "EndFrame": EndFrame,
-        "StartFrame": StartFrame,
-        "CancelFrame": CancelFrame,
         "Pipeline": Pipeline,
         "PipelineRunner": PipelineRunner,
         "PipelineParams": PipelineParams,
@@ -69,7 +53,6 @@ def _get_lazy_imports():
         "GeminiLiveLLMService": GeminiLiveLLMService,
         "FastAPIWebsocketParams": FastAPIWebsocketParams,
         "FastAPIWebsocketTransport": FastAPIWebsocketTransport,
-        "FrameProcessor": FrameProcessor,
     }
 
 
@@ -85,7 +68,6 @@ def _get_imports():
     return _imports_cache
 
 
-
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
 
@@ -98,27 +80,39 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None):
+async def run_bot(
+    websocket_client,
+    google_api_key: str,
+    system_instruction: str = None,
+    organization_id: str = None,
+    agent_id: str = None,
+    persona_id: str = None,
+    scenario_id: str = None,
+    evaluator_id: str = None,
+    result_id: str = None,
+    model_name: str = None,
+    serializer=None,
+    telephony_mode: bool = False,
+    call_short_id: str = None,
+    silence_hangup_secs: float | None = None,
+):
     """
     Run the voice agent bot with the provided Google API key.
-    
+
     Args:
         websocket_client: WebSocket client connection
         google_api_key: Decrypted Google API key for Gemini
         system_instruction: Optional system instruction (overrides default)
         organization_id: Organization ID for organizing S3 uploads
     """
-    # Lazy load all efficientai dependencies
     imports = _get_imports()
-    AudioRecorder = get_audio_recorder_class()
-    
-    # Initialize variables for return values
+
     call_start_time = time.time()
     s3_key_result = None
     duration_result = None
     transcript_text = None
     conversation_turns = []
-    
+
     try:
         transport_serializer = serializer or imports["ProtobufFrameSerializer"]()
         from app.services.voice_agent.tts_sample_rate import (
@@ -145,27 +139,22 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             ),
         )
 
-        # Use provided system instruction or fallback to default
         if system_instruction and system_instruction.strip():
             instruction = system_instruction.strip()
         else:
             instruction = DEFAULT_SYSTEM_INSTRUCTION.strip()
 
-        # Validate API key before passing to Gemini
         if not google_api_key or not google_api_key.strip():
             raise ValueError("Google API key is empty or invalid")
-        
-        # Determine model name
+
         if model_name:
-            if not model_name.startswith("models/"):
-                formatted_model_name = f"models/{model_name}"
-            else:
-                formatted_model_name = model_name
+            formatted_model_name = (
+                model_name if model_name.startswith("models/") else f"models/{model_name}"
+            )
         else:
             formatted_model_name = "models/gemini-2.5-flash-native-audio-preview-12-2025"
         logger.info(f"Using Gemini Live model: {formatted_model_name}")
-        
-        # Gemini S2S uses native voices (e.g. Puck), not provider voice IDs from Persona/VoiceBundle.
+
         llm = imports["GeminiLiveLLMService"](
             api_key=google_api_key,
             voice_id="Puck",
@@ -185,40 +174,32 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         context_aggregator = imports["LLMContextAggregatorPair"](context)
 
         recorder_sample_rate = 8000 if telephony_mode else 24000
-
-        if telephony_mode:
-            from app.services.voice_agent.telephony_recording_paths import telephony_recording_temp_path
-
-            user_audio_path = telephony_recording_temp_path(suffix=".wav")
-            bot_audio_path = telephony_recording_temp_path(suffix=".wav")
-        else:
-            user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
-            os.close(user_audio_fd)
-            bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
-            os.close(bot_audio_fd)
-        
-        # Use a common start time for synchronization
-        start_time = time.time()
-        recorder_alignment = "stream" if telephony_mode else "wall_clock"
-        user_recorder = AudioRecorder(
-            user_audio_path,
-            start_time,
-            target_sample_rate=recorder_sample_rate,
-            recorder_name="UserAudioRecorder",
-            alignment_mode=recorder_alignment,
+        from app.services.voice_agent.conversation_recording import (
+            ConversationRecordingCapture,
+            RecordingTimeline,
+            create_wall_clock_track_tap,
         )
-        bot_recorder = AudioRecorder(
-            bot_audio_path,
-            start_time,
-            target_sample_rate=recorder_sample_rate,
-            recorder_name="BotAudioRecorder",
-            alignment_mode=recorder_alignment,
+
+        recording_capture = ConversationRecordingCapture()
+        recording_timeline = RecordingTimeline()
+        user_track_tap = create_wall_clock_track_tap(
+            recording_capture,
+            recording_timeline,
+            track="user",
+            sample_rate=recorder_sample_rate,
+        )
+        bot_track_tap = create_wall_clock_track_tap(
+            recording_capture,
+            recording_timeline,
+            track="bot",
+            sample_rate=recorder_sample_rate,
         )
 
         from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
-        live_transcript_processor = create_live_transcript_processor(call_short_id) if telephony_mode else None
-        user_transcript_processor = live_transcript_processor
+        user_transcript_processor = (
+            create_live_transcript_processor(call_short_id) if telephony_mode else None
+        )
         agent_transcript_processor = (
             create_live_transcript_processor(call_short_id) if telephony_mode and call_short_id else None
         )
@@ -242,15 +223,16 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             pipeline_processors = [ws_transport.input()]
             if silence_hangup_processor:
                 pipeline_processors.append(silence_hangup_processor)
-            pipeline_processors.extend([user_recorder, context_aggregator.user()])
+            pipeline_processors.append(user_track_tap)
+            pipeline_processors.append(context_aggregator.user())
             if user_transcript_processor:
                 pipeline_processors.append(user_transcript_processor)
             pipeline_processors.append(llm)
             if agent_transcript_processor:
                 pipeline_processors.append(agent_transcript_processor)
             pipeline_processors.extend([
-                bot_recorder,
                 ws_transport.output(),
+                bot_track_tap,
                 context_aggregator.assistant(),
             ])
             pipeline = imports["Pipeline"](pipeline_processors)
@@ -268,6 +250,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):
                 logger.info("Vobiz telephony client connected via WebSocket")
+                recording_timeline.mark_started()
                 await task.queue_frames([imports["LLMRunFrame"]()])
 
             @ws_transport.event_handler("on_client_disconnected")
@@ -275,18 +258,17 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 logger.info("Vobiz telephony client disconnected")
                 await task.cancel()
         else:
-            # RTVI events for efficientai client UI
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
 
             pipeline = imports["Pipeline"](
                 [
                     ws_transport.input(),
-                    user_recorder,
+                    user_track_tap,
                     context_aggregator.user(),
                     rtvi,
                     llm,
-                    bot_recorder,
                     ws_transport.output(),
+                    bot_track_tap,
                     context_aggregator.assistant(),
                 ]
             )
@@ -300,46 +282,53 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 observers=[imports["RTVIObserver"](rtvi)],
             )
 
-            @rtvi.event_handler("on_client_ready")
-            async def on_client_ready(rtvi):
-                await rtvi.set_bot_ready()
-                await task.queue_frames([imports["LLMRunFrame"]()])
-
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):
                 logger.info("efficientai client connected via WebSocket")
+                recording_timeline.mark_started()
+
+            @rtvi.event_handler("on_client_ready")
+            async def on_client_ready(rtvi):
+                await rtvi.set_bot_ready()
+                recording_timeline.mark_started()
+                await task.queue_frames([imports["LLMRunFrame"]()])
 
             @ws_transport.event_handler("on_client_disconnected")
             async def on_client_disconnected(transport, client):
                 logger.info("efficientai Client disconnected")
                 await task.cancel()
 
-        # Verify WebSocket is still open before starting
         if websocket_client.client_state.name != "CONNECTED":
             raise Exception(f"WebSocket is not in CONNECTED state: {websocket_client.client_state.name}")
         runner = imports["PipelineRunner"](handle_sigint=False)
-        
+
         try:
             await runner.run(task)
         except Exception as run_error:
             logger.error(f"Error in runner.run(): {run_error}", exc_info=True)
             raise
         finally:
-            # Close recorders explicitly to ensure files are flushed
-            await user_recorder.cleanup()
-            await bot_recorder.cleanup()
-            s3_key_result, duration_result = merge_and_upload_audio(
-                user_audio_path=user_audio_path,
-                bot_audio_path=bot_audio_path,
-                call_start_time=call_start_time,
-                organization_id=organization_id,
-                evaluator_id=evaluator_id,
-                result_id=result_id,
+            recording_metadata: dict = {}
+            logger.info(
+                "Gemini conversation recording stopped: user={} bytes bot={} bytes",
+                len(recording_capture.user_audio),
+                len(recording_capture.bot_audio),
             )
-            
-            # Extract conversation transcript from the LLM context
+
+            if recording_capture.has_audio():
+                from app.services.voice_agent.conversation_recording import upload_conversation_recording
+
+                s3_key_result, duration_result, recording_metadata = upload_conversation_recording(
+                    recording_capture,
+                    call_start_time=call_start_time,
+                    organization_id=organization_id,
+                    evaluator_id=evaluator_id,
+                    result_id=result_id,
+                    prefer_stereo=True,
+                )
+
             try:
-                raw_messages = context.messages if hasattr(context, 'messages') else []
+                raw_messages = context.messages if hasattr(context, "messages") else []
                 conversation_turns = []
                 transcript_parts = []
                 elapsed = 0.0
@@ -382,6 +371,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                         transcript_text=transcript_text,
                         s3_key=s3_key_result,
                         duration=duration_result,
+                        recording_metadata=recording_metadata,
                     )
                 finally:
                     db.close()
@@ -396,9 +386,9 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             "scenario_id": scenario_id,
             "transcription": transcript_text,
             "speaker_segments": conversation_turns if conversation_turns else None,
-            "error": str(e)
+            "error": str(e),
         }
-    
+
     metadata = {
         "s3_key": s3_key_result,
         "duration": duration_result,
@@ -411,4 +401,3 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     if not s3_key_result and not transcript_text:
         metadata["error"] = "No audio file was uploaded and no transcript captured"
     return metadata
-

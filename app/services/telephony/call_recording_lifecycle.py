@@ -520,6 +520,7 @@ def persist_telephony_call_artifacts(
     transcript_text: Optional[str] = None,
     s3_key: Optional[str] = None,
     duration: Optional[float] = None,
+    recording_metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[CallRecording]:
     """Persist transcript and recording metadata when a telephony call ends."""
     row = db.query(CallRecording).filter(CallRecording.call_short_id == call_short_id).first()
@@ -564,6 +565,22 @@ def persist_telephony_call_artifacts(
             data.setdefault("pipeline_recording_s3_key", s3_key)
     if duration is not None:
         data["duration_seconds"] = duration
+    if recording_metadata:
+        for key in (
+            "recording_format",
+            "recording_source",
+            "stereo_recording_s3_key",
+            "mono_recording_s3_key",
+            "user_recording_s3_key",
+            "bot_recording_s3_key",
+            "merge_strategy",
+            "merge_reason",
+            "merge_correlation_peak",
+        ):
+            if recording_metadata.get(key) is not None:
+                data[key] = recording_metadata[key]
+        if recording_metadata.get("recording_source"):
+            data["recording_source"] = recording_metadata["recording_source"]
     if not data.get("ended_at"):
         data["ended_at"] = _now_iso()
 
