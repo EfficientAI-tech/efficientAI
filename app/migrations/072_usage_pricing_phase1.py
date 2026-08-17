@@ -77,7 +77,7 @@ def _ensure_model_pricing_rates(db: Session) -> None:
                     effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
                     effective_to DATE,
                     currency VARCHAR(8) NOT NULL DEFAULT 'USD',
-                    source VARCHAR(32) NOT NULL DEFAULT 'catalog',
+                    source VARCHAR(255) NOT NULL DEFAULT 'catalog',
                     input_micro_usd_per_million BIGINT NOT NULL DEFAULT 0,
                     output_micro_usd_per_million BIGINT NOT NULL DEFAULT 0,
                     cache_read_micro_usd_per_million BIGINT NOT NULL DEFAULT 0,
@@ -117,10 +117,26 @@ def _ensure_model_pricing_rates(db: Session) -> None:
             text(
                 """
                 ALTER TABLE model_pricing_rates
-                ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'catalog'
+                ADD COLUMN source VARCHAR(255) NOT NULL DEFAULT 'catalog'
                 """
             )
         )
+
+
+def _widen_source_column(db: Session) -> None:
+    if not _table_exists(db, "model_pricing_rates"):
+        return
+    if not _column_exists(db, "model_pricing_rates", "source"):
+        return
+    db.execute(
+        text(
+            """
+            ALTER TABLE model_pricing_rates
+            ALTER COLUMN source TYPE VARCHAR(255)
+            """
+        )
+    )
+    print("Widened model_pricing_rates.source to VARCHAR(255)")
 
 
 def _add_buffer_cost_columns(db: Session) -> None:
@@ -161,6 +177,7 @@ def _strip_org_extras(db: Session) -> None:
 
 def upgrade(db: Session):
     _ensure_model_pricing_rates(db)
+    _widen_source_column(db)
     _add_buffer_cost_columns(db)
     _strip_org_extras(db)
     db.commit()

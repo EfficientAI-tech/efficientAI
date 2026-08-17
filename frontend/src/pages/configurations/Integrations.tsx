@@ -194,6 +194,23 @@ export default function Integrations() {
       ? llmGatewayType
       : llmGatewaySettings?.platform_gateway_type || 'bifrost'
 
+  const activeAIProvider =
+    selectedProvider ||
+    (selectedAIProvider?.provider as ModelProvider | undefined) ||
+    null
+  const isCustomAIProvider =
+    integrationType === 'ai_provider' &&
+    String(activeAIProvider || '').toLowerCase() === ModelProvider.CUSTOM
+  const aiProviderUsesModelsStep = integrationType === 'ai_provider' && !isCustomAIProvider
+  const showGatewayModelField =
+    integrationType === 'ai_provider' &&
+    (isCustomAIProvider ||
+      credentialRoutingMode === 'gateway' ||
+      (credentialRoutingMode === 'inherit' &&
+        llmGatewaySettings?.effective_routing &&
+        llmGatewaySettings.effective_routing !== 'direct'))
+  const aiProviderRequiresApiKey = credentialRoutingMode === 'direct'
+
   const showLlmGatewayConfigOptions = llmGatewayMode !== 'disabled'
 
   useEffect(() => {
@@ -455,8 +472,10 @@ export default function Integrations() {
           showToast('Please enter your Azure OpenAI endpoint URL', 'error')
           return
         }
-        setAiProviderWizardStep(2)
-        return
+        if (!isCustomAIProvider) {
+          setAiProviderWizardStep(2)
+          return
+        }
       }
 
       if (isEditMode && selectedAIProvider) {
@@ -616,20 +635,6 @@ export default function Integrations() {
     integrations.length > 0 ||
     aiIntegrationProviders.length > 0 ||
     hasTelephony
-
-  const activeAIProvider =
-    selectedProvider ||
-    (selectedAIProvider?.provider as ModelProvider | undefined) ||
-    null
-  const showGatewayModelField =
-    integrationType === 'ai_provider' &&
-    (activeAIProvider === ModelProvider.CUSTOM ||
-      credentialRoutingMode === 'gateway' ||
-      (credentialRoutingMode === 'inherit' &&
-        llmGatewaySettings?.effective_routing &&
-        llmGatewaySettings.effective_routing !== 'direct'))
-
-  const aiProviderRequiresApiKey = credentialRoutingMode === 'direct'
 
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
     return platforms.find(p => p.id === platformId)
@@ -1159,7 +1164,7 @@ export default function Integrations() {
 
       {showModal && renderModal(
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-          <div className={`bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-y-auto ${integrationType === 'ai_provider' && aiProviderWizardStep === 2 ? 'max-w-2xl' : 'max-w-md'}`}>
+          <div className={`bg-white rounded-lg shadow-xl w-full mx-4 max-h-[90vh] overflow-y-auto ${aiProviderUsesModelsStep && aiProviderWizardStep === 2 ? 'max-w-2xl' : 'max-w-md'}`}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <div>
                 <h3 className="text-lg font-semibold">
@@ -1171,11 +1176,13 @@ export default function Integrations() {
                         : 'Edit Integration'
                     : 'Add Integration'}
                 </h3>
-                {integrationType === 'ai_provider' ? (
+                {aiProviderUsesModelsStep ? (
                   <p className="mt-0.5 text-xs text-gray-500">
                     Step {aiProviderWizardStep} of 2 —{' '}
                     {aiProviderWizardStep === 1 ? 'Credentials' : 'Enabled models'}
                   </p>
+                ) : isCustomAIProvider ? (
+                  <p className="mt-0.5 text-xs text-gray-500">Custom Bifrost model integration</p>
                 ) : null}
               </div>
               <button onClick={resetForm} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
@@ -1361,16 +1368,20 @@ export default function Integrations() {
                   {showGatewayModelField && (
                     <>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Gateway Model (Optional)</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {isCustomAIProvider ? 'Custom model ID (Optional)' : 'Gateway Model (Optional)'}
+                      </label>
                       <input
                         type="text"
                         value={gatewayModel}
                         onChange={(e) => setGatewayModel(e.target.value)}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                        placeholder="e.g., production-gpt4 or openai/gpt-4o"
+                        placeholder={isCustomAIProvider ? 'e.g. openai/gpt-4o or production-gpt4' : 'e.g., production-gpt4 or openai/gpt-4o'}
                       />
                       <p className="mt-1 text-xs text-gray-500">
-                        Bifrost custom model ID sent when routing via gateway. Leave blank to use the workload-selected model.
+                        {isCustomAIProvider
+                          ? 'Bifrost model ID for this integration. Each custom credential pins one model.'
+                          : 'Bifrost custom model ID sent when routing via gateway. Leave blank to use the workload-selected model.'}
                       </p>
                     </div>
                     <div>
@@ -1505,7 +1516,7 @@ export default function Integrations() {
                 </>
               )}
 
-              {integrationType === 'ai_provider' && aiProviderWizardStep === 2 && (selectedProvider || selectedAIProvider) && (
+              {aiProviderUsesModelsStep && aiProviderWizardStep === 2 && (selectedProvider || selectedAIProvider) && (
                 <AIProviderEnabledModelsStep
                   provider={(selectedProvider || selectedAIProvider!.provider) as ModelProvider}
                   enabledModels={enabledModels}
@@ -1612,7 +1623,7 @@ export default function Integrations() {
 
               <div className="flex gap-3 pt-4">
                 <Button type="button" variant="outline" onClick={resetForm} className="flex-1">Cancel</Button>
-                {integrationType === 'ai_provider' && aiProviderWizardStep === 2 ? (
+                {aiProviderUsesModelsStep && aiProviderWizardStep === 2 ? (
                   <>
                     <Button
                       type="button"
@@ -1635,6 +1646,19 @@ export default function Integrations() {
                       {isEditMode ? 'Save provider' : 'Configure provider'}
                     </Button>
                   </>
+                ) : isCustomAIProvider && integrationType === 'ai_provider' ? (
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    isLoading={
+                      isEditMode
+                        ? updateAIProviderMutation.isPending
+                        : createAIProviderMutation.isPending
+                    }
+                    className="flex-1"
+                  >
+                    {isEditMode ? 'Save provider' : 'Configure provider'}
+                  </Button>
                 ) : (
                   <Button
                     type="submit"
