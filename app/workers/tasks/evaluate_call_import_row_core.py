@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
@@ -17,6 +16,7 @@ from app.models.database import (
     Metric,
 )
 from app.workers.tasks.helpers.constants import AUDIO_ONLY_METRIC_NAMES
+from app.workers.tasks.helpers.llm_evaluation import MetricPromptGroup
 from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
@@ -221,13 +221,6 @@ def build_parent_groups(
 
 
 LlmConfigKey = tuple[str | None, str | None, str | None, str | None]
-
-
-@dataclass
-class MetricPromptGroup:
-    parent_metric: Metric | None
-    metrics: list[Metric]
-    running_discovered: list | None
 
 
 def _llm_config_key(cfg: dict | None) -> str | None:

@@ -182,6 +182,15 @@ def _bind_runtime_database_url(database_url: str) -> None:
     settings.DATABASE_URL = database_url
 
 
+def _drop_postgres_schema(engine) -> None:
+    """Drop all objects in public schema (handles migration-only tables)."""
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+        conn.execute(text("GRANT ALL ON SCHEMA public TO public"))
+        conn.execute(text("GRANT ALL ON SCHEMA public TO CURRENT_USER"))
+
+
 @pytest.fixture(scope="session")
 def test_engine(worker_id):
     """
@@ -225,7 +234,11 @@ def test_engine(worker_id):
         yield engine
     finally:
         if drop_schema_on_teardown:
-            Base.metadata.drop_all(bind=engine)
+            parsed = make_url(str(engine.url))
+            if parsed.drivername.startswith("postgresql"):
+                _drop_postgres_schema(engine)
+            else:
+                Base.metadata.drop_all(bind=engine)
         engine.dispose()
 
 

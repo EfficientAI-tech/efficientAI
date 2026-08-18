@@ -31,6 +31,8 @@ from app.workers.config import celery_app
 from app.workers.tasks.evaluate_call_import_row_core import (
     as_json_dict,
     build_all_columns_block,
+    build_llm_config_buckets,
+    bucket_needs_comparison_pair,
     build_parent_groups,
     categorize_metrics,
     load_enabled_metrics,
@@ -43,6 +45,7 @@ from app.workers.tasks.evaluate_call_import_row_core import (
 )
 from app.workers.tasks.helpers.llm_evaluation import (
     evaluate_with_llm,
+    flatten_metric_groups,
     handle_llm_evaluation_error,
 )
 
@@ -52,7 +55,6 @@ _as_json_dict = as_json_dict
 _was_cancelled_externally = was_cancelled_externally
 _build_all_columns_block = build_all_columns_block
 _categorize_metrics = categorize_metrics
-_build_parent_groups = build_parent_groups
 _rollup_parent = rollup_parent
 _metric_text_references_production = metric_text_references_production
 
@@ -91,21 +93,16 @@ def _run_llm_scoring(
     transcript: str,
     production_transcript: str,
     diarised_transcript: str,
-    transcript_metrics: list[Metric],
-    comparison_metrics: list[Metric],
+    llm_config_buckets: dict,
+    comparison_metric_ids: set[str],
     all_columns_block: str | None,
     ai_providers: list,
     llm_provider: str | None,
     llm_model: str | None,
     llm_credential_id: str | None,
     llm_config: dict | None,
-    metric_llm_overrides: dict,
     discover_new_metrics: bool,
     running_discovered_metrics: list,
-    running_discovered_by_parent: dict[UUID, list],
-    parents_by_id: dict[UUID, Metric],
-    children_by_parent: dict[UUID, list[Metric]],
-    standalone_metrics: list[Metric],
     transcript_unavailable: bool,
     missing_label: str,
 ) -> dict[str, Any]:
@@ -120,182 +117,86 @@ def _run_llm_scoring(
         else None
     )
 
-    run_provider = (llm_provider or "").strip() or None
-    run_model = (llm_model or "").strip() or None
-    run_llm_config = llm_config if isinstance(llm_config, dict) else None
-    run_credential_id = (llm_credential_id or "").strip() or None
-    overrides = metric_llm_overrides if isinstance(metric_llm_overrides, dict) else {}
+    if not llm_config_buckets:
+        return {
+            "metric_scores": metric_scores,
+            "evaluation_failed": evaluation_failed,
+            "primary_error_message": primary_error_message,
+        }
 
-    if comparison_metrics:
-        for cmp_metric in comparison_metrics:
-            override = overrides.get(str(cmp_metric.id)) or {}
-            provider = override.get("provider") or run_provider or None
-            model = override.get("model") or run_model or None
-            llm_cfg = override.get("llm_config") or run_llm_config
-            credential_id = override.get("credential_id") or run_credential_id
-            evaluator_obj = None
-            if provider and model:
-                evaluator_obj = SimpleNamespace(
-                    llm_provider=provider,
-                    llm_model=model,
-                    llm_config=llm_cfg,
-                    llm_credential_id=credential_id,
-                    custom_prompt=None,
-                )
-            try:
-                llm_db = SessionLocal()
-                try:
-                    cmp_scores, _eval_time = evaluate_with_llm(
-                        transcription="",
-                        llm_metrics=[cmp_metric],
-                        ai_providers=ai_providers,
-                        organization_id=organization_id,
-                        result_id=result_id,
-                        db=llm_db,
-                        evaluator=evaluator_obj,
-                        agent=None,
-                        persona=None,
-                        scenario=None,
-                        parent_metric=None,
-                        running_discovered=None,
-                        all_columns_block=all_columns_block,
-                        comparison_pair=(
-                            production_transcript,
-                            diarised_transcript,
-                        ),
-                    )
-                finally:
-                    llm_db.close()
-                metric_scores.update(cmp_scores)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "[CallImportEval {}] Transcript-compare LLM "
-                    "evaluation failed for metric={} provider={} model={}",
-                    eval_row_id,
-                    cmp_metric.id,
-                    provider,
-                    model,
-                )
-                metric_scores.update(
-                    handle_llm_evaluation_error([cmp_metric], exc)
-                )
-                evaluation_failed = True
-                primary_error_message = primary_error_message or str(exc)
+    metric_discovery_emitted = False
 
-    if transcript_metrics and transcript:
-        def _llm_config_key(cfg: dict | None) -> str | None:
-            if not cfg:
-                return None
-            return json.dumps(cfg, sort_keys=True, default=str)
-
-        def _resolve_pm(
-            metric: Metric,
-        ) -> tuple[str | None, str | None, dict | None, str | None]:
-            override = overrides.get(str(metric.id)) or {}
-            provider = override.get("provider") or run_provider or None
-            model = override.get("model") or run_model or None
-            llm_cfg = override.get("llm_config") or run_llm_config
-            credential_id = override.get("credential_id") or run_credential_id
-            return provider, model, llm_cfg, credential_id
-
-        BucketKey = tuple[tuple[str | None, str | None, str | None, str | None], UUID | None]
-        groups: dict[BucketKey, list[Metric]] = {}
-        for metric in standalone_metrics:
-            provider, model, llm_cfg, credential_id = _resolve_pm(metric)
-            groups.setdefault(
-                ((provider, model, _llm_config_key(llm_cfg), credential_id), None),
-                [],
-            ).append(metric)
-        for parent_id, children in children_by_parent.items():
-            provider, model, llm_cfg, credential_id = _resolve_pm(children[0])
-            groups.setdefault(
-                ((provider, model, _llm_config_key(llm_cfg), credential_id), parent_id),
-                [],
-            ).extend(children)
-
-        metric_discovery_emitted = False
-        for (config, parent_id), bucket in groups.items():
-            provider, model, llm_config_key, credential_id = config
-            llm_cfg = json.loads(llm_config_key) if llm_config_key else None
-            evaluator_obj = None
-            if provider and model:
-                evaluator_obj = SimpleNamespace(
-                    llm_provider=provider,
-                    llm_model=model,
-                    llm_config=llm_cfg,
-                    llm_credential_id=credential_id,
-                    custom_prompt=None,
-                )
-            parent_metric = parents_by_id.get(parent_id) if parent_id else None
-            running_discovered = (
-                running_discovered_by_parent.get(parent_id, [])
-                if parent_id is not None
-                else []
+    for config, groups in llm_config_buckets.items():
+        provider, model, llm_config_key, credential_id = config
+        llm_cfg = json.loads(llm_config_key) if llm_config_key else None
+        evaluator_obj = None
+        if provider and model:
+            evaluator_obj = SimpleNamespace(
+                llm_provider=provider,
+                llm_model=model,
+                llm_config=llm_cfg,
+                llm_credential_id=credential_id,
+                custom_prompt=None,
             )
-            emit_metric_discovery = (
-                discover_new_metrics and not metric_discovery_emitted
+        bucket_metrics = flatten_metric_groups(groups)
+        emit_metric_discovery = discover_new_metrics and not metric_discovery_emitted
+        bucket_comparison_pair: tuple[str, str] | None = None
+        if bucket_needs_comparison_pair(
+            groups,
+            production_transcript=production_transcript,
+            diarised_transcript=diarised_transcript,
+            comparison_metric_ids=comparison_metric_ids,
+        ):
+            bucket_comparison_pair = (
+                production_transcript,
+                diarised_transcript,
             )
-            bucket_comparison_pair: tuple[str, str] | None = None
-            if (
-                production_transcript
-                and diarised_transcript
-                and (
-                    (
-                        parent_metric is not None
-                        and _metric_text_references_production(parent_metric)
-                    )
-                    or any(
-                        _metric_text_references_production(m, parent=parent_metric)
-                        for m in bucket
-                    )
-                )
-            ):
-                bucket_comparison_pair = (
-                    production_transcript,
-                    diarised_transcript,
-                )
+        bucket_has_transcript_metrics = any(
+            str(metric.id) not in comparison_metric_ids for metric in bucket_metrics
+        )
+        bucket_transcription = (
+            transcript if bucket_has_transcript_metrics else ""
+        )
+        try:
+            llm_db = SessionLocal()
             try:
-                llm_db = SessionLocal()
-                try:
-                    llm_scores, _eval_time = evaluate_with_llm(
-                        transcription=transcript,
-                        llm_metrics=bucket,
-                        ai_providers=ai_providers,
-                        organization_id=organization_id,
-                        result_id=result_id,
-                        db=llm_db,
-                        evaluator=evaluator_obj,
-                        agent=None,
-                        persona=None,
-                        scenario=None,
-                        parent_metric=parent_metric,
-                        running_discovered=running_discovered,
-                        all_columns_block=all_columns_block,
-                        comparison_pair=bucket_comparison_pair,
-                        discover_new_metrics=emit_metric_discovery,
-                        running_discovered_metrics=(
-                            running_discovered_metrics
-                            if emit_metric_discovery
-                            else None
-                        ),
-                    )
-                finally:
-                    llm_db.close()
-                if emit_metric_discovery:
-                    metric_discovery_emitted = True
-                metric_scores.update(llm_scores)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "[CallImportEval {}] LLM evaluation failed for "
-                    "provider={} model={} parent={}",
-                    eval_row_id,
-                    provider,
-                    model,
-                    parent_id,
+                llm_scores, _eval_time = evaluate_with_llm(
+                    transcription=bucket_transcription,
+                    llm_metrics=bucket_metrics,
+                    ai_providers=ai_providers,
+                    organization_id=organization_id,
+                    result_id=result_id,
+                    db=llm_db,
+                    evaluator=evaluator_obj,
+                    agent=None,
+                    persona=None,
+                    scenario=None,
+                    all_columns_block=all_columns_block,
+                    comparison_pair=bucket_comparison_pair,
+                    discover_new_metrics=emit_metric_discovery,
+                    running_discovered_metrics=(
+                        running_discovered_metrics
+                        if emit_metric_discovery
+                        else None
+                    ),
+                    metric_groups=groups,
                 )
-                metric_scores.update(handle_llm_evaluation_error(bucket, exc))
-                evaluation_failed = True
-                primary_error_message = str(exc)
+            finally:
+                llm_db.close()
+            if emit_metric_discovery:
+                metric_discovery_emitted = True
+            metric_scores.update(llm_scores)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "[CallImportEval {}] LLM evaluation failed for "
+                "provider={} model={}",
+                eval_row_id,
+                provider,
+                model,
+            )
+            metric_scores.update(handle_llm_evaluation_error(bucket_metrics, exc))
+            evaluation_failed = True
+            primary_error_message = str(exc)
 
     return {
         "metric_scores": metric_scores,
@@ -583,15 +484,15 @@ def evaluate_call_import_row_task(
                 .all()
             )
 
-            parents_by_id: dict[UUID, Metric] = {}
-            children_by_parent: dict[UUID, list[Metric]] = {}
-            standalone_metrics: list[Metric] = []
             running_discovered_metrics: list = []
             running_discovered_by_parent: dict[UUID, list] = {}
-            if transcript_metrics and transcript:
-                parents_by_id, children_by_parent, standalone_metrics = (
-                    _build_parent_groups(catalog_db, transcript_metrics)
-                )
+            llm_metrics_for_scoring: list[Metric] = list(comparison_metrics)
+            if transcript:
+                llm_metrics_for_scoring = transcript_metrics + comparison_metrics
+
+            llm_config_buckets: dict = {}
+            comparison_metric_ids = {str(m.id) for m in comparison_metrics}
+            if llm_metrics_for_scoring:
                 if bool(getattr(evaluation, "discover_new_metrics", False)):
                     from app.api.v1.routes.call_import_evaluations import (
                         _get_running_discovered_metrics,
@@ -613,7 +514,10 @@ def evaluate_call_import_row_task(
                     _get_running_discovered_labels,
                 )
 
-                for parent_id, children in children_by_parent.items():
+                parents_by_id, children_by_parent, _ = build_parent_groups(
+                    catalog_db, llm_metrics_for_scoring
+                )
+                for parent_id in children_by_parent:
                     parent_metric = parents_by_id.get(parent_id)
                     if parent_metric is None:
                         continue
@@ -636,14 +540,38 @@ def evaluate_call_import_row_task(
                         )
                     )
 
+                overrides = (
+                    evaluation.metric_llm_overrides
+                    if isinstance(evaluation.metric_llm_overrides, dict)
+                    else {}
+                )
+                llm_config_buckets = build_llm_config_buckets(
+                    catalog_db,
+                    llm_metrics_for_scoring,
+                    overrides=overrides,
+                    run_provider=(evaluation.llm_provider or "").strip() or None,
+                    run_model=(evaluation.llm_model or "").strip() or None,
+                    run_llm_config=(
+                        evaluation.llm_config
+                        if isinstance(evaluation.llm_config, dict)
+                        else None
+                    ),
+                    run_credential_id=(
+                        str(evaluation.llm_credential_id)
+                        if evaluation.llm_credential_id
+                        else None
+                    ),
+                    running_discovered_by_parent=running_discovered_by_parent,
+                )
+
             scoring_inputs = {
                 "eval_row_id": eval_row.id,
                 "organization_id": evaluation.organization_id,
                 "transcript": transcript,
                 "production_transcript": production_transcript,
                 "diarised_transcript": diarised_transcript,
-                "transcript_metrics": transcript_metrics,
-                "comparison_metrics": comparison_metrics,
+                "llm_config_buckets": llm_config_buckets,
+                "comparison_metric_ids": comparison_metric_ids,
                 "all_columns_block": all_columns_block,
                 "ai_providers": ai_providers,
                 "llm_provider": evaluation.llm_provider,
@@ -654,15 +582,10 @@ def evaluate_call_import_row_task(
                     else None
                 ),
                 "llm_config": evaluation.llm_config,
-                "metric_llm_overrides": evaluation.metric_llm_overrides,
                 "discover_new_metrics": bool(
                     getattr(evaluation, "discover_new_metrics", False)
                 ),
                 "running_discovered_metrics": running_discovered_metrics,
-                "running_discovered_by_parent": running_discovered_by_parent,
-                "parents_by_id": parents_by_id,
-                "children_by_parent": children_by_parent,
-                "standalone_metrics": standalone_metrics,
                 "transcript_unavailable": transcript_unavailable,
                 "missing_label": missing_label,
                 "pre_llm_metric_scores": dict(metric_scores),

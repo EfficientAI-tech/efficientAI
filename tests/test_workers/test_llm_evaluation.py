@@ -661,3 +661,64 @@ def test_build_evaluation_prompt_without_comparison_pair_keeps_single_transcript
     assert "hello there" in prompt
     assert "## Transcripts to Compare" not in prompt
     assert "### Production Transcript" not in prompt
+
+
+def test_build_evaluation_prompt_renders_multiple_parent_and_flat_groups():
+    parent_a = _make_metric(
+        name="Outcome A",
+        metric_type="boolean",
+        description="Category A",
+    )
+    parent_a.selection_mode = "multi_label"
+    parent_a.allow_discovery = False
+    child_a = _make_metric(name="Child A1", metric_type="boolean")
+    flat = _make_metric(name="Flat Score", metric_type="rating")
+    parent_b = _make_metric(
+        name="Outcome B",
+        metric_type="boolean",
+        description="Category B",
+    )
+    parent_b.selection_mode = "multi_label"
+    parent_b.allow_discovery = False
+    child_b = _make_metric(name="Child B1", metric_type="boolean")
+
+    groups = [
+        llm_evaluation.MetricPromptGroup(parent_a, [child_a], None),
+        llm_evaluation.MetricPromptGroup(parent_b, [child_b], None),
+        llm_evaluation.MetricPromptGroup(None, [flat], None),
+    ]
+    prompt = llm_evaluation.build_evaluation_prompt(
+        "transcript body",
+        [],
+        metric_groups=groups,
+    )
+    assert "### Category: Outcome A" in prompt
+    assert "### Category: Outcome B" in prompt
+    assert '"flat_score"' in prompt
+    assert len(llm_evaluation.flatten_metric_groups(groups)) == 3
+
+
+def test_map_evaluation_to_metrics_handles_metric_groups():
+    parent = _make_metric(name="Outcome", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    parent.allow_discovery = False
+    child = _make_metric(name="Yes Path", metric_type="boolean", metric_id="c1")
+    flat = _make_metric(name="Quality", metric_type="rating", metric_id="f1")
+    groups = [
+        llm_evaluation.MetricPromptGroup(parent, [child], None),
+        llm_evaluation.MetricPromptGroup(None, [flat], None),
+    ]
+    response = {
+        "yes_path": True,
+        "outcome__sequence": ["yes_path"],
+        "quality": 0.9,
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        response,
+        llm_evaluation.flatten_metric_groups(groups),
+        metric_groups=groups,
+    )
+    assert "c1" in scores
+    assert "p1" in scores
+    assert "f1" in scores
+    assert scores["f1"]["value"] == 0.9

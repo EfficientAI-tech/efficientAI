@@ -1,10 +1,30 @@
 """LLM-based evaluation: prompt building and response parsing."""
 
+from __future__ import annotations
+
 import json
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
+
+
+@dataclass
+class MetricPromptGroup:
+    """One prompt section: flat metrics or a categorization parent + children."""
+
+    parent_metric: Any | None
+    metrics: list
+    running_discovered: list | None = None
+
+
+def flatten_metric_groups(metric_groups: list[MetricPromptGroup]) -> list:
+    """All leaf metrics across groups (for token budgeting and mapping)."""
+    out: list = []
+    for group in metric_groups:
+        out.extend(group.metrics)
+    return out
 
 from loguru import logger
 
@@ -454,6 +474,62 @@ def _render_parent_block(
     return block
 
 
+def _render_flat_metric_lines(metrics: list) -> str:
+    """Render standalone (non-hierarchical) metric definition lines."""
+    prompt = ""
+    for metric in metrics:
+        metric_key = metric.name.lower().replace(" ", "_")
+        metric_desc = metric.description or f"Evaluate {metric.name}"
+        m_type = get_metric_type_value(metric)
+        custom_type = _get_custom_data_type(metric)
+
+        if m_type == "text":
+            prompt += (
+                f'\n- "{metric_key}" (free-form text, 1-3 concise sentences, '
+                f'plain string): {metric_desc}'
+            )
+            continue
+
+        line_added = False
+        if custom_type == "enum":
+            options = _get_enum_options(metric)
+            if options:
+                opts_str = ", ".join(f'"{o}"' for o in options)
+                prompt += f'\n- "{metric_key}" (one of: {opts_str}): {metric_desc}'
+                line_added = True
+
+        if not line_added and custom_type == "number_range":
+            rng = _get_number_range(metric)
+            if rng:
+                bounds = []
+                if rng.get("min") is not None:
+                    bounds.append(f"min={rng['min']}")
+                if rng.get("max") is not None:
+                    bounds.append(f"max={rng['max']}")
+                if rng.get("step") is not None:
+                    bounds.append(f"step={rng['step']}")
+                bound_str = ", ".join(bounds) if bounds else "numeric value"
+                prompt += f'\n- "{metric_key}" (numeric, {bound_str}): {metric_desc}'
+                line_added = True
+
+        if not line_added:
+            if m_type == "rating":
+                prompt += f'\n- "{metric_key}" (rating 0.0-1.0): {metric_desc}'
+            elif m_type == "boolean":
+                prompt += f'\n- "{metric_key}" (true/false): {metric_desc}'
+            elif m_type == "number":
+                prompt += f'\n- "{metric_key}" (numeric value): {metric_desc}'
+
+        if _wants_rationale(metric):
+            prompt += (
+                f'\n- "{_rationale_key(metric_key)}" (free-form text, '
+                f'1-2 concise sentences explaining why "{metric_key}" was chosen): '
+                f"Justification for the value above. Reference specific lines or "
+                f"behaviors from the transcript when possible."
+            )
+    return prompt
+
+
 def build_evaluation_prompt(
     transcription: str,
     llm_metrics: list,
@@ -468,6 +544,7 @@ def build_evaluation_prompt(
     comparison_pair: tuple[str, str] | None = None,
     discover_new_metrics: bool = False,
     running_discovered_metrics: list | None = None,
+    metric_groups: list[MetricPromptGroup] | None = None,
 ) -> str:
     """
     Build the evaluation prompt for LLM-based metric evaluation.
@@ -508,6 +585,9 @@ def build_evaluation_prompt(
             ``evaluate_call_import_row``). Can be combined with
             ``parent_metric`` so a categorisation parent can score
             against the pair.
+        metric_groups: Optional list of :class:`MetricPromptGroup` for
+            multi-parent / mixed flat+hierarchical prompts in a single
+            LLM call. When set, ``parent_metric`` is ignored.
 
     Returns:
         Complete evaluation prompt string
@@ -633,6 +713,27 @@ The following is the system prompt / instructions that the agent was configured 
 ## Metrics to Evaluate (use EXACT keys below)
 """
 
+    if metric_groups is not None:
+        for group in metric_groups:
+            if group.parent_metric is not None:
+                prompt += _render_parent_block(
+                    group.parent_metric,
+                    group.metrics,
+                    running_discovered=group.running_discovered,
+                )
+            elif group.metrics:
+                prompt += _render_flat_metric_lines(group.metrics)
+        if discover_new_metrics:
+            prompt += _render_discovered_metrics_block(
+                running_discovered_metrics
+            )
+        prompt += _build_response_format_instructions(
+            llm_metrics=flatten_metric_groups(metric_groups),
+            metric_groups=metric_groups,
+            discover_new_metrics=discover_new_metrics,
+        )
+        return prompt
+
     if parent_metric is not None:
         # Hierarchical mode: render ONE category block with the children
         # plus a sequence array. Falls through to the format
@@ -658,68 +759,7 @@ The following is the system prompt / instructions that the agent was configured 
         )
         return prompt
 
-    for metric in llm_metrics:
-        metric_key = metric.name.lower().replace(" ", "_")
-        metric_desc = metric.description or f"Evaluate {metric.name}"
-        m_type = get_metric_type_value(metric)
-        custom_type = _get_custom_data_type(metric)
-
-        # Text metrics are unstructured by definition; ignore any stale
-        # ``custom_data_type`` (e.g. left over from when the metric used to be
-        # an enum) and ask the LLM for a free-form string. Rationale doesn't
-        # apply to text metrics (they are themselves free-form prose), so we
-        # short-circuit the rest of the loop body.
-        if m_type == "text":
-            prompt += (
-                f'\n- "{metric_key}" (free-form text, 1-3 concise sentences, '
-                f'plain string): {metric_desc}'
-            )
-            continue
-
-        # Emit the metric line. We deliberately do NOT ``continue`` after
-        # the enum / number_range branches — falling through lets the
-        # rationale companion block at the end of the loop run for those
-        # metric shapes too.
-        line_added = False
-        if custom_type == "enum":
-            options = _get_enum_options(metric)
-            if options:
-                opts_str = ", ".join(f'"{o}"' for o in options)
-                prompt += f'\n- "{metric_key}" (one of: {opts_str}): {metric_desc}'
-                line_added = True
-
-        if not line_added and custom_type == "number_range":
-            rng = _get_number_range(metric)
-            if rng:
-                bounds = []
-                if rng.get("min") is not None:
-                    bounds.append(f"min={rng['min']}")
-                if rng.get("max") is not None:
-                    bounds.append(f"max={rng['max']}")
-                if rng.get("step") is not None:
-                    bounds.append(f"step={rng['step']}")
-                bound_str = ", ".join(bounds) if bounds else "numeric value"
-                prompt += f'\n- "{metric_key}" (numeric, {bound_str}): {metric_desc}'
-                line_added = True
-
-        if not line_added:
-            if m_type == "rating":
-                prompt += f'\n- "{metric_key}" (rating 0.0-1.0): {metric_desc}'
-            elif m_type == "boolean":
-                prompt += f'\n- "{metric_key}" (true/false): {metric_desc}'
-            elif m_type == "number":
-                prompt += f'\n- "{metric_key}" (numeric value): {metric_desc}'
-
-        # When capture_rationale is on, ask for a sibling free-form rationale
-        # key in the SAME flat JSON object. Stays consistent with the "no
-        # nested objects" rule enforced below.
-        if _wants_rationale(metric):
-            prompt += (
-                f'\n- "{_rationale_key(metric_key)}" (free-form text, '
-                f'1-2 concise sentences explaining why "{metric_key}" was chosen): '
-                f"Justification for the value above. Reference specific lines or "
-                f"behaviors from the transcript when possible."
-            )
+    prompt += _render_flat_metric_lines(llm_metrics)
 
     if discover_new_metrics:
         prompt += _render_discovered_metrics_block(
@@ -733,10 +773,89 @@ The following is the system prompt / instructions that the agent was configured 
     return prompt
 
 
+def _append_parent_response_example(
+    instructions: str,
+    parent_metric,
+    llm_metrics: list,
+) -> str:
+    """Append JSON example lines for one categorization parent group."""
+    parent_key = _parent_key(parent_metric)
+    sequence_key = _sequence_key(parent_metric)
+    selection_mode = (parent_metric.selection_mode or "multi_label").lower()
+    child_keys = [c.name.lower().replace(" ", "_") for c in llm_metrics]
+    if not child_keys:
+        child_keys = ["example_child"]
+    chosen_child = child_keys[0]
+    if selection_mode == "single_choice":
+        instructions += f'  "{parent_key}": "{chosen_child}",\n'
+        for i, ck in enumerate(child_keys):
+            instructions += f'  "{ck}": {"true" if i == 0 else "false"},\n'
+    else:
+        for i, ck in enumerate(child_keys):
+            instructions += f'  "{ck}": {"true" if i % 2 == 0 else "false"},\n'
+    seq_sample = child_keys[: min(2, len(child_keys))]
+    seq_str = ", ".join(f'"{k}"' for k in seq_sample)
+    instructions += f'  "{sequence_key}": [{seq_str}],\n'
+    if _discovery_enabled(parent_metric):
+        discovered_key = _discovered_key(parent_metric)
+        instructions += (
+            f'  "{discovered_key}": [\n'
+            '    {"key": "new_outcome_key", "name": "New Outcome", '
+            '"description": "one short sentence", '
+            '"rationale": "verbatim transcript line"}\n'
+            '  ],\n'
+        )
+    if _wants_rationale(parent_metric):
+        parent_rationale_key = _rationale_key(parent_key)
+        instructions += (
+            f'  "{parent_rationale_key}": '
+            f'"Brief justification referencing the transcript.",\n'
+        )
+    return instructions
+
+
+def _append_flat_response_example(instructions: str, llm_metrics: list) -> str:
+    """Append JSON example lines for standalone flat metrics."""
+    for metric in llm_metrics:
+        metric_key = metric.name.lower().replace(" ", "_")
+        m_type = get_metric_type_value(metric)
+        custom_type = _get_custom_data_type(metric)
+
+        if m_type == "text":
+            instructions += (
+                f'  "{metric_key}": '
+                f'"A brief 1-3 sentence summary describing what was observed.",\n'
+            )
+            continue
+
+        line_added = False
+        if custom_type == "enum":
+            options = _get_enum_options(metric)
+            if options:
+                instructions += f'  "{metric_key}": "{options[0]}",\n'
+                line_added = True
+
+        if not line_added:
+            if m_type == "rating":
+                instructions += f'  "{metric_key}": 0.75,\n'
+            elif m_type == "boolean":
+                instructions += f'  "{metric_key}": true,\n'
+            elif m_type == "number":
+                instructions += f'  "{metric_key}": 5,\n'
+
+        if _wants_rationale(metric):
+            instructions += (
+                f'  "{_rationale_key(metric_key)}": '
+                f'"Brief justification referencing the transcript.",\n'
+            )
+    return instructions
+
+
 def _build_response_format_instructions(
     llm_metrics: list,
     parent_metric=None,
     discover_new_metrics: bool = False,
+    metric_groups: list[MetricPromptGroup] | None = None,
 ) -> str:
     """Build the response format section of the prompt.
 
@@ -752,6 +871,62 @@ You MUST respond with ONLY a JSON object using the EXACT metric keys listed abov
 Example format:
 {
 """
+
+    if metric_groups is not None:
+        has_hierarchical = False
+        for group in metric_groups:
+            if group.parent_metric is not None:
+                has_hierarchical = True
+                instructions = _append_parent_response_example(
+                    instructions,
+                    group.parent_metric,
+                    group.metrics,
+                )
+            elif group.metrics:
+                instructions = _append_flat_response_example(
+                    instructions, group.metrics
+                )
+
+        if discover_new_metrics:
+            instructions += (
+                f'  "{DISCOVERED_METRICS_KEY}": [\n'
+                '    {"key": "new_metric_key", "name": "New Metric", '
+                '"description": "one short sentence", '
+                '"suggested_type": "boolean", '
+                '"rationale": "verbatim transcript line"}\n'
+                '  ],\n'
+            )
+
+        hierarchical_rules = ""
+        if has_hierarchical:
+            hierarchical_rules = (
+                "\n6. Categorization groups: child keys are BOOLEAN (true/false). "
+                "Single-choice parents require EXACTLY ONE true child. "
+                "Multi-label parents set children independently. "
+                "Each parent's sequence array uses EXACT child keys in temporal order."
+            )
+
+        metrics_discovery_rule = ""
+        if discover_new_metrics:
+            metrics_discovery_rule = (
+                f'\n7. Top-level "{DISCOVERED_METRICS_KEY}" array: '
+                "propose only BRAND-NEW metrics not already covered by "
+                "the metrics block above."
+            )
+
+        instructions += (
+            "}\n\n"
+            "CRITICAL RULES:\n"
+            "1. Use the EXACT keys shown above - copy them character-for-character.\n"
+            "2. For numeric/boolean standalone metrics, values must be numbers or true/false.\n"
+            "3. For enum metrics, values must match listed options verbatim.\n"
+            "4. For text metrics, values must be plain JSON strings.\n"
+            "5. Do NOT wrap in \"metrics\" or any other object."
+            + hierarchical_rules
+            + metrics_discovery_rule
+            + "\nN. Do NOT add comments or explanations. Return ONLY the JSON object, nothing else."
+        )
+        return instructions
 
     if parent_metric is not None:
         parent_key = _parent_key(parent_metric)
@@ -850,43 +1025,7 @@ Example format:
 
         return instructions
 
-    for metric in llm_metrics:
-        metric_key = metric.name.lower().replace(" ", "_")
-        m_type = get_metric_type_value(metric)
-        custom_type = _get_custom_data_type(metric)
-
-        # ``text`` short-circuits any stale custom_data_type for the same
-        # reason it does in ``build_evaluation_prompt``.
-        if m_type == "text":
-            instructions += (
-                f'  "{metric_key}": '
-                f'"A brief 1-3 sentence summary describing what was observed.",\n'
-            )
-            continue
-
-        # Like build_evaluation_prompt: do NOT ``continue`` out of the
-        # enum branch — fall through so the rationale example line gets
-        # appended for enum metrics too when ``capture_rationale`` is on.
-        line_added = False
-        if custom_type == "enum":
-            options = _get_enum_options(metric)
-            if options:
-                instructions += f'  "{metric_key}": "{options[0]}",\n'
-                line_added = True
-
-        if not line_added:
-            if m_type == "rating":
-                instructions += f'  "{metric_key}": 0.75,\n'
-            elif m_type == "boolean":
-                instructions += f'  "{metric_key}": true,\n'
-            elif m_type == "number":
-                instructions += f'  "{metric_key}": 5,\n'
-
-        if _wants_rationale(metric):
-            instructions += (
-                f'  "{_rationale_key(metric_key)}": '
-                f'"Brief justification referencing the transcript.",\n'
-            )
+    instructions = _append_flat_response_example(instructions, llm_metrics)
 
     if discover_new_metrics:
         instructions += (
@@ -929,34 +1068,54 @@ def _build_system_message(
     llm_metrics: list,
     parent_metric=None,
     discover_new_metrics: bool = False,
+    metric_groups: list[MetricPromptGroup] | None = None,
 ) -> str:
     """Build the system message for LLM evaluation."""
     exact_keys: list[str] = []
-    if parent_metric is not None:
+    if metric_groups is not None:
+        for group in metric_groups:
+            if group.parent_metric is not None:
+                parent_root_key = _parent_key(group.parent_metric)
+                exact_keys.append(parent_root_key)
+                exact_keys.append(_sequence_key(group.parent_metric))
+                if _discovery_enabled(group.parent_metric):
+                    exact_keys.append(_discovered_key(group.parent_metric))
+                if _wants_rationale(group.parent_metric):
+                    exact_keys.append(_rationale_key(parent_root_key))
+            for metric in group.metrics:
+                key = metric.name.lower().replace(" ", "_")
+                exact_keys.append(key)
+                if (
+                    group.parent_metric is None
+                    and _wants_rationale(metric)
+                    and get_metric_type_value(metric) != "text"
+                ):
+                    exact_keys.append(_rationale_key(key))
+    elif parent_metric is not None:
         parent_root_key = _parent_key(parent_metric)
         exact_keys.append(parent_root_key)
         exact_keys.append(_sequence_key(parent_metric))
         if _discovery_enabled(parent_metric):
             exact_keys.append(_discovered_key(parent_metric))
-        # Parent-level rationale key (one per group, never per child).
         if _wants_rationale(parent_metric):
             exact_keys.append(_rationale_key(parent_root_key))
-    for metric in llm_metrics:
-        key = metric.name.lower().replace(" ", "_")
-        exact_keys.append(key)
-        # In hierarchical mode children no longer emit rationale keys;
-        # the parent owns the single rationale string for the group.
-        if (
-            parent_metric is None
-            and _wants_rationale(metric)
-            and get_metric_type_value(metric) != "text"
-        ):
-            exact_keys.append(_rationale_key(key))
+        for metric in llm_metrics:
+            key = metric.name.lower().replace(" ", "_")
+            exact_keys.append(key)
+    else:
+        for metric in llm_metrics:
+            key = metric.name.lower().replace(" ", "_")
+            exact_keys.append(key)
+            if _wants_rationale(metric) and get_metric_type_value(metric) != "text":
+                exact_keys.append(_rationale_key(key))
     if discover_new_metrics:
         exact_keys.append(DISCOVERED_METRICS_KEY)
 
+    metrics_for_enums = (
+        flatten_metric_groups(metric_groups) if metric_groups else llm_metrics
+    )
     enum_constraints: list[str] = []
-    for metric in llm_metrics:
+    for metric in metrics_for_enums:
         if _get_custom_data_type(metric) == "enum":
             options = _get_enum_options(metric)
             if options:
@@ -974,7 +1133,7 @@ def _build_system_message(
 
     text_keys = [
         metric.name.lower().replace(" ", "_")
-        for metric in llm_metrics
+        for metric in metrics_for_enums
         if get_metric_type_value(metric) == "text"
     ]
     text_block = ""
@@ -986,10 +1145,24 @@ def _build_system_message(
             + "\n".join(f'   - "{k}"' for k in text_keys)
         )
 
-    if parent_metric is not None:
-        # Hierarchical mode: only the parent emits a rationale key (when
-        # capture_rationale is on); children never do.
+    if metric_groups is not None:
         rationale_keys: list[str] = []
+        for group in metric_groups:
+            if group.parent_metric is not None and _wants_rationale(
+                group.parent_metric
+            ):
+                rationale_keys.append(
+                    _rationale_key(_parent_key(group.parent_metric))
+                )
+            elif group.parent_metric is None:
+                rationale_keys.extend(
+                    _rationale_key(metric.name.lower().replace(" ", "_"))
+                    for metric in group.metrics
+                    if _wants_rationale(metric)
+                    and get_metric_type_value(metric) != "text"
+                )
+    elif parent_metric is not None:
+        rationale_keys = []
         if _wants_rationale(parent_metric):
             rationale_keys.append(_rationale_key(_parent_key(parent_metric)))
     else:
@@ -1095,6 +1268,7 @@ def evaluate_with_llm(
     comparison_pair: tuple[str, str] | None = None,
     discover_new_metrics: bool = False,
     running_discovered_metrics: list | None = None,
+    metric_groups: list[MetricPromptGroup] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], float | None]:
     """
     Evaluate metrics using LLM.
@@ -1127,9 +1301,13 @@ def evaluate_with_llm(
     """
     from app.services.ai.llm_service import llm_service
 
+    metrics_for_call = (
+        flatten_metric_groups(metric_groups) if metric_groups is not None else llm_metrics
+    )
+
     evaluation_prompt = build_evaluation_prompt(
         transcription=transcription,
-        llm_metrics=llm_metrics,
+        llm_metrics=metrics_for_call,
         evaluator=evaluator,
         agent=agent,
         persona=persona,
@@ -1141,6 +1319,7 @@ def evaluate_with_llm(
         comparison_pair=comparison_pair,
         discover_new_metrics=discover_new_metrics,
         running_discovered_metrics=running_discovered_metrics,
+        metric_groups=metric_groups,
     )
 
     evaluator_llm_provider = getattr(evaluator, "llm_provider", None) if evaluator else None
@@ -1169,9 +1348,10 @@ def evaluate_with_llm(
         {
             "role": "system",
             "content": _build_system_message(
-                llm_metrics,
+                metrics_for_call,
                 parent_metric=parent_metric,
                 discover_new_metrics=discover_new_metrics,
+                metric_groups=metric_groups,
             ),
         },
         {"role": "user", "content": evaluation_prompt},
@@ -1184,8 +1364,8 @@ def evaluate_with_llm(
     # 300 tokens per metric (covers value + rationale + comma/quotes),
     # clamped to a reasonable ceiling. ``llm_service`` will additionally
     # disable thinking and enforce a floor for Gemini 2.5.
-    metric_count = max(1, len(llm_metrics))
-    rationale_count = sum(1 for m in llm_metrics if _wants_rationale(m))
+    metric_count = max(1, len(metrics_for_call))
+    rationale_count = sum(1 for m in metrics_for_call if _wants_rationale(m))
     dynamic_max_tokens = min(
         8192,
         max(2000, 300 * metric_count + 200 * rationale_count),
@@ -1225,7 +1405,10 @@ def evaluate_with_llm(
         evaluation_data = evaluation_data["metrics"]
 
     metric_scores = _map_evaluation_to_metrics(
-        evaluation_data, llm_metrics, parent_metric=parent_metric
+        evaluation_data,
+        metrics_for_call,
+        parent_metric=parent_metric,
+        metric_groups=metric_groups,
     )
 
     # Top-level metric discovery is independent of the per-row metric
@@ -1236,7 +1419,7 @@ def evaluate_with_llm(
     # paths share the same code.
     if discover_new_metrics:
         discovered_metrics = _parse_discovered_metrics(
-            evaluation_data, llm_metrics
+            evaluation_data, metrics_for_call
         )
         if discovered_metrics:
             metric_scores[DISCOVERED_METRICS_KEY] = discovered_metrics
@@ -1248,6 +1431,7 @@ def _map_evaluation_to_metrics(
     evaluation_data: dict,
     llm_metrics: list,
     parent_metric=None,
+    metric_groups: list[MetricPromptGroup] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Map LLM evaluation response to metric scores.
 
@@ -1266,10 +1450,35 @@ def _map_evaluation_to_metrics(
     metric_scores: dict[str, dict[str, Any]] = {}
     response_keys = list(evaluation_data.keys())
 
+    if metric_groups is not None:
+        for group in metric_groups:
+            if group.parent_metric is not None:
+                _map_hierarchical_group(
+                    evaluation_data,
+                    group.metrics,
+                    group.parent_metric,
+                    metric_scores,
+                )
+            else:
+                metric_scores.update(
+                    _map_flat_metrics(evaluation_data, group.metrics, response_keys)
+                )
+        return metric_scores
+
     if parent_metric is not None:
         return _map_hierarchical_group(
             evaluation_data, llm_metrics, parent_metric, metric_scores
         )
+
+    return _map_flat_metrics(evaluation_data, llm_metrics, response_keys)
+
+
+def _map_flat_metrics(
+    evaluation_data: dict,
+    llm_metrics: list,
+    response_keys: list[str],
+) -> dict[str, dict[str, Any]]:
+    metric_scores: dict[str, dict[str, Any]] = {}
 
     for metric in llm_metrics:
         metric_key = metric.name.lower().replace(" ", "_")
