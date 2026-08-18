@@ -288,6 +288,23 @@
       "lastReviewed": "2026-06-15"
     },
     {
+      "featureId": "monitoring/usage",
+      "docPath": "docs-fumadocs/content/docs/monitoring/usage.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/usage.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-08-18"
+    },
+    {
       "featureId": "monitoring/cron-jobs",
       "docPath": "docs-fumadocs/content/docs/monitoring/cron-jobs.mdx",
       "historyPath": "docs-fumadocs/content/docs/monitoring/cron-jobs.mdx",
