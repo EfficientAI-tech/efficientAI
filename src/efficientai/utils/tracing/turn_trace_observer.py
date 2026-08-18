@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 if is_tracing_available():
     from opentelemetry import trace
-    from opentelemetry.trace import Span, SpanContext
+    from opentelemetry.trace import Span, SpanContext, format_trace_id
 
 
 class TurnTraceObserver(BaseObserver):
@@ -66,6 +66,7 @@ class TurnTraceObserver(BaseObserver):
         # Conversation tracking properties
         self._conversation_span: Optional["Span"] = None
         self._conversation_id = conversation_id
+        self._conversation_trace_id: Optional[str] = None
         self._additional_span_attributes = additional_span_attributes or {}
 
         if turn_tracker:
@@ -108,6 +109,9 @@ class TurnTraceObserver(BaseObserver):
 
         # Create a new span for this conversation
         self._conversation_span = self._tracer.start_span("conversation")
+        self._conversation_trace_id = format_trace_id(
+            self._conversation_span.get_span_context().trace_id
+        )
 
         # Set span attributes
         self._conversation_span.set_attribute("conversation.id", conversation_id)
@@ -153,6 +157,10 @@ class TurnTraceObserver(BaseObserver):
 
             logger.debug(f"Ended tracing for Conversation {self._conversation_id}")
             self._conversation_id = None
+
+    def get_conversation_trace_id(self) -> Optional[str]:
+        """Get the active conversation trace id when tracing is enabled."""
+        return self._conversation_trace_id
 
     async def _handle_turn_started(self, turn_number: int):
         """Handle a turn start event by creating a new span."""

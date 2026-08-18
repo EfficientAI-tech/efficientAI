@@ -113,6 +113,19 @@ services:
     depends_on:
       - prometheus
       - loki
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: efficientai_tempo
+    command:
+      - "-config.file=/etc/tempo/tempo.yml"
+    volumes:
+      - ./observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"
+      - "4318:4318"
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.16.0
@@ -151,3 +164,4 @@ volumes:
   prometheus_data:
   grafana_data:
   loki_data:
+  tempo_data:

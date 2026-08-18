@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import Dict, Any, Optional, List
+from datetime import UTC, datetime
 from loguru import logger
 
 from app.database import get_db
@@ -139,39 +140,32 @@ async def websocket_endpoint(
 
         use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
 
-        def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
-            """Resolve API key from AIProvider (preferred) or Integration for given provider."""
-            from sqlalchemy import func
-            # 1) AIProvider (handle both string and enum comparisons)
-            provider_value = provider.value if hasattr(provider, 'value') else provider
-            
-            ai_provider_rec = db.query(AIProvider).filter(
-                AIProvider.organization_id == organization_id,
-                AIProvider.provider == provider_value,
-                AIProvider.is_active == True,
-            ).first()
-            
-            # If not found, try case-insensitive match
-            if not ai_provider_rec:
-                ai_provider_rec = db.query(AIProvider).filter(
-                    AIProvider.organization_id == organization_id,
-                    func.lower(AIProvider.provider) == provider_value.lower(),
-                    AIProvider.is_active == True,
-                ).first()
+        def resolve_api_key_for_provider(
+            provider: ModelProvider,
+            credential_id: Optional[UUID] = None,
+        ) -> str | None:
+            """Resolve API key using shared credential resolver (pinned id -> default -> latest)."""
+            import os
+
+            from app.services.credentials import resolve_ai_provider, resolve_integration
+
+            provider_value = provider.value if hasattr(provider, "value") else provider
+
+            ai_provider_rec = resolve_ai_provider(
+                provider, db, organization_id, credential_id=credential_id
+            )
             if ai_provider_rec:
                 try:
                     key = decrypt_api_key(ai_provider_rec.api_key)
                     logger.debug(
-                        f"[resolve_api_key] Found AIProvider key for '{provider_value}': "
+                        f"[resolve_api_key] Found AIProvider key for '{provider_value}' "
+                        f"(credential_id={credential_id or ai_provider_rec.id}): "
                         f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
                     )
                     return key
                 except Exception as e:
                     logger.error(f"Failed to decrypt AIProvider key for {provider}: {e}", exc_info=True)
-            else:
-                logger.debug(f"[resolve_api_key] No AIProvider record found for '{provider_value}'")
 
-            # 2) Integration mapping (only for platforms that exist in IntegrationPlatform)
             platform_map = {
                 ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
                 ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
@@ -183,38 +177,44 @@ async def websocket_endpoint(
             }
             plat = platform_map.get(provider)
             if plat:
-                # Handle both string and enum comparisons for platform
-                plat_value = plat.value if hasattr(plat, 'value') else plat
-                integ = db.query(Integration).filter(
-                    Integration.organization_id == organization_id,
-                    Integration.platform == plat_value,
-                    Integration.is_active == True,
-                ).first()
-                
-                # If not found, try case-insensitive match
-                if not integ:
-                    integ = db.query(Integration).filter(
-                        Integration.organization_id == organization_id,
-                        func.lower(Integration.platform) == plat_value.lower(),
-                        Integration.is_active == True,
-                    ).first()
-                
+                integ = resolve_integration(plat, db, organization_id, credential_id=credential_id)
                 if integ:
                     try:
                         key = decrypt_api_key(integ.api_key)
+                        plat_value = plat.value if hasattr(plat, "value") else plat
                         logger.debug(
-                            f"[resolve_api_key] Found Integration key for '{provider_value}' (platform={plat_value}): "
+                            f"[resolve_api_key] Found Integration key for '{provider_value}' "
+                            f"(platform={plat_value}, credential_id={credential_id or integ.id}): "
                             f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
                         )
                         return key
                     except Exception as e:
                         logger.error(f"Failed to decrypt Integration key for {provider}: {e}", exc_info=True)
-                else:
-                    logger.debug(f"[resolve_api_key] No Integration record found for platform '{plat_value}'")
-            else:
-                logger.debug(f"[resolve_api_key] No platform mapping for provider '{provider_value}'")
 
-            logger.warning(f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'")
+            env_map = {
+                ModelProvider.OPENAI: "OPENAI_API_KEY",
+                ModelProvider.CARTESIA: "CARTESIA_API_KEY",
+                ModelProvider.ELEVENLABS: "ELEVENLABS_API_KEY",
+                ModelProvider.DEEPGRAM: "DEEPGRAM_API_KEY",
+                ModelProvider.GOOGLE: "GOOGLE_API_KEY",
+                ModelProvider.SARVAM: "SARVAM_API_KEY",
+                ModelProvider.MURF: "MURF_API_KEY",
+                ModelProvider.SMALLEST: "SMALLEST_API_KEY",
+                ModelProvider.VOICEMAKER: "VOICEMAKER_API_KEY",
+            }
+            env_var = env_map.get(provider)
+            if env_var:
+                env_key = os.getenv(env_var)
+                if env_key:
+                    logger.debug(
+                        f"[resolve_api_key] Using environment variable {env_var} for '{provider_value}'"
+                    )
+                    return env_key
+
+            logger.warning(
+                f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}' "
+                f"(credential_id={credential_id})"
+            )
             return None
 
         def resolve_azure_endpoint_for_provider(provider: ModelProvider) -> str | None:
@@ -481,6 +481,34 @@ async def websocket_endpoint(
         from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
 
         agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
+        observability_call_short_id: Optional[str] = None
+        if use_voice_bundle_pipeline and agent_id and workspace_id and result_id:
+            try:
+                from app.models.database import CallRecordingSource
+                from app.services.observability.call_ingest import upsert_call_recording
+
+                started_recording, _ = upsert_call_recording(
+                    db=db,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    provider_platform="efficientai",
+                    provider_call_id=result_id,
+                    call_data_payload={
+                        "direction": "inbound",
+                        "startedAt": datetime.now(UTC).isoformat(),
+                        "live_transcript": [],
+                    },
+                    explicit_agent_id=UUID(agent_id),
+                    call_event="call_started",
+                    source=CallRecordingSource.PLAYGROUND,
+                )
+                observability_call_short_id = started_recording.call_short_id
+            except Exception as observability_start_error:
+                logger.warning(
+                    f"Failed to create observability call record at session start: {observability_start_error}",
+                    exc_info=True,
+                )
+
         try:
             if use_voice_bundle_pipeline:
                 # Resolve per-provider keys for voice bundle
@@ -488,9 +516,30 @@ async def websocket_endpoint(
                 tts_provider = voice_bundle.tts_provider if voice_bundle else None
                 llm_provider = voice_bundle.llm_provider if voice_bundle else None
 
-                stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
-                tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
-                llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+                stt_api_key = (
+                    resolve_api_key_for_provider(
+                        stt_provider,
+                        credential_id=getattr(voice_bundle, "stt_credential_id", None),
+                    )
+                    if stt_provider
+                    else None
+                )
+                tts_api_key = (
+                    resolve_api_key_for_provider(
+                        tts_provider,
+                        credential_id=getattr(voice_bundle, "tts_credential_id", None),
+                    )
+                    if tts_provider
+                    else None
+                )
+                llm_api_key = (
+                    resolve_api_key_for_provider(
+                        llm_provider,
+                        credential_id=getattr(voice_bundle, "llm_credential_id", None),
+                    )
+                    if llm_provider
+                    else None
+                )
                 llm_endpoint_url = (
                     resolve_azure_endpoint_for_provider(llm_provider)
                     if llm_provider and (
@@ -529,6 +578,8 @@ async def websocket_endpoint(
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    workspace_id=str(workspace_id) if workspace_id else None,
+                    call_short_id=observability_call_short_id,
                 )
             else:
                 call_metadata = await run_bot(
@@ -543,6 +594,7 @@ async def websocket_endpoint(
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    workspace_id=str(workspace_id) if workspace_id else None,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
@@ -550,6 +602,7 @@ async def websocket_endpoint(
         
         # Create evaluator result if we have the required data (only if no error)
         # Also create if we have a live transcript even without S3 audio
+        evaluator_result = None
         has_audio = call_metadata and call_metadata.get("s3_key")
         has_transcript = call_metadata and call_metadata.get("transcription")
         has_usable_data = has_audio or has_transcript
@@ -681,6 +734,31 @@ async def websocket_endpoint(
                     logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
                 except Exception as e:
                     logger.error(f"❌ Error creating evaluator result: {e}", exc_info=True)
+
+        if call_metadata and agent_id and result_id and workspace_id:
+            has_observability_payload = any(
+                call_metadata.get(key)
+                for key in ("s3_key", "transcription", "speaker_segments", "trace_id")
+            )
+            if has_observability_payload or observability_call_short_id:
+                try:
+                    from app.services.observability.call_ingest import persist_playground_voice_call
+
+                    persist_playground_voice_call(
+                        db,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        agent_id=UUID(agent_id),
+                        result_id=result_id,
+                        call_metadata=call_metadata,
+                        evaluator_result_id=evaluator_result.id if evaluator_result else None,
+                        provider_platform="efficientai" if use_voice_bundle_pipeline else "efficientai_legacy",
+                    )
+                except Exception as persist_error:
+                    logger.warning(
+                        f"Failed to persist voice call to observability: {persist_error}",
+                        exc_info=True,
+                    )
         
     except WebSocketDisconnect:
         print("WebSocket disconnected by client")

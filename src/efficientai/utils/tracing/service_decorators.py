@@ -43,6 +43,23 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 
+def _resolve_operation_span_name(operation: str, service_obj: object) -> str:
+    if operation in {"llm_tool_call", "llm_tool_result"}:
+        return "tool_call"
+
+    bundle_type = getattr(service_obj, "_observability_bundle_type", None)
+    if bundle_type == "s2s" and operation in {
+        "llm",
+        "stt",
+        "tts",
+        "llm_setup",
+        "llm_request",
+        "llm_response",
+    }:
+        return "s2s"
+    return operation
+
+
 def _noop_decorator(func):
     """No-op fallback decorator when tracing is unavailable.
 
@@ -142,7 +159,7 @@ def traced_tts(func: Optional[Callable] = None, *, name: Optional[str] = None) -
                 return
 
             service_class_name = self.__class__.__name__
-            span_name = "tts"
+            span_name = _resolve_operation_span_name("tts", self)
 
             # Get parent context
             turn_context = get_current_turn_context()
@@ -249,7 +266,7 @@ def traced_stt(func: Optional[Callable] = None, *, name: Optional[str] = None) -
                     return await f(self, transcript, is_final, language)
 
                 service_class_name = self.__class__.__name__
-                span_name = "stt"
+                span_name = _resolve_operation_span_name("stt", self)
 
                 # Get the turn context first, then fall back to service context
                 turn_context = get_current_turn_context()
@@ -331,7 +348,7 @@ def traced_llm(func: Optional[Callable] = None, *, name: Optional[str] = None) -
                     return await f(self, context, *args, **kwargs)
 
                 service_class_name = self.__class__.__name__
-                span_name = "llm"
+                span_name = _resolve_operation_span_name("llm", self)
 
                 # Get the parent context - turn context if available, otherwise service context
                 turn_context = get_current_turn_context()
@@ -538,7 +555,7 @@ def traced_gemini_live(operation: str) -> Callable:
                     return await func(self, *args, **kwargs)
 
                 service_class_name = self.__class__.__name__
-                span_name = f"{operation}"
+                span_name = _resolve_operation_span_name(operation, self)
 
                 # Get the parent context - turn context if available, otherwise service context
                 turn_context = get_current_turn_context()
@@ -664,6 +681,7 @@ def traced_gemini_live(operation: str) -> Callable:
                                     # Add information about the first function call
                                     call = function_calls[0]
                                     operation_attrs["tool.function_name"] = call.name
+                                    operation_attrs["function.name"] = call.name
                                     operation_attrs["tool.call_id"] = call.id
                                     operation_attrs["tool.calls_count"] = len(function_calls)
 
@@ -679,8 +697,10 @@ def traced_gemini_live(operation: str) -> Callable:
                                         if len(args_str) > 1000:
                                             args_str = args_str[:1000] + "..."
                                         operation_attrs["tool.arguments"] = args_str
+                                        operation_attrs["function.input"] = args_str
                                     except Exception:
                                         operation_attrs["tool.arguments"] = str(call.args)[:1000]
+                                        operation_attrs["function.input"] = str(call.args)[:1000]
 
                         elif operation == "llm_tool_result" and args:
                             # Extract tool result information
@@ -695,6 +715,7 @@ def traced_gemini_live(operation: str) -> Callable:
                                     operation_attrs["tool.call_id"] = tool_call_id
                                 if tool_call_name:
                                     operation_attrs["tool.function_name"] = tool_call_name
+                                    operation_attrs["function.name"] = tool_call_name
 
                                 # Parse and capture the result
                                 if result_content:
@@ -705,6 +726,7 @@ def traced_gemini_live(operation: str) -> Callable:
                                         if len(result_str) > 2000:  # Larger limit for results
                                             result_str = result_str[:2000] + "..."
                                         operation_attrs["tool.result"] = result_str
+                                        operation_attrs["function.output"] = result_str
 
                                         # Add result status/success indicator if present
                                         if isinstance(result, dict):
@@ -843,7 +865,7 @@ def traced_openai_realtime(operation: str) -> Callable:
                     return await func(self, *args, **kwargs)
 
                 service_class_name = self.__class__.__name__
-                span_name = f"{operation}"
+                span_name = _resolve_operation_span_name(operation, self)
 
                 # Get the parent context - turn context if available, otherwise service context
                 turn_context = get_current_turn_context()

@@ -17,6 +17,7 @@ import time
 
 from loguru import logger
 
+from app.services.tracing.efficientai_otel import force_flush_tracing, setup_efficientai_tracing
 from app.services.voice_agent.audio_recorder import get_audio_recorder_class
 from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
 
@@ -98,7 +99,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str | None = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -118,6 +119,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     duration_result = None
     transcript_text = None
     conversation_turns = []
+    conversation_trace_id = None
     
     try:
         transport_serializer = serializer or imports["ProtobufFrameSerializer"]()
@@ -173,6 +175,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             system_instruction=instruction,
             model=formatted_model_name,
         )
+        setattr(llm, "_observability_bundle_type", "s2s")
         context = imports["LLMContext"](
             [
                 {
@@ -215,13 +218,37 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             alignment_mode=recorder_alignment,
         )
 
+        if telephony_mode and call_short_id:
+            from app.database import SessionLocal
+            from app.services.telephony.call_recording_lifecycle import register_live_recording_paths
+
+            db = SessionLocal()
+            try:
+                register_live_recording_paths(
+                    db,
+                    call_short_id=call_short_id,
+                    user_audio_path=user_audio_path,
+                    bot_audio_path=bot_audio_path,
+                    sample_rate=recorder_sample_rate,
+                )
+                db.commit()
+            finally:
+                db.close()
+
         from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
-        live_transcript_processor = create_live_transcript_processor(call_short_id) if telephony_mode else None
+        live_transcript_processor = (
+            create_live_transcript_processor(call_short_id, call_start_time=start_time)
+            if telephony_mode
+            else None
+        )
         user_transcript_processor = live_transcript_processor
         agent_transcript_processor = (
-            create_live_transcript_processor(call_short_id) if telephony_mode and call_short_id else None
+            create_live_transcript_processor(call_short_id, call_start_time=start_time)
+            if telephony_mode and call_short_id
+            else None
         )
+        task = None
 
         pipeline_task_ref: list = []
 
@@ -237,6 +264,14 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 timeout_secs=silence_hangup_secs,
                 on_hangup=on_silence_hangup,
             )
+
+        setup_efficientai_tracing(service_name="efficientai-voice-agent")
+        span_attributes = {
+            "organization_id": organization_id or "",
+            "agent_id": agent_id or "",
+        }
+        if workspace_id:
+            span_attributes["workspace_id"] = workspace_id
 
         if telephony_mode:
             pipeline_processors = [ws_transport.input()]
@@ -262,6 +297,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                     audio_in_sample_rate=transport_in_sample_rate,
                     audio_out_sample_rate=transport_out_sample_rate,
                 ),
+                enable_tracing=True,
+                additional_span_attributes=span_attributes,
             )
             pipeline_task_ref.append(task)
 
@@ -298,6 +335,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                     enable_usage_metrics=True,
                 ),
                 observers=[imports["RTVIObserver"](rtvi)],
+                enable_tracing=True,
+                additional_span_attributes=span_attributes,
             )
 
             @rtvi.event_handler("on_client_ready")
@@ -325,6 +364,9 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             logger.error(f"Error in runner.run(): {run_error}", exc_info=True)
             raise
         finally:
+            if task and getattr(task, "turn_trace_observer", None):
+                conversation_trace_id = task.turn_trace_observer.get_conversation_trace_id()
+            force_flush_tracing()
             # Close recorders explicitly to ensure files are flushed
             await user_recorder.cleanup()
             await bot_recorder.cleanup()
@@ -382,6 +424,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                         transcript_text=transcript_text,
                         s3_key=s3_key_result,
                         duration=duration_result,
+                        trace_id=conversation_trace_id,
                     )
                 finally:
                     db.close()
@@ -396,6 +439,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             "scenario_id": scenario_id,
             "transcription": transcript_text,
             "speaker_segments": conversation_turns if conversation_turns else None,
+            "trace_id": conversation_trace_id,
             "error": str(e)
         }
     
@@ -407,6 +451,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         "scenario_id": scenario_id,
         "transcription": transcript_text,
         "speaker_segments": conversation_turns if conversation_turns else None,
+        "trace_id": conversation_trace_id,
     }
     if not s3_key_result and not transcript_text:
         metadata["error"] = "No audio file was uploaded and no transcript captured"

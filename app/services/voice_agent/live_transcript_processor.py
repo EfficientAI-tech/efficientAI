@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from loguru import logger
 
 
-def create_live_transcript_processor(call_short_id: Optional[str]):
+def create_live_transcript_processor(
+    call_short_id: Optional[str],
+    call_start_time: Optional[float] = None,
+):
     """Return a FrameProcessor that publishes user/agent transcript turns."""
     if not call_short_id:
         return None
@@ -57,6 +61,9 @@ def create_live_transcript_processor(call_short_id: Optional[str]):
 
         def _persist_turn(self, role: str, content: str) -> None:
             publish_transcript_turn(call_short_id, role, content)
+            start_time_sec = None
+            if call_start_time is not None:
+                start_time_sec = round(time.time() - call_start_time, 2)
             db = SessionLocal()
             try:
                 append_live_transcript_turn(
@@ -64,6 +71,7 @@ def create_live_transcript_processor(call_short_id: Optional[str]):
                     call_short_id=call_short_id,
                     role=role,
                     content=content,
+                    start_time_sec=start_time_sec,
                 )
                 logger.debug("Live transcript saved call={} role={} text={}", call_short_id, role, content[:80])
                 # region agent log

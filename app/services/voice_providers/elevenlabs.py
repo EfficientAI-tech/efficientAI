@@ -18,6 +18,36 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
         super().__init__(api_key)
         self.api_url = ELEVENLABS_API_URL
 
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Execute an HTTP request with a no-proxy retry fallback.
+
+        Some local environments inject HTTP(S)_PROXY values that block
+        ElevenLabs with tunnel 403 responses. We first try the default
+        request path, then retry once with ``trust_env=False`` to bypass
+        environment proxy settings.
+        """
+        try:
+            return requests.request(method, url, **kwargs)
+        except requests.exceptions.ProxyError as proxy_error:
+            logger.warning(
+                "[ElevenLabsProvider] Proxy error for {} {}: {}. "
+                "Retrying without environment proxies.",
+                method,
+                url,
+                proxy_error,
+            )
+            with requests.Session() as session:
+                session.trust_env = False
+                retry_kwargs = dict(kwargs)
+                # Ensure explicit per-request proxies cannot force the same bad tunnel.
+                retry_kwargs.pop("proxies", None)
+                return session.request(
+                    method,
+                    url,
+                    proxies={"http": None, "https": None},
+                    **retry_kwargs,
+                )
+
     def create_web_call(
         self,
         agent_id: str,
@@ -46,7 +76,7 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
 
             logger.info(f"[ElevenLabsProvider] Requesting signed URL for agent_id={agent_id}")
 
-            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response = self._request("GET", url, headers=headers, params=params, timeout=30)
 
             if response.status_code == 200:
                 data = response.json()
@@ -91,11 +121,119 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
             url = f"{self.api_url}/convai/agents/{agent_id}"
             headers = {"xi-api-key": self.api_key}
 
-            response = requests.get(url, headers=headers, timeout=15)
+            response = self._request("GET", url, headers=headers, timeout=15)
             response.raise_for_status()
             return response.json()
         except Exception as e:
             raise ValueError(f"Failed to get ElevenLabs agent: {str(e)}")
+
+    def list_agents(
+        self,
+        *,
+        page_size: int = 30,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List ElevenLabs Conversational AI agents."""
+        try:
+            url = f"{self.api_url}/convai/agents"
+            headers = {"xi-api-key": self.api_key}
+            params: Dict[str, Any] = {"page_size": max(1, min(page_size, 100))}
+            if search:
+                params["search"] = search
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._request("GET", url, headers=headers, params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list):
+                payload = {"agents": payload}
+            if not isinstance(payload, dict):
+                payload = {"agents": []}
+
+            # ElevenLabs response shape has changed across API versions.
+            # Support common containers so the UI doesn't silently render empty.
+            items = (
+                payload.get("agents")
+                or payload.get("items")
+                or payload.get("data")
+                or payload.get("conversational_ai_agents")
+                or []
+            )
+            if isinstance(items, dict):
+                items = (
+                    items.get("agents")
+                    or items.get("items")
+                    or items.get("data")
+                    or []
+                )
+            normalized_agents = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                # Some variants nest core fields under `agent`.
+                agent_obj = item.get("agent") if isinstance(item.get("agent"), dict) else item
+                agent_id = (
+                    agent_obj.get("agent_id")
+                    or agent_obj.get("id")
+                    or agent_obj.get("agentId")
+                )
+                if not agent_id:
+                    continue
+                name = (
+                    agent_obj.get("name")
+                    or agent_obj.get("agent_name")
+                    or item.get("name")
+                    or str(agent_id)
+                )
+                created_at = (
+                    agent_obj.get("created_at")
+                    or agent_obj.get("created_at_unix_secs")
+                    or agent_obj.get("created_at_unix_ms")
+                )
+                normalized_agents.append(
+                    {
+                        "id": str(agent_id),
+                        "name": str(name),
+                        "archived": bool(
+                            agent_obj.get("archived", False)
+                            or agent_obj.get("is_archived", False)
+                        ),
+                        "created_at": created_at,
+                        "metadata": item,
+                    }
+                )
+
+            return {
+                "agents": normalized_agents,
+                "has_more": bool(payload.get("has_more", False)),
+                "next_cursor": payload.get("next_cursor") or payload.get("cursor"),
+            }
+        except Exception as e:
+            raise ValueError(f"Failed to list ElevenLabs agents: {str(e)}")
+
+    def retrieve_conversation_trace(self, conversation_id: str) -> Dict[str, Any]:
+        """Fetch conversation details with OpenTelemetry payload."""
+        try:
+            url = f"{self.api_url}/convai/conversations/{conversation_id}"
+            headers = {"xi-api-key": self.api_key}
+            response = self._request(
+                "GET",
+                url,
+                headers=headers,
+                params={"format": "opentelemetry"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve ElevenLabs conversation trace: {str(e)}")
+
+    def retrieve_provider_trace(self, call_id: str, **kwargs) -> Dict[str, Any]:
+        """Provider-agnostic alias used by adapter flows."""
+        del kwargs
+        return self.retrieve_conversation_trace(call_id)
 
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         """
@@ -114,7 +252,7 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
             url = f"{self.api_url}/convai/conversations/{call_id}"
             headers = {"xi-api-key": self.api_key}
 
-            response = requests.get(url, headers=headers, timeout=30)
+            response = self._request("GET", url, headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
 
@@ -272,7 +410,7 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 },
             }
             logger.info(f"[ElevenLabsProvider] Updating agent prompt: PATCH {url}")
-            response = requests.patch(url, headers=headers, json=payload, timeout=30)
+            response = self._request("PATCH", url, headers=headers, json=payload, timeout=30)
 
             if not response.ok:
                 try:
@@ -295,7 +433,7 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
             url = f"{self.api_url}/user"
             headers = {"xi-api-key": self.api_key}
 
-            response = requests.get(url, headers=headers, timeout=10)
+            response = self._request("GET", url, headers=headers, timeout=10)
             if response.status_code == 200:
                 return True
             elif response.status_code == 401:

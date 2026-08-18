@@ -11,6 +11,8 @@ import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
 import CustomWebSocketCallDetails from '../../../components/call-recordings/CustomWebSocketCallDetails'
 import SmallestCallDetails from '../../../components/call-recordings/SmallestCallDetails'
+import TraceTree from '../../../components/observability/TraceTree'
+import { ObservabilityCallTrace } from '../../../types/api'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -414,6 +416,20 @@ export default function CallRecordingDetail() {
       const inProgress = reEvalInProgress || (data?.evaluation?.status && ['queued', 'transcribing', 'evaluating'].includes(data.evaluation.status))
       return inProgress ? 2000 : false
     },
+  })
+
+  const {
+    data: providerTrace,
+    isLoading: providerTraceLoading,
+    isError: providerTraceError,
+  } = useQuery<ObservabilityCallTrace>({
+    queryKey: ['playground-provider-trace', callShortId, callRecording?.provider_call_id],
+    queryFn: () => apiClient.getObservabilityCallTrace(callShortId!),
+    enabled:
+      !!callShortId &&
+      (callRecording?.provider_platform || '').toLowerCase() === 'elevenlabs' &&
+      !!callRecording?.provider_call_id,
+    retry: false,
   })
 
   const { data: metrics = [] } = useQuery({
@@ -823,6 +839,26 @@ export default function CallRecordingDetail() {
             </div>
           )}
         </div>
+
+        {(callRecording.provider_platform || '').toLowerCase() === 'elevenlabs' && (
+          <div className="bg-white shadow rounded-lg p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">Provider Trace (ElevenLabs)</h2>
+            {providerTraceLoading ? (
+              <div className="text-sm text-gray-500 flex items-center gap-2">
+                <Loader className="w-4 h-4 animate-spin" />
+                Loading provider trace...
+              </div>
+            ) : providerTraceError ? (
+              <p className="text-sm text-gray-500">
+                Provider trace is not available yet. It appears after the conversation is complete.
+              </p>
+            ) : providerTrace?.spans?.length ? (
+              <TraceTree trace={providerTrace} />
+            ) : (
+              <p className="text-sm text-gray-500">No provider trace spans found for this call.</p>
+            )}
+          </div>
+        )}
       </div>
 
       <ConfirmModal

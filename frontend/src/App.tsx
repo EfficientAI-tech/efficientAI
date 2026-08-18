@@ -55,6 +55,7 @@ import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 import Observability from './pages/observability/Observability'
 import ObservabilityCalls from './pages/observability/ObservabilityCalls'
 import ObservabilityCallDetail from './pages/observability/ObservabilityCallDetail'
+import RouteErrorBoundary from './components/RouteErrorBoundary'
 
 // Alerting
 import Alerts from './pages/alerting/Alerts'
@@ -180,7 +181,14 @@ function App() {
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<ObservabilityCalls />} />
-          <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
+          <Route
+            path="observability/calls/:callShortId"
+            element={(
+              <RouteErrorBoundary>
+                <ObservabilityCallDetail />
+              </RouteErrorBoundary>
+            )}
+          />
           <Route path="iam" element={<IAM />} />
           <Route
             path="workspace-members"

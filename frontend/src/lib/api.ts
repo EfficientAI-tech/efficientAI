@@ -24,6 +24,7 @@ import type {
   Role,
   Integration,
   IntegrationCreate,
+  ExternalProviderAgentListResponse,
   S3ConnectionTestResponse,
   S3ListFilesResponse,
   S3BrowseResponse,
@@ -33,6 +34,9 @@ import type {
   CallImportListResponse,
   CallImportRow,
   ObservabilityCall,
+  ObservabilityCallTrace,
+  ObservabilityCallsSummary,
+  ObservabilityLiveLatencyResponse,
   CallImportSchema,
   CallImportSchemaCreate,
   CallImportSchemaListResponse,
@@ -1408,6 +1412,17 @@ class ApiClient {
 
   async getIntegration(integrationId: string): Promise<Integration> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}`)
+    return response.data
+  }
+
+  async listIntegrationExternalAgents(
+    integrationId: string,
+    params?: { search?: string; cursor?: string; page_size?: number },
+  ): Promise<ExternalProviderAgentListResponse> {
+    const response = await this.client.get(
+      `/api/v1/integrations/${integrationId}/external-agents`,
+      { params },
+    )
     return response.data
   }
 
@@ -3284,6 +3299,28 @@ class ApiClient {
     return response.data
   }
 
+  async getObservabilityCallsSummary(): Promise<ObservabilityCallsSummary> {
+    const response = await this.client.get('/api/v1/observability/calls/summary')
+    return response.data
+  }
+
+  async getObservabilityLiveLatencyMetrics(platform?: string): Promise<ObservabilityLiveLatencyResponse> {
+    const response = await this.client.get('/api/v1/observability/live/metrics/latency', {
+      params: platform ? { platform } : undefined,
+    })
+    return response.data
+  }
+
+  async getObservabilityAgentLiveLatencyMetrics(
+    agentId: string,
+    platform?: string,
+  ): Promise<ObservabilityLiveLatencyResponse> {
+    const response = await this.client.get(`/api/v1/observability/live/agents/${agentId}/latency`, {
+      params: platform ? { platform } : undefined,
+    })
+    return response.data
+  }
+
   private buildAuthenticatedApiUrl(path: string): string {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`
     const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
@@ -3310,6 +3347,16 @@ class ApiClient {
     return response.data
   }
 
+  async getObservabilityCallTrace(callShortId: string): Promise<ObservabilityCallTrace> {
+    const response = await this.client.get(`/api/v1/observability/calls/${callShortId}/trace`)
+    return response.data
+  }
+
+  async refreshObservabilityCall(callShortId: string): Promise<ObservabilityCall> {
+    const response = await this.client.post(`/api/v1/observability/calls/${callShortId}/refresh`)
+    return response.data
+  }
+
   getObservabilityCallLiveEventsUrl(callShortId: string): string {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/observability/calls/${callShortId}/live-events`,
@@ -3322,6 +3369,18 @@ class ApiClient {
       { responseType: 'blob' },
     )
     return URL.createObjectURL(response.data)
+  }
+
+  async getObservabilityLiveAudioBlob(
+    callShortId: string,
+  ): Promise<{ blob: Blob; durationSec: number }> {
+    const response = await this.client.get(
+      `/api/v1/observability/calls/${callShortId}/live-audio`,
+      { responseType: 'blob' },
+    )
+    const rawDuration = response.headers['x-audio-duration-sec']
+    const durationSec = rawDuration ? parseFloat(String(rawDuration)) : 0
+    return { blob: response.data, durationSec }
   }
 
   async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {

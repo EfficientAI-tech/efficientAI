@@ -68,12 +68,18 @@ services:
       # AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=https;AccountName=...
       # AZURE_CONTAINER_NAME: your-container
       SERVICE_MODE: api
+      # Live observability ingest (Pipecat / external runtime → /observability/live/events)
+      OBSERVABILITY_LIVE_INGEST_ENABLED: ${OBSERVABILITY_LIVE_INGEST_ENABLED:-true}
+      OBSERVABILITY_LIVE_AGGREGATES_ENABLED: ${OBSERVABILITY_LIVE_AGGREGATES_ENABLED:-true}
+      OBSERVABILITY_LIVE_DASHBOARD_ENABLED: ${OBSERVABILITY_LIVE_DASHBOARD_ENABLED:-true}
       # Browser voice-agent WS when split (optional). Vobiz uses vobiz.webhook_base_url on telephony.
       # MEDIA_WS_BASE_URL: ${MEDIA_WS_BASE_URL:-ws://localhost:8001}
     volumes:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
+      # Mount local frontend build so UI changes appear without rebuilding the API image
+      - ./frontend/dist:/app/frontend/dist:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     ports:

@@ -477,6 +477,12 @@ class Agent(Base):
     # Voice AI agent integration (Retell, Vapi, etc.)
     voice_ai_integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True, index=True)
     voice_ai_agent_id = Column(String, nullable=True)  # Agent ID from the external provider (Retell/Vapi)
+    observability_auto_evaluator_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluators.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     prompt_variables = Column(JSON, nullable=True)
     silence_hangup_secs = Column(Integer, nullable=False, server_default="15")
     
@@ -1082,6 +1088,7 @@ class CallRecording(Base):
     call_data = Column(JSON, nullable=True)  # JSON blob for provider response
     provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
+    trace_id = Column(String(64), nullable=True, index=True)
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Reference to our agent
     
     # Link to EvaluatorResult for metric evaluations
@@ -1124,6 +1131,111 @@ class CallRecordingPayload(Base):
     call_data = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ObservabilityLiveEventDedup(Base):
+    """Idempotency ledger for live observability events."""
+
+    __tablename__ = "observability_live_event_dedup"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "event_id",
+            name="uq_observability_live_event_dedup_org_event",
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_id = Column(String(128), nullable=False, index=True)
+    provider_platform = Column(String(64), nullable=False, index=True)
+    provider_call_id = Column(String(255), nullable=False, index=True)
+    call_short_id = Column(String(6), nullable=True, index=True)
+    seq = Column(BigInteger, nullable=True)
+    event_ts = Column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ObservabilityLiveLatencySample(Base):
+    """Latency samples captured from live events for rolling percentile queries."""
+
+    __tablename__ = "observability_live_latency_samples"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_recording_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_recordings.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_short_id = Column(String(6), nullable=False, index=True)
+    provider_platform = Column(String(64), nullable=False, index=True)
+    provider_call_id = Column(String(255), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
+    metric_name = Column(String(64), nullable=False, index=True)
+    latency_ms = Column(Float, nullable=False)
+    event_ts = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ObservabilityLiveSloBreach(Base):
+    """Records live SLO breaches for alerting and automation hooks."""
+
+    __tablename__ = "observability_live_slo_breaches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_recording_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_recordings.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    call_short_id = Column(String(6), nullable=True, index=True)
+    provider_platform = Column(String(64), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True, index=True)
+    metric_name = Column(String(64), nullable=False, index=True)
+    window_seconds = Column(Integer, nullable=False)
+    p90_ms = Column(Float, nullable=False)
+    threshold_ms = Column(Float, nullable=False)
+    sample_count = Column(Integer, nullable=False)
+    evaluator_queued = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class Alert(Base):

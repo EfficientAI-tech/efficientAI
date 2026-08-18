@@ -15,6 +15,7 @@ from app.models.database import Integration, IntegrationPlatform, Agent
 from app.models.schemas import (
     IntegrationCreate, IntegrationUpdate, IntegrationResponse,
     PreviewIntegrationAgentPromptRequest, PreviewIntegrationAgentPromptResponse,
+    ExternalAgentListResponse,
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
@@ -471,3 +472,54 @@ async def preview_integration_agent_prompt(
         )
 
     return PreviewIntegrationAgentPromptResponse(provider_prompt=prompt)
+
+
+@router.get(
+    "/{integration_id}/external-agents",
+    response_model=ExternalAgentListResponse,
+    operation_id="listIntegrationExternalAgents",
+)
+async def list_integration_external_agents(
+    integration_id: UUID,
+    search: str | None = Query(None),
+    cursor: str | None = Query(None),
+    page_size: int = Query(30, ge=1, le=100),
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """List provider-side agents for an integration credential."""
+    del api_key
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.organization_id == organization_id,
+        Integration.is_active == True,
+    ).first()
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found or inactive")
+
+    platform_value = integration.platform.value if hasattr(integration.platform, "value") else str(integration.platform).lower()
+    if platform_value not in {
+        IntegrationPlatform.ELEVENLABS.value,
+        IntegrationPlatform.VAPI.value,
+        IntegrationPlatform.RETELL.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="External agent listing is currently supported only for ElevenLabs, Vapi, and Retell integrations",
+        )
+
+    try:
+        decrypted_api_key = decrypt_api_key(integration.api_key)
+        provider_class = get_voice_provider(platform_value)
+        provider = provider_class(api_key=decrypted_api_key)
+        if not hasattr(provider, "list_agents"):
+            raise ValueError("Selected provider does not support listing agents")
+        payload = provider.list_agents(page_size=page_size, search=search, cursor=cursor)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to list provider agents: {str(e)}",
+        )
+
+    return ExternalAgentListResponse.model_validate(payload)

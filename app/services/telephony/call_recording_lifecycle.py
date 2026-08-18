@@ -473,12 +473,64 @@ def ingest_carrier_recording_url(
     return s3_key
 
 
+def register_live_recording_paths(
+    db: Session,
+    *,
+    call_short_id: str,
+    user_audio_path: str,
+    bot_audio_path: str,
+    sample_rate: int,
+) -> None:
+    """Persist shared temp WAV paths so the API can serve partial live audio."""
+    row = db.query(CallRecording).filter(CallRecording.call_short_id == call_short_id).first()
+    if not row:
+        return
+    data = _copy_call_data(row)
+    data["live_user_audio_path"] = user_audio_path
+    data["live_bot_audio_path"] = bot_audio_path
+    data["live_recording_sample_rate"] = sample_rate
+    _save_call_data(db, row, data)
+
+
+def _estimate_turn_duration_sec(content: str) -> float:
+    word_count = len(content.split())
+    return max(1.2, word_count * 0.35)
+
+
+def _upsert_live_speaker_segment(
+    segments: list,
+    *,
+    role: str,
+    content: str,
+    start_time_sec: Optional[float],
+) -> None:
+    speaker = "user" if role == "user" else "assistant"
+    start = max(0.0, start_time_sec) if start_time_sec is not None else None
+    if start is None:
+        if segments:
+            start = float(segments[-1].get("end") or segments[-1].get("end_time") or 0)
+        else:
+            start = 0.0
+    end = start + _estimate_turn_duration_sec(content)
+    entry = {
+        "speaker": speaker,
+        "text": content,
+        "start": round(start, 2),
+        "end": round(end, 2),
+    }
+    if segments and segments[-1].get("speaker") == speaker:
+        segments[-1] = entry
+    else:
+        segments.append(entry)
+
+
 def append_live_transcript_turn(
     db: Session,
     *,
     call_short_id: str,
     role: str,
     content: str,
+    start_time_sec: Optional[float] = None,
 ) -> None:
     if not content.strip():
         return
@@ -487,28 +539,43 @@ def append_live_transcript_turn(
         return
     data = _copy_call_data(row)
     transcript = list(data.get("live_transcript") or [])
+    segments = list(data.get("speaker_segments") or [])
     normalized = content.strip()
+    turn_entry: Dict[str, Any] = {
+        "role": role,
+        "content": normalized,
+        "timestamp": _now_iso(),
+    }
+    if start_time_sec is not None:
+        turn_entry["start_time"] = round(start_time_sec, 2)
+
     if transcript and transcript[-1].get("role") == role:
         last_content = transcript[-1].get("content") or ""
         if normalized == last_content:
             return
         if normalized.startswith(last_content):
-            transcript[-1] = {
-                "role": role,
-                "content": normalized,
-                "timestamp": _now_iso(),
-            }
+            prev_start = transcript[-1].get("start_time", start_time_sec)
+            transcript[-1] = turn_entry
+            _upsert_live_speaker_segment(
+                segments,
+                role=role,
+                content=normalized,
+                start_time_sec=start_time_sec if start_time_sec is not None else prev_start,
+            )
             data["live_transcript"] = transcript
+            data["speaker_segments"] = segments
             _save_call_data(db, row, data)
             return
-    transcript.append(
-        {
-            "role": role,
-            "content": normalized,
-            "timestamp": _now_iso(),
-        }
+
+    transcript.append(turn_entry)
+    _upsert_live_speaker_segment(
+        segments,
+        role=role,
+        content=normalized,
+        start_time_sec=start_time_sec,
     )
     data["live_transcript"] = transcript
+    data["speaker_segments"] = segments
     _save_call_data(db, row, data)
 
 
@@ -520,6 +587,7 @@ def persist_telephony_call_artifacts(
     transcript_text: Optional[str] = None,
     s3_key: Optional[str] = None,
     duration: Optional[float] = None,
+    trace_id: Optional[str] = None,
 ) -> Optional[CallRecording]:
     """Persist transcript and recording metadata when a telephony call ends."""
     row = db.query(CallRecording).filter(CallRecording.call_short_id == call_short_id).first()
@@ -564,8 +632,20 @@ def persist_telephony_call_artifacts(
             data.setdefault("pipeline_recording_s3_key", s3_key)
     if duration is not None:
         data["duration_seconds"] = duration
+    if trace_id:
+        data["trace_id"] = trace_id
+        row.trace_id = trace_id
     if not data.get("ended_at"):
         data["ended_at"] = _now_iso()
+    if not data.get("endedAt"):
+        data["endedAt"] = data["ended_at"]
+    if not data.get("startedAt") and data.get("started_at"):
+        data["startedAt"] = data["started_at"]
+
+    row.call_event = "call_ended"
+    from app.models.database import CallRecordingStatus
+
+    row.status = CallRecordingStatus.UPDATED
 
     _save_call_data(db, row, data)
     # region agent log

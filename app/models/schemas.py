@@ -832,6 +832,22 @@ class IntegrationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExternalProviderAgent(BaseModel):
+    """Normalized provider agent metadata for integration picker UIs."""
+
+    id: str
+    name: str
+    archived: bool = False
+    created_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExternalAgentListResponse(BaseModel):
+    agents: List[ExternalProviderAgent]
+    has_more: bool = False
+    next_cursor: Optional[str] = None
+
+
 # ============================================
 # DATA SOURCES SCHEMAS
 # ============================================
