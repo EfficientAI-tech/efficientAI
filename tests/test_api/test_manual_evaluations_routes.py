@@ -1,5 +1,7 @@
 """API tests for manual-evaluations routes."""
 
+import importlib
+import sys
 from uuid import uuid4
 
 
@@ -7,10 +9,27 @@ def _org_key(org_id, filename: str = "audio.wav", prefix: str = "audio/") -> str
     return f"{prefix}organizations/{org_id}/audio/{filename}"
 
 
+def _ensure_real_s3_service(monkeypatch):
+    """Rebind route storage after worker tests replace module singletons."""
+    from app.api.v1.routes import manual_evaluations as manual_routes
+
+    for module_name in (
+        "app.services.storage.blob_storage_service",
+        "app.services.storage.s3_service",
+    ):
+        sys.modules.pop(module_name, None)
+        importlib.import_module(module_name)
+
+    s3_module = importlib.import_module("app.services.storage.s3_service")
+    monkeypatch.setattr(manual_routes, "s3_service", s3_module.s3_service)
+    return manual_routes.s3_service
+
+
 def test_list_audio_files_and_presigned_url(authenticated_client, monkeypatch, org_id):
     from app.api.v1.routes import manual_evaluations as manual_routes
     from app.config import settings
 
+    _ensure_real_s3_service(monkeypatch)
     own_key = _org_key(org_id)
     monkeypatch.setattr(settings, "S3_PREFIX", "audio", raising=False)
     monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
@@ -55,6 +74,7 @@ def test_manual_evaluations_presigned_url_rejects_cross_tenant_key(
     from app.api.v1.routes import manual_evaluations as manual_routes
     from app.config import settings
 
+    _ensure_real_s3_service(monkeypatch)
     monkeypatch.setattr(settings, "S3_PREFIX", "audio", raising=False)
     monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
     monkeypatch.setattr(
@@ -74,6 +94,7 @@ def test_manual_evaluations_presigned_url_rejects_cross_tenant_key(
 def test_transcribe_audio_creates_transcription(authenticated_client, monkeypatch):
     from app.api.v1.routes import manual_evaluations as manual_routes
 
+    _ensure_real_s3_service(monkeypatch)
     monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
     monkeypatch.setattr(
         manual_routes.transcription_service,

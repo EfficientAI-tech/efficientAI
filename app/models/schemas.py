@@ -3328,6 +3328,13 @@ class CallImportResponse(BaseModel):
     failed_rows: int
     status: CallImportStatus
     error_message: Optional[str] = None
+    latest_evaluation_status: Optional[str] = Field(
+        None,
+        description=(
+            "Status of the most recent evaluation run for this batch, "
+            "when any evaluation exists."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     created_by_email: Optional[str] = None
@@ -4147,6 +4154,13 @@ class CallImportEvaluationResponse(BaseModel):
     # field so the frontend can deep-link to either run). Empty for all
     # other reads.
     sibling_evaluation_ids: List[UUID] = Field(default_factory=list)
+    expected_llm_calls_per_row: Optional[int] = Field(
+        None,
+        description=(
+            "Number of distinct LLM API calls made per evaluation row "
+            "(one per unique provider/model/config among selected metrics)."
+        ),
+    )
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_at: datetime

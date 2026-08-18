@@ -472,10 +472,7 @@ def test_create_evaluation_marks_completed_when_no_rows(
     authenticated_client, db_session, org_id, seed_org
 ):
     metric = _make_metric(db_session, org_id)
-    # Use PENDING rows so none qualify.
-    call_import, _ = _make_call_import(
-        db_session, org_id, rows=2, row_status=CallImportRowStatus.PENDING
-    )
+    call_import, _ = _make_call_import(db_session, org_id, rows=0)
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
@@ -1459,3 +1456,82 @@ def test_update_evaluation_name_stamps_last_updated_by_email(
     assert body["name"] == "Renamed run"
     assert body["created_by_email"] == "owner@example.com"
     assert body["last_updated_by_email"] == "owner@example.com"
+
+
+def test_diarized_rerun_after_production_eval_enqueues_materialize(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Pending import rows from a production run must not instant-complete
+    a later diarized re-run with zero rows."""
+    from unittest.mock import MagicMock
+
+    metric = _make_metric(db_session, org_id)
+    call_import, rows = _make_call_import(
+        db_session,
+        org_id,
+        rows=3,
+        row_status=CallImportRowStatus.PENDING,
+    )
+    for row in rows:
+        row.recording_url = f"https://example.com/{row.row_index}.mp3"
+        row.transcript = f"transcript-{row.row_index}"
+    call_import.status = CallImportStatus.PROCESSING
+    call_import.completed_rows = 0
+    db_session.commit()
+
+    prod = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body(
+            [metric.id],
+            transcript_sources=["production"],
+            auto_transcribe=False,
+        ),
+    )
+    assert prod.status_code == 202, prod.text
+
+    materialize_delay = MagicMock(return_value=types.SimpleNamespace(id="mat-task"))
+    fake_bulk_ops = types.ModuleType("app.workers.tasks.call_import_bulk_ops")
+    fake_bulk_ops.materialize_call_import_evaluation_task = types.SimpleNamespace(
+        delay=materialize_delay
+    )
+    monkeypatch.setitem(
+        sys.modules, "app.workers.tasks.call_import_bulk_ops", fake_bulk_ops
+    )
+
+    diarized = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id], transcript_sources=["diarised"]),
+    )
+    assert diarized.status_code == 202, diarized.text
+    body = diarized.json()
+    assert body["status"] == "pending"
+    assert body["transcript_source"] == "diarised"
+    assert body["total_rows"] == 3
+    materialize_delay.assert_called_once()
+
+
+def test_call_import_detail_includes_latest_evaluation_status(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=1)
+
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id], transcript_sources=["production"], auto_transcribe=False),
+    )
+    assert created.status_code == 202, created.text
+    eval_id = UUID(created.json()["id"])
+
+    evaluation = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == eval_id)
+        .one()
+    )
+    evaluation.status = "completed"
+    evaluation.completed_rows = 1
+    db_session.commit()
+
+    response = authenticated_client.get(f"/api/v1/call-imports/{call_import.id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["latest_evaluation_status"] == "completed"

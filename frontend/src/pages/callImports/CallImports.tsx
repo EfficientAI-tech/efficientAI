@@ -438,7 +438,17 @@ export default function CallImports() {
                       />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <StatusBadge status={item.status} />
+                      {item.latest_evaluation_status ? (
+                        <span className="inline-flex flex-col gap-0.5">
+                          <span className="text-[10px] text-gray-500">Latest eval</span>
+                          <StatusBadge
+                            status={item.latest_evaluation_status}
+                            size="sm"
+                          />
+                        </span>
+                      ) : (
+                        <StatusBadge status={item.status} />
+                      )}
                     </td>
                     <td
                       className="px-6 py-4 whitespace-nowrap text-right text-sm"

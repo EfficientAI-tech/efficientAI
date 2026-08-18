@@ -1178,6 +1178,8 @@ export interface CallImport {
   failed_rows: number
   status: CallImportStatus
   error_message: string | null
+  /** Status of the most recent evaluation run, when any evaluation exists. */
+  latest_evaluation_status?: string | null
   created_at: string
   updated_at: string
   created_by_email?: string | null
@@ -1314,6 +1316,8 @@ export interface CallImportEvaluation {
    * Production and Diarised. Empty array on all other reads.
    */
   sibling_evaluation_ids: string[]
+  /** Distinct LLM API calls per evaluation row (one per unique model/config). */
+  expected_llm_calls_per_row?: number | null
   started_at: string | null
   finished_at: string | null
   created_at: string

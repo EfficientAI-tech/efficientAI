@@ -21,6 +21,7 @@ from app.services.call_imports.bulk_ops import (
     execute_bulk_diarization,
     execute_call_import_materialization,
     materialize_and_enqueue_evaluation,
+    rollup_call_import_batch_status,
 )
 
 
@@ -381,3 +382,94 @@ def test_materialize_production_evaluation_only_creates_transcript_rows(
     assert evaluation.total_rows == 1
     assert len(eval_rows) == 1
     assert eval_rows[0].call_import_row_id == row_with_text.id
+
+
+def test_rollup_eval_primary_pending_imports_reflects_successful_eval(db_session):
+    call_import, _rows = _seed_import_with_rows(db_session, completed=0, pending=3)
+
+    evaluation = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
+        selected_metric_ids=[],
+        status="completed",
+        total_rows=3,
+        completed_rows=3,
+        failed_rows=0,
+        transcript_source="production",
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+
+    rollup_call_import_batch_status(db_session, call_import)
+    assert call_import.status == CallImportStatus.COMPLETED
+
+
+def test_rollup_active_diarized_eval_keeps_batch_processing(db_session):
+    call_import, _rows = _seed_import_with_rows(db_session, completed=0, pending=3)
+
+    evaluation = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
+        selected_metric_ids=[],
+        status="running",
+        total_rows=3,
+        completed_rows=0,
+        failed_rows=0,
+        transcript_source="diarised",
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+
+    rollup_call_import_batch_status(db_session, call_import)
+    assert call_import.status == CallImportStatus.PROCESSING
+
+
+def test_rollup_legacy_import_failure_stays_partial_when_some_rows_failed(db_session):
+    org = Organization(id=uuid4(), name="Legacy Rollup Org")
+    ws = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add_all([org, ws])
+    db_session.flush()
+    call_import = CallImport(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=ws.id,
+        status=CallImportStatus.PROCESSING,
+        total_rows=2,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+    db_session.add_all(
+        [
+            CallImportRow(
+                id=uuid4(),
+                call_import_id=call_import.id,
+                organization_id=org.id,
+                row_index=0,
+                conversation_id="ok",
+                status=CallImportRowStatus.COMPLETED,
+                recording_s3_key="ok.mp3",
+            ),
+            CallImportRow(
+                id=uuid4(),
+                call_import_id=call_import.id,
+                organization_id=org.id,
+                row_index=1,
+                conversation_id="bad",
+                status=CallImportRowStatus.FAILED,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    rollup_call_import_batch_status(db_session, call_import)
+    assert call_import.status == CallImportStatus.PARTIAL
