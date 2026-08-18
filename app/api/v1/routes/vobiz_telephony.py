@@ -698,6 +698,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     websocket,
                     context.system_instruction,
                     str(context.organization_id),
+                    str(context.workspace_id) if context.workspace_id else None,
                     agent_id,
                     persona_id,
                     scenario_id,

@@ -140,6 +140,8 @@ def create_cron_job(
     cron_job = CronJob(
         organization_id=organization_id,
         name=cron_job_data.name,
+        job_type="evaluator_run",
+        is_system=False,
         cron_expression=cron_job_data.cron_expression,
         timezone=cron_job_data.timezone,
         max_runs=cron_job_data.max_runs,
@@ -162,7 +164,10 @@ def list_cron_jobs(
     db: Session = Depends(get_db),
 ):
     """List all cron jobs for the organization."""
-    query = db.query(CronJob).filter(CronJob.organization_id == organization_id)
+    query = db.query(CronJob).filter(
+        CronJob.organization_id == organization_id,
+        CronJob.is_system.is_(False),
+    )
     
     if status_filter:
         query = query.filter(CronJob.status == status_filter.value)
@@ -208,6 +213,12 @@ def update_cron_job(
 
     if not cron_job:
         raise HTTPException(status_code=404, detail="Cron job not found")
+
+    if cron_job.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System cron jobs cannot be modified",
+        )
 
     # Update fields if provided
     if cron_job_data.name is not None:
@@ -309,6 +320,12 @@ def delete_cron_job(
     if not cron_job:
         raise HTTPException(status_code=404, detail="Cron job not found")
 
+    if cron_job.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System cron jobs cannot be deleted",
+        )
+
     db.delete(cron_job)
     db.commit()
 
@@ -331,6 +348,12 @@ def toggle_cron_job_status(
 
     if not cron_job:
         raise HTTPException(status_code=404, detail="Cron job not found")
+
+    if cron_job.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System cron jobs cannot be toggled",
+        )
 
     # Don't allow toggling completed jobs
     if cron_job.status == CronJobStatus.COMPLETED.value:

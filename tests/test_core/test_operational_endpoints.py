@@ -208,7 +208,12 @@ def test_build_health_status_minimal_excludes_migration_details(monkeypatch):
     assert "pending_migrations" not in payload
 
 
-def test_build_health_status_detailed_includes_migration_details(monkeypatch):
+def _stub_create_app_startup(monkeypatch) -> None:
+    """Tests use create_all(); avoid re-running file migrations on TestClient startup."""
+    monkeypatch.setattr("app.app_factory.run_migrations", lambda: None)
+    monkeypatch.setattr("app.app_factory.init_db", lambda: None)
+
+
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (False, ["033_add_workspaces.sql"]),
@@ -222,6 +227,7 @@ def test_build_health_status_detailed_includes_migration_details(monkeypatch):
 
 
 def test_health_detail_returns_migration_info_for_admin(monkeypatch):
+    _stub_create_app_startup(monkeypatch)
     monkeypatch.setitem(
         sys.modules,
         "app.api.v1.api",
@@ -250,6 +256,7 @@ def test_health_detail_returns_migration_info_for_admin(monkeypatch):
 
 
 def test_health_detail_requires_authentication_via_create_app(monkeypatch):
+    _stub_create_app_startup(monkeypatch)
     monkeypatch.setitem(
         sys.modules,
         "app.api.v1.api",

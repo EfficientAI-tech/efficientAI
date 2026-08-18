@@ -332,6 +332,7 @@ def evaluate_call_import_row_task(
     slot_task_id = _eval_slot_task_id or self.request.id
     scoring_inputs: dict[str, Any] | None = None
     restricted_metric_uuids: list[UUID] | None = None
+    usage_ctx_token = None
     try:
         from app.db_sharding.row_ops import (
             close_row_sessions,
@@ -362,6 +363,20 @@ def evaluate_call_import_row_task(
                 eval_row.error_message = "Evaluation parent not found"
                 row_db.commit()
                 return {"status": "failed", "reason": "evaluation_missing"}
+
+            from app.services.usage.call_import_context import (
+                call_import_evaluation_usage_context,
+            )
+            from app.services.usage.context import set_usage_context
+
+            usage_ctx_token = set_usage_context(
+                call_import_evaluation_usage_context(
+                    organization_id=evaluation.organization_id,
+                    workspace_id=evaluation.workspace_id,
+                    evaluation_id=evaluation.id,
+                    call_import_id=evaluation.call_import_id,
+                )
+            )
 
             previous_row_status = eval_row.status
 
@@ -761,6 +776,10 @@ def evaluate_call_import_row_task(
             if row_db is not None:
                 close_row_sessions(row_db, catalog_db)
     finally:
+        if usage_ctx_token is not None:
+            from app.services.usage.context import reset_usage_context
+
+            reset_usage_context(usage_ctx_token)
         from app.workers.concurrency.fair_dispatch import (
             finish_eval_work_and_redispatch,
         )

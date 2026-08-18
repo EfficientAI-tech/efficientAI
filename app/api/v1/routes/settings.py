@@ -32,6 +32,7 @@ from app.core.license import (
     is_feature_enabled,
     ENTERPRISE_FEATURES,
 )
+from app.core.usage_entitlement import get_usage_policy
 
 
 REPORT_LOGO_CONTENT_TYPES = {
@@ -85,12 +86,14 @@ def license_info(organization_id: UUID = Depends(get_organization_id)):
     data = get_license_info()
     all_licensed = data.get("features", []) if isinstance(data.get("features"), list) else []
     enabled_for_org = [f for f in all_licensed if is_feature_enabled(f, organization_id)]
+    usage_policy = get_usage_policy(organization_id)
     return {
         "is_enterprise": bool(enabled_for_org),
         "enabled_features": enabled_for_org,
         "all_enterprise_features": ENTERPRISE_FEATURES,
         "feature_catalog": get_feature_catalog(),
         "organization": data.get("org_id"),
+        "usage_policy": usage_policy.as_dict(),
     }
 
 

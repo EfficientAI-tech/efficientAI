@@ -196,7 +196,31 @@ def test_update_gateway_managed_to_direct_requires_api_key(
     assert update_response.status_code == 400
 
 
-def test_create_aiprovider_rejects_invalid_gateway_base_url(authenticated_client):
+def test_list_aiproviders_gateway_without_base_url_returns_200(
+    authenticated_client, db_session, org_id
+):
+    """Integrations page must not 500 when a gateway credential lacks base_url."""
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = False
+    settings.LLM_GATEWAY_BASE_URL = None
+
+    row = AIProvider(
+        organization_id=org_id,
+        provider="custom",
+        api_key="enc-key",
+        name="Misconfigured gateway",
+        routing_mode="gateway",
+        gateway_model="gpt-oss-120b",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = authenticated_client.get("/api/v1/aiproviders")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["effective_routing"] == "gateway"
     _set_platform_gateway_passthrough(False)
     settings.LLM_GATEWAY_ENABLED = True
     settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080"

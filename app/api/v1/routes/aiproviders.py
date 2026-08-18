@@ -198,6 +198,7 @@ async def create_aiprovider(
             else None
         ),
         gateway_extra_headers=aiprovider.gateway_extra_headers,
+        enabled_models=aiprovider.enabled_models,
     )
     db.add(db_aiprovider)
     db.flush()

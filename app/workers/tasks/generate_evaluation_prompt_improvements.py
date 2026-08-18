@@ -107,25 +107,29 @@ def generate_evaluation_prompt_improvements_task(
                     eval_rows,
                 )
 
-        state = generate_prompt_improvements(
-            evaluation=evaluation,
-            imported_agent=imported_agent,
-            clusters_state=clusters_state,
-            organization_id=evaluation.organization_id,
-            db=db,
-            provider=provider,
-            model=model,
-            credential_id=UUID(credential_id) if credential_id else None,
-            period_deltas=period_deltas,
-        )
-        evaluation.prompt_improvements = prompt_improvements_state_to_db(state)
-        flag_modified(evaluation, "prompt_improvements")
-        db.commit()
-        logger.info(
-            "Prompt improvements completed for evaluation {} ({} suggestions)",
-            evaluation_id,
-            len(state.suggestions),
-        )
+        from app.services.usage.call_import_context import usage_context_for_evaluation
+        from app.services.usage.context import llm_usage_context
+
+        with llm_usage_context(usage_context_for_evaluation(evaluation)):
+            state = generate_prompt_improvements(
+                evaluation=evaluation,
+                imported_agent=imported_agent,
+                clusters_state=clusters_state,
+                organization_id=evaluation.organization_id,
+                db=db,
+                provider=provider,
+                model=model,
+                credential_id=UUID(credential_id) if credential_id else None,
+                period_deltas=period_deltas,
+            )
+            evaluation.prompt_improvements = prompt_improvements_state_to_db(state)
+            flag_modified(evaluation, "prompt_improvements")
+            db.commit()
+            logger.info(
+                "Prompt improvements completed for evaluation {} ({} suggestions)",
+                evaluation_id,
+                len(state.suggestions),
+            )
     except Exception as exc:
         logger.exception(
             "Prompt improvements failed for evaluation {}: {}",

@@ -2,312 +2,722 @@
   "whisper-1": {
     "provider": "openai",
     "model_type": "stt",
-    "description": "General-purpose speech recognition (verbose_json + word/segment timestamps)"
+    "description": "General-purpose speech recognition (verbose_json + word/segment timestamps)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.006
+    }
   },
   "gpt-4o-transcribe": {
     "provider": "openai",
     "model_type": "stt",
-    "description": "GPT-4o speech-to-text; higher accuracy, no granular word timestamps"
+    "description": "GPT-4o speech-to-text; higher accuracy, no granular word timestamps",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00372
+    }
   },
   "gpt-4o-mini-transcribe": {
     "provider": "openai",
     "model_type": "stt",
-    "description": "Cheaper / faster GPT-4o transcription; no granular word timestamps"
+    "description": "Cheaper / faster GPT-4o transcription; no granular word timestamps",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00186
+    }
   },
   "gpt-4o-transcribe-diarize": {
     "provider": "openai",
     "model_type": "stt",
-    "description": "Transcription model that identifies who's speaking when"
+    "description": "Transcription model that identifies who's speaking when",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00372
+    }
   },
   "gpt-realtime-whisper": {
     "provider": "openai",
     "model_type": "stt",
-    "description": "Streaming speech-to-text for realtime transcription"
+    "description": "Streaming speech-to-text for realtime transcription",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.01698
+    }
   },
   "gpt-5.6": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Preview frontier model for select partners; broad availability coming soon"
+    "description": "OpenAI API alias for gpt-5.6-sol",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 30.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
   },
   "gpt-5.5": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "OpenAI flagship — complex reasoning, agentic coding, 1M context"
+    "description": "OpenAI flagship — complex reasoning, agentic coding, 1M context",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 30.0,
+      "cache_read_per_1m": 0.5
+    }
   },
   "gpt-5.5-pro": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Higher-accuracy GPT-5.5 variant with parallel test-time compute"
+    "description": "Higher-accuracy GPT-5.5 variant with parallel test-time compute",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 30.0,
+      "output_per_1m": 180.0,
+      "cache_read_per_1m": 3.0
+    }
   },
   "gpt-5.4": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Affordable frontier model for coding and professional work"
+    "description": "Affordable frontier model for coding and professional work",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.25
+    }
   },
   "gpt-5.4-pro": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Higher-accuracy GPT-5.4 variant"
+    "description": "Higher-accuracy GPT-5.4 variant",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 30.0,
+      "output_per_1m": 180.0,
+      "cache_read_per_1m": 3.0
+    }
   },
   "gpt-5.4-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Strong mini model for coding, computer use, and subagents"
+    "description": "Strong mini model for coding, computer use, and subagents",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.75,
+      "output_per_1m": 4.5,
+      "cache_read_per_1m": 0.075
+    }
   },
   "gpt-5.4-nano": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Cheapest GPT-5.4-class model for simple high-volume tasks"
+    "description": "Cheapest GPT-5.4-class model for simple high-volume tasks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.2,
+      "output_per_1m": 1.25,
+      "cache_read_per_1m": 0.02
+    }
   },
   "gpt-5.3-codex": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Most capable agentic coding model"
+    "description": "Most capable agentic coding model",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
   },
   "gpt-5.2": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Previous frontier model for professional work with configurable reasoning"
+    "description": "Previous frontier model for professional work with configurable reasoning",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
   },
   "gpt-5.2-pro": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Previous pro model for professional work"
+    "description": "Previous pro model for professional work",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 21.0,
+      "output_per_1m": 168.0
+    }
   },
   "gpt-5.2-codex": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Intelligent coding model optimized for long-horizon agentic tasks (deprecated)"
+    "description": "Intelligent coding model optimized for long-horizon agentic tasks (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
   },
   "gpt-5.1": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Best model for coding and agentic tasks with configurable reasoning effort"
+    "description": "Best model for coding and agentic tasks with configurable reasoning effort",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "gpt-5.1-codex": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.1 optimized for agentic coding in Codex (deprecated)"
+    "description": "GPT-5.1 optimized for agentic coding in Codex (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "gpt-5.1-codex-max": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.1-codex optimized for long-running tasks (deprecated)"
+    "description": "GPT-5.1-codex optimized for long-running tasks (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "gpt-5.1-codex-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Smaller, cost-effective GPT-5.1-Codex variant (deprecated)"
+    "description": "Smaller, cost-effective GPT-5.1-Codex variant (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.25,
+      "output_per_1m": 2.0,
+      "cache_read_per_1m": 0.025
+    }
   },
   "gpt-5": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Intelligent reasoning model for coding and agentic tasks"
+    "description": "Intelligent reasoning model for coding and agentic tasks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "gpt-5-pro": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Higher-accuracy GPT-5 variant"
+    "description": "Higher-accuracy GPT-5 variant",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 15.0,
+      "output_per_1m": 120.0
+    }
   },
   "gpt-5-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Near-frontier intelligence for cost-sensitive, low-latency workloads"
+    "description": "Near-frontier intelligence for cost-sensitive, low-latency workloads",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.25,
+      "output_per_1m": 2.0,
+      "cache_read_per_1m": 0.025
+    }
   },
   "gpt-5-nano": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Fastest, most cost-efficient GPT-5 variant"
+    "description": "Fastest, most cost-efficient GPT-5 variant",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.05,
+      "output_per_1m": 0.4,
+      "cache_read_per_1m": 0.005
+    }
   },
   "gpt-5-codex": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5 optimized for agentic coding in Codex (deprecated)"
+    "description": "GPT-5 optimized for agentic coding in Codex (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "codex-mini-latest": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Fast reasoning model optimized for the Codex CLI (deprecated)"
+    "description": "Fast reasoning model optimized for the Codex CLI (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.5,
+      "output_per_1m": 6.0,
+      "cache_read_per_1m": 0.375
+    }
   },
   "o3-pro": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "o3 with more compute for better responses"
+    "description": "o3 with more compute for better responses",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 20.0,
+      "output_per_1m": 80.0
+    }
   },
   "o3": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Reasoning model for complex tasks (succeeded by GPT-5)"
+    "description": "Reasoning model for complex tasks (succeeded by GPT-5)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
   },
   "o3-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Small o3 alternative (deprecated)"
+    "description": "Small o3 alternative (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.1,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.55
+    }
   },
   "o3-deep-research": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "OpenAI flagship \u2014 complex reasoning, agentic coding, 1M context"
+    "description": "OpenAI flagship — complex reasoning, agentic coding, 1M context",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 40.0,
+      "cache_read_per_1m": 2.5
+    }
   },
   "o4-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Fast, cost-efficient reasoning model (succeeded by GPT-5 mini)"
+    "description": "Fast, cost-efficient reasoning model (succeeded by GPT-5 mini)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.1,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.275
+    }
   },
   "o4-mini-deep-research": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Faster, more affordable deep research model (deprecated)"
+    "description": "Faster, more affordable deep research model (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
   },
   "o1-pro": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "o1 with more compute for better responses (deprecated)"
+    "description": "o1 with more compute for better responses (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 150.0,
+      "output_per_1m": 600.0
+    }
   },
   "o1": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Previous full o-series reasoning model (deprecated)"
+    "description": "Previous full o-series reasoning model (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 15.0,
+      "output_per_1m": 60.0,
+      "cache_read_per_1m": 7.5
+    }
   },
   "o1-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Small o1 alternative (deprecated)"
+    "description": "Small o1 alternative (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.21,
+      "output_per_1m": 4.84,
+      "cache_read_per_1m": 0.605
+    }
   },
   "o1-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Preview of the first o-series reasoning model (deprecated)"
+    "description": "Preview of the first o-series reasoning model (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 15.0,
+      "output_per_1m": 60.0,
+      "cache_read_per_1m": 7.5
+    }
   },
   "gpt-4.1": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Smartest non-reasoning GPT-4.x model"
+    "description": "Smartest non-reasoning GPT-4.x model",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
   },
   "gpt-4.1-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Smaller, faster GPT-4.1 variant"
+    "description": "Smaller, faster GPT-4.1 variant",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.4,
+      "output_per_1m": 1.6,
+      "cache_read_per_1m": 0.1
+    }
   },
   "gpt-4.1-nano": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Fastest, most cost-efficient GPT-4.1 variant (deprecated)"
+    "description": "Fastest, most cost-efficient GPT-4.1 variant (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.4,
+      "cache_read_per_1m": 0.025
+    }
   },
   "gpt-4o": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Fast, intelligent, flexible GPT model (deprecated)"
+    "description": "Fast, intelligent, flexible GPT model (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 1.25
+    }
   },
   "gpt-4o-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Fast, affordable small model for focused tasks (deprecated)"
+    "description": "Fast, affordable small model for focused tasks (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "cache_read_per_1m": 0.075
+    }
   },
   "gpt-4o-search-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-4o with web search in Chat Completions (deprecated)"
+    "description": "GPT-4o with web search in Chat Completions (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 1.25
+    }
   },
   "gpt-4o-mini-search-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-4o mini with web search in Chat Completions (deprecated)"
+    "description": "GPT-4o mini with web search in Chat Completions (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "cache_read_per_1m": 0.075
+    }
   },
   "gpt-4-turbo": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Older high-intelligence GPT model (deprecated)"
+    "description": "Older high-intelligence GPT model (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 30.0
+    }
   },
   "gpt-4-turbo-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Older fast GPT model preview (deprecated)"
+    "description": "Older fast GPT model preview (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 30.0
+    }
   },
   "gpt-4": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Older high-intelligence GPT model (deprecated)"
+    "description": "Older high-intelligence GPT model (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 30.0,
+      "output_per_1m": 60.0
+    }
   },
   "gpt-4.5-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Deprecated large GPT preview model"
+    "description": "Deprecated large GPT preview model",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 75.0,
+      "output_per_1m": 150.0,
+      "cache_read_per_1m": 37.5
+    }
   },
   "gpt-3.5-turbo": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Legacy GPT model for cheaper chat tasks (deprecated)"
+    "description": "Legacy GPT model for cheaper chat tasks (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.5,
+      "output_per_1m": 1.5
+    }
   },
   "computer-use-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Specialized model for computer use tool (deprecated)"
+    "description": "Specialized model for computer use tool (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 12.0
+    }
   },
   "gpt-4o-audio-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-4o with audio input/output on Chat Completions (deprecated)"
+    "description": "GPT-4o with audio input/output on Chat Completions (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0
+    }
   },
   "gpt-4o-mini-audio-preview": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-4o mini with audio input/output on Chat Completions (deprecated)"
+    "description": "GPT-4o mini with audio input/output on Chat Completions (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6
+    }
   },
   "gpt-audio-1.5": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Best voice model for audio in/out with Chat Completions"
+    "description": "Best voice model for audio in/out with Chat Completions",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0
+    }
   },
   "gpt-audio": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Audio inputs and outputs with Chat Completions API"
+    "description": "Audio inputs and outputs with Chat Completions API",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0
+    }
   },
   "gpt-audio-mini": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Cost-efficient audio in/out with Chat Completions (deprecated)"
+    "description": "Cost-efficient audio in/out with Chat Completions (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.6,
+      "output_per_1m": 2.4
+    }
   },
   "chat-latest": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "Latest Instant model used in ChatGPT; not recommended for most API use"
+    "description": "Latest Instant model used in ChatGPT; not recommended for most API use",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "gpt-5.3-chat": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.3 Instant model used in ChatGPT (deprecated)"
+    "description": "GPT-5.3 Instant model used in ChatGPT (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
   },
   "gpt-5.2-chat": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.2 model used in ChatGPT (deprecated)"
+    "description": "GPT-5.2 model used in ChatGPT (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
   },
   "gpt-5.1-chat": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.1 model used in ChatGPT (deprecated)"
+    "description": "GPT-5.1 model used in ChatGPT (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.38,
+      "output_per_1m": 11.0,
+      "cache_read_per_1m": 0.14
+    }
   },
   "gpt-5-chat": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5 model used in ChatGPT (deprecated)"
+    "description": "GPT-5 model used in ChatGPT (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "chatgpt-4o-latest": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-4o model used in ChatGPT (deprecated)"
+    "description": "GPT-4o model used in ChatGPT (deprecated)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 15.0
+    }
   },
   "gpt-oss-120b": {
-    "provider": "openai",
+    "provider": "fireworks",
     "model_type": "llm",
-    "description": "Most powerful OpenAI open-weight model (Apache 2.0)"
+    "description": "OpenAI gpt-oss-120b — high-quality open-weight model for general reasoning",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6,
+      "cache_read_per_1m": 0.015
+    }
   },
   "gpt-oss-20b": {
-    "provider": "openai",
+    "provider": "fireworks",
     "model_type": "llm",
-    "description": "Medium-sized OpenAI open-weight model for low latency (Apache 2.0)"
+    "description": "OpenAI gpt-oss-20b — fast open-weight model for chat and classification",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.07,
+      "output_per_1m": 0.3,
+      "cache_read_per_1m": 0.035
+    }
   },
   "gpt-5.6-sol": {
     "provider": "openai",
@@ -315,22 +725,45 @@
     "description": "GPT-5.6 flagship — frontier reasoning, agentic coding, and computer use (1M context)",
     "featured": true,
     "featured_rank": 1,
-    "highlights": ["Flagship", "1M context", "Agentic coding"]
+    "highlights": [
+      "Flagship",
+      "1M context",
+      "Agentic coding"
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 30.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
   },
   "gpt-5.6-terra": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.6 balanced tier — strong everyday performance at lower cost than Sol"
+    "description": "GPT-5.6 balanced tier — strong everyday performance at lower cost than Sol",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 12.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": 2.5
+    }
   },
   "gpt-5.6-luna": {
     "provider": "openai",
     "model_type": "llm",
-    "description": "GPT-5.6 fast tier — lowest-cost model for high-volume classification and extraction"
-  },
-  "gpt-5.6": {
-    "provider": "openai",
-    "model_type": "llm",
-    "description": "OpenAI API alias for gpt-5.6-sol"
+    "description": "GPT-5.6 fast tier — lowest-cost model for high-volume classification and extraction",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.2,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.02,
+      "cache_write_per_1m": 0.25
+    }
   },
   "gpt-4o-mini-tts": {
     "provider": "openai",
@@ -342,144 +775,324 @@
       "Natural prosody",
       "Multiple voices",
       "Studio quality"
-    ]
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 2.5
+    }
   },
   "claude-sonnet-4.5": {
     "provider": "anthropic",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0
+    }
   },
   "claude-opus-4.5": {
     "provider": "anthropic",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0
+    }
   },
   "claude-haiku-4.5": {
     "provider": "anthropic",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.0,
+      "output_per_1m": 5.0,
+      "cache_read_per_1m": 0.1,
+      "cache_write_per_1m": 1.25
+    }
   },
   "claude-sonnet-4.6": {
     "provider": "anthropic",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.3,
+      "cache_write_per_1m": 3.75
+    }
   },
   "claude-opus-4.6": {
     "provider": "anthropic",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
   },
   "claude-opus-4-7": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Opus 4.7 \u2014 stronger coding, vision, and complex multi-step tasks"
+    "description": "Claude Opus 4.7 — stronger coding, vision, and complex multi-step tasks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
   },
   "claude-opus-4-8": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Opus 4.8 \u2014 most capable Opus-tier model; 1M context, adaptive thinking"
+    "description": "Claude Opus 4.8 — most capable Opus-tier model; 1M context, adaptive thinking",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 5.0,
+      "output_per_1m": 25.0,
+      "cache_read_per_1m": 0.5,
+      "cache_write_per_1m": 6.25
+    }
   },
   "claude-fable-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Fable 5 \u2014 Anthropic's most capable widely released model for demanding agentic work"
+    "description": "Claude Fable 5 — Anthropic's most capable widely released model for demanding agentic work",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 50.0,
+      "cache_read_per_1m": 1.0,
+      "cache_write_per_1m": 12.5
+    }
   },
   "claude-mythos-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Mythos 5 \u2014 Fable 5 capabilities; limited availability via Project Glasswing"
+    "description": "Claude Mythos 5 — Fable 5 capabilities; limited availability via Project Glasswing",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 10.0,
+      "output_per_1m": 50.0,
+      "cache_read_per_1m": 1.0,
+      "cache_write_per_1m": 12.5
+    }
   },
   "claude-sonnet-5": {
     "provider": "anthropic",
     "model_type": "llm",
-    "description": "Claude Sonnet 5 \u2014 latest Sonnet tier; near-Opus quality with lower latency and cost",
+    "description": "Claude Sonnet 5 — latest Sonnet tier; near-Opus quality with lower latency and cost",
     "featured": true,
     "featured_rank": 4,
-    "highlights": ["Latest Sonnet", "Agentic workflows", "Cost-efficient"]
+    "highlights": [
+      "Latest Sonnet",
+      "Agentic workflows",
+      "Cost-efficient"
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.2,
+      "cache_write_per_1m": 2.5
+    }
   },
   "grok-4.3": {
     "provider": "xai",
     "model_type": "llm",
-    "description": "xAI flagship \u2014 low hallucination, agentic tool calling, 1M context"
+    "description": "xAI flagship — low hallucination, agentic tool calling, 1M context",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 2.5,
+      "cache_read_per_1m": 0.2
+    }
   },
   "grok-build-0.1": {
     "provider": "xai",
     "model_type": "llm",
-    "description": "xAI fast coding model trained for agentic coding (early access)"
+    "description": "xAI fast coding model trained for agentic coding (early access)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.75
+    }
   },
   "grok-4.20-0309-reasoning": {
     "provider": "xai",
     "model_type": "llm",
-    "description": "Grok 4.20 reasoning snapshot (Mar 2026)"
+    "description": "Grok 4.20 reasoning snapshot (Mar 2026)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 2.5,
+      "cache_read_per_1m": 0.2
+    }
   },
   "grok-4.20-0309-non-reasoning": {
     "provider": "xai",
     "model_type": "llm",
-    "description": "Grok 4.20 non-reasoning snapshot (Mar 2026)"
+    "description": "Grok 4.20 non-reasoning snapshot (Mar 2026)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.2,
+      "output_per_1m": 0.5,
+      "cache_read_per_1m": 0.05
+    }
   },
   "grok-4.20-multi-agent-0309": {
     "provider": "xai",
     "model_type": "llm",
-    "description": "Grok 4.20 multi-agent snapshot (Mar 2026)"
+    "description": "Grok 4.20 multi-agent snapshot (Mar 2026)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0
+    }
   },
   "deepseek-v4-pro": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "DeepSeek V4 Pro \u2014 frontier MoE reasoning and coding (1M context)"
+    "description": "DeepSeek V4 Pro — frontier MoE reasoning and coding (1M context)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.74,
+      "output_per_1m": 3.48,
+      "cache_read_per_1m": 0.145
+    }
   },
   "deepseek-v4-flash": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "DeepSeek V4 Flash \u2014 fast extraction, classification, and search"
+    "description": "DeepSeek V4 Flash — fast extraction, classification, and search",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.14,
+      "output_per_1m": 0.28,
+      "cache_read_per_1m": 0.028
+    }
   },
   "kimi-k2p6": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Kimi K2.6 \u2014 native multimodal agentic model for long-horizon coding"
+    "description": "Kimi K2.6 — native multimodal agentic model for long-horizon coding",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.95,
+      "output_per_1m": 4.0,
+      "cache_read_per_1m": 0.16
+    }
   },
   "kimi-k2p5": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Kimi K2.5 \u2014 unified vision/text agentic model with controllable reasoning"
+    "description": "Kimi K2.5 — unified vision/text agentic model with controllable reasoning",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.6,
+      "output_per_1m": 3.0,
+      "cache_read_per_1m": 0.1
+    }
   },
   "glm-5p1": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "GLM 5.1 \u2014 frontier open model for reasoning and agentic workflows"
+    "description": "GLM 5.1 — frontier open model for reasoning and agentic workflows",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.4,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.26
+    }
   },
   "minimax-m2p7": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "MiniMax M2.7 \u2014 MoE model for complex agent harnesses and productivity tasks"
+    "description": "MiniMax M2.7 — MoE model for complex agent harnesses and productivity tasks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.06
+    }
   },
   "minimax-m2p5": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "MiniMax M2.5 \u2014 fast coding and agentic tool use at low cost"
+    "description": "MiniMax M2.5 — fast coding and agentic tool use at low cost",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.06
+    }
   },
   "qwen3p6-plus": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "Qwen 3.6 Plus \u2014 flagship multimodal model (Fireworks exclusive outside Alibaba)"
-  },
-  "gpt-oss-120b": {
-    "provider": "fireworks",
-    "model_type": "llm",
-    "description": "OpenAI gpt-oss-120b \u2014 high-quality open-weight model for general reasoning"
-  },
-  "gpt-oss-20b": {
-    "provider": "fireworks",
-    "model_type": "llm",
-    "description": "OpenAI gpt-oss-20b \u2014 fast open-weight model for chat and classification"
+    "description": "Qwen 3.6 Plus — flagship multimodal model (Fireworks exclusive outside Alibaba)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.325,
+      "output_per_1m": 1.95
+    }
   },
   "firefunction-v2": {
     "provider": "fireworks",
     "model_type": "llm",
-    "description": "FireFunction V2 \u2014 Fireworks function-calling optimized model"
+    "description": "FireFunction V2 — Fireworks function-calling optimized model",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.9,
+      "output_per_1m": 0.9
+    }
   },
   "google-speech-v2": {
     "provider": "google",
-    "model_type": "stt"
+    "model_type": "stt",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.0015
+    }
   },
   "gemini-2.5-pro-stt": {
     "provider": "google",
     "model_type": "stt",
-    "description": "Gemini 2.5 Pro used for audio transcription via LiteLLM proxy (audio input -> text)"
+    "description": "Gemini 2.5 Pro used for audio transcription via LiteLLM proxy (audio input -> text)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.0015
+    }
   },
   "gemini-2.5-flash-stt": {
     "provider": "google",
@@ -491,150 +1104,358 @@
       "Fast transcription",
       "Cost-efficient",
       "Gemini 2.5"
-    ]
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.0015
+    }
   },
   "gemini-2.5-flash-lite-stt": {
     "provider": "google",
     "model_type": "stt",
-    "description": "Gemini 2.5 Flash Lite used for audio transcription via LiteLLM proxy (lowest cost)"
+    "description": "Gemini 2.5 Flash Lite used for audio transcription via LiteLLM proxy (lowest cost)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00042
+    }
   },
   "gemini-2.5-pro": {
     "provider": "google",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "gemini-2.5-flash": {
     "provider": "google",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.3,
+      "output_per_1m": 2.5,
+      "cache_read_per_1m": 0.03,
+      "reasoning_per_1m": 2.5
+    }
   },
   "gemini-2.5-flash-lite": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 2.5 Flash Lite \u2014 lowest-latency 2.5 model; ideal for diarisation, classification, and other low-reasoning multimodal tasks"
+    "description": "Gemini 2.5 Flash Lite — lowest-latency 2.5 model; ideal for diarisation, classification, and other low-reasoning multimodal tasks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.4,
+      "cache_read_per_1m": 0.01,
+      "reasoning_per_1m": 0.4
+    }
   },
   "gemini-3-pro-preview": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3 Pro \u2014 advanced reasoning and multimodal understanding"
+    "description": "Gemini 3 Pro — advanced reasoning and multimodal understanding",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 12.0,
+      "cache_read_per_1m": 0.2
+    }
   },
   "gemini-3-flash-preview": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3 Flash \u2014 frontier-class performance at lower cost"
+    "description": "Gemini 3 Flash — frontier-class performance at lower cost",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.5,
+      "output_per_1m": 3.0,
+      "cache_read_per_1m": 0.05,
+      "reasoning_per_1m": 3.0
+    }
   },
   "gemini-3.1-pro-preview": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3.1 Pro \u2014 latest reasoning model with 1M context"
+    "description": "Gemini 3.1 Pro — latest reasoning model with 1M context",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 12.0,
+      "cache_read_per_1m": 0.2
+    }
   },
   "gemini-3.5-flash": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3.5 Flash \u2014 GA flagship Flash model for agentic coding and long-horizon tasks",
+    "description": "Gemini 3.5 Flash — GA flagship Flash model for agentic coding and long-horizon tasks",
     "featured": true,
     "featured_rank": 7,
-    "highlights": ["GA stable", "1M context", "Agentic coding"]
+    "highlights": [
+      "GA stable",
+      "1M context",
+      "Agentic coding"
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.5,
+      "output_per_1m": 9.0,
+      "cache_read_per_1m": 0.15,
+      "reasoning_per_1m": 9.0
+    }
   },
   "gemini-3.5-flash-lite": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3.5 Flash Lite \u2014 fastest, lowest-cost 3.5 model for high-throughput extraction, classification, and subagent workflows"
+    "description": "Gemini 3.5 Flash Lite — fastest, lowest-cost 3.5 model for high-throughput extraction, classification, and subagent workflows",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.3,
+      "output_per_1m": 2.5,
+      "cache_read_per_1m": 0.03,
+      "reasoning_per_1m": 2.5
+    }
   },
   "gemini-3.1-flash-lite": {
     "provider": "google",
     "model_type": "llm",
-    "description": "Gemini 3.1 Flash Lite \u2014 cost-efficient stable model for high-volume lightweight tasks"
+    "description": "Gemini 3.1 Flash Lite — cost-efficient stable model for high-volume lightweight tasks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.25,
+      "output_per_1m": 1.5,
+      "cache_read_per_1m": 0.025,
+      "reasoning_per_1m": 1.5
+    }
   },
   "azure-speech-v1": {
     "provider": "azure",
     "model_type": "stt",
-    "description": "Azure Speech-to-text (batch and realtime)"
+    "description": "Azure Speech-to-text (batch and realtime)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.01668
+    }
   },
   "azure-openai-gpt4": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Legacy alias — maps to gpt-4 deployment; prefer azure-gpt-5-mini if that is your deployment name"
+    "description": "Legacy alias — maps to gpt-4 deployment; prefer azure-gpt-5-mini if that is your deployment name",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 30.0,
+      "output_per_1m": 60.0
+    }
   },
   "azure-gpt-4o": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-4o — catalog key maps to deployment name gpt-4o"
+    "description": "Azure OpenAI GPT-4o — catalog key maps to deployment name gpt-4o",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.5,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 1.25
+    }
   },
   "azure-gpt-4o-mini": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-4o mini"
+    "description": "Azure OpenAI GPT-4o mini",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.165,
+      "output_per_1m": 0.66,
+      "cache_read_per_1m": 0.075
+    }
   },
   "azure-gpt-4.1": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-4.1"
+    "description": "Azure OpenAI GPT-4.1",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
   },
   "azure-gpt-4.1-mini": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-4.1 mini"
+    "description": "Azure OpenAI GPT-4.1 mini",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.4,
+      "output_per_1m": 1.6,
+      "cache_read_per_1m": 0.1
+    }
   },
   "azure-gpt-4.1-nano": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-4.1 nano"
+    "description": "Azure OpenAI GPT-4.1 nano",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.4,
+      "cache_read_per_1m": 0.025
+    }
   },
   "azure-gpt-5": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-5"
+    "description": "Azure OpenAI GPT-5",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "azure-gpt-5-mini": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-5 mini — pick this if your deployment is named gpt-5-mini"
+    "description": "Azure OpenAI GPT-5 mini — pick this if your deployment is named gpt-5-mini",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.25,
+      "output_per_1m": 2.0,
+      "cache_read_per_1m": 0.025
+    }
   },
   "azure-gpt-5-nano": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-5 nano"
+    "description": "Azure OpenAI GPT-5 nano",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.05,
+      "output_per_1m": 0.4,
+      "cache_read_per_1m": 0.005
+    }
   },
   "azure-gpt-5.1": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-5.1"
+    "description": "Azure OpenAI GPT-5.1",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0,
+      "cache_read_per_1m": 0.125
+    }
   },
   "azure-gpt-5.2": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI GPT-5.2"
+    "description": "Azure OpenAI GPT-5.2",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.75,
+      "output_per_1m": 14.0,
+      "cache_read_per_1m": 0.175
+    }
   },
   "azure-o3": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI o3 reasoning model"
+    "description": "Azure OpenAI o3 reasoning model",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.5
+    }
   },
   "azure-o3-mini": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI o3 mini"
+    "description": "Azure OpenAI o3 mini",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.1,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.55
+    }
   },
   "azure-o4-mini": {
     "provider": "azure",
     "model_type": "llm",
-    "description": "Azure OpenAI o4 mini"
+    "description": "Azure OpenAI o4 mini",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.1,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.275
+    }
   },
   "azure-tts-v1": {
     "provider": "azure",
     "model_type": "tts",
-    "description": "Azure neural text-to-speech"
+    "description": "Azure neural text-to-speech",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 15.0
+    }
   },
   "aws-transcribe": {
     "provider": "aws",
-    "model_type": "stt"
+    "model_type": "stt",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.006
+    }
   },
   "aws-bedrock-claude": {
     "provider": "aws",
-    "model_type": "llm"
+    "model_type": "llm",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.3,
+      "cache_write_per_1m": 3.75
+    }
   },
   "aws-polly": {
     "provider": "aws",
-    "model_type": "tts"
+    "model_type": "tts",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 16.0
+    }
   },
   "deepgram-flux": {
     "provider": "deepgram",
@@ -646,30 +1467,60 @@
       "Turn detection",
       "Voice agents",
       "Low latency"
-    ]
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00432
+    }
   },
   "deepgram-nova-3": {
     "provider": "deepgram",
     "model_type": "stt",
-    "description": "Highest-performing general-purpose ASR model"
+    "description": "Highest-performing general-purpose ASR model",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00432
+    }
   },
   "deepgram-nova-3-general": {
     "provider": "deepgram",
-    "model_type": "stt"
+    "model_type": "stt",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00432
+    }
   },
   "deepgram-nova-3-general-preview-12-2025": {
     "provider": "deepgram",
-    "model_type": "stt"
+    "model_type": "stt",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00432
+    }
   },
   "deepgram-nova-2": {
     "provider": "deepgram",
     "model_type": "stt",
-    "description": "Available for languages not yet supported by Nova-3"
+    "description": "Available for languages not yet supported by Nova-3",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00432
+    }
   },
   "pulse-v4": {
     "provider": "smallest",
     "model_type": "stt",
-    "description": "Smallest Pulse v4 speech-to-text (batch and realtime)"
+    "description": "Smallest Pulse v4 speech-to-text (batch and realtime)",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.006
+    }
   },
   "cartesia-sonic-3": {
     "provider": "cartesia",
@@ -681,33 +1532,63 @@
       "Ultra-low latency",
       "42 languages",
       "Emotion controls"
-    ]
+    ],
+    "pricing": {
+      "source": "cartesia.ai credits ~$50/1M chars (Pro tier, 1 credit/char)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 50.0
+    }
   },
   "cartesia-sonic-3-mini": {
     "provider": "cartesia",
-    "model_type": "tts"
+    "model_type": "tts",
+    "pricing": {
+      "source": "cartesia.ai ~$40/1M chars (mid-tier estimate)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 40.0
+    }
   },
   "cartesia-sonic-3-nano": {
     "provider": "cartesia",
-    "model_type": "tts"
+    "model_type": "tts",
+    "pricing": {
+      "source": "cartesia.ai Scale ~$37/1M chars",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 37.0
+    }
   },
   "eleven_v3": {
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "Human-like and expressive speech generation",
-    "languages": "70+ languages"
+    "languages": "70+ languages",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_ttv_v3": {
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "Human-like and expressive voice design model (Text to Voice)",
-    "languages": "70+ languages"
+    "languages": "70+ languages",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_multilingual_v2": {
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "Most lifelike model with rich emotional expression",
-    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru"
+    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_flash_v2_5": {
     "provider": "elevenlabs",
@@ -720,31 +1601,56 @@
       "~75ms latency",
       "Real-time",
       "Multilingual"
-    ]
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_turbo_v2_5": {
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "High quality, low-latency model (~250ms-300ms)",
-    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi"
+    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru, hu, no, vi",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_multilingual_sts_v2": {
     "provider": "elevenlabs",
     "model_type": "sts",
     "description": "State-of-the-art multilingual voice changer model (Speech to Speech)",
-    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru"
+    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_multilingual_ttv_v2": {
     "provider": "elevenlabs",
     "model_type": "tts",
     "description": "State-of-the-art multilingual voice designer model (Text to Voice)",
-    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru"
+    "languages": "en, ja, zh, de, hi, fr, ko, pt, it, es, id, nl, tr, fil, pl, sv, bg, ro, ar, cs, el, fi, hr, ms, sk, da, ta, uk, ru",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "eleven_english_sts_v2": {
     "provider": "elevenlabs",
     "model_type": "sts",
     "description": "English-only voice changer model (Speech to Speech)",
-    "languages": "en"
+    "languages": "en",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "scribe_v2_realtime": {
     "provider": "elevenlabs",
@@ -757,72 +1663,136 @@
       "Real-time STT",
       "90+ languages",
       "Streaming"
-    ]
+    ],
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00366
+    }
   },
   "scribe_v2": {
     "provider": "elevenlabs",
     "model_type": "stt",
     "description": "Most accurate transcription model with keyterm prompting and entity detection",
-    "languages": "90+ languages"
+    "languages": "90+ languages",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.00366
+    }
   },
   "eleven_text_to_sound_v2": {
     "provider": "elevenlabs",
     "model_type": "sound_effects",
-    "description": "Sound effects generation from text prompts"
+    "description": "Sound effects generation from text prompts",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "music_v1": {
     "provider": "elevenlabs",
     "model_type": "music",
     "description": "Studio-grade music generation from text prompts",
-    "languages": "en, es, de, ja, and more"
+    "languages": "en, es, de, ja, and more",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 180.0
+    }
   },
   "murf-falcon": {
     "provider": "murf",
     "model_type": "tts",
-    "description": "Murf FALCON \u2013 ultra-low latency streaming TTS",
+    "description": "Murf FALCON – ultra-low latency streaming TTS",
     "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
-    "voices_source_file": "murf_falcon_voices.json"
+    "voices_source_file": "murf_falcon_voices.json",
+    "pricing": {
+      "source": "murf.ai API $0.01/1K chars",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 10.0
+    }
   },
   "murf-gen2": {
     "provider": "murf",
     "model_type": "tts",
-    "description": "Murf GEN2 \u2013 high-quality, natural-sounding TTS",
+    "description": "Murf GEN2 – high-quality, natural-sounding TTS",
     "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
-    "voices_source_file": "murf_gen2_voices.json"
+    "voices_source_file": "murf_gen2_voices.json",
+    "pricing": {
+      "source": "murf.ai API $0.03/1K chars",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 30.0
+    }
   },
   "voicemaker-ai3": {
     "provider": "voicemaker",
     "model_type": "tts",
     "description": "VoiceMaker AI3 neural TTS voices",
     "languages": "en-US, en-GB, en-AU, es-ES, fr-FR, de-DE, ja-JP, zh-CN",
-    "voices_source_file": "voicemaker_voices.json"
+    "voices_source_file": "voicemaker_voices.json",
+    "pricing": {
+      "source": "developer.voicemaker.in $25/1M chars × 1× (AI3)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 25.0
+    }
   },
   "voicemaker-proplus": {
     "provider": "voicemaker",
     "model_type": "tts",
     "description": "VoiceMaker ProPlus expressive multilingual voices",
     "languages": "multi-lang + regional accents",
-    "voices_source_file": "voicemaker_voices.json"
+    "voices_source_file": "voicemaker_voices.json",
+    "pricing": {
+      "source": "developer.voicemaker.in $25/1M chars × 2× (ProPlus Turbo)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 50.0
+    }
   },
   "lightning-v3.1": {
     "provider": "smallest",
     "model_type": "tts",
-    "description": "Smallest Lightning v3.1 low-latency neural TTS"
+    "description": "Smallest Lightning v3.1 low-latency neural TTS",
+    "pricing": {
+      "source": "smallest.ai $0.175/10K chars",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 17.5
+    }
   },
   "sarvam-30b": {
     "provider": "sarvam",
     "model_type": "llm",
-    "description": "Sarvam 30B \u2014 balanced Indian-language + English chat model (64K context)"
+    "description": "Sarvam 30B — balanced Indian-language + English chat model (64K context)",
+    "pricing": {
+      "source": "sarvam.ai ₹2.5 / ₹1.5 / ₹10 per 1M tokens @ 83 INR/USD",
+      "usage_kind": "llm",
+      "input_per_1m": 0.03012,
+      "output_per_1m": 0.120482,
+      "cache_read_per_1m": 0.018072
+    }
   },
   "sarvam-105b": {
     "provider": "sarvam",
     "model_type": "llm",
-    "description": "Sarvam 105B \u2014 flagship MoE for complex reasoning, coding, and agentic workflows (128K context)"
+    "description": "Sarvam 105B — flagship MoE for complex reasoning, coding, and agentic workflows (128K context)",
+    "pricing": {
+      "source": "sarvam.ai ₹4 / ₹2.5 / ₹16 per 1M tokens @ 83 INR/USD",
+      "usage_kind": "llm",
+      "input_per_1m": 0.048193,
+      "output_per_1m": 0.192771,
+      "cache_read_per_1m": 0.03012
+    }
   },
   "saaras:v3": {
     "provider": "sarvam",
     "model_type": "stt",
-    "description": "State-of-the-art Sarvam STT model with transcribe/translate modes"
+    "description": "State-of-the-art Sarvam STT model with transcribe/translate modes",
+    "pricing": {
+      "source": "sarvam.ai ₹30/hour audio @ 83 INR/USD",
+      "usage_kind": "stt",
+      "audio_per_minute": 0.006
+    }
   },
   "bulbul:v3": {
     "provider": "sarvam",
@@ -1024,6 +1994,32 @@
         "name": "Rupali",
         "gender": "Female"
       }
-    ]
+    ],
+    "pricing": {
+      "source": "sarvam.ai ₹30/10K chars @ 83 INR/USD",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 36.144578
+    }
+  },
+  "voice-agent-call": {
+    "provider": "telephony",
+    "model_type": "llm",
+    "description": "External voice-agent call duration (Vapi, Retell, ElevenLabs, Smallest); billed per minute",
+    "pricing": {
+      "source": "manual",
+      "usage_kind": "llm",
+      "audio_per_minute": 0.05
+    }
+  },
+  "unknown": {
+    "provider": "internal",
+    "model_type": "llm",
+    "description": "Fallback when model name is missing from usage records",
+    "pricing": {
+      "source": "manual",
+      "usage_kind": "llm",
+      "input_per_1m": 0,
+      "output_per_1m": 0
+    }
   }
 }

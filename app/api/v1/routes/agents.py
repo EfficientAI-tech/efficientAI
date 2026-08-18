@@ -149,7 +149,10 @@ async def generate_agent_description(
     db: Session = Depends(get_db),
 ):
     """Generate an agent description using AI from a brief description."""
+    from contextlib import nullcontext
+
     from app.services.ai.llm_service import llm_service
+    from app.services.usage.context import llm_usage_context, usage_context_for_agent
     from app.services.testing.test_agent_simulation_prompt import (
         format_scenarios_for_generation_context,
         format_scenarios_reference_appendix,
@@ -202,15 +205,28 @@ async def generate_agent_description(
     ]
 
     try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.7,
-            max_tokens=4000,
-        )
+        usage_ctx = nullcontext()
+        if data.agent_id:
+            agent_for_usage = db.query(Agent).filter(
+                Agent.id == data.agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            ).first()
+            if agent_for_usage:
+                usage_ctx = llm_usage_context(
+                    usage_context_for_agent(agent_for_usage, workspace_id=workspace_id)
+                )
+
+        with usage_ctx:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                temperature=0.7,
+                max_tokens=4000,
+            )
         content = result["text"]
         if data.append_scenarios_to_output and linked_scenarios:
             appendix = format_scenarios_reference_appendix(linked_scenarios)
@@ -239,12 +255,18 @@ def _scenario_draft_responses(scenarios) -> list[GeneratedScenarioDraftResponse]
 async def generate_test_prompt(
     data: GenerateTestPromptRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Stage 1: generate foundational test agent prompt from production prompt."""
     from app.services.testing.agent_test_setup_generation import (
         generate_test_prompt_from_production,
+    )
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
     )
 
     if not data.production_prompt.strip():
@@ -255,19 +277,26 @@ async def generate_test_prompt(
     )
 
     try:
-        result = generate_test_prompt_from_production(
-            data.production_prompt,
-            agent_name=data.agent_name,
-            language=data.language,
-            call_type=data.call_type,
-            additional_context=data.additional_context,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=data.llm_config,
-            credential_id=data.credential_id,
-        )
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.AGENTS,
+            )
+        ):
+            result = generate_test_prompt_from_production(
+                data.production_prompt,
+                agent_name=data.agent_name,
+                language=data.language,
+                call_type=data.call_type,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
         return GenerateTestPromptResponse(
             sections=_test_prompt_section_responses(result.sections),
             test_agent_prompt=result.test_agent_prompt,
@@ -285,12 +314,18 @@ async def generate_test_prompt(
 async def generate_scenarios_from_prompt(
     data: GenerateScenariosFromPromptRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Stage 2: generate scenario drafts from a test agent prompt."""
     from app.services.testing.agent_test_setup_generation import (
         generate_scenarios_from_test_prompt,
+    )
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
     )
 
     if not data.test_agent_prompt.strip():
@@ -301,20 +336,27 @@ async def generate_scenarios_from_prompt(
     )
 
     try:
-        result = generate_scenarios_from_test_prompt(
-            data.test_agent_prompt,
-            agent_name=data.agent_name,
-            scenario_count=data.scenario_count,
-            language=data.language,
-            call_type=data.call_type,
-            additional_context=data.additional_context,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=data.llm_config,
-            credential_id=data.credential_id,
-        )
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.AGENTS,
+            )
+        ):
+            result = generate_scenarios_from_test_prompt(
+                data.test_agent_prompt,
+                agent_name=data.agent_name,
+                scenario_count=data.scenario_count,
+                language=data.language,
+                call_type=data.call_type,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
         return GenerateScenariosFromPromptResponse(
             scenarios=_scenario_draft_responses(result.scenarios),
             provider=result.provider,
@@ -331,6 +373,7 @@ async def generate_scenarios_from_prompt(
 async def generate_test_setup(
     data: GenerateTestSetupRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -338,6 +381,11 @@ async def generate_test_setup(
     from app.services.testing.agent_test_setup_generation import (
         generate_scenarios_from_test_prompt,
         generate_test_prompt_from_production,
+    )
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
     )
 
     if not data.production_prompt.strip():
@@ -348,33 +396,40 @@ async def generate_test_setup(
     )
 
     try:
-        prompt_result = generate_test_prompt_from_production(
-            data.production_prompt,
-            agent_name=data.agent_name,
-            language=data.language,
-            call_type=data.call_type,
-            additional_context=data.additional_context,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=data.llm_config,
-            credential_id=data.credential_id,
-        )
-        scenario_result = generate_scenarios_from_test_prompt(
-            prompt_result.test_agent_prompt,
-            agent_name=data.agent_name,
-            scenario_count=data.scenario_count,
-            language=data.language,
-            call_type=data.call_type,
-            additional_context=data.additional_context,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=data.llm_config,
-            credential_id=data.credential_id,
-        )
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.AGENTS,
+            )
+        ):
+            prompt_result = generate_test_prompt_from_production(
+                data.production_prompt,
+                agent_name=data.agent_name,
+                language=data.language,
+                call_type=data.call_type,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
+            scenario_result = generate_scenarios_from_test_prompt(
+                prompt_result.test_agent_prompt,
+                agent_name=data.agent_name,
+                scenario_count=data.scenario_count,
+                language=data.language,
+                call_type=data.call_type,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
         return GenerateTestSetupResponse(
             sections=_test_prompt_section_responses(prompt_result.sections),
             test_agent_prompt=prompt_result.test_agent_prompt,

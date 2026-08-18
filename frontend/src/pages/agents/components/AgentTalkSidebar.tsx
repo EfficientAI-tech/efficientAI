@@ -59,6 +59,7 @@ export default function AgentTalkSidebar({
   const userInitiatedDisconnectRef = useRef(false)
   const wasOpenRef = useRef(false)
   const userSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const callShortIdRef = useRef<string | null>(null)
 
   const pulseUserSpeaking = (durationMs = 1200) => {
     setActiveSpeaker('user')
@@ -205,9 +206,16 @@ export default function AgentTalkSidebar({
         })
       } else if (isVapi) {
         const client = vapiClientRef.current!
-        client.on('call-start', () => {
+        client.on('call-start', async (call: any) => {
           setIsConnected(true)
           setIsConnecting(false)
+          if (callShortIdRef.current && call?.id) {
+            try {
+              await apiClient.updateCallRecording(callShortIdRef.current, call.id)
+            } catch (err) {
+              console.error('Failed to update Vapi call recording', err)
+            }
+          }
         })
         client.on('speech-start', () => setActiveSpeaker('agent'))
         client.on('speech-end', () => setActiveSpeaker((prev) => (prev === 'agent' ? null : prev)))
@@ -224,13 +232,26 @@ export default function AgentTalkSidebar({
             }
           }
         })
-        client.on('call-end', () => {
+        client.on('call-end', async () => {
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
+          if (callShortIdRef.current) {
+            apiClient.refreshCallRecording(callShortIdRef.current).catch((err) => {
+              console.error('Failed to refresh Vapi call recording', err)
+            })
+          }
         })
-        await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
-        await client.start(agent.voice_ai_agent_id!)
+        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        callShortIdRef.current = webCall.call_short_id ?? null
+        const vapiCall = await client.start(agent.voice_ai_agent_id!)
+        if (callShortIdRef.current && vapiCall?.id) {
+          try {
+            await apiClient.updateCallRecording(callShortIdRef.current, vapiCall.id)
+          } catch (err) {
+            console.error('Failed to update Vapi call recording from start()', err)
+          }
+        }
       } else if (isElevenLabs) {
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
         if (!webCall.signed_url) throw new Error('No signed URL')

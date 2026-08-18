@@ -38,215 +38,9 @@ from app.services.voice_providers import get_voice_provider
 from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
 from app.utils.call_recordings import generate_unique_call_short_id
 
+from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
+
 router = APIRouter(prefix="/playground", tags=["playground"])
-
-
-def extract_transcript_from_call_data(call_data: Dict[str, Any], provider_platform: str) -> tuple:
-    """
-    Extract transcript and speaker segments from provider call_data.
-    
-    Args:
-        call_data: Full call data from voice provider
-        provider_platform: The provider platform ("vapi", "retell", "elevenlabs", "smallest")
-        
-    Returns:
-        Tuple of (transcript_text, speaker_segments)
-        - transcript_text: Plain text transcript
-        - speaker_segments: List of segments with speaker labels
-    """
-    transcript_text = ""
-    speaker_segments = []
-    
-    if not call_data:
-        return transcript_text, speaker_segments
-    
-    provider_platform_lower = provider_platform.lower() if provider_platform else ""
-    
-    if provider_platform_lower == "vapi":
-        # Vapi: keep provider payload raw and derive transcript from transcript/messages.
-        transcript_text = call_data.get("transcript", "")
-        
-        # Get structured messages for speaker segments
-        transcript_object = call_data.get("transcript_object", [])
-        if not transcript_object:
-            # Try messages array
-            artifact = call_data.get("artifact", {}) if isinstance(call_data, dict) else {}
-            messages = call_data.get("messages", []) or artifact.get("messages", [])
-            for msg in messages:
-                role = msg.get("role", "unknown")
-                content = msg.get("message", "") or msg.get("content", "")
-                
-                if not content or role == "system":
-                    continue
-                
-                # Map roles
-                if role in ["bot", "assistant"]:
-                    normalized_role = "agent"
-                elif role == "user":
-                    normalized_role = "user"
-                else:
-                    continue
-                
-                speaker_segments.append({
-                    "speaker": "Agent" if normalized_role == "agent" else "User",
-                    "text": content,
-                    "start": msg.get("secondsFromStart", 0),
-                    "end": msg.get("secondsFromStart", 0) + (msg.get("duration", 0) / 1000),
-                })
-        else:
-            for entry in transcript_object:
-                role = entry.get("role", "unknown")
-                content = entry.get("content", "")
-                
-                if not content:
-                    continue
-                
-                speaker_segments.append({
-                    "speaker": "Agent" if role == "agent" else "User",
-                    "text": content,
-                    "start": entry.get("seconds_from_start", 0),
-                    "end": entry.get("seconds_from_start", 0) + (entry.get("duration_ms", 0) / 1000),
-                })
-        
-        # Build transcript text from segments if not available
-        if not transcript_text and speaker_segments:
-            transcript_text = "\n".join([
-                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
-            ])
-            
-    elif provider_platform_lower == "elevenlabs":
-        raw_transcript = call_data.get("transcript")
-        transcript_obj = call_data.get("transcript_object", [])
-
-        # retrieve_call_metrics already processes the transcript into a
-        # formatted string + speaker_segments list, so handle both the
-        # pre-processed shape and the raw ElevenLabs API shape.
-        if isinstance(raw_transcript, str) and raw_transcript:
-            transcript_text = raw_transcript
-            if isinstance(transcript_obj, list):
-                for seg in transcript_obj:
-                    speaker_segments.append({
-                        "speaker": seg.get("speaker", "Unknown"),
-                        "text": seg.get("text", ""),
-                        "start": seg.get("start", 0),
-                        "end": seg.get("end", 0),
-                    })
-        elif isinstance(raw_transcript, list):
-            for entry in raw_transcript:
-                role = entry.get("role", "unknown")
-                content = entry.get("message", "") or entry.get("text", "")
-                if not content:
-                    continue
-                speaker = "Agent" if role in ("agent", "assistant", "ai") else "User"
-                speaker_segments.append({
-                    "speaker": speaker,
-                    "text": content,
-                    "start": entry.get("time_in_call_secs", 0) or entry.get("start", 0),
-                    "end": entry.get("time_in_call_secs", 0) or entry.get("end", 0),
-                })
-            transcript_text = "\n".join(
-                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
-            )
-
-    elif provider_platform_lower == "smallest":
-        transcript_raw = call_data.get("transcript")
-        transcript_object = call_data.get("transcript_object", [])
-        if isinstance(transcript_object, list) and transcript_object:
-            for entry in transcript_object:
-                if not isinstance(entry, dict):
-                    continue
-                text = entry.get("text", "")
-                if not text:
-                    continue
-                speaker = entry.get("speaker", "Unknown")
-                speaker_segments.append(
-                    {
-                        "speaker": speaker,
-                        "text": text,
-                        "start": entry.get("start", 0),
-                        "end": entry.get("end", entry.get("start", 0)),
-                    }
-                )
-            if not transcript_text:
-                transcript_text = "\n".join(
-                    f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
-                )
-        elif isinstance(transcript_raw, list):
-            for entry in transcript_raw:
-                if not isinstance(entry, dict):
-                    continue
-                role = str(entry.get("speaker") or entry.get("role") or "").lower()
-                speaker = "Agent" if role in ("agent", "assistant", "ai", "bot") else "User"
-                text = entry.get("text", "") or entry.get("message", "") or entry.get("content", "")
-                if not text:
-                    continue
-                ts = entry.get("timeInCallSecs", 0) or entry.get("start", 0) or entry.get("timestamp", 0)
-                speaker_segments.append(
-                    {
-                        "speaker": speaker,
-                        "text": text,
-                        "start": ts,
-                        "end": entry.get("end", ts),
-                    }
-                )
-            transcript_text = "\n".join(
-                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
-            )
-        elif isinstance(transcript_raw, str):
-            transcript_text = transcript_raw
-
-    elif provider_platform_lower == "retell":
-        # Retell: transcript can be a string or list of objects
-        transcript_raw = call_data.get("transcript", "")
-        
-        if isinstance(transcript_raw, str):
-            transcript_text = transcript_raw
-            # Parse transcript text into speaker segments if it has pattern like "Agent: text\nUser: text"
-            lines = transcript_raw.split("\n") if transcript_raw else []
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("Agent:") or line.startswith("agent:"):
-                    speaker_segments.append({
-                        "speaker": "Agent",
-                        "text": line.split(":", 1)[1].strip() if ":" in line else line,
-                        "start": 0,
-                        "end": 0,
-                    })
-                elif line.startswith("User:") or line.startswith("user:"):
-                    speaker_segments.append({
-                        "speaker": "User",
-                        "text": line.split(":", 1)[1].strip() if ":" in line else line,
-                        "start": 0,
-                        "end": 0,
-                    })
-        elif isinstance(transcript_raw, list):
-            # Retell sometimes returns transcript as array of objects
-            for item in transcript_raw:
-                if isinstance(item, dict):
-                    role = item.get("role", "")
-                    content = item.get("content", "") or item.get("text", "")
-                    
-                    if not content:
-                        continue
-                    
-                    speaker = "Agent" if role in ["agent", "assistant", "bot"] else "User"
-                    speaker_segments.append({
-                        "speaker": speaker,
-                        "text": content,
-                        "start": item.get("start_time", 0) or item.get("timestamp", 0),
-                        "end": item.get("end_time", 0),
-                    })
-            
-            # Build transcript text from segments
-            transcript_text = "\n".join([
-                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
-            ])
-    
-    return transcript_text, speaker_segments
-
-
 def generate_unique_result_id(db: Session) -> str:
     """Generate a unique 6-digit result ID for EvaluatorResult."""
     max_attempts = 100
@@ -411,7 +205,8 @@ def poll_call_metrics(
                             or recording_urls.get("stereo_url")
                         )
                         if audio_url:
-                            resp = _http.get(audio_url, timeout=120)
+                            vapi_headers = {"Authorization": f"Bearer {integration_api_key}"}
+                            resp = _http.get(audio_url, headers=vapi_headers, timeout=120)
                             if resp.status_code == 200:
                                 audio_bytes = resp.content
 
@@ -656,13 +451,32 @@ async def create_web_call(
             # For now, we'll skip it for Retell. Other providers can handle it in their implementation.
             if integration.platform != "retell" and web_call_data.custom_sip_headers:
                 call_params["custom_sip_headers"] = web_call_data.custom_sip_headers
-            
-            web_call_response = provider.create_web_call(**call_params)
-            
-            # Store call recording in database
+
+            platform_value = (
+                integration.platform.value
+                if hasattr(integration.platform, "value")
+                else integration.platform
+            )
+            plat_lower = str(platform_value).lower()
+
+            # Vapi Web SDK creates the call in the browser; server-side /call/web
+            # would spawn a second call that never receives the user's microphone.
+            if plat_lower == "vapi":
+                from app.services.voice_providers.vapi import VAPI_SAMPLE_RATE
+
+                web_call_response = {
+                    "call_type": "web_call",
+                    "agent_id": agent.voice_ai_agent_id,
+                    "metadata": web_call_data.metadata or {},
+                    "sample_rate": VAPI_SAMPLE_RATE,
+                    "client_sdk_creates_call": True,
+                }
+                provider_call_id = None
+            else:
+                web_call_response = provider.create_web_call(**call_params)
+                provider_call_id = web_call_response.get("call_id")
+
             call_short_id = generate_unique_call_short_id(db)
-            provider_call_id = web_call_response.get("call_id")
-            
             call_recording = CallRecording(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
@@ -702,17 +516,13 @@ async def create_web_call(
             # Add call_short_id to response for frontend
             response = web_call_response.copy()
             response["call_short_id"] = call_short_id
-            
-            platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
-            
-            # For Vapi, include the public key in the response (needed for frontend SDK)
-            if platform_value.lower() == "vapi" and integration.public_key:
+
+            if plat_lower == "vapi" and integration.public_key:
                 response["public_key"] = integration.public_key
-            
-            # For ElevenLabs, pass through the signed_url (frontend SDK connects directly)
-            if platform_value.lower() == "elevenlabs":
+
+            if plat_lower == "elevenlabs":
                 response["signed_url"] = web_call_response.get("signed_url")
-            
+
             return response
         except Exception as e:
             raise HTTPException(
@@ -1867,7 +1677,10 @@ async def summarize_transcript(
       1. The voice bundle of ``agent_id`` (or the agent on ``call_short_id``).
       2. Any configured AIProvider matching the fallback preference list.
     """
+    from contextlib import nullcontext
+
     from app.services.ai.llm_service import llm_service
+    from app.services.usage.context import llm_usage_context, usage_context_for_agent
 
     transcript_text = (payload.transcript or "").strip()
     if not transcript_text and payload.entries:
@@ -1964,15 +1777,27 @@ async def summarize_transcript(
     ]
 
     try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.3,
-            max_tokens=400,
-        )
+        usage_ctx = nullcontext()
+        if agent_uuid:
+            agent_row = db.query(Agent).filter(
+                Agent.id == agent_uuid,
+                Agent.organization_id == organization_id,
+            ).first()
+            if agent_row:
+                usage_ctx = llm_usage_context(
+                    usage_context_for_agent(agent_row, workspace_id=workspace_id)
+                )
+
+        with usage_ctx:
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                organization_id=organization_id,
+                db=db,
+                temperature=0.3,
+                max_tokens=400,
+            )
     except Exception as e:
         logger.error(f"[summarize-transcript] LLM call failed: {e}")
         raise HTTPException(

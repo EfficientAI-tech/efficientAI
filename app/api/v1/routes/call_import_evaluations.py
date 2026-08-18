@@ -3074,9 +3074,18 @@ def _explain_period_deltas(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.call_import_user_insights import _call_llm, _parse_json_object
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
+    )
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider_hint, model_hint
+    )
+    usage_ctx = call_import_evaluation_usage_context(
+        organization_id=organization_id,
+        workspace_id=evaluation.workspace_id,
+        evaluation_id=evaluation.id,
+        call_import_id=evaluation.call_import_id,
     )
     try:
         text = _call_llm(
@@ -3097,6 +3106,7 @@ def _explain_period_deltas(
             ],
             temperature=0.3,
             max_tokens=900,
+            usage_ctx=usage_ctx,
         )
     except Exception as exc:
         logger.warning("[PeriodDeltaExplain] LLM call failed: {}", exc)
@@ -3748,15 +3758,29 @@ async def generate_call_import_evaluation_pdf_report(
             )
             return _pdf_report_response_from_row(cached_pdf_report, cache_hit=True)
 
-    narrative = _generate_report_narrative(
-        db,
-        organization_id,
-        metric_aggregates=metric_aggregates,
-        insight_aggregates=insight_aggregates if is_internal else [],
-        period_delta_by_metric=period_delta_by_metric,
-        evidence_samples=evidence_samples if is_internal else {},
-        report_config=report_config,
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
     )
+    from app.services.usage.context import llm_usage_context
+
+    with llm_usage_context(
+        call_import_evaluation_usage_context(
+            organization_id=organization_id,
+            workspace_id=getattr(call_import, "workspace_id", None)
+            or evaluation.workspace_id,
+            evaluation_id=evaluation.id,
+            call_import_id=evaluation.call_import_id,
+        )
+    ):
+        narrative = _generate_report_narrative(
+            db,
+            organization_id,
+            metric_aggregates=metric_aggregates,
+            insight_aggregates=insight_aggregates if is_internal else [],
+            period_delta_by_metric=period_delta_by_metric,
+            evidence_samples=evidence_samples if is_internal else {},
+            report_config=report_config,
+        )
 
     generated_at = datetime.now(timezone.utc)
     try:
@@ -5467,29 +5491,41 @@ def _generate_and_persist_tldr_summary(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.ai.llm_service import llm_service
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
+    )
+    from app.services.usage.context import llm_usage_context
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider, model
     )
 
     try:
-        llm_result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.4,
-            max_tokens=1400,
-        )
+        with llm_usage_context(
+            call_import_evaluation_usage_context(
+                organization_id=organization_id,
+                workspace_id=evaluation.workspace_id,
+                evaluation_id=evaluation.id,
+                call_import_id=evaluation.call_import_id,
+            )
+        ):
+            llm_result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                temperature=0.4,
+                max_tokens=1400,
+            )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
 
-    summary = _parse_insights_response(llm_result.get("text", ""))
     total = int(evaluation.total_rows or 0)
+    summary = _parse_insights_response(llm_result.get("text", ""))
     ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
         evaluation.completed_rows or 0
     )

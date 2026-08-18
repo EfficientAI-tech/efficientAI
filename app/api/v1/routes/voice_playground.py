@@ -398,6 +398,7 @@ def _serialize_custom_voice(voice: CustomTTSVoice) -> Dict[str, Any]:
 async def generate_sample_texts(
     data: GenerateSamplesRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -460,16 +461,29 @@ async def generate_sample_texts(
         {"role": "user", "content": user_prompt},
     ]
 
+    from app.services.usage.context import (
+        LLMUsageContext,
+        LLMUsageProductSection,
+        llm_usage_context,
+    )
+
     try:
-        result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=llm_model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=request_llm_config,
-            task_defaults={"temperature": 0.8, "max_tokens": max_tokens},
-        )
+        with llm_usage_context(
+            LLMUsageContext(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section=LLMUsageProductSection.VOICE_PLAYGROUND,
+            )
+        ):
+            result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=llm_model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=request_llm_config,
+                task_defaults={"temperature": 0.8, "max_tokens": max_tokens},
+            )
     except Exception as e:
         logger.error(f"[VoicePlayground] LLM generation failed: {e}")
         raise HTTPException(500, f"LLM generation failed: {str(e)}")

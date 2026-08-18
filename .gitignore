@@ -111,4 +111,9 @@ frontend/dist/
 # Enterprise license private keys
 enterprise/keys/*.pem
 
+# Celery Beat persistent schedule (SQLite + WAL sidecars)
+celerybeat-schedule
+celerybeat-schedule-*
+celerybeat-schedule.*
+
 #

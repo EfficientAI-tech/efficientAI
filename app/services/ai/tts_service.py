@@ -262,6 +262,11 @@ class TTSService:
         api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
         handler = self._get_tts_handler(tts_provider)
         audio_bytes, _ttfb_ms = handler(text, tts_model, api_key, voice, config)
+        self._record_tts_usage(
+            text=text,
+            tts_model=tts_model,
+            organization_id=organization_id,
+        )
         return audio_bytes
 
     def synthesize_timed(
@@ -280,7 +285,39 @@ class TTSService:
         start = time.time()
         audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config)
         total_latency_ms = (time.time() - start) * 1000
+        self._record_tts_usage(
+            text=text,
+            tts_model=tts_model,
+            organization_id=organization_id,
+        )
         return audio_bytes, total_latency_ms, ttfb_ms
+
+    def _record_tts_usage(
+        self,
+        *,
+        text: str,
+        tts_model: str,
+        organization_id: UUID,
+    ) -> None:
+        try:
+            from app.services.usage.context import (
+                ensure_usage_context,
+                reset_usage_context,
+            )
+            from app.services.usage.llm_usage import record_tts_usage
+
+            usage_token = ensure_usage_context(organization_id)
+            try:
+                record_tts_usage(
+                    tts_model,
+                    characters=len(text or ""),
+                    organization_id=organization_id,
+                )
+            finally:
+                if usage_token is not None:
+                    reset_usage_context(usage_token)
+        except Exception:
+            pass
 
     def synthesize_and_upload(
         self,

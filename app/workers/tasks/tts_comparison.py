@@ -180,6 +180,7 @@ def generate_tts_comparison_task(self, comparison_id: str):
     )
     from app.services.ai.tts_service import tts_service, get_audio_file_extension
     from app.services.storage.s3_service import s3_service
+    from app.services.usage.context import LLMUsageContext, LLMUsageProductSection, llm_usage_context
 
     db = SessionLocal()
     try:
@@ -258,15 +259,24 @@ def generate_tts_comparison_task(self, comparison_id: str):
                     f"provider={sample.provider} voice={sample.voice_id} "
                     f"sample_rate_hz={sample_rate_hz} config={tts_config}"
                 )
-                audio_bytes, latency_ms, ttfb_ms = tts_service.synthesize_timed(
-                    text=sample.text,
-                    tts_provider=provider_enum,
-                    tts_model=sample.model,
-                    organization_id=comp.organization_id,
-                    db=db,
-                    voice=sample.voice_id,
-                    config=tts_config or None,
-                )
+                with llm_usage_context(
+                    LLMUsageContext(
+                        organization_id=comp.organization_id,
+                        workspace_id=comp.workspace_id,
+                        product_section=LLMUsageProductSection.VOICE_PLAYGROUND,
+                        resource_id=comp.id,
+                        resource_type="tts_comparison",
+                    )
+                ):
+                    audio_bytes, latency_ms, ttfb_ms = tts_service.synthesize_timed(
+                        text=sample.text,
+                        tts_provider=provider_enum,
+                        tts_model=sample.model,
+                        organization_id=comp.organization_id,
+                        db=db,
+                        voice=sample.voice_id,
+                        config=tts_config or None,
+                    )
 
                 audio_ext = get_audio_file_extension(
                     sample.provider, int(sample_rate_hz) if sample_rate_hz else None
@@ -514,6 +524,20 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
             db.commit()
             return {"evaluated": 0}
 
+        from app.services.usage.context import (
+            LLMUsageContext,
+            LLMUsageProductSection,
+            llm_usage_context,
+        )
+
+        usage_ctx = LLMUsageContext(
+            organization_id=comp.organization_id,
+            workspace_id=comp.workspace_id,
+            product_section=LLMUsageProductSection.VOICE_PLAYGROUND,
+            resource_id=comp.id,
+            resource_type="tts_comparison",
+        )
+
         stt_provider_str, stt_model = _resolve_stt_config(comp, db)
         stt_available = bool(stt_provider_str and stt_model)
         if stt_available:
@@ -535,86 +559,86 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
             )
 
         evaluated = 0
-        for sample in samples:
-            tmp_path = None
-            try:
-                audio_bytes = s3_service.download_file_by_key(sample.audio_s3_key)
-                if not audio_bytes:
-                    continue
+        with llm_usage_context(usage_ctx):
+            for sample in samples:
+                tmp_path = None
+                try:
+                    audio_bytes = s3_service.download_file_by_key(sample.audio_s3_key)
+                    if not audio_bytes:
+                        continue
 
-                ext = ".mp3"
-                if sample.audio_s3_key:
-                    key_ext = os.path.splitext(sample.audio_s3_key)[1].lower()
-                    if key_ext in {".wav", ".mp3", ".flac", ".ogg", ".m4a"}:
-                        ext = key_ext
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
-                os.close(tmp_fd)
-                with open(tmp_path, "wb") as f:
-                    f.write(audio_bytes)
+                    ext = ".mp3"
+                    if sample.audio_s3_key:
+                        key_ext = os.path.splitext(sample.audio_s3_key)[1].lower()
+                        if key_ext in {".wav", ".mp3", ".flac", ".ogg", ".m4a"}:
+                            ext = key_ext
+                    tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
+                    os.close(tmp_fd)
+                    with open(tmp_path, "wb") as f:
+                        f.write(audio_bytes)
 
-                if any_qualitative_enabled:
-                    metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
-                    metrics = _filter_qualitative_metrics(metrics, enabled_voice_metric_names)
-                else:
-                    metrics = {}
-
-                if stt_available and sample.text:
-                    selected_stt_provider = ModelProvider(stt_provider_str)
-                    selected_language = None
-                    if selected_stt_provider == ModelProvider.SARVAM:
-                        # Sarvam saarika models accept language_code; saaras models do not.
-                        if "saarika" in (stt_model or "").lower():
-                            selected_language = "hi-IN"
-                    asr_transcript = transcription_service.transcribe_text_only(
-                        audio_file_path=tmp_path,
-                        stt_provider=selected_stt_provider,
-                        stt_model=stt_model,
-                        organization_id=comp.organization_id,
-                        db=db,
-                        language=selected_language,
-                    )
-                    if asr_transcript:
-                        score_bundle = _compute_wer_cer(sample.text, asr_transcript)
-                        metrics["WER Raw"] = score_bundle.get("raw_wer")
-                        metrics["CER Raw"] = score_bundle.get("raw_cer")
-                        metrics["WER Normalized"] = score_bundle.get("normalized_wer")
-                        metrics["CER Normalized"] = score_bundle.get("normalized_cer")
-                        metrics["WER"] = (
-                            score_bundle.get("normalized_wer")
-                            if score_bundle.get("normalized_wer") is not None
-                            else score_bundle.get("raw_wer")
-                        )
-                        metrics["CER"] = (
-                            score_bundle.get("normalized_cer")
-                            if score_bundle.get("normalized_cer") is not None
-                            else score_bundle.get("raw_cer")
-                        )
-                        metrics["ASR Transcript"] = asr_transcript
+                    if any_qualitative_enabled:
+                        metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
+                        metrics = _filter_qualitative_metrics(metrics, enabled_voice_metric_names)
                     else:
-                        metrics["WER"] = None
-                        metrics["CER"] = None
-                        metrics["WER Raw"] = None
-                        metrics["CER Raw"] = None
-                        metrics["WER Normalized"] = None
-                        metrics["CER Normalized"] = None
-                        metrics["ASR Transcript"] = None
+                        metrics = {}
 
-                _evaluate_custom_voice_metrics(sample, metrics, comp, db)
+                    if stt_available and sample.text:
+                        selected_stt_provider = ModelProvider(stt_provider_str)
+                        selected_language = None
+                        if selected_stt_provider == ModelProvider.SARVAM:
+                            if "saarika" in (stt_model or "").lower():
+                                selected_language = "hi-IN"
+                        asr_transcript = transcription_service.transcribe_text_only(
+                            audio_file_path=tmp_path,
+                            stt_provider=selected_stt_provider,
+                            stt_model=stt_model,
+                            organization_id=comp.organization_id,
+                            db=db,
+                            language=selected_language,
+                        )
+                        if asr_transcript:
+                            score_bundle = _compute_wer_cer(sample.text, asr_transcript)
+                            metrics["WER Raw"] = score_bundle.get("raw_wer")
+                            metrics["CER Raw"] = score_bundle.get("raw_cer")
+                            metrics["WER Normalized"] = score_bundle.get("normalized_wer")
+                            metrics["CER Normalized"] = score_bundle.get("normalized_cer")
+                            metrics["WER"] = (
+                                score_bundle.get("normalized_wer")
+                                if score_bundle.get("normalized_wer") is not None
+                                else score_bundle.get("raw_wer")
+                            )
+                            metrics["CER"] = (
+                                score_bundle.get("normalized_cer")
+                                if score_bundle.get("normalized_cer") is not None
+                                else score_bundle.get("raw_cer")
+                            )
+                            metrics["ASR Transcript"] = asr_transcript
+                        else:
+                            metrics["WER"] = None
+                            metrics["CER"] = None
+                            metrics["WER Raw"] = None
+                            metrics["CER Raw"] = None
+                            metrics["WER Normalized"] = None
+                            metrics["CER Normalized"] = None
+                            metrics["ASR Transcript"] = None
 
-                sample.evaluation_metrics = _sanitize_metrics(metrics)
-                db.commit()
-                evaluated += 1
+                    _evaluate_custom_voice_metrics(sample, metrics, comp, db)
 
-                logger.info(f"[TTS Eval] Sample {sample.id} metrics: {metrics}")
+                    sample.evaluation_metrics = _sanitize_metrics(metrics)
+                    db.commit()
+                    evaluated += 1
 
-            except Exception as e:
-                logger.warning("[TTS Eval] Sample {} eval failed: {}", sample.id, e)
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except Exception:
-                        pass
+                    logger.info(f"[TTS Eval] Sample {sample.id} metrics: {metrics}")
+
+                except Exception as e:
+                    logger.warning("[TTS Eval] Sample {} eval failed: {}", sample.id, e)
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
 
         from app.api.v1.routes.voice_playground import _recompute_summary
 
