@@ -33,11 +33,16 @@ def test_invite_and_list_invitations(iam_admin_override, authenticated_client):
         json={"email": "invitee@example.com", "role": "reader"},
     )
     assert invite_response.status_code == 201
-    assert invite_response.json()["email"] == "invitee@example.com"
+    body = invite_response.json()
+    assert body["email"] == "invitee@example.com"
+    assert body["invite_url"]
+    assert "/invite/" in body["invite_url"]
 
     list_response = authenticated_client.get("/api/v1/iam/invitations")
     assert list_response.status_code == 200
-    assert len(list_response.json()) == 1
+    listed = list_response.json()
+    assert len(listed) == 1
+    assert listed[0]["invite_url"]
 
 
 def test_list_invitations_excludes_accepted(

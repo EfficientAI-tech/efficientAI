@@ -15,6 +15,8 @@ from app.models.database import (
     Organization,
     OrganizationMember,
     RoleEnum,
+    Workspace,
+    WorkspaceMember,
 )
 
 
@@ -112,6 +114,13 @@ def test_accept_pending_invitation_creates_membership(
     target_org = Organization(id=uuid4(), name="Invited Org")
     db_session.add(target_org)
     db_session.commit()
+    from app.services.organization_provisioning import provision_default_workspace
+
+    provision_default_workspace(
+        db_session,
+        organization_id=target_org.id,
+        created_by_user_id=user_context["user"].id,
+    )
 
     invitation = _make_invitation(
         db_session,
@@ -144,6 +153,18 @@ def test_accept_pending_invitation_creates_membership(
         membership.role == RoleEnum.WRITER.value
         or membership.role == RoleEnum.WRITER
     )
+
+    workspace = db_session.query(Workspace).filter(Workspace.organization_id == target_org.id).first()
+    if workspace is not None:
+        ws_member = (
+            db_session.query(WorkspaceMember)
+            .filter(
+                WorkspaceMember.workspace_id == workspace.id,
+                WorkspaceMember.user_id == user_context["user"].id,
+            )
+            .first()
+        )
+        assert ws_member is not None
 
 
 def test_accept_expired_invitation_returns_400(

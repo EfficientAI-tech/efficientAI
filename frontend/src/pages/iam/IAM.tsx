@@ -59,6 +59,8 @@ export default function IAM() {
   const [editingOrgName, setEditingOrgName] = useState(false)
   const [orgNameDraft, setOrgNameDraft] = useState('')
   const [copiedOrgId, setCopiedOrgId] = useState(false)
+  const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null)
+  const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null)
 
   const { data: organization, isLoading: orgLoading } = useQuery({
     queryKey: ['iam', 'organization'],
@@ -93,12 +95,17 @@ export default function IAM() {
 
   const inviteMutation = useMutation({
     mutationFn: (data: InvitationCreate) => apiClient.inviteUser(data),
-    onSuccess: () => {
+    onSuccess: (invitation) => {
       queryClient.invalidateQueries({ queryKey: ['iam'] })
       setShowInviteModal(false)
       setInviteEmail('')
       setInviteRole(Role.READER)
-      showToast('Invitation sent', 'success')
+      if (invitation.invite_url) {
+        setLastInviteUrl(invitation.invite_url)
+        showToast('Invitation created — copy the link below to share it', 'success')
+      } else {
+        showToast('Invitation created', 'success')
+      }
     },
     onError: (error: unknown) => {
       showToast(getApiErrorMessage(error, 'Failed to send invitation'), 'error')
@@ -172,6 +179,14 @@ export default function IAM() {
   const handleInvite = (e: React.FormEvent) => {
     e.preventDefault()
     inviteMutation.mutate({ email: inviteEmail, role: inviteRole })
+  }
+
+  const handleCopyInviteLink = async (invitation: Invitation) => {
+    if (!invitation.invite_url) return
+    await navigator.clipboard.writeText(invitation.invite_url)
+    setCopiedInviteId(invitation.id)
+    setTimeout(() => setCopiedInviteId(null), 2000)
+    showToast('Invite link copied', 'success')
   }
 
   const closeResetPasswordModal = () => {
@@ -541,6 +556,30 @@ export default function IAM() {
           </h2>
         </div>
         <div className="p-6">
+          {lastInviteUrl && (
+            <div className="mb-4 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+              <code className="flex-1 text-xs font-mono text-green-900 break-all">{lastInviteUrl}</code>
+              <button
+                type="button"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(lastInviteUrl)
+                  showToast('Invite link copied', 'success')
+                }}
+                className="p-2 text-green-700 hover:bg-green-100 rounded-lg"
+                title="Copy invite link"
+              >
+                <Copy className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setLastInviteUrl(null)}
+                className="p-2 text-green-700 hover:bg-green-100 rounded-lg"
+                title="Dismiss"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           {invitationsLoading ? (
             <div className="text-center py-8 text-gray-500">Loading invitations...</div>
           ) : invitations && invitations.length > 0 ? (
@@ -558,6 +597,20 @@ export default function IAM() {
                   </div>
                   <div className="flex items-center gap-3">
                     {getInvitationStatusBadge(invitation.status)}
+                    {isAdmin && invitation.status === 'pending' && invitation.invite_url && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyInviteLink(invitation)}
+                        className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                        title="Copy invite link"
+                      >
+                        {copiedInviteId === invitation.id ? (
+                          <Check className="h-4 w-4 text-green-600" />
+                        ) : (
+                          <Copy className="h-4 w-4" />
+                        )}
+                      </button>
+                    )}
                     {isAdmin && invitation.status === 'pending' && (
                       <Button
                         variant="ghost"
@@ -648,7 +701,7 @@ export default function IAM() {
                   isLoading={inviteMutation.isPending}
                   className="flex-1"
                 >
-                  Send Invitation
+                  Create Invitation
                 </Button>
               </div>
             </form>

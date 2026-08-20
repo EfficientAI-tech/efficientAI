@@ -260,6 +260,17 @@ export interface Invitation {
   expires_at: string
   created_at: string
   organization_name?: string | null
+  invite_url?: string | null
+}
+
+export interface InvitationPreview {
+  organization_name?: string | null
+  email: string
+  role: string
+  expires_at: string
+  status: string
+  user_exists: boolean
+  has_password: boolean
 }
 
 export interface InvitationCreate {
