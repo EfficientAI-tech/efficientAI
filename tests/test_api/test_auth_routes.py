@@ -846,11 +846,17 @@ def test_switch_org_revokes_previous_session_tokens(
 
     login = client.post(
         "/api/v1/auth/login",
-        json={"email": "switch@example.com", "password": TEST_PASSWORD},
+        json={
+            "email": "switch@example.com",
+            "password": TEST_PASSWORD,
+            "organization_id": str(source_org.id),
+        },
     )
     assert login.status_code == 200
-    old_access = login.json()["access_token"]
-    old_refresh = login.json()["refresh_token"]
+    body = login.json()
+    assert "access_token" in body
+    old_access = body["access_token"]
+    old_refresh = body["refresh_token"]
 
     switch = client.post(
         "/api/v1/auth/switch-org",
