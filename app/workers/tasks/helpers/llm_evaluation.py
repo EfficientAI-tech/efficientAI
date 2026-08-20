@@ -144,6 +144,56 @@ def _parent_key(parent_metric) -> str:
     return (parent_metric.name or "parent").lower().replace(" ", "_")
 
 
+def _child_slug(child_metric) -> str:
+    """Stable slug for a categorization child label name."""
+    return child_metric.name.lower().replace(" ", "_")
+
+
+def _namespaced_child_key(parent_metric, child_metric) -> str:
+    """LLM JSON key for a child boolean scoped under its parent.
+
+    Prevents collisions when multiple categorization parents (e.g. two
+    Yes/No categories) share one batched JSON response.
+    """
+    return f"{_parent_key(parent_metric)}__{_child_slug(child_metric)}"
+
+
+def _use_namespaced_child_keys(
+    metric_groups: list[MetricPromptGroup] | None,
+) -> bool:
+    """True when batched ``metric_groups`` includes categorization parents."""
+    if metric_groups is None:
+        return False
+    return any(g.parent_metric is not None for g in metric_groups)
+
+
+def _read_child_boolean_raw(
+    evaluation_data: dict,
+    response_keys: list[str],
+    parent_metric,
+    child,
+    *,
+    use_namespaced: bool,
+) -> Any:
+    """Read a child's boolean from LLM JSON (namespaced key, then bare slug)."""
+    child_key = _child_slug(child)
+    if use_namespaced:
+        ns_key = _namespaced_child_key(parent_metric, child)
+        raw = evaluation_data.get(ns_key)
+        if raw is None:
+            matched = find_matching_key(ns_key, response_keys)
+            if matched:
+                raw = evaluation_data.get(matched)
+        if raw is not None:
+            return raw
+    raw = evaluation_data.get(child_key)
+    if raw is None:
+        matched = find_matching_key(child.name, response_keys)
+        if matched:
+            raw = evaluation_data.get(matched)
+    return raw
+
+
 def _sequence_key(parent_metric) -> str:
     """LLM JSON key holding the temporal flow of children for a parent.
 
@@ -332,6 +382,8 @@ def _render_parent_block(
     parent_metric,
     children: list,
     running_discovered: list | None = None,
+    *,
+    use_namespaced_child_keys: bool = False,
 ) -> str:
     """Build the per-parent prompt section for a hierarchical group.
 
@@ -354,16 +406,27 @@ def _render_parent_block(
         f"Context: {parent_desc}\n"
     )
     if selection_mode == "single_choice":
+        child_key_hint = (
+            "namespaced child keys (`parent__child`) listed below"
+            if use_namespaced_child_keys
+            else "child keys listed below"
+        )
         block += (
             "Mode: SINGLE-CHOICE. Pick EXACTLY ONE child label below that "
             "best describes what happened in this call. Output a JSON "
-            f'field `{parent_key}` set to the chosen child key, AND set '
-            "every child key to true/false such that EXACTLY ONE is true. "
+            f'field `{parent_key}` set to the chosen child slug (without '
+            f"the parent prefix), AND set every {child_key_hint} to "
+            "true/false such that EXACTLY ONE is true. "
             "Any other configuration is invalid.\n"
         )
     else:
+        child_key_hint = (
+            "namespaced child key (`parent__child`)"
+            if use_namespaced_child_keys
+            else "child key"
+        )
         block += (
-            "Mode: MULTI-LABEL. Set each child key to true/false "
+            f"Mode: MULTI-LABEL. Set each {child_key_hint} to true/false "
             "INDEPENDENTLY. Some siblings are logically contradictory "
             "(e.g., 'customer_completed_survey' and 'angry_hangup' cannot "
             "both be true). MAINTAIN LOGICAL CONSISTENCY: do not mark "
@@ -372,7 +435,11 @@ def _render_parent_block(
 
     block += "Children (set each true/false):\n"
     for child in children:
-        child_key = child.name.lower().replace(" ", "_")
+        child_key = (
+            _namespaced_child_key(parent_metric, child)
+            if use_namespaced_child_keys
+            else _child_slug(child)
+        )
         child_desc = child.description or f"Detect {child.name}"
         block += f'- "{child_key}" (true/false): {child_desc}\n'
         # When the user attached an illustrative example to this label
@@ -714,12 +781,14 @@ The following is the system prompt / instructions that the agent was configured 
 """
 
     if metric_groups is not None:
+        use_namespaced = _use_namespaced_child_keys(metric_groups)
         for group in metric_groups:
             if group.parent_metric is not None:
                 prompt += _render_parent_block(
                     group.parent_metric,
                     group.metrics,
                     running_discovered=group.running_discovered,
+                    use_namespaced_child_keys=use_namespaced,
                 )
             elif group.metrics:
                 prompt += _render_flat_metric_lines(group.metrics)
@@ -777,22 +846,36 @@ def _append_parent_response_example(
     instructions: str,
     parent_metric,
     llm_metrics: list,
+    *,
+    use_namespaced_child_keys: bool = False,
 ) -> str:
     """Append JSON example lines for one categorization parent group."""
     parent_key = _parent_key(parent_metric)
     sequence_key = _sequence_key(parent_metric)
     selection_mode = (parent_metric.selection_mode or "multi_label").lower()
-    child_keys = [c.name.lower().replace(" ", "_") for c in llm_metrics]
+    child_keys = [_child_slug(c) for c in llm_metrics]
     if not child_keys:
         child_keys = ["example_child"]
     chosen_child = child_keys[0]
     if selection_mode == "single_choice":
         instructions += f'  "{parent_key}": "{chosen_child}",\n'
         for i, ck in enumerate(child_keys):
-            instructions += f'  "{ck}": {"true" if i == 0 else "false"},\n'
+            if use_namespaced_child_keys and i < len(llm_metrics):
+                json_key = _namespaced_child_key(parent_metric, llm_metrics[i])
+            elif use_namespaced_child_keys:
+                json_key = f"{parent_key}__{ck}"
+            else:
+                json_key = ck
+            instructions += f'  "{json_key}": {"true" if i == 0 else "false"},\n'
     else:
         for i, ck in enumerate(child_keys):
-            instructions += f'  "{ck}": {"true" if i % 2 == 0 else "false"},\n'
+            if use_namespaced_child_keys and i < len(llm_metrics):
+                json_key = _namespaced_child_key(parent_metric, llm_metrics[i])
+            elif use_namespaced_child_keys:
+                json_key = f"{parent_key}__{ck}"
+            else:
+                json_key = ck
+            instructions += f'  "{json_key}": {"true" if i % 2 == 0 else "false"},\n'
     seq_sample = child_keys[: min(2, len(child_keys))]
     seq_str = ", ".join(f'"{k}"' for k in seq_sample)
     instructions += f'  "{sequence_key}": [{seq_str}],\n'
@@ -873,6 +956,7 @@ Example format:
 """
 
     if metric_groups is not None:
+        use_namespaced = _use_namespaced_child_keys(metric_groups)
         has_hierarchical = False
         for group in metric_groups:
             if group.parent_metric is not None:
@@ -881,6 +965,7 @@ Example format:
                     instructions,
                     group.parent_metric,
                     group.metrics,
+                    use_namespaced_child_keys=use_namespaced,
                 )
             elif group.metrics:
                 instructions = _append_flat_response_example(
@@ -899,11 +984,20 @@ Example format:
 
         hierarchical_rules = ""
         if has_hierarchical:
+            ns_rule = (
+                " Use `{parent_slug}__{child_slug}` keys for child booleans "
+                "(never bare child slugs at the root when multiple categories "
+                "are present)."
+                if use_namespaced
+                else ""
+            )
             hierarchical_rules = (
-                "\n6. Categorization groups: child keys are BOOLEAN (true/false). "
-                "Single-choice parents require EXACTLY ONE true child. "
+                "\n6. Categorization groups: child keys are BOOLEAN (true/false)."
+                + ns_rule
+                + " Single-choice parents require EXACTLY ONE true child. "
                 "Multi-label parents set children independently. "
-                "Each parent's sequence array uses EXACT child keys in temporal order."
+                "Each parent's sequence array uses child slugs only (no parent "
+                "prefix) in temporal order."
             )
 
         metrics_discovery_rule = ""
@@ -1073,6 +1167,7 @@ def _build_system_message(
     """Build the system message for LLM evaluation."""
     exact_keys: list[str] = []
     if metric_groups is not None:
+        use_namespaced = _use_namespaced_child_keys(metric_groups)
         for group in metric_groups:
             if group.parent_metric is not None:
                 parent_root_key = _parent_key(group.parent_metric)
@@ -1082,14 +1177,19 @@ def _build_system_message(
                     exact_keys.append(_discovered_key(group.parent_metric))
                 if _wants_rationale(group.parent_metric):
                     exact_keys.append(_rationale_key(parent_root_key))
+                for metric in group.metrics:
+                    key = (
+                        _namespaced_child_key(group.parent_metric, metric)
+                        if use_namespaced
+                        else _child_slug(metric)
+                    )
+                    exact_keys.append(key)
             for metric in group.metrics:
+                if group.parent_metric is not None:
+                    continue
                 key = metric.name.lower().replace(" ", "_")
                 exact_keys.append(key)
-                if (
-                    group.parent_metric is None
-                    and _wants_rationale(metric)
-                    and get_metric_type_value(metric) != "text"
-                ):
+                if _wants_rationale(metric) and get_metric_type_value(metric) != "text":
                     exact_keys.append(_rationale_key(key))
     elif parent_metric is not None:
         parent_root_key = _parent_key(parent_metric)
@@ -1366,9 +1466,26 @@ def evaluate_with_llm(
     # disable thinking and enforce a floor for Gemini 2.5.
     metric_count = max(1, len(metrics_for_call))
     rationale_count = sum(1 for m in metrics_for_call if _wants_rationale(m))
+    hierarchical_extra = 0
+    if metric_groups is not None:
+        for group in metric_groups:
+            if group.parent_metric is None:
+                continue
+            parent = group.parent_metric
+            hierarchical_extra += 2  # parent_key + sequence
+            hierarchical_extra += len(group.metrics)  # namespaced child booleans
+            if _wants_rationale(parent):
+                hierarchical_extra += 1
+            if _discovery_enabled(parent):
+                hierarchical_extra += 1
     dynamic_max_tokens = min(
         8192,
-        max(2000, 300 * metric_count + 200 * rationale_count),
+        max(
+            2000,
+            300 * metric_count
+            + 200 * rationale_count
+            + 150 * hierarchical_extra,
+        ),
     )
 
     evaluation_start_time = time.time()
@@ -1451,6 +1568,7 @@ def _map_evaluation_to_metrics(
     response_keys = list(evaluation_data.keys())
 
     if metric_groups is not None:
+        use_namespaced = _use_namespaced_child_keys(metric_groups)
         for group in metric_groups:
             if group.parent_metric is not None:
                 _map_hierarchical_group(
@@ -1458,6 +1576,7 @@ def _map_evaluation_to_metrics(
                     group.metrics,
                     group.parent_metric,
                     metric_scores,
+                    use_namespaced_child_keys=use_namespaced,
                 )
             else:
                 metric_scores.update(
@@ -1565,6 +1684,8 @@ def _map_hierarchical_group(
     children: list,
     parent_metric,
     metric_scores: dict[str, dict[str, Any]],
+    *,
+    use_namespaced_child_keys: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Parse the LLM response for a parent + children group.
 
@@ -1579,17 +1700,19 @@ def _map_hierarchical_group(
 
     child_key_to_metric: dict[str, Any] = {}
     for child in children:
-        child_key_to_metric[child.name.lower().replace(" ", "_")] = child
+        child_key_to_metric[_child_slug(child)] = child
 
     # ----- Per-child booleans -----
     child_results: dict[str, dict[str, Any]] = {}
     for child in children:
-        child_key = child.name.lower().replace(" ", "_")
-        raw_value = evaluation_data.get(child_key)
-        if raw_value is None:
-            matched = find_matching_key(child.name, response_keys)
-            if matched:
-                raw_value = evaluation_data.get(matched)
+        child_key = _child_slug(child)
+        raw_value = _read_child_boolean_raw(
+            evaluation_data,
+            response_keys,
+            parent_metric,
+            child,
+            use_namespaced=use_namespaced_child_keys,
+        )
         score = extract_score(raw_value)
         score = normalize_score(score, "boolean")
         if not isinstance(score, bool):
