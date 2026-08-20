@@ -154,11 +154,13 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
 
   const recordingLinks = {
     combined:
+      (raw.artifact as any)?.presignedMonoUrl ||
       callData.recording_urls?.combined_url ||
       raw.recordingUrl ||
       artifact.recordingUrl ||
       artifactMono.combinedUrl,
     stereo:
+      (raw.artifact as any)?.presignedStereoUrl ||
       callData.recording_urls?.stereo_url ||
       raw.stereoRecordingUrl ||
       artifact.stereoRecordingUrl ||

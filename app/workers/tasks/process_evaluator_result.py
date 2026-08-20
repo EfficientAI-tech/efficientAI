@@ -393,18 +393,9 @@ def _extract_audio_url(call_data: dict, platform: str) -> str | None:
     if platform == "retell":
         return call_data.get("recording_url")
     if platform == "vapi":
-        return (
-            call_data.get("recordingUrl")
-            or call_data.get("stereoRecordingUrl")
-            or artifact.get("recordingUrl")
-            or artifact.get("stereoRecordingUrl")
-            or mono_recording.get("combinedUrl")
-            or recording_urls.get("combined_url")
-            or recording_urls.get("stereo_url")
-            or call_data.get("recordingUrl")
-            or provider_payload.get("recordingUrl")
-            or provider_payload.get("stereoRecordingUrl")
-        )
+        from app.services.voice_providers.vapi_recording import extract_vapi_recording_url
+
+        return extract_vapi_recording_url(call_data)
     if platform == "smallest":
         return (
             call_data.get("recording_url")
@@ -482,7 +473,10 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
     if platform == "elevenlabs" and decrypted_key:
         headers = {"xi-api-key": decrypted_key}
     elif platform == "vapi" and decrypted_key:
-        headers = {"Authorization": f"Bearer {decrypted_key}"}
+        from app.services.voice_providers.vapi_recording import is_presigned_storage_url
+
+        if not is_presigned_storage_url(audio_url):
+            headers = {"Authorization": f"Bearer {decrypted_key}"}
     try:
         response = _http.get(audio_url, headers=headers, timeout=120)
     except Exception as download_err:

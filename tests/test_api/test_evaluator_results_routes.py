@@ -1,6 +1,14 @@
 """API tests for evaluator results routes."""
 
 
+def _blob_storage_service():
+    """Resolve the blob storage singleton exposed as s3_service."""
+    import importlib
+
+    s3_module = importlib.import_module("app.services.storage.s3_service")
+    return s3_module.s3_service
+
+
 def test_derive_speaker_segments_supports_smallest_payload():
     from app.api.v1.routes.evaluator_results import _derive_speaker_segments_from_call_data
 
@@ -234,3 +242,239 @@ def test_evaluator_results_overview_and_aggregate(
     agg = aggregate.json()
     assert agg["total_rows"] == 1
     assert agg["completed_rows"] == 1
+
+
+def test_stream_evaluator_result_audio_from_s3(
+    authenticated_client, make_evaluator_result, monkeypatch
+):
+    storage = _blob_storage_service()
+
+    make_evaluator_result(
+        result_id="991122",
+        audio_s3_key="audio/organizations/test/evaluations/call-1/recording.mp3",
+        provider_platform="elevenlabs",
+        call_data={
+            "recording_url": "https://api.elevenlabs.io/v1/convai/conversations/x/audio",
+        },
+    )
+
+    monkeypatch.setattr(storage, "is_enabled", lambda: True)
+    monkeypatch.setattr(
+        storage,
+        "download_file_by_key",
+        lambda _key: b"fake-audio-bytes",
+    )
+
+    response = authenticated_client.get("/api/v1/evaluator-results/991122/audio")
+
+    assert response.status_code == 200
+    assert response.content == b"fake-audio-bytes"
+    assert response.headers["content-type"] == "audio/mpeg"
+
+
+def test_stream_evaluator_result_audio_proxies_elevenlabs(
+    authenticated_client,
+    make_agent,
+    make_integration,
+    make_evaluator_result,
+    monkeypatch,
+):
+    from app.models.enums import IntegrationPlatform
+
+    integration = make_integration(
+        platform=IntegrationPlatform.ELEVENLABS.value,
+        api_key="enc-key",
+    )
+    agent = make_agent(integration=integration)
+    make_evaluator_result(
+        result_id="992233",
+        agent_id=agent.id,
+        audio_s3_key=None,
+        provider_platform="elevenlabs",
+        provider_call_id="conv-123",
+        call_data={
+            "recording_urls": {
+                "conversation_audio": (
+                    "https://api.elevenlabs.io/v1/convai/conversations/conv-123/audio"
+                ),
+            },
+        },
+    )
+
+    monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "test-xi-key")
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "audio/mpeg"}
+
+        def iter_content(self, chunk_size=8192):
+            yield b"proxied-audio"
+
+    def fake_get(url, headers=None, stream=False, timeout=60):
+        captured["url"] = url
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    response = authenticated_client.get("/api/v1/evaluator-results/992233/audio")
+
+    assert response.status_code == 200
+    assert response.content == b"proxied-audio"
+    assert captured["headers"]["xi-api-key"] == "test-xi-key"
+
+
+def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
+    authenticated_client,
+    make_agent,
+    make_integration,
+    make_evaluator_result,
+    monkeypatch,
+):
+    from app.models.enums import IntegrationPlatform
+
+    integration = make_integration(
+        platform=IntegrationPlatform.VAPI.value,
+        api_key="enc-vapi-key",
+    )
+    agent = make_agent(integration=integration)
+    make_evaluator_result(
+        result_id="994455",
+        agent_id=agent.id,
+        audio_s3_key=None,
+        provider_platform="vapi",
+        call_data={"recordingUrl": "https://storage.vapi.ai/recording.wav"},
+    )
+
+    monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "vapi-private-key")
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "audio/wav"}
+
+        def iter_content(self, chunk_size=8192):
+            yield b"vapi-audio"
+
+    def fake_get(url, headers=None, stream=False, timeout=60):
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    response = authenticated_client.get("/api/v1/evaluator-results/994455/audio")
+
+    assert response.status_code == 200
+    assert response.content == b"vapi-audio"
+    assert captured["headers"]["Authorization"] == "Bearer vapi-private-key"
+
+
+def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
+    authenticated_client,
+    make_evaluator_result,
+):
+    signed_url = (
+        "https://hipaa-recordings.example/recording.wav?"
+        "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
+    )
+    make_evaluator_result(
+        result_id="994466",
+        audio_s3_key=None,
+        provider_platform="vapi",
+        call_data={
+            "artifact": {
+                "presignedMonoUrl": signed_url,
+                "recordingUrl": "https://raw.example/recording.wav",
+            }
+        },
+    )
+
+    response = authenticated_client.get(
+        "/api/v1/evaluator-results/994466/audio",
+        follow_redirects=False,
+    )
+
+    assert response.status_code in {302, 307}
+    assert response.headers["location"] == signed_url
+
+
+def test_stream_evaluator_result_audio_not_found(
+    authenticated_client, make_evaluator_result
+):
+    make_evaluator_result(
+        result_id="993344",
+        audio_s3_key=None,
+        provider_platform="elevenlabs",
+        call_data={},
+    )
+
+    response = authenticated_client.get("/api/v1/evaluator-results/993344/audio")
+
+    assert response.status_code == 404
+
+
+def test_re_evaluate_downloads_vapi_audio_with_bearer(
+    authenticated_client,
+    make_agent,
+    make_integration,
+    make_evaluator,
+    make_evaluator_result,
+    monkeypatch,
+):
+    from app.models.enums import IntegrationPlatform
+
+    integration = make_integration(
+        platform=IntegrationPlatform.VAPI.value,
+        api_key="enc",
+    )
+    agent = make_agent(integration=integration)
+    evaluator = make_evaluator(agent_id=agent.id, evaluator_id="881122")
+    result = make_evaluator_result(
+        result_id="665544",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        audio_s3_key=None,
+        provider_platform="vapi",
+        provider_call_id="call-vapi-1",
+        transcription="hello world",
+        call_data={"recordingUrl": "https://storage.vapi.ai/recording.wav"},
+    )
+
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+        content = b"audio-bytes"
+        headers = {"content-type": "audio/mpeg"}
+
+    def fake_get(url, headers=None, timeout=120):
+        captured["headers"] = headers
+        return FakeResp()
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "vapi-secret")
+    storage = _blob_storage_service()
+    monkeypatch.setattr(
+        storage,
+        "upload_file_by_key",
+        lambda *_args, **_kwargs: None,
+    )
+
+    class FakeTask:
+        id = "task-1"
+
+    monkeypatch.setattr(
+        "app.workers.celery_app.process_evaluator_result_task.delay",
+        lambda *_args, **_kwargs: FakeTask(),
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/evaluator-results/{result.result_id}/re-evaluate"
+    )
+
+    assert response.status_code == 200
+    assert captured["headers"]["Authorization"] == "Bearer vapi-secret"
+

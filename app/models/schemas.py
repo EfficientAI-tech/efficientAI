@@ -410,6 +410,13 @@ class AgentResponse(BaseModel):
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]
     provider_prompt: Optional[str] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: int = Field(
+        default=15,
+        ge=0,
+        le=600,
+        description="End live calls after this many seconds of silence (0 disables)",
+    )
     provider_prompt_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

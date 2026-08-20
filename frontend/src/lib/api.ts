@@ -4471,6 +4471,14 @@ class ApiClient {
     return response.data
   }
 
+  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+      { responseType: 'blob' },
+    )
+    return URL.createObjectURL(response.data)
+  }
+
   async createEvaluatorResultManual(data: {
     evaluator_id: string
     audio_s3_key: string
