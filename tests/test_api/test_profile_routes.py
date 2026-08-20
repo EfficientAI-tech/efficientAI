@@ -167,7 +167,7 @@ def test_accept_pending_invitation_creates_membership(
         assert ws_member is not None
 
 
-def test_accept_expired_invitation_returns_400(
+def test_accept_expired_invitation_returns_410(
     authenticated_client, user_context, db_session
 ):
     target_org = Organization(id=uuid4(), name="Stale Org")
@@ -186,7 +186,7 @@ def test_accept_expired_invitation_returns_400(
         f"/api/v1/profile/invitations/{invitation.id}/accept"
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 410
     assert "expired" in response.json()["detail"].lower()
 
 
