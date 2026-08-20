@@ -35,6 +35,8 @@ def test_invite_and_list_invitations(iam_admin_override, authenticated_client):
     assert invite_response.status_code == 201
     body = invite_response.json()
     assert body["email"] == "invitee@example.com"
+    assert body["invite_path"]
+    assert body["invite_path"].startswith("/invite/")
     assert body["invite_url"]
     assert "/invite/" in body["invite_url"]
 
@@ -42,6 +44,7 @@ def test_invite_and_list_invitations(iam_admin_override, authenticated_client):
     assert list_response.status_code == 200
     listed = list_response.json()
     assert len(listed) == 1
+    assert listed[0]["invite_path"]
     assert listed[0]["invite_url"]
 
 

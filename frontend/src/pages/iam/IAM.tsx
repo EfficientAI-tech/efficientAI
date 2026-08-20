@@ -11,6 +11,7 @@ import { useIsAdmin } from '../../hooks/useRole'
 import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
+import { buildInviteShareUrl } from '../../lib/inviteUrl'
 
 type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
 
@@ -100,9 +101,14 @@ export default function IAM() {
       setShowInviteModal(false)
       setInviteEmail('')
       setInviteRole(Role.READER)
-      if (invitation.invite_url) {
-        setLastInviteUrl(invitation.invite_url)
-        showToast('Invitation created — copy the link below to share it', 'success')
+      if (invitation.invite_path || invitation.invite_url) {
+        const shareUrl = buildInviteShareUrl(invitation)
+        if (shareUrl) {
+          setLastInviteUrl(shareUrl)
+          showToast('Invitation created — copy the link below to share it', 'success')
+        } else {
+          showToast('Invitation created', 'success')
+        }
       } else {
         showToast('Invitation created', 'success')
       }
@@ -182,8 +188,9 @@ export default function IAM() {
   }
 
   const handleCopyInviteLink = async (invitation: Invitation) => {
-    if (!invitation.invite_url) return
-    await navigator.clipboard.writeText(invitation.invite_url)
+    const shareUrl = buildInviteShareUrl(invitation)
+    if (!shareUrl) return
+    await navigator.clipboard.writeText(shareUrl)
     setCopiedInviteId(invitation.id)
     setTimeout(() => setCopiedInviteId(null), 2000)
     showToast('Invite link copied', 'success')
@@ -597,7 +604,7 @@ export default function IAM() {
                   </div>
                   <div className="flex items-center gap-3">
                     {getInvitationStatusBadge(invitation.status)}
-                    {isAdmin && invitation.status === 'pending' && invitation.invite_url && (
+                    {isAdmin && invitation.status === 'pending' && buildInviteShareUrl(invitation) && (
                       <button
                         type="button"
                         onClick={() => handleCopyInviteLink(invitation)}

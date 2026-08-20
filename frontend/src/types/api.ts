@@ -260,6 +260,7 @@ export interface Invitation {
   expires_at: string
   created_at: string
   organization_name?: string | null
+  invite_path?: string | null
   invite_url?: string | null
 }
 

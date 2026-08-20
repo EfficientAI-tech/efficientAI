@@ -695,6 +695,7 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
     organization_name: Optional[str] = None  # Include organization name
+    invite_path: Optional[str] = None
     invite_url: Optional[str] = None
 
     @field_validator('role', mode='before')

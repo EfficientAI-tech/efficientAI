@@ -34,14 +34,19 @@ def to_aware_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def build_invite_path(token: str) -> str:
+    """Build the frontend-relative invite path for the given token."""
+    return f"/invite/{token}"
+
+
 def build_invite_url(token: str) -> str:
-    """Build a shareable frontend invite link for the given token."""
+    """Build an absolute invite link (for server-side/email use when base URL is configured)."""
     base = (settings.FRONTEND_BASE_URL or "").strip().rstrip("/")
     if not base and settings.CORS_ORIGINS:
         base = settings.CORS_ORIGINS[0].rstrip("/")
     if not base:
         base = "http://localhost:8000"
-    return f"{base}/invite/{token}"
+    return f"{base}{build_invite_path(token)}"
 
 
 def get_invitation_by_token(db: Session, token: str) -> Optional[Invitation]:
@@ -184,8 +189,10 @@ def invitation_to_response_dict(
         organization_name = org.name if org else None
 
     status_value = getattr(invitation.status, "value", invitation.status)
+    invite_path = None
     invite_url = None
     if status_value == InvitationStatus.PENDING.value:
+        invite_path = build_invite_path(invitation.token)
         invite_url = build_invite_url(invitation.token)
 
     return {
@@ -197,5 +204,6 @@ def invitation_to_response_dict(
         "expires_at": invitation.expires_at,
         "created_at": invitation.created_at,
         "organization_name": organization_name,
+        "invite_path": invite_path,
         "invite_url": invite_url,
     }
