@@ -264,6 +264,18 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
     return token.strip()
 
 
+def _revoke_local_password_access_token(bearer: str) -> None:
+    try:
+        claims = decode_access_token(bearer)
+        jti = claims.get("jti")
+        exp = claims.get("exp")
+        if jti and exp:
+            ttl = max(int(exp) - int(datetime.now(timezone.utc).timestamp()), 1)
+            revoke_access_jti(jti, ttl)
+    except JWTError:
+        pass
+
+
 def _issue_session_tokens(
     db: Session,
     *,
@@ -485,15 +497,7 @@ def logout(
     """Revoke the current session's refresh token and blacklist the access token."""
     bearer = _extract_bearer(authorization)
     if bearer and principal.auth_method == AuthMethod.LOCAL_PASSWORD:
-        try:
-            claims = decode_access_token(bearer)
-            jti = claims.get("jti")
-            exp = claims.get("exp")
-            if jti and exp:
-                ttl = max(int(exp) - int(datetime.now(timezone.utc).timestamp()), 1)
-                revoke_access_jti(jti, ttl)
-        except JWTError:
-            pass
+        _revoke_local_password_access_token(bearer)
 
     if payload and payload.refresh_token:
         revoke_refresh_token(db, payload.refresh_token)
@@ -571,12 +575,14 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)) -> T
 
 class SwitchOrgRequest(BaseModel):
     organization_id: str
+    refresh_token: Optional[str] = None
 
 
 @router.post("/switch-org", response_model=TokenResponse)
 def switch_organization(
     payload: SwitchOrgRequest,
     principal: Principal = Depends(get_principal),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
     """
@@ -639,6 +645,13 @@ def switch_organization(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User is no longer active.",
         )
+
+    if principal.auth_method == AuthMethod.LOCAL_PASSWORD:
+        bearer = _extract_bearer(authorization)
+        if bearer:
+            _revoke_local_password_access_token(bearer)
+        if payload.refresh_token:
+            revoke_refresh_token(db, payload.refresh_token)
 
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()

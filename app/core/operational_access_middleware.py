@@ -1,4 +1,8 @@
-"""Restrict /metrics from the public internet (/health stays open for load balancers)."""
+"""Restrict /metrics from the public internet (/health stays open for load balancers).
+
+Not Spring Boot Actuator: this FastAPI app exposes /health (LB probes) and /metrics
+(Prometheus scrape). /metrics is gated by trusted IPs or OPERATIONAL_PUBLIC only.
+"""
 
 from __future__ import annotations
 
@@ -6,14 +10,11 @@ import ipaddress
 import logging
 from typing import Iterable
 
-from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.config import settings
-from app.core.auth.dependency import _resolve
-from app.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -75,22 +76,6 @@ def _resolved_trusted_ip(request: Request) -> str | None:
     return hops[-1]
 
 
-def _has_authenticated_caller(request: Request) -> bool:
-    db = SessionLocal()
-    try:
-        principal = _resolve(
-            request.headers.get("authorization"),
-            request.headers.get("x-api-key"),
-            request.headers.get("x-efficientai-api-key"),
-            db,
-        )
-        return principal is not None
-    except HTTPException:
-        return False
-    finally:
-        db.close()
-
-
 def is_operational_access_allowed(request: Request) -> bool:
     """Return True when the caller may access a protected operational endpoint."""
     if settings.OPERATIONAL_PUBLIC:
@@ -98,9 +83,6 @@ def is_operational_access_allowed(request: Request) -> bool:
 
     resolved_ip = _resolved_trusted_ip(request)
     if resolved_ip and _ip_in_trusted(resolved_ip, settings.OPERATIONAL_TRUSTED_IPS):
-        return True
-
-    if _has_authenticated_caller(request):
         return True
 
     return False

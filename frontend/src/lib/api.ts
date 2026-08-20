@@ -820,6 +820,15 @@ class ApiClient {
     return response.data
   }
 
+  async platformLogout(): Promise<{ success: boolean; admin_id: string }> {
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/platform/auth/logout`,
+      {},
+      { headers: this.platformHeaders() },
+    )
+    return response.data
+  }
+
   async getPlatformOrganizationStats(): Promise<PlatformOrganizationStats> {
     const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations/stats`, {
       headers: this.platformHeaders(),
@@ -952,6 +961,7 @@ class ApiClient {
   async switchOrganization(organizationId: string): Promise<TokenResponse> {
     const response = await this.client.post('/api/v1/auth/switch-org', {
       organization_id: organizationId,
+      refresh_token: localStorage.getItem('refreshToken') || undefined,
     })
     return response.data
   }

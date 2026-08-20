@@ -4,6 +4,7 @@ import { AlertCircle, Eye, EyeOff } from 'lucide-react'
 import { Button, Chip } from '@heroui/react'
 import Logo from '../../components/Logo'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import { usePlatformAdminStore } from '../../store/platformAdminStore'
 
 export default function PlatformLogin() {
@@ -42,7 +43,7 @@ export default function PlatformLogin() {
             'Is the backend running?',
         )
       } else {
-        setError(detail || 'Sign in failed')
+        setError(getApiErrorMessage(err, 'Sign in failed'))
       }
     } finally {
       setIsLoading(false)

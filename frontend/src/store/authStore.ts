@@ -114,16 +114,21 @@ export const useAuthStore = create<AuthState>((set, get) => {
 
     logout: () => {
       const refreshToken = get().refreshToken
-      apiClient.logout(refreshToken).catch(() => {})
-      apiClient.clearApiKey()
-      apiClient.clearAccessToken()
-      apiClient.clearRefreshToken()
-      localStorage.removeItem(STORAGE_API_KEY)
-      localStorage.removeItem(STORAGE_ACCESS_TOKEN)
-      localStorage.removeItem(STORAGE_REFRESH_TOKEN)
-      localStorage.removeItem(STORAGE_USER)
-      useWorkspaceStore.getState().clearActiveWorkspaceId()
-      set({ apiKey: null, accessToken: null, refreshToken: null, user: null })
+      const clearLocal = () => {
+        apiClient.clearApiKey()
+        apiClient.clearAccessToken()
+        apiClient.clearRefreshToken()
+        localStorage.removeItem(STORAGE_API_KEY)
+        localStorage.removeItem(STORAGE_ACCESS_TOKEN)
+        localStorage.removeItem(STORAGE_REFRESH_TOKEN)
+        localStorage.removeItem(STORAGE_USER)
+        useWorkspaceStore.getState().clearActiveWorkspaceId()
+        set({ apiKey: null, accessToken: null, refreshToken: null, user: null })
+      }
+      apiClient
+        .logout(refreshToken)
+        .catch(() => apiClient.logout(refreshToken))
+        .finally(clearLocal)
     },
 
     validate: async () => {

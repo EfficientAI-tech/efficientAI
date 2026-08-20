@@ -6,6 +6,7 @@ import type { AuthConfigResponse, AuthProviderConfig, LoginOrgOption } from '../
 import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { consumeAuthRedirectMessage } from '../../lib/authSession'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody, Button, Divider, Tabs, Tab } from '@heroui/react'
@@ -109,8 +110,8 @@ export default function Login() {
       }
       setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Invalid email or password')
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Invalid email or password'))
     } finally {
       setIsLoading(false)
     }
@@ -127,8 +128,8 @@ export default function Login() {
       }
       setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Could not sign in to the selected organization')
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Could not sign in to the selected organization'))
     } finally {
       setSelectingOrgId(null)
     }
@@ -154,8 +155,8 @@ export default function Login() {
       })
       setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Sign up failed')
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Sign up failed'))
     } finally {
       setIsLoading(false)
     }

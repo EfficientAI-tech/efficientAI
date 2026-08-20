@@ -124,9 +124,9 @@ class Settings(BaseSettings):
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
 
-    # Content Security Policy (Report-Only by default; set CSP_REPORT_ONLY=false to enforce)
+    # Content Security Policy (enforcing by default; set CSP_REPORT_ONLY=true for local report-only mode)
     CSP_ENABLED: bool = True
-    CSP_REPORT_ONLY: bool = True
+    CSP_REPORT_ONLY: bool = False
     CSP_POLICY: str = (
         "default-src 'self'; "
         "script-src 'self'; "
@@ -857,6 +857,15 @@ def load_config_from_file(config_path: str) -> None:
             settings.OPERATIONAL_PUBLIC = bool(operational_config["public"])
         if "trusted_ips" in operational_config:
             settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
+
+    if "security" in config_data:
+        security_config = config_data["security"]
+        if "csp_enabled" in security_config:
+            settings.CSP_ENABLED = bool(security_config["csp_enabled"])
+        if "csp_report_only" in security_config:
+            settings.CSP_REPORT_ONLY = bool(security_config["csp_report_only"])
+        if security_config.get("csp_policy"):
+            settings.CSP_POLICY = security_config["csp_policy"]
 
     if "flexprice" in config_data:
         flexprice_config = config_data["flexprice"]

@@ -777,3 +777,99 @@ def test_logout_revokes_access_and_refresh_tokens(
         json={"refresh_token": refresh_token},
     )
     assert refresh.status_code == 401
+
+
+def test_set_password_rejects_weak_password(
+    authenticated_client, db_session, org_id, api_key, seed_org, enable_local_password
+):
+    user = User(
+        id=uuid4(),
+        email="weakpw@example.com",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.flush()
+    _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
+
+    response = authenticated_client.post(
+        "/api/v1/auth/password",
+        json={"new_password": "alllowercase"},
+    )
+    assert response.status_code == 400
+    assert "uppercase" in response.json()["detail"].lower()
+
+
+def test_iam_reset_password_rejects_weak_password(
+    authenticated_client, db_session, org_id, enable_local_password
+):
+    target = User(
+        email="member@example.com",
+        password_hash=hash_password(TEST_PASSWORD),
+        is_active=True,
+    )
+    db_session.add(target)
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=target.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.commit()
+
+    response = authenticated_client.post(
+        f"/api/v1/iam/users/{target.id}/reset-password",
+        json={"new_password": "alllowercase"},
+    )
+    assert response.status_code == 400
+    assert "uppercase" in response.json()["detail"].lower()
+
+
+def test_switch_org_revokes_previous_session_tokens(
+    client, db_session, enable_local_password
+):
+    user, source_org = _seed_user_with_org(
+        db_session, "switch@example.com", TEST_PASSWORD
+    )
+    target_org = Organization(id=uuid4(), name="Switch Target Org")
+    db_session.add(target_org)
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(
+            organization_id=target_org.id,
+            user_id=user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "switch@example.com", "password": TEST_PASSWORD},
+    )
+    assert login.status_code == 200
+    old_access = login.json()["access_token"]
+    old_refresh = login.json()["refresh_token"]
+
+    switch = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(target_org.id),
+            "refresh_token": old_refresh,
+        },
+        headers={"Authorization": f"Bearer {old_access}"},
+    )
+    assert switch.status_code == 200
+
+    me = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {old_access}"},
+    )
+    assert me.status_code == 401
+
+    stale_refresh = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": old_refresh},
+    )
+    assert stale_refresh.status_code == 401

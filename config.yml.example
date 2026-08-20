@@ -13,11 +13,19 @@ server:
   port: 8000
 
 # Operational endpoints (/metrics). /health is always open for ALB/kube probes.
+# This is FastAPI, not Spring Boot Actuator — scanners may flag /health or /metrics
+# under an "Actuator" template. /metrics is IP-gated; /health returns minimal status only.
 # Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+
+# HTTP security headers (CSP, X-Frame-Options, etc.)
+security:
+  csp_enabled: true
+  csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
+  # csp_policy: "default-src 'self'; ..."  # optional override
 
 # Database Configuration
 database:
