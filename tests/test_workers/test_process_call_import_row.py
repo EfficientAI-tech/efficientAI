@@ -174,6 +174,15 @@ class _FakeS3:
         self.uploads.append({"key": key, "size": len(file_content), "content_type": content_type})
         return key
 
+    def get_organization_root_prefix(self, organization_id: str) -> str:
+        return f"{self.prefix}organizations/{organization_id}/"
+
+    def list_audio_files(self, **_kwargs):
+        return []
+
+    def generate_presigned_url_by_key(self, key, expiration=3600):
+        return f"https://example.com/{key}?exp={expiration}"
+
 
 class _NonClosingSession:
     """Proxy that forwards everything to the underlying session but ignores .close().

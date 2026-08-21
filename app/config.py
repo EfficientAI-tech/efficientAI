@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
+    FRONTEND_BASE_URL: str = ""
 
     # Content Security Policy (Report-Only by default; set CSP_REPORT_ONLY=false to enforce)
     CSP_ENABLED: bool = True
@@ -450,8 +451,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.DEBUG = app_config["debug"]
         if "secret_key" in app_config:
             settings.SECRET_KEY = app_config["secret_key"]
-    
-    if "server" in config_data:
+        if "frontend_base_url" in app_config:
+            settings.FRONTEND_BASE_URL = app_config["frontend_base_url"]
         server_config = config_data["server"]
         if "host" in server_config:
             settings.HOST = server_config["host"]

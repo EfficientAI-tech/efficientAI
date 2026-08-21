@@ -661,3 +661,221 @@ def test_build_evaluation_prompt_without_comparison_pair_keeps_single_transcript
     assert "hello there" in prompt
     assert "## Transcripts to Compare" not in prompt
     assert "### Production Transcript" not in prompt
+
+
+def test_build_evaluation_prompt_renders_multiple_parent_and_flat_groups():
+    parent_a = _make_metric(
+        name="Outcome A",
+        metric_type="boolean",
+        description="Category A",
+    )
+    parent_a.selection_mode = "multi_label"
+    parent_a.allow_discovery = False
+    child_a = _make_metric(name="Child A1", metric_type="boolean")
+    flat = _make_metric(name="Flat Score", metric_type="rating")
+    parent_b = _make_metric(
+        name="Outcome B",
+        metric_type="boolean",
+        description="Category B",
+    )
+    parent_b.selection_mode = "multi_label"
+    parent_b.allow_discovery = False
+    child_b = _make_metric(name="Child B1", metric_type="boolean")
+
+    groups = [
+        llm_evaluation.MetricPromptGroup(parent_a, [child_a], None),
+        llm_evaluation.MetricPromptGroup(parent_b, [child_b], None),
+        llm_evaluation.MetricPromptGroup(None, [flat], None),
+    ]
+    prompt = llm_evaluation.build_evaluation_prompt(
+        "transcript body",
+        [],
+        metric_groups=groups,
+    )
+    assert "### Category: Outcome A" in prompt
+    assert "### Category: Outcome B" in prompt
+    assert '"flat_score"' in prompt
+    assert len(llm_evaluation.flatten_metric_groups(groups)) == 3
+
+
+def test_map_evaluation_to_metrics_handles_metric_groups():
+    parent = _make_metric(name="Outcome", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    parent.allow_discovery = False
+    child = _make_metric(name="Yes Path", metric_type="boolean", metric_id="c1")
+    flat = _make_metric(name="Quality", metric_type="rating", metric_id="f1")
+    groups = [
+        llm_evaluation.MetricPromptGroup(parent, [child], None),
+        llm_evaluation.MetricPromptGroup(None, [flat], None),
+    ]
+    response = {
+        "yes_path": True,
+        "outcome__sequence": ["yes_path"],
+        "quality": 0.9,
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        response,
+        llm_evaluation.flatten_metric_groups(groups),
+        metric_groups=groups,
+    )
+    assert "c1" in scores
+    assert "p1" in scores
+    assert "f1" in scores
+    assert scores["f1"]["value"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Namespaced categorization child keys (batched metric_groups)
+# ---------------------------------------------------------------------------
+
+
+def test_batched_metric_groups_prompt_uses_namespaced_child_keys():
+    parent_a = _make_metric(name="AI reveal", metric_type="boolean")
+    parent_a.selection_mode = "single_choice"
+    parent_a.allow_discovery = False
+    yes_a = _make_metric(name="Yes", metric_type="boolean")
+    no_a = _make_metric(name="No", metric_type="boolean")
+    parent_b = _make_metric(name="Bot gibberish", metric_type="boolean")
+    parent_b.selection_mode = "single_choice"
+    parent_b.allow_discovery = False
+    yes_b = _make_metric(name="Yes", metric_type="boolean")
+    no_b = _make_metric(name="No", metric_type="boolean")
+
+    groups = [
+        llm_evaluation.MetricPromptGroup(parent_a, [yes_a, no_a], None),
+        llm_evaluation.MetricPromptGroup(parent_b, [yes_b, no_b], None),
+    ]
+    prompt = llm_evaluation.build_evaluation_prompt(
+        "transcript",
+        [],
+        metric_groups=groups,
+    )
+    assert '"ai_reveal__yes"' in prompt
+    assert '"ai_reveal__no"' in prompt
+    assert '"bot_gibberish__yes"' in prompt
+    assert '"bot_gibberish__no"' in prompt
+    # Bare yes/no must not appear as child boolean keys in batched mode.
+    assert '\n- "yes" (true/false)' not in prompt
+
+
+def test_batched_yes_no_parents_parse_independently_with_namespaced_keys():
+    parent_a = _make_metric(
+        name="AI reveal", metric_type="boolean", metric_id="parent-a"
+    )
+    parent_a.selection_mode = "single_choice"
+    parent_a.allow_discovery = False
+    yes_a = _make_metric(name="Yes", metric_type="boolean", metric_id="yes-a")
+    no_a = _make_metric(name="No", metric_type="boolean", metric_id="no-a")
+    parent_b = _make_metric(
+        name="Bot gibberish", metric_type="boolean", metric_id="parent-b"
+    )
+    parent_b.selection_mode = "single_choice"
+    parent_b.allow_discovery = False
+    yes_b = _make_metric(name="Yes", metric_type="boolean", metric_id="yes-b")
+    no_b = _make_metric(name="No", metric_type="boolean", metric_id="no-b")
+
+    groups = [
+        llm_evaluation.MetricPromptGroup(parent_a, [yes_a, no_a], None),
+        llm_evaluation.MetricPromptGroup(parent_b, [yes_b, no_b], None),
+    ]
+    response = {
+        "ai_reveal": "no",
+        "ai_reveal__yes": False,
+        "ai_reveal__no": True,
+        "ai_reveal__sequence": ["no"],
+        "bot_gibberish": "yes",
+        "bot_gibberish__yes": True,
+        "bot_gibberish__no": False,
+        "bot_gibberish__sequence": ["yes"],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        response,
+        llm_evaluation.flatten_metric_groups(groups),
+        metric_groups=groups,
+    )
+    assert scores["parent-a"]["value"] == "No"
+    assert scores["parent-b"]["value"] == "Yes"
+    assert scores["no-a"]["value"] is True
+    assert scores["yes-b"]["value"] is True
+
+
+def test_batched_outcome_detection_namespaced_children():
+    parent = _make_metric(
+        name="Outcome detection for ticket",
+        metric_type="boolean",
+        metric_id="outcome-parent",
+    )
+    parent.selection_mode = "single_choice"
+    parent.allow_discovery = False
+    children = [
+        _make_metric(
+            name="Product_not_delivered",
+            metric_type="boolean",
+            metric_id="c-prod",
+        ),
+        _make_metric(
+            name="Pincode_unserviceable",
+            metric_type="boolean",
+            metric_id="c-pin",
+        ),
+    ]
+    groups = [llm_evaluation.MetricPromptGroup(parent, children, None)]
+    prompt = llm_evaluation.build_evaluation_prompt(
+        "transcript", [], metric_groups=groups
+    )
+    assert '"outcome_detection_for_ticket__product_not_delivered"' in prompt
+    assert '"outcome_detection_for_ticket__pincode_unserviceable"' in prompt
+
+    response = {
+        "outcome_detection_for_ticket": "pincode_unserviceable",
+        "outcome_detection_for_ticket__product_not_delivered": False,
+        "outcome_detection_for_ticket__pincode_unserviceable": True,
+        "outcome_detection_for_ticket__sequence": ["pincode_unserviceable"],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        response,
+        llm_evaluation.flatten_metric_groups(groups),
+        metric_groups=groups,
+    )
+    assert scores["outcome-parent"]["value"] == "Pincode_unserviceable"
+    assert scores["c-pin"]["value"] is True
+    assert scores["c-prod"]["value"] is False
+
+
+def test_legacy_single_parent_path_still_parses_bare_child_keys():
+    parent = _make_metric(name="Call Outcome", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "single_choice"
+    parent.allow_discovery = False
+    happy = _make_metric(name="happy_completion", metric_type="boolean", metric_id="c1")
+    angry = _make_metric(name="angry_hangup", metric_type="boolean", metric_id="c2")
+    response = {
+        "call_outcome": "angry_hangup",
+        "happy_completion": False,
+        "angry_hangup": True,
+        "call_outcome__sequence": ["angry_hangup"],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        response,
+        [happy, angry],
+        parent_metric=parent,
+    )
+    assert scores["p1"]["value"] == "angry_hangup"
+    assert scores["c2"]["value"] is True
+
+
+def test_metric_groups_falls_back_to_bare_child_keys_when_namespaced_missing():
+    parent = _make_metric(name="Outcome", metric_type="boolean", metric_id="p1")
+    parent.selection_mode = "multi_label"
+    parent.allow_discovery = False
+    child = _make_metric(name="Yes Path", metric_type="boolean", metric_id="c1")
+    groups = [llm_evaluation.MetricPromptGroup(parent, [child], None)]
+    response = {
+        "yes_path": True,
+        "outcome__sequence": ["yes_path"],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        response,
+        llm_evaluation.flatten_metric_groups(groups),
+        metric_groups=groups,
+    )
+    assert scores["c1"]["value"] is True

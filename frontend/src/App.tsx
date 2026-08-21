@@ -5,6 +5,7 @@ import Layout from './components/Layout'
 
 // Auth
 import Login from './pages/auth/Login'
+import InviteAccept from './pages/auth/InviteAccept'
 import LoginCallback from './pages/auth/LoginCallback'
 import SelectOrganization from './pages/auth/SelectOrganization'
 import PlatformLogin from './pages/platform/PlatformLogin'
@@ -140,6 +141,7 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/invite/:token" element={<InviteAccept />} />
         <Route path="/platform/login" element={<PlatformLogin />} />
         <Route path="/platform" element={<PlatformAdmin />} />
         <Route path="/login/callback" element={<LoginCallback />} />

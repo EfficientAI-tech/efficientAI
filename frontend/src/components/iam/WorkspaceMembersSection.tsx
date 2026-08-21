@@ -316,121 +316,130 @@ export default function WorkspaceMembersSection() {
         </div>
 
         {selectedWorkspace && (
-          <div className="p-4 border border-gray-200 rounded-lg bg-gray-50 space-y-4">
-            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          <div className="p-4 border border-gray-200 rounded-lg bg-gray-50">
+            <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 mb-4">
               <Settings className="h-4 w-4" />
               Workspace Settings
             </h3>
 
-            <div>
-              <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                Workspace Name
-              </label>
-              {editingName && canEditWorkspaceName ? (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={nameDraft}
-                    onChange={(e) => setNameDraft(e.target.value)}
-                    maxLength={255}
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                  />
-                  <Button
-                    variant="primary"
-                    onClick={() => {
-                      const trimmed = nameDraft.trim()
-                      if (!trimmed) {
-                        showToast('Workspace name cannot be empty', 'error')
-                        return
-                      }
-                      renameMutation.mutate(trimmed)
-                    }}
-                    disabled={renameMutation.isPending}
-                  >
-                    Save
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      setEditingName(false)
-                      setNameDraft(selectedWorkspace.name)
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-medium text-gray-900">
-                    {selectedWorkspace.name}
-                  </span>
-                  {canEditWorkspaceName && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setNameDraft(selectedWorkspace.name)
-                        setEditingName(true)
-                      }}
-                      className="text-sm text-primary-700 hover:text-primary-800 font-medium"
-                    >
-                      Edit
-                    </button>
-                  )}
-                </div>
-              )}
-              <p className="mt-1 text-xs text-gray-500">
-                Slug stays fixed for links:{' '}
-                <span className="font-mono">{selectedWorkspace.slug}</span>
-              </p>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-4 sm:gap-6 items-start">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                  Workspace Name
+                </p>
+                {editingName && canEditWorkspaceName ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <input
+                      type="text"
+                      value={nameDraft}
+                      onChange={(e) => setNameDraft(e.target.value)}
+                      maxLength={255}
+                      className="flex-1 min-w-0 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="primary"
+                        onClick={() => {
+                          const trimmed = nameDraft.trim()
+                          if (!trimmed) {
+                            showToast('Workspace name cannot be empty', 'error')
+                            return
+                          }
+                          renameMutation.mutate(trimmed)
+                        }}
+                        disabled={renameMutation.isPending}
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setEditingName(false)
+                          setNameDraft(selectedWorkspace.name)
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="text-sm font-medium text-gray-900 truncate">
+                      {selectedWorkspace.name}
+                    </span>
+                    {canEditWorkspaceName && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNameDraft(selectedWorkspace.name)
+                          setEditingName(true)
+                        }}
+                        className="text-sm text-primary-700 hover:text-primary-800 font-medium flex-shrink-0"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+                )}
+                <p className="mt-1.5 text-xs text-gray-500">
+                  Slug: <span className="font-mono">{selectedWorkspace.slug}</span>
+                </p>
+              </div>
+
+              <div className="sm:text-right flex-shrink-0">
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                  Status
+                </p>
+                <span
+                  className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
+                    selectedWorkspace.is_active
+                      ? 'bg-green-100 text-green-800'
+                      : 'bg-gray-200 text-gray-700'
+                  }`}
+                >
+                  {selectedWorkspace.is_active ? 'Active' : 'Inactive'}
+                </span>
+              </div>
             </div>
 
             {isAdmin && (
-              <div className="pt-2 border-t border-gray-200">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
-                      Status
-                    </p>
-                    <span
-                      className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                        selectedWorkspace.is_active
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-gray-200 text-gray-700'
-                      }`}
-                    >
-                      {selectedWorkspace.is_active ? 'Active' : 'Inactive'}
-                    </span>
-                    {!selectedWorkspace.is_active && (
-                      <p className="mt-2 text-xs text-gray-600">
-                        Inactive workspaces are fully locked for all non-org-admin
-                        users. Reactivate to restore access.
-                      </p>
-                    )}
-                  </div>
-                  {selectedWorkspace.is_active ? (
-                    <Button
-                      variant="danger"
-                      disabled={selectedWorkspace.is_default || activeStatusMutation.isPending}
-                      onClick={() => setShowDeactivateModal(true)}
-                      title={
-                        selectedWorkspace.is_default
-                          ? 'The default workspace cannot be deactivated'
-                          : 'Deactivate workspace'
-                      }
-                    >
-                      Deactivate
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="primary"
-                      disabled={activeStatusMutation.isPending}
-                      onClick={() => activeStatusMutation.mutate(true)}
-                    >
-                      Reactivate
-                    </Button>
-                  )}
-                </div>
+              <div className="mt-4 pt-4 border-t border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <p className="text-xs text-gray-600">
+                  {selectedWorkspace.is_active
+                    ? 'Deactivate to lock this workspace for non–org-admin users.'
+                    : 'Reactivate to restore access for workspace members.'}
+                </p>
+                {selectedWorkspace.is_active ? (
+                  <Button
+                    variant="danger"
+                    disabled={selectedWorkspace.is_default || activeStatusMutation.isPending}
+                    onClick={() => setShowDeactivateModal(true)}
+                    title={
+                      selectedWorkspace.is_default
+                        ? 'The default workspace cannot be deactivated'
+                        : 'Deactivate workspace'
+                    }
+                    className="sm:flex-shrink-0"
+                  >
+                    Deactivate
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    disabled={activeStatusMutation.isPending}
+                    onClick={() => activeStatusMutation.mutate(true)}
+                    className="sm:flex-shrink-0"
+                  >
+                    Reactivate
+                  </Button>
+                )}
               </div>
+            )}
+
+            {!selectedWorkspace.is_active && (
+              <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                Inactive workspaces are fully locked for all non-org-admin users.
+              </p>
             )}
           </div>
         )}

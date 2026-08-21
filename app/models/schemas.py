@@ -410,6 +410,13 @@ class AgentResponse(BaseModel):
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]
     provider_prompt: Optional[str] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: int = Field(
+        default=15,
+        ge=0,
+        le=600,
+        description="End live calls after this many seconds of silence (0 disables)",
+    )
     provider_prompt_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -688,6 +695,8 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
     organization_name: Optional[str] = None  # Include organization name
+    invite_path: Optional[str] = None
+    invite_url: Optional[str] = None
 
     @field_validator('role', mode='before')
     @classmethod
@@ -3328,6 +3337,13 @@ class CallImportResponse(BaseModel):
     failed_rows: int
     status: CallImportStatus
     error_message: Optional[str] = None
+    latest_evaluation_status: Optional[str] = Field(
+        None,
+        description=(
+            "Status of the most recent evaluation run for this batch, "
+            "when any evaluation exists."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
     created_by_email: Optional[str] = None
@@ -4147,6 +4163,13 @@ class CallImportEvaluationResponse(BaseModel):
     # field so the frontend can deep-link to either run). Empty for all
     # other reads.
     sibling_evaluation_ids: List[UUID] = Field(default_factory=list)
+    expected_llm_calls_per_row: Optional[int] = Field(
+        None,
+        description=(
+            "Number of distinct LLM API calls made per evaluation row "
+            "(one per unique provider/model/config among selected metrics)."
+        ),
+    )
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_at: datetime

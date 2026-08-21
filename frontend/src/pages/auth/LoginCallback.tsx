@@ -5,6 +5,7 @@ import Logo from '../../components/Logo'
 import { apiClient } from '../../lib/api'
 import { useAuthStore } from '../../store/authStore'
 import { exchangeAuthorizationCode, readPkceState } from '../../lib/oidc'
+import { consumePendingInviteToken, getPendingInviteToken } from '../../lib/inviteToken'
 
 export default function LoginCallback() {
   const navigate = useNavigate()
@@ -49,6 +50,23 @@ export default function LoginCallback() {
         apiClient.setAccessToken(accessToken)
         const user = await apiClient.getMe()
         if (!active) return
+
+        const pendingInvite = getPendingInviteToken()
+        if (pendingInvite) {
+          try {
+            const accepted = await apiClient.acceptInvitationByToken(pendingInvite)
+            consumePendingInviteToken()
+            setSession(accepted.access_token, accepted.user, accepted.refresh_token)
+            navigate('/', { replace: true })
+            return
+          } catch (inviteErr: any) {
+            if (!active) return
+            setError(inviteErr?.response?.data?.detail || 'Signed in, but could not accept the invitation')
+            setSession(accessToken, user)
+            navigate('/', { replace: true })
+            return
+          }
+        }
 
         setSession(accessToken, user)
 

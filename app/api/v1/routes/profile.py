@@ -20,19 +20,11 @@ from app.models.schemas import (
     InvitationUpdate
 )
 from app.core.password import hash_password
-
-
-def _to_aware_utc(dt: datetime) -> datetime:
-    """Normalize a datetime to timezone-aware UTC.
-
-    SQLite loses tz info on round-trip, so `invitation.expires_at` can come
-    back naive even though we wrote it aware. Normalizing here keeps the
-    comparison with ``datetime.now(timezone.utc)`` safe across SQLite (dev,
-    tests) and Postgres (prod).
-    """
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+from app.services.invitation_service import (
+    InvitationError,
+    accept_invitation as accept_invitation_record,
+    to_aware_utc,
+)
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
 
@@ -264,7 +256,7 @@ async def get_my_invitations(
         # Check if expired. Normalize expires_at to tz-aware UTC so the
         # comparison works on SQLite (which drops tz info) as well as
         # Postgres.
-        if invitation.status == InvitationStatus.PENDING and _to_aware_utc(invitation.expires_at) < now_utc:
+        if invitation.status == InvitationStatus.PENDING and to_aware_utc(invitation.expires_at) < now_utc:
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
         
@@ -302,48 +294,12 @@ async def accept_invitation(
     
     if not invitation:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    
-    if invitation.status != InvitationStatus.PENDING:
-        # `status` is a plain String column on the model, so it comes back
-        # as a str here - don't assume it has an `.value` attribute.
-        current_status = getattr(invitation.status, "value", invitation.status)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot accept invitation with status: {current_status}"
-        )
-    
-    if _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
-        invitation.status = InvitationStatus.EXPIRED
-        db.commit()
-        raise HTTPException(status_code=400, detail="Invitation has expired")
-    
-    # Check if user is already a member
-    existing_member = db.query(OrganizationMember).filter(
-        OrganizationMember.organization_id == invitation.organization_id,
-        OrganizationMember.user_id == current_user.id
-    ).first()
-    
-    if existing_member:
-        raise HTTPException(
-            status_code=400,
-            detail="User is already a member of this organization"
-        )
-    
-    # Create organization membership
-    member = OrganizationMember(
-        organization_id=invitation.organization_id,
-        user_id=current_user.id,
-        role=invitation.role
-    )
-    db.add(member)
-    
-    # Update invitation
-    invitation.status = InvitationStatus.ACCEPTED
-    invitation.accepted_at = datetime.now(timezone.utc)
-    invitation.invited_user_id = current_user.id
-    
-    db.commit()
-    
+
+    try:
+        accept_invitation_record(db, invitation, current_user)
+    except InvitationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
     return {"message": "Invitation accepted successfully"}
 
 

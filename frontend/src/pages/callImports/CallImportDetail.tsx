@@ -1649,7 +1649,16 @@ export default function CallImportDetail() {
             </h1>
             <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
             <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
-              <StatusBadge status={data.status} />
+              <span className="inline-flex items-center gap-1.5 shrink-0">
+                {data.latest_evaluation_status ? (
+                  <>
+                    <span className="text-xs text-gray-500">Latest evaluation</span>
+                    <StatusBadge status={data.latest_evaluation_status} />
+                  </>
+                ) : (
+                  <StatusBadge status={data.status} />
+                )}
+              </span>
               <span className="capitalize shrink-0">
                 Provider:{' '}
                 <span className="font-medium text-gray-800">

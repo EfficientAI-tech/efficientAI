@@ -819,24 +819,20 @@ def test_evaluate_llm_metrics_grouped_passes_parent_for_categorization_children(
     db_session.add_all([parent, child_yes, child_no])
     db_session.commit()
 
-    parent_calls: list = []
-    flat_calls: list = []
+    grouped_calls: list = []
 
-    def fake_evaluate_with_llm(*, llm_metrics, parent_metric=None, **kwargs):
-        if parent_metric is not None:
-            parent_calls.append((parent_metric, list(llm_metrics)))
-            return (
-                {
-                    str(parent.id): {
-                        "type": "category",
-                        "metric_name": parent.name,
-                        "value": "Yes",
-                    }
-                },
-                0.1,
-            )
-        flat_calls.append(list(llm_metrics))
-        return {}, 0.1
+    def fake_evaluate_with_llm(*, llm_metrics, metric_groups=None, parent_metric=None, **kwargs):
+        grouped_calls.append((metric_groups, list(llm_metrics)))
+        return (
+            {
+                str(parent.id): {
+                    "type": "category",
+                    "metric_name": parent.name,
+                    "value": "Yes",
+                }
+            },
+            0.1,
+        )
 
     monkeypatch.setattr(task_module, "evaluate_with_llm", fake_evaluate_with_llm)
 
@@ -853,9 +849,11 @@ def test_evaluate_llm_metrics_grouped_passes_parent_for_categorization_children(
         scenario=None,
     )
 
-    assert len(parent_calls) == 1
-    assert parent_calls[0][0].id == parent.id
-    assert {m.id for m in parent_calls[0][1]} == {child_yes.id, child_no.id}
-    assert flat_calls == []
+    assert len(grouped_calls) == 1
+    metric_groups, metrics = grouped_calls[0]
+    assert metric_groups is not None
+    assert len(metric_groups) == 1
+    assert metric_groups[0].parent_metric.id == parent.id
+    assert {m.id for m in metrics} == {child_yes.id, child_no.id}
     assert str(parent.id) in scores
     assert scores[str(parent.id)]["type"] == "category"

@@ -109,6 +109,24 @@ def suggest_failure_policy(
             failure_child_names=negative_children,
         )
 
+    if is_parent and selection_mode == "single_choice":
+        children = [str(n).strip() for n in (child_names or []) if str(n).strip()]
+        # Never auto-flag bare "No"/"False" for pick-one categories — for
+        # Yes/No style metrics (AI reveal, bot gibberish) the good outcome
+        # is often the "No" child. Descriptive negative labels still apply.
+        negative_children = [
+            n
+            for n in children
+            if _label_looks_negative(n)
+            and normalize_label(n) not in ("no", "false")
+        ]
+        if negative_children:
+            return MetricFailurePolicy(
+                metric_id=metric_id,
+                failure_values=[normalize_label(l) for l in negative_children],
+            )
+        return MetricFailurePolicy(metric_id=metric_id, failure_values=[])
+
     labels = [str(l).strip() for l in observed_labels if str(l).strip()]
     negative_labels = [l for l in labels if _label_looks_negative(l)]
     if negative_labels:

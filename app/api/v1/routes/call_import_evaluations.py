@@ -563,6 +563,29 @@ def _serialize_eval(
         user_emails = emails_for_user_ids(db, user_ids_from_evaluations([row]))
     created_email, updated_email = actor_emails_for_evaluation(row, user_emails)
 
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        count_distinct_llm_configs_for_metrics,
+    )
+
+    selected_set = set(selected_ids)
+    scoring_metrics = [m for m in metrics if m.id in selected_set]
+    expected_llm_calls_per_row = count_distinct_llm_configs_for_metrics(
+        scoring_metrics,
+        overrides=(
+            row.metric_llm_overrides
+            if isinstance(row.metric_llm_overrides, dict)
+            else {}
+        ),
+        run_provider=(row.llm_provider or "").strip() or None,
+        run_model=(row.llm_model or "").strip() or None,
+        run_llm_config=(
+            row.llm_config if isinstance(getattr(row, "llm_config", None), dict) else None
+        ),
+        run_credential_id=(
+            str(row.llm_credential_id) if row.llm_credential_id else None
+        ),
+    )
+
     return CallImportEvaluationResponse(
         id=row.id,
         call_import_id=row.call_import_id,
@@ -618,6 +641,7 @@ def _serialize_eval(
         ),
         transcript_source=(row.transcript_source or "diarised"),
         sibling_evaluation_ids=list(sibling_evaluation_ids or []),
+        expected_llm_calls_per_row=expected_llm_calls_per_row,
         started_at=row.started_at,
         finished_at=row.finished_at,
         created_at=row.created_at,
@@ -1014,7 +1038,6 @@ async def create_call_import_evaluation(
     from app.models.enums import CallImportParameterType, CallImportStatus
     from app.services.call_imports.bulk_ops import (
         count_all_source_rows,
-        count_completed_source_rows,
         count_source_rows_with_production_transcript,
     )
 
@@ -1124,14 +1147,29 @@ async def create_call_import_evaluation(
         db.refresh(call_import)
         starting_from_mapped = True
 
+    all_source_row_count = count_all_source_rows(db, call_import.id)
+
     if use_diarised:
-        total_row_count = count_completed_source_rows(db, call_import.id)
+        # Diarized runs materialize every import row; recording fetch may
+        # still be pending when switching from a production eval-primary run.
+        total_row_count = all_source_row_count
     else:
         # Production runs score CSV text — rows need not wait for
         # recording fetch to finish before they are evaluable.
         total_row_count = count_source_rows_with_production_transcript(
             db, call_import.id
         )
+
+    if (
+        use_diarised
+        and not starting_from_mapped
+        and all_source_row_count > 0
+        and call_import.status != CallImportStatus.DELETING
+    ):
+        call_import.status = CallImportStatus.PROCESSING
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
+        db.refresh(call_import)
 
     requested_sources: List[str] = list(payload.transcript_sources)
 
@@ -1209,7 +1247,7 @@ async def create_call_import_evaluation(
     primary_evaluation = created_evaluations[0]
     sibling_ids = [e.id for e in created_evaluations[1:]]
 
-    if not total_row_count and not starting_from_mapped:
+    if not all_source_row_count and not starting_from_mapped:
         for evaluation in created_evaluations:
             evaluation.status = "completed"
         db.commit()

@@ -84,6 +84,8 @@ def test_agent_response_converts_legacy_enum_strings():
         voice_ai_integration_id=uuid4(),
         voice_ai_agent_id="agent_123",
         provider_prompt=None,
+        prompt_variables={"company": "Acme"},
+        silence_hangup_secs=45,
         provider_prompt_synced_at=None,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
@@ -92,6 +94,8 @@ def test_agent_response_converts_legacy_enum_strings():
     assert response.language.value == "en"
     assert response.call_type.value == "outbound"
     assert response.call_medium.value == "phone_call"
+    assert response.silence_hangup_secs == 45
+    assert response.prompt_variables == {"company": "Acme"}
 
 
 def test_voice_bundle_response_converts_provider_enum_from_uppercase_name():

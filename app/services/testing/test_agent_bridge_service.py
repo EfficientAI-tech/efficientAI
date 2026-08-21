@@ -1000,23 +1000,19 @@ class TestAgentBridgeService:
                                     if resp.status_code == 200:
                                         audio_bytes = resp.content
                             elif plat == "vapi":
-                                artifact = call_metrics.get("artifact", {}) if isinstance(call_metrics, dict) else {}
-                                recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
-                                mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
-                                audio_url = (
-                                    call_metrics.get("recordingUrl")
-                                    or call_metrics.get("stereoRecordingUrl")
-                                    or artifact.get("recordingUrl")
-                                    or artifact.get("stereoRecordingUrl")
-                                    or mono_recording.get("combinedUrl")
-                                    or recording_urls.get("combined_url")
-                                    or recording_urls.get("stereo_url")
-                                    or call_metrics.get("recordingUrl")
-                                    or provider_payload.get("recordingUrl")
-                                    or provider_payload.get("stereoRecordingUrl")
+                                from app.services.voice_providers.vapi_recording import (
+                                    extract_vapi_recording_url,
+                                    is_presigned_storage_url,
                                 )
+
+                                audio_url = extract_vapi_recording_url(call_metrics)
                                 if audio_url:
-                                    resp = _http.get(audio_url, timeout=120)
+                                    headers = (
+                                        None
+                                        if is_presigned_storage_url(audio_url)
+                                        else {"Authorization": f"Bearer {provider.api_key}"}
+                                    )
+                                    resp = _http.get(audio_url, headers=headers, timeout=120)
                                     if resp.status_code == 200:
                                         audio_bytes = resp.content
 

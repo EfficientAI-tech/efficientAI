@@ -107,10 +107,28 @@ def test_list_and_get_agent(authenticated_client, make_agent):
     list_response = authenticated_client.get("/api/v1/agents")
     assert list_response.status_code == 200
     assert len(list_response.json()) == 1
+    assert list_response.json()[0]["silence_hangup_secs"] == 15
 
     get_response = authenticated_client.get(f"/api/v1/agents/{agent.agent_id}")
     assert get_response.status_code == 200
-    assert get_response.json()["id"] == str(agent.id)
+    body = get_response.json()
+    assert body["id"] == str(agent.id)
+    assert body["silence_hangup_secs"] == 15
+
+
+def test_update_agent_persists_silence_hangup_secs(authenticated_client, make_agent):
+    agent = make_agent(name="Silence Agent", agent_id="666666")
+
+    update_response = authenticated_client.put(
+        f"/api/v1/agents/{agent.agent_id}",
+        json={"silence_hangup_secs": 60},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["silence_hangup_secs"] == 60
+
+    get_response = authenticated_client.get(f"/api/v1/agents/{agent.agent_id}")
+    assert get_response.status_code == 200
+    assert get_response.json()["silence_hangup_secs"] == 60
 
 
 def test_agent_delete_impact_without_dependencies(authenticated_client, make_agent):

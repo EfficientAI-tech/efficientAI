@@ -730,6 +730,7 @@ def test_evaluate_call_import_row_scores_comparison_metric_with_both_transcripts
                 "transcription": kwargs.get("transcription"),
                 "comparison_pair": kwargs.get("comparison_pair"),
                 "metric_ids": [str(m.id) for m in kwargs["llm_metrics"]],
+                "metric_groups": kwargs.get("metric_groups"),
             }
         )
         return (
@@ -755,10 +756,8 @@ def test_evaluate_call_import_row_scores_comparison_metric_with_both_transcripts
     assert len(captured) == 1
     invocation = captured[0]
     assert invocation["metric_ids"] == [str(metric.id)]
-    # Comparison metrics intentionally pass an empty transcription
-    # because the prompt-builder reads the pair via ``comparison_pair``.
-    assert invocation["transcription"] == ""
     assert invocation["comparison_pair"] == ("PROD speak", "DIAR speak")
+    assert invocation.get("metric_groups") is not None
 
 
 def test_evaluate_call_import_row_records_comparison_skip_when_diarised_missing(
@@ -849,18 +848,15 @@ def test_evaluate_call_import_row_mixes_comparison_with_other_metric_kinds(
     )
     assert result["status"] == "completed"
 
-    # Two LLM invocations: one per kind (comparison, transcript).
-    # Ordering is implementation-defined so key by metric.
-    assert len(invocations) == 2
-    by_metric = {inv["metric_ids"][0]: inv for inv in invocations}
-
-    cmp_call = by_metric[str(comparison_metric.id)]
-    assert cmp_call["transcription"] == ""
-    assert cmp_call["comparison_pair"] == ("PROD text", "DIAR text")
-
-    transcript_call = by_metric[str(transcript_metric.id)]
-    assert transcript_call["comparison_pair"] is None
-    assert transcript_call["transcription"] == "DIAR text"
+    # One LLM invocation: comparison + transcript metrics share the same config.
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert set(invocation["metric_ids"]) == {
+        str(transcript_metric.id),
+        str(comparison_metric.id),
+    }
+    assert invocation["comparison_pair"] == ("PROD text", "DIAR text")
+    assert invocation["transcription"] == "DIAR text"
 
     db_session.refresh(eval_rows[0])
     # Both metrics scored exactly once; the column-input bucket has
@@ -1460,3 +1456,163 @@ def test_rollup_parent_incremental_without_row_scan(db_session, monkeypatch):
     # Incremental path should not query CallImportEvaluationRow statuses.
     row_status_queries = query_calls["count"] - queries_before
     assert row_status_queries <= 2
+
+
+def test_evaluate_call_import_row_batches_multiple_parent_groups_in_one_call(
+    db_session, monkeypatch
+):
+    """Multiple categorization parents with the same run LLM → one API call."""
+    org, _ci, _metrics, source_rows, evaluation, eval_rows = _seed(
+        db_session, metric_count=0
+    )
+    parent_a = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=evaluation.workspace_id,
+        name="Outcome A",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        selection_mode="multi_label",
+    )
+    parent_b = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=evaluation.workspace_id,
+        name="Outcome B",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        selection_mode="multi_label",
+    )
+    child_a = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=evaluation.workspace_id,
+        name="Child A1",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        parent_metric_id=parent_a.id,
+    )
+    child_b = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=evaluation.workspace_id,
+        name="Child B1",
+        metric_type="boolean",
+        trigger="always",
+        enabled=True,
+        parent_metric_id=parent_b.id,
+    )
+    flat = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=evaluation.workspace_id,
+        name="Flat Metric",
+        metric_type="rating",
+        trigger="always",
+        enabled=True,
+    )
+    db_session.add_all([parent_a, parent_b, child_a, child_b, flat])
+    evaluation.selected_metric_ids = [
+        str(child_a.id),
+        str(child_b.id),
+        str(flat.id),
+    ]
+    evaluation.llm_provider = "openai"
+    evaluation.llm_model = "gpt-4o"
+    db_session.commit()
+
+    invocations: list = []
+
+    def _capture(*_args, **kwargs):
+        invocations.append(kwargs)
+        scores = {}
+        for m in kwargs["llm_metrics"]:
+            scores[str(m.id)] = {
+                "value": 1,
+                "type": "rating",
+                "metric_name": m.name,
+            }
+        return scores, 0.1
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_capture
+    )
+    result = task_module.evaluate_call_import_row_task.run(str(eval_rows[0].id))
+
+    assert result["status"] == "completed"
+    assert len(invocations) == 1
+    groups = invocations[0]["metric_groups"]
+    assert groups is not None
+    assert len(groups) == 3
+    parent_ids = {
+        g.parent_metric.id for g in groups if g.parent_metric is not None
+    }
+    assert parent_ids == {parent_a.id, parent_b.id}
+
+
+def test_build_llm_config_buckets_splits_on_metric_overrides(db_session):
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        build_llm_config_buckets,
+        count_distinct_llm_configs_for_metrics,
+    )
+
+    org = Organization(id=uuid4(), name="Bucket Org")
+    ws = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add_all([org, ws])
+    db_session.flush()
+    global_metric = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=ws.id,
+        name="Global",
+        metric_type="rating",
+        trigger="always",
+        enabled=True,
+    )
+    override_metric = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=ws.id,
+        name="Override",
+        metric_type="rating",
+        trigger="always",
+        enabled=True,
+    )
+    db_session.add_all([global_metric, override_metric])
+    db_session.commit()
+
+    overrides = {
+        str(override_metric.id): {
+            "provider": "anthropic",
+            "model": "claude-3-5-sonnet-20241022",
+        }
+    }
+    metrics = [global_metric, override_metric]
+    assert count_distinct_llm_configs_for_metrics(
+        metrics,
+        overrides=overrides,
+        run_provider="openai",
+        run_model="gpt-4o",
+        run_llm_config=None,
+        run_credential_id=None,
+    ) == 2
+
+    buckets = build_llm_config_buckets(
+        db_session,
+        metrics,
+        overrides=overrides,
+        run_provider="openai",
+        run_model="gpt-4o",
+        run_llm_config=None,
+        run_credential_id=None,
+    )
+    assert len(buckets) == 2
