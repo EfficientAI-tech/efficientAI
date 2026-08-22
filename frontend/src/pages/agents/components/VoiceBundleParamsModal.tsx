@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Brain, MessageSquare, Volume2, X, SlidersHorizontal } from 'lucide-react'
+import { Brain, MessageSquare, Volume2, X, SlidersHorizontal, ChevronDown, ChevronUp } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
 import {
   ModelProvider,
@@ -60,12 +60,17 @@ function draftFromBundle(bundle: VoiceBundle): DraftParams {
   }
 }
 
+/** readonly: summary only; collapsible: summary + click to expand inline; modal: summary + modal editor */
+export type VoiceBundleParamsMode = 'readonly' | 'collapsible' | 'modal' | 'expanded'
+
 interface VoiceBundleParamsModalProps {
   bundle: VoiceBundle
   showToast: (message: string, type: 'success' | 'error') => void
   disabled?: boolean
-  /** Show full STT/LLM/TTS editor inline on Configuration (no summary + open button). */
+  /** @deprecated Prefer `mode`. Inline editor always open. */
   expanded?: boolean
+  /** readonly: summary only; collapsible: summary + click to expand inline; modal: summary + modal editor */
+  mode?: 'readonly' | 'collapsible' | 'modal' | 'expanded'
 }
 
 export default function VoiceBundleParamsModal({
@@ -73,8 +78,11 @@ export default function VoiceBundleParamsModal({
   showToast,
   disabled = false,
   expanded = false,
+  mode: modeProp,
 }: VoiceBundleParamsModalProps) {
+  const mode = modeProp ?? (expanded ? 'expanded' : 'modal')
   const [open, setOpen] = useState(false)
+  const [inlineExpanded, setInlineExpanded] = useState(false)
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<DraftParams>(() => draftFromBundle(bundle))
 
@@ -116,7 +124,7 @@ export default function VoiceBundleParamsModal({
       return configs
     },
     staleTime: 5 * 60 * 1000,
-    enabled: open || expanded,
+    enabled: open || mode === 'expanded' || (mode === 'collapsible' && inlineExpanded),
   })
 
   const optionsFor = (provider?: ModelProvider | null) =>
@@ -144,7 +152,7 @@ export default function VoiceBundleParamsModal({
       queryClient.invalidateQueries({ queryKey: ['voicebundles'] })
       queryClient.invalidateQueries({ queryKey: ['agent'] })
       showToast('Voice bundle parameters saved', 'success')
-      if (!expanded) {
+      if (mode === 'modal') {
         setOpen(false)
       }
     },
@@ -294,7 +302,7 @@ export default function VoiceBundleParamsModal({
             value={draft.llm_config}
             onChange={(llm_config) => setDraft((p) => ({ ...p, llm_config }))}
             disabled={disabled}
-            defaultExpanded={expanded}
+            defaultExpanded={false}
           />
         </div>
       </section>
@@ -415,7 +423,86 @@ export default function VoiceBundleParamsModal({
     </div>
   )
 
-  if (expanded) {
+  const renderReadonlyProvider = (provider?: ModelProvider | null) => (
+    <div className="flex items-center gap-2 text-sm text-gray-800 bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[2.5rem]">
+      {provider && getProviderLogo(provider) ? (
+        <img src={getProviderLogo(provider)!} alt="" className="h-5 w-5 object-contain shrink-0" />
+      ) : null}
+      <span className="truncate">{provider ? getProviderLabel(provider) : '—'}</span>
+    </div>
+  )
+
+  const renderReadonlyModel = (value?: string | null) => (
+    <div className="text-sm text-gray-800 bg-white border border-gray-200 rounded-lg px-3 py-2 min-h-[2.5rem] flex items-center">
+      <span className="truncate font-mono text-xs sm:text-sm">{value?.trim() || '—'}</span>
+    </div>
+  )
+
+  const pipelineOverview = (
+    <div className="space-y-4">
+      <section className="rounded-lg border border-blue-100 bg-blue-50/50 p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-blue-600" />
+          Speech-to-text (STT)
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <p className="block text-xs font-medium text-gray-600 mb-1">Provider</p>
+            {renderReadonlyProvider(bundle.stt_provider)}
+          </div>
+          <div>
+            <p className="block text-xs font-medium text-gray-600 mb-1">Model</p>
+            {renderReadonlyModel(bundle.stt_model)}
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-purple-100 bg-purple-50/30 p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          <Brain className="h-4 w-4 text-purple-600" />
+          Language model (LLM)
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <p className="block text-xs font-medium text-gray-600 mb-1">Provider</p>
+            {renderReadonlyProvider(bundle.llm_provider)}
+          </div>
+          <div>
+            <p className="block text-xs font-medium text-gray-600 mb-1">Model</p>
+            {renderReadonlyModel(bundle.llm_model)}
+          </div>
+        </div>
+        {llmSummary ? (
+          <p className="text-xs text-gray-600 pt-1 border-t border-purple-100/80">
+            Parameters: {llmSummary}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="rounded-lg border border-green-100 bg-green-50/50 p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+          <Volume2 className="h-4 w-4 text-green-600" />
+          Text-to-speech (TTS)
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <p className="block text-xs font-medium text-gray-600 mb-1">Provider</p>
+            {renderReadonlyProvider(bundle.tts_provider)}
+          </div>
+          <div>
+            <p className="block text-xs font-medium text-gray-600 mb-1">TTS model</p>
+            {renderReadonlyModel(bundle.tts_model)}
+          </div>
+          <div className="sm:col-span-2">
+            <p className="block text-xs font-medium text-gray-600 mb-1">Voice</p>
+            {renderReadonlyModel(bundle.tts_voice)}
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+
+  if (mode === 'expanded') {
     return (
       <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
@@ -428,26 +515,47 @@ export default function VoiceBundleParamsModal({
     )
   }
 
+  if (mode === 'readonly') {
+    return pipelineOverview
+  }
+
+  if (mode === 'collapsible') {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setInlineExpanded((prev) => !prev)}
+          className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left border-b border-gray-100 bg-gray-50/80 hover:bg-gray-50 transition-colors"
+          aria-expanded={inlineExpanded}
+        >
+          <div className="min-w-0">
+            <h4 className="text-sm font-semibold text-gray-900">Voice pipeline parameters</h4>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {inlineExpanded ? 'Click to collapse' : 'Providers and models shown below — click to tune parameters'}
+            </p>
+          </div>
+          {inlineExpanded ? (
+            <ChevronUp className="h-5 w-5 text-gray-500 shrink-0" />
+          ) : (
+            <ChevronDown className="h-5 w-5 text-gray-500 shrink-0" />
+          )}
+        </button>
+        {!inlineExpanded ? (
+          <div className="p-4">{pipelineOverview}</div>
+        ) : (
+          <>
+            <div className="p-4 max-h-[min(70vh,720px)] overflow-y-auto">{pipelineEditorBody('inline')}</div>
+            <div className="px-4 pb-4">{editorFooter(false)}</div>
+          </>
+        )}
+      </div>
+    )
+  }
+
   return (
     <>
       <div className="space-y-3">
-        <div className="grid gap-2 text-sm text-gray-700">
-          <div className="flex items-center gap-2 p-2 rounded-md bg-blue-50/80">
-            <MessageSquare className="h-4 w-4 text-blue-600 shrink-0" />
-            <span className="truncate">STT: {bundle.stt_model || '—'}</span>
-          </div>
-          <div className="flex items-center gap-2 p-2 rounded-md bg-purple-50/80">
-            <Brain className="h-4 w-4 text-purple-600 shrink-0" />
-            <span className="truncate">
-              LLM: {bundle.llm_model || '—'}
-              {llmSummary ? ` · ${llmSummary}` : ''}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 p-2 rounded-md bg-green-50/80">
-            <Volume2 className="h-4 w-4 text-green-600 shrink-0" />
-            <span className="truncate">TTS: {bundle.tts_voice || bundle.tts_model || '—'}</span>
-          </div>
-        </div>
+        {pipelineOverview}
         <Button
           type="button"
           variant="outline"

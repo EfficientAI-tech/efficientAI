@@ -540,6 +540,18 @@ export interface AgentPhoneAssignmentCheckResponse {
   conflict?: AgentPhoneAssignmentConflict | null
 }
 
+export interface TestAgentFirstMessage {
+  production_mode: string
+  production_message?: string | null
+  caller_mode: string
+  caller_message?: string | null
+}
+
+export interface TestAgentTemplate {
+  sections: Array<{ key: string; title: string; content: string }>
+  first_message: TestAgentFirstMessage
+}
+
 export interface TestAgent {
   id: string
   agent_id?: string | null
@@ -548,6 +560,7 @@ export interface TestAgent {
   telephony_phone_number_id?: string | null
   language: string
   description: string | null
+  test_agent_template?: TestAgentTemplate | null
   prompt_variables?: Record<string, string> | null
   silence_hangup_secs?: number
   call_type: string

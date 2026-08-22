@@ -522,6 +522,7 @@ class Agent(Base):
     voice_ai_integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True, index=True)
     voice_ai_agent_id = Column(String, nullable=True)  # Agent ID from the external provider (Retell/Vapi)
     prompt_variables = Column(JSON, nullable=True)
+    test_agent_template = Column(JSON, nullable=True)
     silence_hangup_secs = Column(Integer, nullable=False, server_default="15")
     
     created_at = Column(DateTime, server_default=func.now())
@@ -557,10 +558,39 @@ class Persona(Base):
     response_delay_ms = Column(Integer, nullable=True)
     max_turns = Column(Integer, nullable=True)
     allow_interruptions = Column(Boolean, nullable=True)
+    background_noise_source = Column(String(20), nullable=False, default="none")
+    background_noise_preset = Column(String(50), nullable=True)
+    background_noise_volume = Column(Float, nullable=True, default=0.22)
+    background_noise_s3_key = Column(String, nullable=True)
+    background_noise_asset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("ambient_noise_assets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)
+
+
+class AmbientNoiseAsset(Base):
+    """Reusable ambient noise bed uploaded for test-agent personas."""
+    __tablename__ = "ambient_noise_assets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    s3_key = Column(String, nullable=False)
+    original_filename = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class Scenario(Base):

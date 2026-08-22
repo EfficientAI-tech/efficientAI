@@ -153,6 +153,30 @@ def _get_service(service_name: str):
     elif service_name == "AzureLLMService":
         from efficientai.services.azure.llm import AzureLLMService
         service_class = AzureLLMService
+    elif service_name == "AnthropicLLMService":
+        from efficientai.services.anthropic.llm import AnthropicLLMService
+        service_class = AnthropicLLMService
+    elif service_name == "FireworksLLMService":
+        from efficientai.services.fireworks.llm import FireworksLLMService
+        service_class = FireworksLLMService
+    elif service_name == "GrokLLMService":
+        from efficientai.services.grok.llm import GrokLLMService
+        service_class = GrokLLMService
+    elif service_name == "MistralLLMService":
+        from efficientai.services.mistral.llm import MistralLLMService
+        service_class = MistralLLMService
+    elif service_name == "TogetherLLMService":
+        from efficientai.services.together.llm import TogetherLLMService
+        service_class = TogetherLLMService
+    elif service_name == "PerplexityLLMService":
+        from efficientai.services.perplexity.llm import PerplexityLLMService
+        service_class = PerplexityLLMService
+    elif service_name == "OpenRouterLLMService":
+        from efficientai.services.openrouter.llm import OpenRouterLLMService
+        service_class = OpenRouterLLMService
+    elif service_name == "AWSBedrockLLMService":
+        from efficientai.services.aws.llm import AWSBedrockLLMService
+        service_class = AWSBedrockLLMService
     
     # Optional: Smart Turn Analyzer
     elif service_name == "LocalSmartTurnAnalyzerV3":
@@ -347,40 +371,10 @@ def _instantiate_tts_service(
 
 
 def _get_llm_providers():
-    """Get LLM provider registry with truly lazy-loaded service classes.
-    
-    Each provider's SDK is only loaded when that provider is actually used.
-    """
-    return {
-        "openai": {
-            "env_key": "OPENAI_API_KEY",
-            "default_model": "gpt-4.1",
-            "factory": lambda api_key, model, params=None: _get_service("OpenAILLMService")(
-                api_key=api_key,
-                model=model,
-                **({"params": params} if params else {}),
-            ),
-        },
-        "google": {
-            "env_key": "GOOGLE_API_KEY",
-            "default_model": "gemini-2.5-flash",
-            "factory": lambda api_key, model, params=None: _get_service("GoogleLLMService")(
-                api_key=api_key,
-                model=model,
-                **({"params": params} if params else {}),
-            ),
-        },
-        "azure": {
-            "env_key": "AZURE_OPENAI_API_KEY",
-            "default_model": "gpt-4.1",
-            # Azure is instantiated with endpoint metadata in run_voice_bundle_fastapi.
-            "factory": lambda api_key, model, params=None: _get_service("OpenAILLMService")(
-                api_key=api_key,
-                model=model,
-                **({"params": params} if params else {}),
-            ),
-        },
-    }
+    """Get LLM provider registry with truly lazy-loaded service classes."""
+    from app.services.voice_agent.llm_voice_providers import get_llm_provider_registry
+
+    return get_llm_provider_registry(_get_service)
 
 
 DEFAULT_STT_PROVIDER = None
@@ -522,10 +516,13 @@ async def run_voice_bundle_fastapi(
     tts_api_key: str | None = None,
     llm_api_key: str | None = None,
     llm_endpoint_url: str | None = None,
+    llm_base_url: str | None = None,
     serializer=None,
     telephony_mode: bool = False,
     call_short_id: str | None = None,
     silence_hangup_secs: float | None = None,
+    caller_speaks_first: bool = True,
+    caller_opening_text: str | None = None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -607,6 +604,11 @@ async def run_voice_bundle_fastapi(
         transport_out_sample_rate = resolve_websocket_audio_out_sample_rate_hz(
             telephony_mode=telephony_mode,
         )
+        ambient_mixer = None
+        if persona is not None:
+            from app.services.audio.ambient_catalog import resolve_ambient_mixer
+
+            ambient_mixer = await resolve_ambient_mixer(persona, transport_out_sample_rate)
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
@@ -617,6 +619,7 @@ async def run_voice_bundle_fastapi(
                 audio_out_sample_rate=transport_out_sample_rate,
                 vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
                 serializer=transport_serializer,
+                audio_out_mixer=ambient_mixer,
             ),
         )
 
@@ -696,7 +699,16 @@ async def run_voice_bundle_fastapi(
                     params=llm_params,
                 )
         else:
-            llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model, params=llm_params)
+            from app.services.voice_agent.llm_voice_providers import instantiate_llm_service
+
+            llm = instantiate_llm_service(
+                llm_provider_value,
+                get_service=_get_service,
+                api_key=llm_api_key,
+                model=llm_model,
+                params=llm_params,
+                base_url=llm_base_url,
+            )
 
         # Build context with provided system instruction or a default
         base_instruction = (
@@ -715,16 +727,15 @@ async def run_voice_bundle_fastapi(
                 "or special Unicode characters. Use only plain spoken words."
             )
 
-        messages = [
-            {
-                "role": "system",
-                "content": base_instruction,
-            },
-            {
-                "role": "user",
-                "content": "Start by greeting the user warmly and introducing yourself based on the system instruction.",
-            },
-        ]
+        messages = [{"role": "system", "content": base_instruction}]
+        if caller_speaks_first:
+            bootstrap = (
+                f"Say your opening line now, in character, word for word if possible: "
+                f"\"{caller_opening_text.strip()}\""
+                if caller_opening_text and caller_opening_text.strip()
+                else "Introduce yourself using your name from the system prompt, then begin the scenario naturally."
+            )
+            messages.append({"role": "user", "content": bootstrap})
 
         context = imports["LLMContext"](messages)
         context_aggregator = imports["LLMContextAggregatorPair"](context)
@@ -877,7 +888,8 @@ async def run_voice_bundle_fastapi(
                 if not use_aligned_recorders:
                     await audio_buffer_input.start_recording()
                     await audio_buffer_output.start_recording()
-                await task.queue_frames([imports["LLMRunFrame"]()])
+                if caller_speaks_first:
+                    await task.queue_frames([imports["LLMRunFrame"]()])
 
             @ws_transport.event_handler("on_client_disconnected")
             async def on_client_disconnected(transport, client):
@@ -926,7 +938,10 @@ async def run_voice_bundle_fastapi(
                 await audio_buffer_input.start_recording()
                 await audio_buffer_output.start_recording()
                 logger.info("AudioBufferProcessors started recording (input + output)")
-                await task.queue_frames([imports["LLMRunFrame"]()])
+                if caller_speaks_first:
+                    await task.queue_frames([imports["LLMRunFrame"]()])
+                else:
+                    logger.info("Caller waits for production agent — skipping initial LLM run")
 
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):

@@ -98,7 +98,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None, persona=None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -132,6 +132,11 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         transport_out_sample_rate = resolve_websocket_audio_out_sample_rate_hz(
             telephony_mode=telephony_mode,
         )
+        ambient_mixer = None
+        if persona is not None:
+            from app.services.audio.ambient_catalog import resolve_ambient_mixer
+
+            ambient_mixer = await resolve_ambient_mixer(persona, transport_out_sample_rate)
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
@@ -142,6 +147,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 audio_out_sample_rate=transport_out_sample_rate if telephony_mode else None,
                 vad_analyzer=imports["SileroVADAnalyzer"](),
                 serializer=transport_serializer,
+                audio_out_mixer=ambient_mixer,
             ),
         )
 

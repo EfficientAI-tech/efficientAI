@@ -67,9 +67,12 @@ def build_evaluator_results_query(
     )
 
     if playground is True:
-        query = query.filter(EvaluatorResult.evaluator_id.is_(None))
         if test_agents_only is True:
+            # Voice-bundle playground test agents (not Retell/Vapi). Includes runs
+            # that auto-link an evaluator when persona + scenario are selected.
             query = query.filter(EvaluatorResult.provider_platform.is_(None))
+        else:
+            query = query.filter(EvaluatorResult.evaluator_id.is_(None))
     elif playground is False:
         query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
     else:

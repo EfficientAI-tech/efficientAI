@@ -865,10 +865,37 @@ def re_evaluate_result(
         )
 
     if not result.evaluator_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot re-evaluate: this result is not linked to an evaluator."
-        )
+        if result.agent_id and result.persona_id and result.scenario_id:
+            from app.api.v1.routes.evaluators import generate_unique_evaluator_id
+
+            evaluator = db.query(Evaluator).filter(
+                Evaluator.agent_id == result.agent_id,
+                Evaluator.persona_id == result.persona_id,
+                Evaluator.scenario_id == result.scenario_id,
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
+            ).first()
+            if not evaluator:
+                new_evaluator_id = generate_unique_evaluator_id(db)
+                evaluator = Evaluator(
+                    evaluator_id=new_evaluator_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agent_id=result.agent_id,
+                    persona_id=result.persona_id,
+                    scenario_id=result.scenario_id,
+                    tags=["auto-created", "test-voice-agent"],
+                )
+                db.add(evaluator)
+                db.commit()
+                db.refresh(evaluator)
+            result.evaluator_id = evaluator.id
+            db.commit()
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot re-evaluate: this result is not linked to an evaluator."
+            )
 
     evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
     if not evaluator:

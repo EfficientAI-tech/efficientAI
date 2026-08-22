@@ -102,6 +102,8 @@ class ElevenLabsWSBridge:
         self._silence_task: Optional[asyncio.Task] = None
         # Background task that simulates a live microphone by sending silence
         self._bg_silence_task: Optional[asyncio.Task] = None
+        # When True, an external ambient mic pump feeds continuous PCM instead.
+        self._external_mic_feed = False
         # Suppresses background silence while the test agent is actively sending audio
         self._user_is_sending = False
 
@@ -157,10 +159,9 @@ class ElevenLabsWSBridge:
             # Start background message receiver
             asyncio.create_task(self._receive_loop())
 
-            # Start continuous silence stream to simulate a live microphone.
-            # Without this, ElevenLabs' VAD stalls between turns because it
-            # expects a constant audio input (just like a browser mic provides).
-            self._bg_silence_task = asyncio.create_task(self._background_silence_loop())
+            # Start continuous silence stream unless an external mic feed is active.
+            if not self._external_mic_feed:
+                self._bg_silence_task = asyncio.create_task(self._background_silence_loop())
 
             return True
 
@@ -200,6 +201,14 @@ class ElevenLabsWSBridge:
         so the background silence loop can resume.
         """
         self._user_is_sending = False
+
+    def suppress_background_silence(self):
+        """Stop the zero-silence mic loop when an ambient mic pump is active."""
+        self._external_mic_feed = True
+        if self._bg_silence_task and not self._bg_silence_task.done():
+            self._bg_silence_task.cancel()
+        self._bg_silence_task = None
+        logger.info("[ElevenLabsWS] Background silence stream suppressed (external mic feed active)")
 
     async def send_silence(self, duration_ms: int = 500):
         """Send an explicit silence buffer (e.g. trailing silence after an utterance)."""

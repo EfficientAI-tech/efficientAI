@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
+import { Sparkles, Loader2, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
 import ParamSlider from './ParamSlider'
-import { OverviewSection, formatSilenceHangupLabel } from './AgentOverviewLayout'
+import { OverviewSection, formatSilenceHangupLabel, OverviewConfigBadge, OverviewDetailRow, OVERVIEW_NOT_CONFIGURED } from './AgentOverviewLayout'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
@@ -14,19 +14,25 @@ import { TelephonyProvider } from '../../../types/api'
 import type { AgentDetailTab } from './AgentInfoView'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
 import VoiceBundleDetailCard from './VoiceBundleDetailCard'
-import AgentPromptComposer from './AgentPromptComposer'
 import {
   formatGatewayCredentialLabel,
   resolveLLMModelsForCredential,
 } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { formatAgentPhoneConflictMessage } from './agentPhoneValidation'
+import TestAgentTemplateEditor, { applyGeneratedTemplate } from './TestAgentTemplateEditor'
+import {
+  TestAgentTemplateDraft,
+  assembleTestAgentPrompt,
+  isTemplateFilled,
+} from './agentTestSetupConstants'
 
 interface FormData {
   name: string
   phone_number: string
   language: string
   description: string
+  test_agent_template: TestAgentTemplateDraft
   prompt_variables: Record<string, string>
   silence_hangup_secs: number
   call_type: string
@@ -71,13 +77,9 @@ export default function AgentEditForm({
   agentId,
 }: AgentEditFormProps) {
   const navigate = useNavigate()
-  const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
   const [providerPromptEditorMode, setProviderPromptEditorMode] = useState<'write' | 'preview'>('write')
-  const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
-  const [includeLinkedScenarios, setIncludeLinkedScenarios] = useState(true)
-  const [aiDescription, setAiDescription] = useState('')
-  const [aiTone, setAiTone] = useState('professional')
-  const [aiFormat, setAiFormat] = useState('structured')
+  const [showGenerateFromProductionPanel, setShowGenerateFromProductionPanel] = useState(false)
+  const [setupAdditionalContext, setSetupAdditionalContext] = useState('')
   const [aiCredentialId, setAiCredentialId] = useState('')
   const [aiModel, setAiModel] = useState('')
   const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
@@ -175,28 +177,42 @@ export default function AgentEditForm({
     telephonyNumbers,
   ])
 
-  const generateDescriptionMutation = useMutation({
-    mutationFn: (data: {
-      description: string
-      tone?: string
-      format_style?: string
-      provider?: string
-      model?: string
-      agent_id?: string
-      include_linked_scenarios?: boolean
-      append_scenarios_to_output?: boolean
-    }) => apiClient.generateAgentDescription(data),
+  const generateFromProductionMutation = useMutation({
+    mutationFn: () => {
+      if (!formData.provider_prompt?.trim()) {
+        throw new Error('Production prompt is required')
+      }
+      return apiClient.generateTestPromptFromProduction({
+        production_prompt: formData.provider_prompt,
+        agent_name: formData.name,
+        language: formData.language,
+        call_type: formData.call_type,
+        additional_context: setupAdditionalContext.trim() || undefined,
+        ...(aiProvider ? { provider: aiProvider } : {}),
+        ...(aiCredentialId ? { credential_id: aiCredentialId } : {}),
+        ...(aiModel ? { model: aiModel } : {}),
+      })
+    },
     onSuccess: (data) => {
-      onChange({ ...formData, description: data.content })
-      setShowAIGeneratePanel(false)
-      setAiDescription('')
-      setDescriptionEditorMode('preview')
-      showToast('Description generated successfully!', 'success')
+      const nextTemplate = applyGeneratedTemplate(formData.test_agent_template, data)
+      onChange({
+        ...formData,
+        test_agent_template: nextTemplate,
+        description: data.test_agent_prompt || assembleTestAgentPrompt(nextTemplate.sections),
+      })
+      setShowGenerateFromProductionPanel(false)
+      showToast('Test agent template generated from production prompt', 'success')
     },
     onError: (err: any) => {
-      showToast(err?.response?.data?.detail || 'Failed to generate description with AI', 'error')
+      showToast(
+        err?.message || err?.response?.data?.detail || 'Failed to generate from production',
+        'error',
+      )
     },
   })
+
+  const hasStructuredTemplate = isTemplateFilled(formData.test_agent_template)
+  const showLegacyPrompt = Boolean(formData.description?.trim() && !hasStructuredTemplate)
 
   const voiceAgentIntegrations = integrations.filter(
     (integration) =>
@@ -212,6 +228,29 @@ export default function AgentEditForm({
     ? voiceBundles.find((vb) => vb.id === formData.voice_bundle_id)
     : undefined
 
+  const testAgentConfigured = Boolean(
+    linkedVoiceBundle && linkedVoiceBundle.is_active !== false,
+  )
+  const voiceAiConfigured = Boolean(
+    formData.voice_ai_integration_id?.trim() && formData.voice_ai_agent_id?.trim(),
+  )
+  const voiceBundleLabel = linkedVoiceBundle
+    ? linkedVoiceBundle.name
+    : formData.voice_bundle_id
+      ? 'Unknown bundle'
+      : OVERVIEW_NOT_CONFIGURED
+  const voiceAiIntegrationLabel = selectedVoiceIntegration
+    ? (() => {
+        const platformLabel = getIntegrationPlatformLabel(
+          selectedVoiceIntegration.platform as IntegrationPlatform,
+        )
+        const name = selectedVoiceIntegration.name?.trim()
+        return name ? `${name} (${platformLabel})` : platformLabel
+      })()
+    : formData.voice_ai_integration_id
+      ? 'Unknown integration'
+      : OVERVIEW_NOT_CONFIGURED
+
   const hasPlatformLink = Boolean(formData.voice_ai_integration_id || formData.voice_ai_agent_id)
 
   const productionPromptProse =
@@ -220,7 +259,16 @@ export default function AgentEditForm({
   return (
     <form onSubmit={handleFormSubmit}>
       {activeTab === 'overview' && (
-        <div className="space-y-5 max-w-3xl">
+        <div className="space-y-5 w-full min-w-0">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Identity, call routing, voice stacks, and session behavior.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
+            <div className="xl:col-span-2 space-y-5 min-w-0">
           <OverviewSection title="Agent profile" description="Name and language shown to evaluators and logs.">
             <div className="space-y-4">
               <div>
@@ -460,11 +508,53 @@ export default function AgentEditForm({
               Delete agent
             </Button>
           </div>
+            </div>
+
+            <div className="space-y-5 min-w-0">
+              <OverviewSection
+                title="Test agent (EfficientAI)"
+                description="Configure voice stack on the Test Agent tab."
+              >
+                <dl>
+                  <OverviewDetailRow
+                    label="Status"
+                    value={<OverviewConfigBadge configured={testAgentConfigured} />}
+                  />
+                  <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                </dl>
+              </OverviewSection>
+
+              <OverviewSection
+                title="Voice AI agent"
+                description="Configure integration on the Voice AI Agent tab."
+              >
+                <dl>
+                  <OverviewDetailRow
+                    label="Status"
+                    value={<OverviewConfigBadge configured={voiceAiConfigured} />}
+                  />
+                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                  <OverviewDetailRow
+                    label="Provider agent ID"
+                    value={
+                      formData.voice_ai_agent_id?.trim() ? (
+                        <span className="font-mono text-xs font-semibold text-primary-700">
+                          {formData.voice_ai_agent_id.trim()}
+                        </span>
+                      ) : (
+                        OVERVIEW_NOT_CONFIGURED
+                      )
+                    }
+                  />
+                </dl>
+              </OverviewSection>
+            </div>
+          </div>
         </div>
       )}
 
       {activeTab === 'test_agent' && (
-        <div className="max-w-4xl space-y-4">
+        <div className="w-full space-y-4">
           <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
 
           {testAgentSubTab === 'configuration' && (
@@ -494,7 +584,7 @@ export default function AgentEditForm({
               {linkedVoiceBundle && (
                 <VoiceBundleDetailCard
                   bundle={linkedVoiceBundle}
-                  allowParamTuning
+                  paramTuningMode="collapsible"
                   onEdit={() => {
                     const returnPath = agentId ? `/agents/${agentId}?tab=test_agent` : '/agents'
                     navigate(
@@ -508,137 +598,69 @@ export default function AgentEditForm({
           )}
 
           {testAgentSubTab === 'prompt' && (
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-              <div className="flex items-center justify-between mb-3">
-                <label className="block text-sm font-medium text-gray-700">EfficientAI Test Agent Prompt</label>
+            <div className="border border-gray-200 rounded-lg p-4 bg-white space-y-4">
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">EfficientAI Test Agent Template</label>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setShowAIGeneratePanel(!showAIGeneratePanel)}
-                    disabled={generateDescriptionMutation.isPending}
+                    onClick={() => setShowGenerateFromProductionPanel(!showGenerateFromProductionPanel)}
+                    disabled={generateFromProductionMutation.isPending}
                     className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
-                      showAIGeneratePanel
+                      showGenerateFromProductionPanel
                         ? 'bg-amber-100 text-amber-800 border-amber-300'
                         : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
                     }`}
                   >
-                    {generateDescriptionMutation.isPending ? (
+                    {generateFromProductionMutation.isPending ? (
                       <Loader2 className="h-3 w-3 animate-spin" />
                     ) : (
                       <Sparkles className="h-3 w-3" />
                     )}
-                    {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
+                    {generateFromProductionMutation.isPending ? 'Generating...' : 'Generate from production'}
                   </button>
                   <button
                     type="button"
                     onClick={onSaveSystemPrompt}
-                    disabled={!formData.description?.trim()}
+                    disabled={!isTemplateFilled(formData.test_agent_template)}
                     className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
                   >
                     <Save className="h-3 w-3" />
                     Save Prompt
                   </button>
-                  <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setDescriptionEditorMode('write')}
-                      className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                        descriptionEditorMode === 'write'
-                          ? 'bg-white text-gray-900 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                    >
-                      <Code className="h-3 w-3" />
-                      Write
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDescriptionEditorMode('preview')}
-                      className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                        descriptionEditorMode === 'preview'
-                          ? 'bg-white text-gray-900 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                    >
-                      <Eye className="h-3 w-3" />
-                      Preview
-                    </button>
-                  </div>
                 </div>
               </div>
 
-              {/* AI Generate Panel */}
-              {showAIGeneratePanel && (
-                <div className="mb-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Sparkles className="h-4 w-4 text-amber-600" />
-                    <span className="text-sm font-medium text-amber-900">Generate Description with AI</span>
-                  </div>
-                  <p className="text-xs text-amber-700 mb-3">
-                    Describe what this agent should do and AI will generate a rich markdown description.
+              {showGenerateFromProductionPanel && (
+                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 space-y-3">
+                  <p className="text-xs text-amber-700">
+                    Uses the production agent prompt from the Voice AI Agent tab to generate complementary
+                    caller sections and first-message settings.
                   </p>
-                  <textarea
-                    value={aiDescription}
-                    onChange={(e) => setAiDescription(e.target.value)}
-                    placeholder="e.g., A customer support agent that handles refund requests, tracks orders, and escalates complex issues..."
-                    rows={3}
-                    className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white mb-2"
-                  />
-                  {agentId ? (
-                    <label className="flex items-center gap-2 text-xs text-gray-700 mb-2">
-                      <input
-                        type="checkbox"
-                        checked={includeLinkedScenarios}
-                        onChange={(e) => setIncludeLinkedScenarios(e.target.checked)}
-                        className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
-                      />
-                      Include linked scenarios as AI context (does not append to prompt)
-                    </label>
+                  {!formData.provider_prompt?.trim() ? (
+                    <p className="text-xs text-red-600">
+                      Add a production prompt on the Voice AI Agent tab first.
+                    </p>
                   ) : null}
-                  <div className="grid grid-cols-2 gap-3 mb-2">
+                  <textarea
+                    value={setupAdditionalContext}
+                    onChange={(e) => setSetupAdditionalContext(e.target.value)}
+                    rows={2}
+                    placeholder="Additional context (optional)…"
+                    className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg bg-white"
+                  />
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Tone</label>
-                      <select
-                        value={aiTone}
-                        onChange={(e) => setAiTone(e.target.value)}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                      >
-                        <option value="professional">Professional</option>
-                        <option value="casual">Casual / Friendly</option>
-                        <option value="technical">Technical</option>
-                        <option value="concise">Concise / Direct</option>
-                        <option value="detailed">Detailed / Thorough</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Format Style</label>
-                      <select
-                        value={aiFormat}
-                        onChange={(e) => setAiFormat(e.target.value)}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
-                      >
-                        <option value="structured">Structured (sections & bullet points)</option>
-                        <option value="narrative">Narrative (flowing text)</option>
-                        <option value="template">Template (with placeholders)</option>
-                        <option value="step-by-step">Step-by-step Instructions</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div className="flex gap-3 mb-2">
-                    <div className="flex-1">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">
-                        <Bot className="w-3 h-3 inline mr-1" />
-                        LLM Provider
-                      </label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">LLM Provider</label>
                       <select
                         value={aiCredentialId}
                         onChange={(e) => {
                           setAiCredentialId(e.target.value)
                           setAiModel('')
                         }}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white"
                       >
-                        <option value="">Auto-detect (use first available)</option>
+                        <option value="">Auto-detect</option>
                         {aiProviders
                           .filter((p) => p.is_active)
                           .map((p) => (
@@ -653,67 +675,44 @@ export default function AgentEditForm({
                           ))}
                       </select>
                     </div>
-                    <div className="flex-1">
+                    <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
-                      {gatewayDirectModel ? (
-                        <div
-                          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
-                          title={gatewayDirectModel}
-                        >
-                          {gatewayDirectModel}
-                        </div>
-                      ) : (
-                        <select
-                          value={aiModel}
-                          onChange={(e) => setAiModel(e.target.value)}
-                          disabled={!aiCredentialId}
-                          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
-                        >
-                          {!aiCredentialId ? (
-                            <option value="">Select a provider first</option>
-                          ) : selectableModels.length === 0 ? (
-                            <option value="">Loading models...</option>
-                          ) : (
-                            selectableModels.map((m: string) => (
-                              <option key={m} value={m}>
-                                {m}
-                              </option>
-                            ))
-                          )}
-                        </select>
-                      )}
+                      <select
+                        value={aiModel}
+                        onChange={(e) => setAiModel(e.target.value)}
+                        disabled={!aiCredentialId || !!gatewayDirectModel}
+                        className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg bg-white disabled:bg-gray-100"
+                      >
+                        {gatewayDirectModel ? (
+                          <option value="">{gatewayDirectModel}</option>
+                        ) : (
+                          selectableModels.map((m: string) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))
+                        )}
+                      </select>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 justify-end">
+                  <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      onClick={() => setShowAIGeneratePanel(false)}
-                      className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
+                      onClick={() => setShowGenerateFromProductionPanel(false)}
+                      className="px-3 py-1.5 text-xs font-medium text-gray-600"
                     >
                       Cancel
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        generateDescriptionMutation.mutate({
-                          description: aiDescription,
-                          tone: aiTone,
-                          format_style: aiFormat,
-                          ...(aiProvider ? { provider: aiProvider } : {}),
-                          ...(aiModel ? { model: aiModel } : {}),
-                          ...(agentId
-                            ? {
-                                agent_id: agentId,
-                                include_linked_scenarios: includeLinkedScenarios,
-                                append_scenarios_to_output: false,
-                              }
-                            : {}),
-                        })
+                      onClick={() => generateFromProductionMutation.mutate()}
+                      disabled={
+                        generateFromProductionMutation.isPending ||
+                        !formData.provider_prompt?.trim()
                       }
-                      disabled={generateDescriptionMutation.isPending || !aiDescription.trim()}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg disabled:opacity-50"
                     >
-                      {generateDescriptionMutation.isPending ? (
+                      {generateFromProductionMutation.isPending ? (
                         <>
                           <Loader2 className="h-3 w-3 animate-spin" /> Generating...
                         </>
@@ -727,7 +726,21 @@ export default function AgentEditForm({
                 </div>
               )}
 
-              <div className="mb-4 rounded-lg border border-gray-200 bg-white p-3">
+              <TestAgentTemplateEditor
+                template={formData.test_agent_template}
+                onChange={(test_agent_template) =>
+                  onChange({
+                    ...formData,
+                    test_agent_template,
+                    description: assembleTestAgentPrompt(test_agent_template.sections),
+                  })
+                }
+                legacyDescription={formData.description}
+                showLegacy={showLegacyPrompt}
+                variant="workspace"
+              />
+
+              <div className="rounded-lg border border-gray-200 bg-white p-3">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <label className="text-sm font-medium text-gray-700">Custom prompt variables</label>
                   <button
@@ -802,29 +815,13 @@ export default function AgentEditForm({
                   </div>
                 )}
               </div>
-
-              {descriptionEditorMode === 'write' ? (
-                <AgentPromptComposer
-                  value={formData.description}
-                  onChange={(description) => onChange({ ...formData, description })}
-                  customVariables={formData.prompt_variables}
-                />
-              ) : (
-                <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100">
-                  {formData.description ? (
-                    <ReactMarkdown>{formData.description}</ReactMarkdown>
-                  ) : (
-                    <p className="text-gray-400 italic">Nothing to preview yet...</p>
-                  )}
-                </div>
-              )}
             </div>
           )}
         </div>
       )}
 
       {activeTab === 'voice_ai_agent' && hasPlatformLink && (
-        <div className="max-w-2xl space-y-4">
+        <div className="w-full space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
             <div className="flex items-center gap-3">

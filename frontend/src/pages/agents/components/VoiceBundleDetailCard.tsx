@@ -2,23 +2,32 @@ import { Mic, Edit, ExternalLink } from 'lucide-react'
 import { VoiceBundle, VoiceBundleType } from '../../../types/api'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
-import VoiceBundleParamsModal from './VoiceBundleParamsModal'
+import VoiceBundleParamsModal, { type VoiceBundleParamsMode } from './VoiceBundleParamsModal'
 
 interface VoiceBundleDetailCardProps {
   bundle: VoiceBundle | null | undefined
   onEdit?: () => void
   onManageInVoiceBundles?: () => void
-  /** Show STT / LLM / TTS parameter tuning (updates the linked voice bundle). */
+  /**
+   * readonly — compact STT/LLM/TTS summary only (view mode).
+   * collapsible — summary by default; expand to tune in edit mode.
+   * @deprecated Use `paramTuningMode` instead.
+   */
   allowParamTuning?: boolean
+  paramTuningMode?: VoiceBundleParamsMode
 }
 
 export default function VoiceBundleDetailCard({
   bundle,
   onEdit,
   onManageInVoiceBundles,
-  allowParamTuning = true,
+  allowParamTuning,
+  paramTuningMode,
 }: VoiceBundleDetailCardProps) {
   const { showToast } = useToast()
+
+  const paramsMode: VoiceBundleParamsMode =
+    paramTuningMode ?? (allowParamTuning === false ? 'readonly' : allowParamTuning ? 'collapsible' : 'readonly')
 
   if (!bundle) {
     return (
@@ -64,11 +73,7 @@ export default function VoiceBundleDetailCard({
       </div>
 
       <div className="p-4">
-        {allowParamTuning ? (
-          <VoiceBundleParamsModal bundle={bundle} showToast={showToast} expanded />
-        ) : (
-          <p className="text-sm text-gray-500">Open Voice Bundles to change pipeline settings.</p>
-        )}
+        <VoiceBundleParamsModal bundle={bundle} showToast={showToast} mode={paramsMode} />
       </div>
     </div>
   )

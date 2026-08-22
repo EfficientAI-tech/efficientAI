@@ -30,6 +30,11 @@ from app.services.testing.test_agent_simulation_prompt import (
     compose_test_agent_simulation_prompt,
     scenario_goal_from_required_info,
 )
+from app.services.testing.test_agent_template import (
+    resolve_caller_opening_text,
+    resolve_first_message_from_agent,
+    should_caller_speak_first,
+)
 from app.workers.celery_app import process_evaluator_result_task
 
 
@@ -310,6 +315,7 @@ class TestAgentBridgeService:
 
         webrtc_bridge = None
         test_agent = None
+        ambient_mic_pump = None
 
         # Helper function to update status
         async def update_status(new_status: str, event: str = None, error: str = None):
@@ -596,10 +602,17 @@ class TestAgentBridgeService:
                 test_agent = None
             else:
                 scenario_goal = scenario_goal_from_required_info(scenario)
-                first_message = f"Hello, this is {persona.name} calling."
-
+                first_message_config = resolve_first_message_from_agent(agent)
+                scenario_first_message = None
                 if scenario.required_info and isinstance(scenario.required_info, dict):
-                    first_message = scenario.required_info.get("first_message", first_message)
+                    scenario_first_message = scenario.required_info.get("first_message")
+
+                first_message = resolve_caller_opening_text(
+                    first_message=first_message_config,
+                    persona_name=persona.name or "Test Caller",
+                    scenario_first_message=scenario_first_message,
+                )
+                caller_speaks_first = should_caller_speak_first(first_message_config)
 
                 persona_description = build_persona_description_for_bridge(persona)
                 effective_max_turns = resolve_persona_max_turns(persona)
@@ -623,7 +636,8 @@ class TestAgentBridgeService:
                     persona_description=persona_description,
                     scenario_description=getattr(scenario, "description", None) or scenario.name or "Test call scenario",
                     scenario_goal=scenario_goal,
-                    first_message=first_message,
+                    first_message=first_message or "",
+                    caller_speaks_first=caller_speaks_first,
                     llm_api_key=llm_api_key,
                     llm_temperature=getattr(persona, "llm_temperature", None),
                     llm_max_tokens=getattr(persona, "llm_max_tokens", None),
@@ -669,14 +683,43 @@ class TestAgentBridgeService:
                 # Set up callbacks to connect test agent with voice provider
                 chunk_ms = 40 if provider_platform == "vapi" else 20
 
+                from app.services.audio.ambient_catalog import resolve_ambient_mixer
+                from app.services.audio.ambient_mic_pump import AmbientMicPump
+
+                ambient_mixer = await resolve_ambient_mixer(persona, sample_rate)
+                if ambient_mixer:
+                    if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "suppress_background_silence"):
+                        webrtc_bridge.suppress_background_silence()
+                    mark_done = (
+                        webrtc_bridge.mark_user_audio_done
+                        if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "mark_user_audio_done")
+                        else None
+                    )
+                    ambient_mic_pump = AmbientMicPump(
+                        ambient_mixer.bed,
+                        sample_rate=sample_rate,
+                        chunk_duration_ms=chunk_ms,
+                        send_callback=webrtc_bridge.receive_audio_from_test_agent,
+                        mark_speech_done=mark_done,
+                    )
+                    await ambient_mic_pump.start()
+
                 async def send_audio_chunks(audio: bytes):
                     """Stream audio to voice provider in real-time chunks."""
                     touch_voice_activity()
-                    await test_agent.stream_audio_chunks(audio, webrtc_bridge.receive_audio_from_test_agent, chunk_duration_ms=chunk_ms)
-                    # Tell ElevenLabs bridge that we're done sending real audio
-                    # so the background silence stream can resume immediately.
-                    if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "mark_user_audio_done"):
-                        webrtc_bridge.mark_user_audio_done()
+                    if ambient_mic_pump:
+                        await ambient_mic_pump.send_speech(
+                            audio,
+                            test_agent.stream_audio_chunks,
+                        )
+                    else:
+                        await test_agent.stream_audio_chunks(
+                            audio,
+                            webrtc_bridge.receive_audio_from_test_agent,
+                            chunk_duration_ms=chunk_ms,
+                        )
+                        if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "mark_user_audio_done"):
+                            webrtc_bridge.mark_user_audio_done()
 
                 async def on_transcript_received(transcript: str):
                     """When voice agent finishes speaking, process with test agent."""
@@ -726,14 +769,12 @@ class TestAgentBridgeService:
                 webrtc_bridge.on_agent_stop_talking = on_agent_stop_talking
                 test_agent.on_call_should_end = on_call_should_end
 
-                # ElevenLabs agents have a built-in greeting; we skip the test
-                # agent's first message and let the ElevenLabs agent speak first.
-                # The background silence loop (started at connection time) simulates
-                # a live microphone so ElevenLabs' VAD activates normally.
-                if provider_platform == "elevenlabs":
+                # Honor template first-message config; ElevenLabs agents often greet first.
+                if provider_platform == "elevenlabs" and not caller_speaks_first:
                     logger.info("[Bridge WebRTC] ElevenLabs: waiting for agent greeting (background silence stream active)")
+                elif not caller_speaks_first:
+                    logger.info("[Bridge WebRTC] Test caller waiting for production agent to speak first")
                 else:
-                    # Retell / Vapi: test agent initiates the conversation
                     logger.info("[Bridge WebRTC] Sending test agent's first message...")
                     first_audio = await test_agent.generate_first_message()
                     if first_audio:
@@ -741,8 +782,10 @@ class TestAgentBridgeService:
                         await send_audio_chunks(first_audio)
                         logger.info(f"[Bridge WebRTC] ✅ First message sent to {provider_platform}")
                     else:
-                        logger.error(f"[Bridge WebRTC] ⚠️ First message TTS returned no audio — test agent will be silent! "
-                                     f"Check TTS provider ({test_agent.config.tts_provider}) config and ffmpeg availability.")
+                        logger.error(
+                            f"[Bridge WebRTC] ⚠️ First message TTS returned no audio — test agent will be silent! "
+                            f"Check TTS provider ({test_agent.config.tts_provider}) config and ffmpeg availability."
+                        )
 
                 logger.info("[Bridge WebRTC] ✅ Test agent connected, conversation starting...")
             else:
@@ -800,6 +843,8 @@ class TestAgentBridgeService:
             await update_status(EvaluatorResultStatus.FAILED.value, "call_error", str(e))
         finally:
             # Cleanup
+            if ambient_mic_pump:
+                await ambient_mic_pump.stop()
             if webrtc_bridge:
                 await webrtc_bridge.disconnect()
             if test_agent:

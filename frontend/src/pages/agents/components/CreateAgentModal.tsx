@@ -21,6 +21,8 @@ import {
   TELEPHONY_STEPS,
   PLATFORM_STEPS,
 } from './create/createAgentTypes'
+import { applyGeneratedTemplate } from './TestAgentTemplateEditor'
+import { assembleTestAgentPrompt } from './agentTestSetupConstants'
 
 interface CreateAgentModalProps {
   isOpen: boolean
@@ -136,8 +138,15 @@ export default function CreateAgentModal({
       })
     },
     onSuccess: (data) => {
-      setFormData((prev) => ({ ...prev, description: data.test_agent_prompt }))
-      showToast('Test agent prompt generated from production prompt', 'success')
+      setFormData((prev) => {
+        const nextTemplate = applyGeneratedTemplate(prev.test_agent_template, data)
+        return {
+          ...prev,
+          test_agent_template: nextTemplate,
+          description: data.test_agent_prompt || assembleTestAgentPrompt(nextTemplate.sections),
+        }
+      })
+      showToast('Test agent template generated from production prompt', 'success')
     },
     onError: (err: any) => {
       showToast(err?.message || err?.response?.data?.detail || 'Failed to generate test prompt', 'error')
@@ -168,10 +177,13 @@ export default function CreateAgentModal({
 
   const createMutation = useMutation({
     mutationFn: async (data: CreateAgentFormData) => {
+      const assembledDescription =
+        data.description?.trim() || assembleTestAgentPrompt(data.test_agent_template.sections)
       const payload: Record<string, unknown> = {
         name: data.name,
         language: data.language,
-        description: data.description || null,
+        description: assembledDescription,
+        test_agent_template: data.test_agent_template,
         call_type: data.call_type,
         call_medium: createPath === 'platform' ? 'web_call' : 'phone_call',
         voice_bundle_id: data.voice_bundle_id.trim(),
@@ -253,7 +265,7 @@ export default function CreateAgentModal({
         return true
       }
       if (currentStep === 2) {
-        if (!isPromptStepValid(productionPrompt, formData.description)) {
+        if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
           if (!productionPrompt.trim()) showToast('Production prompt is required.', 'error')
           else showToast('Test agent prompt must be at least 10 words.', 'error')
           return false
@@ -287,7 +299,7 @@ export default function CreateAgentModal({
         return true
       }
       if (currentStep === 3) {
-        if (!isPromptStepValid(productionPrompt, formData.description)) {
+        if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
           if (!productionPrompt.trim()) showToast('Production prompt must be fetched from the provider.', 'error')
           else showToast('Test agent prompt must be at least 10 words.', 'error')
           return false
@@ -325,7 +337,7 @@ export default function CreateAgentModal({
         return
       }
     }
-    if (!isPromptStepValid(productionPrompt, formData.description)) {
+    if (!isPromptStepValid(productionPrompt, formData.test_agent_template)) {
       showToast('Production and test agent prompts are required.', 'error')
       return
     }
@@ -385,8 +397,14 @@ export default function CreateAgentModal({
             callType={formData.call_type}
             productionPrompt={productionPrompt}
             onProductionPromptChange={setProductionPrompt}
-            testAgentPrompt={formData.description}
-            onTestAgentPromptChange={(description) => setFormData((prev) => ({ ...prev, description }))}
+            testAgentTemplate={formData.test_agent_template}
+            onTestAgentTemplateChange={(test_agent_template) =>
+              setFormData((prev) => ({
+                ...prev,
+                test_agent_template,
+                description: assembleTestAgentPrompt(test_agent_template.sections),
+              }))
+            }
             additionalContext={setupAdditionalContext}
             onAdditionalContextChange={setSetupAdditionalContext}
             aiProviders={aiProviders}
@@ -446,8 +464,14 @@ export default function CreateAgentModal({
         productionPromptReadOnly
         isFetchingProductionPrompt={fetchPlatformPromptMutation.isPending}
         fetchError={promptFetchError}
-        testAgentPrompt={formData.description}
-        onTestAgentPromptChange={(description) => setFormData((prev) => ({ ...prev, description }))}
+        testAgentTemplate={formData.test_agent_template}
+        onTestAgentTemplateChange={(test_agent_template) =>
+          setFormData((prev) => ({
+            ...prev,
+            test_agent_template,
+            description: assembleTestAgentPrompt(test_agent_template.sections),
+          }))
+        }
         additionalContext={setupAdditionalContext}
         onAdditionalContextChange={setSetupAdditionalContext}
         aiProviders={aiProviders}

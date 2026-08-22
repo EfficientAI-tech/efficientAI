@@ -1213,6 +1213,21 @@ class ApiClient {
   ): Promise<{
     sections: Array<{ key: string; title: string; content: string }>
     test_agent_prompt: string
+    first_message: {
+      production_mode: string
+      production_message?: string | null
+      caller_mode: string
+      caller_message?: string | null
+    }
+    test_agent_template: {
+      sections: Array<{ key: string; title: string; content: string }>
+      first_message: {
+        production_mode: string
+        production_message?: string | null
+        caller_mode: string
+        caller_message?: string | null
+      }
+    }
     provider: string
     model: string
   }> {
@@ -1380,6 +1395,72 @@ class ApiClient {
 
   async deletePersonaCustomVoice(customVoiceId: string): Promise<any> {
     const response = await this.client.delete(`/api/v1/personas/custom-voices/${customVoiceId}`)
+    return response.data
+  }
+
+  async listAmbientPresets(): Promise<{ presets: { id: string; label: string }[] }> {
+    const response = await this.client.get('/api/v1/personas/ambient-presets')
+    return response.data
+  }
+
+  async listAmbientLibrary(): Promise<
+    Array<{
+      id: string
+      name: string
+      original_filename?: string | null
+      created_at?: string
+    }>
+  > {
+    const response = await this.client.get('/api/v1/personas/ambient-library')
+    return response.data
+  }
+
+  async uploadAmbientLibraryAsset(file: File, name?: string): Promise<any> {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (name) {
+      formData.append('name', name)
+    }
+    const response = await this.client.post('/api/v1/personas/ambient-library', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async updateAmbientLibraryAsset(assetId: string, data: { name: string }): Promise<any> {
+    const response = await this.client.patch(`/api/v1/personas/ambient-library/${assetId}`, data)
+    return response.data
+  }
+
+  async deleteAmbientLibraryAsset(assetId: string): Promise<void> {
+    await this.client.delete(`/api/v1/personas/ambient-library/${assetId}`)
+  }
+
+  async previewAmbientLibraryAsset(assetId: string): Promise<Blob> {
+    const response = await this.client.get(`/api/v1/personas/ambient-library/${assetId}/preview`, {
+      responseType: 'blob',
+    })
+    return response.data
+  }
+
+  async previewAmbientPreset(presetId: string): Promise<Blob> {
+    const response = await this.client.get(`/api/v1/personas/ambient-presets/${presetId}/preview`, {
+      responseType: 'blob',
+    })
+    return response.data
+  }
+
+  async uploadPersonaAmbientAudio(personaId: string, file: File): Promise<any> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post(`/api/v1/personas/${personaId}/ambient-audio`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async deletePersonaAmbientAudio(personaId: string): Promise<any> {
+    const response = await this.client.delete(`/api/v1/personas/${personaId}/ambient-audio`)
     return response.data
   }
 

@@ -190,7 +190,7 @@ interface TestVoiceAgentResultData {
   name?: string
   timestamp?: string
   duration_seconds?: number | null
-  status?: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
+  status?: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed' | 'call_ended'
   transcription?: string | null
   speaker_segments?: Array<{
     speaker: string

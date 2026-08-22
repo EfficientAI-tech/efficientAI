@@ -732,6 +732,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     telephony_mode=True,
                     call_short_id=call_short_id,
                     silence_hangup_secs=hangup_secs,
+                    persona=context.persona,
                 )
         except ValueError as e:
             logger.error("Vobiz media websocket setup failed: {}", e)

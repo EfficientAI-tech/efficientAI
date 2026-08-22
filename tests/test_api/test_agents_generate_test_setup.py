@@ -1,5 +1,31 @@
 """API tests for agent test setup generation routes."""
 
+import json
+
+
+def _sample_generation_payload():
+    return {
+        "sections": [
+            {
+                "key": "complementary_goal",
+                "title": "Role and Goal",
+                "content": "You are a caller interacting with a support agent.",
+            },
+            {"key": "talking_style", "title": "Talking Style", "content": "Speak naturally."},
+            {"key": "questions_to_ask", "title": "Questions to Ask", "content": "Ask about your issue."},
+            {
+                "key": "information_to_relay",
+                "title": "Information to Relay",
+                "content": "Provide account details when asked.",
+            },
+            {"key": "constraints", "title": "Constraints", "content": "Stay realistic."},
+        ],
+        "first_message": {
+            "production_mode": "assistant_speaks_first",
+            "production_message": "Thank you for calling support.",
+        },
+    }
+
 
 def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provider):
     from importlib import import_module
@@ -7,10 +33,7 @@ def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provide
     llm_service_module = import_module("app.services.ai.llm_service")
     make_ai_provider(provider="openai")
 
-    llm_response = (
-        "You are a caller interacting with a support agent. "
-        "Introduce yourself naturally and ask questions about your issue."
-    )
+    llm_response = json.dumps(_sample_generation_payload())
 
     monkeypatch.setattr(
         llm_service_module.llm_service,
@@ -29,9 +52,11 @@ def test_generate_test_prompt(authenticated_client, monkeypatch, make_ai_provide
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["sections"] == []
-    assert body["test_agent_prompt"] == llm_response
+    assert len(body["sections"]) == 5
+    assert body["sections"][0]["key"] == "complementary_goal"
     assert "caller interacting with a support agent" in body["test_agent_prompt"]
+    assert body["first_message"]["caller_mode"] == "wait"
+    assert body["test_agent_template"]["first_message"]["production_mode"] == "assistant_speaks_first"
     assert body["provider"] == "openai"
 
 
@@ -48,7 +73,6 @@ def test_generate_scenarios_from_prompt(authenticated_client, monkeypatch, make_
             "goal": "Obtain refund confirmation",
         }
     ]
-    import json
 
     monkeypatch.setattr(
         llm_service_module.llm_service,
@@ -59,7 +83,7 @@ def test_generate_scenarios_from_prompt(authenticated_client, monkeypatch, make_
     response = authenticated_client.post(
         "/api/v1/agents/generate-scenarios-from-prompt",
         json={
-            "test_agent_prompt": "## Purpose\nSupport refunds.",
+            "test_agent_prompt": "## Role and Goal\nSupport refunds.",
             "agent_name": "Support Bot",
             "scenario_count": 3,
         },
@@ -77,10 +101,6 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
     llm_service_module = import_module("app.services.ai.llm_service")
     make_ai_provider(provider="openai")
 
-    prompt_text = (
-        "## Role\nYou are a patient calling to book an appointment.\n\n"
-        "Behave naturally and provide details when asked."
-    )
     scenario_json = [
         {
             "name": "Book appointment",
@@ -88,14 +108,13 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
             "goal": "Book slot",
         }
     ]
-    import json
 
     call_count = {"n": 0}
 
     def fake_generate(**_kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            return {"text": prompt_text}
+            return {"text": json.dumps(_sample_generation_payload())}
         return {"text": json.dumps(scenario_json)}
 
     monkeypatch.setattr(llm_service_module.llm_service, "generate_response", fake_generate)
@@ -110,8 +129,9 @@ def test_generate_test_setup_runs_both_stages(authenticated_client, monkeypatch,
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["sections"] == []
-    assert "book an appointment" in body["test_agent_prompt"]
+    assert len(body["sections"]) == 5
+    assert "caller interacting with a support agent" in body["test_agent_prompt"]
+    assert body["first_message"]["caller_mode"] == "wait"
     assert len(body["scenarios"]) == 1
     assert call_count["n"] == 2
 
