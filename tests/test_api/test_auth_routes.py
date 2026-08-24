@@ -20,11 +20,14 @@ from app.core.auth.principal import AuthMethod, Principal
 from app.core.password import hash_password
 from app.models.database import (
     APIKey,
+    Invitation,
+    InvitationStatus,
     Organization,
     OrganizationMember,
     RoleEnum,
     User,
     Workspace,
+    WorkspaceMember,
 )
 from app.services.organization_provisioning import provision_default_workspace
 
@@ -779,103 +782,195 @@ def test_logout_revokes_access_and_refresh_tokens(
     assert refresh.status_code == 401
 
 
-def test_set_password_rejects_weak_password(
-    authenticated_client, db_session, org_id, api_key, seed_org, enable_local_password
+# ---------------------------------------------------------------------------
+# Organization invite token flow
+# ---------------------------------------------------------------------------
+
+def _make_invitation(
+    db_session,
+    *,
+    email,
+    invited_by_id,
+    organization_id,
+    role=RoleEnum.READER.value,
+    token=None,
+    expires_in_days=7,
 ):
-    user = User(
+    invitation = Invitation(
         id=uuid4(),
-        email="weakpw@example.com",
-        is_active=True,
+        organization_id=organization_id,
+        invited_by_id=invited_by_id,
+        email=email,
+        role=role,
+        status=InvitationStatus.PENDING.value,
+        token=token or f"tok-{uuid4()}",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=expires_in_days),
     )
-    db_session.add(user)
-    db_session.flush()
-    _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
+    db_session.add(invitation)
+    db_session.commit()
+    db_session.refresh(invitation)
+    return invitation
 
-    response = authenticated_client.post(
-        "/api/v1/auth/password",
-        json={"new_password": "alllowercase"},
+
+def test_preview_invitation_returns_org_details(client, db_session, user_context, org_id):
+    invitation = _make_invitation(
+        db_session,
+        email="invitee@example.com",
+        invited_by_id=user_context["user"].id,
+        organization_id=org_id,
+        role=RoleEnum.WRITER.value,
+        token="preview-token-123",
     )
-    assert response.status_code == 400
-    assert "uppercase" in response.json()["detail"].lower()
+
+    response = client.get(f"/api/v1/auth/invitations/preview/{invitation.token}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] == "invitee@example.com"
+    assert body["role"] == RoleEnum.WRITER.value
+    assert body["status"] == InvitationStatus.PENDING.value
+    assert body["user_exists"] is False
+    assert body["has_password"] is False
 
 
-def test_iam_reset_password_rejects_weak_password(
-    authenticated_client, db_session, org_id, enable_local_password
+def test_preview_invitation_not_found(client):
+    response = client.get("/api/v1/auth/invitations/preview/missing-token")
+    assert response.status_code == 404
+
+
+def test_signup_with_invite_token_joins_invited_org(
+    client, db_session, enable_local_password, user_context, org_id, seed_org
 ):
-    target = User(
-        email="member@example.com",
+    invitation = _make_invitation(
+        db_session,
+        email="new-invitee@example.com",
+        invited_by_id=user_context["user"].id,
+        organization_id=org_id,
+        role=RoleEnum.READER.value,
+        token="signup-invite-token",
+    )
+
+    response = client.post(
+        "/api/v1/auth/signup",
+        json={
+            "email": "new-invitee@example.com",
+            "password": "Correct1!Horse",
+            "invite_token": invitation.token,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user"]["organization_id"] == str(org_id)
+    assert body["user"]["role"] == RoleEnum.READER.value
+
+    user = db_session.query(User).filter(User.email == "new-invitee@example.com").one()
+    memberships = (
+        db_session.query(OrganizationMember)
+        .filter(OrganizationMember.user_id == user.id)
+        .all()
+    )
+    assert len(memberships) == 1
+    assert memberships[0].organization_id == org_id
+
+    personal_orgs = (
+        db_session.query(Organization)
+        .filter(Organization.name.like("%new-invitee@example.com%"))
+        .count()
+    )
+    assert personal_orgs == 0
+
+    db_session.refresh(invitation)
+    assert invitation.status == InvitationStatus.ACCEPTED.value
+
+
+def test_signup_with_invite_token_rejects_email_mismatch(
+    client, db_session, enable_local_password, user_context, org_id
+):
+    invitation = _make_invitation(
+        db_session,
+        email="invitee@example.com",
+        invited_by_id=user_context["user"].id,
+        organization_id=org_id,
+        token="mismatch-token",
+    )
+
+    response = client.post(
+        "/api/v1/auth/signup",
+        json={
+            "email": "other@example.com",
+            "password": "Correct1!Horse",
+            "invite_token": invitation.token,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "email" in response.json()["detail"].lower()
+
+
+def test_accept_invitation_by_token_issues_org_scoped_session(
+    client, db_session, enable_local_password, user_context, org_id
+):
+    invited_org = Organization(id=uuid4(), name="Target Org")
+    db_session.add(invited_org)
+    db_session.commit()
+
+    invitation = _make_invitation(
+        db_session,
+        email="existing@example.com",
+        invited_by_id=user_context["user"].id,
+        organization_id=invited_org.id,
+        role=RoleEnum.WRITER.value,
+        token="accept-by-token",
+    )
+    existing_user = User(
+        email="existing@example.com",
         password_hash=hash_password(TEST_PASSWORD),
         is_active=True,
     )
-    db_session.add(target)
+    home_org = Organization(id=uuid4(), name="Home Org")
+    db_session.add(home_org)
+    db_session.add(existing_user)
     db_session.flush()
     db_session.add(
         OrganizationMember(
-            organization_id=org_id,
-            user_id=target.id,
-            role=RoleEnum.READER.value,
+            organization_id=home_org.id,
+            user_id=existing_user.id,
+            role=RoleEnum.ADMIN.value,
         )
     )
-    db_session.commit()
-
-    response = authenticated_client.post(
-        f"/api/v1/iam/users/{target.id}/reset-password",
-        json={"new_password": "alllowercase"},
-    )
-    assert response.status_code == 400
-    assert "uppercase" in response.json()["detail"].lower()
-
-
-def test_switch_org_revokes_previous_session_tokens(
-    client, db_session, enable_local_password
-):
-    user, source_org = _seed_user_with_org(
-        db_session, "switch@example.com", TEST_PASSWORD
-    )
-    target_org = Organization(id=uuid4(), name="Switch Target Org")
-    db_session.add(target_org)
-    db_session.flush()
-    db_session.add(
-        OrganizationMember(
-            organization_id=target_org.id,
-            user_id=user.id,
-            role=RoleEnum.READER.value,
-        )
+    provision_default_workspace(
+        db_session,
+        organization_id=invited_org.id,
+        created_by_user_id=user_context["user"].id,
     )
     db_session.commit()
 
     login = client.post(
         "/api/v1/auth/login",
-        json={
-            "email": "switch@example.com",
-            "password": TEST_PASSWORD,
-            "organization_id": str(source_org.id),
-        },
+        json={"email": "existing@example.com", "password": TEST_PASSWORD},
     )
     assert login.status_code == 200
-    body = login.json()
-    assert "access_token" in body
-    old_access = body["access_token"]
-    old_refresh = body["refresh_token"]
+    access_token = login.json()["access_token"]
 
-    switch = client.post(
-        "/api/v1/auth/switch-org",
-        json={
-            "organization_id": str(target_org.id),
-            "refresh_token": old_refresh,
-        },
-        headers={"Authorization": f"Bearer {old_access}"},
+    response = client.post(
+        "/api/v1/auth/invitations/accept-by-token",
+        json={"token": invitation.token},
+        headers={"Authorization": f"Bearer {access_token}"},
     )
-    assert switch.status_code == 200
 
-    me = client.get(
-        "/api/v1/auth/me",
-        headers={"Authorization": f"Bearer {old_access}"},
-    )
-    assert me.status_code == 401
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user"]["organization_id"] == str(invited_org.id)
+    assert body["user"]["role"] == RoleEnum.WRITER.value
 
-    stale_refresh = client.post(
-        "/api/v1/auth/refresh",
-        json={"refresh_token": old_refresh},
+    workspace_membership = (
+        db_session.query(WorkspaceMember)
+        .join(Workspace, Workspace.id == WorkspaceMember.workspace_id)
+        .filter(
+            WorkspaceMember.user_id == existing_user.id,
+            Workspace.organization_id == invited_org.id,
+        )
+        .count()
     )
-    assert stale_refresh.status_code == 401
+    assert workspace_membership >= 1

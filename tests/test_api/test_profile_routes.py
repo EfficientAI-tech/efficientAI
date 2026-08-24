@@ -15,6 +15,8 @@ from app.models.database import (
     Organization,
     OrganizationMember,
     RoleEnum,
+    Workspace,
+    WorkspaceMember,
 )
 
 
@@ -112,6 +114,13 @@ def test_accept_pending_invitation_creates_membership(
     target_org = Organization(id=uuid4(), name="Invited Org")
     db_session.add(target_org)
     db_session.commit()
+    from app.services.organization_provisioning import provision_default_workspace
+
+    provision_default_workspace(
+        db_session,
+        organization_id=target_org.id,
+        created_by_user_id=user_context["user"].id,
+    )
 
     invitation = _make_invitation(
         db_session,
@@ -145,8 +154,20 @@ def test_accept_pending_invitation_creates_membership(
         or membership.role == RoleEnum.WRITER
     )
 
+    workspace = db_session.query(Workspace).filter(Workspace.organization_id == target_org.id).first()
+    if workspace is not None:
+        ws_member = (
+            db_session.query(WorkspaceMember)
+            .filter(
+                WorkspaceMember.workspace_id == workspace.id,
+                WorkspaceMember.user_id == user_context["user"].id,
+            )
+            .first()
+        )
+        assert ws_member is not None
 
-def test_accept_expired_invitation_returns_400(
+
+def test_accept_expired_invitation_returns_410(
     authenticated_client, user_context, db_session
 ):
     target_org = Organization(id=uuid4(), name="Stale Org")
@@ -165,7 +186,7 @@ def test_accept_expired_invitation_returns_400(
         f"/api/v1/profile/invitations/{invitation.id}/accept"
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 410
     assert "expired" in response.json()["detail"].lower()
 
 

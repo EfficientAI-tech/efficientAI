@@ -927,6 +927,30 @@ def _aggregate_import_row_status_counts(
     )
 
 
+def _call_import_status_from_evaluation_status(eval_status: str) -> CallImportStatus:
+    """Map a terminal evaluation run status onto batch status."""
+    normalized = (eval_status or "").strip().lower()
+    if normalized == "completed":
+        return CallImportStatus.COMPLETED
+    if normalized == "partial":
+        return CallImportStatus.PARTIAL
+    if normalized in ("failed", "cancelled"):
+        return CallImportStatus.FAILED
+    if normalized in ("pending", "running"):
+        return CallImportStatus.PROCESSING
+    return CallImportStatus.PROCESSING
+
+
+def _latest_evaluation_status(db: Session, call_import_id: UUID) -> Optional[str]:
+    row = (
+        db.query(CallImportEvaluation.status)
+        .filter(CallImportEvaluation.call_import_id == call_import_id)
+        .order_by(CallImportEvaluation.created_at.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
 def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> None:
     """Recompute batch counters and terminal status on the parent import.
 
@@ -973,7 +997,13 @@ def rollup_call_import_batch_status(db: Session, call_import: CallImport) -> Non
         )
         if has_evaluations:
             if failed == 0 and completed == 0:
-                call_import.status = CallImportStatus.FAILED
+                latest_eval_status = _latest_evaluation_status(db, call_import.id)
+                if latest_eval_status is not None:
+                    call_import.status = _call_import_status_from_evaluation_status(
+                        latest_eval_status
+                    )
+                else:
+                    call_import.status = CallImportStatus.FAILED
             else:
                 call_import.status = CallImportStatus.PARTIAL
         else:

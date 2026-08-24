@@ -7,6 +7,7 @@ app:
   version: "0.1.0"
   debug: false
   secret_key: "your-secret-key-here-change-in-production"
+  frontend_base_url: "http://localhost:8000"
 
 # Server Settings
 server:

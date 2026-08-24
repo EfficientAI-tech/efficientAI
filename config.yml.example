@@ -6,6 +6,10 @@ app:
   version: "0.1.0"
   debug: true
   secret_key: "your-secret-key-here-change-in-production"
+  # Public URL where users open the app (used for organization invite links).
+  # Local: http://localhost:8000 when the API serves the built SPA on port 8000.
+  # Production: https://your-company.efficientai.com (or your custom domain).
+  frontend_base_url: "http://localhost:8000"
 
 # Server Settings
 server:

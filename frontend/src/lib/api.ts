@@ -23,6 +23,7 @@ import type {
   OrganizationMember,
   Invitation,
   InvitationCreate,
+  InvitationPreview,
   Profile,
   UserUpdate,
   UserPreferences,
@@ -801,8 +802,19 @@ class ApiClient {
     first_name?: string
     last_name?: string
     reference_code?: string
+    invite_token?: string
   }): Promise<TokenResponse> {
     const response = await this.client.post('/api/v1/auth/signup', data)
+    return response.data
+  }
+
+  async previewInvitation(token: string): Promise<InvitationPreview> {
+    const response = await axios.get(`${API_BASE_URL}/api/v1/auth/invitations/preview/${encodeURIComponent(token)}`)
+    return response.data
+  }
+
+  async acceptInvitationByToken(token: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/invitations/accept-by-token', { token })
     return response.data
   }
 
@@ -927,12 +939,14 @@ class ApiClient {
   async loginWithPassword(
     email: string,
     password: string,
-    organizationId?: string
+    organizationId?: string,
+    inviteToken?: string,
   ): Promise<LoginResponse> {
     const response = await this.client.post('/api/v1/auth/login', {
       email,
       password,
       ...(organizationId ? { organization_id: organizationId } : {}),
+      ...(inviteToken ? { invite_token: inviteToken } : {}),
     })
     return response.data
   }
@@ -4479,6 +4493,14 @@ class ApiClient {
   async getEvaluatorResultMetrics(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
     return response.data
+  }
+
+  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+      { responseType: 'blob' },
+    )
+    return URL.createObjectURL(response.data)
   }
 
   async createEvaluatorResultManual(data: {

@@ -148,7 +148,10 @@ def _serialize_call_import(
     user_emails: Optional[Dict[UUID, str]] = None,
 ) -> CallImportResponse:
     """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
-    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+    from app.services.call_imports.bulk_ops import (
+        _latest_evaluation_status,
+        rollup_call_import_batch_status,
+    )
     from app.services.call_imports.progress_counters import (
         clear_import_progress_redis,
         read_import_progress,
@@ -185,6 +188,9 @@ def _serialize_call_import(
         update={
             "completed_rows": completed,
             "failed_rows": failed,
+            "latest_evaluation_status": _latest_evaluation_status(
+                db, call_import.id
+            ),
             "created_by_email": created_email,
             "last_updated_by_email": updated_email,
         }

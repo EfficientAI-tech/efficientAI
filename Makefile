@@ -6,6 +6,8 @@ PYTEST_FLAGS ?= -q
 TEST_DB_HOST ?= localhost
 TEST_DB_PORT ?= 5432
 TEST_DB_NAME ?= efficientai
+# Dedicated DB for test-docker-db / local Postgres runs (matches CI; not the dev DB).
+TEST_DOCKER_DB_NAME ?= efficientai_test
 TEST_DB_USER ?= efficientai
 TEST_DB_PASSWORD ?= password
 TEST_DATABASE_URL ?= postgresql://$(TEST_DB_USER):$(TEST_DB_PASSWORD)@$(TEST_DB_HOST):$(TEST_DB_PORT)/$(TEST_DB_NAME)
@@ -49,8 +51,11 @@ test-parallel: check-pytest-xdist ## Run the full test suite in parallel (pytest
 	$(PYTEST) tests $(PYTEST_FLAGS) -n auto --dist loadscope $(PYTEST_ARGS)
 
 test-docker-db: check-pytest ## Run tests against running Docker Compose Postgres
-	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" DATABASE_URL="$(TEST_DATABASE_URL)" \
-	POSTGRES_HOST="$(TEST_DB_HOST)" POSTGRES_PORT="$(TEST_DB_PORT)" POSTGRES_DB="$(TEST_DB_NAME)" \
+	@PGPASSWORD="$(TEST_DB_PASSWORD)" psql -h "$(TEST_DB_HOST)" -p "$(TEST_DB_PORT)" -U "$(TEST_DB_USER)" -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='$(TEST_DOCKER_DB_NAME)'" | grep -q 1 \
+	|| PGPASSWORD="$(TEST_DB_PASSWORD)" psql -h "$(TEST_DB_HOST)" -p "$(TEST_DB_PORT)" -U "$(TEST_DB_USER)" -d postgres -c "CREATE DATABASE \"$(TEST_DOCKER_DB_NAME)\";"
+	TEST_DATABASE_URL="postgresql://$(TEST_DB_USER):$(TEST_DB_PASSWORD)@$(TEST_DB_HOST):$(TEST_DB_PORT)/$(TEST_DOCKER_DB_NAME)" \
+	DATABASE_URL="postgresql://$(TEST_DB_USER):$(TEST_DB_PASSWORD)@$(TEST_DB_HOST):$(TEST_DB_PORT)/$(TEST_DOCKER_DB_NAME)" \
+	POSTGRES_HOST="$(TEST_DB_HOST)" POSTGRES_PORT="$(TEST_DB_PORT)" POSTGRES_DB="$(TEST_DOCKER_DB_NAME)" \
 	POSTGRES_USER="$(TEST_DB_USER)" POSTGRES_PASSWORD="$(TEST_DB_PASSWORD)" \
 	$(PYTEST) tests $(PYTEST_FLAGS) $(PYTEST_ARGS)
 

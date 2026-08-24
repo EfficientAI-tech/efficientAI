@@ -20,7 +20,8 @@ from app.services.metric_studio.metric_selection import load_studio_run_metrics
 from app.services.metric_studio.source_resolver import resolve_source
 from app.workers.config import celery_app
 from app.workers.tasks.evaluate_call_import_row_core import (
-    build_parent_groups,
+    bucket_needs_comparison_pair,
+    build_llm_config_buckets,
     categorize_metrics,
 )
 from app.workers.tasks.helpers.audio_evaluation import (
@@ -29,6 +30,7 @@ from app.workers.tasks.helpers.audio_evaluation import (
 )
 from app.workers.tasks.helpers.llm_evaluation import (
     evaluate_with_llm,
+    flatten_metric_groups,
     handle_llm_evaluation_error,
 )
 
@@ -166,74 +168,47 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
                 )
 
         if llm_metrics and transcript:
-            parents_by_id, children_by_parent, standalone = build_parent_groups(
-                db, llm_metrics
-            )
             result_id = f"studio:{result_row.id}"
-
-            for parent_id, children in children_by_parent.items():
-                parent = parents_by_id.get(parent_id)
-                if not parent or not children:
-                    continue
-                try:
+            production_text = (sample.transcript or "").strip()
+            diarised_text = (sample.diarised_transcript or "").strip()
+            comparison_ids = {
+                str(m.id)
+                for m in llm_metrics
+                if getattr(m, "compare_transcripts", False)
+            }
+            buckets = build_llm_config_buckets(
+                db,
+                llm_metrics,
+                overrides={},
+                run_provider=None,
+                run_model=None,
+                run_llm_config=None,
+                run_credential_id=None,
+            )
+            try:
+                for _config, groups in buckets.items():
                     comparison_pair = None
-                    if any(getattr(m, "compare_transcripts", False) for m in children):
-                        comparison_pair = (
-                            sample.transcript or "",
-                            sample.diarised_transcript or sample.transcript or "",
-                        )
+                    if bucket_needs_comparison_pair(
+                        groups,
+                        production_transcript=production_text,
+                        diarised_transcript=diarised_text,
+                        comparison_metric_ids=comparison_ids,
+                    ):
+                        comparison_pair = (production_text, diarised_text)
+                    bucket_metrics = flatten_metric_groups(groups)
                     scores, _ = evaluate_with_llm(
                         transcription=transcript,
-                        llm_metrics=children,
+                        llm_metrics=bucket_metrics,
                         ai_providers=ai_providers,
                         organization_id=run.organization_id,
                         result_id=result_id,
                         db=db,
-                        parent_metric=parent,
                         comparison_pair=comparison_pair,
+                        metric_groups=groups,
                     )
                     metric_scores.update(scores)
-                except Exception as llm_err:
-                    metric_scores.update(
-                        handle_llm_evaluation_error(children, llm_err)
-                    )
-
-            if standalone:
-                try:
-                    comparison_standalone = [
-                        m
-                        for m in standalone
-                        if getattr(m, "compare_transcripts", False)
-                    ]
-                    transcript_standalone = [
-                        m for m in standalone if m not in comparison_standalone
-                    ]
-                    if transcript_standalone:
-                        scores, _ = evaluate_with_llm(
-                            transcription=transcript,
-                            llm_metrics=transcript_standalone,
-                            ai_providers=ai_providers,
-                            organization_id=run.organization_id,
-                            result_id=result_id,
-                            db=db,
-                        )
-                        metric_scores.update(scores)
-                    for metric in comparison_standalone:
-                        scores, _ = evaluate_with_llm(
-                            transcription=transcript,
-                            llm_metrics=[metric],
-                            ai_providers=ai_providers,
-                            organization_id=run.organization_id,
-                            result_id=result_id,
-                            db=db,
-                            comparison_pair=(
-                                sample.transcript or "",
-                                sample.diarised_transcript or sample.transcript or "",
-                            ),
-                        )
-                        metric_scores.update(scores)
-                except Exception as llm_err:
-                    metric_scores.update(handle_llm_evaluation_error(standalone, llm_err))
+            except Exception as llm_err:
+                metric_scores.update(handle_llm_evaluation_error(llm_metrics, llm_err))
 
         result_row.metric_scores = metric_scores
         flag_modified(result_row, "metric_scores")

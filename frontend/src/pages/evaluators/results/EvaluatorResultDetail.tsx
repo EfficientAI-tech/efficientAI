@@ -13,6 +13,7 @@ import { useToast } from '../../../hooks/useToast'
 import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
+import { getProviderRecordingUrl, hasEvaluatorResultRecording } from '../../../lib/recordingUrls'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -42,6 +43,8 @@ function getVobizPhoneNumbers(callData: any): { from: string | null; to: string 
 function getResultAudioS3Key(result: any): string | null {
   return result?.audio_s3_key || result?.call_data?.recording_s3_key || null
 }
+
+const AUTH_GATED_PROVIDERS = new Set(['elevenlabs'])
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
   description: string
@@ -438,7 +441,6 @@ export default function EvaluatorResultDetailPage({
   }
 
   const audioS3Key = getResultAudioS3Key(result)
-  const observabilityCallShortId = result?.call_data?.call_short_id as string | undefined
 
   const { data: presignedUrl } = useRecordingPresignedUrl(audioS3Key)
 
@@ -472,38 +474,51 @@ export default function EvaluatorResultDetailPage({
   }, [result?.status, queryClient])
 
   useEffect(() => {
-    const providerRecordingUrl = result?.call_data?.recording_url
-    if (providerRecordingUrl) {
-      setAudioUrl(providerRecordingUrl)
-      return
-    }
-    if (presignedUrl?.url) {
-      setAudioUrl(presignedUrl.url)
-      return
-    }
-    setAudioUrl(null)
-  }, [presignedUrl, result?.call_data?.recording_url])
-
-  useEffect(() => {
-    const callShortId = observabilityCallShortId
-    const hasS3Recording = !!audioS3Key
-    if (!callShortId || !hasS3Recording || result?.call_data?.recording_url) {
-      return
-    }
-
     let cancelled = false
-    apiClient.getObservabilityCallAudioUrl(callShortId)
-      .then((url) => {
-        if (!cancelled) setAudioUrl(url)
-      })
-      .catch(() => {
-        if (!cancelled && presignedUrl?.url) setAudioUrl(presignedUrl.url)
-      })
+    let objectUrl: string | null = null
+
+    async function resolveAudioUrl() {
+      if (presignedUrl?.url) {
+        if (!cancelled) setAudioUrl(presignedUrl.url)
+        return
+      }
+
+      const provider = (result?.provider_platform || '').toLowerCase()
+      const providerRecordingUrl = getProviderRecordingUrl(result?.call_data, provider)
+      const resultId = result?.result_id || id
+
+      if (!audioS3Key && providerRecordingUrl && provider !== 'elevenlabs') {
+        if (!cancelled) setAudioUrl(providerRecordingUrl)
+        return
+      }
+
+      if (!audioS3Key && resultId && (AUTH_GATED_PROVIDERS.has(provider) || provider === 'vapi')) {
+        try {
+          objectUrl = await apiClient.getEvaluatorResultAudioUrl(resultId)
+          if (!cancelled) setAudioUrl(objectUrl)
+          return
+        } catch {
+          // fall through
+        }
+      }
+
+      if (!cancelled) setAudioUrl(null)
+    }
+
+    void resolveAudioUrl()
 
     return () => {
       cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [observabilityCallShortId, audioS3Key, result?.call_data?.recording_url, presignedUrl?.url])
+  }, [
+    presignedUrl,
+    audioS3Key,
+    result?.call_data,
+    result?.provider_platform,
+    result?.result_id,
+    id,
+  ])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -763,9 +778,9 @@ export default function EvaluatorResultDetailPage({
   const displayStatus = displayEvaluatorResultStatus(resultData)
   const statusConfig = getStatusConfig(displayStatus)
   const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
+  const providerRecordingUrl = getProviderRecordingUrl(resultData.call_data, resultData.provider_platform)
   const hasCallMediaOrTranscript = Boolean(
-    audioS3Key ||
-    resultData.call_data?.recording_url ||
+    hasEvaluatorResultRecording(resultData) ||
     resultData.transcription ||
     resultData.speaker_segments?.length ||
     (Array.isArray(resultData.call_data?.messages) && resultData.call_data.messages.length > 0)
@@ -1121,7 +1136,11 @@ export default function EvaluatorResultDetailPage({
               </span>
             )}
           </h2>
-          <ElevenLabsCallDetails callData={resultData.call_data} hideTranscript />
+          <ElevenLabsCallDetails
+            callData={resultData.call_data}
+            callShortId={resultData.call_data?.call_short_id}
+            hideTranscript
+          />
         </div>
       )}
 
@@ -1354,12 +1373,12 @@ export default function EvaluatorResultDetailPage({
                         </div>
                       )}
 
-                      {(resultData.call_data?.recording_url || audioS3Key) && (
+                      {(providerRecordingUrl || audioS3Key) && (
                         <div className="p-3 bg-white rounded-lg border border-gray-100">
                           <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Recording</p>
-                          {resultData.call_data?.recording_url ? (
+                          {providerRecordingUrl ? (
                             <a
-                              href={resultData.call_data.recording_url}
+                              href={providerRecordingUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-800"

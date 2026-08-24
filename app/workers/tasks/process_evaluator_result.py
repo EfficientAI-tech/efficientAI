@@ -249,50 +249,35 @@ def _evaluate_llm_metrics_grouped(
     agent,
     persona,
     scenario,
+    comparison_pair: tuple[str, str] | None = None,
+    all_columns_block: str | None = None,
+    discover_new_metrics: bool = False,
+    running_discovered_metrics: list | None = None,
 ) -> tuple[dict, float | None]:
-    """Evaluate LLM metrics, grouping categorization children by parent."""
-    from app.workers.tasks.evaluate_call_import_row_core import build_parent_groups
-
-    parents_by_id, children_by_parent, standalone_metrics = build_parent_groups(
-        db, llm_metrics
+    """Evaluate all LLM metrics in a single call (grouped by parent in prompt)."""
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        build_metric_prompt_groups,
     )
-    metric_scores: dict = {}
-    evaluation_time: float | None = None
 
-    def _run_bucket(bucket, parent_metric=None):
-        nonlocal evaluation_time
-        scores, eval_time = evaluate_with_llm(
-            transcription=transcription,
-            llm_metrics=bucket,
-            ai_providers=ai_providers,
-            organization_id=organization_id,
-            result_id=result_id,
-            db=db,
-            evaluator=evaluator,
-            agent=agent,
-            persona=persona,
-            scenario=scenario,
-            parent_metric=parent_metric,
-        )
-        metric_scores.update(scores)
-        if eval_time is not None:
-            evaluation_time = eval_time
-
-    if standalone_metrics:
-        _run_bucket(standalone_metrics, parent_metric=None)
-
-    for parent_id, children in children_by_parent.items():
-        parent_metric = parents_by_id.get(parent_id)
-        if not parent_metric:
-            logger.warning(
-                f"[EvaluatorResult {result_id}] Parent metric {parent_id} not found; "
-                "evaluating children as flat metrics"
-            )
-            _run_bucket(children, parent_metric=None)
-            continue
-        _run_bucket(children, parent_metric=parent_metric)
-
-    return metric_scores, evaluation_time
+    metric_groups = build_metric_prompt_groups(db, llm_metrics)
+    scores, eval_time = evaluate_with_llm(
+        transcription=transcription,
+        llm_metrics=llm_metrics,
+        ai_providers=ai_providers,
+        organization_id=organization_id,
+        result_id=result_id,
+        db=db,
+        evaluator=evaluator,
+        agent=agent,
+        persona=persona,
+        scenario=scenario,
+        comparison_pair=comparison_pair,
+        all_columns_block=all_columns_block,
+        discover_new_metrics=discover_new_metrics,
+        running_discovered_metrics=running_discovered_metrics,
+        metric_groups=metric_groups,
+    )
+    return scores, eval_time
 
 
 _PERMANENT_VAPI_ENDED_REASONS = frozenset(
@@ -408,18 +393,9 @@ def _extract_audio_url(call_data: dict, platform: str) -> str | None:
     if platform == "retell":
         return call_data.get("recording_url")
     if platform == "vapi":
-        return (
-            call_data.get("recordingUrl")
-            or call_data.get("stereoRecordingUrl")
-            or artifact.get("recordingUrl")
-            or artifact.get("stereoRecordingUrl")
-            or mono_recording.get("combinedUrl")
-            or recording_urls.get("combined_url")
-            or recording_urls.get("stereo_url")
-            or call_data.get("recordingUrl")
-            or provider_payload.get("recordingUrl")
-            or provider_payload.get("stereoRecordingUrl")
-        )
+        from app.services.voice_providers.vapi_recording import extract_vapi_recording_url
+
+        return extract_vapi_recording_url(call_data)
     if platform == "smallest":
         return (
             call_data.get("recording_url")
@@ -497,7 +473,10 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
     if platform == "elevenlabs" and decrypted_key:
         headers = {"xi-api-key": decrypted_key}
     elif platform == "vapi" and decrypted_key:
-        headers = {"Authorization": f"Bearer {decrypted_key}"}
+        from app.services.voice_providers.vapi_recording import is_presigned_storage_url
+
+        if not is_presigned_storage_url(audio_url):
+            headers = {"Authorization": f"Bearer {decrypted_key}"}
     try:
         response = _http.get(audio_url, headers=headers, timeout=120)
     except Exception as download_err:

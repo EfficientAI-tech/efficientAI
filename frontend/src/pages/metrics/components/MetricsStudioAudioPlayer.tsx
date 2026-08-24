@@ -8,6 +8,8 @@ type MetricsStudioAudioPlayerProps = {
   metadata: Record<string, unknown>
 }
 
+const AUTH_GATED_PROVIDERS = new Set(['elevenlabs', 'vapi'])
+
 function pickString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
@@ -31,12 +33,6 @@ export default function MetricsStudioAudioPlayer({
       setAudioUrl(null)
 
       try {
-        const providerUrl = pickString(metadata.recording_url)
-        if (providerUrl) {
-          if (!cancelled) setAudioUrl(providerUrl)
-          return
-        }
-
         const s3Key =
           pickString(metadata.audio_s3_key) ?? pickString(metadata.recording_s3_key)
         if (s3Key) {
@@ -63,10 +59,24 @@ export default function MetricsStudioAudioPlayer({
             if (!cancelled) setAudioUrl(url)
             return
           }
+
+          const provider = (result?.provider_platform || '').toLowerCase()
+          if (AUTH_GATED_PROVIDERS.has(provider)) {
+            objectUrl = await apiClient.getEvaluatorResultAudioUrl(sourceRef)
+            if (!cancelled) setAudioUrl(objectUrl)
+            return
+          }
+
           const callDataUrl = pickString(result?.call_data?.recording_url)
           if (callDataUrl && !cancelled) {
             setAudioUrl(callDataUrl)
           }
+          return
+        }
+
+        const providerUrl = pickString(metadata.recording_url)
+        if (providerUrl && !cancelled) {
+          setAudioUrl(providerUrl)
         }
       } catch {
         if (!cancelled) setError('Could not load recording')
