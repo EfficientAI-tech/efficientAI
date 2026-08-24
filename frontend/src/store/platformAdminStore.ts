@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { apiClient } from '../lib/api'
+import { clearPlatformAdminSession } from '../lib/authSession'
 
 type PlatformAdminUser = {
   id: string
@@ -39,13 +40,9 @@ export const usePlatformAdminStore = create<PlatformAdminState>((set, get) => {
     },
     logout: () => {
       const accessToken = get().accessToken
-      localStorage.removeItem(STORAGE_TOKEN)
-      localStorage.removeItem(STORAGE_ADMIN)
+      clearPlatformAdminSession()
       set({ accessToken: null, admin: null })
-
-      void apiClient
-        .platformLogout(accessToken)
-        .catch(() => apiClient.platformLogout(accessToken))
+      apiClient.revokePlatformSessionBestEffort(accessToken)
     },
   }
 })

@@ -1,9 +1,12 @@
 import axios, { AxiosInstance } from 'axios'
 import {
+  clearAuthSession,
   getApiErrorDetail,
+  hasRevocableUserCredentials,
   isOrganizationAccessDenied,
   organizationAccessDeniedMessage,
   redirectToLoginWithMessage,
+  type UserSessionCredentials,
 } from './authSession'
 import type {
   GenerateScenariosFromPromptParams,
@@ -585,6 +588,7 @@ class ApiClient {
           requestUrl.includes('/auth/login') ||
           requestUrl.includes('/auth/signup') ||
           requestUrl.includes('/auth/refresh') ||
+          requestUrl.includes('/auth/logout') ||
           requestUrl.includes('/auth/config')
 
         const detail = getApiErrorDetail(error)
@@ -611,10 +615,7 @@ class ApiClient {
             }
           }
 
-          localStorage.removeItem('apiKey')
-          localStorage.removeItem('accessToken')
-          localStorage.removeItem('refreshToken')
-          localStorage.removeItem('authUser')
+          clearAuthSession()
           window.location.href = '/login'
         }
         return Promise.reject(error)
@@ -834,13 +835,37 @@ class ApiClient {
 
   async platformLogout(accessToken?: string | null): Promise<{ success: boolean; admin_id: string }> {
     const token = accessToken ?? localStorage.getItem('platformAccessToken')
-    const headers = token ? { Authorization: `Bearer ${token}` } : {}
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/auth/logout`,
       {},
       { headers },
     )
     return response.data
+  }
+
+  /**
+   * Voluntary logout: revoke JWT blacklist + refresh token on the server.
+   * Uses raw axios so credentials survive after local session is cleared.
+   */
+  revokeUserSessionBestEffort(credentials: UserSessionCredentials): void {
+    if (!hasRevocableUserCredentials(credentials)) {
+      return
+    }
+    const auth = { accessToken: credentials.accessToken, apiKey: credentials.apiKey }
+    void this.revokeUserSession(credentials.refreshToken, auth).catch(() =>
+      this.revokeUserSession(credentials.refreshToken, auth),
+    )
+  }
+
+  revokePlatformSessionBestEffort(accessToken?: string | null): void {
+    if (!accessToken) {
+      return
+    }
+    void this.platformLogout(accessToken).catch(() => this.platformLogout(accessToken))
   }
 
   async getPlatformOrganizationStats(): Promise<PlatformOrganizationStats> {
@@ -957,7 +982,14 @@ class ApiClient {
     refreshToken?: string | null,
     credentials?: { accessToken?: string | null; apiKey?: string | null },
   ): Promise<{ success: boolean; auth_method: string }> {
-    const headers: Record<string, string> = {}
+    return this.revokeUserSession(refreshToken, credentials)
+  }
+
+  private async revokeUserSession(
+    refreshToken?: string | null,
+    credentials?: { accessToken?: string | null; apiKey?: string | null },
+  ): Promise<{ success: boolean; auth_method: string }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     const accessToken = credentials?.accessToken ?? localStorage.getItem('accessToken')
     const apiKey = credentials?.apiKey ?? localStorage.getItem('apiKey')
     if (accessToken) {
@@ -965,8 +997,8 @@ class ApiClient {
     } else if (apiKey) {
       headers['X-API-Key'] = apiKey
     }
-    const response = await this.client.post(
-      '/api/v1/auth/logout',
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/auth/logout`,
       {
         refresh_token: refreshToken ?? localStorage.getItem('refreshToken') ?? undefined,
       },

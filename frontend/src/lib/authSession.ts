@@ -1,5 +1,11 @@
 export const AUTH_REDIRECT_MESSAGE_KEY = 'authRedirectMessage'
 
+export type UserSessionCredentials = {
+  accessToken?: string | null
+  refreshToken?: string | null
+  apiKey?: string | null
+}
+
 export function getApiErrorDetail(error: unknown): string | undefined {
   const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data
     ?.detail
@@ -21,6 +27,16 @@ export function clearAuthSession(): void {
   localStorage.removeItem('refreshToken')
   localStorage.removeItem('authUser')
   localStorage.removeItem('activeWorkspaceId')
+}
+
+/** True when a voluntary logout can still revoke something server-side. */
+export function hasRevocableUserCredentials(credentials: UserSessionCredentials): boolean {
+  return Boolean(credentials.accessToken || credentials.apiKey || credentials.refreshToken)
+}
+
+export function clearPlatformAdminSession(): void {
+  localStorage.removeItem('platformAccessToken')
+  localStorage.removeItem('platformAdminUser')
 }
 
 export function redirectToLoginWithMessage(message: string): void {
