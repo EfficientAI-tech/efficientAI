@@ -60,3 +60,74 @@ This document defines the platform-neutral envelope accepted by live observabili
 - `turn.*`: appends live transcript turns and updates in-progress state.
 - `call.ended` / `call.failed`: stamps terminal state and final metadata.
 - Existing `call_data` keys are preserved; only live-observability fields are patched.
+
+## Transcript (required for UI + synthetic trace)
+
+Post one event per finalized utterance:
+
+```json
+{
+  "event_type": "turn.user",
+  "payload": { "content": "Hello?" }
+}
+```
+
+```json
+{
+  "event_type": "turn.assistant",
+  "payload": {
+    "content": "Hi, how can I help?",
+    "latency": { "stt_ms": 120, "llm_ms": 380, "tts_ms": 210 }
+  }
+}
+```
+
+Without `turn.user` / `turn.assistant` events, EfficientAI only stores an empty call shell
+(`call.started` + `call.ended`) — no transcript tab and no synthetic trace.
+
+## Recording (optional, on `call.ended`)
+
+```json
+{
+  "event_type": "call.ended",
+  "payload": {
+    "endedAt": "2026-08-18T09:00:00.000Z",
+    "recording_url": "https://your-cdn.example/recording.wav",
+    "duration_seconds": 42.5
+  }
+}
+```
+
+EfficientAI archives `recording_url` to object storage when the call is terminal.
+
+## Trace (choose one)
+
+**Level 2 — synthetic (recommended for Pipecat/LiveKit):** include turn latencies on
+`turn.assistant` / `turn.user` events; EfficientAI builds STT/LLM/TTS spans on `call.ended`.
+
+**Level 3 — native OTLP:** pass `trace_id` on every event and include exported spans on
+`call.ended`:
+
+```json
+{
+  "event_type": "call.ended",
+  "trace_id": "0af7651916cd43dd8448eb211c80319c",
+  "payload": {
+    "otlp_traces": { "...": "OTLP JSON resourceSpans blob" },
+    "trace_source": "pipecat_native"
+  }
+}
+```
+
+Or inline normalized trace:
+
+```json
+{
+  "payload": {
+    "provider_trace": {
+      "trace_source": "livekit_native",
+      "normalized_trace": { "trace_id": "...", "spans": [] }
+    }
+  }
+}
+```

@@ -213,6 +213,68 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to list ElevenLabs agents: {str(e)}")
 
+    def list_conversations(
+        self,
+        *,
+        agent_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        page_size: int = 100,
+        call_start_after_unix: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """List ElevenLabs conversations for migration/catalog sync."""
+        try:
+            url = f"{self.api_url}/convai/conversations"
+            headers = {"xi-api-key": self.api_key}
+            params: Dict[str, Any] = {"page_size": max(1, min(page_size, 100))}
+            if agent_id:
+                params["agent_id"] = agent_id
+            if cursor:
+                params["cursor"] = cursor
+            if call_start_after_unix is not None:
+                params["call_start_after_unix"] = int(call_start_after_unix)
+
+            response = self._request("GET", url, headers=headers, params=params, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                payload = {}
+
+            items = payload.get("conversations") or payload.get("items") or payload.get("data") or []
+            if isinstance(items, dict):
+                items = items.get("conversations") or items.get("items") or items.get("data") or []
+
+            normalized: list[Dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                conversation_id = (
+                    item.get("conversation_id")
+                    or item.get("id")
+                    or item.get("call_id")
+                )
+                if not conversation_id:
+                    continue
+                normalized.append(
+                    {
+                        "conversation_id": str(conversation_id),
+                        "agent_id": item.get("agent_id"),
+                        "status": item.get("status"),
+                        "start_time_unix_secs": item.get("start_time_unix_secs"),
+                        "call_duration_secs": item.get("call_duration_secs"),
+                        "message_count": item.get("message_count"),
+                        "call_successful": item.get("call_successful"),
+                        "metadata": item,
+                    }
+                )
+
+            return {
+                "conversations": normalized,
+                "has_more": bool(payload.get("has_more", False)),
+                "next_cursor": payload.get("next_cursor") or payload.get("cursor"),
+            }
+        except Exception as e:
+            raise ValueError(f"Failed to list ElevenLabs conversations: {str(e)}")
+
     def retrieve_conversation_trace(self, conversation_id: str) -> Dict[str, Any]:
         """Fetch conversation details with OpenTelemetry payload."""
         try:

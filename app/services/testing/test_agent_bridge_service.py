@@ -23,6 +23,8 @@ from app.models.database import (
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
 from app.services.storage.s3_service import s3_service
+from app.services.observability.elevenlabs_trace import extract_trace_id
+from app.services.tracing.efficientai_otel import force_flush_tracing, setup_efficientai_tracing
 from app.services.testing.test_agent_simulation_prompt import (
     build_persona_description_for_bridge,
     build_test_agent_system_prompt,
@@ -333,6 +335,7 @@ class TestAgentBridgeService:
                 status_db.close()
 
         try:
+            setup_efficientai_tracing(service_name="efficientai-test-agent-bridge")
             logger.info(
                 f"[Bridge WebRTC] Starting WebRTC bridge for evaluator {evaluator_id}, "
                 f"bridging to {provider_platform} call {call_id}"
@@ -802,6 +805,7 @@ class TestAgentBridgeService:
                 await webrtc_bridge.disconnect()
             if test_agent:
                 await test_agent.cleanup()
+            force_flush_tracing()
 
             logger.info("[Bridge WebRTC] Bridge cleanup completed")
 
@@ -920,6 +924,21 @@ class TestAgentBridgeService:
                     if end_timestamp or call_status in ["ended", "completed", "failed", "done", "end-of-call-report"]:
                         call_completed = True
                         logger.info(f"[Bridge Poll] ✅ Call completed: status={call_status}")
+
+                        if provider_platform == "elevenlabs" and hasattr(provider, "retrieve_conversation_trace"):
+                            try:
+                                trace_payload = provider.retrieve_conversation_trace(call_id)
+                                if isinstance(trace_payload, dict) and isinstance(trace_payload.get("otlp_traces"), dict):
+                                    provider_trace_id = extract_trace_id(trace_payload["otlp_traces"])
+                                    call_metrics["provider_trace"] = {
+                                        "source": "elevenlabs_get_conversation",
+                                        "otlp_traces": trace_payload["otlp_traces"],
+                                        "trace_id": provider_trace_id,
+                                    }
+                                    if provider_trace_id:
+                                        call_metrics["trace_id"] = provider_trace_id
+                            except Exception as trace_err:
+                                logger.warning(f"[Bridge Poll] Could not fetch ElevenLabs OTLP trace: {trace_err}")
 
                         # === Status: CALL_ENDED ===
                         result.status = EvaluatorResultStatus.CALL_ENDED.value

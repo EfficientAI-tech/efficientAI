@@ -184,7 +184,7 @@ def acquire_pool_slot(org_id: UUID) -> bool:
             if current >= max_concurrent:
                 return False
             new_count = current + 1
-            pipe.setex(key, ttl, json.dumps({"count": new_count}))
+            pipe.set(key, json.dumps({"count": new_count}), ex=ttl)
             pipe.execute()
             return True
     except redis.RedisError as exc:
@@ -208,7 +208,7 @@ def release_pool_slot(org_id: UUID) -> None:
         if new_count == 0:
             _get_redis().delete(key)
         else:
-            _get_redis().setex(key, ttl, json.dumps({"count": new_count}))
+            _get_redis().set(key, json.dumps({"count": new_count}), ex=ttl)
     except redis.RedisError as exc:
         logger.warning("Redis unavailable for outbound pool release: %s", exc)
         _purge_expired_in_memory()

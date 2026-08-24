@@ -41,7 +41,7 @@ def test_elevenlabs_list_agents_normalizes_response(monkeypatch):
             return fixture
 
     monkeypatch.setattr(
-        "app.services.voice_providers.elevenlabs.requests.get",
+        "app.services.voice_providers.elevenlabs.requests.request",
         lambda *_args, **_kwargs: _Resp(),
     )
 
@@ -63,7 +63,7 @@ def test_elevenlabs_retrieve_conversation_trace_returns_payload(monkeypatch):
             return fixture
 
     monkeypatch.setattr(
-        "app.services.voice_providers.elevenlabs.requests.get",
+        "app.services.voice_providers.elevenlabs.requests.request",
         lambda *_args, **_kwargs: _Resp(),
     )
 
@@ -71,6 +71,28 @@ def test_elevenlabs_retrieve_conversation_trace_returns_payload(monkeypatch):
     payload = provider.retrieve_conversation_trace("conv_123")
     assert payload["conversation_id"] == fixture["conversation_id"]
     assert "otlp_traces" in payload
+
+
+def test_elevenlabs_list_conversations_normalizes_response(monkeypatch):
+    fixture = json.loads((FIXTURE_DIR / "conversations_list.json").read_text())
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return fixture
+
+    monkeypatch.setattr(
+        "app.services.voice_providers.elevenlabs.requests.request",
+        lambda *_args, **_kwargs: _Resp(),
+    )
+
+    provider = ElevenLabsVoiceProvider(api_key="k")
+    payload = provider.list_conversations(page_size=50, agent_id="agent_abc")
+    assert payload["has_more"] is False
+    assert payload["conversations"][0]["conversation_id"] == "conv_12345"
+    assert payload["conversations"][0]["status"] == "done"
 
 
 def test_vapi_list_agents_normalizes_response(monkeypatch):

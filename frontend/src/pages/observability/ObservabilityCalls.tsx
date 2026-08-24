@@ -19,11 +19,43 @@ import {
 } from '../../types/api'
 import { CallAgentLink } from './CallAgentLink'
 
+const LIVE_INGEST_PLATFORMS = new Set(['pipecat', 'livekit', 'external'])
+const PROVIDER_PLATFORMS = new Set(['retell', 'vapi', 'elevenlabs', 'efficientai'])
+
+type CallSourceFilter = 'all' | 'providers' | 'live' | 'simulated' | 'in_progress'
+
+function isSimulatedLiveCall(call: ObservabilityCall): boolean {
+  const platform = (call.provider_platform || '').toLowerCase()
+  const providerCallId = call.provider_call_id || ''
+  return platform === 'pipecat' && providerCallId.startsWith('pipecat-live-')
+}
+
+function isProviderCall(call: ObservabilityCall): boolean {
+  const platform = (call.provider_platform || '').toLowerCase()
+  if (PROVIDER_PLATFORMS.has(platform)) return true
+  return (call.source || '').toUpperCase() === 'PLAYGROUND'
+}
+
+function isLiveIngestCall(call: ObservabilityCall): boolean {
+  const platform = (call.provider_platform || '').toLowerCase()
+  return LIVE_INGEST_PLATFORMS.has(platform) && !isSimulatedLiveCall(call)
+}
+
+function matchesSourceFilter(call: ObservabilityCall, filter: CallSourceFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'providers') return isProviderCall(call)
+  if (filter === 'live') return isLiveIngestCall(call) || Boolean(call.is_live)
+  if (filter === 'simulated') return isSimulatedLiveCall(call)
+  if (filter === 'in_progress') return Boolean(call.is_live)
+  return true
+}
+
 export default function ObservabilityCalls() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null)
   const [eventFilter, setEventFilter] = useState<'all' | 'call_ended' | 'call_started' | 'other'>('all')
+  const [sourceFilter, setSourceFilter] = useState<CallSourceFilter>('all')
   const [copiedWebhook, setCopiedWebhook] = useState<string | null>(null)
   const [showSetupGuide, setShowSetupGuide] = useState(false)
 
@@ -113,12 +145,21 @@ export default function ObservabilityCalls() {
     }
   }, [calls, summary])
 
+  const sourceFilterCounts = useMemo(() => ({
+    all: calls.length,
+    providers: calls.filter(isProviderCall).length,
+    live: calls.filter((c) => isLiveIngestCall(c) || Boolean(c.is_live)).length,
+    simulated: calls.filter(isSimulatedLiveCall).length,
+    in_progress: calls.filter((c) => Boolean(c.is_live)).length,
+  }), [calls])
+
   const filteredCalls = useMemo(() => {
-    if (eventFilter === 'all') return calls
-    if (eventFilter === 'call_ended') return calls.filter((c) => c.call_event === 'call_ended')
-    if (eventFilter === 'call_started') return calls.filter((c) => c.call_event === 'call_started')
-    return calls.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
-  }, [calls, eventFilter])
+    const bySource = calls.filter((c) => matchesSourceFilter(c, sourceFilter))
+    if (eventFilter === 'all') return bySource
+    if (eventFilter === 'call_ended') return bySource.filter((c) => c.call_event === 'call_ended')
+    if (eventFilter === 'call_started') return bySource.filter((c) => c.call_event === 'call_started')
+    return bySource.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
+  }, [calls, eventFilter, sourceFilter])
 
   const formatTimestamp = (timestamp: string): string => {
     const date = new Date(timestamp)
@@ -324,25 +365,49 @@ export default function ObservabilityCalls() {
               <h2 className="text-lg font-semibold text-gray-900">Call Records</h2>
             </div>
             {calls.length > 0 && (
-              <div className="flex items-center gap-1">
-                {([
-                  { key: 'all' as const, label: 'All', count: summaryStats.total },
-                  { key: 'call_ended' as const, label: 'Ended', count: summaryStats.ended },
-                  { key: 'call_started' as const, label: 'Started', count: summaryStats.started },
-                  { key: 'other' as const, label: 'Other', count: summaryStats.other },
-                ] as const).map(({ key, label, count }) => (
-                  <button
-                    key={key}
-                    onClick={() => setEventFilter(key)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                      eventFilter === key
-                        ? 'bg-primary-100 text-primary-800 border border-primary-300'
-                        : 'text-gray-600 hover:bg-gray-100 border border-transparent'
-                    }`}
-                  >
-                    {label} ({count})
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1">
+                  {([
+                    { key: 'all' as const, label: 'All sources', count: sourceFilterCounts.all },
+                    { key: 'providers' as const, label: 'Providers', count: sourceFilterCounts.providers },
+                    { key: 'live' as const, label: 'Live ingest', count: sourceFilterCounts.live },
+                    { key: 'simulated' as const, label: 'Simulated', count: sourceFilterCounts.simulated },
+                    { key: 'in_progress' as const, label: 'In progress', count: sourceFilterCounts.in_progress },
+                  ] as const).map(({ key, label, count }) => (
+                    <button
+                      key={key}
+                      onClick={() => setSourceFilter(key)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        sourceFilter === key
+                          ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                          : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  ))}
+                </div>
+                <span className="hidden sm:inline text-gray-300">|</span>
+                <div className="flex items-center gap-1">
+                  {([
+                    { key: 'all' as const, label: 'All events', count: summaryStats.total },
+                    { key: 'call_ended' as const, label: 'Ended', count: summaryStats.ended },
+                    { key: 'call_started' as const, label: 'Started', count: summaryStats.started },
+                    { key: 'other' as const, label: 'Other', count: summaryStats.other },
+                  ] as const).map(({ key, label, count }) => (
+                    <button
+                      key={key}
+                      onClick={() => setEventFilter(key)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        eventFilter === key
+                          ? 'bg-primary-100 text-primary-800 border border-primary-300'
+                          : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -364,7 +429,10 @@ export default function ObservabilityCalls() {
           <div className="p-12 text-center">
             <p className="text-gray-500 mb-2">No matching calls found.</p>
             <button
-              onClick={() => setEventFilter('all')}
+              onClick={() => {
+                setEventFilter('all')
+                setSourceFilter('all')
+              }}
               className="text-sm text-primary-600 hover:text-primary-800 font-medium"
             >
               Show all calls

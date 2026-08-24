@@ -99,7 +99,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str | None = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str | None = None, live_observability_emitter=None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -238,13 +238,21 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
         live_transcript_processor = (
-            create_live_transcript_processor(call_short_id, call_start_time=start_time)
+            create_live_transcript_processor(
+                call_short_id,
+                call_start_time=start_time,
+                live_observability_emitter=live_observability_emitter,
+            )
             if telephony_mode
             else None
         )
         user_transcript_processor = live_transcript_processor
         agent_transcript_processor = (
-            create_live_transcript_processor(call_short_id, call_start_time=start_time)
+            create_live_transcript_processor(
+                call_short_id,
+                call_start_time=start_time,
+                live_observability_emitter=live_observability_emitter,
+            )
             if telephony_mode and call_short_id
             else None
         )
@@ -314,19 +322,34 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         else:
             # RTVI events for efficientai client UI
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
+            playground_transcript_call_id = call_short_id
+            rtvi_user_transcript_processor = None
+            rtvi_agent_transcript_processor = None
+            if playground_transcript_call_id or live_observability_emitter is not None:
+                rtvi_user_transcript_processor = create_live_transcript_processor(
+                    playground_transcript_call_id,
+                    call_start_time=call_start_time,
+                    live_observability_emitter=live_observability_emitter,
+                )
+                rtvi_agent_transcript_processor = create_live_transcript_processor(
+                    playground_transcript_call_id,
+                    call_start_time=call_start_time,
+                    live_observability_emitter=live_observability_emitter,
+                )
 
-            pipeline = imports["Pipeline"](
-                [
-                    ws_transport.input(),
-                    user_recorder,
-                    context_aggregator.user(),
-                    rtvi,
-                    llm,
-                    bot_recorder,
-                    ws_transport.output(),
-                    context_aggregator.assistant(),
-                ]
-            )
+            pipeline_processors = [ws_transport.input(), user_recorder, context_aggregator.user()]
+            if rtvi_user_transcript_processor:
+                pipeline_processors.append(rtvi_user_transcript_processor)
+            pipeline_processors.extend([rtvi, llm])
+            if rtvi_agent_transcript_processor:
+                pipeline_processors.append(rtvi_agent_transcript_processor)
+            pipeline_processors.extend([
+                bot_recorder,
+                ws_transport.output(),
+                context_aggregator.assistant(),
+            ])
+
+            pipeline = imports["Pipeline"](pipeline_processors)
 
             task = imports["PipelineTask"](
                 pipeline,

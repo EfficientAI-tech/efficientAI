@@ -21,6 +21,10 @@ from app.workers.tasks import (
     run_judge_alignment_task,
     initiate_vobiz_outbound_call_task,
     finalize_telephony_recording_task,
+    sync_elevenlabs_agents_task,
+    sync_elevenlabs_catalog_task,
+    sync_elevenlabs_enrich_task,
+    run_elevenlabs_monitor_bridge_task,
 )
 
 __all__ = [
@@ -36,4 +40,8 @@ __all__ = [
     "run_judge_alignment_task",
     "initiate_vobiz_outbound_call_task",
     "finalize_telephony_recording_task",
+    "sync_elevenlabs_agents_task",
+    "sync_elevenlabs_catalog_task",
+    "sync_elevenlabs_enrich_task",
+    "run_elevenlabs_monitor_bridge_task",
 ]

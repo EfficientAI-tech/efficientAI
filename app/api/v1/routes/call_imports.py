@@ -1434,7 +1434,7 @@ async def preview_call_import_file(
     file_bytes = await file.read()
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
         )
 
@@ -1512,7 +1512,7 @@ async def create_call_import(
     file_bytes = await file.read()
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
         )
 
@@ -1983,7 +1983,7 @@ async def upload_call_import_csv(
     file_bytes = await file.read()
     if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
         )
 
@@ -2162,7 +2162,7 @@ async def upload_call_import_audio(
             )
         if len(contents) > max_bytes:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=(
                     f"Audio file '{filename}' exceeds "
                     f"{settings.MAX_FILE_SIZE_MB} MB."

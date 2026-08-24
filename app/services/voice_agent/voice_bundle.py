@@ -531,6 +531,7 @@ async def run_voice_bundle_fastapi(
     call_short_id: str | None = None,
     silence_hangup_secs: float | None = None,
     workspace_id: str | None = None,
+    live_observability_emitter=None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -851,14 +852,14 @@ async def run_voice_bundle_fastapi(
             if silence_hangup_processor:
                 pipeline_processors.append(silence_hangup_processor)
             pipeline_processors.extend([audio_buffer_input, stt])
-        if call_short_id:
+        if call_short_id or live_observability_emitter is not None:
             from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
             user_transcript_processor = create_live_transcript_processor(
-                call_short_id, call_start_time=recording_start_time
+                call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
             )
             agent_transcript_processor = create_live_transcript_processor(
-                call_short_id, call_start_time=recording_start_time
+                call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
             )
             if user_transcript_processor:
                 pipeline_processors.append(user_transcript_processor)
@@ -869,7 +870,7 @@ async def run_voice_bundle_fastapi(
         pipeline_processors.append(context_aggregator.user())
         pipeline_processors.append(llm)
 
-        if call_short_id and agent_transcript_processor:
+        if (call_short_id or live_observability_emitter is not None) and agent_transcript_processor:
             pipeline_processors.append(agent_transcript_processor)
 
         pipeline_processors.extend([
@@ -908,14 +909,14 @@ async def run_voice_bundle_fastapi(
             if silence_hangup_processor:
                 rtvi_processors.append(silence_hangup_processor)
             rtvi_processors.extend([audio_buffer_input, stt])
-            if call_short_id:
+            if call_short_id or live_observability_emitter is not None:
                 from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
                 rtvi_user_transcript_processor = create_live_transcript_processor(
-                    call_short_id, call_start_time=recording_start_time
+                    call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
                 )
                 rtvi_agent_transcript_processor = create_live_transcript_processor(
-                    call_short_id, call_start_time=recording_start_time
+                    call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
                 )
                 if rtvi_user_transcript_processor:
                     rtvi_processors.append(rtvi_user_transcript_processor)
@@ -923,7 +924,7 @@ async def run_voice_bundle_fastapi(
                 rtvi_user_transcript_processor = None
                 rtvi_agent_transcript_processor = None
             rtvi_processors.extend([context_aggregator.user(), rtvi, llm])
-            if call_short_id and rtvi_agent_transcript_processor:
+            if (call_short_id or live_observability_emitter is not None) and rtvi_agent_transcript_processor:
                 rtvi_processors.append(rtvi_agent_transcript_processor)
             rtvi_processors.extend([
                 tts,

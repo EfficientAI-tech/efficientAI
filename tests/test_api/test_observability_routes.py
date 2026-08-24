@@ -349,6 +349,43 @@ def test_live_audio_endpoint_serves_partial_wav(
     assert response.content.startswith(b"RIFF")
 
 
+def test_observability_audio_uses_elevenlabs_proxy(
+    authenticated_client, make_integration, make_agent, make_call_recording, monkeypatch
+):
+    from fastapi.responses import Response
+
+    integration = make_integration(platform="elevenlabs", api_key="encrypted-api-key")
+    agent = make_agent(
+        integration=integration,
+        voice_ai_integration_id=integration.id,
+        voice_ai_agent_id="agent_abc",
+    )
+    call_recording = make_call_recording(
+        call_short_id="obselaud1",
+        source="webhook",
+        agent_id=agent.id,
+        provider_platform="elevenlabs",
+        provider_call_id="conv_123",
+        call_data={"recording_urls": {"conversation_audio": "https://api.elevenlabs.io/v1/convai/conversations/conv_123/audio"}},
+    )
+
+    def _proxy(**kwargs):
+        assert kwargs["call_recording"].call_short_id == "obselaud1"
+        return Response(content=b"mp3-bytes", media_type="audio/mpeg")
+
+    monkeypatch.setattr(
+        "app.services.observability.provider_audio_proxy.stream_elevenlabs_audio_proxy",
+        _proxy,
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/observability/calls/{call_recording.call_short_id}/audio"
+    )
+    assert response.status_code == 200
+    assert response.content == b"mp3-bytes"
+    assert response.headers["content-type"].startswith("audio/mpeg")
+
+
 def test_webhook_ingest_persists_trace_id(authenticated_client, api_key):
     payload = {
         "id": "provider-call-999",

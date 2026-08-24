@@ -3,6 +3,7 @@ Integrations API Routes
 Manage integrations with external voice AI platforms (Retell, Vapi, etc.)
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from celery import chain
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -10,17 +11,29 @@ from typing import List
 from uuid import UUID
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_api_key
-from app.models.database import Integration, IntegrationPlatform, Agent
+from app.dependencies import get_db, get_organization_id, get_api_key, get_workspace_id
+from app.models.database import (
+    Integration,
+    IntegrationPlatform,
+    Agent,
+    ProviderSyncJob,
+)
 from app.models.schemas import (
     IntegrationCreate, IntegrationUpdate, IntegrationResponse,
     PreviewIntegrationAgentPromptRequest, PreviewIntegrationAgentPromptResponse,
     ExternalAgentListResponse,
+    ElevenLabsConversationSyncRequest,
+    ProviderSyncJobResponse,
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
 from app.services.voice_providers import get_voice_provider
 from app.services.ai.llm_gateway import get_credential_effective_routing_label
+from app.workers.celery_app import (
+    sync_elevenlabs_agents_task,
+    sync_elevenlabs_catalog_task,
+    sync_elevenlabs_enrich_task,
+)
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
@@ -37,6 +50,31 @@ def _integration_response(
     )
     response = IntegrationResponse.model_validate(integration)
     return response.model_copy(update={"effective_routing": effective_routing})
+
+
+def _provider_sync_job_response(job: ProviderSyncJob) -> ProviderSyncJobResponse:
+    config = job.config if isinstance(job.config, dict) else {}
+    cursor_state = job.cursor_state if isinstance(job.cursor_state, dict) else {}
+    return ProviderSyncJobResponse.model_validate(
+        {
+            "id": job.id,
+            "integration_id": job.integration_id,
+            "provider_platform": job.provider_platform,
+            "status": job.status,
+            "phase": job.phase,
+            "config": config,
+            "cursor_state": cursor_state,
+            "agents_synced": job.agents_synced or 0,
+            "conversations_cataloged": job.conversations_cataloged or 0,
+            "conversations_enriched": job.conversations_enriched or 0,
+            "errors_count": job.errors_count or 0,
+            "last_error": job.last_error,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+        }
+    )
 
 
 def _validate_smallest_connection(raw_api_key: str):
@@ -523,3 +561,205 @@ async def list_integration_external_agents(
         )
 
     return ExternalAgentListResponse.model_validate(payload)
+
+
+def _load_active_integration(db: Session, organization_id: UUID, integration_id: UUID) -> Integration:
+    integration = (
+        db.query(Integration)
+        .filter(
+            Integration.id == integration_id,
+            Integration.organization_id == organization_id,
+            Integration.is_active == True,
+        )
+        .first()
+    )
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found or inactive")
+    return integration
+
+
+def _ensure_no_running_sync_job(
+    db: Session,
+    *,
+    organization_id: UUID,
+    integration_id: UUID,
+) -> None:
+    existing = (
+        db.query(ProviderSyncJob)
+        .filter(
+            ProviderSyncJob.organization_id == organization_id,
+            ProviderSyncJob.integration_id == integration_id,
+            ProviderSyncJob.status.in_(["queued", "running"]),
+        )
+        .order_by(ProviderSyncJob.created_at.desc())
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A sync job is already active for this integration ({existing.id})",
+        )
+
+
+@router.post(
+    "/{integration_id}/sync/elevenlabs/agents",
+    response_model=ProviderSyncJobResponse,
+    operation_id="startElevenLabsAgentSync",
+)
+async def start_elevenlabs_agent_sync(
+    integration_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    integration = _load_active_integration(db, organization_id, integration_id)
+    platform_value = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else str(integration.platform).lower()
+    )
+    if platform_value != IntegrationPlatform.ELEVENLABS.value:
+        raise HTTPException(status_code=400, detail="This endpoint only supports ElevenLabs integrations")
+    _ensure_no_running_sync_job(
+        db,
+        organization_id=organization_id,
+        integration_id=integration.id,
+    )
+
+    job = ProviderSyncJob(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        integration_id=integration.id,
+        provider_platform=IntegrationPlatform.ELEVENLABS.value,
+        status="queued",
+        phase="agents",
+        config={"insights_only": True},
+        cursor_state={},
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    sync_elevenlabs_agents_task.delay(str(job.id))
+    return _provider_sync_job_response(job)
+
+
+@router.post(
+    "/{integration_id}/sync/elevenlabs/conversations",
+    response_model=ProviderSyncJobResponse,
+    operation_id="startElevenLabsConversationSync",
+)
+async def start_elevenlabs_conversation_sync(
+    integration_id: UUID,
+    body: ElevenLabsConversationSyncRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    integration = _load_active_integration(db, organization_id, integration_id)
+    platform_value = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else str(integration.platform).lower()
+    )
+    if platform_value != IntegrationPlatform.ELEVENLABS.value:
+        raise HTTPException(status_code=400, detail="This endpoint only supports ElevenLabs integrations")
+    _ensure_no_running_sync_job(
+        db,
+        organization_id=organization_id,
+        integration_id=integration.id,
+    )
+
+    since_unix = body.since_unix
+    if since_unix is None:
+        since_unix = int((datetime.now(timezone.utc).timestamp()) - (30 * 24 * 60 * 60))
+
+    job = ProviderSyncJob(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        integration_id=integration.id,
+        provider_platform=IntegrationPlatform.ELEVENLABS.value,
+        status="queued",
+        phase="catalog",
+        config={
+            "since_unix": since_unix,
+            "agent_ids": body.agent_ids or [],
+            "insights_only": bool(body.insights_only),
+        },
+        cursor_state={},
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    chain(
+        sync_elevenlabs_catalog_task.si(str(job.id)),
+        sync_elevenlabs_enrich_task.si(str(job.id)),
+    ).delay()
+    return _provider_sync_job_response(job)
+
+
+@router.get(
+    "/{integration_id}/sync/jobs/{job_id}",
+    response_model=ProviderSyncJobResponse,
+    operation_id="getProviderSyncJob",
+)
+async def get_provider_sync_job(
+    integration_id: UUID,
+    job_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key, workspace_id
+    job = (
+        db.query(ProviderSyncJob)
+        .filter(
+            ProviderSyncJob.id == job_id,
+            ProviderSyncJob.integration_id == integration_id,
+            ProviderSyncJob.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+    return _provider_sync_job_response(job)
+
+
+@router.post(
+    "/{integration_id}/sync/jobs/{job_id}/cancel",
+    response_model=ProviderSyncJobResponse,
+    operation_id="cancelProviderSyncJob",
+)
+async def cancel_provider_sync_job(
+    integration_id: UUID,
+    job_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    del api_key, workspace_id
+    job = (
+        db.query(ProviderSyncJob)
+        .filter(
+            ProviderSyncJob.id == job_id,
+            ProviderSyncJob.integration_id == integration_id,
+            ProviderSyncJob.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+    if job.status not in {"completed", "failed", "cancelled"}:
+        job.status = "cancelled"
+        job.phase = "failed"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(job)
+    return _provider_sync_job_response(job)

@@ -339,6 +339,7 @@ def _install_static_stubs():
         fake_voice_quality_module.AUDIO_METRICS = []
         fake_voice_quality_module.is_audio_metric = lambda *_args, **_kwargs: False
         fake_voice_quality_module.calculate_audio_metrics = lambda *_args, **_kwargs: {}
+        fake_voice_quality_module.get_recording_url = lambda *_args, **_kwargs: None
         fake_audio_service_module.AudioService = _FakeAudioService
         fake_audio_pkg.audio_service = fake_audio_service_module
         fake_audio_pkg.voice_quality_service = fake_voice_quality_module

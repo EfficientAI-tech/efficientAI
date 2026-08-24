@@ -114,6 +114,35 @@ def merge_live_event_call_data(
         if payload.get("endedReason"):
             merged["endedReason"] = payload.get("endedReason")
         merged["status"] = payload.get("status") or ("failed" if "failed" in event_type else "ended")
+        for recording_key in (
+            "recording_url",
+            "recording_s3_key",
+            "recording_multi_channel_url",
+            "recordingUrl",
+        ):
+            value = payload.get(recording_key)
+            if isinstance(value, str) and value.strip():
+                merged[recording_key if recording_key != "recordingUrl" else "recording_url"] = value.strip()
+        recording_urls = payload.get("recording_urls")
+        if isinstance(recording_urls, dict) and recording_urls:
+            merged["recording_urls"] = recording_urls
+        if isinstance(payload.get("duration_seconds"), (int, float)):
+            merged["duration_seconds"] = float(payload.get("duration_seconds"))
+        provider_trace = payload.get("provider_trace")
+        if isinstance(provider_trace, dict) and provider_trace:
+            merged["provider_trace"] = provider_trace
+        elif isinstance(payload.get("otlp_traces"), dict) and payload.get("otlp_traces"):
+            merged["provider_trace"] = {
+                **(merged.get("provider_trace") if isinstance(merged.get("provider_trace"), dict) else {}),
+                "otlp_traces": payload.get("otlp_traces"),
+                "source": payload.get("trace_source") or event.get("platform"),
+            }
+        elif isinstance(payload.get("normalized_trace"), dict) and payload.get("normalized_trace"):
+            merged["provider_trace"] = {
+                **(merged.get("provider_trace") if isinstance(merged.get("provider_trace"), dict) else {}),
+                "normalized_trace": payload.get("normalized_trace"),
+                "source": payload.get("trace_source") or event.get("platform"),
+            }
     elif event_type.startswith("turn."):
         live_turns = merged.get("live_transcript")
         if not isinstance(live_turns, list):

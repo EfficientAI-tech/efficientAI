@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from app.api.v1.routes import integrations as integrations_route
+from app.models.database import ProviderSyncJob, Workspace
 
 prompt_sync_module = importlib.import_module("app.services.voice_providers.prompt_sync")
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "elevenlabs"
@@ -231,3 +232,82 @@ def test_list_integration_external_agents_retell(authenticated_client, monkeypat
     assert response.status_code == 200
     payload = response.json()
     assert payload["agents"][0]["id"] == "agent_retell_1"
+
+
+def test_start_elevenlabs_agent_sync_creates_job(authenticated_client, monkeypatch, make_integration):
+    integration = make_integration(platform="elevenlabs", api_key="encrypted")
+    scheduled = {"job_id": None}
+
+    class _Task:
+        @staticmethod
+        def delay(job_id):
+            scheduled["job_id"] = job_id
+            return None
+
+    monkeypatch.setattr(integrations_route, "sync_elevenlabs_agents_task", _Task())
+    response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/sync/elevenlabs/agents"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["phase"] == "agents"
+    assert body["provider_platform"] == "elevenlabs"
+    assert scheduled["job_id"] == body["id"]
+
+
+def test_start_elevenlabs_conversation_sync_creates_job(authenticated_client, monkeypatch, make_integration):
+    integration = make_integration(platform="elevenlabs", api_key="encrypted")
+    called = {"count": 0}
+
+    class _Chain:
+        def delay(self):
+            called["count"] += 1
+            return None
+
+    monkeypatch.setattr(integrations_route, "chain", lambda *_args, **_kwargs: _Chain())
+    response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/sync/elevenlabs/conversations",
+        json={"insights_only": True, "agent_ids": ["agent_abc"]},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["phase"] == "catalog"
+    assert body["config"]["agent_ids"] == ["agent_abc"]
+    assert called["count"] == 1
+
+
+def test_get_and_cancel_provider_sync_job(authenticated_client, db_session, make_integration):
+    integration = make_integration(platform="elevenlabs", api_key="encrypted")
+    org_id = integration.organization_id
+    workspace = db_session.query(Workspace).filter(
+        Workspace.organization_id == org_id,
+        Workspace.is_default.is_(True),
+    ).first()
+    assert workspace is not None
+    ws_id = workspace.id
+
+    job = ProviderSyncJob(
+        organization_id=org_id,
+        workspace_id=ws_id,
+        integration_id=integration.id,
+        provider_platform="elevenlabs",
+        status="running",
+        phase="catalog",
+        config={"since_unix": 0},
+        cursor_state={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    get_response = authenticated_client.get(
+        f"/api/v1/integrations/{integration.id}/sync/jobs/{job.id}"
+    )
+    assert get_response.status_code == 200
+    assert get_response.json()["id"] == str(job.id)
+
+    cancel_response = authenticated_client.post(
+        f"/api/v1/integrations/{integration.id}/sync/jobs/{job.id}/cancel"
+    )
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"

@@ -579,6 +579,61 @@ class Integration(Base):
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
 
 
+class ProviderSyncJob(Base):
+    """Background sync job for provider-side agent/conversation migration."""
+
+    __tablename__ = "provider_sync_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider_platform = Column(String(64), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="queued", index=True)  # queued|running|completed|failed|cancelled
+    phase = Column(String(32), nullable=False, default="queued", index=True)  # agents|catalog|enrich|complete|failed
+    config = Column(JSON, nullable=True)  # since_unix, agent_ids, insights_only
+    cursor_state = Column(JSON, nullable=True)  # pagination cursors and runtime checkpoints
+    agents_synced = Column(Integer, nullable=False, default=0)
+    conversations_cataloged = Column(Integer, nullable=False, default=0)
+    conversations_enriched = Column(Integer, nullable=False, default=0)
+    errors_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProviderSyncJobError(Base):
+    """Per-item sync errors captured for diagnostics/retry."""
+
+    __tablename__ = "provider_sync_job_errors"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("provider_sync_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider_call_id = Column(String(255), nullable=True, index=True)
+    provider_agent_id = Column(String(255), nullable=True, index=True)
+    phase = Column(String(32), nullable=False, index=True)
+    error_message = Column(Text, nullable=False)
+    payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ManualTranscription(Base):
     """Manual transcription model for storing transcriptions from S3 audio files."""
 

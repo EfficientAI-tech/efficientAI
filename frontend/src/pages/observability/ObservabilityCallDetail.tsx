@@ -155,9 +155,15 @@ export default function ObservabilityCallDetail() {
   const hasElevenLabsProviderTraceCandidate =
     resolvedProviderPlatform === 'elevenlabs' &&
     !!callRecording?.provider_call_id
+  const liveTranscriptCount = Array.isArray(callRecording?.call_data?.live_transcript)
+    ? callRecording.call_data.live_transcript.length
+    : 0
+  const isLiveIngestPlatform = ['pipecat', 'livekit', 'external'].includes(resolvedProviderPlatform)
   const hasSyntheticProviderTraceCandidate =
-    (resolvedProviderPlatform === 'vapi' || resolvedProviderPlatform === 'retell') &&
-    !!callRecording?.provider_call_id
+    ((resolvedProviderPlatform === 'vapi' || resolvedProviderPlatform === 'retell') &&
+      !!callRecording?.provider_call_id) ||
+    (isLiveIngestPlatform &&
+      (liveTranscriptCount > 0 || !!linkedTraceId || !!callRecording?.call_data?.provider_trace))
 
   const {
     data: callTrace,

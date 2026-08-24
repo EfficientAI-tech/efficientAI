@@ -848,6 +848,44 @@ class ExternalAgentListResponse(BaseModel):
     next_cursor: Optional[str] = None
 
 
+class ElevenLabsConversationSyncRequest(BaseModel):
+    """Start configuration for ElevenLabs conversation catalog/enrich sync."""
+
+    since_unix: Optional[int] = Field(
+        default=None,
+        description="Unix timestamp lower bound; defaults to last 30 days when omitted.",
+    )
+    agent_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Optional subset of ElevenLabs agent IDs to sync.",
+    )
+    insights_only: bool = Field(
+        default=True,
+        description="When true, store transcript/analysis/cost pointers without downloading audio.",
+    )
+
+
+class ProviderSyncJobResponse(BaseModel):
+    id: UUID
+    integration_id: UUID
+    provider_platform: str
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    phase: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    cursor_state: Dict[str, Any] = Field(default_factory=dict)
+    agents_synced: int = 0
+    conversations_cataloged: int = 0
+    conversations_enriched: int = 0
+    errors_count: int = 0
+    last_error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ============================================
 # DATA SOURCES SCHEMAS
 # ============================================

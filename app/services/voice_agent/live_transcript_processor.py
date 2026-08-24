@@ -11,9 +11,10 @@ from loguru import logger
 def create_live_transcript_processor(
     call_short_id: Optional[str],
     call_start_time: Optional[float] = None,
+    live_observability_emitter: Optional[Any] = None,
 ):
     """Return a FrameProcessor that publishes user/agent transcript turns."""
-    if not call_short_id:
+    if not call_short_id and live_observability_emitter is None:
         return None
 
     imports = None
@@ -60,32 +61,46 @@ def create_live_transcript_processor(
             self._agent_buffer = ""
 
         def _persist_turn(self, role: str, content: str) -> None:
-            publish_transcript_turn(call_short_id, role, content)
             start_time_sec = None
             if call_start_time is not None:
                 start_time_sec = round(time.time() - call_start_time, 2)
-            db = SessionLocal()
-            try:
-                append_live_transcript_turn(
-                    db,
-                    call_short_id=call_short_id,
-                    role=role,
-                    content=content,
-                    start_time_sec=start_time_sec,
-                )
-                logger.debug("Live transcript saved call={} role={} text={}", call_short_id, role, content[:80])
-                # region agent log
-                from app.utils.debug_agent_log import agent_debug_log
+            if call_short_id:
+                publish_transcript_turn(call_short_id, role, content)
+                db = SessionLocal()
+                try:
+                    append_live_transcript_turn(
+                        db,
+                        call_short_id=call_short_id,
+                        role=role,
+                        content=content,
+                        start_time_sec=start_time_sec,
+                    )
+                    logger.debug("Live transcript saved call={} role={} text={}", call_short_id, role, content[:80])
+                    # region agent log
+                    from app.utils.debug_agent_log import agent_debug_log
 
-                agent_debug_log(
-                    "live_transcript_processor.py:_persist_turn",
-                    "transcript turn persisted",
-                    {"call_short_id": call_short_id, "role": role, "content_len": len(content)},
-                    "H2",
-                )
-                # endregion
-            finally:
-                db.close()
+                    agent_debug_log(
+                        "live_transcript_processor.py:_persist_turn",
+                        "transcript turn persisted",
+                        {"call_short_id": call_short_id, "role": role, "content_len": len(content)},
+                        "H2",
+                    )
+                    # endregion
+                finally:
+                    db.close()
+            if live_observability_emitter is not None:
+                try:
+                    live_observability_emitter.emit_turn(
+                        role,
+                        content,
+                        start_time=start_time_sec,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Live observability turn emit failed for call {}: {}",
+                        call_short_id or getattr(live_observability_emitter, "provider_call_id", "?"),
+                        exc,
+                    )
 
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)

@@ -482,32 +482,53 @@ async def websocket_endpoint(
 
         agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
         observability_call_short_id: Optional[str] = None
-        if use_voice_bundle_pipeline and agent_id and workspace_id and result_id:
+        live_observability_emitter = None
+        if agent_id and workspace_id and result_id:
             try:
-                from app.models.database import CallRecordingSource
-                from app.services.observability.call_ingest import upsert_call_recording
+                from app.services.observability.live_event_emitter import LiveObservabilityEmitter
 
-                started_recording, _ = upsert_call_recording(
-                    db=db,
+                live_observability_emitter = LiveObservabilityEmitter(
                     organization_id=organization_id,
                     workspace_id=workspace_id,
-                    provider_platform="efficientai",
                     provider_call_id=result_id,
-                    call_data_payload={
-                        "direction": "inbound",
-                        "startedAt": datetime.now(UTC).isoformat(),
-                        "live_transcript": [],
-                    },
+                    provider_platform="pipecat",
+                    agent_ref=str(agent_id),
                     explicit_agent_id=UUID(agent_id),
-                    call_event="call_started",
-                    source=CallRecordingSource.PLAYGROUND,
                 )
-                observability_call_short_id = started_recording.call_short_id
+                observability_call_short_id = live_observability_emitter.start_call()
             except Exception as observability_start_error:
                 logger.warning(
-                    f"Failed to create observability call record at session start: {observability_start_error}",
+                    f"Failed to start live observability ingest for voice session: {observability_start_error}",
                     exc_info=True,
                 )
+                live_observability_emitter = None
+
+            if use_voice_bundle_pipeline and live_observability_emitter is None:
+                try:
+                    from app.models.database import CallRecordingSource
+                    from app.services.observability.call_ingest import upsert_call_recording
+
+                    started_recording, _ = upsert_call_recording(
+                        db=db,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        provider_platform="efficientai",
+                        provider_call_id=result_id,
+                        call_data_payload={
+                            "direction": "inbound",
+                            "startedAt": datetime.now(UTC).isoformat(),
+                            "live_transcript": [],
+                        },
+                        explicit_agent_id=UUID(agent_id),
+                        call_event="call_started",
+                        source=CallRecordingSource.PLAYGROUND,
+                    )
+                    observability_call_short_id = started_recording.call_short_id
+                except Exception as observability_start_error:
+                    logger.warning(
+                        f"Failed to create observability call record at session start: {observability_start_error}",
+                        exc_info=True,
+                    )
 
         try:
             if use_voice_bundle_pipeline:
@@ -580,6 +601,7 @@ async def websocket_endpoint(
                     silence_hangup_secs=agent_silence_hangup_secs,
                     workspace_id=str(workspace_id) if workspace_id else None,
                     call_short_id=observability_call_short_id,
+                    live_observability_emitter=live_observability_emitter,
                 )
             else:
                 call_metadata = await run_bot(
@@ -595,6 +617,7 @@ async def websocket_endpoint(
                     model_name=model_name,  # Pass model name from voice bundle
                     silence_hangup_secs=agent_silence_hangup_secs,
                     workspace_id=str(workspace_id) if workspace_id else None,
+                    live_observability_emitter=live_observability_emitter,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
@@ -736,6 +759,20 @@ async def websocket_endpoint(
                     logger.error(f"❌ Error creating evaluator result: {e}", exc_info=True)
 
         if call_metadata and agent_id and result_id and workspace_id:
+            if live_observability_emitter is not None:
+                try:
+                    live_observability_emitter.end_call(
+                        recording_s3_key=call_metadata.get("s3_key"),
+                        duration_seconds=call_metadata.get("duration"),
+                        trace_id=call_metadata.get("trace_id"),
+                    )
+                    if not observability_call_short_id:
+                        observability_call_short_id = live_observability_emitter.call_short_id
+                except Exception as live_end_error:
+                    logger.warning(
+                        f"Failed to finalize live observability ingest: {live_end_error}",
+                        exc_info=True,
+                    )
             has_observability_payload = any(
                 call_metadata.get(key)
                 for key in ("s3_key", "transcription", "speaker_segments", "trace_id")

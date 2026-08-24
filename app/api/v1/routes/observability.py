@@ -637,6 +637,12 @@ def _maybe_archive_observability_recording(
     provider_platform = (call_recording.provider_platform or payload.get("provider_platform") or "").strip().lower()
     if not provider_platform:
         return payload
+    if (
+        provider_platform == IntegrationPlatform.ELEVENLABS.value
+        and settings.OBSERVABILITY_ELEVENLABS_SKIP_RECORDING_ARCHIVE
+        and not payload.get("force_recording_archive")
+    ):
+        return payload
 
     provider_api_key = _resolve_provider_api_key_for_call(
         db=db,
@@ -1371,12 +1377,22 @@ async def ingest_live_event(
 
     if call_recording.call_event in {"call_ended", "call_failed"}:
         db.refresh(call_recording)
-        if _maybe_persist_provider_trace(
+        terminal_call_data = (
+            call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+        )
+        trace_persisted = _maybe_persist_provider_trace(
             db,
             call_recording,
-            call_data=call_recording.call_data if isinstance(call_recording.call_data, dict) else {},
+            call_data=terminal_call_data,
             provider_platform=provider_platform,
-        ):
+            raw_payload=(
+                envelope.payload.get("otlp_traces")
+                if isinstance(envelope.payload.get("otlp_traces"), dict)
+                else None
+            ),
+        )
+        _maybe_archive_observability_recording(db, call_recording)
+        if trace_persisted:
             db.commit()
             db.refresh(call_recording)
 
@@ -2040,6 +2056,25 @@ async def stream_observability_call_audio(
         db, organization_id, call_recording, enrich=False
     )
     call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    provider_platform = (
+        call_recording.provider_platform
+        or call_data.get("provider_platform")
+        or ""
+    ).strip().lower()
+
+    if provider_platform == IntegrationPlatform.ELEVENLABS.value:
+        from app.services.observability.provider_audio_proxy import (
+            stream_elevenlabs_audio_proxy,
+        )
+
+        return stream_elevenlabs_audio_proxy(
+            db=db,
+            organization_id=organization_id,
+            call_recording=call_recording,
+            call_data=call_data,
+            filename_prefix="call",
+        )
+
     if not call_data.get("recording_s3_key"):
         call_data = _maybe_archive_observability_recording(db, call_recording, call_data)
 

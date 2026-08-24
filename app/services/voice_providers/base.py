@@ -122,3 +122,7 @@ class BaseVoiceProvider(ABC):
         """Optional provider capability: fetch provider-native execution trace payload."""
         raise NotImplementedError("This provider does not support provider trace retrieval")
 
+    def list_conversations(self, **kwargs) -> Dict[str, Any]:
+        """Optional provider capability: list provider-side conversations/calls."""
+        raise NotImplementedError("This provider does not support listing conversations")
+
