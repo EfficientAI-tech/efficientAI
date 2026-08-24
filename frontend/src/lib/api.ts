@@ -856,16 +856,18 @@ class ApiClient {
       return
     }
     const auth = { accessToken: credentials.accessToken, apiKey: credentials.apiKey }
-    void this.revokeUserSession(credentials.refreshToken, auth).catch(() =>
-      this.revokeUserSession(credentials.refreshToken, auth),
-    )
+    void this.revokeUserSession(credentials.refreshToken, auth)
+      .catch(() => this.revokeUserSession(credentials.refreshToken, auth))
+      .catch(() => {})
   }
 
   revokePlatformSessionBestEffort(accessToken?: string | null): void {
     if (!accessToken) {
       return
     }
-    void this.platformLogout(accessToken).catch(() => this.platformLogout(accessToken))
+    void this.platformLogout(accessToken)
+      .catch(() => this.platformLogout(accessToken))
+      .catch(() => {})
   }
 
   async getPlatformOrganizationStats(): Promise<PlatformOrganizationStats> {
