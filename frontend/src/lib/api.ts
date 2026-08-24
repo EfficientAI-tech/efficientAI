@@ -832,11 +832,13 @@ class ApiClient {
     return response.data
   }
 
-  async platformLogout(): Promise<{ success: boolean; admin_id: string }> {
+  async platformLogout(accessToken?: string | null): Promise<{ success: boolean; admin_id: string }> {
+    const token = accessToken ?? localStorage.getItem('platformAccessToken')
+    const headers = token ? { Authorization: `Bearer ${token}` } : {}
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/auth/logout`,
       {},
-      { headers: this.platformHeaders() },
+      { headers },
     )
     return response.data
   }
@@ -951,10 +953,25 @@ class ApiClient {
     return response.data
   }
 
-  async logout(refreshToken?: string | null): Promise<{ success: boolean; auth_method: string }> {
-    const response = await this.client.post('/api/v1/auth/logout', {
-      refresh_token: refreshToken || localStorage.getItem('refreshToken') || undefined,
-    })
+  async logout(
+    refreshToken?: string | null,
+    credentials?: { accessToken?: string | null; apiKey?: string | null },
+  ): Promise<{ success: boolean; auth_method: string }> {
+    const headers: Record<string, string> = {}
+    const accessToken = credentials?.accessToken ?? localStorage.getItem('accessToken')
+    const apiKey = credentials?.apiKey ?? localStorage.getItem('apiKey')
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`
+    } else if (apiKey) {
+      headers['X-API-Key'] = apiKey
+    }
+    const response = await this.client.post(
+      '/api/v1/auth/logout',
+      {
+        refresh_token: refreshToken ?? localStorage.getItem('refreshToken') ?? undefined,
+      },
+      { headers },
+    )
     return response.data
   }
 

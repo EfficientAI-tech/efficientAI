@@ -25,7 +25,7 @@ function readStoredAdmin(): PlatformAdminUser | null {
   }
 }
 
-export const usePlatformAdminStore = create<PlatformAdminState>((set) => {
+export const usePlatformAdminStore = create<PlatformAdminState>((set, get) => {
   const storedToken = localStorage.getItem(STORAGE_TOKEN)
   const storedAdmin = readStoredAdmin()
 
@@ -38,15 +38,14 @@ export const usePlatformAdminStore = create<PlatformAdminState>((set) => {
       set({ accessToken: token, admin })
     },
     logout: () => {
-      const clearLocal = () => {
-        localStorage.removeItem(STORAGE_TOKEN)
-        localStorage.removeItem(STORAGE_ADMIN)
-        set({ accessToken: null, admin: null })
-      }
-      apiClient
-        .platformLogout()
-        .catch(() => apiClient.platformLogout())
-        .finally(clearLocal)
+      const accessToken = get().accessToken
+      localStorage.removeItem(STORAGE_TOKEN)
+      localStorage.removeItem(STORAGE_ADMIN)
+      set({ accessToken: null, admin: null })
+
+      void apiClient
+        .platformLogout(accessToken)
+        .catch(() => apiClient.platformLogout(accessToken))
     },
   }
 })
