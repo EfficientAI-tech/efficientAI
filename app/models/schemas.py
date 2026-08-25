@@ -410,6 +410,13 @@ class AgentResponse(BaseModel):
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]
     provider_prompt: Optional[str] = None
+    prompt_variables: Optional[Dict[str, str]] = None
+    silence_hangup_secs: int = Field(
+        default=15,
+        ge=0,
+        le=600,
+        description="End live calls after this many seconds of silence (0 disables)",
+    )
     provider_prompt_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
@@ -688,6 +695,8 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
     organization_name: Optional[str] = None  # Include organization name
+    invite_path: Optional[str] = None
+    invite_url: Optional[str] = None
 
     @field_validator('role', mode='before')
     @classmethod
@@ -830,22 +839,6 @@ class IntegrationResponse(BaseModel):
         return v
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class ExternalProviderAgent(BaseModel):
-    """Normalized provider agent metadata for integration picker UIs."""
-
-    id: str
-    name: str
-    archived: bool = False
-    created_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ExternalAgentListResponse(BaseModel):
-    agents: List[ExternalProviderAgent]
-    has_more: bool = False
-    next_cursor: Optional[str] = None
 
 
 class ElevenLabsConversationSyncRequest(BaseModel):
@@ -1024,6 +1017,13 @@ class AIProviderCreate(BaseModel):
         None,
         description="Arbitrary HTTP headers sent with gateway-routed LiteLLM calls.",
     )
+    enabled_models: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Allowlisted model names for this credential. "
+            "Null or empty means all catalog models for the provider."
+        ),
+    )
     is_default: Optional[bool] = Field(
         None,
         description=(
@@ -1107,6 +1107,21 @@ class AIProviderCreate(BaseModel):
     def validate_gateway_extra_headers(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
         return _validate_gateway_extra_headers(v)
 
+    @field_validator("enabled_models")
+    @classmethod
+    def validate_enabled_models_create(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in v:
+            name = str(item).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        return out or None
+
 
 class AIProviderUpdate(BaseModel):
     """Schema for updating an AI Provider."""
@@ -1123,6 +1138,7 @@ class AIProviderUpdate(BaseModel):
     gateway_auth_secret: Optional[str] = None
     clear_gateway_auth_secret: bool = False
     gateway_extra_headers: Optional[Dict[str, str]] = None
+    enabled_models: Optional[List[str]] = None
 
     @field_validator("gateway_model")
     @classmethod
@@ -1181,6 +1197,21 @@ class AIProviderUpdate(BaseModel):
     ) -> Optional[Dict[str, str]]:
         return _validate_gateway_extra_headers(v)
 
+    @field_validator("enabled_models")
+    @classmethod
+    def validate_enabled_models_update(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in v:
+            name = str(item).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            out.append(name)
+        return out or None
+
 
 class AIProviderResponse(BaseModel):
     """Schema for AI Provider response."""
@@ -1199,6 +1230,7 @@ class AIProviderResponse(BaseModel):
     gateway_auth_secret_env: Optional[str] = None
     has_gateway_auth_secret: bool = False
     gateway_extra_headers: Optional[Dict[str, str]] = None
+    enabled_models: Optional[List[str]] = None
     gateway_managed: bool = False
     effective_routing: Literal["inherit", "direct", "gateway", "bifrost", "litellm_proxy"] = "inherit"
     effective_gateway_interface: Literal["litellm_shim", "native_openai"] = "litellm_shim"
@@ -2020,6 +2052,9 @@ class MetricResponse(BaseModel):
     # render a "Compare transcripts" badge in the metric picker and
     # know to skip the run's transcript_source toggle for this metric.
     compare_transcripts: bool = False
+    lifecycle: str = "active"
+    promoted_from_draft_at: Optional[datetime] = None
+    studio_notes: Optional[str] = None
     children: List["MetricResponse"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -2079,6 +2114,130 @@ class MetricResponse(BaseModel):
 
 
 MetricResponse.model_rebuild()
+
+
+class MetricDraftCreate(MetricCreate):
+    """Create a draft metric for Metrics Studio experimentation."""
+
+    studio_notes: Optional[str] = Field(
+        default=None,
+        description="Optional notes about what this draft is testing.",
+    )
+
+
+class MetricDraftCreateWithChildren(MetricCreateWithChildren):
+    """Atomically create a draft parent category metric plus its children."""
+
+    studio_notes: Optional[str] = Field(
+        default=None,
+        description="Optional notes about what this draft category is testing.",
+    )
+
+
+class MetricPromoteResponse(BaseModel):
+    """Response after promoting a draft metric to active."""
+
+    metric: MetricResponse
+    promoted_at: datetime
+
+
+MetricStudioSourceKind = Literal[
+    "call_import_row", "call_recording", "evaluator_result"
+]
+
+
+class MetricStudioSourceItem(BaseModel):
+    """One call source selected for a Studio run."""
+
+    source_kind: MetricStudioSourceKind
+    source_ref: str = Field(
+        ...,
+        min_length=1,
+        description="UUID for import rows / evaluator results; call_short_id for recordings.",
+    )
+    display_label: Optional[str] = Field(
+        default=None,
+        max_length=512,
+        description="Optional UI label; resolved server-side when omitted.",
+    )
+
+
+class MetricStudioRunCreate(BaseModel):
+    """Request body for triggering a Metrics Studio evaluation run."""
+
+    metric_ids: List[UUID] = Field(..., min_length=1)
+    sources: List[MetricStudioSourceItem] = Field(..., min_length=1)
+    name: Optional[str] = Field(default=None, max_length=255)
+    transcript_source: Literal["production", "diarised"] = "diarised"
+    llm_provider: Optional[str] = Field(default=None, max_length=50)
+    llm_model: Optional[str] = Field(default=None, max_length=100)
+    llm_credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
+    metric_llm_overrides: Optional[Dict[str, Any]] = None
+
+
+class MetricStudioRunRetryRequest(BaseModel):
+    """Retry failed or selected Studio run results."""
+
+    result_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description="When omitted, retry all failed results in the run.",
+    )
+
+
+class MetricStudioRunResultResponse(BaseModel):
+    """Per-source result row for a Studio run."""
+
+    id: UUID
+    run_id: UUID
+    source_kind: str
+    source_ref: str
+    display_label: Optional[str] = None
+    source_metadata: Optional[Dict[str, Any]] = None
+    status: str
+    metric_scores: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MetricStudioRunResponse(BaseModel):
+    """Metrics Studio run summary."""
+
+    id: UUID
+    organization_id: UUID
+    workspace_id: UUID
+    name: Optional[str] = None
+    selected_metric_ids: List[str] = Field(default_factory=list)
+    selected_metric_groups: Optional[Dict[str, List[str]]] = None
+    transcript_source: str
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    status: str
+    total_items: int
+    completed_items: int
+    failed_items: int
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MetricStudioRunListResponse(BaseModel):
+    items: List[MetricStudioRunResponse]
+    total: int
+
+
+class MetricStudioRunResultListResponse(BaseModel):
+    items: List[MetricStudioRunResultResponse]
+    total: int
 
 
 # Evaluator Result Schemas
@@ -2518,6 +2677,8 @@ class CronJobResponse(BaseModel):
     id: UUID
     organization_id: UUID
     name: str
+    job_type: str = "evaluator_run"
+    is_system: bool = False
     cron_expression: str
     timezone: str
     max_runs: int
@@ -2956,10 +3117,9 @@ class CallImportSchemaParameterBase(BaseModel):
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
             "datetime / url. Exactly one parameter of type "
-            "'conversation_id' and exactly one of type 'recording_url' "
-            "must be present; at most one each of 'recording_date' and "
-            "'transcript'. Both conversation_id and recording_url are "
-            "forced required."
+            "'conversation_id' must be present; at most one each of "
+            "'recording_url', 'recording_date', and 'transcript'. "
+            "Only conversation_id is forced required."
         ),
     )
     description: Optional[str] = Field(
@@ -2971,9 +3131,8 @@ class CallImportSchemaParameterBase(BaseModel):
         default=False,
         description=(
             "When True, the parameter must be mapped to a CSV column on "
-            "every upload. The ``conversation_id`` and ``recording_url`` "
-            "parameters are always required and are force-set to True by "
-            "the server."
+            "every upload. The ``conversation_id`` parameter is always "
+            "required and is force-set to True by the server."
         ),
     )
 
@@ -3028,19 +3187,15 @@ def _validate_schema_parameters(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
         )
-    if rec_url_count != 1:
+    if rec_url_count > 1:
         raise ValueError(
-            "Schema must contain exactly one parameter of type "
+            "Schema may contain at most one parameter of type "
             "'recording_url'."
         )
     if recording_date_count > 1:
         raise ValueError(
             "Schema may contain at most one parameter of type "
             "'recording_date'."
-        )
-    if rec_url_count > 1:
-        raise ValueError(
-            "Schema may contain at most one parameter of type 'recording_url'."
         )
     if transcript_count > 1:
         raise ValueError(
@@ -3220,8 +3375,17 @@ class CallImportResponse(BaseModel):
     failed_rows: int
     status: CallImportStatus
     error_message: Optional[str] = None
+    latest_evaluation_status: Optional[str] = Field(
+        None,
+        description=(
+            "Status of the most recent evaluation run for this batch, "
+            "when any evaluation exists."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
+    created_by_email: Optional[str] = None
+    last_updated_by_email: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -3360,6 +3524,12 @@ class CallImportPreviewResponse(BaseModel):
 class CallImportUpdate(BaseModel):
     """Partial update of a call-import batch."""
 
+    original_filename: Optional[str] = Field(
+        None,
+        description=(
+            "User-facing batch label shown in the UI. Pass an empty string to clear."
+        ),
+    )
     dataset: Optional[str] = Field(
         None,
         description=(
@@ -4031,10 +4201,19 @@ class CallImportEvaluationResponse(BaseModel):
     # field so the frontend can deep-link to either run). Empty for all
     # other reads.
     sibling_evaluation_ids: List[UUID] = Field(default_factory=list)
+    expected_llm_calls_per_row: Optional[int] = Field(
+        None,
+        description=(
+            "Number of distinct LLM API calls made per evaluation row "
+            "(one per unique provider/model/config among selected metrics)."
+        ),
+    )
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    created_by_email: Optional[str] = None
+    last_updated_by_email: Optional[str] = None
     # Cached LLM-generated TLDR for the Visualizations tab. Lazily
     # populated by ``POST /evaluations/{eval_id}/insights``; ``None``
     # for runs the user has not summarised yet. ``is_stale`` on the
@@ -5222,9 +5401,10 @@ class WorkspaceCreate(WorkspaceBase):
 
 
 class WorkspaceUpdate(BaseModel):
-    """Body for PATCH /workspaces/{id} (rename only in v1)."""
+    """Body for PATCH /workspaces/{id} (rename and/or org-admin activation)."""
 
-    name: str = Field(..., min_length=1, max_length=255)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    is_active: Optional[bool] = None
 
 
 class WorkspaceResponse(BaseModel):
@@ -5235,6 +5415,7 @@ class WorkspaceResponse(BaseModel):
     name: str
     slug: str
     is_default: bool
+    is_active: bool = True
     created_at: datetime
     updated_at: datetime
     role_id: Optional[UUID] = None

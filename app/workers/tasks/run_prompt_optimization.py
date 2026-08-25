@@ -106,18 +106,23 @@ def run_prompt_optimization_task(self, optimization_run_id: str):
         )
 
         from app.services.optimization import run_optimization
-
-        result = run_optimization(
-            agent=agent,
-            evaluator=evaluator,
-            voice_bundle=voice_bundle,
-            training_data=training_data,
-            metrics=enabled_metrics,
-            ai_providers=ai_providers,
-            organization_id=run.organization_id,
-            db=db,
-            config=run.config,
+        from app.services.usage.context import (
+            llm_usage_context,
+            usage_context_for_prompt_optimization_run,
         )
+
+        with llm_usage_context(usage_context_for_prompt_optimization_run(run)):
+            result = run_optimization(
+                agent=agent,
+                evaluator=evaluator,
+                voice_bundle=voice_bundle,
+                training_data=training_data,
+                metrics=enabled_metrics,
+                ai_providers=ai_providers,
+                organization_id=run.organization_id,
+                db=db,
+                config=run.config,
+            )
 
         run.best_prompt = result["best_candidate"]
         run.best_score = result["best_score"]

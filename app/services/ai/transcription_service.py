@@ -581,6 +581,24 @@ class TranscriptionService:
                 return None
 
             text = (result.get("text") or "").strip()
+            try:
+                from app.services.usage.llm_usage import (
+                    probe_audio_seconds,
+                    record_stt_usage,
+                )
+
+                audio_seconds = probe_audio_seconds(audio_file_path)
+                if stt_provider != ModelProvider.GOOGLE:
+                    record_stt_usage(
+                        stt_model or "unknown",
+                        audio_seconds=audio_seconds,
+                        organization_id=organization_id,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[TranscriptionService] text-only stt usage record skipped: %s",
+                    exc,
+                )
             return text or None
         except Exception as e:
             logger.error(f"[TranscriptionService] text-only transcription failed ({stt_provider}/{stt_model}): {e}")
@@ -662,6 +680,33 @@ class TranscriptionService:
                 raise NotImplementedError("AWS Transcribe not yet implemented")
             else:
                 result = self._transcribe_with_whisper_local(temp_file_path, "base")
+
+            try:
+                from app.services.usage.llm_usage import (
+                    probe_audio_seconds,
+                    record_stt_usage,
+                )
+
+                audio_seconds = 0
+                if isinstance(result, dict):
+                    raw_duration = result.get("duration")
+                    if raw_duration is not None:
+                        try:
+                            audio_seconds = int(float(raw_duration))
+                        except (TypeError, ValueError):
+                            audio_seconds = 0
+                if audio_seconds <= 0 and temp_file_path:
+                    audio_seconds = probe_audio_seconds(temp_file_path)
+                if stt_provider != ModelProvider.GOOGLE:
+                    record_stt_usage(
+                        stt_model or "unknown",
+                        audio_seconds=audio_seconds,
+                        organization_id=organization_id,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[TranscriptionService] stt usage record skipped: %s", exc
+                )
 
             # Apply speaker diarization if enabled
             speaker_segments = None

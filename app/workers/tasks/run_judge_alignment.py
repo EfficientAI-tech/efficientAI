@@ -79,7 +79,13 @@ def run_judge_alignment_task(
             return {"error": "No samples"}
 
         try:
-            metrics = run_judge(run, dataset, evaluator, samples, db)
+            from app.services.usage.context import (
+                llm_usage_context,
+                usage_context_for_judge_run,
+            )
+
+            with llm_usage_context(usage_context_for_judge_run(run)):
+                metrics = run_judge(run, dataset, evaluator, samples, db)
         except Exception as exc:
             logger.error(
                 f"[JudgeAlignment] Run {judge_run_id} crashed: {exc}",

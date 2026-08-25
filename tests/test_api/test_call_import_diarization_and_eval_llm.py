@@ -32,6 +32,8 @@ def _make_fake_row():
     return SimpleNamespace(
         id=uuid4(),
         organization_id=uuid4(),
+        call_import_id=uuid4(),
+        workspace_id=uuid4(),
         recording_s3_key="s3://bucket/key.wav",
         transcript="production value from CSV",
         transcript_source="csv",

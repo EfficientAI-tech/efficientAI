@@ -83,6 +83,53 @@ def _seed(db_session, *, row_count: int = 1):
     return org, call_import, rows
 
 
+def _seed_transcript_only(db_session, *, row_count: int = 1):
+    """Generic CSV import batch with no telephony provider."""
+    org = Organization(id=uuid4(), name="Transcript Only Org")
+    db_session.add(org)
+    workspace = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add(workspace)
+    db_session.commit()
+
+    call_import = CallImport(
+        organization_id=org.id,
+        workspace_id=workspace.id,
+        provider="",
+        telephony_integration_id=None,
+        original_filename="transcripts.csv",
+        total_rows=row_count,
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.PROCESSING,
+    )
+    db_session.add(call_import)
+    db_session.flush()
+
+    rows = []
+    for idx in range(row_count):
+        row = CallImportRow(
+            call_import_id=call_import.id,
+            organization_id=org.id,
+            workspace_id=workspace.id,
+            row_index=idx,
+            conversation_id=f"call-{idx}",
+            recording_url=None,
+            transcript=f"transcript {idx}",
+            status=CallImportRowStatus.PENDING,
+        )
+        db_session.add(row)
+        rows.append(row)
+    db_session.commit()
+
+    return org, call_import, rows
+
+
 class _FakeExotelClient:
     """Stand-in for ExotelClient that the worker can call."""
 
@@ -126,6 +173,15 @@ class _FakeS3:
     def upload_file_by_key(self, file_content, key, content_type="audio/mpeg"):
         self.uploads.append({"key": key, "size": len(file_content), "content_type": content_type})
         return key
+
+    def get_organization_root_prefix(self, organization_id: str) -> str:
+        return f"{self.prefix}organizations/{organization_id}/"
+
+    def list_audio_files(self, **_kwargs):
+        return []
+
+    def generate_presigned_url_by_key(self, key, expiration=3600):
+        return f"https://example.com/{key}?exp={expiration}"
 
 
 class _NonClosingSession:
@@ -218,13 +274,17 @@ def _wrap_bind_task_for_tests(task):
             _bind_task_wrapped = True
 
             def __init__(self):
-                self.request = types.SimpleNamespace(id="test-task-id")
+                self.request = types.SimpleNamespace(id="test-task-id", retries=0)
+                self.max_retries = 3
 
             def run(self, row_id, *args, **kwargs):
                 return fn(self, row_id, *args, **kwargs)
 
             def retry(self, exc=None, countdown=None):
                 raise RetryCalled((exc, countdown))
+
+            def apply_async(self, *args, **kwargs):
+                return types.SimpleNamespace(id="test-task-id")
 
         return _FakeBindTask()
 
@@ -241,6 +301,11 @@ def _wrap_bind_task_for_tests(task):
             return self._celery_task.retry(*args, **kwargs)
 
     return _CeleryDelegate(task)
+
+
+def _reset_task_retry_state(task) -> None:
+    task.request = types.SimpleNamespace(id="test-task-id", retries=0)
+    task.max_retries = 3
 
 
 def _load_task_module():
@@ -446,6 +511,7 @@ def test_process_call_import_row_retries_on_credentialed_throttle(db_session, mo
 
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, _ThrottledClient(), fake_s3)
+    _reset_task_retry_state(task_module.process_call_import_row_task)
     from app.workers.concurrency.telephony_credential_rate_limit import CreditStatus
 
     monkeypatch.setattr(
@@ -615,6 +681,88 @@ def test_process_call_import_row_marks_failed_on_auth_error_without_retry(db_ses
     assert fake_s3.uploads == []
 
 
+def test_process_call_import_row_fails_on_repeated_credential_rejection(
+    db_session, monkeypatch
+):
+    _, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    row.attempts = 1
+    db_session.commit()
+
+    from app.services.telephony.exotel_client import CredentialedRecordingThrottledError
+
+    class _AuthRejectClient:
+        _credential_fingerprint = "fp-auth-reject"
+
+        def download_recording(self, _url):
+            raise CredentialedRecordingThrottledError(
+                "Recording URL rejected credentials (HTTP 401)",
+                retry_after_seconds=15,
+            )
+
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, _AuthRejectClient(), fake_s3
+    )
+    from app.workers.concurrency.telephony_credential_rate_limit import CreditStatus
+
+    monkeypatch.setattr(
+        "app.workers.concurrency.telephony_credential_rate_limit.consume_telephony_import_credit",
+        lambda _fp: CreditStatus(allowed=True, remaining=4),
+    )
+    monkeypatch.setattr(
+        task_module.process_call_import_row_task,
+        "retry",
+        lambda exc, countdown: (_ for _ in ()).throw(RetryCalled((exc, countdown))),
+    )
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result["status"] == "failed"
+    db_session.refresh(row)
+    db_session.refresh(call_import)
+    assert row.status == CallImportRowStatus.FAILED
+    assert "credentials rejected" in (row.error_message or "").lower()
+    assert call_import.failed_rows == 1
+
+
+def test_process_call_import_row_fails_when_max_retries_exhausted(
+    db_session, monkeypatch
+):
+    _, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+
+    from app.services.telephony.exotel_client import ExotelTransientError
+
+    class _TransientClient:
+        def download_recording(self, _url):
+            raise ExotelTransientError("flaky network")
+
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, _TransientClient(), fake_s3
+    )
+    task = task_module.process_call_import_row_task
+    _reset_task_retry_state(task)
+    task.request = types.SimpleNamespace(id="test-task-id", retries=3)
+    task.max_retries = 3
+    try:
+        monkeypatch.setattr(
+            task,
+            "retry",
+            lambda exc, countdown: (_ for _ in ()).throw(RetryCalled((exc, countdown))),
+        )
+
+        result = task.run(str(row.id))
+
+        assert result["status"] == "failed"
+        db_session.refresh(row)
+        assert row.status == CallImportRowStatus.FAILED
+        assert "after 4 attempts" in (row.error_message or "").lower()
+    finally:
+        _reset_task_retry_state(task)
+
+
 def test_process_call_import_row_retries_on_transient_error(db_session, monkeypatch):
     _, _call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
@@ -697,6 +845,36 @@ def test_process_call_import_row_fails_when_csv_omits_recording_url(
     assert row.status == CallImportRowStatus.FAILED
     assert "Exotel import requires a recording URL" in (row.error_message or "")
     assert call_import.status == CallImportStatus.FAILED
+
+
+def test_process_call_import_row_completes_without_recording_url_for_generic_import(
+    db_session, monkeypatch
+):
+    """Transcript-only rows on generic imports complete without downloading audio."""
+
+    _, call_import, rows = _seed_transcript_only(db_session, row_count=1)
+    row = rows[0]
+
+    fake_client = _FakeExotelClient()
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    public_calls = _patch_public_download(
+        monkeypatch,
+        return_value=(b"should-not-be-used", "audio/mpeg"),
+    )
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result["status"] == "completed"
+    assert result["s3_key"] is None
+    db_session.refresh(row)
+    db_session.refresh(call_import)
+    assert fake_client.calls == []
+    assert public_calls == []
+    assert fake_s3.uploads == []
+    assert row.status == CallImportRowStatus.COMPLETED
+    assert row.recording_s3_key is None
+    assert call_import.completed_rows == 1
 
 
 def test_process_call_import_row_exotel_csv_url_uses_credentialed_download(

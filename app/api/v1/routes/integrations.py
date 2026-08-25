@@ -46,7 +46,7 @@ def _integration_response(
     effective_routing = get_credential_effective_routing_label(
         organization_id,
         db,
-        integration.routing_mode,
+        integration,
     )
     response = IntegrationResponse.model_validate(integration)
     return response.model_copy(update={"effective_routing": effective_routing})

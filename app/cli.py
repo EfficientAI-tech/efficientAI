@@ -441,6 +441,91 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         sys.exit(1)
 
 
+@main.command("beat")
+@click.option(
+    "--config",
+    "-c",
+    default="config.yml",
+    help="Path to configuration file",
+)
+@click.option(
+    "--loglevel",
+    "-l",
+    default="info",
+    type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
+    help="Log level for Celery beat",
+)
+@click.option(
+    "--platform-worker-concurrency",
+    default=2,
+    type=int,
+    help="Concurrency for the co-located platform task worker (default: 2; thread pool).",
+)
+def beat(config: str, loglevel: str, platform_worker_concurrency: int):
+    """Start Celery Beat + platform task worker (alerts, FX, prune) — single replica only."""
+    from app.config import load_config_from_file
+
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+
+    try:
+        load_config_from_file(str(config_path))
+        click.echo(f"✅ Loaded configuration from {config_path}")
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}", err=True)
+        sys.exit(1)
+
+    from app.workers.config import PLATFORM_WORKER_QUEUE
+
+    click.echo(
+        "🚀 Starting Celery Beat + platform worker "
+        f"(queue={PLATFORM_WORKER_QUEUE}, concurrency={platform_worker_concurrency})"
+    )
+    platform_proc = None
+    try:
+        import subprocess
+
+        platform_proc = subprocess.Popen(
+            [
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                f"--queues={PLATFORM_WORKER_QUEUE}",
+                "--pool=threads",
+                f"--concurrency={platform_worker_concurrency}",
+                f"--loglevel={loglevel}",
+            ],
+        )
+        subprocess.run(
+            [
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "beat",
+                f"--loglevel={loglevel}",
+            ],
+            check=True,
+        )
+    except KeyboardInterrupt:
+        click.echo("\n👋 Celery Beat stopped")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"❌ Celery Beat failed: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError:
+        click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
+        sys.exit(1)
+    finally:
+        if platform_proc is not None and platform_proc.poll() is None:
+            platform_proc.terminate()
+            try:
+                platform_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                platform_proc.kill()
+
+
 @main.command("telephony-worker")
 @click.option(
     "--config",
@@ -653,6 +738,34 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     ),
 )
 @click.option(
+    "--usage-worker/--no-usage-worker",
+    default=True,
+    help=(
+        "Also start a dedicated worker for the `usage` queue (flush + cost recompute; "
+        "default: True)."
+    ),
+)
+@click.option(
+    "--usage-worker-concurrency",
+    default=4,
+    type=int,
+    help="Concurrency for the usage worker (default: 4; thread pool).",
+)
+@click.option(
+    "--beat/--no-beat",
+    default=True,
+    help=(
+        "Start Celery Beat for platform periodic tasks (usage flush, alerts, etc.; "
+        "default: True — single replica only in production)."
+    ),
+)
+@click.option(
+    "--beat-loglevel",
+    default=None,
+    type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
+    help="Log level for Celery Beat (defaults to --worker-loglevel).",
+)
+@click.option(
     "--telephony-worker/--no-telephony-worker",
     default=True,
     help="Spawn telephony media server for live voice WebSockets (default: on).",
@@ -675,6 +788,10 @@ def start_all(
     worker_loglevel: str,
     imports_worker: bool,
     imports_worker_concurrency: int,
+    usage_worker: bool,
+    usage_worker_concurrency: int,
+    beat: bool,
+    beat_loglevel: Optional[str],
     telephony_worker: bool,
     media_port: Optional[int],
 ):
@@ -721,6 +838,9 @@ def start_all(
     # Store worker processes for cleanup.
     worker_process = None
     worker_imports_process = None
+    worker_usage_process = None
+    beat_process = None
+    platform_worker_process = None
     telephony_process = None
 
     def _terminate(proc, label: str):
@@ -740,10 +860,13 @@ def start_all(
 
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process, worker_imports_process, telephony_process
+        nonlocal worker_process, worker_imports_process, worker_usage_process, beat_process, platform_worker_process, telephony_process
         _terminate(telephony_process, "Telephony media server")
+        _terminate(beat_process, "Celery Beat")
+        _terminate(platform_worker_process, "Celery platform worker")
         _terminate(worker_process, "Celery worker (default)")
         _terminate(worker_imports_process, "Celery worker (imports)")
+        _terminate(worker_usage_process, "Celery worker (usage)")
     
     # Register cleanup on exit
     atexit.register(cleanup_processes)
@@ -907,6 +1030,64 @@ def start_all(
                 ),
                 prefix="[WORKER-IMPORTS]",
             )
+
+        if usage_worker:
+            from app.workers.config import USAGE_WORKER_QUEUE
+
+            worker_usage_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "worker",
+                    f"--loglevel={worker_loglevel}",
+                    "-Q",
+                    USAGE_WORKER_QUEUE,
+                    "-P",
+                    "threads",
+                    "-c",
+                    str(usage_worker_concurrency),
+                ],
+                label=(
+                    f"Celery worker ({USAGE_WORKER_QUEUE} queue, "
+                    f"pool=threads, concurrency={usage_worker_concurrency})"
+                ),
+                prefix="[WORKER-USAGE]",
+            )
+
+        if beat:
+            from app.workers.config import PLATFORM_WORKER_QUEUE
+
+            beat_level = beat_loglevel or worker_loglevel
+            platform_worker_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "worker",
+                    f"--loglevel={beat_level}",
+                    "-Q",
+                    PLATFORM_WORKER_QUEUE,
+                    "-P",
+                    "threads",
+                    "-c",
+                    "2",
+                ],
+                label=f"Celery platform worker ({PLATFORM_WORKER_QUEUE} queue)",
+                prefix="[BEAT-WORKER]",
+            )
+            beat_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "beat",
+                    f"--loglevel={beat_level}",
+                ],
+                label=f"Celery Beat (scheduler, loglevel={beat_level})",
+                prefix="[BEAT]",
+            )
+
     except FileNotFoundError:
         click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
         sys.exit(1)
@@ -946,6 +1127,19 @@ def start_all(
             )
         else:
             click.echo("   Workers: default queue only (--no-imports-worker)")
+        if usage_worker:
+            from app.workers.config import USAGE_WORKER_QUEUE
+
+            click.echo(
+                f"   Usage worker: {USAGE_WORKER_QUEUE} queue "
+                f"(concurrency={usage_worker_concurrency})"
+            )
+        else:
+            click.echo("   Usage worker: disabled (--no-usage-worker)")
+        if beat:
+            click.echo("   Celery Beat: scheduler + platform worker (alerts, FX, prune); flush on worker-usage")
+        else:
+            click.echo("   Celery Beat: disabled (--no-beat)")
         if telephony_worker:
             telephony_public = (settings.VOBIZ_WEBHOOK_BASE_URL or "").strip()
             click.echo(f"   Telephony edge: http://localhost:{bind_media_port} (local)")
@@ -1222,6 +1416,244 @@ def sharding_rebalance_slices(
         sys.exit(1)
     finally:
         catalog.close()
+
+
+@click.group()
+def usage():
+    """Usage pricing ops (seed rates, diff catalog, recompute costs)."""
+    pass
+
+
+main.add_command(usage)
+
+
+def _load_cli_config(config: str) -> Path:
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        sys.exit(1)
+    from app.config import load_config_from_file
+
+    load_config_from_file(str(config_path))
+    return config_path
+
+
+@usage.command("seed-rates")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option(
+    "--effective-from",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Effective date for seeded rates (default: 2020-01-01)",
+)
+def usage_seed_rates(config: str, effective_from):
+    """Upsert model_pricing_rates from models.json pricing blocks."""
+    _load_cli_config(config)
+    from app.database import SessionLocal
+    from app.services.usage.pricing_ops import seed_rates_from_models_json
+
+    day = effective_from.date() if effective_from else None
+    db = SessionLocal()
+    try:
+        count = seed_rates_from_models_json(db, effective_from=day)
+        db.commit()
+        click.echo(f"✅ Seeded/updated {count} pricing rate row(s)")
+    finally:
+        db.close()
+
+
+@usage.command("diff-rates")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option(
+    "--effective-from",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Compare rates at this effective_from date (default: 2020-01-01)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON")
+def usage_diff_rates(config: str, effective_from, as_json: bool):
+    """Diff models.json pricing blocks vs model_pricing_rates in Postgres."""
+    import json as json_module
+
+    _load_cli_config(config)
+    from app.database import SessionLocal
+    from app.services.usage.pricing_ops import diff_models_json_vs_db
+
+    day = effective_from.date() if effective_from else None
+    db = SessionLocal()
+    try:
+        report = diff_models_json_vs_db(db, effective_from=day)
+    finally:
+        db.close()
+
+    if as_json:
+        click.echo(json_module.dumps(report, indent=2, default=str))
+        return
+
+    click.echo(f"effective_from: {report['effective_from']}")
+    click.echo(
+        f"models.json priced: {report['models_json_count']} | "
+        f"database rows: {report['database_count']} | "
+        f"in_sync: {report['in_sync']}"
+    )
+    if report["only_in_models_json"]:
+        click.echo(f"\nOnly in models.json ({len(report['only_in_models_json'])}):")
+        for item in report["only_in_models_json"][:20]:
+            click.echo(f"  - {item['model']} ({item['usage_kind']})")
+    if report["only_in_database"]:
+        click.echo(f"\nOnly in database ({len(report['only_in_database'])}):")
+        for item in report["only_in_database"][:20]:
+            click.echo(f"  - {item['model']} ({item['usage_kind']})")
+    if report["mismatches"]:
+        click.echo(f"\nMismatched rates ({len(report['mismatches'])}):")
+        for item in report["mismatches"][:20]:
+            click.echo(f"  - {item['model']} ({item['usage_kind']})")
+            for field, values in item["fields"].items():
+                click.echo(
+                    f"      {field}: json={values['models_json']} db={values['database']}"
+                )
+    missing = report["missing_pricing_blocks"]
+    if missing:
+        click.echo(f"\nmodels.json entries missing pricing blocks ({len(missing)}):")
+        for model in missing[:20]:
+            click.echo(f"  - {model}")
+    unresolved = report["litellm_unresolved"]
+    if unresolved:
+        click.echo(f"\nLiteLLM unresolved ({len(unresolved)}):")
+        for item in unresolved[:20]:
+            click.echo(f"  - {item.get('model')} ({item.get('reason', 'unresolved')})")
+
+
+@usage.command("recompute")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option("--organization-id", default=None, help="Scope recompute to one org UUID")
+@click.option("--model", default=None, help="Scope recompute to one model")
+@click.option("--usage-kind", default=None, help="Scope recompute to llm/stt/tts")
+@click.option("--start-date", type=click.DateTime(formats=["%Y-%m-%d"]), default=None)
+@click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]), default=None)
+@click.option(
+    "--async/--sync",
+    "run_async",
+    default=True,
+    help="Enqueue Celery task (default) or run synchronously in this process",
+)
+def usage_recompute(
+    config: str,
+    organization_id: Optional[str],
+    model: Optional[str],
+    usage_kind: Optional[str],
+    start_date,
+    end_date,
+    run_async: bool,
+):
+    """Backfill or recompute stored usage costs on llm_usage_daily rollups."""
+    from uuid import UUID
+
+    _load_cli_config(config)
+    start = start_date.date() if start_date else None
+    end = end_date.date() if end_date else None
+    org_uuid = UUID(organization_id) if organization_id else None
+
+    if run_async:
+        if org_uuid is None:
+            click.echo(
+                "❌ --organization-id is required for async recompute (creates a tracked job).",
+                err=True,
+            )
+            click.echo(
+                "💡 Use --sync to recompute in this process without an org scope, or pass --organization-id.",
+                err=True,
+            )
+            sys.exit(1)
+
+        from app.database import SessionLocal
+        from app.services.usage.pricing_jobs import (
+            create_recompute_job,
+            enqueue_recompute_job,
+            job_to_dict,
+        )
+
+        db = SessionLocal()
+        try:
+            job = create_recompute_job(
+                db,
+                organization_id=org_uuid,
+                model=model,
+                usage_kind=usage_kind,
+                start_date=start,
+                end_date=end,
+            )
+            enqueue_recompute_job(db, job)
+            db.refresh(job)
+            payload = job_to_dict(job)
+            click.echo(f"✅ Enqueued recompute job {payload['id']} (status={payload['status']})")
+            if payload.get("celery_task_id"):
+                click.echo(f"   Celery task: {payload['celery_task_id']}")
+        except Exception as exc:
+            click.echo(f"❌ Failed to enqueue recompute job: {exc}", err=True)
+            sys.exit(1)
+        finally:
+            db.close()
+        return
+
+    from app.database import SessionLocal
+    from app.services.usage.pricing import recompute_usage_costs
+
+    db = SessionLocal()
+    try:
+        updated = recompute_usage_costs(
+            db,
+            organization_id=org_uuid,
+            model=model,
+            usage_kind=usage_kind,
+            start_date=start,
+            end_date=end,
+        )
+        click.echo(f"✅ Recomputed costs for {updated} rollup row(s)")
+    finally:
+        db.close()
+
+
+@usage.command("sync-litellm")
+@click.option("--local", is_flag=True, help="Use bundled LiteLLM model_cost JSON")
+@click.option(
+    "--write-models",
+    is_flag=True,
+    help="Merge generated pricing into app/config/models.json",
+)
+@click.option("--stdout", is_flag=True, help="Print pricing_catalog.json to stdout")
+def usage_sync_litellm(local: bool, write_models: bool, stdout: bool):
+    """Fetch LiteLLM prices and regenerate pricing_catalog.json."""
+    import subprocess
+    import sys as sys_module
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "sync_pricing_catalog_from_litellm.py"
+    cmd = [sys_module.executable, str(script)]
+    if local:
+        cmd.append("--local")
+    if write_models:
+        cmd.append("--write-models")
+    if stdout:
+        cmd.append("--stdout")
+    subprocess.run(cmd, check=True)
 
 
 if __name__ == "__main__":

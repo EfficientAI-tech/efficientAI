@@ -62,6 +62,17 @@ services:
         loki-max-backoff: "800ms"
         loki-external-labels: "service=worker-imports,environment=docker"
 
+  worker-usage:
+    depends_on:
+      - loki
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=worker-usage,environment=docker"
+
 # Pin image tags instead of :latest to reduce exposure to stale third-party
 # binaries (e.g. Go stdlib CVEs in observability tooling).
   loki:

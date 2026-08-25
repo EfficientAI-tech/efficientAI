@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../../store/authStore'
 import { apiClient, isLoginOrgSelectionResponse } from '../../lib/api'
 import type { AuthConfigResponse, AuthProviderConfig, LoginOrgOption } from '../../lib/api'
 import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
+import { consumeAuthRedirectMessage } from '../../lib/authSession'
+import {
+  consumePendingInviteToken,
+  getPendingInviteToken,
+  storePendingInviteToken,
+} from '../../lib/inviteToken'
 import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
-import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
+import { Card, CardBody, Button, Divider, Tabs, Tab } from '@heroui/react'
 
 /**
  * Provider-aware sign-in screen.
@@ -24,8 +30,21 @@ import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
 type Mode = 'password' | 'signup' | 'sso'
 type LoginStep = 'credentials' | 'org-select'
 
+function LoginFormError({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="flex w-full items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-relaxed text-red-700"
+    >
+      <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+      <p className="min-w-0 flex-1 whitespace-normal break-words">{message}</p>
+    </div>
+  )
+}
+
 export default function Login() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { setSession } = useAuthStore()
 
   const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null)
@@ -38,12 +57,49 @@ export default function Login() {
   const [orgName, setOrgName] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
+  const [referenceCode, setReferenceCode] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [loginStep, setLoginStep] = useState<LoginStep>('credentials')
   const [orgOptions, setOrgOptions] = useState<LoginOrgOption[]>([])
   const [selectingOrgId, setSelectingOrgId] = useState<string | null>(null)
   const [showPassword, setShowPassword] = useState(false)
+  const [inviteToken, setInviteToken] = useState<string | null>(null)
+  const [invitePreview, setInvitePreview] = useState<{
+    organization_name?: string | null
+    email: string
+    has_password?: boolean
+  } | null>(null)
+
+  useEffect(() => {
+    const fromQuery = searchParams.get('invite')
+    const fromStorage = getPendingInviteToken()
+    const token = fromQuery || fromStorage
+    if (!token) return
+    setInviteToken(token)
+    storePendingInviteToken(token)
+    apiClient
+      .previewInvitation(token)
+      .then((preview) => {
+        setInvitePreview(preview)
+        setEmail(preview.email)
+        if (preview.has_password) {
+          setMode('password')
+        } else {
+          setMode('signup')
+        }
+      })
+      .catch(() => {
+        setInviteToken(null)
+      })
+  }, [searchParams])
+
+  useEffect(() => {
+    const redirectMessage = consumeAuthRedirectMessage()
+    if (redirectMessage) {
+      setError(redirectMessage)
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -54,8 +110,8 @@ export default function Login() {
         setAuthConfig(cfg)
         // Pick a sensible default tab based on what's enabled server-side.
         const byName = (n: string) => cfg.providers.find((p) => p.name === n && p.enabled)
-        if (byName('local_password')) setMode('password')
-        else if (byName('external_oidc')) setMode('sso')
+        if (byName('local_password') && !inviteToken) setMode('password')
+        else if (byName('external_oidc') && !inviteToken) setMode('sso')
       })
       .catch(() => {
         if (!active) return
@@ -75,19 +131,43 @@ export default function Login() {
   const localPwd = providerByName('local_password')
   const oidc = providerByName('external_oidc')
 
+  const completeInviteIfNeeded = async (accessToken: string, authUser: Parameters<typeof setSession>[1], refreshToken?: string | null) => {
+    const token = inviteToken || getPendingInviteToken()
+    if (!token) {
+      setSession(accessToken, authUser, refreshToken)
+      navigate('/')
+      return
+    }
+    try {
+      apiClient.setAccessToken(accessToken)
+      const accepted = await apiClient.acceptInvitationByToken(token)
+      consumePendingInviteToken()
+      setSession(accepted.access_token, accepted.user, accepted.refresh_token)
+      navigate('/')
+    } catch (err: any) {
+      setSession(accessToken, authUser, refreshToken)
+      setError(err?.response?.data?.detail || 'Signed in, but could not accept the invitation')
+      navigate('/')
+    }
+  }
+
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setIsLoading(true)
     try {
-      const res = await apiClient.loginWithPassword(email, password)
+      const res = await apiClient.loginWithPassword(
+        email,
+        password,
+        undefined,
+        inviteToken || getPendingInviteToken() || undefined,
+      )
       if (isLoginOrgSelectionResponse(res)) {
         setOrgOptions(res.organizations)
         setLoginStep('org-select')
         return
       }
-      setSession(res.access_token, res.user, res.refresh_token)
-      navigate('/')
+      await completeInviteIfNeeded(res.access_token, res.user, res.refresh_token)
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Invalid email or password')
     } finally {
@@ -99,13 +179,17 @@ export default function Login() {
     setError('')
     setSelectingOrgId(organizationId)
     try {
-      const res = await apiClient.loginWithPassword(email, password, organizationId)
+      const res = await apiClient.loginWithPassword(
+        email,
+        password,
+        organizationId,
+        inviteToken || getPendingInviteToken() || undefined,
+      )
       if (isLoginOrgSelectionResponse(res)) {
         setError('Organization selection failed — try again')
         return
       }
-      setSession(res.access_token, res.user, res.refresh_token)
-      navigate('/')
+      await completeInviteIfNeeded(res.access_token, res.user, res.refresh_token)
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Could not sign in to the selected organization')
     } finally {
@@ -126,10 +210,13 @@ export default function Login() {
       const res = await apiClient.signup({
         email,
         password,
-        organization_name: orgName || undefined,
+        organization_name: inviteToken ? undefined : orgName || undefined,
         first_name: firstName || undefined,
         last_name: lastName || undefined,
+        reference_code: inviteToken || !authConfig?.gated_signup ? undefined : referenceCode,
+        invite_token: inviteToken || undefined,
       })
+      consumePendingInviteToken()
       setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
     } catch (err: any) {
@@ -148,6 +235,9 @@ export default function Login() {
     }
 
     try {
+      if (inviteToken) {
+        storePendingInviteToken(inviteToken)
+      }
       const redirect = `${window.location.origin}/login/callback`
       const authorizeUrl = await buildAuthorizeUrl(provider, redirect)
       window.location.href = authorizeUrl
@@ -188,7 +278,16 @@ export default function Login() {
             <Logo textSize="xl" />
           </div>
           <p className="mt-2 text-sm text-gray-600">
-            {authConfig?.tier === 'enterprise' ? 'Enterprise' : 'Self-Hosted'} · Sign in to continue
+            {invitePreview ? (
+              <>
+                Join <span className="font-medium text-gray-900">{invitePreview.organization_name || 'your organization'}</span>
+              </>
+            ) : authConfig?.tier === 'enterprise' ? (
+              'Enterprise'
+            ) : (
+              'Self-Hosted'
+            )}{' '}
+            · Sign in to continue
           </p>
         </div>
 
@@ -253,14 +352,10 @@ export default function Login() {
                     {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                   </button>
                 </div>
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
                 <Button type="submit" color="primary" isLoading={isLoading} className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207] border border-[#facc15]" size="lg" radius="full">
                   Sign in
                 </Button>
+                {error && <LoginFormError message={error} />}
               </form>
             )}
 
@@ -292,11 +387,6 @@ export default function Login() {
                     )
                   })}
                 </div>
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -308,6 +398,7 @@ export default function Login() {
                 >
                   Back to sign in
                 </button>
+                {error && <LoginFormError message={error} />}
               </div>
             )}
 
@@ -317,7 +408,7 @@ export default function Login() {
                   <input type="text" placeholder="First name" value={firstName} onChange={(e) => setFirstName(e.target.value)} className="px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
                   <input type="text" placeholder="Last name" value={lastName} onChange={(e) => setLastName(e.target.value)} className="px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
                 </div>
-                <input type="email" placeholder="you@example.com" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
+                <input type="email" placeholder="you@example.com" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required readOnly={!!inviteToken} className={`w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] ${inviteToken ? 'bg-gray-100 text-gray-700' : 'bg-gray-50 focus:bg-white'}`} />
                 <div className="relative">
                   <input
                     type={showPassword ? 'text' : 'password'}
@@ -340,17 +431,27 @@ export default function Login() {
                     {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                   </button>
                 </div>
-                <input type="text" placeholder="Organization name (optional)" value={orgName} onChange={(e) => setOrgName(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
+                {!inviteToken && (
+                  <input type="text" placeholder="Organization name (optional)" value={orgName} onChange={(e) => setOrgName(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
+                )}
+                {authConfig?.gated_signup && !inviteToken && (
+                  <input
+                    type="text"
+                    placeholder="Reference code"
+                    value={referenceCode}
+                    onChange={(e) => setReferenceCode(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
+                  />
                 )}
                 <Button type="submit" color="primary" isLoading={isLoading} className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207]" size="lg" radius="full">
                   Create account
                 </Button>
+                {error && <LoginFormError message={error} />}
                 <p className="text-xs text-gray-500 text-center">
-                  By signing up you become the admin of a new organization. You can invite teammates later.
+                  {invitePreview
+                    ? `You'll join ${invitePreview.organization_name || 'the invited organization'} directly — no separate organization is created.`
+                    : 'By signing up you become the admin of a new organization. You can invite teammates later.'}
                 </p>
               </form>
             )}
@@ -360,11 +461,7 @@ export default function Login() {
                 <Button onPress={() => handleSsoRedirect(oidc)} className="w-full font-semibold" size="lg" radius="full" color="primary" variant="bordered">
                   Continue with {oidc.display_name}
                 </Button>
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
+                {error && <LoginFormError message={error} />}
                 <p className="text-xs text-gray-500 text-center">
                   You'll be redirected to your identity provider to complete sign-in.
                 </p>

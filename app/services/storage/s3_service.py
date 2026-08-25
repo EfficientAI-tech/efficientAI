@@ -479,7 +479,13 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error generating presigned URL: {str(e)}")
 
-    def generate_presigned_url_by_key(self, key: str, expiration: int = 3600) -> str:
+    def generate_presigned_url_by_key(
+        self,
+        key: str,
+        expiration: int = 3600,
+        *,
+        response_content_disposition: str | None = None,
+    ) -> str:
         """Generate a presigned URL for temporary file access by key."""
         self._ensure_initialized()
         if not self.is_enabled():
@@ -487,9 +493,12 @@ class S3Service:
             raise StorageError(error_msg)
 
         try:
+            params: dict[str, str] = {"Bucket": self.bucket_name, "Key": key}
+            if response_content_disposition:
+                params["ResponseContentDisposition"] = response_content_disposition
             url = self.s3_client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": self.bucket_name, "Key": key},
+                Params=params,
                 ExpiresIn=expiration,
             )
             return url

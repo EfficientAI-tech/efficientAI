@@ -5,11 +5,17 @@ import Layout from './components/Layout'
 
 // Auth
 import Login from './pages/auth/Login'
+import InviteAccept from './pages/auth/InviteAccept'
 import LoginCallback from './pages/auth/LoginCallback'
 import SelectOrganization from './pages/auth/SelectOrganization'
+import PlatformLogin from './pages/platform/PlatformLogin'
+import PlatformAdmin from './pages/platform/PlatformAdmin'
 
 // Dashboard
 import Dashboard from './pages/dashboard/Dashboard'
+
+// Usage
+import UsagePage, { UsagePricingRedirect } from './pages/usage/UsagePage'
 
 // Prompt Partials
 import PromptPartials from './pages/promptPartials/PromptPartials'
@@ -24,8 +30,10 @@ import Personas from './pages/personas/Personas'
 import Scenarios from './pages/scenarios/Scenarios'
 
 // Metrics
-import Metrics from './pages/metrics/Metrics'
+import MetricsLayout from './pages/metrics/MetricsLayout'
 import MetricsManagement from './pages/metrics/MetricsManagement'
+import MetricsStudio from './pages/metrics/MetricsStudio'
+import MetricsStudioRunDetail from './pages/metrics/MetricsStudioRunDetail'
 
 // Playground - Agent
 import AgentPlayground from './pages/playground/agent/AgentPlayground'
@@ -134,6 +142,9 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/invite/:token" element={<InviteAccept />} />
+        <Route path="/platform/login" element={<PlatformLogin />} />
+        <Route path="/platform" element={<PlatformAdmin />} />
         <Route path="/login/callback" element={<LoginCallback />} />
         <Route path="/select-organization" element={<SelectOrganization />} />
         {/* Public blind test form - intentionally outside PrivateRoute and EnterpriseGate.
@@ -159,14 +170,18 @@ function App() {
           <Route path="agents/:id" element={<AgentsWorkspace />} />
           <Route path="personas" element={<Personas />} />
           <Route path="scenarios" element={<Scenarios />} />
-          <Route path="metrics" element={<Metrics />} />
+          <Route path="metrics" element={<Navigate to="/metrics-management/studio" replace />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="telephony-numbers" element={<TelephonyNumbers />} />
           <Route path="data-sources" element={<DataSources />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
           <Route path="evaluate-test-agents/:id" element={<EvaluatorDetail />} />
-          <Route path="metrics-management" element={<MetricsManagement />} />
+          <Route path="metrics-management" element={<MetricsLayout />}>
+            <Route index element={<MetricsManagement />} />
+            <Route path="studio" element={<MetricsStudio />} />
+            <Route path="studio/runs/:runId" element={<MetricsStudioRunDetail />} />
+          </Route>
           <Route path="results" element={<ResultsOverview />} />
           <Route path="results/unassigned" element={<ResultsUnassigned />} />
           <Route path="results/agents/:agentId" element={<ResultsAgentWorkspace />} />
@@ -190,6 +205,8 @@ function App() {
             )}
           />
           <Route path="iam" element={<IAM />} />
+          <Route path="usage" element={<UsagePage />} />
+          <Route path="usage/pricing" element={<UsagePricingRedirect />} />
           <Route
             path="workspace-members"
             element={<Navigate to="/iam?tab=workspace-members" replace />}

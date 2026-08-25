@@ -21,8 +21,16 @@ from . import generate_evaluation_prompt_improvements
 from . import agent_flowchart_jobs
 from . import initiate_vobiz_outbound
 from . import finalize_telephony_recording
+from . import evaluate_studio_run_item
 from . import call_import_bulk_ops
 from . import elevenlabs_provider_sync
+from . import flush_usage_counters
+from . import recompute_usage_costs
+from . import prune_oss_usage_history
+from . import dispatch_cron_jobs
+from . import evaluate_alerts
+from . import refresh_fx_rates
+from . import run_cron_evaluator_job
 from app.workers.concurrency import eval_dispatch
 from app.workers.concurrency import fair_dispatch
 from app.workers.concurrency import fair_diarization_dispatch
@@ -53,6 +61,7 @@ __all__ = [
     "dispatch_evaluation_rows_task",
     "dispatch_fair_eval_rows_task",
     "dispatch_fair_diarization_rows_task",
+    "evaluate_studio_run_item_task",
     "dispatch_fair_import_rows_task",
     "bulk_diarize_call_import_task",
     "bulk_delete_call_import_rows_task",
@@ -117,6 +126,9 @@ materialize_call_import_rows_task = (
     call_import_bulk_ops.materialize_call_import_rows_task
 )
 delete_call_import_task = call_import_bulk_ops.delete_call_import_task
+evaluate_studio_run_item_task = (
+    evaluate_studio_run_item.evaluate_studio_run_item_task
+)
 materialize_call_import_evaluation_task = (
     call_import_bulk_ops.materialize_call_import_evaluation_task
 )
@@ -126,3 +138,10 @@ sync_elevenlabs_enrich_task = elevenlabs_provider_sync.sync_elevenlabs_enrich_ta
 run_elevenlabs_monitor_bridge_task = (
     elevenlabs_provider_sync.run_elevenlabs_monitor_bridge_task
 )
+flush_usage_counters_task = flush_usage_counters.flush_usage_counters_task
+recompute_usage_costs_task = recompute_usage_costs.recompute_usage_costs_task
+prune_oss_usage_history_task = prune_oss_usage_history.prune_oss_usage_history_task
+dispatch_cron_jobs_task = dispatch_cron_jobs.dispatch_cron_jobs_task
+evaluate_alerts_task = evaluate_alerts.evaluate_alerts_task
+refresh_fx_rates_task = refresh_fx_rates.refresh_fx_rates_task
+run_cron_evaluator_job_task = run_cron_evaluator_job.run_cron_evaluator_job_task

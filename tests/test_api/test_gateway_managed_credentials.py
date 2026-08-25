@@ -27,6 +27,37 @@ def _reset_gateway_settings():
     ) = original
 
 
+def test_create_aiprovider_gateway_with_credential_base_url_when_org_direct(
+    authenticated_client,
+):
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = False
+    settings.LLM_GATEWAY_BASE_URL = None
+
+    disable_response = authenticated_client.put(
+        "/api/v1/organizations/llm-gateway",
+        json={"mode": "disabled"},
+    )
+    assert disable_response.status_code == 200
+    assert disable_response.json()["effective_routing"] == "direct"
+
+    response = authenticated_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "custom",
+            "name": "Test",
+            "routing_mode": "gateway",
+            "gateway_model": "gpt-oss-120b",
+            "gateway_interface": "native_openai",
+            "gateway_base_url": "http://localhost:8080",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert data["effective_routing"] == "bifrost"
+    assert data["gateway_model"] == "gpt-oss-120b"
+
+
 def test_create_aiprovider_without_key_when_gateway_routing(
     authenticated_client, db_session, org_id
 ):
@@ -165,7 +196,31 @@ def test_update_gateway_managed_to_direct_requires_api_key(
     assert update_response.status_code == 400
 
 
-def test_create_aiprovider_rejects_invalid_gateway_base_url(authenticated_client):
+def test_list_aiproviders_gateway_without_base_url_returns_200(
+    authenticated_client, db_session, org_id
+):
+    """Integrations page must not 500 when a gateway credential lacks base_url."""
+    _set_platform_gateway_passthrough(False)
+    settings.LLM_GATEWAY_ENABLED = False
+    settings.LLM_GATEWAY_BASE_URL = None
+
+    row = AIProvider(
+        organization_id=org_id,
+        provider="custom",
+        api_key="enc-key",
+        name="Misconfigured gateway",
+        routing_mode="gateway",
+        gateway_model="gpt-oss-120b",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = authenticated_client.get("/api/v1/aiproviders")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["effective_routing"] == "gateway"
     _set_platform_gateway_passthrough(False)
     settings.LLM_GATEWAY_ENABLED = True
     settings.LLM_GATEWAY_BASE_URL = "http://localhost:8080"

@@ -553,7 +553,13 @@ class AzureBlobService:
         key = self._get_key(file_id, file_format)
         return self.generate_presigned_url_by_key(key, expiration=expiration)
 
-    def generate_presigned_url_by_key(self, key: str, expiration: int = 3600) -> str:
+    def generate_presigned_url_by_key(
+        self,
+        key: str,
+        expiration: int = 3600,
+        *,
+        response_content_disposition: str | None = None,
+    ) -> str:
         """Generate a SAS URL for temporary file access by key."""
         self._ensure_initialized()
         if not self.is_enabled():
@@ -574,14 +580,17 @@ class AzureBlobService:
             )
 
         try:
-            sas_token = generate_blob_sas(
-                account_name=account_name,
-                container_name=self.bucket_name,
-                blob_name=key,
-                account_key=account_key,
-                permission=BlobSasPermissions(read=True),
-                expiry=datetime.now(UTC) + timedelta(seconds=expiration),
-            )
+            sas_kwargs: dict = {
+                "account_name": account_name,
+                "container_name": self.bucket_name,
+                "blob_name": key,
+                "account_key": account_key,
+                "permission": BlobSasPermissions(read=True),
+                "expiry": datetime.now(UTC) + timedelta(seconds=expiration),
+            }
+            if response_content_disposition:
+                sas_kwargs["content_disposition"] = response_content_disposition
+            sas_token = generate_blob_sas(**sas_kwargs)
             blob_client = self.container_client.get_blob_client(key)
             return f"{blob_client.url}?{sas_token}"
         except Exception as e:

@@ -34,6 +34,7 @@ import {
   Search,
   Square,
   Trash2,
+  Upload,
   Volume2,
   X,
   XCircle,
@@ -57,6 +58,9 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
+import {
+  CallImportAuditMeta,
+} from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import ProviderModelPicker, {
   type ProviderModelValue,
@@ -69,6 +73,7 @@ import {
 } from '../../lib/llmModelOptions'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import RetryFailedImportModal from './components/RetryFailedImportModal'
+import UploadAudioModal from './components/UploadAudioModal'
 import InsightsMetricCard, {
   INSIGHTS_PALETTE,
 } from './components/InsightsMetricCard'
@@ -126,6 +131,13 @@ function formatRecordingDate(value: string | null | undefined): string {
 function isNonRetryableError(message: string | null | undefined): boolean {
   if (!message) return false
   return /(401|403|404|forbidden|unauthor|not found|exceeds|too large|invalid content)/i.test(message)
+}
+
+function isImportCredentialError(message: string | null | undefined): boolean {
+  if (!message) return false
+  return /(rejected credentials|telephony credentials rejected|auth failed|credentials could not be verified)/i.test(
+    message,
+  )
 }
 
 // --- Insights tab helpers ---------------------------------------------
@@ -405,15 +417,12 @@ export default function CallImportDetail() {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const [showDeleteImport, setShowDeleteImport] = useState(false)
+  const [showAppendAudioModal, setShowAppendAudioModal] = useState(false)
   const [showRetryFailedImportConfirm, setShowRetryFailedImportConfirm] =
     useState(false)
   const [retryFailedImportError, setRetryFailedImportError] = useState<string | null>(
     null,
   )
-  const [showForceFailDiarisationConfirm, setShowForceFailDiarisationConfirm] =
-    useState(false)
-  const [forceFailDiarisationError, setForceFailDiarisationError] =
-    useState<string | null>(null)
   const [pendingDeleteRow, setPendingDeleteRow] = useState<CallImportRow | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showRunEval, setShowRunEval] = useState(false)
@@ -589,12 +598,24 @@ export default function CallImportDetail() {
     queryClient,
   ])
 
+  const runEvaluationStepRef = useRef<HTMLDivElement>(null)
+  const [highlightRunEvaluation, setHighlightRunEvaluation] = useState(false)
+  const [pendingScrollToEvaluation, setPendingScrollToEvaluation] = useState(false)
+
+  const handleMappingSaved = useCallback(() => {
+    showToast('Mapping saved. Continue with Run Evaluation below.', 'success')
+    setHighlightRunEvaluation(true)
+    setPendingScrollToEvaluation(true)
+    window.setTimeout(() => setHighlightRunEvaluation(false), 4000)
+  }, [showToast])
+
   const { data: aiProviders = [] } = useQuery({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
   })
 
   const [editingMeta, setEditingMeta] = useState(false)
+  const [draftImportName, setDraftImportName] = useState('')
   const [draftDataset, setDraftDataset] = useState('')
   const [draftTagIds, setDraftTagIds] = useState<string[]>([])
 
@@ -610,8 +631,11 @@ export default function CallImportDetail() {
   })
 
   const updateMetaMutation = useMutation({
-    mutationFn: (payload: { dataset?: string | null; tag_ids?: string[] }) =>
-      apiClient.updateCallImport(id!, payload),
+    mutationFn: (payload: {
+      original_filename?: string | null
+      dataset?: string | null
+      tag_ids?: string[]
+    }) => apiClient.updateCallImport(id!, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -663,27 +687,6 @@ export default function CallImportDetail() {
         err?.response?.data?.detail ||
           err?.message ||
           'Failed to retry failed import rows.',
-      )
-    },
-  })
-
-  const forceFailDiarisationMutation = useMutation({
-    mutationFn: () => apiClient.cancelCallImportDiarisation(id!, null),
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['call-import', activeWorkspaceId, id] })
-      setShowForceFailDiarisationConfirm(false)
-      const parts = [`Force-failed ${result.cancelled} diarisation row${result.cancelled === 1 ? '' : 's'}`]
-      if (result.skipped > 0) {
-        parts.push(`skipped ${result.skipped}`)
-      }
-      setForceFailDiarisationError(null)
-      setBulkActionResult(parts.join(' · '))
-    },
-    onError: (err: any) => {
-      setForceFailDiarisationError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to force-fail in-flight diarisation rows.',
       )
     },
   })
@@ -940,6 +943,17 @@ export default function CallImportDetail() {
     // actions on this page, which already invalidate the query.
     staleTime: 0,
   })
+
+  useEffect(() => {
+    if (!pendingScrollToEvaluation || data?.status !== 'mapped') return
+    setPendingScrollToEvaluation(false)
+    window.setTimeout(() => {
+      runEvaluationStepRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    }, 100)
+  }, [pendingScrollToEvaluation, data?.status])
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, 'agent'],
@@ -1234,9 +1248,6 @@ export default function CallImportDetail() {
     },
   })
 
-  // Tracks which evaluation run is currently being aborted so we can show
-  // a tiny spinner inline on its Abort button without blocking the rest
-  // of the evaluations list. Cleared on success or error.
   const [cancellingEvalId, setCancellingEvalId] = useState<string | null>(null)
 
   const cancelEvaluationMutation = useMutation({
@@ -1251,12 +1262,7 @@ export default function CallImportDetail() {
       }
       queryClient.invalidateQueries({ queryKey: evaluationsQueryKey })
     },
-    onError: (err: any) => {
-      // Cancel is idempotent on the server — the most likely failure
-      // is a 404 because the run was just deleted, in which case the
-      // refetch above will reconcile state. Surface a console.error
-      // so dev-tools shows it without breaking the layout.
-      // eslint-disable-next-line no-console
+    onError: (err: unknown) => {
       console.error('cancelEvaluationMutation failed:', err)
     },
     onSettled: () => {
@@ -1264,12 +1270,7 @@ export default function CallImportDetail() {
     },
   })
 
-  // Bulk-abort companion to ``cancelEvaluationMutation`` — fires the
-  // single-run cancel endpoint per selected run in parallel. We
-  // deliberately keep this client-side fan-out (rather than a new
-  // bulk endpoint) so the UI surface stays small; cancel is cheap
-  // server-side because each call only revokes the rows that are
-  // still in-flight.
+  // Bulk-abort — fires the single-run cancel endpoint per selected run in parallel.
   const bulkCancelEvalsMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const results = await Promise.allSettled(
@@ -1420,32 +1421,6 @@ export default function CallImportDetail() {
     })
   }
 
-  // Toggle one child while keeping the parent reference in sync: if a
-  // child is the only remaining selected member of its group we drop
-  // the parent id; if every child is selected we add the parent id so
-  // the run modal can show a single chip for the whole group.
-  const toggleChildMetric = (parent: any, childId: string) => {
-    const childIds: string[] = Array.isArray(parent.children)
-      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
-      : []
-    setSelectedMetricIds((prev) => {
-      const set = new Set(prev)
-      if (set.has(childId)) {
-        set.delete(childId)
-      } else {
-        set.add(childId)
-      }
-      const allSelected =
-        childIds.length > 0 && childIds.every((cid) => set.has(cid))
-      if (allSelected) {
-        set.add(parent.id)
-      } else {
-        set.delete(parent.id)
-      }
-      return Array.from(set)
-    })
-  }
-
   const openTranscribeModal = (rows: CallImportRow[]) => {
     setTranscribeTargetRows(rows)
     setTranscribeError(null)
@@ -1516,6 +1491,14 @@ export default function CallImportDetail() {
   }
 
   const rows = data.rows ?? []
+  const pendingCredentialErrorCount = rows.filter(
+    (row) =>
+      row.status === 'pending' &&
+      !!row.error_message &&
+      isImportCredentialError(row.error_message),
+  ).length
+  const showCredentialImportWarning =
+    data.status === 'processing' && pendingCredentialErrorCount > 0
 
   // The staged-flow batch isn't ready to render rows / evaluations
   // until the user finishes the MAP + IMPORT steps. We swap out the
@@ -1524,6 +1507,9 @@ export default function CallImportDetail() {
   const needsMapping = data.status === 'uploaded' || data.status === 'mapped'
   const showWorkflowTabs = !needsMapping
   const isDeleting = data.status === 'deleting'
+  const isManualAudioImport = (data.source_format || '').toLowerCase() === 'audio'
+  const canAppendManualAudio =
+    isManualAudioImport && data.status === 'completed' && !isDeleting
   const canRunEvaluation = data.status === 'mapped' || showWorkflowTabs
 
   // Selection state — ``selectedRowIds`` can now span pages (we no
@@ -1602,6 +1588,17 @@ export default function CallImportDetail() {
               Run Evaluation
             </Button>
           )}
+          {canAppendManualAudio && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Upload className="h-4 w-4" />}
+              onClick={() => setShowAppendAudioModal(true)}
+              title="Upload more recordings into this import batch"
+            >
+              Add recordings
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"
@@ -1628,23 +1625,6 @@ export default function CallImportDetail() {
               Retry failed imports ({failedImportRowsCount})
             </Button>
           )}
-          {diarisationInFlightCount > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<Square className="h-4 w-4" />}
-              onClick={() => {
-                setForceFailDiarisationError(null)
-                setShowForceFailDiarisationConfirm(true)
-              }}
-              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
-              title={`Force-fail ${diarisationInFlightCount} pending/running diarisation row${
-                diarisationInFlightCount === 1 ? '' : 's'
-              }`}
-            >
-              Force-fail diarisation ({diarisationInFlightCount})
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="sm"
@@ -1668,24 +1648,34 @@ export default function CallImportDetail() {
               {data.original_filename || '(unnamed import)'}
             </h1>
             <div className="mt-1 text-xs text-gray-500 font-mono">{data.id}</div>
-            <div className="mt-3 flex items-center gap-3 flex-wrap">
-              <StatusBadge status={data.status} />
-              <span className="text-sm text-gray-600 capitalize">
+            <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
+              <span className="inline-flex items-center gap-1.5 shrink-0">
+                {data.latest_evaluation_status ? (
+                  <>
+                    <span className="text-xs text-gray-500">Latest evaluation</span>
+                    <StatusBadge status={data.latest_evaluation_status} />
+                  </>
+                ) : (
+                  <StatusBadge status={data.status} />
+                )}
+              </span>
+              <span className="capitalize shrink-0">
                 Provider:{' '}
-                <span className="font-medium">
+                <span className="font-medium text-gray-800">
                   {data.provider || (
-                    <span className="text-gray-400 italic normal-case">
+                    <span className="text-gray-400 italic normal-case font-normal">
                       not selected yet
                     </span>
                   )}
                 </span>
               </span>
-              <span className="text-sm text-gray-600">
-                Created: {new Date(data.created_at).toLocaleString()}
-              </span>
-              <span className="text-sm text-gray-600">
-                Updated: {new Date(data.updated_at).toLocaleString()}
-              </span>
+              <CallImportAuditMeta
+                inline
+                createdAt={data.created_at}
+                updatedAt={data.updated_at}
+                createdByEmail={data.created_by_email}
+                lastUpdatedByEmail={data.last_updated_by_email}
+              />
             </div>
           </div>
 
@@ -1799,16 +1789,33 @@ export default function CallImportDetail() {
                 size="sm"
                 leftIcon={<Edit3 className="h-4 w-4" />}
                 onClick={() => {
+                  setDraftImportName(data.original_filename || '')
                   setDraftDataset(data.dataset || '')
                   setDraftTagIds(data.tags.map((t) => t.id))
                   setEditingMeta(true)
                 }}
               >
-                Edit dataset / tags
+                Edit name / dataset / tags
               </Button>
             </div>
           ) : (
             <div className="space-y-3">
+              <div>
+                <label
+                  htmlFor="import-name-edit"
+                  className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1"
+                >
+                  Import name
+                </label>
+                <input
+                  id="import-name-edit"
+                  type="text"
+                  value={draftImportName}
+                  onChange={(e) => setDraftImportName(e.target.value)}
+                  placeholder="Leave blank to clear"
+                  className="w-full max-w-sm px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+              </div>
               <div>
                 <label
                   htmlFor="dataset-edit"
@@ -1887,6 +1894,9 @@ export default function CallImportDetail() {
                   isLoading={updateMetaMutation.isPending}
                   onClick={() =>
                     updateMetaMutation.mutate({
+                      original_filename: draftImportName.trim()
+                        ? draftImportName.trim()
+                        : null,
                       dataset: draftDataset.trim() ? draftDataset.trim() : null,
                       tag_ids: draftTagIds,
                     })
@@ -1918,6 +1928,22 @@ export default function CallImportDetail() {
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
               <p className="text-sm text-red-800">{data.error_message}</p>
+            </div>
+          </div>
+        )}
+
+        {showCredentialImportWarning && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm text-amber-900 space-y-1">
+                <p>
+                  {pendingCredentialErrorCount} row
+                  {pendingCredentialErrorCount === 1 ? '' : 's'} failed to fetch
+                  recordings due to telephony credential errors. Update credentials in
+                  Integrations, then use Retry failed to try again.
+                </p>
+              </div>
             </div>
           </div>
         )}
@@ -1963,10 +1989,18 @@ export default function CallImportDetail() {
       {needsMapping && data.source_s3_key && (
         <>
           {(data.status === 'uploaded' || data.status === 'mapped') && (
-            <MappingPanel callImport={data} />
+            <MappingPanel
+              callImport={data}
+              onMappingSaved={handleMappingSaved}
+            />
           )}
           {data.status === 'mapped' && !isDeleting && (
-            <RunEvaluationStep onRunEvaluation={openRunEvaluationModal} />
+            <div ref={runEvaluationStepRef}>
+              <RunEvaluationStep
+                onRunEvaluation={openRunEvaluationModal}
+                highlighted={highlightRunEvaluation}
+              />
+            </div>
           )}
         </>
       )}
@@ -2572,6 +2606,15 @@ export default function CallImportDetail() {
                     </div>
                   )}
 
+                  {row.status === 'pending' && row.error_message && (
+                    <div className="border-t border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-900 flex items-start gap-2">
+                      <AlertCircle className="h-3.5 w-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1 break-words">
+                        <span className="font-medium">Retry pending:</span> {row.error_message}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Surface diarisation-specific failures even when
                       the row's recording download itself succeeded.
                       Previously these only showed inside the expanded
@@ -3123,32 +3166,51 @@ export default function CallImportDetail() {
             No evaluations have been run for this dataset yet.
           </p>
         ) : (
-          <div className="space-y-2">
-            {(() => {
-              const items = evaluationsData?.items ?? []
-              const allSelected =
-                items.length > 0 &&
-                items.every((row) => selectedEvalIds.has(row.id))
-              return (
-                <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
-                  <input
-                    type="checkbox"
-                    aria-label="Select all evaluations"
-                    checked={allSelected}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelectedEvalIds(new Set(items.map((row) => row.id)))
-                      } else {
-                        setSelectedEvalIds(new Set())
-                      }
-                    }}
-                  />
-                  <span className="text-xs text-gray-600">
-                    Select all ({items.length})
-                  </span>
-                </div>
-              )
-            })()}
+          <div className="overflow-x-auto border border-gray-200 rounded-lg">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="w-10 px-3 py-3">
+                    {(() => {
+                      const items = evaluationsData?.items ?? []
+                      const allSelected =
+                        items.length > 0 &&
+                        items.every((row) => selectedEvalIds.has(row.id))
+                      return (
+                        <input
+                          type="checkbox"
+                          aria-label="Select all evaluations"
+                          checked={allSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedEvalIds(new Set(items.map((row) => row.id)))
+                            } else {
+                              setSelectedEvalIds(new Set())
+                            }
+                          }}
+                        />
+                      )
+                    })()}
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Evaluation
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Run by
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last updated by
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Progress
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Status
+                  </th>
+                  <th className="w-0 px-2 py-3" aria-hidden />
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
             {evaluationsData?.items.map((evaluation: CallImportEvaluation) => {
               const isSelected = selectedEvalIds.has(evaluation.id)
               const bulkOperationActive = evaluationHasActiveBulkOperation(
@@ -3157,91 +3219,118 @@ export default function CallImportDetail() {
               const headerLabel = evaluation.name?.trim()
                 ? evaluation.name
                 : `Evaluation ${evaluation.id.slice(0, 8)}`
+              const runBy = evaluation.created_by_email?.trim() || '—'
+              const lastUpdatedBy = evaluation.last_updated_by_email?.trim() || '—'
               return (
-                <div
+                <tr
                   key={evaluation.id}
-                  className={`flex items-center gap-3 border rounded-lg px-3 py-2.5 bg-white transition ${
-                    isSelected
-                      ? 'border-primary-400 bg-primary-50/40'
-                      : 'border-gray-200 hover:border-gray-300'
+                  role="link"
+                  tabIndex={0}
+                  onClick={() =>
+                    navigate(
+                      `/call-imports/${id}/evaluations/${evaluation.id}`,
+                    )
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      navigate(
+                        `/call-imports/${id}/evaluations/${evaluation.id}`,
+                      )
+                    }
+                  }}
+                  className={`cursor-pointer group hover:bg-gray-50 ${
+                    isSelected ? 'bg-primary-50/40' : ''
                   }`}
                 >
-                  <input
-                    type="checkbox"
-                    aria-label={`Select ${headerLabel}`}
-                    checked={isSelected}
-                    onChange={(e) => {
-                      setSelectedEvalIds((prev) => {
-                        const next = new Set(prev)
-                        if (e.target.checked) next.add(evaluation.id)
-                        else next.delete(evaluation.id)
-                        return next
-                      })
-                    }}
-                  />
-                  <Link
-                    to={`/call-imports/${id}/evaluations/${evaluation.id}`}
-                    className="flex-1 min-w-0 flex items-center justify-between gap-3"
+                  <td
+                    className="px-3 py-4 align-middle"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">
-                        {headerLabel}
-                      </p>
-                      <p className="text-[11px] text-gray-400 mt-0.5">
-                        Created {new Date(evaluation.created_at).toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="text-right flex-shrink-0">
-                      <StatusBadge status={evaluation.status} size="sm" />
-                      {evaluation.bulk_operation && (
-                        <p className="text-[11px] text-amber-700 mt-1 flex items-center justify-end gap-1">
-                          <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-                          {evaluationBulkOperationLabel(evaluation.bulk_operation)}
-                        </p>
-                      )}
-                      <p className="text-xs text-gray-500 mt-1">
-                        {evaluation.completed_rows}/{evaluation.total_rows} rows
-                      </p>
-                    </div>
-                  </Link>
-                  {(evaluation.status === 'pending' ||
-                    evaluation.status === 'running') && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      leftIcon={<XCircle className="h-4 w-4" />}
-                      isLoading={
-                        bulkOperationActive ||
-                        (cancellingEvalId === evaluation.id &&
-                          cancelEvaluationMutation.isPending)
-                      }
-                      disabled={
-                        bulkOperationActive ||
-                        (cancellingEvalId === evaluation.id &&
-                          cancelEvaluationMutation.isPending)
-                      }
-                      onClick={(e) => {
-                        // Stop the click from bubbling into the parent
-                        // Link (which would navigate to the evaluation
-                        // detail page mid-cancel).
-                        e.preventDefault()
-                        e.stopPropagation()
-                        if (bulkOperationActive) return
-                        cancelEvaluationMutation.mutate(evaluation.id)
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${headerLabel}`}
+                      checked={isSelected}
+                      onChange={(e) => {
+                        setSelectedEvalIds((prev) => {
+                          const next = new Set(prev)
+                          if (e.target.checked) next.add(evaluation.id)
+                          else next.delete(evaluation.id)
+                          return next
+                        })
                       }}
-                      className="flex-shrink-0 text-amber-700 hover:text-amber-800 hover:bg-amber-50"
-                      title={
-                        bulkOperationActive
-                          ? 'Wait for the current bulk operation to finish'
-                          : 'Abort this evaluation run'
-                      }
-                    >
-                      Abort
-                    </Button>
-                  )}
-                </div>
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </td>
+                  <td className="px-4 py-4 align-top min-w-[10rem]">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-gray-900 truncate group-hover:text-primary-700">
+                        {headerLabel}
+                      </div>
+                      <div className="text-xs text-gray-400 font-mono mt-0.5">
+                        {evaluation.id.slice(0, 8)}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4 align-top text-sm text-gray-700 max-w-[12rem]">
+                    <span className="break-all">{runBy}</span>
+                  </td>
+                  <td className="px-4 py-4 align-top text-sm text-gray-700 max-w-[12rem]">
+                    <span className="break-all">{lastUpdatedBy}</span>
+                  </td>
+                  <td className="px-4 py-4 align-top whitespace-nowrap text-sm text-gray-600">
+                    {evaluation.completed_rows}/{evaluation.total_rows} rows
+                  </td>
+                  <td className="px-4 py-4 align-top whitespace-nowrap">
+                    <StatusBadge status={evaluation.status} size="sm" />
+                    {evaluation.bulk_operation && (
+                      <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
+                        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+                        {evaluationBulkOperationLabel(evaluation.bulk_operation)}
+                      </p>
+                    )}
+                  </td>
+                  <td
+                    className="px-2 py-4 align-top text-right whitespace-nowrap"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {(evaluation.status === 'pending' ||
+                      evaluation.status === 'running') && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leftIcon={<XCircle className="h-4 w-4" />}
+                        isLoading={
+                          bulkOperationActive ||
+                          (cancellingEvalId === evaluation.id &&
+                            cancelEvaluationMutation.isPending)
+                        }
+                        disabled={
+                          bulkOperationActive ||
+                          (cancellingEvalId === evaluation.id &&
+                            cancelEvaluationMutation.isPending)
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (bulkOperationActive) return
+                          cancelEvaluationMutation.mutate(evaluation.id)
+                        }}
+                        className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                        title={
+                          bulkOperationActive
+                            ? 'Wait for the current bulk operation to finish'
+                            : 'Abort this evaluation run'
+                        }
+                      >
+                        Abort
+                      </Button>
+                    )}
+                  </td>
+                </tr>
               )
             })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -3999,6 +4088,22 @@ export default function CallImportDetail() {
           (() => {
             const enabledMetrics = metrics.filter((m: any) => m.enabled)
             const disabledMetrics = metrics.filter((m: any) => !m.enabled)
+            const allSelectableIds = enabledMetrics.flatMap((metric: any) => {
+              const children: any[] = Array.isArray(metric.children)
+                ? metric.children.filter((c: any) => c.enabled)
+                : []
+              const isParent =
+                !!metric.selection_mode && children.length > 0
+              if (isParent) {
+                return [metric.id, ...children.map((c: any) => c.id)]
+              }
+              return [metric.id]
+            })
+            const allMetricsSelected =
+              allSelectableIds.length > 0 &&
+              allSelectableIds.every((metricId) =>
+                selectedMetricIds.includes(metricId),
+              )
             // Group the user's selection into "override targets" — one
             // entry per parent categorization metric (regardless of how
             // many of its labels are picked) and one entry per standalone
@@ -4170,17 +4275,36 @@ export default function CallImportDetail() {
                                 *
                               </span>
                             </p>
-                            {selectedMetricIds.length === 0 ? (
-                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
-                                <AlertCircle className="h-3 w-3" />
-                                Pick at least one
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium text-gray-500">
-                                {selectedMetricIds.length} selected
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {enabledMetrics.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="text-[11px] text-primary-600 hover:text-primary-700 disabled:opacity-50"
+                                  disabled={runEvaluationMutation.isPending}
+                                  onClick={() => {
+                                    if (allMetricsSelected) {
+                                      setSelectedMetricIds([])
+                                    } else {
+                                      setSelectedMetricIds(allSelectableIds)
+                                    }
+                                  }}
+                                >
+                                  {allMetricsSelected ? 'Clear all' : 'Select all'}
+                                </button>
+                              )}
+                              {selectedMetricIds.length === 0 ? (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
+                                  <AlertCircle className="h-3 w-3" />
+                                  Pick at least one
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-medium text-gray-500">
+                                  {selectedMetricIds.length} selected
+                                </span>
+                              )}
+                            </div>
                           </div>
+                          <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
                           {enabledMetrics.map((metric: any) => {
                             const children: any[] = Array.isArray(metric.children)
                               ? metric.children.filter((c: any) => c.enabled)
@@ -4191,21 +4315,17 @@ export default function CallImportDetail() {
                               return (
                                 <label
                                   key={metric.id}
-                                  className="flex items-start gap-2 text-sm cursor-pointer"
+                                  className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
                                 >
                                   <input
                                     type="checkbox"
                                     checked={selectedMetricIds.includes(metric.id)}
                                     onChange={() => toggleMetric(metric.id)}
-                                    className="mt-1"
+                                    disabled={runEvaluationMutation.isPending}
+                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                   />
-                                  <span>
-                                    <span className="font-medium text-gray-900">{metric.name}</span>
-                                    {metric.description ? (
-                                      <span className="block text-xs text-gray-500">
-                                        {metric.description}
-                                      </span>
-                                    ) : null}
+                                  <span className="font-medium text-gray-900 truncate">
+                                    {metric.name}
                                   </span>
                                 </label>
                               )
@@ -4214,75 +4334,42 @@ export default function CallImportDetail() {
                             const selectedChildCount = childIds.filter((cid) =>
                               selectedMetricIds.includes(cid),
                             ).length
-                            const allSelected =
+                            const allChildrenSelected =
                               selectedChildCount === childIds.length &&
                               childIds.length > 0
-                            const someSelected =
-                              selectedChildCount > 0 && !allSelected
+                            const someChildrenSelected =
+                              selectedChildCount > 0 && !allChildrenSelected
                             return (
-                              <div
+                              <label
                                 key={metric.id}
-                                className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1"
+                                className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm"
                               >
-                                <label className="flex items-start gap-2 text-sm cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    ref={(el) => {
-                                      if (el) el.indeterminate = someSelected
-                                    }}
-                                    checked={allSelected}
-                                    onChange={() => toggleParentMetric(metric)}
-                                    className="mt-1"
-                                  />
-                                  <span className="flex-1">
-                                    <span className="font-medium text-gray-900">
-                                      {metric.name}
-                                    </span>
-                                    <span className="ml-2 inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
-                                      {metric.selection_mode === 'single_choice'
-                                        ? 'pick one'
-                                        : 'multi-label'}
-                                    </span>
-                                    <span className="ml-2 text-[11px] text-gray-500">
-                                      {selectedChildCount}/{childIds.length} selected
-                                    </span>
-                                    {metric.description ? (
-                                      <span className="block text-xs text-gray-500">
-                                        {metric.description}
-                                      </span>
-                                    ) : null}
+                                <input
+                                  type="checkbox"
+                                  ref={(el) => {
+                                    if (el) {
+                                      el.indeterminate = someChildrenSelected
+                                    }
+                                  }}
+                                  checked={allChildrenSelected}
+                                  onChange={() => toggleParentMetric(metric)}
+                                  disabled={runEvaluationMutation.isPending}
+                                  className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                />
+                                <span className="min-w-0 flex-1 flex items-baseline gap-2">
+                                  <span className="font-medium text-gray-900 truncate">
+                                    {metric.name}
                                   </span>
-                                </label>
-                                <div className="ml-6 space-y-1 border-l border-gray-200 pl-3">
-                                  {children.map((child: any) => (
-                                    <label
-                                      key={child.id}
-                                      className="flex items-start gap-2 text-xs cursor-pointer"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedMetricIds.includes(child.id)}
-                                        onChange={() =>
-                                          toggleChildMetric(metric, child.id)
-                                        }
-                                        className="mt-0.5"
-                                      />
-                                      <span>
-                                        <span className="font-medium text-gray-800">
-                                          {child.name}
-                                        </span>
-                                        {child.description ? (
-                                          <span className="block text-[11px] text-gray-500">
-                                            {child.description}
-                                          </span>
-                                        ) : null}
-                                      </span>
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
+                                  {someChildrenSelected ? (
+                                    <span className="text-[11px] text-gray-500 whitespace-nowrap">
+                                      {selectedChildCount}/{childIds.length} labels
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </label>
                             )
                           })}
+                          </div>
                         </div>
 
                         {disabledMetrics.length > 0 && (
@@ -4483,9 +4570,9 @@ export default function CallImportDetail() {
                               Transcript for evaluation
                             </p>
                             <p className="text-[11px] text-gray-500 mt-0.5">
-                              Choose whether to score the CSV production
-                              transcript or diarize first, then score the
-                              diarized output.
+                              {isManualAudioImport
+                                ? 'Recordings are already uploaded to this batch. Diarization uses the stored audio files — no CSV recording URL column is needed.'
+                                : 'Choose whether to score the CSV production transcript or diarize first, then score the diarized output.'}
                             </p>
                           </div>
                           <div
@@ -4524,10 +4611,10 @@ export default function CallImportDetail() {
                           </div>
                           {evalTranscriptSource === 'production' ? (
                             <p className="text-[11px] text-gray-500">
-                              Skips diarization and scores the transcript
-                              imported from your CSV. Recordings are still
-                              fetched from Exotel/Plivo when a recording URL
-                              is mapped (needed for audio metrics).
+                              Skips diarization and recording download, and
+                              scores the transcript imported from your CSV
+                              directly. Audio metrics require a recording
+                              already stored on the row.
                             </p>
                           ) : null}
                         </div>
@@ -5024,33 +5111,18 @@ export default function CallImportDetail() {
         }}
       />
 
-      <ConfirmModal
-        isOpen={showForceFailDiarisationConfirm}
-        title={`Force-fail ${diarisationInFlightCount} in-flight diarisation row${
-          diarisationInFlightCount === 1 ? '' : 's'
-        }?`}
-        description={(() => {
-          const lines = [
-            'Any row currently pending/running in diarisation will be marked failed immediately.',
-            'You can then re-diarise those failed rows from the same page.',
-            forceFailDiarisationError ? `Error: ${forceFailDiarisationError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel={`Force-fail ${diarisationInFlightCount} row${
-          diarisationInFlightCount === 1 ? '' : 's'
-        }`}
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={forceFailDiarisationMutation.isPending}
-        onConfirm={() => {
-          if (forceFailDiarisationMutation.isPending) return
-          forceFailDiarisationMutation.mutate()
-        }}
-        onCancel={() => {
-          if (forceFailDiarisationMutation.isPending) return
-          setShowForceFailDiarisationConfirm(false)
-          setForceFailDiarisationError(null)
+      <UploadAudioModal
+        open={showAppendAudioModal}
+        onClose={() => setShowAppendAudioModal(false)}
+        appendToImportId={id}
+        appendToImportName={data.original_filename || undefined}
+        onAppendSuccess={(response) => {
+          showToast(
+            response.message ||
+              `Added recordings (${response.total_rows} total in batch).`,
+            'success',
+          )
+          refetch()
         }}
       />
 

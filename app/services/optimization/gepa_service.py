@@ -149,15 +149,23 @@ def run_optimization(
         resp = litellm_completion(**reflection_kwargs, credential=credential_ctx)
         return resp.choices[0].message.content
 
-    result = gepa_optimize(
-        seed_candidate={"system_prompt": seed_prompt},
-        trainset=trainset,
-        adapter=adapter,
-        reflection_lm=reflection_lm,
-        max_metric_calls=max_metric_calls,
-        reflection_minibatch_size=min(minibatch_size, len(trainset)),
-        candidate_selection_strategy="pareto",
-    )
+    from app.services.ai.llm_gateway import litellm_batch_completion_recording
+
+    with litellm_batch_completion_recording(
+        organization_id=organization_id,
+        db=db,
+        model=lm_identifier,
+        credential=credential_ctx,
+    ):
+        result = gepa_optimize(
+            seed_candidate={"system_prompt": seed_prompt},
+            trainset=trainset,
+            adapter=adapter,
+            reflection_lm=reflection_lm,
+            max_metric_calls=max_metric_calls,
+            reflection_minibatch_size=min(minibatch_size, len(trainset)),
+            candidate_selection_strategy="pareto",
+        )
 
     return _format_result(result, seed_prompt)
 

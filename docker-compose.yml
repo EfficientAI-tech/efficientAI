@@ -47,6 +47,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile.api
     container_name: efficientai_api
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -101,6 +103,8 @@ services:
       args:
         INSTALL_EXTRAS: "qualitative-voice"
     container_name: efficientai_media
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -132,6 +136,8 @@ services:
       args:
         INSTALL_EXTRAS: "qualitative-voice"
     container_name: efficientai_worker
+    env_file:
+      - .env
     environment:
       # Worker uses Docker network, so it reaches DB/Redis via service names
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
@@ -154,12 +160,45 @@ services:
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     command: eai worker --config /app/config.yml --loglevel info --queues celery,audio-metrics --concurrency 8
 
+    # Celery Beat — platform schedules + platform task worker (single replica; do not scale).
+    # Beat enqueues tasks; co-located worker runs evaluate_alerts, refresh_fx_rates, prune_oss_usage_history.
+    # flush_usage_counters still runs on worker-usage (usage queue).
+  beat:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: ""
+    container_name: efficientai_beat
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: >
+      sh -c "celery -A app.workers.celery_app worker -Q platform --pool threads --concurrency 2 --loglevel=info &
+      exec celery -A app.workers.celery_app beat --loglevel=info"
+
   # Dedicated worker for call-import + evaluation queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
   # then ``eval-control`` (cancel/retry/materialize), then ``evaluations``
   # (fair dispatch + LLM scoring).
-  # The default ``worker`` service handles ``celery`` (legacy) and
-  # ``audio-metrics`` (Praat/UTMOS audio metric tasks).
+  # The default ``worker`` service handles ``celery`` (evaluator cron dispatch only)
+  # and ``audio-metrics`` (Praat/UTMOS audio metric tasks).
+  # Platform schedules run via ``beat`` (scheduler + ``platform`` queue worker).
   worker-imports:
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     build:
@@ -168,6 +207,8 @@ services:
       args:
         INSTALL_EXTRAS: ""
     container_name: efficientai_worker_imports
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -190,6 +231,34 @@ services:
     # Thread pool: keep concurrency near Redis inflight caps + headroom when sharding
     # (each task may hold catalog + shard connections for tens of seconds).
     command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations --pool threads --concurrency 12
+
+  # Low-priority usage pricing: Redis flush + cost recompute/backfill.
+  worker-usage:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: ""
+    container_name: efficientai_worker_usage
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info --queues usage --pool threads --concurrency 4
 
 volumes:
   postgres_data:

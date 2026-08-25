@@ -1,4 +1,10 @@
 import axios, { AxiosInstance } from 'axios'
+import {
+  getApiErrorDetail,
+  isOrganizationAccessDenied,
+  organizationAccessDeniedMessage,
+  redirectToLoginWithMessage,
+} from './authSession'
 import type {
   GenerateScenariosFromPromptParams,
   GenerateTestPromptParams,
@@ -17,6 +23,7 @@ import type {
   OrganizationMember,
   Invitation,
   InvitationCreate,
+  InvitationPreview,
   Profile,
   UserUpdate,
   UserPreferences,
@@ -47,6 +54,8 @@ import type {
   CallImportPreviewResponse,
   CallImportEvaluation,
   CallImportEvaluationBaselineCandidatesResponse,
+  CallImportEvaluationPdfReport,
+  CallImportEvaluationPdfReportListResponse,
   CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
   CallImportEvaluationRow,
@@ -102,12 +111,18 @@ export interface VoicePlaygroundBlindTestPair {
   y: VoicePlaygroundBlindTestAudioRef
 }
 
+export interface UsagePolicy {
+  extended_history: boolean
+  max_history_days: number | null
+}
+
 export interface LicenseInfoResponse {
   is_enterprise: boolean
   enabled_features: string[]
   all_enterprise_features: string[]
   feature_catalog?: EnterpriseFeatureCatalog
   organization?: string
+  usage_policy?: UsagePolicy
 }
 
 export interface ReportBranding {
@@ -139,6 +154,7 @@ export interface AuthProviderConfig {
 export interface AuthConfigResponse {
   providers: AuthProviderConfig[]
   tier: 'oss' | 'enterprise'
+  gated_signup?: boolean
 }
 
 export interface AuthUserSummary {
@@ -170,6 +186,58 @@ export interface LoginOrgOption {
 export interface LoginOrgSelectionResponse {
   requires_org_selection: true
   organizations: LoginOrgOption[]
+}
+
+export interface PlatformAdminSummary {
+  id: string
+  email: string
+}
+
+export interface PlatformTokenResponse {
+  access_token: string
+  token_type: string
+  expires_in: number
+  admin: PlatformAdminSummary
+}
+
+export interface PlatformOrganizationItem {
+  id: string
+  name: string
+  is_active: boolean
+  member_count: number
+  created_at?: string | null
+  disabled_at?: string | null
+}
+
+export interface PlatformOrganizationListResponse {
+  items: PlatformOrganizationItem[]
+  total: number
+  offset: number
+  limit: number
+}
+
+export interface PlatformOrganizationStats {
+  total: number
+  active: number
+  disabled: number
+}
+
+export interface PlatformOrgUser {
+  id: string
+  email: string
+  role: string
+  is_active: boolean
+}
+
+export interface PlatformSignupCode {
+  id: string
+  label?: string | null
+  max_uses?: number | null
+  use_count: number
+  expires_at?: string | null
+  is_active: boolean
+  created_at?: string | null
+  code?: string | null
 }
 
 export type LoginResponse = TokenResponse | LoginOrgSelectionResponse
@@ -516,17 +584,28 @@ class ApiClient {
         }
 
         const originalRequest = error.config
+        const requestUrl = String(originalRequest?.url || '')
+        const isAuthEndpoint =
+          requestUrl.includes('/auth/login') ||
+          requestUrl.includes('/auth/signup') ||
+          requestUrl.includes('/auth/refresh') ||
+          requestUrl.includes('/auth/config')
+
+        const detail = getApiErrorDetail(error)
+        if (
+          response?.status === 403 &&
+          isOrganizationAccessDenied(detail) &&
+          !isAuthEndpoint
+        ) {
+          redirectToLoginWithMessage(organizationAccessDeniedMessage(detail))
+          return Promise.reject(error)
+        }
+
         if (
           response?.status === 401 &&
           originalRequest &&
           !originalRequest._retry
         ) {
-          const url = String(originalRequest.url || '')
-          const isAuthEndpoint =
-            url.includes('/auth/login') ||
-            url.includes('/auth/signup') ||
-            url.includes('/auth/refresh')
-
           if (!isAuthEndpoint) {
             originalRequest._retry = true
             const newToken = await this.tryRefreshAccessToken()
@@ -568,7 +647,18 @@ class ApiClient {
           }
           return access_token as string
         })
-        .catch(() => null)
+        .catch((err) => {
+          const refreshDetail = getApiErrorDetail(err)
+          if (
+            err?.response?.status === 403 &&
+            isOrganizationAccessDenied(refreshDetail)
+          ) {
+            redirectToLoginWithMessage(
+              organizationAccessDeniedMessage(refreshDetail),
+            )
+          }
+          return null
+        })
         .finally(() => {
           refreshPromise = null
         })
@@ -617,7 +707,7 @@ class ApiClient {
 
   async updateWorkspace(
     workspaceId: string,
-    payload: { name: string },
+    payload: { name?: string; is_active?: boolean },
   ): Promise<Workspace> {
     const response = await this.client.patch(
       `/api/v1/workspaces/${workspaceId}`,
@@ -715,20 +805,143 @@ class ApiClient {
     organization_name?: string
     first_name?: string
     last_name?: string
+    reference_code?: string
+    invite_token?: string
   }): Promise<TokenResponse> {
     const response = await this.client.post('/api/v1/auth/signup', data)
+    return response.data
+  }
+
+  async previewInvitation(token: string): Promise<InvitationPreview> {
+    const response = await axios.get(`${API_BASE_URL}/api/v1/auth/invitations/preview/${encodeURIComponent(token)}`)
+    return response.data
+  }
+
+  async acceptInvitationByToken(token: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/invitations/accept-by-token', { token })
+    return response.data
+  }
+
+  private platformHeaders() {
+    const token = localStorage.getItem('platformAccessToken')
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
+  async platformLogin(email: string, password: string): Promise<PlatformTokenResponse> {
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/platform/auth/login`,
+      { email, password },
+      { headers: { 'Content-Type': 'application/json' } },
+    )
+    return response.data
+  }
+
+  async getPlatformOrganizationStats(): Promise<PlatformOrganizationStats> {
+    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations/stats`, {
+      headers: this.platformHeaders(),
+    })
+    return response.data
+  }
+
+  async listPlatformOrganizations(params?: {
+    offset?: number
+    limit?: number
+    search?: string
+    is_active?: boolean
+  }): Promise<PlatformOrganizationListResponse> {
+    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations`, {
+      headers: this.platformHeaders(),
+      params,
+    })
+    return response.data
+  }
+
+  async updatePlatformOrganization(
+    orgId: string,
+    data: { is_active: boolean },
+  ): Promise<PlatformOrganizationItem> {
+    const response = await axios.patch(
+      `${API_BASE_URL}/api/v1/platform/organizations/${orgId}`,
+      data,
+      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+    )
+    return response.data
+  }
+
+  async listPlatformOrganizationUsers(
+    orgId: string,
+    params?: { role?: string },
+  ): Promise<PlatformOrgUser[]> {
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/platform/organizations/${orgId}/users`,
+      { headers: this.platformHeaders(), params },
+    )
+    return response.data
+  }
+
+  async platformResetUserPassword(
+    orgId: string,
+    userId: string,
+    newPassword: string,
+  ): Promise<{ user_id: string; email: string; message: string }> {
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/platform/organizations/${orgId}/users/${userId}/reset-password`,
+      { new_password: newPassword },
+      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+    )
+    return response.data
+  }
+
+  async listPlatformSignupCodes(): Promise<PlatformSignupCode[]> {
+    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/signup-codes`, {
+      headers: this.platformHeaders(),
+    })
+    return response.data
+  }
+
+  async createPlatformSignupCode(data: {
+    code: string
+    label?: string
+    max_uses?: number
+    expires_at?: string
+  }): Promise<PlatformSignupCode> {
+    const response = await axios.post(`${API_BASE_URL}/api/v1/platform/signup-codes`, data, {
+      headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' },
+    })
+    return response.data
+  }
+
+  async updatePlatformSignupCode(
+    codeId: string,
+    data: { is_active?: boolean; max_uses?: number; label?: string },
+  ): Promise<PlatformSignupCode> {
+    const response = await axios.patch(
+      `${API_BASE_URL}/api/v1/platform/signup-codes/${codeId}`,
+      data,
+      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+    )
+    return response.data
+  }
+
+  async deactivatePlatformSignupCode(codeId: string): Promise<PlatformSignupCode> {
+    const response = await axios.delete(
+      `${API_BASE_URL}/api/v1/platform/signup-codes/${codeId}`,
+      { headers: this.platformHeaders() },
+    )
     return response.data
   }
 
   async loginWithPassword(
     email: string,
     password: string,
-    organizationId?: string
+    organizationId?: string,
+    inviteToken?: string,
   ): Promise<LoginResponse> {
     const response = await this.client.post('/api/v1/auth/login', {
       email,
       password,
       ...(organizationId ? { organization_id: organizationId } : {}),
+      ...(inviteToken ? { invite_token: inviteToken } : {}),
     })
     return response.data
   }
@@ -1776,6 +1989,7 @@ class ApiClient {
     options: {
       dataset: string
       tagIds?: string[]
+      batchName?: string
     },
   ): Promise<CallImportUploadResponse> {
     const formData = new FormData()
@@ -1783,6 +1997,9 @@ class ApiClient {
       formData.append('files', file)
     }
     formData.append('dataset', options.dataset)
+    if (options.batchName?.trim()) {
+      formData.append('batch_name', options.batchName.trim())
+    }
     if (options.tagIds && options.tagIds.length > 0) {
       for (const tagId of options.tagIds) {
         formData.append('tag_ids', tagId)
@@ -1792,6 +2009,118 @@ class ApiClient {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     return response.data
+  }
+
+  async appendCallImportAudio(
+    importId: string,
+    files: File[],
+  ): Promise<CallImportUploadResponse> {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('files', file)
+    }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${importId}/audio-append`,
+      formData,
+      {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      },
+    )
+    return response.data
+  }
+
+  async uploadCallImportAudioChunked(
+    files: File[],
+    options: {
+      dataset: string
+      tagIds?: string[]
+      batchName?: string
+      onProgress?: (progress: CallImportAudioUploadProgress) => void
+    },
+  ): Promise<CallImportUploadResponse> {
+    if (files.length === 0) {
+      throw new Error('At least one audio file is required.')
+    }
+
+    const chunks: File[][] = []
+    for (let i = 0; i < files.length; i += AUDIO_UPLOAD_CHUNK_SIZE) {
+      chunks.push(files.slice(i, i + AUDIO_UPLOAD_CHUNK_SIZE))
+    }
+
+    let result: CallImportUploadResponse | null = null
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex]
+      options.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: chunkIndex * AUDIO_UPLOAD_CHUNK_SIZE,
+        totalFiles: files.length,
+      })
+
+      if (chunkIndex === 0) {
+        result = await this.uploadCallImportAudio(chunk, {
+          dataset: options.dataset,
+          tagIds: options.tagIds,
+          batchName: options.batchName,
+        })
+      } else {
+        result = await this.appendCallImportAudio(result!.id, chunk)
+      }
+
+      options.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: Math.min(
+          (chunkIndex + 1) * AUDIO_UPLOAD_CHUNK_SIZE,
+          files.length,
+        ),
+        totalFiles: files.length,
+      })
+    }
+
+    return result!
+  }
+
+  async uploadCallImportAudioAppendChunked(
+    importId: string,
+    files: File[],
+    options?: {
+      onProgress?: (progress: CallImportAudioUploadProgress) => void
+    },
+  ): Promise<CallImportUploadResponse> {
+    if (files.length === 0) {
+      throw new Error('At least one audio file is required.')
+    }
+
+    const chunks: File[][] = []
+    for (let i = 0; i < files.length; i += AUDIO_UPLOAD_CHUNK_SIZE) {
+      chunks.push(files.slice(i, i + AUDIO_UPLOAD_CHUNK_SIZE))
+    }
+
+    let result: CallImportUploadResponse | null = null
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+      const chunk = chunks[chunkIndex]
+      options?.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: chunkIndex * AUDIO_UPLOAD_CHUNK_SIZE,
+        totalFiles: files.length,
+      })
+
+      result = await this.appendCallImportAudio(importId, chunk)
+
+      options?.onProgress?.({
+        chunkIndex: chunkIndex + 1,
+        totalChunks: chunks.length,
+        uploadedFiles: Math.min(
+          (chunkIndex + 1) * AUDIO_UPLOAD_CHUNK_SIZE,
+          files.length,
+        ),
+        totalFiles: files.length,
+      })
+    }
+
+    return result!
   }
 
   /**
@@ -1952,6 +2281,7 @@ class ApiClient {
   async updateCallImport(
     id: string,
     payload: {
+      original_filename?: string | null
       dataset?: string | null
       tag_ids?: string[]
       /**
@@ -2897,7 +3227,7 @@ class ApiClient {
       reportConfig?: Record<string, any>
       platformBaseUrl?: string | null
     },
-  ): Promise<Blob> {
+  ): Promise<CallImportEvaluationPdfReport | Blob> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
       {
@@ -2912,6 +3242,44 @@ class ApiClient {
         report_config: options?.reportConfig || {},
         platform_base_url: options?.platformBaseUrl || null,
       },
+      { responseType: 'arraybuffer' },
+    )
+    const contentType = String(response.headers['content-type'] || '')
+    if (contentType.includes('application/pdf')) {
+      return new Blob([response.data], { type: 'application/pdf' })
+    }
+    const text = new TextDecoder().decode(response.data)
+    return JSON.parse(text) as CallImportEvaluationPdfReport
+  }
+
+  async listCallImportEvaluationPdfReports(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluationPdfReportListResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationPdfReport(
+    callImportId: string,
+    evaluationId: string,
+    reportId: string,
+  ): Promise<CallImportEvaluationPdfReport> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports/${reportId}`,
+    )
+    return response.data
+  }
+
+  async downloadCallImportEvaluationPdfReport(
+    callImportId: string,
+    evaluationId: string,
+    reportId: string,
+  ): Promise<Blob> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-reports/${reportId}/download`,
       { responseType: 'blob' },
     )
     return response.data
@@ -2963,6 +3331,335 @@ class ApiClient {
   // Model Config endpoints
   async getDashboardSummary(): Promise<DashboardSummary> {
     const response = await this.client.get('/api/v1/dashboard/summary')
+    return response.data
+  }
+
+  async getOrgUsageFxRate(): Promise<{
+    base: string
+    quote: string
+    rate: number
+    as_of: string
+    source: string
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/fx-rate')
+    return response.data
+  }
+
+  async getOrgUsageSummary(params: {
+    start?: string
+    end?: string
+    tz?: string
+    workspace_id?: string
+    product_section?: string
+    model?: string
+    resource_id?: string
+    usage_kind?: string
+    call_import_id?: string
+    evaluation_id?: string
+    dataset?: string
+    tag_id?: string
+  }): Promise<{
+    start: string
+    end: string
+    totals: {
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+      cache_read_tokens: number
+      cache_creation_tokens: number
+      reasoning_tokens: number
+      audio_seconds: number
+      tts_characters: number
+      call_count: number
+      input_cost_micro_usd?: number
+      output_cost_micro_usd?: number
+      cache_read_cost_micro_usd?: number
+      cache_creation_cost_micro_usd?: number
+      reasoning_cost_micro_usd?: number
+      audio_cost_micro_usd?: number
+      tts_cost_micro_usd?: number
+      total_cost_micro_usd?: number
+      costs?: {
+        input_cost_usd: number
+        output_cost_usd: number
+        cache_read_cost_usd: number
+        cache_write_cost_usd: number
+        reasoning_cost_usd: number
+        audio_cost_usd: number
+        tts_cost_usd: number
+        total_cost_usd: number
+        currency: string
+        has_unpriced_usage: boolean
+      }
+    }
+    last_updated_at?: string | null
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/summary', {
+      params,
+    })
+    return response.data
+  }
+
+  async getOrgUsageBreakdown(params: {
+    start?: string
+    end?: string
+    tz?: string
+    group_by?: 'workspace' | 'product_section' | 'model' | 'resource' | 'usage_kind' | 'call_import'
+    workspace_id?: string
+    product_section?: string
+    model?: string
+    resource_id?: string
+    usage_kind?: string
+    call_import_id?: string
+    evaluation_id?: string
+    dataset?: string
+    tag_id?: string
+    limit?: number
+    offset?: number
+  }): Promise<{
+    start: string
+    end: string
+    group_by: string
+    rows: Array<{
+      workspace_id?: string | null
+      workspace_name?: string | null
+      product_section?: string | null
+      product_section_label?: string | null
+      model?: string | null
+      resource_id?: string | null
+      resource_type?: string | null
+      resource_label?: string | null
+      call_import_id?: string | null
+      call_import_label?: string | null
+      usage_kind?: string | null
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+      cache_read_tokens: number
+      cache_creation_tokens: number
+      reasoning_tokens: number
+      audio_seconds: number
+      tts_characters: number
+      call_count: number
+      input_cost_micro_usd?: number
+      output_cost_micro_usd?: number
+      cache_read_cost_micro_usd?: number
+      cache_creation_cost_micro_usd?: number
+      reasoning_cost_micro_usd?: number
+      audio_cost_micro_usd?: number
+      tts_cost_micro_usd?: number
+      total_cost_micro_usd?: number
+      costs?: {
+        input_cost_usd: number
+        output_cost_usd: number
+        cache_read_cost_usd: number
+        cache_write_cost_usd: number
+        reasoning_cost_usd: number
+        audio_cost_usd: number
+        tts_cost_usd: number
+        total_cost_usd: number
+        currency: string
+        has_unpriced_usage: boolean
+      }
+    }>
+    total_count: number
+    truncated_at_limit?: boolean
+    last_updated_at?: string | null
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/breakdown', {
+      params,
+    })
+    return response.data
+  }
+
+  async listUsagePricingAvailableModels(): Promise<{ models: string[] }> {
+    const response = await this.client.get(
+      '/api/v1/organizations/usage/pricing/available-models',
+    )
+    return response.data
+  }
+
+  async getUsagePricingEffective(
+    model: string,
+    params?: { usage_kind?: string; as_of?: string },
+  ): Promise<{
+    model: string
+    usage_kind: string
+    as_of: string
+    catalog_rates?: Record<string, number | null> | null
+    effective_rates?: Record<string, number | null> | null
+    effective_source?: string | null
+    has_override: boolean
+    override?: {
+      effective_from: string
+      effective_to?: string | null
+      rates: Record<string, number | null>
+    } | null
+  }> {
+    const response = await this.client.get(
+      `/api/v1/organizations/usage/pricing/overrides/${encodeURIComponent(model)}`,
+      { params },
+    )
+    return response.data
+  }
+
+  async listUsagePricingOverrides(params?: {
+    model?: string
+    usage_kind?: string
+  }): Promise<
+    Array<{
+      id: string
+      organization_id: string
+      model: string
+      usage_kind: string
+      effective_from: string
+      effective_to?: string | null
+      rates: {
+        input_per_1m?: number | null
+        output_per_1m?: number | null
+        cache_read_per_1m?: number | null
+        cache_write_per_1m?: number | null
+        reasoning_per_1m?: number | null
+        audio_per_minute?: number | null
+        tts_per_1m_characters?: number | null
+      }
+      recompute_enqueued?: boolean
+      recompute_job_id?: string | null
+    }>
+  > {
+    const response = await this.client.get('/api/v1/organizations/usage/pricing/overrides', {
+      params,
+    })
+    return response.data
+  }
+
+  async upsertUsagePricingOverride(
+    model: string,
+    body: {
+      usage_kind?: string
+      effective_from: string
+      effective_to?: string
+      rates: {
+        input_per_1m?: number
+        output_per_1m?: number
+        cache_read_per_1m?: number
+        cache_write_per_1m?: number
+        reasoning_per_1m?: number
+        audio_per_minute?: number
+        tts_per_1m_characters?: number
+      }
+      recompute?: boolean
+    }
+  ): Promise<{
+    id: string
+    model: string
+    usage_kind: string
+    effective_from: string
+    effective_to?: string | null
+    rates: Record<string, number | null | undefined>
+    recompute_enqueued?: boolean
+    recompute_job_id?: string | null
+  }> {
+    const response = await this.client.put(
+      `/api/v1/organizations/usage/pricing/overrides/${encodeURIComponent(model)}`,
+      body
+    )
+    return response.data
+  }
+
+  async deleteUsagePricingOverride(
+    model: string,
+    params?: { usage_kind?: string; effective_from?: string; recompute?: boolean }
+  ): Promise<{
+    deleted: boolean
+    model: string
+    usage_kind: string
+    recompute_enqueued?: boolean
+    recompute_job_id?: string | null
+  }> {
+    const response = await this.client.delete(
+      `/api/v1/organizations/usage/pricing/overrides/${encodeURIComponent(model)}`,
+      { params }
+    )
+    return response.data
+  }
+
+  async triggerUsageCostRecompute(body?: {
+    start_date?: string
+    end_date?: string
+    model?: string
+    usage_kind?: string
+  }): Promise<{
+    id: string
+    organization_id: string
+    status: string
+    model?: string | null
+    usage_kind?: string | null
+    start_date?: string | null
+    end_date?: string | null
+    updated_rows: number
+    error_message?: string | null
+    celery_task_id?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+    completed_at?: string | null
+  }> {
+    const response = await this.client.post(
+      '/api/v1/organizations/usage/pricing/recompute',
+      body ?? {}
+    )
+    return response.data
+  }
+
+  async getUsageCostRecomputeJob(jobId: string): Promise<{
+    id: string
+    organization_id: string
+    status: string
+    model?: string | null
+    usage_kind?: string | null
+    start_date?: string | null
+    end_date?: string | null
+    updated_rows: number
+    error_message?: string | null
+    celery_task_id?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+    completed_at?: string | null
+  }> {
+    const response = await this.client.get(
+      `/api/v1/organizations/usage/pricing/recompute/${jobId}`
+    )
+    return response.data
+  }
+
+  async getOrgUsageFilters(params?: {
+    start?: string
+    end?: string
+    tz?: string
+    workspace_id?: string
+    product_section?: string
+    model?: string
+    resource_id?: string
+    evaluation_id?: string
+    usage_kind?: string
+    call_import_id?: string
+    q?: string
+    dataset?: string
+    tag_id?: string
+  }): Promise<{
+    workspaces: Array<{ id: string; name: string }>
+    product_sections: Array<{ id: string; label: string }>
+    call_imports: Array<{ id: string; label: string }>
+    evaluations: Array<{ id: string; label: string }>
+    models: string[]
+    resources: Array<{ id: string; type?: string; label: string; product_section?: string }>
+    usage_kinds: Array<{ id: string; label: string }>
+    datasets: string[]
+    tags: Array<{ id: string; label: string }>
+  }> {
+    const response = await this.client.get('/api/v1/organizations/usage/filters', {
+      params,
+    })
     return response.data
   }
 
@@ -3130,7 +3827,7 @@ class ApiClient {
   }): Promise<{
     call_type: string
     access_token?: string
-    call_id: string
+    call_id?: string
     agent_id: string
     agent_version?: number
     call_status?: string
@@ -3651,14 +4348,127 @@ class ApiClient {
     return response.data
   }
 
-  async listMetrics(surface?: string, includeChildren: boolean = true): Promise<any[]> {
+  async listMetrics(
+    surface?: string,
+    includeChildren: boolean = true,
+    options?: { includeDrafts?: boolean; draftsOnly?: boolean; enabledOnly?: boolean },
+  ): Promise<any[]> {
     const response = await this.client.get('/api/v1/metrics', {
       params: {
         ...(surface ? { surface } : {}),
         include_children: includeChildren,
+        ...(options?.includeDrafts ? { include_drafts: true } : {}),
+        ...(options?.draftsOnly ? { drafts_only: true } : {}),
+        ...(options?.enabledOnly ? { enabled_only: true } : {}),
       },
     })
     return response.data
+  }
+
+  async createMetricDraft(data: {
+    name: string
+    description?: string
+    metric_type: string
+    trigger: string
+    metric_origin?: string
+    studio_notes?: string
+    parent_metric_id?: string
+    selection_mode?: string
+    custom_data_type?: string
+    custom_config?: Record<string, unknown>
+    capture_rationale?: boolean
+    compare_transcripts?: boolean
+    scope?: 'workspace' | 'organization'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    tags?: string[]
+    enabled?: boolean
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/metrics/drafts', data)
+    return response.data
+  }
+
+  async createMetricDraftWithChildren(data: {
+    name: string
+    description?: string | null
+    selection_mode: 'single_choice' | 'multi_label'
+    allow_discovery?: boolean
+    capture_rationale?: boolean
+    supported_surfaces: string[]
+    enabled_surfaces: string[]
+    children: Array<{
+      name: string
+      description?: string | null
+      example?: string | null
+      capture_rationale?: boolean
+      enabled?: boolean
+    }>
+    scope?: 'workspace' | 'organization'
+    studio_notes?: string
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/metrics/drafts/with-children', data)
+    return response.data
+  }
+
+  async promoteMetric(metricId: string): Promise<{ metric: any; promoted_at: string }> {
+    const response = await this.client.post(`/api/v1/metrics/${metricId}/promote`)
+    return response.data
+  }
+
+  async createMetricStudioRun(data: {
+    name?: string
+    metric_ids: string[]
+    sources: Array<{
+      source_kind: 'call_import_row' | 'call_recording' | 'evaluator_result'
+      source_ref: string
+      display_label?: string
+    }>
+    transcript_source?: 'production' | 'diarised'
+    llm_provider?: string
+    llm_model?: string
+    llm_credential_id?: string
+    llm_config?: LLMGenerationConfig | null
+    metric_llm_overrides?: Record<string, unknown>
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/metric-studio/runs', data)
+    return response.data
+  }
+
+  async listMetricStudioRuns(skip = 0, limit = 50): Promise<{ items: any[]; total: number }> {
+    const response = await this.client.get('/api/v1/metric-studio/runs', {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async getMetricStudioRun(runId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/metric-studio/runs/${runId}`)
+    return response.data
+  }
+
+  async listMetricStudioRunResults(
+    runId: string,
+    skip = 0,
+    limit = 100,
+  ): Promise<{ items: any[]; total: number }> {
+    const response = await this.client.get(`/api/v1/metric-studio/runs/${runId}/results`, {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async retryMetricStudioRun(
+    runId: string,
+    resultIds?: string[],
+  ): Promise<any> {
+    const response = await this.client.post(`/api/v1/metric-studio/runs/${runId}/retry`, {
+      result_ids: resultIds,
+    })
+    return response.data
+  }
+
+  async deleteMetricStudioRun(runId: string): Promise<void> {
+    await this.client.delete(`/api/v1/metric-studio/runs/${runId}`)
   }
 
   // Evaluator Results endpoints
@@ -3732,6 +4542,14 @@ class ApiClient {
   async getEvaluatorResultMetrics(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
     return response.data
+  }
+
+  async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+      { responseType: 'blob' },
+    )
+    return URL.createObjectURL(response.data)
   }
 
   async createEvaluatorResultManual(data: {
@@ -4844,6 +5662,15 @@ export interface JudgeOptimizeResponse {
   optimization_run_id: string
   dev_sample_count: number
   test_sample_count: number
+}
+
+export const AUDIO_UPLOAD_CHUNK_SIZE = 25
+
+export interface CallImportAudioUploadProgress {
+  chunkIndex: number
+  totalChunks: number
+  uploadedFiles: number
+  totalFiles: number
 }
 
 // Factory function to create ApiClient instance

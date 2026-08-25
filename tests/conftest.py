@@ -182,6 +182,15 @@ def _bind_runtime_database_url(database_url: str) -> None:
     settings.DATABASE_URL = database_url
 
 
+def _drop_postgres_schema(engine) -> None:
+    """Drop all objects in public schema (handles migration-only tables)."""
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+        conn.execute(text("GRANT ALL ON SCHEMA public TO public"))
+        conn.execute(text("GRANT ALL ON SCHEMA public TO CURRENT_USER"))
+
+
 @pytest.fixture(scope="session")
 def test_engine(worker_id):
     """
@@ -225,7 +234,11 @@ def test_engine(worker_id):
         yield engine
     finally:
         if drop_schema_on_teardown:
-            Base.metadata.drop_all(bind=engine)
+            parsed = make_url(str(engine.url))
+            if parsed.drivername.startswith("postgresql"):
+                _drop_postgres_schema(engine)
+            else:
+                Base.metadata.drop_all(bind=engine)
         engine.dispose()
 
 
@@ -339,7 +352,6 @@ def _install_static_stubs():
         fake_voice_quality_module.AUDIO_METRICS = []
         fake_voice_quality_module.is_audio_metric = lambda *_args, **_kwargs: False
         fake_voice_quality_module.calculate_audio_metrics = lambda *_args, **_kwargs: {}
-        fake_voice_quality_module.get_recording_url = lambda *_args, **_kwargs: None
         fake_audio_service_module.AudioService = _FakeAudioService
         fake_audio_pkg.audio_service = fake_audio_service_module
         fake_audio_pkg.voice_quality_service = fake_voice_quality_module
@@ -825,6 +837,8 @@ def _build_session_api_app():
         vobiz_telephony,
         workspaces,
         workspace_iam,
+        platform_admin,
+        metric_studio,
     )
 
     app = FastAPI()
@@ -868,6 +882,8 @@ def _build_session_api_app():
     app.include_router(call_import_evaluations.router, prefix="/api/v1")
     app.include_router(workspaces.router, prefix="/api/v1")
     app.include_router(workspace_iam.router, prefix="/api/v1")
+    app.include_router(platform_admin.router, prefix="/api/v1")
+    app.include_router(metric_studio.router, prefix="/api/v1")
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
     app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True

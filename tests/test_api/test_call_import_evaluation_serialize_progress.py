@@ -40,6 +40,8 @@ def test_serialize_eval_merges_redis_deltas_without_clearing(db_session, org_id,
             "finished_at": None,
             "created_at": now,
             "updated_at": now,
+            "created_by_user_id": None,
+            "last_updated_by_user_id": None,
         },
     )()
 

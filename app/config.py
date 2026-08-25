@@ -1,6 +1,8 @@
 """Configuration management using Pydantic settings."""
 
 import json
+import os
+import re
 import yaml
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Optional, Union
@@ -107,8 +109,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
 
     # Authentication
-    AUTH_PROVIDERS: List[str] = ["api_key"]
+    AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
+    AUTH_GATED_SIGNUP_ENABLED: bool = False
     AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 15
     AUTH_REFRESH_TOKEN_TTL_DAYS: int = 7
     AUTH_OIDC_ISSUER: Optional[str] = None
@@ -120,6 +123,7 @@ class Settings(BaseSettings):
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
+    FRONTEND_BASE_URL: str = ""
 
     # Content Security Policy (Report-Only by default; set CSP_REPORT_ONLY=false to enforce)
     CSP_ENABLED: bool = True
@@ -437,6 +441,19 @@ def apply_service_mode(mode: str) -> None:
     settings.SERVICE_MODE = normalized
 
 
+_ENV_REF_PATTERN = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _expand_env_ref(value: Any) -> Any:
+    """Replace ``${VAR}`` with ``os.environ[VAR]`` when loading YAML secrets."""
+    if not isinstance(value, str):
+        return value
+    match = _ENV_REF_PATTERN.match(value.strip())
+    if not match:
+        return value
+    return os.environ.get(match.group(1), "")
+
+
 def load_config_from_file(config_path: str) -> None:
     """Load configuration from a YAML file and update global settings."""
     import yaml
@@ -459,8 +476,8 @@ def load_config_from_file(config_path: str) -> None:
             settings.DEBUG = app_config["debug"]
         if "secret_key" in app_config:
             settings.SECRET_KEY = app_config["secret_key"]
-    
-    if "server" in config_data:
+        if "frontend_base_url" in app_config:
+            settings.FRONTEND_BASE_URL = app_config["frontend_base_url"]
         server_config = config_data["server"]
         if "host" in server_config:
             settings.HOST = server_config["host"]
@@ -602,9 +619,13 @@ def load_config_from_file(config_path: str) -> None:
         if "region" in s3_config:
             settings.S3_REGION = s3_config["region"]
         if "access_key_id" in s3_config:
-            settings.S3_ACCESS_KEY_ID = s3_config["access_key_id"]
+            resolved = _expand_env_ref(s3_config["access_key_id"])
+            if resolved:
+                settings.S3_ACCESS_KEY_ID = resolved
         if "secret_access_key" in s3_config:
-            settings.S3_SECRET_ACCESS_KEY = s3_config["secret_access_key"]
+            resolved = _expand_env_ref(s3_config["secret_access_key"])
+            if resolved:
+                settings.S3_SECRET_ACCESS_KEY = resolved
         if "endpoint_url" in s3_config:
             settings.S3_ENDPOINT_URL = s3_config["endpoint_url"]
         if "prefix" in s3_config:
@@ -711,6 +732,9 @@ def load_config_from_file(config_path: str) -> None:
                 settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_config["token_ttl_minutes"])
             if "refresh_token_ttl_days" in local_config:
                 settings.AUTH_REFRESH_TOKEN_TTL_DAYS = int(local_config["refresh_token_ttl_days"])
+            gated_config = local_config.get("gated_signup", {})
+            if isinstance(gated_config, dict) and "enabled" in gated_config:
+                settings.AUTH_GATED_SIGNUP_ENABLED = bool(gated_config["enabled"])
 
         oidc_config = auth_config.get("oidc", {})
         if isinstance(oidc_config, dict):
@@ -804,9 +828,13 @@ def load_config_from_file(config_path: str) -> None:
                 if "region" in loki_s3:
                     settings.LOKI_S3_REGION = loki_s3["region"]
                 if "access_key_id" in loki_s3:
-                    settings.LOKI_S3_ACCESS_KEY_ID = loki_s3["access_key_id"]
+                    resolved = _expand_env_ref(loki_s3["access_key_id"])
+                    if resolved:
+                        settings.LOKI_S3_ACCESS_KEY_ID = resolved
                 if "secret_access_key" in loki_s3:
-                    settings.LOKI_S3_SECRET_ACCESS_KEY = loki_s3["secret_access_key"]
+                    resolved = _expand_env_ref(loki_s3["secret_access_key"])
+                    if resolved:
+                        settings.LOKI_S3_SECRET_ACCESS_KEY = resolved
                 if "prefix" in loki_s3:
                     settings.LOKI_S3_PREFIX = loki_s3["prefix"]
     if "plivo" in config_data:

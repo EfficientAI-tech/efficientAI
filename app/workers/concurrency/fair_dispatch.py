@@ -17,6 +17,7 @@ from app.models.database import (
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
+    Workspace,
 )
 from app.workers.concurrency.eval_dispatch import (
     DISPATCH_QUEUE,
@@ -216,6 +217,7 @@ def _workspaces_with_pending_rows(
             CallImportEvaluationRow,
             CallImportEvaluationRow.evaluation_id == CallImportEvaluation.id,
         )
+        .join(Workspace, Workspace.id == CallImportEvaluation.workspace_id)
         .filter(
             # Pending rows are authoritative — a run can stay ``partial``
             # (or even ``completed``) while retry resets rows back to
@@ -223,6 +225,7 @@ def _workspaces_with_pending_rows(
             CallImportEvaluation.status != "cancelled",
             CallImportEvaluationRow.status == "pending",
             CallImportEvaluationRow.celery_task_id.is_(None),
+            Workspace.is_active.is_(True),
         )
         .distinct()
         .all()

@@ -14,6 +14,7 @@ import csv
 import io
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -25,6 +26,7 @@ from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.auth import Principal, get_principal
 from app.core.auth.rbac import require_admin
 from app.database import get_db
 from app.db_sharding.sessions import is_sharding_enabled
@@ -35,6 +37,12 @@ from app.dependencies import (
     require_enterprise_feature,
 )
 from app.services.billing.flexprice_service import record_call_import_batch_created
+from app.services.call_imports.audit import (
+    actor_emails_for_call_import,
+    emails_for_user_ids,
+    stamp_call_import_actor,
+    user_ids_from_call_imports,
+)
 from app.services.call_imports.dispatch_diagnostics import (
     build_call_import_dispatch_diagnostics,
 )
@@ -123,9 +131,27 @@ def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
-def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportResponse:
+def _normalize_import_display_name(raw: Optional[str]) -> Optional[str]:
+    """Trim a user-facing import/batch label; empty clears to NULL."""
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    return cleaned[:512]
+
+
+def _serialize_call_import(
+    db: Session,
+    call_import: CallImport,
+    *,
+    user_emails: Optional[Dict[UUID, str]] = None,
+) -> CallImportResponse:
     """Catalog parent fields; counters come from SQL rollup (not Redis merge)."""
-    from app.services.call_imports.bulk_ops import rollup_call_import_batch_status
+    from app.services.call_imports.bulk_ops import (
+        _latest_evaluation_status,
+        rollup_call_import_batch_status,
+    )
     from app.services.call_imports.progress_counters import (
         clear_import_progress_redis,
         read_import_progress,
@@ -150,8 +176,25 @@ def _serialize_call_import(db: Session, call_import: CallImport) -> CallImportRe
     failed = min(int(call_import.failed_rows or 0), total) if total else int(
         call_import.failed_rows or 0
     )
+    if user_emails is None:
+        user_emails = emails_for_user_ids(
+            db, user_ids_from_call_imports([call_import])
+        )
+    created_email, updated_email = actor_emails_for_call_import(
+        call_import, user_emails
+    )
     base = CallImportResponse.model_validate(call_import)
-    return base.model_copy(update={"completed_rows": completed, "failed_rows": failed})
+    return base.model_copy(
+        update={
+            "completed_rows": completed,
+            "failed_rows": failed,
+            "latest_evaluation_status": _latest_evaluation_status(
+                db, call_import.id
+            ),
+            "created_by_email": created_email,
+            "last_updated_by_email": updated_email,
+        }
+    )
 
 
 def _resolve_tags(
@@ -182,6 +225,8 @@ def _resolve_tags(
 
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB upload cap (CSV or Excel)
+MAX_AUDIO_FILES_PER_REQUEST = 100
+MANUAL_AUDIO_BLOB_UPLOAD_WORKERS = 10
 
 # File extensions accepted by the upload + preview endpoints. Keep in
 # lockstep with the frontend ``accept`` attribute on the file picker.
@@ -264,6 +309,203 @@ def _dedupe_conversation_id(
         return base
     suffix = f"-{count}"
     return f"{base[: 255 - len(suffix)]}{suffix}"
+
+
+def _conversation_id_base(conversation_id: str) -> str:
+    match = re.match(r"^(.*)-(\d+)$", (conversation_id or "").strip())
+    if match:
+        return match.group(1)
+    return (conversation_id or "").strip()
+
+
+def _manual_audio_append_start_state(
+    db: Session,
+    call_import: CallImport,
+) -> tuple[int, Dict[str, int]]:
+    """Next row_index and conversation-id suffix counts for audio append."""
+    from app.db_sharding.scatter_gather import (
+        load_call_import_conversation_ids,
+        max_call_import_row_index,
+    )
+
+    max_index = max_call_import_row_index(db, call_import.id)
+    start_row_index = max_index + 1
+    if start_row_index == 0 and (call_import.total_rows or 0) > 0:
+        start_row_index = call_import.total_rows
+    conversation_counts = _seed_conversation_counts(
+        cid for cid in load_call_import_conversation_ids(db, call_import.id) if cid
+    )
+    return start_row_index, conversation_counts
+
+
+def _seed_conversation_counts(existing_conversation_ids: Iterable[str]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for conversation_id in existing_conversation_ids:
+        base = _conversation_id_base(conversation_id)
+        if not base:
+            continue
+        counts[base] = counts.get(base, 0) + 1
+    return counts
+
+
+def _enforce_audio_upload_file_limit(file_count: int) -> None:
+    if file_count > MAX_AUDIO_FILES_PER_REQUEST:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"At most {MAX_AUDIO_FILES_PER_REQUEST} audio files may be uploaded "
+                "per request. Split large batches into multiple requests."
+            ),
+        )
+
+
+async def _prepare_audio_upload_files(
+    files: List[UploadFile],
+    conversation_counts: Dict[str, int],
+) -> List[Dict[str, Any]]:
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one audio file is required.",
+        )
+    _enforce_audio_upload_file_limit(len(files))
+
+    max_bytes = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
+    prepared: List[Dict[str, Any]] = []
+
+    for idx, upload in enumerate(files):
+        filename = upload.filename or f"recording-{idx + 1}"
+        ext = _audio_extension(filename)
+        if not ext:
+            allowed = ", ".join(settings.ALLOWED_AUDIO_FORMATS)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported audio file '{filename}'. Allowed formats: {allowed}.",
+            )
+
+        contents = await upload.read()
+        if not contents:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Audio file '{filename}' is empty.",
+            )
+        if len(contents) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"Audio file '{filename}' exceeds "
+                    f"{settings.MAX_FILE_SIZE_MB} MB."
+                ),
+            )
+
+        base_conversation_id = _sanitize_conversation_id(_filename_stem(filename))
+        conversation_id = _dedupe_conversation_id(
+            base_conversation_id,
+            conversation_counts,
+        )
+        prepared.append(
+            {
+                "filename": filename,
+                "extension": ext,
+                "content_type": _audio_content_type(ext, upload.content_type),
+                "contents": contents,
+                "conversation_id": conversation_id,
+            }
+        )
+    return prepared
+
+
+def _upload_manual_audio_blobs_parallel(
+    upload_specs: List[Tuple[str, bytes, str]],
+) -> None:
+    """Upload prepared manual-audio blobs concurrently (key, body, content_type)."""
+    if not upload_specs:
+        return
+
+    from app.services.storage.s3_service import s3_service
+
+    def _upload_one(spec: Tuple[str, bytes, str]) -> None:
+        key, contents, content_type = spec
+        s3_service.upload_file_by_key(
+            contents,
+            key,
+            content_type=content_type,
+        )
+
+    if len(upload_specs) == 1:
+        _upload_one(upload_specs[0])
+        return
+
+    workers = min(MANUAL_AUDIO_BLOB_UPLOAD_WORKERS, len(upload_specs))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_upload_one, spec) for spec in upload_specs]
+        for future in as_completed(futures):
+            future.result()
+
+
+def _persist_prepared_audio_rows(
+    db: Session,
+    *,
+    call_import: CallImport,
+    organization_id: UUID,
+    workspace_id: UUID,
+    prepared: List[Dict[str, Any]],
+    start_row_index: int,
+) -> List[str]:
+    uploaded_keys: List[str] = []
+    row_mappings: List[Dict[str, Any]] = []
+    upload_specs: List[Tuple[str, bytes, str]] = []
+
+    for offset, item in enumerate(prepared):
+        row_id = uuid4()
+        key = _audio_s3_key(
+            organization_id,
+            call_import.id,
+            row_id,
+            item["extension"],
+        )
+        uploaded_keys.append(key)
+        upload_specs.append((key, item["contents"], item["content_type"]))
+        row_mappings.append(
+            {
+                "id": row_id,
+                "call_import_id": call_import.id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "row_index": start_row_index + offset,
+                "conversation_id": item["conversation_id"],
+                "recording_url": None,
+                "transcript": None,
+                "transcript_source": None,
+                "raw_columns": {"conversation_id": item["conversation_id"]},
+                "status": CallImportRowStatus.COMPLETED,
+                "recording_s3_key": key,
+                "recording_content_type": item["content_type"],
+                "recording_size_bytes": len(item["contents"]),
+            }
+        )
+
+    _upload_manual_audio_blobs_parallel(upload_specs)
+
+    added_size = sum(len(item["contents"]) for item in prepared)
+    new_total_rows = (call_import.total_rows or 0) + len(prepared)
+
+    if is_sharding_enabled():
+        from app.db_sharding.row_ops import (
+            bulk_insert_mappings_on_shards,
+            register_shard_slices,
+        )
+
+        bulk_insert_mappings_on_shards(db, call_import.id, row_mappings)
+        register_shard_slices(db, call_import.id, new_total_rows)
+    else:
+        for mapping in row_mappings:
+            db.add(CallImportRow(**mapping))
+
+    call_import.total_rows = new_total_rows
+    call_import.completed_rows = (call_import.completed_rows or 0) + len(prepared)
+    call_import.source_size_bytes = (call_import.source_size_bytes or 0) + added_size
+    return uploaded_keys
 
 
 def _normalize_header(name: str) -> str:
@@ -459,10 +701,7 @@ def _parameter_is_required(param: CallImportSchemaParameter) -> bool:
         param_type = CallImportParameterType(param.type)
     except ValueError:
         return False
-    return param_type in (
-        CallImportParameterType.CONVERSATION_ID,
-        CallImportParameterType.RECORDING_URL,
-    )
+    return param_type == CallImportParameterType.CONVERSATION_ID
 
 
 def _apply_schema_mapping(
@@ -1097,7 +1336,7 @@ def _validate_direct_url_import_ready(
     parameters: List[CallImportSchemaParameter],
     parameter_mapping: Dict[str, Any],
 ) -> None:
-    """Ensure direct-URL import has a mapped recording_url column."""
+    """Ensure direct-URL import has a mapped recording_url when required."""
     rec_url_param = next(
         (
             p
@@ -1107,13 +1346,9 @@ def _validate_direct_url_import_ready(
         None,
     )
     if rec_url_param is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Direct URL import requires a schema parameter of type "
-                "'recording_url'."
-            ),
-        )
+        return
+    if not _parameter_is_required(rec_url_param):
+        return
     mapped_header = (parameter_mapping or {}).get(rec_url_param.name)
     if not (mapped_header or "").strip():
         raise HTTPException(
@@ -1157,6 +1392,45 @@ def _validate_exotel_import_ready(
         )
 
 
+def _is_manual_audio_call_import(call_import: CallImport) -> bool:
+    """True for batches created via manual audio upload (recordings already in S3)."""
+    return (call_import.source_format or "").lower() == "audio"
+
+
+def _validate_diarised_eval_recording_ready(
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, Any],
+) -> None:
+    """Ensure diarised evaluation can fetch recordings from the mapped batch."""
+    rec_url_param = next(
+        (
+            p
+            for p in parameters
+            if p.type == CallImportParameterType.RECORDING_URL.value
+        ),
+        None,
+    )
+    if rec_url_param is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Diarize then evaluate requires a schema parameter of type "
+                "'recording_url'. Add one to the schema and map it to a "
+                "source column."
+            ),
+        )
+    mapped_header = (parameter_mapping or {}).get(rec_url_param.name)
+    if not (mapped_header or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Diarize then evaluate requires the "
+                f"'{rec_url_param.name}' recording URL parameter to be "
+                "mapped to a source column."
+            ),
+        )
+
+
 def _resolve_telephony_integration(
     db: Session,
     organization_id: UUID,
@@ -1191,6 +1465,54 @@ def _resolve_telephony_integration(
             detail="Selected telephony credential is inactive.",
         )
     return integration
+
+
+def _is_stuck_pending_import_row(row: CallImportRow) -> bool:
+    """True when a pending row exhausted retries or hit credential errors."""
+    from app.models.enums import CallImportRowStatus
+
+    if row.status != CallImportRowStatus.PENDING:
+        return False
+    if (row.attempts or 0) > 0:
+        return True
+    message = (row.error_message or "").lower()
+    auth_indicators = (
+        "rejected credentials",
+        "telephony credentials rejected",
+        "auth failed",
+        "recording fetch failed after",
+    )
+    return any(indicator in message for indicator in auth_indicators)
+
+
+def _validate_telephony_credentials_live(
+    db: Session,
+    organization_id: UUID,
+    integration: TelephonyIntegration,
+) -> None:
+    """Verify telephony credentials against the provider API before import work."""
+    from app.services.telephony.telephony_service import telephony_service
+
+    provider_label = (integration.provider or "telephony").title()
+    try:
+        client = telephony_service.get_provider_client(
+            organization_id,
+            db,
+            provider=integration.provider,
+            credential_id=integration.id,
+        )
+        client.test_connection()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        detail = str(exc).strip() or "Unknown error"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{provider_label} credentials could not be verified: {detail}. "
+                "Update credentials in Integrations and retry."
+            ),
+        ) from exc
 
 
 def _clean_parameter_mapping(
@@ -1479,6 +1801,7 @@ async def create_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
     """UPLOAD stage of the staged call-import flow.
@@ -1584,6 +1907,7 @@ async def create_call_import(
     if tag_rows:
         call_import.tags = tag_rows
 
+    stamp_call_import_actor(call_import, principal, creating=True)
     db.add(call_import)
     try:
         db.commit()
@@ -1616,6 +1940,7 @@ async def update_call_import_mapping(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
     """MAP stage of the staged call-import flow.
@@ -1723,6 +2048,7 @@ async def update_call_import_mapping(
     call_import.skipped_columns = list(cleaned_skipped)
     call_import.sheet_name = canonical_sheet
     call_import.status = CallImportStatus.MAPPED
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
     return _serialize_call_import(db, call_import)
@@ -1748,6 +2074,7 @@ async def start_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Deprecated IMPORT stage — use Run Evaluation for new batches.
@@ -1822,6 +2149,7 @@ async def start_call_import(
             payload.telephony_integration_id,
             payload.provider or "",
         )
+        _validate_telephony_credentials_live(db, organization_id, integration)
         if (integration.provider or "").lower() == "exotel":
             _validate_exotel_import_ready(
                 parameters, dict(call_import.parameter_mapping or {})
@@ -1846,6 +2174,7 @@ async def start_call_import(
     call_import.failed_rows = 0
     call_import.error_message = None
     call_import.status = CallImportStatus.PROCESSING
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
 
@@ -1946,6 +2275,7 @@ async def upload_call_import_csv(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Legacy one-shot upload kept for backward compatibility.
@@ -2052,6 +2382,7 @@ async def upload_call_import_csv(
     )
     if tag_rows:
         call_import.tags = tag_rows
+    stamp_call_import_actor(call_import, principal, creating=True)
     db.add(call_import)
     db.flush()  # populate call_import.id
     if integration is None:
@@ -2064,6 +2395,7 @@ async def upload_call_import_csv(
     )
 
     call_import.status = CallImportStatus.PROCESSING
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
 
@@ -2112,9 +2444,17 @@ async def upload_call_import_audio(
         None,
         description="Optional list of CallImportTag ids to attach to the new batch.",
     ),
+    batch_name: Optional[str] = Form(
+        None,
+        description=(
+            "Optional display name for this manual upload batch. "
+            "When omitted, a generic label is used for multi-file uploads."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Persist manually uploaded recordings as completed CallImport rows.
@@ -2131,65 +2471,18 @@ async def upload_call_import_audio(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="dataset is required and must be a non-empty string.",
         )
-    if not files:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one audio file is required.",
-        )
 
     _ensure_blob_storage_enabled()
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
+    prepared = await _prepare_audio_upload_files(files, conversation_counts={})
 
-    max_bytes = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
-    prepared: List[Dict[str, Any]] = []
-    conversation_counts: Dict[str, int] = {}
-
-    for idx, upload in enumerate(files):
-        filename = upload.filename or f"recording-{idx + 1}"
-        ext = _audio_extension(filename)
-        if not ext:
-            allowed = ", ".join(settings.ALLOWED_AUDIO_FORMATS)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported audio file '{filename}'. Allowed formats: {allowed}.",
-            )
-
-        contents = await upload.read()
-        if not contents:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Audio file '{filename}' is empty.",
-            )
-        if len(contents) > max_bytes:
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail=(
-                    f"Audio file '{filename}' exceeds "
-                    f"{settings.MAX_FILE_SIZE_MB} MB."
-                ),
-            )
-
-        base_conversation_id = _sanitize_conversation_id(_filename_stem(filename))
-        conversation_id = _dedupe_conversation_id(
-            base_conversation_id,
-            conversation_counts,
-        )
-        prepared.append(
-            {
-                "filename": filename,
-                "extension": ext,
-                "content_type": _audio_content_type(ext, upload.content_type),
-                "contents": contents,
-                "conversation_id": conversation_id,
-            }
-        )
-
-    original_filename = (
-        prepared[0]["filename"]
-        if len(prepared) == 1
-        else f"{len(prepared)} manual recordings"
-    )
-    total_size = sum(len(item["contents"]) for item in prepared)
+    normalized_batch_name = _normalize_import_display_name(batch_name)
+    if normalized_batch_name:
+        original_filename = normalized_batch_name
+    elif len(prepared) == 1:
+        original_filename = prepared[0]["filename"]
+    else:
+        original_filename = "Manual recordings"
     uploaded_keys: List[str] = []
 
     from app.services.storage.s3_service import s3_service
@@ -2201,17 +2494,18 @@ async def upload_call_import_audio(
         telephony_integration_id=None,
         original_filename=original_filename,
         source_format="audio",
-        source_size_bytes=total_size,
+        source_size_bytes=0,
         source_content_type="audio/*",
         dataset=normalized_dataset,
-        total_rows=len(prepared),
-        completed_rows=len(prepared),
+        total_rows=0,
+        completed_rows=0,
         failed_rows=0,
         status=CallImportStatus.COMPLETED,
     )
     if tag_rows:
         call_import.tags = tag_rows
 
+    stamp_call_import_actor(call_import, principal, creating=True)
     try:
         db.add(call_import)
         db.flush()
@@ -2219,53 +2513,14 @@ async def upload_call_import_audio(
         # intentionally have no telephony provider.
         call_import.provider = None
 
-        row_mappings: List[Dict[str, Any]] = []
-        for idx, item in enumerate(prepared):
-            row_id = uuid4()
-            key = _audio_s3_key(
-                organization_id,
-                call_import.id,
-                row_id,
-                item["extension"],
-            )
-            s3_service.upload_file_by_key(
-                item["contents"],
-                key,
-                content_type=item["content_type"],
-            )
-            uploaded_keys.append(key)
-
-            row_mappings.append(
-                {
-                    "id": row_id,
-                    "call_import_id": call_import.id,
-                    "organization_id": organization_id,
-                    "workspace_id": workspace_id,
-                    "row_index": idx,
-                    "conversation_id": item["conversation_id"],
-                    "recording_url": None,
-                    "transcript": None,
-                    "transcript_source": None,
-                    "raw_columns": {"conversation_id": item["conversation_id"]},
-                    "status": CallImportRowStatus.COMPLETED,
-                    "recording_s3_key": key,
-                    "recording_content_type": item["content_type"],
-                    "recording_size_bytes": len(item["contents"]),
-                }
-            )
-
-        if is_sharding_enabled():
-            from app.db_sharding.row_ops import (
-                bulk_insert_mappings_on_shards,
-                register_shard_slices,
-            )
-
-            bulk_insert_mappings_on_shards(db, call_import.id, row_mappings)
-            register_shard_slices(db, call_import.id, len(row_mappings))
-        else:
-            for mapping in row_mappings:
-                db.add(CallImportRow(**mapping))
-
+        uploaded_keys = _persist_prepared_audio_rows(
+            db,
+            call_import=call_import,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            prepared=prepared,
+            start_row_index=0,
+        )
         db.commit()
     except Exception as exc:
         db.rollback()
@@ -2301,6 +2556,107 @@ async def upload_call_import_audio(
         message=(
             f"Uploaded {call_import.total_rows} manual recording"
             f"{'' if call_import.total_rows == 1 else 's'}."
+        ),
+    )
+
+
+@router.post(
+    "/{call_import_id}/audio-append",
+    response_model=CallImportUploadResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="appendCallImportAudio",
+)
+async def append_call_import_audio(
+    call_import_id: UUID,
+    files: List[UploadFile] = File(
+        ...,
+        description="Additional manual call recording audio files for an existing batch.",
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportUploadResponse:
+    """Append manually uploaded recordings to an existing audio batch."""
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+    if (call_import.source_format or "").lower() != "audio":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Audio append is only supported for manual audio upload batches.",
+        )
+    if call_import.status != CallImportStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot append audio while batch is in status "
+                f"'{call_import.status.value}'."
+            ),
+        )
+
+    _ensure_blob_storage_enabled()
+
+    start_row_index, conversation_counts = _manual_audio_append_start_state(
+        db,
+        call_import,
+    )
+
+    prepared = await _prepare_audio_upload_files(files, conversation_counts)
+    uploaded_keys: List[str] = []
+
+    from app.services.storage.s3_service import s3_service
+
+    try:
+        uploaded_keys = _persist_prepared_audio_rows(
+            db,
+            call_import=call_import,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            prepared=prepared,
+            start_row_index=start_row_index,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if uploaded_keys and s3_service.is_enabled():
+            try:
+                s3_service.delete_keys(uploaded_keys)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up manual audio append keys after error"
+                )
+        logger.exception("Failed to append manual call recording upload")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to append manual recordings: {exc}",
+        ) from exc
+
+    db.refresh(call_import)
+    return CallImportUploadResponse(
+        id=call_import.id,
+        total_rows=call_import.total_rows,
+        status=call_import.status,
+        dataset=call_import.dataset,
+        tags=_tag_response_payload(call_import.tags),
+        message=(
+            f"Uploaded {len(prepared)} additional manual recording"
+            f"{'' if len(prepared) == 1 else 's'} "
+            f"({call_import.total_rows} total)."
         ),
     )
 
@@ -2391,8 +2747,12 @@ async def list_call_imports(
         .all()
     )
 
+    email_map = emails_for_user_ids(db, user_ids_from_call_imports(items))
     return CallImportListResponse(
-        items=[_serialize_call_import(db, item) for item in items],
+        items=[
+            _serialize_call_import(db, item, user_emails=email_map)
+            for item in items
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -2514,6 +2874,7 @@ async def update_call_import(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportResponse:
     """Edit dataset / tag assignments (and schema, pre-import) on a batch.
@@ -2543,6 +2904,11 @@ async def update_call_import(
         )
 
     body = payload.model_dump(exclude_unset=True)
+    if "original_filename" in body:
+        call_import.original_filename = _normalize_import_display_name(
+            body["original_filename"]
+        )
+
     if "dataset" in body:
         call_import.dataset = _normalize_dataset(body["dataset"])
 
@@ -2575,6 +2941,7 @@ async def update_call_import(
             call_import.sheet_name = None
             call_import.status = CallImportStatus.UPLOADED
 
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     db.refresh(call_import)
     return _serialize_call_import(db, call_import)
@@ -2929,6 +3296,7 @@ async def delete_call_import(
     call_import_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportDeleteResponse:
     """Delete a call-import batch asynchronously.
@@ -2960,6 +3328,7 @@ async def delete_call_import(
 
     call_import.status = CallImportStatus.DELETING
     call_import.error_message = None
+    stamp_call_import_actor(call_import, principal)
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import delete_call_import_task
@@ -3025,6 +3394,7 @@ async def delete_call_import_row(
     row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Response:
     """Delete a single CallImportRow and its S3 recording.
@@ -3075,6 +3445,7 @@ async def delete_call_import_row(
         row_db.commit()
 
         _recompute_call_import_counters(db, call_import)
+        stamp_call_import_actor(call_import, principal)
         db.commit()
     finally:
         close_row_sessions(row_db, extra_catalog)
@@ -3116,6 +3487,7 @@ async def retry_failed_call_import_rows(
     payload: Optional[CallImportRetryFailedRowsRequest] = Body(None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRetryFailedRowsResponse:
     """Re-enqueue every failed import row in this batch.
@@ -3152,6 +3524,7 @@ async def retry_failed_call_import_rows(
                 payload.telephony_integration_id,
                 payload.provider or "",
             )
+            _validate_telephony_credentials_live(db, organization_id, integration)
             call_import.provider = integration.provider
             call_import.telephony_integration_id = integration.id
             if (integration.provider or "").lower() == "exotel":
@@ -3170,16 +3543,24 @@ async def retry_failed_call_import_rows(
             call_import.telephony_integration_id = None
         db.flush()
 
-    failed_rows = (
+    candidate_rows = (
         db.query(CallImportRow)
         .filter(
             CallImportRow.call_import_id == call_import.id,
-            CallImportRow.status == CallImportRowStatus.FAILED,
+            CallImportRow.status.in_(
+                (CallImportRowStatus.FAILED, CallImportRowStatus.PENDING)
+            ),
         )
         .order_by(CallImportRow.row_index.asc())
         .all()
     )
-    if not failed_rows:
+    retryable_rows = [
+        row
+        for row in candidate_rows
+        if row.status == CallImportRowStatus.FAILED
+        or _is_stuck_pending_import_row(row)
+    ]
+    if not retryable_rows:
         return CallImportRetryFailedRowsResponse(
             requeued=0,
             enqueue_failed=0,
@@ -3192,18 +3573,20 @@ async def retry_failed_call_import_rows(
 
     # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
     # progress" immediately even if the worker queue is backlogged.
-    for row in failed_rows:
+    for row in retryable_rows:
         row.status = CallImportRowStatus.PENDING
         row.error_message = None
         row.celery_task_id = None
+        row.attempts = 0
 
     db.flush()
     _recompute_call_import_counters(db, call_import)
+    stamp_call_import_actor(call_import, principal)
     db.commit()
 
     try:
         schedule_fair_import_dispatch(max_workspace_turns=999)
-        requeued = len(failed_rows)
+        requeued = len(retryable_rows)
         enqueue_failed = 0
         skipped = 0
     except Exception as exc:  # noqa: BLE001
@@ -3212,9 +3595,9 @@ async def retry_failed_call_import_rows(
             call_import.id,
         )
         requeued = 0
-        enqueue_failed = len(failed_rows)
+        enqueue_failed = len(retryable_rows)
         skipped = 0
-        for row in failed_rows:
+        for row in retryable_rows:
             db.refresh(row)
             if row.status != CallImportRowStatus.PENDING:
                 skipped += 1
@@ -3244,6 +3627,7 @@ async def bulk_delete_call_import_rows(
     payload: CallImportRowBulkDelete,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRowBulkDeleteResponse:
     """Delete multiple ``CallImportRow`` rows in one request.
@@ -3275,6 +3659,9 @@ async def bulk_delete_call_import_rows(
     from app.workers.tasks.call_import_bulk_ops import bulk_delete_call_import_rows_task
 
     row_id_strs = [str(rid) for rid in payload.row_ids]
+
+    stamp_call_import_actor(call_import, principal)
+    db.commit()
 
     bulk_delete_call_import_rows_task.delay(
         str(call_import_id),
@@ -3321,6 +3708,7 @@ async def transcribe_call_import(
     payload: CallImportTranscribeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportTranscribeResponse:
     """Fan out diarization tasks for many rows in a single call.
@@ -3349,6 +3737,9 @@ async def transcribe_call_import(
 
     from app.workers.tasks.call_import_bulk_ops import bulk_diarize_call_import_task
 
+    stamp_call_import_actor(call_import, principal)
+    db.commit()
+
     bulk_diarize_call_import_task.delay(
         str(call_import_id),
         str(organization_id),
@@ -3376,6 +3767,7 @@ async def transcribe_call_import_row(
     payload: CallImportTranscribeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportTranscribeResponse:
     """Diarize / transcribe a single row.
@@ -3415,6 +3807,9 @@ async def transcribe_call_import_row(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    stamp_call_import_actor(call_import, principal)
+    db.commit()
 
     return CallImportTranscribeResponse(
         queued=result.queued,
@@ -3531,6 +3926,7 @@ async def cancel_call_import_row_diarisation(
     row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRowResponse:
     """Abort an in-flight (or queued) diarisation for a single row.
@@ -3577,6 +3973,8 @@ async def cancel_call_import_row_diarisation(
     try:
         _apply_diarisation_cancel([row])
         row_db.commit()
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
         row_db.refresh(row)
         return CallImportRowResponse.model_validate(row)
     finally:
@@ -3594,6 +3992,7 @@ async def cancel_call_import_diarisation(
     payload: Optional[CallImportCancelDiarisationRequest] = None,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportCancelDiarisationResponse:
     """Abort in-flight diarisation for many rows in a single call.
@@ -3652,6 +4051,7 @@ async def cancel_call_import_diarisation(
         skipped_missing = 0
 
     cancelled, skipped = _apply_diarisation_cancel(rows)
+    stamp_call_import_actor(call_import, principal)
     db.commit()
     return CallImportCancelDiarisationResponse(
         cancelled=cancelled,
@@ -3702,6 +4102,7 @@ async def toggle_call_import_row_speaker_swap(
     row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportRowResponse:
     """Flip the user <-> agent mapping on a diarised row.
@@ -3766,6 +4167,8 @@ async def toggle_call_import_row_speaker_swap(
             _render_diarised_segments_text(segments, swap=new_swap) or None
         )
         row_db.commit()
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
         row_db.refresh(row)
         return CallImportRowResponse.model_validate(row)
     finally:

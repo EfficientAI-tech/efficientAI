@@ -25,6 +25,7 @@ import {
   Mic,
   Bot,
   Activity,
+  PieChart,
   Bell,
   History,
   Key,
@@ -100,6 +101,13 @@ const navigationSections: NavSection[] = [
     ],
   },
   {
+    title: 'Usage',
+    icon: PieChart,
+    items: [
+      { name: 'Overview', href: '/usage', icon: PieChart },
+    ],
+  },
+  {
     title: 'Alerting',
     icon: Bell,
     items: [
@@ -144,6 +152,15 @@ function getFlattenedNavItems(): NavItem[] {
   }
   items.push(...bottomNavigation)
   return items
+}
+
+function isNavItemActive(href: string, pathname: string): boolean {
+  if (href === '/metrics-management') {
+    return (
+      pathname === href || pathname.startsWith('/metrics-management/')
+    )
+  }
+  return pathname === href
 }
 
 export default function Layout() {
@@ -436,9 +453,6 @@ function SidebarContent({
   )
 
   const toggleSection = (title: string) => {
-    if (title === 'Playground') {
-      return
-    }
     const newExpanded = new Set(expandedSections)
     if (newExpanded.has(title)) {
       newExpanded.delete(title)
@@ -475,7 +489,7 @@ function SidebarContent({
               <SidebarIconLink
                 key={item.href}
                 item={item}
-                isActive={location.pathname === item.href}
+                isActive={isNavItemActive(item.href, location.pathname)}
                 isGated={Boolean(item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature))}
               />
             ))}
@@ -526,7 +540,7 @@ function SidebarContent({
         <nav className="flex-1 px-2 py-4 space-y-1">
           {/* Other Navigation */}
           {otherNavigation.map((item) => {
-            const isActive = location.pathname === item.href
+            const isActive = isNavItemActive(item.href, location.pathname)
             const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
             return (
               <Link
@@ -552,7 +566,7 @@ function SidebarContent({
           {/* Navigation Sections */}
           <div className="mt-4 space-y-1">
             {navigationSections.map((section) => {
-              const isExpanded = section.title === 'Playground' || expandedSections.has(section.title)
+              const isExpanded = expandedSections.has(section.title)
               const isActive = isSectionActive(section)
               const SectionIcon = section.icon
 
@@ -581,7 +595,7 @@ function SidebarContent({
                   {isExpanded && (
                     <div className="ml-6 mt-1 space-y-1">
                       {section.items.map((item) => {
-                        const isItemActive = location.pathname === item.href
+                        const isItemActive = isNavItemActive(item.href, location.pathname)
                         const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
                         return (
                           <Link
@@ -614,7 +628,7 @@ function SidebarContent({
         </nav>
         <nav className="mt-5 px-2 space-y-1 border-t border-gray-200 pt-4">
           {bottomNavigation.map((item) => {
-            const isActive = location.pathname === item.href
+            const isActive = isNavItemActive(item.href, location.pathname)
             return (
               <Link
                 key={item.name}

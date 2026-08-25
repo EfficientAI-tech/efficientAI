@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
-from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording
+from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording, Agent, Integration
 import random
 from datetime import datetime
 from app.models.schemas import (
@@ -32,6 +32,32 @@ from app.services.evaluators.evaluator_result_status import (
 )
 
 router = APIRouter(prefix="/evaluator-results", tags=["evaluator-results"])
+
+
+def _lookup_evaluator_result(
+    db: Session,
+    id: str,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> EvaluatorResult | None:
+    """Resolve an evaluator result by UUID or 6-digit result_id."""
+    try:
+        result_uuid = UUID(id)
+        return db.query(EvaluatorResult).filter(
+            and_(
+                EvaluatorResult.id == result_uuid,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
+        ).first()
+    except ValueError:
+        return db.query(EvaluatorResult).filter(
+            and_(
+                EvaluatorResult.result_id == id,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
+        ).first()
 
 
 def _detach_call_recordings_from_evaluator_results(
@@ -617,6 +643,107 @@ def get_evaluator_result_metrics(
     }
 
 
+@router.get("/{id}/audio")
+async def stream_evaluator_result_audio(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Stream evaluator result audio from S3 or proxy auth-gated provider URLs."""
+    from io import BytesIO
+
+    import requests as http_requests
+    from fastapi.responses import RedirectResponse, StreamingResponse
+
+    from app.core.encryption import decrypt_api_key
+    from app.services.storage.s3_service import s3_service
+    from app.services.voice_providers.vapi_recording import is_presigned_storage_url
+    from app.workers.tasks.process_evaluator_result import _extract_audio_url
+
+    del api_key
+
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    s3_key = result.audio_s3_key
+    if not s3_key and isinstance(result.call_data, dict):
+        s3_key = result.call_data.get("recording_s3_key")
+
+    if s3_key:
+        if not s3_service.is_enabled():
+            raise HTTPException(status_code=400, detail="S3 storage is not configured")
+        try:
+            audio_bytes = s3_service.download_file_by_key(s3_key)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail="Audio file not found in storage") from exc
+
+        extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "wav"
+        content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
+        content_type = content_type_map.get(extension, "audio/wav")
+        return StreamingResponse(
+            BytesIO(audio_bytes),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="result_{result.result_id}.{extension}"',
+            },
+        )
+
+    call_data = result.call_data if isinstance(result.call_data, dict) else {}
+    platform = (result.provider_platform or "").lower()
+    audio_url = _extract_audio_url(call_data, platform)
+    if not audio_url:
+        raise HTTPException(status_code=404, detail="No recording available")
+
+    if platform in {"retell", "smallest"}:
+        return RedirectResponse(audio_url)
+
+    if platform == "vapi" and is_presigned_storage_url(audio_url):
+        return RedirectResponse(audio_url)
+
+    decrypted_key = None
+    agent = db.query(Agent).filter(Agent.id == result.agent_id).first() if result.agent_id else None
+    if agent and agent.voice_ai_integration_id:
+        integration = db.query(Integration).filter(
+            Integration.id == agent.voice_ai_integration_id,
+            Integration.organization_id == organization_id,
+        ).first()
+        if integration:
+            try:
+                decrypted_key = decrypt_api_key(integration.api_key)
+            except Exception:
+                decrypted_key = None
+
+    headers = None
+    if platform == "elevenlabs" and decrypted_key:
+        headers = {"xi-api-key": decrypted_key}
+    elif platform == "vapi" and decrypted_key:
+        headers = {"Authorization": f"Bearer {decrypted_key}"}
+    elif platform == "vapi":
+        return RedirectResponse(audio_url)
+
+    if platform == "elevenlabs" and not headers:
+        raise HTTPException(status_code=400, detail="Agent integration not found for ElevenLabs audio")
+
+    upstream = http_requests.get(audio_url, headers=headers, stream=True, timeout=60)
+    if upstream.status_code != 200:
+        raise HTTPException(
+            status_code=upstream.status_code,
+            detail=f"Provider audio fetch failed ({upstream.status_code})",
+        )
+
+    content_type = upstream.headers.get("content-type", "audio/mpeg")
+    return StreamingResponse(
+        upstream.iter_content(chunk_size=8192),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="result_{result.result_id}.mp3"',
+        },
+    )
+
+
 @router.post("", response_model=EvaluatorResultResponse, status_code=status.HTTP_201_CREATED)
 def create_evaluator_result_manual(
     result_data: EvaluatorResultCreateManual,
@@ -791,20 +918,19 @@ def re_evaluate_result(
                     if resp.status_code == 200:
                         audio_bytes = resp.content
             elif platform == "vapi":
-                audio_url = (
-                    call_data.get("recordingUrl")
-                    or call_data.get("stereoRecordingUrl")
-                    or artifact.get("recordingUrl")
-                    or artifact.get("stereoRecordingUrl")
-                    or mono_recording.get("combinedUrl")
-                    or recording_urls.get("combined_url")
-                    or recording_urls.get("stereo_url")
-                    or call_data.get("recordingUrl")
-                    or provider_payload.get("recordingUrl")
-                    or provider_payload.get("stereoRecordingUrl")
+                from app.services.voice_providers.vapi_recording import (
+                    extract_vapi_recording_url,
+                    is_presigned_storage_url,
                 )
+
+                audio_url = extract_vapi_recording_url(call_data)
                 if audio_url:
-                    resp = _http.get(audio_url, timeout=120)
+                    headers = (
+                        None
+                        if is_presigned_storage_url(audio_url)
+                        else ({"Authorization": f"Bearer {decrypted_key}"} if decrypted_key else None)
+                    )
+                    resp = _http.get(audio_url, headers=headers, timeout=120)
                     if resp.status_code == 200:
                         audio_bytes = resp.content
             elif platform == "smallest":

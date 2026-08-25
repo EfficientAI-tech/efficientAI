@@ -587,6 +587,7 @@ async def websocket_endpoint(
                     websocket,
                     system_instruction,
                     str(organization_id),
+                    str(workspace_id) if workspace_id else None,
                     agent_id,
                     persona_id,
                     scenario_id,

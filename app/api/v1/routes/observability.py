@@ -199,6 +199,15 @@ def _serialize_call_recording(
     payload: Dict[str, Any] = {
         "id": str(call_recording.id),
         "call_short_id": call_recording.call_short_id,
+        "display_name": (
+            agent.name
+            if agent and agent.name
+            else (
+                f"{call_recording.provider_platform} call"
+                if call_recording.provider_platform
+                else call_recording.call_short_id
+            )
+        ),
         "status": call_recording.status.value if call_recording.status else None,
         "call_event": call_event,
         "is_live": call_event in live_events,

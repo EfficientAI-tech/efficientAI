@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, update
+from sqlalchemy import case, func, or_, update
 from sqlalchemy.orm import Session
 
 from app.models.database import (
@@ -16,6 +16,7 @@ from app.models.database import (
     Metric,
 )
 from app.workers.tasks.helpers.constants import AUDIO_ONLY_METRIC_NAMES
+from app.workers.tasks.helpers.llm_evaluation import MetricPromptGroup
 from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
@@ -51,6 +52,11 @@ def was_cancelled_externally(db, eval_row: CallImportEvaluationRow) -> bool:
         db.refresh(eval_row, attribute_names=["status", "error_message"])
     except Exception:  # noqa: BLE001
         return False
+    return is_eval_row_user_cancelled(eval_row)
+
+
+def is_eval_row_user_cancelled(eval_row: CallImportEvaluationRow) -> bool:
+    """True when the row was aborted by the operator."""
     return (
         (eval_row.status or "").lower() == "failed"
         and (eval_row.error_message or "") == EVAL_CANCELLED_BY_USER_ERROR
@@ -214,6 +220,145 @@ def build_parent_groups(
     return parents_by_id, children_by_parent, standalone
 
 
+LlmConfigKey = tuple[str | None, str | None, str | None, str | None]
+
+
+def _llm_config_key(cfg: dict | None) -> str | None:
+    import json
+
+    if not cfg:
+        return None
+    return json.dumps(cfg, sort_keys=True, default=str)
+
+
+def resolve_metric_llm_config(
+    metric: Metric,
+    *,
+    overrides: dict,
+    run_provider: str | None,
+    run_model: str | None,
+    run_llm_config: dict | None,
+    run_credential_id: str | None,
+) -> LlmConfigKey:
+    override = overrides.get(str(metric.id)) or {}
+    provider = override.get("provider") or run_provider or None
+    model = override.get("model") or run_model or None
+    llm_cfg = override.get("llm_config") or run_llm_config
+    credential_id = override.get("credential_id") or run_credential_id
+    return (provider, model, _llm_config_key(llm_cfg), credential_id)
+
+
+def build_metric_prompt_groups(
+    db,
+    metrics: list[Metric],
+    *,
+    running_discovered_by_parent: dict[UUID, list] | None = None,
+) -> list[MetricPromptGroup]:
+    parents_by_id, children_by_parent, standalone = build_parent_groups(db, metrics)
+    discovered_map = running_discovered_by_parent or {}
+    groups: list[MetricPromptGroup] = []
+    if standalone:
+        groups.append(MetricPromptGroup(None, standalone, None))
+    for parent_id, children in children_by_parent.items():
+        parent_metric = parents_by_id.get(parent_id)
+        if parent_metric is None:
+            groups.append(MetricPromptGroup(None, children, None))
+        else:
+            groups.append(
+                MetricPromptGroup(
+                    parent_metric,
+                    children,
+                    discovered_map.get(parent_id),
+                )
+            )
+    return groups
+
+
+def build_llm_config_buckets(
+    db,
+    metrics: list[Metric],
+    *,
+    overrides: dict,
+    run_provider: str | None,
+    run_model: str | None,
+    run_llm_config: dict | None,
+    run_credential_id: str | None,
+    running_discovered_by_parent: dict[UUID, list] | None = None,
+) -> dict[LlmConfigKey, list[MetricPromptGroup]]:
+    """Group metrics by LLM config; each bucket holds prompt groups for one call."""
+    buckets: dict[LlmConfigKey, list[Metric]] = {}
+    for metric in metrics:
+        key = resolve_metric_llm_config(
+            metric,
+            overrides=overrides,
+            run_provider=run_provider,
+            run_model=run_model,
+            run_llm_config=run_llm_config,
+            run_credential_id=run_credential_id,
+        )
+        buckets.setdefault(key, []).append(metric)
+
+    return {
+        config: build_metric_prompt_groups(
+            db,
+            bucket_metrics,
+            running_discovered_by_parent=running_discovered_by_parent,
+        )
+        for config, bucket_metrics in buckets.items()
+    }
+
+
+def bucket_needs_comparison_pair(
+    groups: list[MetricPromptGroup],
+    *,
+    production_transcript: str,
+    diarised_transcript: str,
+    comparison_metric_ids: set[str],
+) -> bool:
+    if not production_transcript or not diarised_transcript:
+        return False
+    for group in groups:
+        if group.parent_metric is not None and metric_text_references_production(
+            group.parent_metric
+        ):
+            return True
+        for metric in group.metrics:
+            if str(metric.id) in comparison_metric_ids:
+                return True
+            if metric_text_references_production(
+                metric, parent=group.parent_metric
+            ):
+                return True
+    return False
+
+
+def count_distinct_llm_configs_for_metrics(
+    metrics: list[Metric],
+    *,
+    overrides: dict,
+    run_provider: str | None,
+    run_model: str | None,
+    run_llm_config: dict | None,
+    run_credential_id: str | None,
+) -> int:
+    """Expected LLM calls per row (one per distinct LLM config among metrics)."""
+    configs: set[LlmConfigKey] = set()
+    for metric in metrics:
+        if (metric.name or "").strip().lower() in AUDIO_ONLY_METRIC_NAMES:
+            continue
+        configs.add(
+            resolve_metric_llm_config(
+                metric,
+                overrides=overrides,
+                run_provider=run_provider,
+                run_model=run_model,
+                run_llm_config=run_llm_config,
+                run_credential_id=run_credential_id,
+            )
+        )
+    return len(configs)
+
+
 _TERMINAL_ROW_STATUSES = frozenset({"completed", "failed"})
 
 
@@ -323,6 +468,18 @@ def _apply_parent_status_from_counters(
     completed = int(evaluation.completed_rows or 0)
     failed = int(evaluation.failed_rows or 0)
     in_progress = total - completed - failed
+
+    if (evaluation.status or "").strip().lower() == "cancelled":
+        if in_progress > 0:
+            return
+        evaluation.finished_at = now_utc()
+        if total == 0 or failed == 0:
+            evaluation.status = "completed"
+        elif completed == 0:
+            evaluation.status = "failed"
+        else:
+            evaluation.status = "partial"
+        return
 
     if in_progress > 0:
         evaluation.status = "running"
@@ -489,6 +646,7 @@ def load_enabled_metrics(
             Metric.organization_id == evaluation.organization_id,
             Metric.id.in_(metric_ids),
             Metric.enabled.is_(True),
+            or_(Metric.lifecycle.is_(None), Metric.lifecycle == "active"),
         )
         .all()
     )

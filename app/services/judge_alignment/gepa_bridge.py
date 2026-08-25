@@ -219,6 +219,31 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
     if not evaluator:
         raise RuntimeError("Evaluator vanished between dispatch and execution")
 
+    from app.services.usage.context import (
+        reset_usage_context,
+        set_usage_context,
+        usage_context_for_prompt_optimization_run,
+    )
+
+    usage_token = set_usage_context(usage_context_for_prompt_optimization_run(run))
+    try:
+        return _execute_judge_gepa_with_context(
+            run=run,
+            cfg=cfg,
+            evaluator=evaluator,
+            db=db,
+        )
+    finally:
+        reset_usage_context(usage_token)
+
+
+def _execute_judge_gepa_with_context(
+    *,
+    run: PromptOptimizationRun,
+    cfg: Dict[str, Any],
+    evaluator: Evaluator,
+    db: Session,
+) -> Dict[str, Any]:
     dev_ids: List[str] = cfg.get("dev_sample_ids", [])
     if not dev_ids:
         raise RuntimeError("Optimisation run has no dev_sample_ids in config")
@@ -370,19 +395,27 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
         resp = litellm_completion(**reflection_kwargs, credential=credential_ctx)
         return resp.choices[0].message.content
 
+    from app.services.ai.llm_gateway import litellm_batch_completion_recording
+
     run.status = PromptOptimizationStatus.RUNNING.value
     db.commit()
 
     try:
-        result = gepa_optimize(
-            seed_candidate={"system_prompt": evaluator.custom_prompt},
-            trainset=trainset,
-            adapter=adapter,
-            reflection_lm=reflection_lm,
-            max_metric_calls=int(cfg.get("max_metric_calls", 20)),
-            reflection_minibatch_size=1,
-            candidate_selection_strategy="pareto",
-        )
+        with litellm_batch_completion_recording(
+            organization_id=run.organization_id,
+            db=db,
+            model=lm_identifier,
+            credential=credential_ctx,
+        ):
+            result = gepa_optimize(
+                seed_candidate={"system_prompt": evaluator.custom_prompt},
+                trainset=trainset,
+                adapter=adapter,
+                reflection_lm=reflection_lm,
+                max_metric_calls=int(cfg.get("max_metric_calls", 20)),
+                reflection_minibatch_size=1,
+                candidate_selection_strategy="pareto",
+            )
     except Exception as exc:
         run.status = PromptOptimizationStatus.FAILED.value
         run.error_message = str(exc)

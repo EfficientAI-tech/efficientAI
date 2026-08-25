@@ -391,6 +391,8 @@ def _persist_diarization_failure(
 def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     """STT / S3 / LLM diarisation without a long-lived DB session."""
     from app.models.enums import ModelProvider
+    from app.services.usage.call_import_context import call_import_row_usage_context
+    from app.services.usage.context import llm_usage_context
     from app.workers.tasks.helpers.llm_diarisation import (
         LLMDiarisationError,
         diarize_audio_with_llm,
@@ -406,6 +408,52 @@ def _run_diarization_pipeline(ctx: dict[str, Any]) -> dict[str, Any]:
     llm_credential_uuid = ctx["llm_credential_uuid"]
     effective_prompt = ctx["effective_prompt"]
 
+    evaluation_id = ctx.get("evaluation_id")
+    call_import_id = ctx.get("call_import_id")
+    if not call_import_id:
+        raise ValueError("call_import_id missing from transcribe pipeline context")
+
+    with llm_usage_context(
+        call_import_row_usage_context(
+            organization_id=organization_id,
+            workspace_id=ctx.get("workspace_id"),
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+        )
+    ):
+        return _run_diarization_pipeline_inner(
+            ctx,
+            row_id=row_id,
+            normalised_mode=normalised_mode,
+            recording_key=recording_key,
+            organization_id=organization_id,
+            llm_provider_value=llm_provider_value,
+            llm_model_value=llm_model_value,
+            llm_credential_uuid=llm_credential_uuid,
+            effective_prompt=effective_prompt,
+            ModelProvider=ModelProvider,
+            LLMDiarisationError=LLMDiarisationError,
+            diarize_audio_with_llm=diarize_audio_with_llm,
+            diarize_transcript_with_llm=diarize_transcript_with_llm,
+        )
+
+
+def _run_diarization_pipeline_inner(
+    ctx: dict[str, Any],
+    *,
+    row_id,
+    normalised_mode,
+    recording_key,
+    organization_id,
+    llm_provider_value,
+    llm_model_value,
+    llm_credential_uuid,
+    effective_prompt,
+    ModelProvider,
+    LLMDiarisationError,
+    diarize_audio_with_llm,
+    diarize_transcript_with_llm,
+) -> dict[str, Any]:
     plain_text: Optional[str] = None
     raw_turns: Optional[List[Dict[str, Any]]] = None
 
@@ -780,16 +828,28 @@ def transcribe_call_import_row_task(
         )
 
         row_db = catalog_db = None
+        eval_row_for_chain = None
         try:
             if run_eval_row_id:
                 try:
                     _er_db, _cat, eval_row_for_chain, _, _ = (
                         locate_call_import_evaluation_row(UUID(run_eval_row_id))
                     )
+                    from app.workers.tasks.evaluate_call_import_row_core import (
+                        was_cancelled_externally,
+                    )
+
+                    if was_cancelled_externally(_er_db, eval_row_for_chain):
+                        close_row_sessions(_er_db, _cat)
+                        return {
+                            "status": "skipped",
+                            "reason": "eval_cancelled_by_user",
+                        }
                     evaluation_id_for_dispatch = str(
                         eval_row_for_chain.evaluation_id
                     )
                     close_row_sessions(_er_db, _cat)
+                    eval_row_for_chain = None
                 except LookupError:
                     pass
 
@@ -911,6 +971,16 @@ def transcribe_call_import_row_task(
                 "normalised_mode": normalised_mode,
                 "recording_key": recording_key,
                 "organization_id": row.organization_id,
+                "workspace_id": getattr(row, "workspace_id", None),
+                "call_import_id": row.call_import_id,
+                "evaluation_id": (
+                    UUID(evaluation_id_for_dispatch)
+                    if evaluation_id_for_dispatch
+                    else None
+                ),
+                "evaluation_row_id": (
+                    UUID(run_eval_row_id) if run_eval_row_id else None
+                ),
                 "stt_provider": provider_enum.value if provider_enum else None,
                 "stt_model": stt_model,
                 "credential_uuid": credential_uuid,

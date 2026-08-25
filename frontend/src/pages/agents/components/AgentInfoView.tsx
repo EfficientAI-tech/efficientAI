@@ -196,7 +196,7 @@ export default function AgentInfoView({
               >
                 <ParamSlider
                   label="End call after silence"
-                  helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable.`}
+                  helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable. Use Edit to change.`}
                   min={0}
                   max={600}
                   step={1}

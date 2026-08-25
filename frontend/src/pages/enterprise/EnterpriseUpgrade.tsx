@@ -3,9 +3,9 @@ import { useLicenseStore } from '../../store/licenseStore'
 
 const FALLBACK_TITLE = 'Enterprise Feature'
 
-export default function EnterpriseUpgrade({ feature }: { feature: string }) {
+export default function EnterpriseUpgrade({ feature }: { feature?: string }) {
   const getFeatureMeta = useLicenseStore((state) => state.getFeatureMeta)
-  const title = getFeatureMeta(feature)?.title ?? FALLBACK_TITLE
+  const title = feature ? (getFeatureMeta(feature)?.title ?? FALLBACK_TITLE) : 'Extended Usage History'
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">
@@ -21,7 +21,9 @@ export default function EnterpriseUpgrade({ feature }: { feature: string }) {
         </span>
 
         <p className="text-gray-600 mb-8 leading-relaxed">
-          This feature is available with an EfficientAI Enterprise license.
+          {feature
+            ? 'This feature is available with an EfficientAI Enterprise license.'
+            : 'Extended usage history and pricing tools require a valid EfficientAI Enterprise license with any enabled feature.'}
         </p>
 
         <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 mb-8 text-left">

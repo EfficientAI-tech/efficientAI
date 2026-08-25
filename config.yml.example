@@ -6,6 +6,10 @@ app:
   version: "0.1.0"
   debug: true
   secret_key: "your-secret-key-here-change-in-production"
+  # Public URL where users open the app (used for organization invite links).
+  # Local: http://localhost:8000 when the API serves the built SPA on port 8000.
+  # Production: https://your-company.efficientai.com (or your custom domain).
+  frontend_base_url: "http://localhost:8000"
 
 # Server Settings
 server:
@@ -164,6 +168,9 @@ auth:
     refresh_token_ttl_days: 7
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
+    # When enabled, signup requires a valid reference code from the platform admin API.
+    gated_signup:
+      enabled: false
 
   # External OIDC (enterprise): bring your own IdP. Works with any
   # OIDC-compliant provider. See README.md > Authentication & Deployment

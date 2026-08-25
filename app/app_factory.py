@@ -19,6 +19,7 @@ from app.core.migrations import check_migrations_status, ensure_migrations_direc
 from app.core.operational_access_middleware import OperationalAccessMiddleware
 from app.core.rbac_middleware import ReaderReadOnlyMiddleware
 from app.core.security_headers_middleware import SecurityHeadersMiddleware
+from app.core.usage_context_middleware import LLMUsageContextMiddleware
 from app.database import init_db
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,7 @@ def _add_common_middleware(app: FastAPI) -> None:
     if _includes_http_routes():
         app.add_middleware(MigrationCheckMiddleware)
         app.add_middleware(ReaderReadOnlyMiddleware)
+        app.add_middleware(LLMUsageContextMiddleware)
 
     if settings.OBSERVABILITY_ENABLED and settings.LOKI_ENABLED and settings.LOKI_MULTI_TENANT:
         from app.core.observability_middleware import OrgLoggingMiddleware

@@ -11,7 +11,7 @@ import math
 import re
 import statistics
 from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from datetime import date, datetime, timedelta, timezone
 
@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, func, or_, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -32,12 +33,20 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
+from app.services.call_imports.audit import (
+    actor_emails_for_evaluation,
+    emails_for_user_ids,
+    stamp_call_import_actor,
+    stamp_evaluation_actor,
+    user_ids_from_evaluations,
+)
 from app.services.workspace_rbac import resolve_workspace_capabilities
 from app.models.database import (
     AIProvider,
     CallImport,
     CallImportEvaluation,
     CallImportEvaluationReportSnapshot,
+    CallImportEvaluationPdfReport,
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
@@ -91,6 +100,15 @@ from app.models.schemas import (
 )
 from app.services.reporting.call_import_evaluation_pdf_report import (
     call_import_evaluation_pdf_report_service,
+)
+from app.services.reporting.call_import_pdf_report_storage import (
+    build_pdf_report_s3_key,
+    compute_pdf_report_cache_fingerprint,
+    compute_pdf_report_config_fingerprint,
+    compute_pdf_report_content_fingerprint,
+    config_summary_from_report_config,
+    find_cached_pdf_report,
+    presigned_urls_for_pdf_report,
 )
 from app.services.call_import_metric_clusters import (
     METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
@@ -150,6 +168,35 @@ class CallImportEvaluationPdfReportRequest(BaseModel):
         if not cleaned:
             raise ValueError("Vendor name is required.")
         return cleaned
+
+
+class CallImportEvaluationPdfReportResponse(BaseModel):
+    id: str
+    filename: str
+    preview_url: Optional[str] = None
+    download_url: Optional[str] = None
+    created_at: datetime
+    created_by: Optional[str] = None
+    report_type: str
+    vendor_name: str
+    config_summary: Optional[str] = None
+    storage_available: bool = True
+    cache_hit: bool = False
+
+
+class CallImportEvaluationPdfReportListItem(BaseModel):
+    id: str
+    filename: Optional[str] = None
+    vendor_name: str
+    report_type: str
+    created_by: Optional[str] = None
+    created_at: datetime
+    config_summary: Optional[str] = None
+    cache_fingerprint: Optional[str] = None
+
+
+class CallImportEvaluationPdfReportListResponse(BaseModel):
+    items: List[CallImportEvaluationPdfReportListItem]
 
 
 class CallImportEvaluationBaselineCandidate(BaseModel):
@@ -464,6 +511,7 @@ def _serialize_eval(
     row: CallImportEvaluation,
     *,
     sibling_evaluation_ids: Optional[List[UUID]] = None,
+    user_emails: Optional[Dict[UUID, str]] = None,
 ) -> CallImportEvaluationResponse:
     selected_ids = _serialize_selected_metric_ids(row.selected_metric_ids)
 
@@ -510,6 +558,33 @@ def _serialize_eval(
         min(ui_completed_raw, total) if total else ui_completed_raw
     )
     ui_failed = min(ui_failed_raw, total) if total else ui_failed_raw
+
+    if user_emails is None:
+        user_emails = emails_for_user_ids(db, user_ids_from_evaluations([row]))
+    created_email, updated_email = actor_emails_for_evaluation(row, user_emails)
+
+    from app.workers.tasks.evaluate_call_import_row_core import (
+        count_distinct_llm_configs_for_metrics,
+    )
+
+    selected_set = set(selected_ids)
+    scoring_metrics = [m for m in metrics if m.id in selected_set]
+    expected_llm_calls_per_row = count_distinct_llm_configs_for_metrics(
+        scoring_metrics,
+        overrides=(
+            row.metric_llm_overrides
+            if isinstance(row.metric_llm_overrides, dict)
+            else {}
+        ),
+        run_provider=(row.llm_provider or "").strip() or None,
+        run_model=(row.llm_model or "").strip() or None,
+        run_llm_config=(
+            row.llm_config if isinstance(getattr(row, "llm_config", None), dict) else None
+        ),
+        run_credential_id=(
+            str(row.llm_credential_id) if row.llm_credential_id else None
+        ),
+    )
 
     return CallImportEvaluationResponse(
         id=row.id,
@@ -566,10 +641,13 @@ def _serialize_eval(
         ),
         transcript_source=(row.transcript_source or "diarised"),
         sibling_evaluation_ids=list(sibling_evaluation_ids or []),
+        expected_llm_calls_per_row=expected_llm_calls_per_row,
         started_at=row.started_at,
         finished_at=row.finished_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        created_by_email=created_email,
+        last_updated_by_email=updated_email,
         tldr_summary=_tldr_summary_payload(row),
         user_insights=_user_insights_payload(row),
         metric_clusters=_metric_clusters_payload(row),
@@ -626,6 +704,7 @@ async def create_call_import_evaluation(
     payload: CallImportEvaluationCreate,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationResponse:
     del api_key
@@ -655,6 +734,20 @@ async def create_call_import_evaluation(
                 "These metric ids do not exist in your organization: "
                 f"{', '.join(str(mid) for mid in unknown_ids)}. "
                 "Refresh the metrics list and try again."
+            ),
+        )
+    draft_metrics = [
+        metric
+        for metric in org_metrics
+        if (getattr(metric, "lifecycle", None) or "active") == "draft"
+    ]
+    if draft_metrics:
+        names = ", ".join(metric.name for metric in draft_metrics)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Draft metrics cannot be used in call import evaluations: {names}. "
+                "Promote them in Metrics Studio first."
             ),
         )
     # Parents themselves are containers, not scored rows, so a disabled
@@ -945,9 +1038,38 @@ async def create_call_import_evaluation(
     from app.models.enums import CallImportParameterType, CallImportStatus
     from app.services.call_imports.bulk_ops import (
         count_all_source_rows,
-        count_completed_source_rows,
         count_source_rows_with_production_transcript,
     )
+
+    if use_diarised:
+        from app.api.v1.routes.call_imports import _is_manual_audio_call_import
+
+        if not _is_manual_audio_call_import(call_import):
+            if call_import.schema_id:
+                from app.api.v1.routes.call_imports import (
+                    _resolve_schema,
+                    _validate_diarised_eval_recording_ready,
+                )
+
+                diarised_schema = _resolve_schema(
+                    db, organization_id, call_import.workspace_id, call_import.schema_id
+                )
+                _validate_diarised_eval_recording_ready(
+                    list(diarised_schema.parameters),
+                    dict(call_import.parameter_mapping or {}),
+                )
+            else:
+                legacy_recording_column = (
+                    (call_import.column_mapping or {}).get("recording_url") or ""
+                ).strip()
+                if not legacy_recording_column:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Diarize then evaluate requires a recording URL column "
+                            "to be mapped."
+                        ),
+                    )
 
     starting_from_mapped = False
     if call_import.status == CallImportStatus.MAPPED:
@@ -969,6 +1091,7 @@ async def create_call_import_evaluation(
             _resolve_schema,
             _resolve_telephony_integration,
             _validate_direct_url_import_ready,
+            _validate_telephony_credentials_live,
         )
 
         workspace_id = call_import.workspace_id
@@ -998,6 +1121,7 @@ async def create_call_import_evaluation(
                 payload.telephony_integration_id,
                 payload.provider or "",
             )
+            _validate_telephony_credentials_live(db, organization_id, integration)
         else:
             _validate_direct_url_import_ready(
                 parameters, dict(call_import.parameter_mapping or {})
@@ -1018,18 +1142,34 @@ async def create_call_import_evaluation(
         call_import.failed_rows = 0
         call_import.error_message = None
         call_import.status = CallImportStatus.PROCESSING
+        stamp_call_import_actor(call_import, principal)
         db.commit()
         db.refresh(call_import)
         starting_from_mapped = True
 
+    all_source_row_count = count_all_source_rows(db, call_import.id)
+
     if use_diarised:
-        total_row_count = count_completed_source_rows(db, call_import.id)
+        # Diarized runs materialize every import row; recording fetch may
+        # still be pending when switching from a production eval-primary run.
+        total_row_count = all_source_row_count
     else:
         # Production runs score CSV text — rows need not wait for
         # recording fetch to finish before they are evaluable.
         total_row_count = count_source_rows_with_production_transcript(
             db, call_import.id
         )
+
+    if (
+        use_diarised
+        and not starting_from_mapped
+        and all_source_row_count > 0
+        and call_import.status != CallImportStatus.DELETING
+    ):
+        call_import.status = CallImportStatus.PROCESSING
+        stamp_call_import_actor(call_import, principal)
+        db.commit()
+        db.refresh(call_import)
 
     requested_sources: List[str] = list(payload.transcript_sources)
 
@@ -1095,6 +1235,7 @@ async def create_call_import_evaluation(
                 getattr(payload, "discover_new_metrics", False)
             ),
         )
+        stamp_evaluation_actor(evaluation, principal, creating=True)
         db.add(evaluation)
         db.flush()
         created_evaluations.append(evaluation)
@@ -1106,7 +1247,7 @@ async def create_call_import_evaluation(
     primary_evaluation = created_evaluations[0]
     sibling_ids = [e.id for e in created_evaluations[1:]]
 
-    if not total_row_count and not starting_from_mapped:
+    if not all_source_row_count and not starting_from_mapped:
         for evaluation in created_evaluations:
             evaluation.status = "completed"
         db.commit()
@@ -1170,8 +1311,9 @@ async def list_call_import_evaluations(
         .order_by(desc(CallImportEvaluation.created_at))
         .all()
     )
+    email_map = emails_for_user_ids(db, user_ids_from_evaluations(rows))
     return CallImportEvaluationListResponse(
-        items=[_serialize_eval(db, row) for row in rows],
+        items=[_serialize_eval(db, row, user_emails=email_map) for row in rows],
         total=len(rows),
     )
 
@@ -2094,6 +2236,57 @@ def _report_filename_slug(value: str) -> str:
     return slug or "client"
 
 
+def _pdf_report_actor(principal: Principal) -> tuple[Optional[str], Optional[UUID]]:
+    created_by = principal.email
+    if not created_by and principal.user_id:
+        created_by = str(principal.user_id)
+    return created_by, principal.user_id
+
+
+def _pdf_report_response_from_row(
+    row: CallImportEvaluationPdfReport,
+    *,
+    cache_hit: bool = False,
+) -> CallImportEvaluationPdfReportResponse:
+    filename = row.filename or "report.pdf"
+    preview_url, download_url = presigned_urls_for_pdf_report(
+        row.s3_key or "",
+        filename,
+    )
+    return CallImportEvaluationPdfReportResponse(
+        id=str(row.id),
+        filename=filename,
+        preview_url=preview_url,
+        download_url=download_url,
+        created_at=row.created_at or datetime.now(timezone.utc),
+        created_by=row.created_by,
+        report_type=row.report_type,
+        vendor_name=row.vendor_name,
+        config_summary=config_summary_from_report_config(
+            row.report_config if isinstance(row.report_config, dict) else {}
+        ),
+        storage_available=bool(row.s3_key),
+        cache_hit=cache_hit,
+    )
+
+
+def _pdf_report_list_item_from_row(
+    row: CallImportEvaluationPdfReport,
+) -> CallImportEvaluationPdfReportListItem:
+    return CallImportEvaluationPdfReportListItem(
+        id=str(row.id),
+        filename=row.filename,
+        vendor_name=row.vendor_name,
+        report_type=row.report_type,
+        created_by=row.created_by,
+        created_at=row.created_at or datetime.now(timezone.utc),
+        config_summary=config_summary_from_report_config(
+            row.report_config if isinstance(row.report_config, dict) else {}
+        ),
+        cache_fingerprint=row.cache_fingerprint,
+    )
+
+
 def _report_branding_for_import_workspace(
     db: Session,
     organization_id: UUID,
@@ -2919,9 +3112,18 @@ def _explain_period_deltas(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.call_import_user_insights import _call_llm, _parse_json_object
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
+    )
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider_hint, model_hint
+    )
+    usage_ctx = call_import_evaluation_usage_context(
+        organization_id=organization_id,
+        workspace_id=evaluation.workspace_id,
+        evaluation_id=evaluation.id,
+        call_import_id=evaluation.call_import_id,
     )
     try:
         text = _call_llm(
@@ -2942,6 +3144,7 @@ def _explain_period_deltas(
             ],
             temperature=0.3,
             max_tokens=900,
+            usage_ctx=usage_ctx,
         )
     except Exception as exc:
         logger.warning("[PeriodDeltaExplain] LLM call failed: {}", exc)
@@ -3087,10 +3290,10 @@ def _report_period_from_rows(
     iso_year, iso_week, _ = week_anchor.isocalendar()
     label = f"{iso_year}-W{iso_week:02d}"
     if week_start.year == week_end.year:
-        week_range = f"{week_start.strftime('%b %d')}–{week_end.strftime('%b %d, %Y')}"
+        week_range = f"{week_start.strftime('%b %d')}ΓÇô{week_end.strftime('%b %d, %Y')}"
     else:
         week_range = (
-            f"{week_start.strftime('%b %d, %Y')}–{week_end.strftime('%b %d, %Y')}"
+            f"{week_start.strftime('%b %d, %Y')}ΓÇô{week_end.strftime('%b %d, %Y')}"
         )
     display = f"W{iso_week:02d} · {week_range}"
     return start, end, label, display
@@ -3387,8 +3590,9 @@ async def generate_call_import_evaluation_pdf_report(
     payload: CallImportEvaluationPdfReportRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> StreamingResponse:
+):
     del api_key
     call_import = _require_import(db, call_import_id, organization_id)
 
@@ -3509,17 +3713,6 @@ async def generate_call_import_evaluation_pdf_report(
         cached_prompt_improvements,
         report_config,
     )
-    narrative = _generate_report_narrative(
-        db,
-        organization_id,
-        metric_aggregates=metric_aggregates,
-        insight_aggregates=insight_aggregates if is_internal else [],
-        period_delta_by_metric=period_delta_by_metric,
-        evidence_samples=evidence_samples if is_internal else {},
-        report_config=report_config,
-    )
-
-    generated_at = datetime.now(timezone.utc)
     branding_images, custom_heading = _report_branding_for_import_workspace(
         db,
         organization_id,
@@ -3544,6 +3737,90 @@ async def generate_call_import_evaluation_pdf_report(
         pdf_aggregates,
         child_names_by_parent=pdf_child_map,
     )
+
+    from app.services.storage.s3_service import s3_service
+
+    config_fingerprint = compute_pdf_report_config_fingerprint(
+        report_type=payload.report_type,
+        include_period_delta=bool(payload.include_period_delta),
+        include_weekly_delta=bool(payload.include_weekly_delta),
+        baseline_evaluation_id=payload.baseline_evaluation_id,
+        internal_brand_image_id=payload.internal_brand_image_id,
+        external_brand_image_id=payload.external_brand_image_id,
+        use_case=payload.use_case,
+        report_config=report_config,
+        report_heading=custom_heading,
+        vendor_name=payload.vendor_name,
+        platform_base_url=payload.platform_base_url,
+        period_label=period_label,
+    )
+    content_fingerprint = compute_pdf_report_content_fingerprint(
+        evaluation_status=evaluation.status,
+        completed_rows=int(evaluation.completed_rows or 0),
+        total_rows=int(evaluation.total_rows or 0),
+        failed_rows=int(evaluation.failed_rows or 0),
+        metric_aggregates=metric_aggregates,
+        insight_aggregates=insight_aggregates,
+        period_delta_by_metric=period_delta_by_metric,
+        benchmark_context=benchmark_context,
+        metric_metadata=[
+            {
+                "id": str(metric.id),
+                "name": metric.name,
+                "description": metric.description,
+            }
+            for metric in metrics
+        ],
+        failure_policies=failure_policies_for_pdf,
+        tldr_summary=cached_tldr_summary,
+        user_insights_for_pdf=generated_insights_for_pdf,
+        metric_clusters_for_pdf=metric_clusters_for_pdf,
+        prompt_improvements_for_pdf=prompt_improvements_for_pdf,
+    )
+    cache_fingerprint = compute_pdf_report_cache_fingerprint(
+        config_fingerprint=config_fingerprint,
+        content_fingerprint=content_fingerprint,
+    )
+    if s3_service.is_enabled():
+        cached_pdf_report = find_cached_pdf_report(
+            db,
+            evaluation_id=evaluation.id,
+            organization_id=organization_id,
+            cache_fingerprint=cache_fingerprint,
+        )
+        if cached_pdf_report is not None:
+            logger.info(
+                "Reusing stored PDF report {} for evaluation {} (cache fingerprint match)",
+                cached_pdf_report.id,
+                eval_id,
+            )
+            return _pdf_report_response_from_row(cached_pdf_report, cache_hit=True)
+
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
+    )
+    from app.services.usage.context import llm_usage_context
+
+    with llm_usage_context(
+        call_import_evaluation_usage_context(
+            organization_id=organization_id,
+            workspace_id=getattr(call_import, "workspace_id", None)
+            or evaluation.workspace_id,
+            evaluation_id=evaluation.id,
+            call_import_id=evaluation.call_import_id,
+        )
+    ):
+        narrative = _generate_report_narrative(
+            db,
+            organization_id,
+            metric_aggregates=metric_aggregates,
+            insight_aggregates=insight_aggregates if is_internal else [],
+            period_delta_by_metric=period_delta_by_metric,
+            evidence_samples=evidence_samples if is_internal else {},
+            report_config=report_config,
+        )
+
+    generated_at = datetime.now(timezone.utc)
     try:
         pdf_started = datetime.now(timezone.utc)
         pdf_bytes = await asyncio.to_thread(
@@ -3617,16 +3894,226 @@ async def generate_call_import_evaluation_pdf_report(
         .count(),
     )
     db.add(snapshot)
-    db.commit()
+    db.flush()
 
     filename = (
         f"{_report_filename_slug(payload.vendor_name)}-"
         f"{payload.report_type}-quality-metric-audit-{eval_id}.pdf"
     )
+
+    if not s3_service.is_enabled():
+        db.commit()
+        return StreamingResponse(
+            iter([pdf_bytes]),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    report_id = uuid4()
+    s3_key = build_pdf_report_s3_key(
+        organization_id=organization_id,
+        call_import_id=call_import.id,
+        evaluation_id=evaluation.id,
+        report_id=report_id,
+    )
+    try:
+        s3_service.upload_file_by_key(
+            file_content=pdf_bytes,
+            key=s3_key,
+            content_type="application/pdf",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to upload PDF report for evaluation {} to object storage",
+            eval_id,
+        )
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to store PDF report: {exc}",
+        ) from exc
+
+    created_by, created_by_user_id = _pdf_report_actor(principal)
+    pdf_report = CallImportEvaluationPdfReport(
+        id=report_id,
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=organization_id,
+        workspace_id=call_import.workspace_id,
+        snapshot_id=snapshot.id,
+        vendor_name=payload.vendor_name,
+        report_type=payload.report_type,
+        filename=filename,
+        s3_key=s3_key,
+        report_config=report_config,
+        cache_fingerprint=cache_fingerprint,
+        created_by=created_by,
+        created_by_user_id=created_by_user_id,
+    )
+    db.add(pdf_report)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        try:
+            s3_service.delete_file_by_key(s3_key)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to delete orphan PDF after cache race for evaluation {}",
+                eval_id,
+            )
+        raced_winner = find_cached_pdf_report(
+            db,
+            evaluation_id=evaluation.id,
+            organization_id=organization_id,
+            cache_fingerprint=cache_fingerprint,
+        )
+        if raced_winner is not None:
+            logger.info(
+                "PDF report cache race resolved for evaluation {} (winner {})",
+                eval_id,
+                raced_winner.id,
+            )
+            return _pdf_report_response_from_row(raced_winner, cache_hit=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to store PDF report due to a concurrent duplicate request.",
+        ) from None
+    db.refresh(pdf_report)
+    return _pdf_report_response_from_row(pdf_report)
+
+
+@router.get(
+    "/{eval_id}/pdf-reports",
+    response_model=CallImportEvaluationPdfReportListResponse,
+    operation_id="listCallImportEvaluationPdfReports",
+)
+async def list_call_import_evaluation_pdf_reports(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationPdfReportListResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    rows = (
+        db.query(CallImportEvaluationPdfReport)
+        .filter(
+            CallImportEvaluationPdfReport.evaluation_id == eval_id,
+            CallImportEvaluationPdfReport.organization_id == organization_id,
+        )
+        .order_by(desc(CallImportEvaluationPdfReport.created_at))
+        .all()
+    )
+    return CallImportEvaluationPdfReportListResponse(
+        items=[_pdf_report_list_item_from_row(row) for row in rows],
+    )
+
+
+@router.get(
+    "/{eval_id}/pdf-reports/{report_id}",
+    response_model=CallImportEvaluationPdfReportResponse,
+    operation_id="getCallImportEvaluationPdfReport",
+)
+async def get_call_import_evaluation_pdf_report(
+    call_import_id: UUID,
+    eval_id: UUID,
+    report_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationPdfReportResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    row = (
+        db.query(CallImportEvaluationPdfReport)
+        .filter(
+            CallImportEvaluationPdfReport.id == report_id,
+            CallImportEvaluationPdfReport.evaluation_id == eval_id,
+            CallImportEvaluationPdfReport.call_import_id == call_import_id,
+            CallImportEvaluationPdfReport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="PDF report not found")
+    if not row.s3_key:
+        raise HTTPException(
+            status_code=404,
+            detail="PDF report file is not available in object storage",
+        )
+    return _pdf_report_response_from_row(row)
+
+
+@router.get(
+    "/{eval_id}/pdf-reports/{report_id}/download",
+    operation_id="downloadCallImportEvaluationPdfReport",
+)
+async def download_call_import_evaluation_pdf_report(
+    call_import_id: UUID,
+    eval_id: UUID,
+    report_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+    row = (
+        db.query(CallImportEvaluationPdfReport)
+        .filter(
+            CallImportEvaluationPdfReport.id == report_id,
+            CallImportEvaluationPdfReport.evaluation_id == eval_id,
+            CallImportEvaluationPdfReport.call_import_id == call_import_id,
+            CallImportEvaluationPdfReport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="PDF report not found")
+    if not row.s3_key:
+        raise HTTPException(
+            status_code=404,
+            detail="PDF report file is not available in object storage",
+        )
+    from app.services.storage.s3_service import s3_service
+
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Object storage is not enabled or not configured.",
+        )
+    try:
+        file_bytes = s3_service.download_file_by_key(row.s3_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to download PDF report {} for evaluation {}",
+            report_id,
+            eval_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to download PDF report: {exc}",
+        ) from exc
+    filename = row.filename or "report.pdf"
+    safe_name = filename.replace('"', "'")
     return StreamingResponse(
-        iter([pdf_bytes]),
+        iter([file_bytes]),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
 
 
@@ -3641,6 +4128,7 @@ async def update_call_import_evaluation(
     payload: CallImportEvaluationUpdate,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationResponse:
     """Edit metadata on an existing evaluation run (currently just ``name``)."""
@@ -3666,6 +4154,7 @@ async def update_call_import_evaluation(
     if "name" in payload_data:
         row.name = _normalize_name(payload_data["name"])
 
+    stamp_evaluation_actor(row, principal)
     db.commit()
     db.refresh(row)
     return _serialize_eval(db, row)
@@ -3764,8 +4253,50 @@ def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
         )
 
 
+def _cancel_eval_row_with_source_diarisation(
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow | None,
+    *,
+    cascade_diarisation: bool,
+    now: datetime | None = None,
+) -> list[str]:
+    """Mark an eval row cancelled; optionally fail in-flight diarisation.
+
+    Returns Celery task ids to revoke (deduped). The caller may batch-revoke
+    them; when ``cascade_diarisation`` is true, diarisation revoke also runs
+    inside :func:`_apply_diarisation_cancel` for the source row's task id.
+    """
+    cancellable_states = _cancellable_eval_states()
+    if (eval_row.status or "").lower() not in cancellable_states:
+        return []
+
+    stamp = now or datetime.now(timezone.utc)
+    task_ids: list[str] = []
+    eval_task_id = (eval_row.celery_task_id or "").strip()
+    if eval_task_id:
+        task_ids.append(eval_task_id)
+
+    eval_row.status = "failed"
+    eval_row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+    eval_row.finished_at = stamp
+    eval_row.celery_task_id = None
+
+    if cascade_diarisation and source_row is not None:
+        from app.api.v1.routes.call_imports import _apply_diarisation_cancel
+
+        source_task_id = (source_row.celery_task_id or "").strip()
+        if source_task_id and source_task_id not in task_ids:
+            task_ids.append(source_task_id)
+        _apply_diarisation_cancel([source_row])
+
+    return list(dict.fromkeys(task_ids))
+
+
 def _apply_evaluation_cancel(
     eval_rows: List[CallImportEvaluationRow],
+    *,
+    source_rows: dict[UUID, CallImportRow] | None = None,
+    cascade_diarisation: bool = False,
 ) -> Tuple[int, int]:
     """Cancel every cancellable row in ``eval_rows``.
 
@@ -3778,22 +4309,47 @@ def _apply_evaluation_cancel(
     cancelled = 0
     skipped = 0
     now = datetime.now(timezone.utc)
+    source_rows = source_rows or {}
     for eval_row in eval_rows:
         if (eval_row.status or "").lower() not in cancellable_states:
             skipped += 1
             continue
-        # Flip the row state BEFORE we revoke so the UI's next poll
-        # already shows the cancel, even if Celery's control plane is
-        # slow to ack.
-        eval_row.status = "failed"
-        eval_row.error_message = EVAL_CANCELLED_BY_USER_ERROR
-        eval_row.finished_at = now
-        _revoke_eval_task(eval_row)
-        # Drop the task id so a follow-up retry (or a stale poll) can't
-        # accidentally re-revoke or get confused.
-        eval_row.celery_task_id = None
+        source_row = source_rows.get(eval_row.call_import_row_id)
+        task_ids = _cancel_eval_row_with_source_diarisation(
+            eval_row,
+            source_row,
+            cascade_diarisation=cascade_diarisation,
+            now=now,
+        )
+        for task_id in task_ids:
+            _revoke_eval_task_by_id(task_id, eval_row_id=eval_row.id)
         cancelled += 1
     return cancelled, skipped
+
+
+def _revoke_eval_task_by_id(task_id: str, *, eval_row_id: UUID) -> None:
+    """Best-effort revoke when the task id is known outside the ORM row."""
+    cleaned = (task_id or "").strip()
+    if not cleaned:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(
+            cleaned, terminate=True, signal="SIGTERM"
+        )
+        logger.info(
+            "Revoked evaluation task {} for eval row {}",
+            cleaned,
+            eval_row_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
+        logger.warning(
+            "Failed to revoke evaluation task {} for eval row {}: {}",
+            cleaned,
+            eval_row_id,
+            exc,
+        )
 
 
 def _claim_evaluation_bulk_operation(
@@ -3847,6 +4403,7 @@ async def cancel_call_import_evaluation(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationBulkActionResponse:
     """Abort all in-flight (or queued) rows in a single evaluation run.
@@ -3879,6 +4436,13 @@ async def cancel_call_import_evaluation(
 
     target_count = count_evaluation_cancel_targets(db, eval_id, mode="abort")
     if target_count == 0:
+        from app.services.call_imports.bulk_ops import (
+            _sweep_evaluation_diarisation_cancel,
+        )
+
+        swept = _sweep_evaluation_diarisation_cancel(db, eval_id)
+        if swept:
+            db.commit()
         return CallImportEvaluationBulkActionResponse(
             accepted=True,
             target_count=0,
@@ -3887,6 +4451,7 @@ async def cancel_call_import_evaluation(
 
     _claim_evaluation_bulk_operation(eval_id, "abort")
     evaluation.status = "cancelled"
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
@@ -3912,6 +4477,7 @@ async def force_fail_pending_call_import_evaluation_rows(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationBulkActionResponse:
     """Force-fail only rows currently in ``pending`` for a single run.
@@ -3953,6 +4519,8 @@ async def force_fail_pending_call_import_evaluation_rows(
         )
 
     _claim_evaluation_bulk_operation(eval_id, "force_fail_pending")
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
         cancel_call_import_evaluation_task,
@@ -3980,6 +4548,7 @@ async def cancel_call_import_evaluation_row(
     eval_row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationRowResponse:
     """Abort an in-flight (or queued) evaluation for a single row.
@@ -4026,9 +4595,14 @@ async def cancel_call_import_evaluation_row(
                         status_code=404,
                         detail="Evaluation row not found in this run",
                     )
-                _apply_evaluation_cancel([eval_row])
+                _apply_evaluation_cancel(
+                    [eval_row],
+                    source_rows={source_row.id: source_row},
+                    cascade_diarisation=True,
+                )
                 row_db.commit()
                 _rollup_evaluation_status(evaluation, db)
+                stamp_evaluation_actor(evaluation, principal)
                 db.commit()
                 row_db.refresh(eval_row)
                 return _to_evaluation_row_response(eval_row, source_row, evaluation)
@@ -4050,17 +4624,24 @@ async def cancel_call_import_evaluation_row(
             status_code=404, detail="Evaluation row not found in this run"
         )
 
-    _apply_evaluation_cancel([eval_row])
-    db.flush()
-    _rollup_evaluation_status(evaluation, db)
-    db.commit()
-    db.refresh(eval_row)
-
     source_row = (
         db.query(CallImportRow)
         .filter(CallImportRow.id == eval_row.call_import_row_id)
         .first()
     )
+    source_rows = (
+        {source_row.id: source_row} if source_row is not None else None
+    )
+    _apply_evaluation_cancel(
+        [eval_row],
+        source_rows=source_rows,
+        cascade_diarisation=True,
+    )
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(eval_row)
 
     return _to_evaluation_row_response(eval_row, source_row, evaluation)
 
@@ -4075,6 +4656,7 @@ async def delete_call_import_evaluation(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Response:
     del api_key
@@ -4109,6 +4691,7 @@ async def bulk_delete_call_import_evaluations(
     payload: CallImportEvaluationBulkDelete,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Dict[str, int]:
     """Delete multiple evaluation runs scoped to one call import.
@@ -4946,29 +5529,41 @@ def _generate_and_persist_tldr_summary(
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
     from app.services.ai.llm_service import llm_service
+    from app.services.usage.call_import_context import (
+        call_import_evaluation_usage_context,
+    )
+    from app.services.usage.context import llm_usage_context
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, provider, model
     )
 
     try:
-        llm_result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.4,
-            max_tokens=1400,
-        )
+        with llm_usage_context(
+            call_import_evaluation_usage_context(
+                organization_id=organization_id,
+                workspace_id=evaluation.workspace_id,
+                evaluation_id=evaluation.id,
+                call_import_id=evaluation.call_import_id,
+            )
+        ):
+            llm_result = llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                temperature=0.4,
+                max_tokens=1400,
+            )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
         raise HTTPException(
             status_code=502, detail=f"LLM call failed: {e}"
         ) from e
 
-    summary = _parse_insights_response(llm_result.get("text", ""))
     total = int(evaluation.total_rows or 0)
+    summary = _parse_insights_response(llm_result.get("text", ""))
     ui_completed = min(int(evaluation.completed_rows or 0), total) if total else int(
         evaluation.completed_rows or 0
     )
@@ -5039,6 +5634,7 @@ async def generate_call_import_evaluation_insights(
     body: EvaluationInsightsRequest = Body(default_factory=EvaluationInsightsRequest),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationTldrSummary:
     """Generate (or return-cached) the LLM TLDR for an evaluation run.
@@ -5110,6 +5706,9 @@ async def generate_call_import_evaluation_insights(
 
     summary = EvaluationTldrSummary.model_validate(task_result)
     db.refresh(evaluation)
+    stamp_evaluation_actor(evaluation, principal)
+    db.commit()
+    db.refresh(evaluation)
 
     from app.services.ai.llm_resolver import get_llm_provider_and_model
 
@@ -5124,6 +5723,7 @@ async def generate_call_import_evaluation_insights(
         force=body.regenerate,
         max_llm_calls=body.max_llm_calls,
         db=db,
+        principal=principal,
     )
 
     return summary
@@ -5181,6 +5781,7 @@ def _enqueue_user_insights_job(
     force: bool = False,
     max_llm_calls: Optional[int] = None,
     db: Optional[Session] = None,
+    principal: Optional[Principal] = None,
 ) -> None:
     """Enqueue background user-insights generation unless already running."""
     current = _user_insights_payload(evaluation)
@@ -5212,6 +5813,8 @@ def _enqueue_user_insights_job(
         "error_message": None,
     }
     if db is not None:
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "user_insights")
         db.commit()
 
@@ -5271,6 +5874,7 @@ async def generate_call_import_evaluation_user_insights(
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationUserInsightsState:
     del api_key
@@ -5318,6 +5922,7 @@ async def generate_call_import_evaluation_user_insights(
         force=body.force or body.regenerate,
         max_llm_calls=body.max_llm_calls,
         db=db,
+        principal=principal,
     )
 
     db.refresh(evaluation)
@@ -5401,6 +6006,7 @@ def _enqueue_prompt_improvements_job(
     credential_id: Optional[UUID] = None,
     force: bool = False,
     db: Optional[Session] = None,
+    principal: Optional[Principal] = None,
 ) -> None:
     current = _prompt_improvements_payload(evaluation)
     if current is not None and current.status == "running" and not force:
@@ -5418,6 +6024,8 @@ def _enqueue_prompt_improvements_job(
         "error_message": None,
     }
     if db is not None:
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "prompt_improvements")
         db.commit()
 
@@ -5560,6 +6168,7 @@ def _enqueue_metric_clusters_job(
     selected_evaluation_row_ids: Optional[List[str]] = None,
     failure_policies: Optional[Dict[str, MetricFailurePolicy]] = None,
     db: Optional[Session] = None,
+    principal: Optional[Principal] = None,
 ) -> None:
     current = _metric_clusters_payload(evaluation)
     if current is not None and current.status == "running" and not force:
@@ -5638,6 +6247,8 @@ def _enqueue_metric_clusters_job(
         **policy_blob,
     }
     if db is not None:
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         flag_modified(evaluation, "metric_clusters")
         db.commit()
 
@@ -5659,6 +6270,8 @@ def _enqueue_metric_clusters_job(
     if db is not None and isinstance(evaluation.metric_clusters, dict):
         evaluation.metric_clusters["celery_task_id"] = async_result.id
         flag_modified(evaluation, "metric_clusters")
+        if principal is not None:
+            stamp_evaluation_actor(evaluation, principal)
         db.commit()
 
 
@@ -5778,6 +6391,7 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
     body: MetricFailurePoliciesSaveRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MetricFailurePoliciesResponse:
     del api_key
@@ -5817,6 +6431,7 @@ async def save_call_import_evaluation_metric_cluster_failure_policies(
         source="user",
     )
     flag_modified(evaluation, "metric_clusters")
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     db.refresh(evaluation)
 
@@ -5938,6 +6553,7 @@ async def generate_call_import_evaluation_metric_clusters(
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationMetricClustersState:
     del api_key
@@ -6059,6 +6675,7 @@ async def generate_call_import_evaluation_metric_clusters(
         selected_evaluation_row_ids=selected_row_ids,
         failure_policies=merged_policies,
         db=db,
+        principal=principal,
     )
 
     db.refresh(evaluation)
@@ -6077,6 +6694,7 @@ async def cancel_call_import_evaluation_metric_clusters(
     eval_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationMetricClustersState:
     """Abort in-flight failure-diagnostics clustering.
@@ -6103,6 +6721,7 @@ async def cancel_call_import_evaluation_metric_clusters(
 
     _apply_metric_clusters_cancel(evaluation)
     flag_modified(evaluation, "metric_clusters")
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     db.refresh(evaluation)
 
@@ -6154,6 +6773,7 @@ async def generate_call_import_evaluation_prompt_improvements(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> EvaluationPromptImprovementsState:
     del api_key
@@ -6223,6 +6843,7 @@ async def generate_call_import_evaluation_prompt_improvements(
         credential_id=body.credential_id,
         force=body.force or body.regenerate,
         db=db,
+        principal=principal,
     )
 
     db.refresh(evaluation)
@@ -7213,6 +7834,7 @@ async def merge_call_import_evaluation_discovered_labels(
     body: DiscoveredLabelMergeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredLabelsResponse:
     """Rewrite every row's ``discovered_labels`` entry from from_key -> to_key.
@@ -7379,6 +8001,7 @@ async def merge_call_import_evaluation_discovered_labels(
     aliases_top[parent_id_str] = parent_aliases
     evaluation.discovered_label_aliases = aliases_top
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     alias_map_after = _alias_map_for_parent(evaluation, parent.id)
@@ -7406,6 +8029,7 @@ async def delete_call_import_evaluation_discovered_label(
     body: DiscoveredLabelDeleteRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredLabelsResponse:
     """Tombstone a single LLM-discovered candidate for this evaluation.
@@ -7540,6 +8164,7 @@ async def delete_call_import_evaluation_discovered_label(
     aliases_top[parent_id_str] = parent_aliases
     evaluation.discovered_label_aliases = aliases_top
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     alias_map_after = _alias_map_for_parent(evaluation, parent.id)
@@ -7645,6 +8270,7 @@ async def merge_call_import_evaluation_discovered_metrics(
     body: DiscoveredMetricMergeRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredMetricsResponse:
     """Rewrite every row's ``__discovered_metrics__`` entry from→to.
@@ -7749,6 +8375,7 @@ async def merge_call_import_evaluation_discovered_metrics(
             aliases[k] = canonical_to
     evaluation.discovered_metric_aliases = aliases
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     items_raw = _get_running_discovered_metrics(
@@ -7774,6 +8401,7 @@ async def delete_call_import_evaluation_discovered_metric(
     body: DiscoveredMetricDeleteRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> DiscoveredMetricsResponse:
     """Tombstone a single LLM-discovered top-level metric candidate."""
@@ -7847,6 +8475,7 @@ async def delete_call_import_evaluation_discovered_metric(
             aliases[k] = ""
     evaluation.discovered_metric_aliases = aliases
 
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     items_raw = _get_running_discovered_metrics(
@@ -7872,6 +8501,7 @@ async def delete_call_import_evaluation_row(
     eval_row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> Response:
     """Delete a single per-row scoring entry within an evaluation run.
@@ -7907,6 +8537,7 @@ async def delete_call_import_evaluation_row(
                 status_code=404, detail="Evaluation row not found in this run"
             )
         _rollup_evaluation_status(evaluation, db)
+        stamp_evaluation_actor(evaluation, principal)
         db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -7936,6 +8567,7 @@ async def delete_call_import_evaluation_row(
     db.delete(eval_row)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -7965,13 +8597,22 @@ def _prepare_source_row_for_retry(
 
     # Re-fetch recordings when a prior import failed or stalled without S3 audio.
     # Mirrors retry_failed_call_import_rows so eval retry can re-enqueue imports.
+    from app.api.v1.routes.call_imports import _is_stuck_pending_import_row
+
     if (
         source_row.status
-        in (CallImportRowStatus.FAILED, CallImportRowStatus.PROCESSING)
+        in (
+            CallImportRowStatus.FAILED,
+            CallImportRowStatus.PROCESSING,
+        )
+        and not (source_row.recording_s3_key or "").strip()
+    ) or (
+        _is_stuck_pending_import_row(source_row)
         and not (source_row.recording_s3_key or "").strip()
     ):
         source_row.status = CallImportRowStatus.PENDING
         source_row.error_message = None
+        source_row.attempts = 0
 
     if transcribe_overwrite and (source_row.diarised_transcript or "").strip():
         source_row.diarised_transcript = None
@@ -8113,7 +8754,10 @@ def _apply_telephony_retry_overrides(
     ):
         return
 
-    from app.api.v1.routes.call_imports import _resolve_telephony_integration
+    from app.api.v1.routes.call_imports import (
+        _resolve_telephony_integration,
+        _validate_telephony_credentials_live,
+    )
 
     if payload.telephony_integration_id is not None:
         integration = _resolve_telephony_integration(
@@ -8122,6 +8766,7 @@ def _apply_telephony_retry_overrides(
             payload.telephony_integration_id,
             payload.provider or "",
         )
+        _validate_telephony_credentials_live(db, organization_id, integration)
         call_import.provider = integration.provider
         call_import.telephony_integration_id = integration.id
     else:
@@ -8467,6 +9112,7 @@ async def retry_call_import_evaluation(
     payload: Optional[CallImportEvaluationRetryRequest] = Body(default=None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationRetryResponse:
     """Re-enqueue failed rows in an evaluation run.
@@ -8525,7 +9171,7 @@ async def retry_call_import_evaluation(
     # The Re-run-metrics modal surfaces PARENTS for hierarchical
     # metrics (it suppresses individual children via
     # ``childrenInGroups`` in ``CallImportEvaluationDetail.tsx``), so a
-    # naive ``metric_ids ⊆ selected_metric_ids`` check rejects every
+    # naive ``metric_ids Γèå selected_metric_ids`` check rejects every
     # parent-ID request with a misleading "unknown ids" 400. We accept
     # both shapes here and then EXPAND any parent IDs into
     # ``{parent_id, *child_ids}`` so the downstream helpers see the
@@ -8699,6 +9345,7 @@ async def retry_call_import_evaluation(
         evaluation.started_at = datetime.now(timezone.utc)
 
     _claim_evaluation_bulk_operation(eval_id, "retry")
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     from app.workers.tasks.call_import_bulk_ops import (
@@ -8736,6 +9383,7 @@ async def retry_call_import_evaluation_row(
     eval_row_id: UUID,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> CallImportEvaluationRowResponse:
     """Re-enqueue a single failed evaluation row.
@@ -8821,6 +9469,7 @@ async def retry_call_import_evaluation_row(
         evaluation.started_at = datetime.now(timezone.utc)
     db.flush()
     _rollup_evaluation_status(evaluation, db)
+    stamp_evaluation_actor(evaluation, principal)
     db.commit()
 
     try:

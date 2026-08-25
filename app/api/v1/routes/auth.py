@@ -54,6 +54,17 @@ from app.services.organization_provisioning import (
     provision_billing_customer,
     provision_default_workspace,
 )
+from app.services.signup_reference_codes import (
+    consume_reference_code,
+    validate_reference_code_for_signup,
+)
+from app.services.invitation_service import (
+    InvitationError,
+    accept_invitation as accept_invitation_record,
+    get_invitation_preview,
+    get_valid_pending_invitation_by_token,
+)
+from app.api.v1.routes.profile import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -81,6 +92,7 @@ class AuthProviderConfig(BaseModel):
 class AuthConfigResponse(BaseModel):
     providers: List[AuthProviderConfig]
     tier: str  # "oss" | "enterprise"
+    gated_signup: bool = False
 
 
 class SignupRequest(BaseModel):
@@ -89,12 +101,29 @@ class SignupRequest(BaseModel):
     organization_name: Optional[str] = Field(default=None, max_length=255)
     first_name: Optional[str] = Field(default=None, max_length=255)
     last_name: Optional[str] = Field(default=None, max_length=255)
+    reference_code: Optional[str] = Field(default=None, max_length=64)
+    invite_token: Optional[str] = Field(default=None, max_length=255)
+
+
+class InvitationPreviewResponse(BaseModel):
+    organization_name: Optional[str] = None
+    email: str
+    role: str
+    expires_at: datetime
+    status: str
+    user_exists: bool = False
+    has_password: bool = False
+
+
+class AcceptInviteByTokenRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=255)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
     organization_id: Optional[str] = None
+    invite_token: Optional[str] = Field(default=None, max_length=255)
 
 
 class LoginOrgOption(BaseModel):
@@ -200,7 +229,15 @@ def get_auth_config() -> AuthConfigResponse:
             )
         )
 
-    return AuthConfigResponse(providers=providers, tier=tier)
+    return AuthConfigResponse(
+        providers=providers,
+        tier=tier,
+        gated_signup=(
+            settings.AUTH_GATED_SIGNUP_ENABLED
+            and settings.AUTH_LOCAL_ALLOW_SIGNUP
+            and "local_password" in enabled
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +313,38 @@ def _issue_session_tokens(
     )
 
 
+@router.get("/invitations/preview/{token}", response_model=InvitationPreviewResponse)
+def preview_invitation(token: str, db: Session = Depends(get_db)) -> InvitationPreviewResponse:
+    """Public preview of an organization invite (no auth required)."""
+    try:
+        preview = get_invitation_preview(db, token)
+    except InvitationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return InvitationPreviewResponse(**preview)
+
+
+@router.post("/invitations/accept-by-token", response_model=TokenResponse)
+def accept_invitation_by_token(
+    payload: AcceptInviteByTokenRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    """Accept an invitation and return a session scoped to the invited organization."""
+    try:
+        invitation = get_valid_pending_invitation_by_token(db, payload.token)
+        member = accept_invitation_record(db, invitation, current_user)
+    except InvitationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    role_value = member.role.value if hasattr(member.role, "value") else member.role
+    return _issue_session_tokens(
+        db,
+        user=current_user,
+        organization_id=invitation.organization_id,
+        role_value=role_value,
+    )
+
+
 @router.post("/signup", response_model=TokenResponse)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """
@@ -292,28 +361,82 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
             detail="Self-service signup is disabled. Contact your administrator for access.",
         )
 
+    reference_row = None
+    invite_token = (payload.invite_token or "").strip() or None
+    pending_invitation = None
+
+    if invite_token:
+        try:
+            pending_invitation = get_valid_pending_invitation_by_token(db, invite_token)
+        except InvitationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        if pending_invitation.email.lower() != payload.email.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email does not match the invitation.",
+            )
+    elif settings.AUTH_GATED_SIGNUP_ENABLED:
+        reference_row = validate_reference_code_for_signup(db, payload.reference_code)
+
     existing = db.query(User).filter(User.email == payload.email).first()
-    if existing:
+    if existing and existing.password_hash:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists. Try signing in instead.",
         )
 
-    org_name = (payload.organization_name or payload.email.split("@")[0] + "'s Org").strip()
     _validate_password_or_400(payload.password)
 
-    user = User(
-        email=payload.email,
-        password_hash=hash_password(payload.password),
-        first_name=payload.first_name,
-        last_name=payload.last_name,
-        name=((payload.first_name or "") + " " + (payload.last_name or "")).strip() or None,
-        is_active=True,
-        auth_provider="local",
-    )
+    if existing and not existing.password_hash:
+        user = existing
+        user.password_hash = hash_password(payload.password)
+        if payload.first_name:
+            user.first_name = payload.first_name
+        if payload.last_name:
+            user.last_name = payload.last_name
+        if payload.first_name or payload.last_name:
+            user.name = ((payload.first_name or "") + " " + (payload.last_name or "")).strip() or user.name
+        user.is_active = True
+        if not user.auth_provider:
+            user.auth_provider = "local"
+        db.flush()
+    else:
+        user = User(
+            email=payload.email,
+            password_hash=hash_password(payload.password),
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+            name=((payload.first_name or "") + " " + (payload.last_name or "")).strip() or None,
+            is_active=True,
+            auth_provider="local",
+        )
+        db.add(user)
+        db.flush()
+
+    if pending_invitation is not None:
+        member = accept_invitation_record(
+            db,
+            pending_invitation,
+            user,
+            require_email_match=True,
+        )
+        if reference_row is not None:
+            consume_reference_code(db, reference_row)
+        user.last_login_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(user)
+
+        role_value = member.role.value if hasattr(member.role, "value") else member.role
+        return _issue_session_tokens(
+            db,
+            user=user,
+            organization_id=pending_invitation.organization_id,
+            role_value=role_value,
+        )
+
+    org_name = (payload.organization_name or payload.email.split("@")[0] + "'s Org").strip()
     organization = Organization(name=org_name)
     db.add(organization)
-    db.add(user)
     db.flush()
 
     membership = OrganizationMember(
@@ -332,6 +455,8 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
         name=org_name,
         email=payload.email,
     )
+    if reference_row is not None:
+        consume_reference_code(db, reference_row)
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(user)
@@ -368,14 +493,38 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
     memberships = (
         db.query(OrganizationMember, Organization)
         .join(Organization, Organization.id == OrganizationMember.organization_id)
-        .filter(OrganizationMember.user_id == user.id)
+        .filter(
+            OrganizationMember.user_id == user.id,
+            Organization.is_active == True,  # noqa: E712
+        )
         .order_by(OrganizationMember.joined_at.asc())
         .all()
     )
+
+    invite_token = (payload.invite_token or "").strip() or None
+    if not memberships and invite_token:
+        try:
+            invitation = get_valid_pending_invitation_by_token(db, invite_token)
+            if invitation.email.lower() != user.email.lower():
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This invitation was sent to a different email address.",
+                )
+            member = accept_invitation_record(db, invitation, user)
+            organization = (
+                db.query(Organization)
+                .filter(Organization.id == invitation.organization_id)
+                .first()
+            )
+            if organization is not None and organization.is_active:
+                memberships = [(member, organization)]
+        except InvitationError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
     if not memberships:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your account is not a member of any organization. Contact your administrator.",
+            detail="Your account is not a member of any active organization. Contact your administrator.",
         )
 
     if len(memberships) > 1 and not payload.organization_id:
@@ -512,6 +661,13 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)) -> T
             detail="User is not a member of this organization.",
         )
 
+    org = db.query(Organization).filter(Organization.id == row.organization_id).first()
+    if org is None or not org.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization disabled.",
+        )
+
     revoke_refresh_token(db, payload.refresh_token)
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
     return _issue_session_tokens(
@@ -594,6 +750,13 @@ def switch_organization(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not a member of that organization.",
+        )
+
+    org = db.query(Organization).filter(Organization.id == target_org_id).first()
+    if org is None or not org.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization disabled.",
         )
 
     user = db.query(User).filter(User.id == principal.user_id).first()

@@ -21,6 +21,8 @@ from app.models.database import (
     Metric,
     ModelProvider,
 )
+from app.services.usage.context import LLMUsageContext
+
 from app.models.schemas import (
     EvaluationUserInsightItem,
     EvaluationUserInsightsState,
@@ -222,17 +224,28 @@ def _call_llm(
     *,
     temperature: float,
     max_tokens: int,
+    usage_ctx: Optional[LLMUsageContext] = None,
 ) -> str:
-    result = llm_service.generate_response(
-        messages=messages,
-        llm_provider=provider,
-        llm_model=model,
-        organization_id=organization_id,
-        db=db,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return str(result.get("text") or "")
+    from app.services.usage.context import get_usage_context, llm_usage_context
+
+    effective_ctx = usage_ctx or get_usage_context()
+
+    def _run() -> str:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider,
+            llm_model=model,
+            organization_id=organization_id,
+            db=db,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return str(result.get("text") or "")
+
+    if effective_ctx is not None:
+        with llm_usage_context(effective_ctx):
+            return _run()
+    return _run()
 
 
 def run_extraction_batch(

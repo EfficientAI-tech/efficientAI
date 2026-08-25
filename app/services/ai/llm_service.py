@@ -519,22 +519,6 @@ class LLMService:
         )
         _normalize_temperature_for_model(model_str, call_kwargs)
 
-        # #region agent log
-        try:
-            import json as _json, time as _time
-            _msg_types = []
-            for _m in messages:
-                _c = _m.get("content")
-                if isinstance(_c, list):
-                    _msg_types.extend(
-                        p.get("type") for p in _c if isinstance(p, dict)
-                    )
-            with open("debug-bfc313.log", "a", encoding="utf-8") as _f:
-                _f.write(_json.dumps({"sessionId": "bfc313", "runId": "post-fix", "hypothesisId": "C", "location": "llm_service.py:generate_response", "message": "pre-completion routing", "data": {"effective_routing": effective_routing, "credential_mode": getattr(credential_ctx, "routing_mode", None), "credential_id": str(credential_id) if credential_id else None, "model": model_str, "has_api_base": "api_base" in call_kwargs, "custom_llm_provider": call_kwargs.get("custom_llm_provider"), "content_part_types": _msg_types}, "timestamp": int(_time.time() * 1000)}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-
         try:
             response = litellm.completion(**call_kwargs)
         except Exception as e:
@@ -578,6 +562,36 @@ class LLMService:
             "raw_response": response,
             "processing_time": time.time() - start_time,
         }
+        try:
+            from app.services.usage.context import (
+                LLMUsageProductSection,
+                ensure_usage_context,
+                reset_usage_context,
+            )
+            from app.services.usage.normalize import (
+                normalize_llm_usage,
+                usage_snapshot_is_billable,
+            )
+            from app.services.usage.llm_usage import record_llm_usage
+
+            usage_token = ensure_usage_context(
+                organization_id,
+                product_section=LLMUsageProductSection.OTHER,
+            )
+            try:
+                snapshot = normalize_llm_usage(raw_response=response)
+                result["usage"]["cache_read_tokens"] = snapshot.cache_read_tokens
+                result["usage"]["cache_creation_tokens"] = snapshot.cache_creation_tokens
+                result["usage"]["reasoning_tokens"] = snapshot.reasoning_tokens
+                if usage_snapshot_is_billable(snapshot):
+                    record_llm_usage(
+                        llm_model, snapshot, organization_id=organization_id
+                    )
+            finally:
+                if usage_token is not None:
+                    reset_usage_context(usage_token)
+        except Exception as exc:
+            logger.debug("llm usage record skipped: {}", exc)
         return result
 
 

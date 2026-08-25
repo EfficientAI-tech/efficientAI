@@ -7,10 +7,9 @@ drives the upload-time mapping UI. The user defines the schema once
 parameters are mapped to source columns.
 
 Every schema MUST contain exactly one parameter with
-``type='conversation_id'`` and exactly one with
-``type='recording_url'``. At most one parameter each may use
-``type='recording_date'`` or ``type='transcript'``.
-``conversation_id`` and ``recording_url`` are forced to
+``type='conversation_id'``. At most one parameter each may use
+``type='recording_url'``, ``type='recording_date'``, or
+``type='transcript'``. Only ``conversation_id`` is forced to
 ``is_required=True``. The invariant is enforced here on create + update
 because it spans the parent (`call_import_schemas`) and the children
 (`call_import_schema_parameters`) which are written in the same
@@ -78,11 +77,7 @@ def _materialize_parameters(
     rows: List[CallImportSchemaParameter] = []
     for idx, param in enumerate(payload_params):
         is_required = (
-            param.type
-            in (
-                CallImportParameterType.CONVERSATION_ID,
-                CallImportParameterType.RECORDING_URL,
-            )
+            param.type == CallImportParameterType.CONVERSATION_ID
             or bool(param.is_required)
         )
         rows.append(

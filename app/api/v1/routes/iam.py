@@ -23,15 +23,9 @@ from app.models.schemas import (
 )
 from app.core.password import hash_password, validate_password_strength
 from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
+from app.services.invitation_service import invitation_to_response_dict, to_aware_utc
 
 router = APIRouter(prefix="/iam", tags=["IAM"])
-
-
-def _to_aware_utc(dt: datetime) -> datetime:
-    """Normalize datetimes to timezone-aware UTC for safe comparisons."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def get_user_from_api_key(api_key: str, db: Session) -> User:
@@ -309,19 +303,13 @@ async def invite_user(
     db.commit()
     db.refresh(invitation)
     
-    # Get organization name
     org = db.query(Organization).filter(Organization.id == organization_id).first()
-    
-    return {
-        "id": invitation.id,
-        "organization_id": invitation.organization_id,
-        "email": invitation.email,
-        "role": invitation.role,
-        "status": invitation.status,
-        "expires_at": invitation.expires_at,
-        "created_at": invitation.created_at,
-        "organization_name": org.name if org else None
-    }
+
+    return invitation_to_response_dict(
+        db,
+        invitation,
+        organization_name=org.name if org else None,
+    )
 
 
 @router.get("/invitations", response_model=List[InvitationResponse], operation_id="listInvitations")
@@ -345,21 +333,12 @@ async def list_invitations(
     result = []
     for invitation in invitations:
         # Mark expired pending invites in the DB but do not surface them here.
-        if _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
+        if to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
             continue
-        
-        result.append({
-            "id": invitation.id,
-            "organization_id": invitation.organization_id,
-            "email": invitation.email,
-            "role": invitation.role,
-            "status": invitation.status,
-            "expires_at": invitation.expires_at,
-            "created_at": invitation.created_at,
-            "organization_name": org_name
-        })
+
+        result.append(invitation_to_response_dict(db, invitation, organization_name=org_name))
     
     return result
 

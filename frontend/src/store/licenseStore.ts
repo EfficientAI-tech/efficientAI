@@ -1,16 +1,23 @@
 import { create } from 'zustand'
 import { apiClient } from '../lib/api'
-import type { EnterpriseFeatureCatalog, EnterpriseFeatureMeta } from '../lib/api'
+import type { EnterpriseFeatureCatalog, EnterpriseFeatureMeta, UsagePolicy } from '../lib/api'
+
+const DEFAULT_USAGE_POLICY: UsagePolicy = {
+  extended_history: false,
+  max_history_days: 7,
+}
 
 interface LicenseState {
   isEnterprise: boolean
   enabledFeatures: string[]
   allEnterpriseFeatures: string[]
   featureCatalog: EnterpriseFeatureCatalog
+  usagePolicy: UsagePolicy
   isLoaded: boolean
   fetchLicense: () => Promise<void>
   isFeatureEnabled: (feature: string) => boolean
   getFeatureMeta: (feature: string) => EnterpriseFeatureMeta | undefined
+  hasExtendedUsageHistory: () => boolean
 }
 
 export const useLicenseStore = create<LicenseState>((set, get) => ({
@@ -18,6 +25,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
   enabledFeatures: [],
   allEnterpriseFeatures: [],
   featureCatalog: {},
+  usagePolicy: DEFAULT_USAGE_POLICY,
   isLoaded: false,
 
   fetchLicense: async () => {
@@ -28,6 +36,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
         enabledFeatures: info.enabled_features,
         allEnterpriseFeatures: info.all_enterprise_features,
         featureCatalog: info.feature_catalog ?? {},
+        usagePolicy: info.usage_policy ?? DEFAULT_USAGE_POLICY,
         isLoaded: true,
       })
     } catch {
@@ -36,6 +45,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
         enabledFeatures: [],
         allEnterpriseFeatures: [],
         featureCatalog: {},
+        usagePolicy: DEFAULT_USAGE_POLICY,
         isLoaded: true,
       })
     }
@@ -47,5 +57,9 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
 
   getFeatureMeta: (feature: string) => {
     return get().featureCatalog[feature]
+  },
+
+  hasExtendedUsageHistory: () => {
+    return get().usagePolicy.extended_history
   },
 }))

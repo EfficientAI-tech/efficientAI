@@ -553,7 +553,13 @@ class GcsService:
         key = self._get_key(file_id, file_format)
         return self.generate_presigned_url_by_key(key, expiration=expiration)
 
-    def generate_presigned_url_by_key(self, key: str, expiration: int = 3600) -> str:
+    def generate_presigned_url_by_key(
+        self,
+        key: str,
+        expiration: int = 3600,
+        *,
+        response_content_disposition: str | None = None,
+    ) -> str:
         """Generate a signed URL for temporary file access by key."""
         self._ensure_initialized()
         if not self.is_enabled():
@@ -567,23 +573,27 @@ class GcsService:
         if credentials is None and iam_params is None:
             raise StorageError(_GCS_SIGNING_UNAVAILABLE_MSG)
 
+        signed_url_kwargs: dict = {
+            "version": "v4",
+            "expiration": timedelta(seconds=expiration),
+            "method": "GET",
+        }
+        if response_content_disposition:
+            signed_url_kwargs["response_disposition"] = response_content_disposition
+
         try:
             blob = self.bucket.blob(key)
             if credentials is not None:
                 url = blob.generate_signed_url(
-                    version="v4",
-                    expiration=timedelta(seconds=expiration),
-                    method="GET",
                     credentials=credentials,
+                    **signed_url_kwargs,
                 )
             else:
                 sa_email, access_token = iam_params
                 url = blob.generate_signed_url(
-                    version="v4",
-                    expiration=timedelta(seconds=expiration),
-                    method="GET",
                     service_account_email=sa_email,
                     access_token=access_token,
+                    **signed_url_kwargs,
                 )
             return url
         except GoogleCloudError as e:

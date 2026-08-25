@@ -289,6 +289,17 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             if user_transcript_processor:
                 pipeline_processors.append(user_transcript_processor)
             pipeline_processors.append(llm)
+            from app.services.usage.voice_usage_processor import create_llm_usage_recorder
+
+            usage_recorder = create_llm_usage_recorder(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section="agents" if agent_id else ("telephony" if telephony_mode else "playground"),
+                resource_id=agent_id,
+                resource_type="agent" if agent_id else None,
+            )
+            if usage_recorder:
+                pipeline_processors.append(usage_recorder)
             if agent_transcript_processor:
                 pipeline_processors.append(agent_transcript_processor)
             pipeline_processors.extend([
@@ -337,12 +348,23 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                     live_observability_emitter=live_observability_emitter,
                 )
 
+            from app.services.usage.voice_usage_processor import create_llm_usage_recorder
+
+            usage_recorder = create_llm_usage_recorder(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                product_section="agents" if agent_id else "playground",
+                resource_id=agent_id,
+                resource_type="agent" if agent_id else None,
+            )
             pipeline_processors = [ws_transport.input(), user_recorder, context_aggregator.user()]
             if rtvi_user_transcript_processor:
                 pipeline_processors.append(rtvi_user_transcript_processor)
             pipeline_processors.extend([rtvi, llm])
             if rtvi_agent_transcript_processor:
                 pipeline_processors.append(rtvi_agent_transcript_processor)
+            if usage_recorder:
+                pipeline_processors.append(usage_recorder)
             pipeline_processors.extend([
                 bot_recorder,
                 ws_transport.output(),

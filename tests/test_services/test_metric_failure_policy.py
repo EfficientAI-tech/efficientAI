@@ -43,6 +43,16 @@ def test_suggest_failure_policy_prefers_no_over_yes():
     assert policy.failure_values == ["no"]
 
 
+def test_suggest_failure_policy_single_choice_yes_no_does_not_auto_flag_no():
+    parent = _metric(name="AI reveal", selection_mode="single_choice")
+    policy = suggest_failure_policy(
+        parent,
+        observed_labels=["Yes", "No"],
+        child_names=["Yes", "No"],
+    )
+    assert policy.failure_values == []
+
+
 def test_prune_policy_when_no_rows_match_failure_label():
     metric = _metric()
     raw = suggest_failure_policy(metric, observed_labels=["Yes", "No"])

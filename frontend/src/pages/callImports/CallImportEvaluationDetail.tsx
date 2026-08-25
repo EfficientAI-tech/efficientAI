@@ -59,6 +59,7 @@ import {
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import { downloadBlob } from '../../lib/download'
 import {
   isLLMSelectionComplete,
   resolveLLMModelForSubmit,
@@ -92,6 +93,7 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import { getActiveWorkspaceId, useWorkspaceStore } from '../../store/workspaceStore'
 import StatusBadge from '../../components/shared/StatusBadge'
+import { EvaluationAuditMeta } from '../../components/callImports/AuditMetaChips'
 import DiariseStatusPill from '../../components/callImports/DiariseStatusPill'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
@@ -431,9 +433,10 @@ export default function CallImportEvaluationDetail() {
   const [pendingDeleteRow, setPendingDeleteRow] =
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
-  const [forceFailPendingOpen, setForceFailPendingOpen] = useState(false)
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
+  const [pdfReportMenuOpen, setPdfReportMenuOpen] = useState(false)
+  const pdfReportMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
   const [pdfWizardStep, setPdfWizardStep] = useState(1)
   const [pdfUserInsightsTriggering, setPdfUserInsightsTriggering] =
@@ -471,6 +474,10 @@ export default function CallImportEvaluationDetail() {
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false)
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
   const [pdfPreviewFilename, setPdfPreviewFilename] = useState('')
+  const [pdfPreviewReportId, setPdfPreviewReportId] = useState<string | null>(
+    null,
+  )
+  const [pdfPreviewDownloading, setPdfPreviewDownloading] = useState(false)
   const [vizBaselineEvaluationId, setVizBaselineEvaluationId] = useState<
     string | null
   >(null)
@@ -889,6 +896,12 @@ export default function CallImportEvaluationDetail() {
     },
   })
 
+  const pdfReportsQuery = useQuery({
+    queryKey: ['call-import-evaluation-pdf-reports', activeWorkspaceId, id, evalId],
+    queryFn: () => apiClient.listCallImportEvaluationPdfReports(id!, evalId!),
+    enabled: pdfReportMenuOpen && !!id && !!evalId,
+  })
+
   useEffect(() => {
     if (!deepLinkConversationId && !deepLinkRowId) return
     if (deepLinkConversationId && searchQuery !== deepLinkConversationId) {
@@ -1054,15 +1067,16 @@ export default function CallImportEvaluationDetail() {
   // persists them onto the run so the next retry defaults to them.
   const retryAllFailedMutation = useMutation({
     mutationFn: () => {
-      // Only forward LLM overrides when the user actually picked
-      // BOTH provider and model — backend 400s on half-configured
-      // input, and "did the user touch the picker" is fuzzy anyway
-      // because it gets seeded from the run's saved values.
+      // Forward LLM overrides only when the picker resolves to a
+      // complete selection (catalog model, gateway credential, etc.).
       const llmChanged =
         retryLLM.provider !== (evaluation?.llm_provider ?? null) ||
         retryLLM.model !== (evaluation?.llm_model ?? null) ||
         (retryLLM.credential_id ?? null) !==
-          (evaluation?.llm_credential_id ?? null)
+          (evaluation?.llm_credential_id ?? null) ||
+        JSON.stringify(retryLLM.llm_config ?? null) !==
+          JSON.stringify(evaluation?.llm_config ?? null)
+      const llmComplete = isLLMSelectionComplete(retryLLM, aiProviders)
       const sttChanged =
         retrySTT.provider !== (evaluation?.stt_provider ?? null) ||
         retrySTT.model !== (evaluation?.stt_model ?? null) ||
@@ -1075,6 +1089,10 @@ export default function CallImportEvaluationDetail() {
           (evaluation?.diarisation_llm_model ?? null) ||
         (retryDiariserLLM.credential_id ?? null) !==
           (evaluation?.diarisation_llm_credential_id ?? null)
+      const diariserComplete = isLLMSelectionComplete(
+        retryDiariserLLM,
+        aiProviders,
+      )
       const transcribeModeChanged =
         retryTranscribeMode !== (evaluation?.transcribe_mode ?? 'stt_llm')
       const diarisationPromptChanged =
@@ -1093,17 +1111,16 @@ export default function CallImportEvaluationDetail() {
 
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         llmProvider:
-          llmChanged && retryLLM.provider && retryLLM.model
-            ? retryLLM.provider
-            : undefined,
+          llmChanged && llmComplete ? retryLLM.provider ?? undefined : undefined,
         llmModel:
-          llmChanged && retryLLM.provider && retryLLM.model
-            ? retryLLM.model
+          llmChanged && llmComplete
+            ? resolveLLMModelForSubmit(retryLLM, aiProviders) ??
+              retryLLM.model ??
+              undefined
             : undefined,
         llmCredentialId:
-          llmChanged && retryLLM.provider && retryLLM.model
-            ? retryLLM.credential_id ?? null
-            : undefined,
+          llmChanged && llmComplete ? retryLLM.credential_id ?? null : undefined,
+        llmConfig: llmChanged ? retryLLM.llm_config ?? null : undefined,
         sttProvider:
           sttChanged && retrySTT.provider && retrySTT.model
             ? retrySTT.provider
@@ -1120,16 +1137,17 @@ export default function CallImportEvaluationDetail() {
           ? retryTranscribeMode
           : undefined,
         diarizationLlmProvider:
-          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
-            ? retryDiariserLLM.provider
+          diariserChanged && diariserComplete
+            ? retryDiariserLLM.provider ?? undefined
             : undefined,
         diarizationLlmModel:
-          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+          diariserChanged && diariserComplete
             ? resolveLLMModelForSubmit(retryDiariserLLM, aiProviders) ??
-              retryDiariserLLM.model
+              retryDiariserLLM.model ??
+              undefined
             : undefined,
         diarizationLlmCredentialId:
-          diariserChanged && retryDiariserLLM.provider && retryDiariserLLM.model
+          diariserChanged && diariserComplete
             ? retryDiariserLLM.credential_id ?? null
             : undefined,
         diarizationPrompt: diarisationPromptChanged
@@ -1238,21 +1256,20 @@ export default function CallImportEvaluationDetail() {
           (evaluation?.llm_credential_id ?? null) ||
         JSON.stringify(rerunLLM.llm_config ?? null) !==
           JSON.stringify(evaluation?.llm_config ?? null)
+      const llmComplete = isLLMSelectionComplete(rerunLLM, aiProviders)
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         metricIds,
         includeCompleted: true,
         llmProvider:
-          llmChanged && rerunLLM.provider && rerunLLM.model
-            ? rerunLLM.provider
-            : undefined,
+          llmChanged && llmComplete ? rerunLLM.provider ?? undefined : undefined,
         llmModel:
-          llmChanged && rerunLLM.model && rerunLLM.provider
-            ? rerunLLM.model
+          llmChanged && llmComplete
+            ? resolveLLMModelForSubmit(rerunLLM, aiProviders) ??
+              rerunLLM.model ??
+              undefined
             : undefined,
         llmCredentialId:
-          llmChanged && rerunLLM.provider && rerunLLM.model
-            ? rerunLLM.credential_id ?? null
-            : undefined,
+          llmChanged && llmComplete ? rerunLLM.credential_id ?? null : undefined,
         llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
       })
     },
@@ -1342,29 +1359,6 @@ export default function CallImportEvaluationDetail() {
           : err?.response?.data?.detail ||
               err?.message ||
               'Failed to abort this evaluation run.',
-      )
-    },
-  })
-
-  const forceFailPendingMutation = useMutation({
-    mutationFn: () => apiClient.forceFailCallImportEvaluationPending(id!, evalId!),
-    onMutate: () => {
-      setCancelError(null)
-    },
-    onSuccess: (data: CallImportEvaluationBulkActionResponse) => {
-      if (data.target_count > 0) {
-        setEvaluationBulkOperationOptimistic('force_fail_pending')
-      }
-      setForceFailPendingOpen(false)
-      invalidateEvaluationQueries()
-    },
-    onError: (err: any) => {
-      setCancelError(
-        err?.response?.status === 409
-          ? err?.response?.data?.detail || bulkOperationConflictMessage
-          : err?.response?.data?.detail ||
-              err?.message ||
-              'Failed to force-fail pending rows.',
       )
     },
   })
@@ -1816,6 +1810,34 @@ export default function CallImportEvaluationDetail() {
     )
   }
 
+  const openStoredPdfPreview = async (reportId: string) => {
+    if (!id || !evalId) return
+    try {
+      const report = await apiClient.getCallImportEvaluationPdfReport(
+        id,
+        evalId,
+        reportId,
+      )
+      if (!report.preview_url) {
+        throw new Error('Preview URL is not available.')
+      }
+      if (pdfPreviewUrl?.startsWith('blob:')) {
+        window.URL.revokeObjectURL(pdfPreviewUrl)
+      }
+      setPdfPreviewUrl(report.preview_url)
+      setPdfPreviewFilename(report.filename || 'report.pdf')
+      setPdfPreviewReportId(reportId)
+      setPdfPreviewOpen(true)
+      setPdfReportMenuOpen(false)
+    } catch (e: unknown) {
+      console.error('Failed to open stored PDF report', e)
+      showToast(
+        getApiErrorMessage(e, 'Failed to open PDF preview.'),
+        'error',
+      )
+    }
+  }
+
   const handlePdfReportSubmit = async () => {
     if (!id || !evalId || pdfReportLoading) return
     const vendorName = pdfVendorName.trim()
@@ -1826,20 +1848,47 @@ export default function CallImportEvaluationDetail() {
     setPdfReportLoadingAction('download')
     setPdfReportError(null)
     try {
-      const blob = await generatePdfReportBlob(vendorName)
+      const result = await generatePdfReportBlob(vendorName)
       const vendorSlug =
         vendorName
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-+|-+$/g, '') || 'client'
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
+      const defaultFilename = `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`
+
+      if (result instanceof Blob) {
+        downloadBlob(result, defaultFilename)
+      } else {
+        if (result.id && id && evalId) {
+          const blob = await apiClient.downloadCallImportEvaluationPdfReport(
+            id,
+            evalId,
+            result.id,
+          )
+          downloadBlob(blob, result.filename || defaultFilename)
+        } else {
+          const downloadUrl = result.download_url
+          if (!downloadUrl) {
+            throw new Error('Download URL is not available.')
+          }
+          const response = await fetch(downloadUrl)
+          if (!response.ok) {
+            throw new Error('Failed to download PDF report.')
+          }
+          downloadBlob(
+            await response.blob(),
+            result.filename || defaultFilename,
+          )
+        }
+        await queryClient.invalidateQueries({
+          queryKey: [
+            'call-import-evaluation-pdf-reports',
+            activeWorkspaceId,
+            id,
+            evalId,
+          ],
+        })
+      }
       setPdfReportOpen(false)
       setPdfWizardStep(1)
       setPdfVendorName('')
@@ -1865,18 +1914,45 @@ export default function CallImportEvaluationDetail() {
     setPdfReportLoadingAction('preview')
     setPdfReportError(null)
     try {
-      const blob = await generatePdfReportBlob(vendorName)
+      const result = await generatePdfReportBlob(vendorName)
       const vendorSlug =
         vendorName
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-+|-+$/g, '') || 'client'
-      if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
-      const url = window.URL.createObjectURL(blob)
-      setPdfPreviewUrl(url)
-      setPdfPreviewFilename(
-        `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
-      )
+
+      if (result instanceof Blob) {
+        if (pdfPreviewUrl?.startsWith('blob:')) {
+          window.URL.revokeObjectURL(pdfPreviewUrl)
+        }
+        const url = window.URL.createObjectURL(result)
+        setPdfPreviewUrl(url)
+        setPdfPreviewFilename(
+          `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
+        )
+        setPdfPreviewReportId(null)
+      } else {
+        if (!result.preview_url) {
+          throw new Error('Preview URL is not available.')
+        }
+        if (pdfPreviewUrl?.startsWith('blob:')) {
+          window.URL.revokeObjectURL(pdfPreviewUrl)
+        }
+        setPdfPreviewUrl(result.preview_url)
+        setPdfPreviewFilename(
+          result.filename ||
+            `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
+        )
+        setPdfPreviewReportId(result.id)
+        await queryClient.invalidateQueries({
+          queryKey: [
+            'call-import-evaluation-pdf-reports',
+            activeWorkspaceId,
+            id,
+            evalId,
+          ],
+        })
+      }
       setPdfPreviewOpen(true)
     } catch (e: unknown) {
       console.error('Failed to preview PDF report', e)
@@ -1884,6 +1960,43 @@ export default function CallImportEvaluationDetail() {
       showToast(message, 'error')
     } finally {
       setPdfReportLoadingAction(null)
+    }
+  }
+
+  const handlePdfPreviewDownload = async () => {
+    if (!pdfPreviewFilename) return
+    setPdfPreviewDownloading(true)
+    try {
+      if (pdfPreviewReportId && id && evalId) {
+        const blob = await apiClient.downloadCallImportEvaluationPdfReport(
+          id,
+          evalId,
+          pdfPreviewReportId,
+        )
+        downloadBlob(blob, pdfPreviewFilename)
+        return
+      }
+      if (pdfPreviewUrl?.startsWith('blob:')) {
+        downloadBlob(
+          await fetch(pdfPreviewUrl).then((r) => r.blob()),
+          pdfPreviewFilename,
+        )
+        return
+      }
+      if (!pdfPreviewUrl) return
+      const response = await fetch(pdfPreviewUrl)
+      if (!response.ok) {
+        throw new Error('Failed to download PDF report.')
+      }
+      downloadBlob(await response.blob(), pdfPreviewFilename)
+    } catch (e: unknown) {
+      console.error('Failed to download PDF report', e)
+      showToast(
+        getApiErrorMessage(e, 'Failed to download PDF report.'),
+        'error',
+      )
+    } finally {
+      setPdfPreviewDownloading(false)
     }
   }
 
@@ -2019,7 +2132,9 @@ export default function CallImportEvaluationDetail() {
 
   useEffect(() => {
     return () => {
-      if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+      if (pdfPreviewUrl?.startsWith('blob:')) {
+        window.URL.revokeObjectURL(pdfPreviewUrl)
+      }
     }
   }, [pdfPreviewUrl])
 
@@ -2164,6 +2279,20 @@ export default function CallImportEvaluationDetail() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [downloadMenuOpen])
 
+  useEffect(() => {
+    if (!pdfReportMenuOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        pdfReportMenuRef.current &&
+        !pdfReportMenuRef.current.contains(event.target as Node)
+      ) {
+        setPdfReportMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [pdfReportMenuOpen])
+
   if (!id || !evalId) {
     return <div className="text-sm text-red-600">Missing identifiers.</div>
   }
@@ -2208,12 +2337,6 @@ export default function CallImportEvaluationDetail() {
     : `Evaluation ${evaluation.id.slice(0, 8)}`
   const bulkOperation = evaluation.bulk_operation ?? null
   const bulkOperationActive = bulkOperation !== null
-  const pendingRowCount = Math.max(
-    0,
-    (evaluation.total_rows ?? 0) -
-      (evaluation.completed_rows ?? 0) -
-      (evaluation.failed_rows ?? 0),
-  )
   const getMetricLlmLabel = (metricId: string): string => {
     const override = evaluation.metric_llm_overrides?.[metricId]
     const overrideProvider = override?.provider?.trim()
@@ -2269,36 +2392,6 @@ export default function CallImportEvaluationDetail() {
               Abort run
             </Button>
           )}
-          {pendingRowCount > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              leftIcon={<AlertTriangle className="h-4 w-4" />}
-              onClick={() => {
-                if (
-                  forceFailPendingMutation.isPending ||
-                  bulkOperationActive
-                ) {
-                  return
-                }
-                setCancelError(null)
-                setForceFailPendingOpen(true)
-              }}
-              isLoading={
-                forceFailPendingMutation.isPending ||
-                bulkOperation === 'force_fail_pending'
-              }
-              disabled={
-                bulkOperationActive || forceFailPendingMutation.isPending
-              }
-              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
-              title={`Mark ${pendingRowCount} pending row${
-                pendingRowCount === 1 ? '' : 's'
-              } as failed without aborting running rows`}
-            >
-              Force-fail pending ({pendingRowCount})
-            </Button>
-          )}
           {evaluation.failed_rows > 0 && (
             <Button
               variant="outline"
@@ -2346,20 +2439,90 @@ export default function CallImportEvaluationDetail() {
               Re-run metrics
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<FileText className="h-4 w-4" />}
-            onClick={() => {
-              setPdfReportError(null)
-              setPdfGenerationError(null)
-              setPdfWizardStep(1)
-              setPdfReportOpen(true)
-            }}
-            disabled={!rowsQuery.data?.items?.length}
-          >
-            Generate PDF Report
-          </Button>
+          <div className="relative" ref={pdfReportMenuRef}>
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<FileText className="h-4 w-4" />}
+              rightIcon={
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${
+                    pdfReportMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              }
+              onClick={() => setPdfReportMenuOpen((prev) => !prev)}
+              disabled={(evaluation?.total_rows ?? 0) < 1}
+            >
+              PDF report
+            </Button>
+            {pdfReportMenuOpen && (
+              <div
+                className="absolute right-0 z-20 mt-1 w-80 flex flex-col max-h-[min(28rem,70vh)] bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
+                role="menu"
+              >
+                <div className="p-2 border-b border-gray-100 shrink-0">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center justify-center gap-1.5 rounded-md border border-amber-500 bg-white px-2.5 py-1.5 text-xs font-semibold text-amber-900 hover:border-amber-600 hover:bg-amber-50/50 transition-colors"
+                    onClick={() => {
+                      setPdfReportMenuOpen(false)
+                      setPdfReportError(null)
+                      setPdfGenerationError(null)
+                      setPdfWizardStep(1)
+                      setPdfReportOpen(true)
+                    }}
+                  >
+                    <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    Generate new PDF
+                  </button>
+                </div>
+                <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100 shrink-0 bg-white">
+                  History
+                </div>
+                <div
+                  className="overflow-y-auto overscroll-y-contain min-h-0 flex-1 [scrollbar-gutter:stable]"
+                  role="group"
+                  aria-label="Stored PDF reports"
+                >
+                  {pdfReportsQuery.isLoading ? (
+                    <p className="px-3 py-3 text-sm text-gray-500">Loading…</p>
+                  ) : (pdfReportsQuery.data?.items?.length ?? 0) === 0 ? (
+                    <p className="px-3 py-3 text-sm text-gray-500">
+                      No stored reports yet.
+                    </p>
+                  ) : (
+                    <ul className="py-1">
+                      {pdfReportsQuery.data!.items.map((item) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            className="w-full px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 focus:outline-none focus-visible:bg-gray-50 border-b border-gray-50 last:border-b-0"
+                            role="menuitem"
+                            onClick={() => openStoredPdfPreview(item.id)}
+                          >
+                            <span className="font-medium text-gray-900 block truncate">
+                              {item.vendor_name} · {item.report_type}
+                            </span>
+                            <span className="text-xs text-gray-500 block truncate mt-0.5">
+                              {new Date(item.created_at).toLocaleString()}
+                              {item.created_by ? ` · ${item.created_by}` : ''}
+                            </span>
+                            {item.config_summary ? (
+                              <span className="text-xs text-gray-400 block truncate mt-0.5">
+                                {item.config_summary}
+                              </span>
+                            ) : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           <div className="relative" ref={downloadMenuRef}>
             <Button
               variant="outline"
@@ -2480,11 +2643,11 @@ export default function CallImportEvaluationDetail() {
             <div className="mt-1 text-xs text-gray-500 font-mono">
               {evaluation.id}
             </div>
-            <div className="mt-3 flex items-center gap-3 flex-wrap">
+            <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 min-w-0 max-w-full text-sm text-gray-600">
               <StatusBadge status={evaluation.status} />
               <span
                 className={
-                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ' +
+                  'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ' +
                   (evaluation.transcript_source === 'diarised'
                     ? 'bg-purple-50 text-purple-700'
                     : 'bg-gray-100 text-gray-700')
@@ -2499,19 +2662,15 @@ export default function CallImportEvaluationDetail() {
                   ? 'Evaluated on Diarised transcript'
                   : 'Evaluated on Production transcript'}
               </span>
-              <span className="text-sm text-gray-600">
-                Created: {formatDateTime(evaluation.created_at)}
-              </span>
-              {evaluation.started_at && (
-                <span className="text-sm text-gray-600">
-                  Started: {formatDateTime(evaluation.started_at)}
-                </span>
-              )}
-              {evaluation.finished_at && (
-                <span className="text-sm text-gray-600">
-                  Finished: {formatDateTime(evaluation.finished_at)}
-                </span>
-              )}
+              <EvaluationAuditMeta
+                inline
+                showTimestamps={false}
+                startedAt={evaluation.started_at}
+                finishedAt={evaluation.finished_at}
+                runByEmail={evaluation.created_by_email}
+                lastUpdatedByEmail={evaluation.last_updated_by_email}
+                formatDate={formatDateTime}
+              />
             </div>
           </div>
 
@@ -3913,30 +4072,6 @@ export default function CallImportEvaluationDetail() {
           setRowDeleteError(null)
         }}
       />
-      <ConfirmModal
-        isOpen={forceFailPendingOpen}
-        title={`Force-fail ${pendingRowCount} pending row${
-          pendingRowCount === 1 ? '' : 's'
-        }?`}
-        description={`This marks ${pendingRowCount} pending row${
-          pendingRowCount === 1 ? '' : 's'
-        } as failed immediately.\n\nThis won't affect rows currently running.`}
-        confirmLabel={`Force-fail ${pendingRowCount} pending row${
-          pendingRowCount === 1 ? '' : 's'
-        }`}
-        cancelLabel="Cancel"
-        variant="danger"
-        isLoading={forceFailPendingMutation.isPending}
-        onConfirm={() => {
-          if (!forceFailPendingMutation.isPending) {
-            forceFailPendingMutation.mutate()
-          }
-        }}
-        onCancel={() => {
-          if (forceFailPendingMutation.isPending) return
-          setForceFailPendingOpen(false)
-        }}
-      />
 
       {retryConfirmOpen &&
         createPortal(
@@ -4188,8 +4323,7 @@ export default function CallImportEvaluationDetail() {
                   isLoading={retryAllFailedMutation.isPending}
                   disabled={
                     retryAllFailedMutation.isPending ||
-                    !retryLLM.provider ||
-                    !retryLLM.model ||
+                    !isLLMSelectionComplete(retryLLM, aiProviders) ||
                     !isCredentialSelectionValid(
                       retryTelephonyProvider,
                       retryTelephonyIntegrationId,
@@ -4382,8 +4516,7 @@ export default function CallImportEvaluationDetail() {
                       disabled={
                         rerunMetricsMutation.isPending ||
                         noneSelected ||
-                        !rerunLLM.provider ||
-                        !rerunLLM.model
+                        !isLLMSelectionComplete(rerunLLM, aiProviders)
                       }
                     >
                       Re-run {selectedCount > 0 ? `${selectedCount} ` : ''}
@@ -5268,23 +5401,20 @@ export default function CallImportEvaluationDetail() {
               <div className="flex items-center gap-2 shrink-0">
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    if (!pdfPreviewUrl) return
-                    const link = document.createElement('a')
-                    link.href = pdfPreviewUrl
-                    link.download = pdfPreviewFilename
-                    document.body.appendChild(link)
-                    link.click()
-                    link.remove()
-                  }}
+                  onClick={handlePdfPreviewDownload}
+                  isLoading={pdfPreviewDownloading}
+                  disabled={pdfPreviewDownloading}
                 >
                   Download
                 </Button>
                 <Button
                   variant="primary"
                   onClick={() => {
-                    if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+                    if (pdfPreviewUrl?.startsWith('blob:')) {
+                      window.URL.revokeObjectURL(pdfPreviewUrl)
+                    }
                     setPdfPreviewUrl(null)
+                    setPdfPreviewReportId(null)
                     setPdfPreviewOpen(false)
                   }}
                 >
