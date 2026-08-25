@@ -2,12 +2,31 @@
 
 from uuid import uuid4
 
-from app.models.database import CallRecordingSource
+from app.models.database import Agent, CallRecordingSource
 from app.services.observability.call_ingest import persist_playground_voice_call
 
 
-def test_persist_playground_voice_call_merges_live_transcript(db_session, org_id, default_workspace, make_agent):
-    agent = make_agent()
+def _make_test_agent(db_session, org_id, default_workspace):
+    agent = Agent(
+        id=uuid4(),
+        agent_id="123456",
+        organization_id=org_id,
+        workspace_id=default_workspace.id,
+        name="Observability Test Agent",
+        phone_number="+1234567890",
+        language="en",
+        description="Agent description",
+        call_type="outbound",
+        call_medium="phone_call",
+    )
+    db_session.add(agent)
+    db_session.commit()
+    db_session.refresh(agent)
+    return agent
+
+
+def test_persist_playground_voice_call_merges_live_transcript(db_session, org_id, default_workspace):
+    agent = _make_test_agent(db_session, org_id, default_workspace)
     result_id = "882211"
     existing = persist_playground_voice_call(
         db_session,
@@ -63,8 +82,8 @@ def test_persist_playground_voice_call_merges_live_transcript(db_session, org_id
     assert call_data.get("startedAt") == "2026-08-07T09:18:00.000Z"
 
 
-def test_persist_playground_voice_call_sets_agent_on_create(db_session, org_id, default_workspace, make_agent):
-    agent = make_agent()
+def test_persist_playground_voice_call_sets_agent_on_create(db_session, org_id, default_workspace):
+    agent = _make_test_agent(db_session, org_id, default_workspace)
     recording = persist_playground_voice_call(
         db_session,
         organization_id=org_id,

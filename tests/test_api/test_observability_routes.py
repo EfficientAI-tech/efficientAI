@@ -165,7 +165,7 @@ def test_get_call_trace_returns_vapi_synthetic_trace_without_trace_id(
     authenticated_client, make_call_recording
 ):
     call_recording = make_call_recording(
-        call_short_id="vapi4444",
+        call_short_id="vapi44",
         source="webhook",
         provider_platform="vapi",
         provider_call_id="call_vapi_123",
@@ -212,7 +212,7 @@ def test_get_call_trace_returns_retell_synthetic_trace_without_trace_id(
     authenticated_client, make_call_recording
 ):
     call_recording = make_call_recording(
-        call_short_id="retell4444",
+        call_short_id="ret444",
         source="webhook",
         provider_platform="retell",
         provider_call_id="call_retell_123",
@@ -253,7 +253,7 @@ def test_get_call_trace_returns_retell_synthetic_trace_without_trace_id(
 
 def test_get_call_trace_prefers_stored_provider_trace(authenticated_client, make_call_recording):
     call_recording = make_call_recording(
-        call_short_id="storedtrace1",
+        call_short_id="stort1",
         source="webhook",
         provider_platform="retell",
         provider_call_id="call_retell_999",
@@ -361,7 +361,7 @@ def test_observability_audio_uses_elevenlabs_proxy(
         voice_ai_agent_id="agent_abc",
     )
     call_recording = make_call_recording(
-        call_short_id="obselaud1",
+        call_short_id="obsaud",
         source="webhook",
         agent_id=agent.id,
         provider_platform="elevenlabs",
@@ -370,7 +370,7 @@ def test_observability_audio_uses_elevenlabs_proxy(
     )
 
     def _proxy(**kwargs):
-        assert kwargs["call_recording"].call_short_id == "obselaud1"
+        assert kwargs["call_recording"].call_short_id == "obsaud"
         return Response(content=b"mp3-bytes", media_type="audio/mpeg")
 
     monkeypatch.setattr(
@@ -439,7 +439,7 @@ def test_refresh_observability_call_pulls_provider_metrics(
     integration = make_integration(platform="vapi", api_key="encrypted-api-key")
     agent = make_agent(integration=integration, voice_ai_integration_id=integration.id)
     call_recording = make_call_recording(
-        call_short_id="obsrefresh1",
+        call_short_id="obsrf1",
         source="webhook",
         agent_id=agent.id,
         provider_platform="vapi",
@@ -469,7 +469,7 @@ def test_refresh_observability_call_requires_provider_info(
     authenticated_client, make_call_recording
 ):
     call_recording = make_call_recording(
-        call_short_id="obsrefresh2",
+        call_short_id="obsrf2",
         source="webhook",
         call_data={"status": "queued"},
         provider_platform=None,
@@ -750,7 +750,7 @@ def test_get_call_trace_returns_pipecat_live_synthetic_trace(
 ):
     trace_id = "60e7082206844a85bbd9eaa13888c5ed"
     call_recording = make_call_recording(
-        call_short_id="pipecat7777",
+        call_short_id="pipe77",
         source="webhook",
         provider_platform="pipecat",
         provider_call_id="pipecat-live-1786946667",

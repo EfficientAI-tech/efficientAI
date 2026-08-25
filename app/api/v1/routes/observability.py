@@ -59,7 +59,14 @@ from app.workers.celery_app import process_evaluator_result_task
 
 router = APIRouter(prefix="/observability", tags=["observability"])
 
-_LIVE_SYNTHETIC_PLATFORMS = frozenset({"pipecat", "livekit", "external"})
+_LIVE_SYNTHETIC_PLATFORMS = frozenset({"pipecat", "livekit"})
+
+
+def _should_build_live_synthetic_trace(provider_platform: str, call_data: Dict[str, Any]) -> bool:
+    platform = (provider_platform or "").strip().lower()
+    if platform in _LIVE_SYNTHETIC_PLATFORMS:
+        return True
+    return isinstance(call_data.get("live_transcript"), list)
 
 
 class CallIngestionPayload(BaseModel):
@@ -877,7 +884,7 @@ def _maybe_persist_provider_trace(
             provider_trace = payload.get("provider_trace")
             if isinstance(provider_trace, dict) and isinstance(provider_trace.get("otlp_traces"), dict):
                 raw_payload = provider_trace.get("otlp_traces")
-    elif platform in _LIVE_SYNTHETIC_PLATFORMS or isinstance(payload.get("live_transcript"), list):
+    elif _should_build_live_synthetic_trace(platform, payload):
         trace_payload = build_live_synthetic_trace(
             payload,
             provider_call_id=str(
@@ -2744,7 +2751,7 @@ async def get_call_trace(
             db.commit()
             return synthetic_trace
 
-    if provider_platform in _LIVE_SYNTHETIC_PLATFORMS or isinstance(call_data.get("live_transcript"), list):
+    if _should_build_live_synthetic_trace(provider_platform, call_data):
         synthetic_trace = build_live_synthetic_trace(
             call_data,
             provider_call_id=str(call_recording.provider_call_id or call_data.get("id") or call_short_id),

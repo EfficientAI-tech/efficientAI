@@ -170,6 +170,11 @@ class _FakeS3:
     def get_status_message(self):
         return None if self._enabled else "S3 disabled in tests"
 
+    def download_file_by_key(self, key, **_kwargs):
+        self.downloads = getattr(self, "downloads", [])
+        self.downloads.append(key)
+        return b"fake-audio-bytes"
+
     def upload_file_by_key(self, file_content, key, content_type="audio/mpeg"):
         self.uploads.append({"key": key, "size": len(file_content), "content_type": content_type})
         return key
