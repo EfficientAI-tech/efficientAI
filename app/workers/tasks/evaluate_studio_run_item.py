@@ -17,6 +17,7 @@ from app.models.database import (
     MetricStudioRunResult,
 )
 from app.services.metric_studio.metric_selection import load_studio_run_metrics
+from app.services.metric_studio.run_rollup import rollup_metric_studio_run
 from app.services.metric_studio.source_resolver import resolve_source
 from app.workers.config import celery_app
 from app.workers.tasks.evaluate_call_import_row_core import (
@@ -40,28 +41,7 @@ def _now_utc() -> datetime:
 
 
 def _rollup_run(db: Session, run: MetricStudioRun) -> None:
-    results = (
-        db.query(MetricStudioRunResult)
-        .filter(MetricStudioRunResult.run_id == run.id)
-        .all()
-    )
-    completed = sum(1 for r in results if r.status == "completed")
-    failed = sum(1 for r in results if r.status == "failed")
-    pending = sum(1 for r in results if r.status in {"pending", "running"})
-    run.completed_items = completed
-    run.failed_items = failed
-    if pending:
-        run.status = "running"
-    elif failed and completed:
-        run.status = "partial"
-        run.finished_at = _now_utc()
-    elif failed:
-        run.status = "failed"
-        run.finished_at = _now_utc()
-    else:
-        run.status = "completed"
-        run.finished_at = _now_utc()
-    db.commit()
+    rollup_metric_studio_run(db, run, emit_flexprice=True, commit=True)
 
 
 @celery_app.task(
@@ -236,6 +216,19 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
         result_row.error_message = None
         result_row.finished_at = _now_utc()
         db.commit()
+
+        from app.services.billing.flexprice_service import record_metric_studio_item_evaluated
+
+        record_metric_studio_item_evaluated(
+            run.organization_id,
+            result_row.id,
+            workspace_id=run.workspace_id,
+            run_id=run.id,
+            source_kind=result_row.source_kind,
+            source_ref=result_row.source_ref,
+            metric_count=len(metric_scores),
+        )
+
         _rollup_run(db, run)
         return {"status": "completed", "scores": len(metric_scores)}
     except Exception as exc:

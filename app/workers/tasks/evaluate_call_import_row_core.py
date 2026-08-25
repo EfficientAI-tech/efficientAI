@@ -591,7 +591,15 @@ def rollup_parent(
             reconcile_evaluation_counters(db, evaluation)
             db.refresh(evaluation)
 
+    _apply_parent_status_from_counters(evaluation)
+
+    total = int(evaluation.total_rows or 0)
     completed = int(evaluation.completed_rows or 0)
+    failed = int(evaluation.failed_rows or 0)
+    in_progress = total - completed - failed
+    if in_progress > 0:
+        return
+
     already_billed = int(getattr(evaluation, "billed_completed_rows", 0) or 0)
     delta = completed - already_billed
     if delta > 0:
@@ -618,8 +626,6 @@ def rollup_parent(
         )
         if billing_accepted:
             evaluation.billed_completed_rows = completed
-
-    _apply_parent_status_from_counters(evaluation)
 
 
 def parse_restricted_metric_uuids(
@@ -816,7 +822,7 @@ def maybe_bill_completed_eval_row_flexprice(
     if (eval_row.status or "").lower() != "completed":
         return
     from app.services.billing.flexprice_service import (
-        record_call_import_audio_minutes_billed,
+        record_call_import_recording_minutes_billed,
     )
 
     if source_row is None:
@@ -835,7 +841,7 @@ def maybe_bill_completed_eval_row_flexprice(
     if minutes <= 0:
         return
 
-    record_call_import_audio_minutes_billed(
+    record_call_import_recording_minutes_billed(
         evaluation.organization_id,
         eval_row.id,
         workspace_id=eval_row.workspace_id or evaluation.workspace_id,

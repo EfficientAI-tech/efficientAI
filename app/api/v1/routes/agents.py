@@ -2,16 +2,19 @@
 Agents API Routes
 Complete CRUD operations for test agents
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from uuid import uuid4
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 import random
 from pydantic import BaseModel
 from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
+from app.services.billing.flexprice_service import record_scenario_ai_text_generated
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
@@ -313,6 +316,7 @@ async def generate_test_prompt(
 @router.post("/generate-scenarios-from-prompt", response_model=GenerateScenariosFromPromptResponse)
 async def generate_scenarios_from_prompt(
     data: GenerateScenariosFromPromptRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -357,6 +361,15 @@ async def generate_scenarios_from_prompt(
                 llm_config=data.llm_config,
                 credential_id=data.credential_id,
             )
+        background_tasks.add_task(
+            record_scenario_ai_text_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            model=result.model,
+            purpose="scenarios_from_agent_prompt",
+            scenario_count=len(result.scenarios),
+        )
         return GenerateScenariosFromPromptResponse(
             scenarios=_scenario_draft_responses(result.scenarios),
             provider=result.provider,
@@ -372,6 +385,7 @@ async def generate_scenarios_from_prompt(
 @router.post("/generate-test-setup", response_model=GenerateTestSetupResponse)
 async def generate_test_setup(
     data: GenerateTestSetupRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -430,6 +444,15 @@ async def generate_test_setup(
                 llm_config=data.llm_config,
                 credential_id=data.credential_id,
             )
+        background_tasks.add_task(
+            record_scenario_ai_text_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            model=scenario_result.model,
+            purpose="scenarios_from_agent_prompt",
+            scenario_count=len(scenario_result.scenarios),
+        )
         return GenerateTestSetupResponse(
             sections=_test_prompt_section_responses(prompt_result.sections),
             test_agent_prompt=prompt_result.test_agent_prompt,

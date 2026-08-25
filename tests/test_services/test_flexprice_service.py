@@ -284,7 +284,7 @@ def test_record_call_import_evaluation_started(mock_flexprice):
 
 
 @patch("flexprice.Flexprice")
-def test_record_call_import_audio_minutes_billed(mock_flexprice):
+def test_record_call_import_recording_minutes_billed(mock_flexprice):
     settings.FLEXPRICE_ENABLED = True
     settings.FLEXPRICE_API_KEY = "test-key"
 
@@ -297,7 +297,7 @@ def test_record_call_import_audio_minutes_billed(mock_flexprice):
     mock_client = MagicMock()
     mock_flexprice.return_value.__enter__.return_value = mock_client
 
-    accepted = svc.record_call_import_audio_minutes_billed(
+    accepted = svc.record_call_import_recording_minutes_billed(
         org_id,
         eval_row_id,
         workspace_id=workspace_id,
@@ -308,7 +308,7 @@ def test_record_call_import_audio_minutes_billed(mock_flexprice):
     )
 
     mock_client.events.ingest_event.assert_called_once_with(
-        event_name="call_import.audio_minutes_billed",
+        event_name="call_import.recording_minutes_billed",
         external_customer_id=str(org_id),
         event_id=str(eval_row_id),
         source="efficientai",
@@ -319,6 +319,8 @@ def test_record_call_import_audio_minutes_billed(mock_flexprice):
             "evaluation_id": str(evaluation_id),
             "evaluation_row_id": str(eval_row_id),
             "audio_seconds": "90",
+            "billable_minutes": "2",
+            "billing_unit": "minute",
             "quantity": "2",
         },
     )
@@ -411,9 +413,457 @@ def test_record_playground_call_evaluated_uses_per_attempt_event_id(mock_flexpri
         source="efficientai",
         properties={
             "workspace_id": str(workspace_id),
+            "feature": "agent_playground",
             "call_short_id": "123456",
             "evaluator_result_id": str(evaluator_result_id),
             "evaluation_attempt_id": evaluation_attempt_id,
             "metric_count": "4",
+            "quantity": "1",
         },
     )
+
+
+@patch("flexprice.Flexprice")
+def test_record_playground_web_call_started_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    agent_id = uuid4()
+    call_short_id = "abc123"
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_playground_web_call_started(
+        org_id,
+        call_short_id,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "playground.web_call_started"
+    assert payload["properties"]["feature"] == "agent_playground"
+    assert payload["properties"]["quantity"] == "1"
+
+
+@patch("flexprice.Flexprice")
+def test_record_playground_websocket_session_started_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    call_short_id = "ws456"
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_playground_websocket_session_started(
+        org_id,
+        call_short_id,
+        workspace_id=workspace_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "playground.websocket_session_started"
+    assert payload["properties"]["feature"] == "agent_playground"
+
+
+@patch("flexprice.Flexprice")
+def test_record_playground_evaluation_completed_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    evaluator_result_id = uuid4()
+    evaluation_attempt_id = f"{evaluator_result_id}:task-1"
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_playground_evaluation_completed(
+        org_id,
+        evaluation_attempt_id,
+        evaluator_result_id=evaluator_result_id,
+        workspace_id=workspace_id,
+        call_short_id="999",
+        duration_seconds=12.5,
+        metric_count=2,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "playground.evaluation_completed"
+    assert payload["properties"]["feature"] == "agent_playground"
+    assert payload["properties"]["metric_count"] == "2"
+
+
+@patch("flexprice.Flexprice")
+def test_record_test_agent_conversation_started_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    conversation_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_test_agent_conversation_started(
+        org_id,
+        conversation_id,
+        workspace_id=workspace_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "test_agent.conversation_started"
+    assert payload["properties"]["feature"] == "agent_playground"
+
+
+@patch("flexprice.Flexprice")
+def test_record_test_agent_conversation_ended_bills_one_conversation(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    conversation_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_test_agent_conversation_ended(
+        org_id,
+        conversation_id,
+        workspace_id=workspace_id,
+        duration_seconds=120.0,
+        turn_count=8,
+    )
+
+    mock_client.events.ingest_event.assert_called_once_with(
+        event_name="test_agent.conversation_ended",
+        external_customer_id=str(org_id),
+        event_id=str(conversation_id),
+        source="efficientai",
+        properties={
+            "workspace_id": str(workspace_id),
+            "feature": "agent_playground",
+            "conversation_id": str(conversation_id),
+            "duration_seconds": "120.0",
+            "turn_count": "8",
+            "quantity": "1",
+        },
+    )
+
+
+@patch("flexprice.Flexprice")
+def test_record_test_agent_conversation_started_includes_voice_agent_metadata(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    conversation_id = uuid4()
+    agent_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_test_agent_conversation_started(
+        org_id,
+        conversation_id,
+        workspace_id=workspace_id,
+        result_id="123456",
+        agent_id=agent_id,
+        call_short_id="654321",
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["properties"]["result_id"] == "123456"
+    assert payload["properties"]["agent_id"] == str(agent_id)
+    assert payload["properties"]["call_short_id"] == "654321"
+
+
+@patch("flexprice.Flexprice")
+def test_record_evaluator_run_requested_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    request_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_evaluator_run_requested(
+        org_id,
+        request_id,
+        workspace_id=workspace_id,
+        quantity=3,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "evaluator.run_requested"
+    assert payload["properties"]["feature"] == "evaluators"
+    assert payload["properties"]["quantity"] == "3"
+
+
+@patch("flexprice.Flexprice")
+def test_record_evaluator_run_completed_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    evaluator_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_evaluator_run_completed(
+        org_id,
+        "res-001",
+        workspace_id=workspace_id,
+        evaluator_id=evaluator_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "evaluator.run_completed"
+    assert payload["properties"]["feature"] == "evaluators"
+    assert payload["properties"]["quantity"] == "1"
+
+
+@patch("flexprice.Flexprice")
+def test_record_judge_alignment_run_completed_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    run_id = uuid4()
+    dataset_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_judge_alignment_run_completed(
+        org_id,
+        run_id,
+        workspace_id=workspace_id,
+        dataset_id=dataset_id,
+        samples_scored=12,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "judge_alignment.run_completed"
+    assert payload["properties"]["feature"] == "judge_alignment"
+
+
+@patch("flexprice.Flexprice")
+def test_record_metrics_ai_assist_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    request_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_metrics_ai_assist(
+        org_id,
+        request_id,
+        workspace_id=workspace_id,
+        mode="generate",
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "metrics.ai_assist"
+    assert payload["properties"]["feature"] == "metrics_ai_assist"
+    assert payload["properties"]["mode"] == "generate"
+
+
+@patch("flexprice.Flexprice")
+def test_record_metric_studio_run_completed_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    run_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_metric_studio_run_completed(
+        org_id,
+        run_id,
+        workspace_id=workspace_id,
+        run_status="completed",
+        total_items=3,
+        completed_items=3,
+        failed_items=0,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "metric_studio.run_completed"
+    assert payload["properties"]["feature"] == "metric_studio"
+
+
+@patch("flexprice.Flexprice")
+def test_record_scenario_ai_text_generated_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    request_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_scenario_ai_text_generated(
+        org_id,
+        request_id,
+        workspace_id=workspace_id,
+        model="gpt-4o",
+        purpose="scenario_description",
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "scenario.ai_text_generated"
+    assert payload["properties"]["feature"] == "scenario_ai"
+    assert payload["properties"]["purpose"] == "scenario_description"
+
+
+@patch("flexprice.Flexprice")
+def test_record_tts_generation_started_includes_voice_playground_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    comparison_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_tts_generation_started(
+        org_id,
+        comparison_id,
+        workspace_id=workspace_id,
+        sample_count=4,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "tts.generation_started"
+    assert payload["properties"]["feature"] == "voice_playground"
+
+
+@patch("flexprice.Flexprice")
+def test_record_tts_sample_synthesized_includes_voice_playground_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    sample_id = uuid4()
+    comparison_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_tts_sample_synthesized(
+        org_id,
+        sample_id,
+        workspace_id=workspace_id,
+        comparison_id=comparison_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "tts.sample_synthesized"
+    assert payload["properties"]["feature"] == "voice_playground"
+    assert payload["properties"]["quantity"] == "1"
+
+
+@patch("flexprice.Flexprice")
+def test_record_tts_report_requested_includes_voice_playground_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    report_job_id = uuid4()
+    comparison_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_tts_report_requested(
+        org_id,
+        report_job_id,
+        workspace_id=workspace_id,
+        comparison_id=comparison_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "tts.report_requested"
+    assert payload["properties"]["feature"] == "voice_playground"
+
+
+@patch("flexprice.Flexprice")
+def test_record_tts_report_completed_includes_voice_playground_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    report_job_id = uuid4()
+    comparison_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_tts_report_completed(
+        org_id,
+        report_job_id,
+        workspace_id=workspace_id,
+        comparison_id=comparison_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "tts.report_completed"
+    assert payload["properties"]["feature"] == "voice_playground"
+
+
+@patch("flexprice.Flexprice")
+def test_record_blind_test_response_submitted_includes_voice_playground_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    response_id = uuid4()
+    share_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_blind_test_response_submitted(
+        org_id,
+        response_id,
+        share_id=share_id,
+        workspace_id=workspace_id,
+        response_count=3,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "blind_test.response_submitted"
+    assert payload["properties"]["feature"] == "voice_playground"
+    assert payload["properties"]["quantity"] == "3"

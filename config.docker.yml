@@ -141,3 +141,9 @@ judge_alignment:
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
 # license:
 #   key: "eyJhbGciOi..."
+
+# Flexprice usage metering (optional). api_key from FLEXPRICE_API_KEY env.
+flexprice:
+  enabled: true
+  api_host: "https://api.cloud.flexprice.io/v1"
+  # api_key: use FLEXPRICE_API_KEY in .env / container env

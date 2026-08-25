@@ -4,6 +4,31 @@ Event naming: ``product.action`` snake_case (e.g. ``call_import.batch_created``)
 Every event uses ``external_customer_id=str(organization.id)`` and a stable
 ``event_id`` for idempotency. ``properties`` should include ``workspace_id`` and
 ``feature`` (license key) when the surface is gated.
+
+Plan pricing (Flexprice UI): bill on **successful delivery**, not attempts.
+Primary charge meters per product (add plan usage charges on these only):
+
+- call_imports: ``call_import.batch_created``, ``call_import.evaluation_completed`` (one
+  event per finished evaluation pass; ``quantity`` = newly completed rows),
+  ``call_import.recording_minutes_billed`` (one per evaluated call with audio;
+  ``billable_minutes`` = rounded-up recording duration in minutes),
+  ``call_import.pdf_report_generated``
+- agent_playground: ``playground.evaluation_completed`` (main); optional secondary
+  ``test_agent.conversation_ended`` for test-agent-only flows — not both on the
+  same conversation
+- voice_playground: ``tts.sample_synthesized``, ``tts.report_completed``; optional
+  ``blind_test.share_created`` or ``blind_test.response_submitted``
+- evaluators: ``evaluator.run_completed`` (not ``run_requested``)
+- gepa_optimization: ``prompt_optimization.run_completed``
+- judge_alignment: ``judge_alignment.run_completed`` (not ``run_started``)
+- metrics_ai_assist: ``metrics.ai_assist`` (AI metric builder / bulk parse)
+- metric_studio: ``metric_studio.run_completed`` (main); ``metric_studio.item_evaluated`` optional
+- scenario_ai: ``scenario.ai_text_generated`` (AI text generation, e.g. scenario descriptions)
+
+Track-only (analytics, do not price): ``*_started``, ``call_evaluated``,
+``conversation_started``, ``web_call_started``, ``evaluation_started``, etc.
+``metric_count`` and ``duration_seconds`` in properties are metadata unless a
+meter explicitly SUMs those fields (call-import audio minutes does).
 """
 
 from __future__ import annotations
@@ -18,8 +43,14 @@ from app.config import settings
 
 EVENT_SOURCE = "efficientai"
 FEATURE_CALL_IMPORTS = "call_imports"
+FEATURE_AGENT_PLAYGROUND = "agent_playground"
 FEATURE_VOICE_PLAYGROUND = "voice_playground"
 FEATURE_GEPA = "gepa_optimization"
+FEATURE_EVALUATORS = "evaluators"
+FEATURE_JUDGE_ALIGNMENT = "judge_alignment"
+FEATURE_METRICS_AI_ASSIST = "metrics_ai_assist"
+FEATURE_METRIC_STUDIO = "metric_studio"
+FEATURE_SCENARIO_AI = "scenario_ai"
 
 # Log once when metering is inactive so AWS/worker misconfig is obvious.
 _disabled_skip_logged = False
@@ -32,11 +63,10 @@ TTS_SAMPLE_SYNTHESIZED = "tts.sample_synthesized"
 TTS_REPORT_REQUESTED = "tts.report_requested"
 TTS_REPORT_COMPLETED = "tts.report_completed"
 CALL_IMPORT_BATCH_CREATED = "call_import.batch_created"
-CALL_IMPORT_ROW_IMPORTED = "call_import.row_imported"
 CALL_IMPORT_EVALUATION_STARTED = "call_import.evaluation_started"
 CALL_IMPORT_EVALUATION_COMPLETED = "call_import.evaluation_completed"
-CALL_IMPORT_EVALUATION_ROW_COMPLETED = "call_import.evaluation_row_completed"
-CALL_IMPORT_AUDIO_MINUTES_BILLED = "call_import.audio_minutes_billed"
+CALL_IMPORT_RECORDING_MINUTES_BILLED = "call_import.recording_minutes_billed"
+CALL_IMPORT_AUDIO_MINUTES_BILLED = CALL_IMPORT_RECORDING_MINUTES_BILLED
 CALL_IMPORT_PDF_REPORT_GENERATED = "call_import.pdf_report_generated"
 PLAYGROUND_WEB_CALL_STARTED = "playground.web_call_started"
 PLAYGROUND_WEBSOCKET_SESSION_STARTED = "playground.websocket_session_started"
@@ -54,8 +84,13 @@ OBSERVABILITY_CALL_INGESTED = "observability.call_ingested"
 OBSERVABILITY_CALL_EVALUATED = "observability.call_evaluated"
 TEST_AGENT_CONVERSATION_STARTED = "test_agent.conversation_started"
 TEST_AGENT_CONVERSATION_ENDED = "test_agent.conversation_ended"
-METRICS_LLM_ASSIST = "metrics.llm_assist"
-CHAT_COMPLETION = "chat.completion"
+METRICS_AI_ASSIST = "metrics.ai_assist"
+METRIC_STUDIO_ITEM_EVALUATED = "metric_studio.item_evaluated"
+METRIC_STUDIO_RUN_COMPLETED = "metric_studio.run_completed"
+SCENARIO_AI_TEXT_GENERATED = "scenario.ai_text_generated"
+# Legacy aliases (Flexprice meters may still exist under old names)
+METRICS_LLM_ASSIST = METRICS_AI_ASSIST
+CHAT_COMPLETION = SCENARIO_AI_TEXT_GENERATED
 
 
 def _verbose_logging() -> bool:
@@ -430,7 +465,7 @@ def record_tts_report_completed(
     )
 
 
-# --- Call imports ---
+# --- Call imports (tracking complete: batch, eval lifecycle, audio minutes, PDF) ---
 
 
 def record_call_import_batch_created(
@@ -497,7 +532,7 @@ def record_call_import_evaluation_completed(
     total_rows: int = 0,
     metric_count: int = 0,
 ) -> bool:
-    """Bill one pass of an evaluation run for newly completed rows."""
+    """Bill one finished evaluation pass for newly completed rows (not per row)."""
     return record_event(
         CALL_IMPORT_EVALUATION_COMPLETED,
         organization_id,
@@ -516,6 +551,38 @@ def record_call_import_evaluation_completed(
     )
 
 
+def record_call_import_recording_minutes_billed(
+    organization_id: UUID,
+    evaluation_row_id: UUID,
+    *,
+    workspace_id: UUID,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    audio_seconds: int,
+    billable_minutes: int,
+) -> bool:
+    """Bill recording duration for one successfully evaluated call-import row."""
+    if billable_minutes <= 0:
+        return False
+    return record_event(
+        CALL_IMPORT_RECORDING_MINUTES_BILLED,
+        organization_id,
+        evaluation_row_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_CALL_IMPORTS,
+            "call_import_id": call_import_id,
+            "evaluation_id": evaluation_id,
+            "evaluation_row_id": evaluation_row_id,
+            "audio_seconds": audio_seconds,
+            "billable_minutes": billable_minutes,
+            "billing_unit": "minute",
+            # Flexprice generic field; same value as billable_minutes for older meters.
+            "quantity": billable_minutes,
+        },
+    )
+
+
 def record_call_import_audio_minutes_billed(
     organization_id: UUID,
     evaluation_row_id: UUID,
@@ -526,22 +593,14 @@ def record_call_import_audio_minutes_billed(
     audio_seconds: int,
     billable_minutes: int,
 ) -> bool:
-    """Bill audio duration for one completed evaluation row."""
-    if billable_minutes <= 0:
-        return False
-    return record_event(
-        CALL_IMPORT_AUDIO_MINUTES_BILLED,
+    return record_call_import_recording_minutes_billed(
         organization_id,
         evaluation_row_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "evaluation_id": evaluation_id,
-            "evaluation_row_id": evaluation_row_id,
-            "audio_seconds": audio_seconds,
-            "quantity": billable_minutes,
-        },
+        workspace_id=workspace_id,
+        evaluation_id=evaluation_id,
+        call_import_id=call_import_id,
+        audio_seconds=audio_seconds,
+        billable_minutes=billable_minutes,
     )
 
 
@@ -586,8 +645,10 @@ def record_playground_web_call_started(
         call_short_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_AGENT_PLAYGROUND,
             "agent_id": agent_id,
             "call_short_id": call_short_id,
+            "quantity": 1,
         },
     )
 
@@ -604,7 +665,9 @@ def record_playground_websocket_session_started(
         call_short_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_AGENT_PLAYGROUND,
             "call_short_id": call_short_id,
+            "quantity": 1,
         },
     )
 
@@ -624,10 +687,12 @@ def record_playground_call_evaluated(
         evaluation_attempt_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_AGENT_PLAYGROUND,
             "call_short_id": call_short_id,
             "evaluator_result_id": evaluator_result_id,
             "evaluation_attempt_id": evaluation_attempt_id,
             "metric_count": metric_count,
+            "quantity": 1,
         },
     )
 
@@ -648,11 +713,13 @@ def record_playground_evaluation_completed(
         evaluation_attempt_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_AGENT_PLAYGROUND,
             "call_short_id": call_short_id,
             "evaluator_result_id": evaluator_result_id,
             "evaluation_attempt_id": evaluation_attempt_id,
             "duration_seconds": duration_seconds,
             "metric_count": metric_count,
+            "quantity": 1,
         },
     )
 
@@ -673,6 +740,7 @@ def record_evaluator_run_requested(
         request_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_EVALUATORS,
             "quantity": quantity,
         },
     )
@@ -692,9 +760,11 @@ def record_evaluator_run_completed(
         result_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_EVALUATORS,
             "evaluator_id": evaluator_id,
             "result_id": result_id,
             "call_count": call_count,
+            "quantity": 1,
         },
     )
 
@@ -800,9 +870,11 @@ def record_judge_alignment_run_started(
         run_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_JUDGE_ALIGNMENT,
             "run_id": run_id,
             "dataset_id": dataset_id,
             "sample_count": sample_count,
+            "quantity": 1,
         },
     )
 
@@ -821,9 +893,11 @@ def record_judge_alignment_run_completed(
         run_id,
         properties={
             "workspace_id": workspace_id,
+            "feature": FEATURE_JUDGE_ALIGNMENT,
             "run_id": run_id,
             "dataset_id": dataset_id,
             "samples_scored": samples_scored,
+            "quantity": 1,
         },
     )
 
@@ -872,44 +946,88 @@ def record_observability_call_evaluated(
 
 def record_test_agent_conversation_started(
     organization_id: UUID,
-    conversation_id: UUID,
+    conversation_id: Union[str, UUID],
     *,
     workspace_id: UUID,
+    result_id: Optional[str] = None,
+    agent_id: Optional[UUID] = None,
+    call_short_id: Optional[str] = None,
 ) -> None:
+    properties: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "feature": FEATURE_AGENT_PLAYGROUND,
+        "conversation_id": conversation_id,
+        "quantity": 1,
+    }
+    if result_id is not None:
+        properties["result_id"] = result_id
+    if agent_id is not None:
+        properties["agent_id"] = agent_id
+    if call_short_id is not None:
+        properties["call_short_id"] = call_short_id
     record_event(
         TEST_AGENT_CONVERSATION_STARTED,
         organization_id,
         conversation_id,
-        properties={
-            "workspace_id": workspace_id,
-            "conversation_id": conversation_id,
-        },
+        properties=properties,
     )
 
 
 def record_test_agent_conversation_ended(
     organization_id: UUID,
-    conversation_id: UUID,
+    conversation_id: Union[str, UUID],
     *,
     workspace_id: UUID,
     duration_seconds: Optional[float] = None,
     turn_count: int = 0,
+    result_id: Optional[str] = None,
+    agent_id: Optional[UUID] = None,
+    call_short_id: Optional[str] = None,
 ) -> None:
+    properties: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "feature": FEATURE_AGENT_PLAYGROUND,
+        "conversation_id": conversation_id,
+        "turn_count": turn_count,
+        "quantity": 1,
+    }
+    if duration_seconds is not None:
+        properties["duration_seconds"] = duration_seconds
+    if result_id is not None:
+        properties["result_id"] = result_id
+    if agent_id is not None:
+        properties["agent_id"] = agent_id
+    if call_short_id is not None:
+        properties["call_short_id"] = call_short_id
     record_event(
         TEST_AGENT_CONVERSATION_ENDED,
         organization_id,
         conversation_id,
-        properties={
-            "workspace_id": workspace_id,
-            "conversation_id": conversation_id,
-            "duration_seconds": duration_seconds,
-            "turn_count": turn_count,
-            "quantity": duration_seconds or 1,
-        },
+        properties=properties,
     )
 
 
-# --- LLM assist ---
+# --- Metrics AI assist (metric builder) ---
+
+
+def record_metrics_ai_assist(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    mode: str,
+) -> None:
+    record_event(
+        METRICS_AI_ASSIST,
+        organization_id,
+        request_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_METRICS_AI_ASSIST,
+            "mode": mode,
+            "quantity": 1,
+        },
+    )
 
 
 def record_metrics_llm_assist(
@@ -919,13 +1037,94 @@ def record_metrics_llm_assist(
     workspace_id: Optional[UUID],
     mode: str,
 ) -> None:
+    record_metrics_ai_assist(
+        organization_id,
+        request_id,
+        workspace_id=workspace_id,
+        mode=mode,
+    )
+
+
+# --- Metric Studio ---
+
+
+def record_metric_studio_item_evaluated(
+    organization_id: UUID,
+    result_row_id: UUID,
+    *,
+    workspace_id: UUID,
+    run_id: UUID,
+    source_kind: str,
+    source_ref: str,
+    metric_count: int = 0,
+) -> None:
     record_event(
-        METRICS_LLM_ASSIST,
+        METRIC_STUDIO_ITEM_EVALUATED,
+        organization_id,
+        result_row_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_METRIC_STUDIO,
+            "run_id": run_id,
+            "result_row_id": result_row_id,
+            "source_kind": source_kind,
+            "source_ref": source_ref,
+            "metric_count": metric_count,
+            "quantity": 1,
+        },
+    )
+
+
+def record_metric_studio_run_completed(
+    organization_id: UUID,
+    run_id: UUID,
+    *,
+    workspace_id: UUID,
+    run_status: str,
+    total_items: int,
+    completed_items: int,
+    failed_items: int,
+) -> None:
+    record_event(
+        METRIC_STUDIO_RUN_COMPLETED,
+        organization_id,
+        run_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_METRIC_STUDIO,
+            "run_id": run_id,
+            "run_status": run_status,
+            "total_items": total_items,
+            "completed_items": completed_items,
+            "failed_items": failed_items,
+            "quantity": 1,
+        },
+    )
+
+
+# --- Scenario / assistant AI text ---
+
+
+def record_scenario_ai_text_generated(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    model: Optional[str] = None,
+    purpose: str = "scenario_description",
+    scenario_count: Optional[int] = None,
+) -> None:
+    record_event(
+        SCENARIO_AI_TEXT_GENERATED,
         organization_id,
         request_id,
         properties={
             "workspace_id": workspace_id,
-            "mode": mode,
+            "feature": FEATURE_SCENARIO_AI,
+            "model": model,
+            "purpose": purpose,
+            "scenario_count": scenario_count,
+            "quantity": 1,
         },
     )
 
@@ -936,14 +1135,14 @@ def record_chat_completion(
     *,
     workspace_id: Optional[UUID],
     model: Optional[str] = None,
+    purpose: str = "scenario_description",
+    scenario_count: Optional[int] = None,
 ) -> None:
-    record_event(
-        CHAT_COMPLETION,
+    record_scenario_ai_text_generated(
         organization_id,
         request_id,
-        properties={
-            "workspace_id": workspace_id,
-            "model": model,
-            "quantity": 1,
-        },
+        workspace_id=workspace_id,
+        model=model,
+        purpose=purpose,
+        scenario_count=scenario_count,
     )

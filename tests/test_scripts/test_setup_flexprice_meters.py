@@ -1,4 +1,13 @@
-from scripts.setup_flexprice_meters import meter_aggregation_matches
+from scripts.setup_flexprice_meters import (
+    AGENT_PLAYGROUND_PRIMARY_EVENT,
+    EVALUATOR_RUN_REQUESTED_EVENT,
+    JUDGE_ALIGNMENT_PRIMARY_EVENT,
+    LICENSE_FEATURES,
+    METRICS_AI_ASSIST_EVENT,
+    METRIC_STUDIO_PRIMARY_EVENT,
+    SCENARIO_AI_TEXT_EVENT,
+    meter_aggregation_matches,
+)
 from app.api.v1.routes.call_import_evaluations import (
     DISCOVERED_METRICS_KEY,
     _is_metric_scores_meta_key,
@@ -13,6 +22,42 @@ def test_meter_aggregation_matches_sum_quantity():
 def test_meter_aggregation_matches_rejects_count():
     meter = {"aggregation": {"type": "COUNT"}}
     assert meter_aggregation_matches(meter, agg_type="SUM", agg_field="quantity") is False
+
+
+def test_agent_playground_license_feature_spec():
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "agent_playground")
+    assert spec["event_name"] == AGENT_PLAYGROUND_PRIMARY_EVENT
+    assert spec["aggregation"] == {"type": "COUNT"}
+
+
+def test_evaluators_license_feature_spec():
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "evaluators")
+    assert spec["event_name"] == EVALUATOR_RUN_REQUESTED_EVENT
+    assert spec["aggregation"] == {"type": "SUM", "field": "quantity"}
+
+
+def test_judge_alignment_license_feature_spec():
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "judge_alignment")
+    assert spec["event_name"] == JUDGE_ALIGNMENT_PRIMARY_EVENT
+    assert spec["aggregation"] == {"type": "COUNT"}
+
+
+def test_metrics_ai_assist_license_feature_spec():
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "metrics_ai_assist")
+    assert spec["event_name"] == METRICS_AI_ASSIST_EVENT
+    assert spec["aggregation"] == {"type": "COUNT"}
+
+
+def test_metric_studio_license_feature_spec():
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "metric_studio")
+    assert spec["event_name"] == METRIC_STUDIO_PRIMARY_EVENT
+    assert spec["aggregation"] == {"type": "COUNT"}
+
+
+def test_scenario_ai_license_feature_spec():
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "scenario_ai")
+    assert spec["event_name"] == SCENARIO_AI_TEXT_EVENT
+    assert spec["aggregation"] == {"type": "COUNT"}
 
 
 def test_metric_scores_meta_keys():

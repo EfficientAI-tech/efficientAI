@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
     llm_config: Optional[Dict[str, Any]] = None
+    usage_purpose: Optional[str] = "scenario_description"
 
 
 class ChatResponse(BaseModel):
@@ -80,6 +81,7 @@ async def chat_completion(
             uuid4(),
             workspace_id=workspace_id,
             model=result.get("model", request.model),
+            purpose=request.usage_purpose or "scenario_description",
         )
 
         return ChatResponse(

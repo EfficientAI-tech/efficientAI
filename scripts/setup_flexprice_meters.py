@@ -20,6 +20,12 @@ CALL_IMPORT_BATCH_EVENT = "call_import.batch_created"
 CALL_IMPORT_BATCH_METER_NAME = "Call Imports"
 CALL_IMPORT_BATCH_AGG_TYPE = "SUM"
 CALL_IMPORT_BATCH_AGG_FIELD = "quantity"
+AGENT_PLAYGROUND_PRIMARY_EVENT = "playground.web_call_started"
+EVALUATOR_RUN_REQUESTED_EVENT = "evaluator.run_requested"
+JUDGE_ALIGNMENT_PRIMARY_EVENT = "judge_alignment.run_completed"
+METRICS_AI_ASSIST_EVENT = "metrics.ai_assist"
+METRIC_STUDIO_PRIMARY_EVENT = "metric_studio.run_completed"
+SCENARIO_AI_TEXT_EVENT = "scenario.ai_text_generated"
 
 # (event_name, display_name, aggregation_type, aggregation_field|None)
 METERS: list[tuple[str, str, str, str | None]] = [
@@ -33,15 +39,18 @@ METERS: list[tuple[str, str, str, str | None]] = [
     # Call imports (batch_created meter comes from the call_imports license feature)
     ("call_import.evaluation_started", "Call Import Evaluation Started", "COUNT", None),
     ("call_import.evaluation_completed", "Call Import Evaluation Completed", "SUM", "quantity"),
-    ("call_import.audio_minutes_billed", "Call Import Audio Minutes Billed", "SUM", "quantity"),
+    (
+        "call_import.recording_minutes_billed",
+        "Call Import Recording Minutes",
+        "SUM",
+        "billable_minutes",
+    ),
     ("call_import.pdf_report_generated", "Call Import PDF Report Generated", "COUNT", None),
-    # Agent playground
-    ("playground.web_call_started", "Playground Web Call Started", "COUNT", None),
+    # Agent playground (web_call_started meter comes from the agent_playground license feature)
     ("playground.websocket_session_started", "Playground Websocket Session Started", "COUNT", None),
     ("playground.call_evaluated", "Playground Call Evaluated", "COUNT", None),
     ("playground.evaluation_completed", "Playground Evaluation Completed", "COUNT", None),
-    # Evaluators
-    ("evaluator.run_requested", "Evaluator Run Requested", "SUM", "quantity"),
+    # Evaluators (run_requested meter comes from the evaluators license feature)
     ("evaluator.run_completed", "Evaluator Run Completed", "COUNT", None),
     # Legacy evaluations
     ("evaluation.created", "Evaluation Created", "COUNT", None),
@@ -49,18 +58,18 @@ METERS: list[tuple[str, str, str, str | None]] = [
     # Prompt optimization
     ("prompt_optimization.run_started", "Prompt Optimization Run Started", "COUNT", None),
     ("prompt_optimization.run_completed", "Prompt Optimization Run Completed", "COUNT", None),
-    # Judge alignment
+    # Judge alignment (run_completed meter comes from the judge_alignment license feature)
     ("judge_alignment.run_started", "Judge Alignment Run Started", "COUNT", None),
-    ("judge_alignment.run_completed", "Judge Alignment Run Completed", "COUNT", None),
     # Observability
     ("observability.call_ingested", "Observability Call Ingested", "COUNT", None),
     ("observability.call_evaluated", "Observability Call Evaluated", "COUNT", None),
     # Test agents
     ("test_agent.conversation_started", "Test Agent Conversation Started", "COUNT", None),
-    ("test_agent.conversation_ended", "Test Agent Conversation Ended", "SUM", "quantity"),
-    # LLM assist
-    ("metrics.llm_assist", "Metrics LLM Assist", "COUNT", None),
-    ("chat.completion", "Chat Completion", "SUM", "quantity"),
+    ("test_agent.conversation_ended", "Test Agent Conversation Ended", "COUNT", None),
+    # Metric studio (run_completed meter comes from the metric_studio license feature)
+    ("metric_studio.item_evaluated", "Metric Studio Item Evaluated", "COUNT", None),
+    # Metrics AI assist (primary meter comes from the metrics_ai_assist license feature)
+    # Scenario AI text (primary meter comes from the scenario_ai license feature)
 ]
 
 LICENSE_FEATURES: list[dict[str, Any]] = [
@@ -72,6 +81,15 @@ LICENSE_FEATURES: list[dict[str, Any]] = [
         "unit_plural": "rows",
         "event_name": CALL_IMPORT_BATCH_EVENT,
         "aggregation": {"type": CALL_IMPORT_BATCH_AGG_TYPE, "field": CALL_IMPORT_BATCH_AGG_FIELD},
+    },
+    {
+        "name": "Agent Playground",
+        "lookup_key": "agent_playground",
+        "description": "Agent web calls, websocket sessions, evaluations, and test-agent conversations",
+        "unit_singular": "session",
+        "unit_plural": "sessions",
+        "event_name": AGENT_PLAYGROUND_PRIMARY_EVENT,
+        "aggregation": {"type": "COUNT"},
     },
     {
         "name": "Voice Playground",
@@ -89,6 +107,51 @@ LICENSE_FEATURES: list[dict[str, Any]] = [
         "unit_singular": "run",
         "unit_plural": "runs",
         "event_name": "prompt_optimization.run_started",
+        "aggregation": {"type": "COUNT"},
+    },
+    {
+        "name": "Evaluators",
+        "lookup_key": "evaluators",
+        "description": "Batch evaluator simulation runs and completions",
+        "unit_singular": "run",
+        "unit_plural": "runs",
+        "event_name": EVALUATOR_RUN_REQUESTED_EVENT,
+        "aggregation": {"type": "SUM", "field": "quantity"},
+    },
+    {
+        "name": "Judge Alignment",
+        "lookup_key": "judge_alignment",
+        "description": "Judge calibration runs on labeled datasets",
+        "unit_singular": "run",
+        "unit_plural": "runs",
+        "event_name": JUDGE_ALIGNMENT_PRIMARY_EVENT,
+        "aggregation": {"type": "COUNT"},
+    },
+    {
+        "name": "Metrics AI Assist",
+        "lookup_key": "metrics_ai_assist",
+        "description": "AI-assisted metric creation and bulk label parsing in Metrics Management",
+        "unit_singular": "request",
+        "unit_plural": "requests",
+        "event_name": METRICS_AI_ASSIST_EVENT,
+        "aggregation": {"type": "COUNT"},
+    },
+    {
+        "name": "Metric Studio",
+        "lookup_key": "metric_studio",
+        "description": "Batch metric scoring runs in Metrics Studio",
+        "unit_singular": "run",
+        "unit_plural": "runs",
+        "event_name": METRIC_STUDIO_PRIMARY_EVENT,
+        "aggregation": {"type": "COUNT"},
+    },
+    {
+        "name": "Scenario AI Text",
+        "lookup_key": "scenario_ai",
+        "description": "AI-generated text for scenarios and similar assistant flows",
+        "unit_singular": "generation",
+        "unit_plural": "generations",
+        "event_name": SCENARIO_AI_TEXT_EVENT,
         "aggregation": {"type": "COUNT"},
     },
 ]
