@@ -120,17 +120,22 @@ def generate_persona_prompt_from_agent(
     if source == "test_agent":
         source_prompt = test_agent_prompt
         source_label = "test agent prompt"
+        if not source_prompt.strip():
+            raise ValueError("Selected agent has no test agent prompt to generate from")
     elif source == "agent":
         source_prompt = agent_prompt or test_agent_prompt
         source_label = "agent / production prompt"
+        if not source_prompt.strip():
+            raise ValueError(
+                "Selected agent has no production prompt or test agent prompt to generate from"
+            )
     else:
         source_prompt = test_agent_prompt or agent_prompt
         source_label = "agent prompt"
-
-    if not source_prompt.strip():
-        raise ValueError(
-            "Selected agent has no test agent prompt or production prompt to generate from"
-        )
+        if not source_prompt.strip():
+            raise ValueError(
+                "Selected agent has no test agent prompt or production prompt to generate from"
+            )
 
     messages = [
         {"role": "system", "content": GENERATE_PERSONA_PROMPT_SYSTEM},

@@ -679,6 +679,16 @@ async def vobiz_media_websocket(websocket: WebSocket):
                 persona_id=persona_id,
                 scenario_id=scenario_id,
             )
+            from app.services.telephony.vobiz_agent_context import resolve_vobiz_telephony_run_params
+
+            run_params = resolve_vobiz_telephony_run_params(
+                db,
+                context=context,
+                call_direction=session.direction,
+                persona_id=persona_id,
+                scenario_id=scenario_id,
+                evaluator_id=session.evaluator_id,
+            )
             serializer = VobizFrameSerializer(
                 stream_id=stream_id,
                 call_id=call_id,
@@ -696,7 +706,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                 hangup_secs = resolve_agent_silence_hangup_secs(context.agent)
                 await run_voice_bundle_fastapi(
                     websocket,
-                    context.system_instruction,
+                    run_params.system_instruction,
                     str(context.organization_id),
                     str(context.workspace_id) if context.workspace_id else None,
                     agent_id,
@@ -711,6 +721,10 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     telephony_mode=True,
                     call_short_id=call_short_id,
                     silence_hangup_secs=hangup_secs,
+                    call_direction=session.direction,
+                    caller_speaks_first=run_params.caller_speaks_first,
+                    caller_opening_text=run_params.caller_opening_text,
+                    persona_speaks_via_tts=run_params.persona_speaks_via_tts,
                 )
             else:
                 if not context.google_api_key:
@@ -722,7 +736,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
                 await run_bot(
                     websocket,
                     context.google_api_key,
-                    context.system_instruction,
+                    run_params.system_instruction,
                     str(context.organization_id),
                     agent_id,
                     persona_id,
@@ -733,6 +747,8 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     call_short_id=call_short_id,
                     silence_hangup_secs=hangup_secs,
                     persona=context.persona,
+                    call_direction=session.direction,
+                    persona_speaks_via_tts=run_params.persona_speaks_via_tts,
                 )
         except ValueError as e:
             logger.error("Vobiz media websocket setup failed: {}", e)

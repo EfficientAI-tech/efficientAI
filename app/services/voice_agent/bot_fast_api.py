@@ -98,7 +98,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None, persona=None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None, persona=None, call_direction: str = "outbound", persona_speaks_via_tts: bool = False):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -133,7 +133,23 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             telephony_mode=telephony_mode,
         )
         ambient_mixer = None
-        if persona is not None:
+        ambient_input_processor = None
+        if persona is not None and telephony_mode:
+            from app.services.audio.ambient_telephony import resolve_ambient_for_telephony
+            from app.services.audio.ambient_input_processor import get_ambient_input_processor_class
+
+            ambient_config = await resolve_ambient_for_telephony(
+                persona,
+                call_direction=call_direction,
+                input_sample_rate=transport_in_sample_rate,
+                output_sample_rate=transport_out_sample_rate,
+                persona_speaks_via_tts=persona_speaks_via_tts,
+            )
+            ambient_mixer = ambient_config.output_mixer
+            if ambient_config.input_bed is not None:
+                AmbientInputProcessor = get_ambient_input_processor_class()
+                ambient_input_processor = AmbientInputProcessor(ambient_config.input_bed)
+        elif persona is not None:
             from app.services.audio.ambient_catalog import resolve_ambient_mixer
 
             ambient_mixer = await resolve_ambient_mixer(persona, transport_out_sample_rate)
@@ -212,6 +228,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             target_sample_rate=recorder_sample_rate,
             recorder_name="UserAudioRecorder",
             alignment_mode=recorder_alignment,
+            capture="input",
         )
         bot_recorder = AudioRecorder(
             bot_audio_path,
@@ -219,6 +236,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             target_sample_rate=recorder_sample_rate,
             recorder_name="BotAudioRecorder",
             alignment_mode=recorder_alignment,
+            capture="output",
         )
 
         from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
@@ -246,6 +264,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
 
         if telephony_mode:
             pipeline_processors = [ws_transport.input()]
+            if ambient_input_processor:
+                pipeline_processors.append(ambient_input_processor)
             if silence_hangup_processor:
                 pipeline_processors.append(silence_hangup_processor)
             pipeline_processors.extend([user_recorder, context_aggregator.user()])
@@ -366,6 +386,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 organization_id=organization_id,
                 evaluator_id=evaluator_id,
                 result_id=result_id,
+                call_direction=call_direction,
             )
             
             # Extract conversation transcript from the LLM context

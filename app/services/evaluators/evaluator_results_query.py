@@ -9,11 +9,12 @@ from uuid import UUID
 from sqlalchemy.orm import Session, Query
 from sqlalchemy import and_, or_
 
-from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario
+from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona
 from app.models.schemas import (
     AgentResponse,
     EvaluatorResultResponse,
     ScenarioResponse,
+    PersonaResponse,
     EvaluatorResponse,
 )
 from app.services.evaluators.evaluator_result_status import (
@@ -169,6 +170,12 @@ def serialize_evaluator_result_row(
         if scenario:
             scenario_data = ScenarioResponse.model_validate(scenario)
 
+    persona_data = None
+    if result.persona_id:
+        persona = db.query(Persona).filter(Persona.id == result.persona_id).first()
+        if persona:
+            persona_data = PersonaResponse.model_validate(persona)
+
     result_dict: Dict[str, Any] = {
         "id": result.id,
         "result_id": result.result_id,
@@ -196,6 +203,7 @@ def serialize_evaluator_result_row(
         "updated_at": result.updated_at,
         "created_by": result.created_by,
         "scenario": scenario_data,
+        "persona": persona_data,
         "evaluator": evaluator_stub,
     }
 

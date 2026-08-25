@@ -16,6 +16,7 @@ def merge_and_upload_audio(
     organization_id: str = None,
     evaluator_id: str = None,
     result_id: str = None,
+    call_direction: str | None = None,
 ):
     """
     Merge user and bot telephony recordings with alignment analysis, upload mono WAV to S3,
@@ -44,6 +45,7 @@ def merge_and_upload_audio(
                         user_audio_path,
                         bot_audio_path,
                         output_path=merged_path,
+                        call_direction=call_direction,
                     )
                 except Exception as merge_exc:
                     logger.error("Telephony aligned merge failed: {}", merge_exc, exc_info=True)

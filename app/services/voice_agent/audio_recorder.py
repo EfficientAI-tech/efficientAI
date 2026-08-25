@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import wave
+from typing import Literal
 
 import numpy as np
 from loguru import logger
@@ -17,8 +18,14 @@ def get_audio_recorder_class():
     if _audio_recorder_class is not None:
         return _audio_recorder_class
 
-    from efficientai.frames.frames import AudioRawFrame, CancelFrame, EndFrame
-    from efficientai.processors.frame_processor import FrameProcessor
+    from efficientai.frames.frames import (
+        AudioRawFrame,
+        CancelFrame,
+        EndFrame,
+        InputAudioRawFrame,
+        OutputAudioRawFrame,
+    )
+    from efficientai.processors.frame_processor import FrameDirection, FrameProcessor
 
     class AudioRecorder(FrameProcessor):
         def __init__(
@@ -28,6 +35,7 @@ def get_audio_recorder_class():
             target_sample_rate: int = 24000,
             recorder_name: str = "AudioRecorder",
             alignment_mode: str = "wall_clock",
+            capture: Literal["input", "output"] = "input",
         ):
             super().__init__()
             self.filename = filename
@@ -35,6 +43,7 @@ def get_audio_recorder_class():
             self.target_sample_rate = target_sample_rate
             self.recorder_name = recorder_name
             self.alignment_mode = alignment_mode
+            self.capture = capture
             self.wave_file = None
             self.params_set = False
             self.sample_rate = 0
@@ -76,11 +85,18 @@ def get_audio_recorder_class():
             self.wave_file.writeframes(audio_to_write)
             self.total_samples_written += num_samples
 
+        def _should_capture(self, frame: AudioRawFrame, direction: FrameDirection) -> bool:
+            if direction != FrameDirection.DOWNSTREAM:
+                return False
+            if self.capture == "input":
+                return isinstance(frame, InputAudioRawFrame)
+            return isinstance(frame, OutputAudioRawFrame)
+
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)
             self.frames_received += 1
 
-            if isinstance(frame, AudioRawFrame):
+            if isinstance(frame, AudioRawFrame) and self._should_capture(frame, direction):
                 self.audio_frames_received += 1
                 if not self.wave_file:
                     try:

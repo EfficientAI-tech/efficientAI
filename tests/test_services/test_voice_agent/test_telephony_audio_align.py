@@ -41,8 +41,20 @@ def test_analyze_chooses_user_only_when_bot_on_inbound():
     bot[400:800] = 5000
     user = bot.copy()
     user[400:800] += 2000
-    analysis = analyze_dual_tracks(user, bot, sample_rate=sample_rate)
+    analysis = analyze_dual_tracks(user, bot, sample_rate=sample_rate, call_direction="inbound")
     assert analysis.strategy == TelephonyMergeStrategy.USER_ONLY
+
+
+def test_analyze_chooses_user_only_when_bot_leaks_during_bot_speech():
+    sample_rate = 8000
+    bot = np.zeros(sample_rate * 2, dtype=np.int16)
+    bot[800:1600] = 6000
+    user = np.zeros(sample_rate * 2, dtype=np.int16)
+    user[820:1620] = (bot[800:1600] * 0.7).astype(np.int16)
+    user[200:600] = 3000
+    analysis = analyze_dual_tracks(user, bot, sample_rate=sample_rate, call_direction="outbound")
+    assert analysis.strategy == TelephonyMergeStrategy.USER_ONLY
+    assert analysis.reason in ("bot_speech_leak_on_user_leg", "bot_energy_on_inbound_leg")
 
 
 def test_merge_with_delayed_bot_track(tmp_path):

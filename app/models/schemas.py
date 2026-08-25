@@ -1719,10 +1719,18 @@ class EvaluatorSuiteCombinationResponse(BaseModel):
     """One agent+persona+scenario combination inside a suite."""
     id: UUID
     evaluator_id: str
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
     scenario_id: Optional[UUID] = None
     scenario_name: Optional[str] = None
     scenario_description: Optional[str] = None
     scenario_required_info: Optional[Any] = None
+
+
+class EvaluatorSuitePersonaSummary(BaseModel):
+    """Persona referenced by a suite combination grid."""
+    id: UUID
+    name: Optional[str] = None
 
 
 
@@ -1731,7 +1739,8 @@ class EvaluatorSuiteCreate(BaseModel):
     """Schema for creating an evaluator suite."""
     name: Optional[str] = None
     agent_id: UUID
-    persona_id: UUID
+    persona_id: Optional[UUID] = None
+    persona_ids: Optional[List[UUID]] = None
     scenario_ids: List[UUID]
     metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
@@ -1763,6 +1772,8 @@ class EvaluatorSuiteResponse(BaseModel):
     name: Optional[str] = None
     agent_id: UUID
     persona_id: UUID
+    persona_ids: List[UUID] = Field(default_factory=list)
+    personas: List[EvaluatorSuitePersonaSummary] = Field(default_factory=list)
     agent_name: Optional[str] = None
     persona_name: Optional[str] = None
     agent_call_type: Optional[str] = None
@@ -1788,6 +1799,16 @@ class EvaluatorSuiteResponse(BaseModel):
 class EvaluatorSuiteAddScenariosRequest(BaseModel):
     """Schema for adding scenarios to an existing suite."""
     scenario_ids: List[UUID]
+
+
+class EvaluatorSuiteAddPersonasRequest(BaseModel):
+    """Schema for adding personas to an existing suite."""
+    persona_ids: List[UUID]
+
+
+class EvaluatorSuiteReplacePersonasRequest(BaseModel):
+    """Schema for replacing the persona set on an existing suite."""
+    persona_ids: List[UUID] = Field(..., min_length=1)
 
 
 
@@ -1821,6 +1842,8 @@ class RunNextCombinationRequest(BaseModel):
 class RunNextCombinationResponse(BaseModel):
     """Schema for round-robin run response."""
     evaluator_id: UUID
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
     scenario_id: Optional[UUID] = None
     scenario_name: str
     combination_index: int
@@ -1837,6 +1860,8 @@ class RunNextCombinationResponse(BaseModel):
 class ChooseNextCombinationResponse(BaseModel):
     """Advance inbound round-robin without initiating a call or evaluation run."""
     evaluator_id: UUID
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
     scenario_id: Optional[UUID] = None
     scenario_name: str
     combination_index: int

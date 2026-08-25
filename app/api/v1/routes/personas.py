@@ -27,6 +27,7 @@ from app.models.schemas import (
 from app.models.enums import ModelProvider
 from app.services.ai.model_config_service import model_config_service
 from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
+from app.services.personas.configured_tts_providers import get_configured_tts_provider_keys
 from app.services.personas.persona_tts_config import (
     normalize_persona_tts_config,
     validate_persona_tts_config,
@@ -472,7 +473,10 @@ async def get_voice_options(
             "description": cv.description,
         })
 
-    all_keys: set = set(TTS_VOICES.keys()) | set(model_voices_by_provider.keys()) | set(custom_by_provider.keys())
+    configured_keys = get_configured_tts_provider_keys(organization_id, db)
+    all_keys: set = (
+        set(TTS_VOICES.keys()) | set(model_voices_by_provider.keys()) | set(custom_by_provider.keys())
+    ) & configured_keys
     if provider:
         all_keys = {k for k in all_keys if k == provider.lower()}
 

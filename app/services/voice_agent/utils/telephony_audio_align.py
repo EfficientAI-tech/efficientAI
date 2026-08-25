@@ -5,7 +5,7 @@ from __future__ import annotations
 import wave
 from dataclasses import dataclass
 from enum import Enum
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from loguru import logger
@@ -55,6 +55,33 @@ def _rms_envelope(samples: np.ndarray, frame_size: int) -> np.ndarray:
     return np.sqrt(np.mean(frames * frames, axis=1))
 
 
+def _bot_speech_leak_correlation(
+    user: np.ndarray,
+    bot: np.ndarray,
+    *,
+    sample_rate: int,
+) -> float:
+    """Correlation on frames where the bot track is active (echo / bleed detection)."""
+    frame = max(1, sample_rate // 50)
+    user_env = _rms_envelope(user, frame)
+    bot_env = _rms_envelope(bot, frame)
+    min_len = min(len(user_env), len(bot_env))
+    if min_len < 4:
+        return 0.0
+    user_env = user_env[:min_len]
+    bot_env = bot_env[:min_len]
+    active = bot_env > max(float(bot_env.max()) * 0.2, 1.0)
+    if not np.any(active):
+        return 0.0
+    active_user = user_env[active] - user_env[active].mean()
+    active_bot = bot_env[active] - bot_env[active].mean()
+    user_norm = np.linalg.norm(active_user)
+    bot_norm = np.linalg.norm(active_bot)
+    if user_norm < 1e-6 or bot_norm < 1e-6:
+        return 0.0
+    return float(np.dot(active_user, active_bot) / (user_norm * bot_norm))
+
+
 def estimate_bot_lag_samples(
     user: np.ndarray,
     bot: np.ndarray,
@@ -98,15 +125,29 @@ def analyze_dual_tracks(
     bot_samples: np.ndarray,
     *,
     sample_rate: int,
+    call_direction: Optional[str] = None,
 ) -> TelephonyTrackAnalysis:
     corr_lag, peak = estimate_bot_lag_samples(user_samples, bot_samples, sample_rate=sample_rate)
     threshold = float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT", 0.35))
+    direction = (call_direction or "").strip().lower()
+    if direction in {"inbound", "outbound"}:
+        threshold = min(
+            threshold,
+            float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_TELEPHONY", 0.25)),
+        )
+
+    leak_peak = _bot_speech_leak_correlation(
+        user_samples,
+        bot_samples,
+        sample_rate=sample_rate,
+    )
+    effective_peak = max(peak, leak_peak)
 
     if len(bot_samples) < sample_rate // 20:
         return TelephonyTrackAnalysis(
             strategy=TelephonyMergeStrategy.USER_ONLY,
             bot_delay_samples=0,
-            correlation_peak=peak,
+            correlation_peak=effective_peak,
             correlation_lag_samples=corr_lag,
             user_sample_rate=sample_rate,
             user_duration_samples=len(user_samples),
@@ -114,16 +155,19 @@ def analyze_dual_tracks(
             reason="bot_track_too_short",
         )
 
-    if peak >= threshold:
+    if effective_peak >= threshold:
+        reason = "bot_energy_on_inbound_leg"
+        if leak_peak >= threshold and peak < threshold:
+            reason = "bot_speech_leak_on_user_leg"
         return TelephonyTrackAnalysis(
             strategy=TelephonyMergeStrategy.USER_ONLY,
             bot_delay_samples=0,
-            correlation_peak=peak,
+            correlation_peak=effective_peak,
             correlation_lag_samples=corr_lag,
             user_sample_rate=sample_rate,
             user_duration_samples=len(user_samples),
             bot_duration_samples=len(bot_samples),
-            reason="bot_energy_on_inbound_leg",
+            reason=reason,
         )
 
     default_delay_ms = int(getattr(settings, "TELEPHONY_BOT_PLAYBACK_DELAY_MS", 400))
@@ -133,7 +177,7 @@ def analyze_dual_tracks(
     return TelephonyTrackAnalysis(
         strategy=TelephonyMergeStrategy.ALIGNED_MIX,
         bot_delay_samples=bot_delay,
-        correlation_peak=peak,
+        correlation_peak=effective_peak,
         correlation_lag_samples=corr_lag,
         user_sample_rate=sample_rate,
         user_duration_samples=len(user_samples),
@@ -175,6 +219,7 @@ def merge_telephony_tracks_to_mono(
     bot_audio_path: str,
     *,
     output_path: str,
+    call_direction: Optional[str] = None,
 ) -> Tuple[TelephonyTrackAnalysis, float]:
     user, user_rate = read_wav_mono(user_audio_path)
     bot, bot_rate = read_wav_mono(bot_audio_path)
@@ -193,7 +238,7 @@ def merge_telephony_tracks_to_mono(
             bot.astype(np.float32),
         ).astype(np.int16)
 
-    analysis = analyze_dual_tracks(user, bot, sample_rate=user_rate)
+    analysis = analyze_dual_tracks(user, bot, sample_rate=user_rate, call_direction=call_direction)
 
     logger.info(
         "Telephony merge analysis strategy={} reason={} corr_peak={:.3f} corr_lag_samples={} "

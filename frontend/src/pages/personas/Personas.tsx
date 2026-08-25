@@ -1,4 +1,5 @@
 import { useState, useMemo, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import {
@@ -687,6 +688,18 @@ export default function Personas() {
                 </p>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Provider *</label>
+                  {providers.length === 0 ? (
+                    <p className="text-sm text-gray-600">
+                      No TTS providers are connected yet.{' '}
+                      <Link
+                        to="/integrations"
+                        className="text-primary-600 hover:text-primary-700 underline font-medium"
+                      >
+                        Connect a provider in Integrations
+                      </Link>{' '}
+                      before registering custom voices.
+                    </p>
+                  ) : (
                   <div className="grid grid-cols-2 gap-2">
                     {providers.map((p) => {
                       const isSelected = customVoiceForm.provider === p.id
@@ -709,6 +722,7 @@ export default function Personas() {
                       )
                     })}
                   </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID *</label>

@@ -429,10 +429,17 @@ export interface VobizOutboundCallResponse {
 export interface EvaluatorSuiteCombination {
   id: string
   evaluator_id: string
+  persona_id?: string
+  persona_name?: string | null
   scenario_id: string
   scenario_name?: string | null
   scenario_description?: string | null
   scenario_required_info?: Record<string, unknown> | null
+}
+
+export interface EvaluatorSuitePersonaSummary {
+  id: string
+  name?: string | null
 }
 
 export interface EvaluatorSuite {
@@ -441,6 +448,8 @@ export interface EvaluatorSuite {
   name?: string | null
   agent_id: string
   persona_id: string
+  persona_ids?: string[]
+  personas?: EvaluatorSuitePersonaSummary[]
   agent_name?: string | null
   persona_name?: string | null
   agent_call_type?: string | null
@@ -468,6 +477,8 @@ export interface RunEvaluatorSuiteResponse {
 
 export interface RunNextCombinationResponse {
   evaluator_id: string
+  persona_id?: string | null
+  persona_name?: string | null
   scenario_id: string
   scenario_name: string
   combination_index: number
@@ -481,6 +492,8 @@ export interface RunNextCombinationResponse {
 
 export interface ChooseNextCombinationResponse {
   evaluator_id: string
+  persona_id?: string | null
+  persona_name?: string | null
   scenario_id: string
   scenario_name: string
   combination_index: number
@@ -4186,7 +4199,8 @@ class ApiClient {
   async createEvaluatorSuite(data: {
     name?: string
     agent_id: string
-    persona_id: string
+    persona_id?: string
+    persona_ids?: string[]
     scenario_ids: string[]
     metric_ids?: string[]
     llm_provider?: string
@@ -4233,6 +4247,27 @@ class ApiClient {
   async removeEvaluatorSuiteScenario(suiteId: string, scenarioId: string): Promise<EvaluatorSuite> {
     const response = await this.client.delete(
       `/api/v1/evaluator-suites/${suiteId}/scenarios/${scenarioId}`,
+    )
+    return response.data
+  }
+
+  async addEvaluatorSuitePersonas(suiteId: string, personaIds: string[]): Promise<EvaluatorSuite> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/personas`, {
+      persona_ids: personaIds,
+    })
+    return response.data
+  }
+
+  async replaceEvaluatorSuitePersonas(suiteId: string, personaIds: string[]): Promise<EvaluatorSuite> {
+    const response = await this.client.put(`/api/v1/evaluator-suites/${suiteId}/personas`, {
+      persona_ids: personaIds,
+    })
+    return response.data
+  }
+
+  async removeEvaluatorSuitePersona(suiteId: string, personaId: string): Promise<EvaluatorSuite> {
+    const response = await this.client.delete(
+      `/api/v1/evaluator-suites/${suiteId}/personas/${personaId}`,
     )
     return response.data
   }

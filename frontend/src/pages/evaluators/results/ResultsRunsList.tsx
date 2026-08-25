@@ -32,6 +32,7 @@ interface ResultsRunsListProps {
   listParams: Omit<ListEvaluatorResultsParams, 'skip' | 'limit' | 'status'>
   counts?: { total: number; completed: number; failed: number; in_progress: number }
   showAgentColumn?: boolean
+  showPersonaColumn?: boolean
   showScenarioColumn?: boolean
   /** Opens result in agent workspace when set; otherwise navigates to /results/:id */
   onResultClick?: (resultId: string) => void
@@ -45,6 +46,7 @@ export default function ResultsRunsList({
   listParams,
   counts,
   showAgentColumn = false,
+  showPersonaColumn = false,
   showScenarioColumn = false,
   onResultClick,
 }: ResultsRunsListProps) {
@@ -196,6 +198,9 @@ export default function ResultsRunsList({
                   {showAgentColumn && (
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
                   )}
+                  {showPersonaColumn && (
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Persona</th>
+                  )}
                   {showScenarioColumn && (
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Scenario</th>
                   )}
@@ -232,6 +237,9 @@ export default function ResultsRunsList({
                       <td className="px-4 py-3 text-sm text-gray-900">{result.name}</td>
                       {showAgentColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.agent?.name ?? '—'}</td>
+                      )}
+                      {showPersonaColumn && (
+                        <td className="px-4 py-3 text-sm text-gray-600">{result.persona?.name ?? '—'}</td>
                       )}
                       {showScenarioColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.scenario?.name ?? '—'}</td>

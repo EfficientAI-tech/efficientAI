@@ -21,6 +21,7 @@ import {
 import { useToast } from '../../../hooks/useToast'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
+import { formatSuitePersonaLabel } from '../components/evaluatorSuitePersonas'
 import EvaluatorSuiteWizard from '../components/EvaluatorSuiteWizard'
 import EvaluatorSmartRunModal from '../components/EvaluatorSmartRunModal'
 import { CallTypeBadge, StatCard } from '../components/evaluatorUi'
@@ -363,7 +364,7 @@ export default function EvaluateTestAgents() {
                       <td className={`${cellClass} text-sm text-gray-900`}>
                         {suite.agent_name || group.agentName || '—'}
                       </td>
-                      <td className={`${cellClass} text-sm text-gray-900`}>{suite.persona_name || '—'}</td>
+                      <td className={`${cellClass} text-sm text-gray-900`}>{formatSuitePersonaLabel(suite)}</td>
                       <td className={cellClass}>
                         <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100">
                           {suite.combination_count}

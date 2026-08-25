@@ -29,6 +29,7 @@ import EvaluatorDetailHeader from '../components/EvaluatorDetailHeader'
 import EvaluatorMetricsDisplay from '../components/EvaluatorMetricsDisplay'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS, StatCard } from '../components/evaluatorUi'
 import { normalizeSelectedMetricIds, type MetricRow } from '../components/metricSelectionUtils'
+import { formatSuitePersonaLabel } from '../components/evaluatorSuitePersonas'
 
 const DEFAULT_SCENARIO_NAMES = [
   'Cancel Subscription',
@@ -50,6 +51,8 @@ export default function EvaluatorDetail() {
   const [editLlmProvider, setEditLlmProvider] = useState<ModelProvider | null>(null)
   const [editLlmModel, setEditLlmModel] = useState('')
   const [scenarioToAdd, setScenarioToAdd] = useState('')
+  const [personaToAdd, setPersonaToAdd] = useState('')
+  const [personaToSwap, setPersonaToSwap] = useState('')
   const [viewCombination, setViewCombination] = useState<EvaluatorSuiteCombination | null>(null)
   const [showRunModal, setShowRunModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -74,6 +77,25 @@ export default function EvaluatorDetail() {
     queryKey: ['scenarios', suite?.agent_id],
     queryFn: () => apiClient.listScenarios(0, 100, suite!.agent_id),
     enabled: isEditing && !!suite?.agent_id,
+  })
+
+  const { data: personas = [] } = useQuery({
+    queryKey: ['personas'],
+    queryFn: () => apiClient.listPersonas(),
+    enabled: isEditing,
+  })
+
+  const voiceBundleId = agent?.voice_bundle_id
+
+  const { data: voiceBundle } = useQuery({
+    queryKey: ['voicebundle', voiceBundleId],
+    queryFn: () => {
+      if (!voiceBundleId) {
+        throw new Error('Missing voice bundle id')
+      }
+      return apiClient.getVoiceBundle(voiceBundleId)
+    },
+    enabled: isEditing && !!voiceBundleId,
   })
 
   const { data: metrics = [] } = useQuery({
@@ -134,6 +156,41 @@ export default function EvaluatorDetail() {
     },
     onError: (err: any) => {
       showToast(err?.response?.data?.detail || 'Failed to remove scenario', 'error')
+    },
+  })
+
+  const addPersonasMutation = useMutation({
+    mutationFn: (personaIds: string[]) => apiClient.addEvaluatorSuitePersonas(id!, personaIds),
+    onSuccess: () => {
+      invalidateSuite()
+      setPersonaToAdd('')
+      showToast('Persona added', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to add persona', 'error')
+    },
+  })
+
+  const replacePersonasMutation = useMutation({
+    mutationFn: (personaIds: string[]) => apiClient.replaceEvaluatorSuitePersonas(id!, personaIds),
+    onSuccess: () => {
+      invalidateSuite()
+      setPersonaToSwap('')
+      showToast('Persona updated', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to update persona', 'error')
+    },
+  })
+
+  const removePersonaMutation = useMutation({
+    mutationFn: (personaId: string) => apiClient.removeEvaluatorSuitePersona(id!, personaId),
+    onSuccess: () => {
+      invalidateSuite()
+      showToast('Persona removed', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to remove persona', 'error')
     },
   })
 
@@ -211,9 +268,20 @@ export default function EvaluatorDetail() {
   const isInbound = suite.agent_call_type === 'inbound'
   const firstCombo = suite.combinations[0]
   const existingScenarioIds = new Set(suite.combinations.map((c) => c.scenario_id))
+  const existingPersonaIds = new Set(suite.persona_ids ?? suite.combinations.map((c) => c.persona_id).filter(Boolean))
+  const distinctScenarioCount = existingScenarioIds.size
+  const personaCount = existingPersonaIds.size
+  const voiceBundleTtsProvider = voiceBundle?.tts_provider
+    ? String(voiceBundle.tts_provider).toLowerCase()
+    : null
+  const filteredPersonas = voiceBundleTtsProvider
+    ? (personas as any[]).filter((p) => p.tts_provider?.toLowerCase() === voiceBundleTtsProvider)
+    : (personas as any[])
   const availableScenarios = (scenarios as any[]).filter(
     (s) => !DEFAULT_SCENARIO_NAMES.includes(s.name) && !existingScenarioIds.has(s.id),
   )
+  const availablePersonas = filteredPersonas.filter((p) => !existingPersonaIds.has(p.id))
+  const swapPersonas = filteredPersonas.filter((p) => !existingPersonaIds.has(p.id))
 
   const llmLabel = suite.llm_provider
     ? `${suite.llm_provider}${suite.llm_model ? ` · ${suite.llm_model}` : ''}`
@@ -231,7 +299,7 @@ export default function EvaluatorDetail() {
 
       <EvaluatorDetailHeader
         title={displayTitle}
-        subtitle={!isEditing ? `${suite.combination_count} scenario combination${suite.combination_count !== 1 ? 's' : ''}${suite.agent_suite_count > 1 ? ` · ${suite.agent_suite_count} suites for this agent` : ''}` : undefined}
+        subtitle={!isEditing ? `${suite.combination_count} combination${suite.combination_count !== 1 ? 's' : ''} (${personaCount} persona${personaCount !== 1 ? 's' : ''} × ${distinctScenarioCount} scenario${distinctScenarioCount !== 1 ? 's' : ''})${suite.agent_suite_count > 1 ? ` · ${suite.agent_suite_count} suites for this agent` : ''}` : undefined}
         callMedium={suite.agent_call_medium}
         callType={suite.agent_call_type}
         isEditing={isEditing}
@@ -281,8 +349,8 @@ export default function EvaluatorDetail() {
                 icon={<Bot className="w-5 h-5" />}
               />
               <StatCard
-                label="Persona"
-                value={suite.persona_name || '—'}
+                label={personaCount > 1 ? 'Personas' : 'Persona'}
+                value={formatSuitePersonaLabel(suite)}
                 accentClass="text-base font-semibold text-gray-900"
                 iconBgClass="bg-purple-50"
                 iconClass="text-purple-600"
@@ -290,7 +358,7 @@ export default function EvaluatorDetail() {
               />
               <StatCard
                 label="Scenarios"
-                value={suite.combination_count}
+                value={distinctScenarioCount}
                 accentClass="text-indigo-600"
                 iconBgClass="bg-indigo-50"
                 iconClass="text-indigo-500"
@@ -330,6 +398,92 @@ export default function EvaluatorDetail() {
           )}
 
           {isEditing && (
+            <div className="space-y-4 border-t border-gray-100 pt-6">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3">Personas</h3>
+                {voiceBundleTtsProvider && (
+                  <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3">
+                    Showing personas matching TTS provider {voiceBundleTtsProvider}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {(suite.personas ?? []).map((persona) => (
+                    <span
+                      key={persona.id}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-purple-50 text-purple-800 text-sm border border-purple-100"
+                    >
+                      {persona.name || persona.id}
+                      {personaCount > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => removePersonaMutation.mutate(persona.id)}
+                          disabled={removePersonaMutation.isPending}
+                          className="text-purple-500 hover:text-red-600"
+                          title="Remove persona"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                {personaCount <= 1 && swapPersonas.length > 0 && (
+                  <div className="flex items-center gap-2 mb-3">
+                    <select
+                      value={personaToSwap}
+                      onChange={(e) => setPersonaToSwap(e.target.value)}
+                      className={`${MODERN_SELECT_CLASS} sm:w-56`}
+                    >
+                      <option value="">Change persona…</option>
+                      {swapPersonas.map((p: any) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => personaToSwap && replacePersonasMutation.mutate([personaToSwap])}
+                      disabled={!personaToSwap}
+                      isLoading={replacePersonasMutation.isPending}
+                    >
+                      Change
+                    </Button>
+                  </div>
+                )}
+                {availablePersonas.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={personaToAdd}
+                      onChange={(e) => setPersonaToAdd(e.target.value)}
+                      className={`${MODERN_SELECT_CLASS} sm:w-56`}
+                    >
+                      <option value="">Add persona…</option>
+                      {availablePersonas.map((p: any) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => personaToAdd && addPersonasMutation.mutate([personaToAdd])}
+                      disabled={!personaToAdd}
+                      isLoading={addPersonasMutation.isPending}
+                      leftIcon={<Plus className="h-3.5 w-3.5" />}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                )}
+                {personaCount <= 1 && (
+                  <p className="text-xs text-gray-500 mt-2">
+                    Use Change persona to swap the library persona for this suite.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {isEditing && (
             <div className="space-y-6 border-t border-gray-100 pt-6">
               <div>
                 <h3 className="text-sm font-semibold text-gray-900 mb-3">Metrics</h3>
@@ -357,9 +511,9 @@ export default function EvaluatorDetail() {
         <EvaluatorOutboundCallPanel
           evaluatorId={firstCombo.id}
           agentId={suite.agent_id}
-          personaId={suite.persona_id}
+          personaId={firstCombo.persona_id || suite.persona_id}
           scenarioId={firstCombo.scenario_id}
-          personaName={suite.persona_name || undefined}
+          personaName={firstCombo.persona_name || suite.persona_name || undefined}
           scenarioName={firstCombo.scenario_name || undefined}
           callMedium={suite.agent_call_medium || 'phone_call'}
           callType={suite.agent_call_type || 'outbound'}
@@ -372,7 +526,7 @@ export default function EvaluatorDetail() {
         <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div className="flex items-center gap-3">
             <FileText className="h-5 w-5 text-green-600" />
-            <h2 className="text-lg font-semibold text-gray-900">Scenario Combinations</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Combinations</h2>
             <span className="px-2 py-0.5 text-xs font-medium text-green-700 bg-green-100 rounded-full">
               {suite.combination_count}
             </span>
@@ -407,6 +561,7 @@ export default function EvaluatorDetail() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluator ID</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Persona</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scenario</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
@@ -415,6 +570,12 @@ export default function EvaluatorDetail() {
               {suite.combinations.map((c) => (
                 <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 font-mono text-xs text-gray-500">{c.evaluator_id}</td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-2">
+                      <User className="h-4 w-4 text-purple-400 shrink-0" />
+                      <span className="text-sm font-medium text-gray-900">{c.persona_name || c.persona_id || '—'}</span>
+                    </div>
+                  </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4 text-gray-400 shrink-0" />
@@ -432,7 +593,7 @@ export default function EvaluatorDetail() {
                       >
                         View
                       </Button>
-                      {isEditing && suite.combinations.length > 1 && (
+                      {isEditing && distinctScenarioCount > 1 && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -451,7 +612,7 @@ export default function EvaluatorDetail() {
             </tbody>
           </table>
         </div>
-        {isEditing && suite.combinations.length <= 1 && (
+        {isEditing && distinctScenarioCount <= 1 && (
           <p className="px-6 py-3 text-xs text-gray-500 border-t border-gray-100 bg-gray-50/50">
             At least one scenario is required — you cannot remove the last one.
           </p>

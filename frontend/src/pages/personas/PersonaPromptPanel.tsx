@@ -38,21 +38,18 @@ export default function PersonaPromptPanel({
     enabled: !!selectedAgentId,
   })
 
+  const hasTestAgentPrompt = Boolean(promptSources?.test_agent_prompt?.trim())
+
   const seedMutation = useMutation({
-    mutationFn: async (source: 'test_agent' | 'agent') => {
+    mutationFn: async () => {
       if (!selectedAgentId) {
         throw new Error('Select an agent first')
       }
       const sources =
         promptSources ?? (await apiClient.getPersonaAgentPromptSources(selectedAgentId))
-      const text =
-        source === 'test_agent' ? sources.test_agent_prompt : sources.agent_prompt
+      const text = sources.test_agent_prompt
       if (!text?.trim()) {
-        throw new Error(
-          source === 'test_agent'
-            ? 'This agent has no test agent prompt'
-            : 'This agent has no production prompt',
-        )
+        throw new Error('This agent has no test agent prompt')
       }
       return text.trim()
     },
@@ -68,10 +65,14 @@ export default function PersonaPromptPanel({
 
   const handleAgentChange = (agentId: string) => {
     setSelectedAgentId(agentId)
+    setShowAiPanel(false)
     if (agentId) {
       void refetchSources()
     }
   }
+
+  const canUseTestAgentPrompt =
+    Boolean(selectedAgentId) && !isLoadingSources && hasTestAgentPrompt
 
   return (
     <div className="space-y-3">
@@ -94,11 +95,11 @@ export default function PersonaPromptPanel({
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          disabled={!selectedAgentId || seedMutation.isPending}
-          onClick={() => seedMutation.mutate('test_agent')}
+          disabled={!canUseTestAgentPrompt || seedMutation.isPending}
+          onClick={() => seedMutation.mutate()}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50"
         >
-          {seedMutation.isPending && seedMutation.variables === 'test_agent' ? (
+          {seedMutation.isPending ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
             <FileText className="h-3.5 w-3.5" />
@@ -107,20 +108,7 @@ export default function PersonaPromptPanel({
         </button>
         <button
           type="button"
-          disabled={!selectedAgentId || seedMutation.isPending}
-          onClick={() => seedMutation.mutate('agent')}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-        >
-          {seedMutation.isPending && seedMutation.variables === 'agent' ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <FileText className="h-3.5 w-3.5" />
-          )}
-          Use agent prompt
-        </button>
-        <button
-          type="button"
-          disabled={!selectedAgentId}
+          disabled={!canUseTestAgentPrompt}
           onClick={() => setShowAiPanel((v) => !v)}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50"
         >
@@ -133,15 +121,21 @@ export default function PersonaPromptPanel({
         <p className="text-xs text-gray-500">Loading agent prompts…</p>
       ) : null}
 
+      {selectedAgentId && !isLoadingSources && !hasTestAgentPrompt ? (
+        <p className="text-xs text-amber-700">
+          This agent has no test agent prompt. Configure one on the agent&apos;s Test Agent tab first.
+        </p>
+      ) : null}
+
       {seedMutation.isError ? (
         <p className="text-xs text-red-600">
           {(seedMutation.error as Error)?.message || 'Failed to load prompt'}
         </p>
       ) : null}
 
-      {showAiPanel && selectedAgentId ? (
+      {showAiPanel && canUseTestAgentPrompt ? (
         <AIGeneratePanel
-          title="Generate persona prompt from agent"
+          title="Generate persona prompt from test agent"
           placeholder="Optional: describe caller personality, tone, or scenario context…"
           showToneAndFormat={false}
           requireDescription={false}
@@ -158,7 +152,7 @@ export default function PersonaPromptPanel({
           }) => {
             const result = await apiClient.generatePersonaPrompt({
               agent_id: selectedAgentId,
-              source: 'auto',
+              source: 'test_agent',
               persona_name: personaName?.trim() || undefined,
               persona_gender: personaGender || undefined,
               additional_context: params.description.trim() || undefined,

@@ -523,6 +523,8 @@ async def run_voice_bundle_fastapi(
     silence_hangup_secs: float | None = None,
     caller_speaks_first: bool = True,
     caller_opening_text: str | None = None,
+    call_direction: str = "outbound",
+    persona_speaks_via_tts: bool = False,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -605,7 +607,23 @@ async def run_voice_bundle_fastapi(
             telephony_mode=telephony_mode,
         )
         ambient_mixer = None
-        if persona is not None:
+        ambient_input_processor = None
+        if persona is not None and telephony_mode:
+            from app.services.audio.ambient_telephony import resolve_ambient_for_telephony
+            from app.services.audio.ambient_input_processor import get_ambient_input_processor_class
+
+            ambient_config = await resolve_ambient_for_telephony(
+                persona,
+                call_direction=call_direction,
+                input_sample_rate=transport_in_sample_rate,
+                output_sample_rate=transport_out_sample_rate,
+                persona_speaks_via_tts=persona_speaks_via_tts,
+            )
+            ambient_mixer = ambient_config.output_mixer
+            if ambient_config.input_bed is not None:
+                AmbientInputProcessor = get_ambient_input_processor_class()
+                ambient_input_processor = AmbientInputProcessor(ambient_config.input_bed)
+        elif persona is not None:
             from app.services.audio.ambient_catalog import resolve_ambient_mixer
 
             ambient_mixer = await resolve_ambient_mixer(persona, transport_out_sample_rate)
@@ -760,6 +778,7 @@ async def run_voice_bundle_fastapi(
                 target_sample_rate=tts_sample_rate,
                 recorder_name="UserAudioRecorder",
                 alignment_mode="stream",
+                capture="input",
             )
             bot_recorder = AudioRecorder(
                 bot_audio_path,
@@ -767,6 +786,7 @@ async def run_voice_bundle_fastapi(
                 target_sample_rate=tts_sample_rate,
                 recorder_name="BotAudioRecorder",
                 alignment_mode="stream",
+                capture="output",
             )
             audio_buffer_input = None
             audio_buffer_output = None
@@ -822,11 +842,15 @@ async def run_voice_bundle_fastapi(
 
         if use_aligned_recorders:
             pipeline_processors = [ws_transport.input()]
+            if ambient_input_processor:
+                pipeline_processors.append(ambient_input_processor)
             if silence_hangup_processor:
                 pipeline_processors.append(silence_hangup_processor)
             pipeline_processors.extend([user_recorder, stt])
         else:
             pipeline_processors = [ws_transport.input()]
+            if ambient_input_processor:
+                pipeline_processors.append(ambient_input_processor)
             if silence_hangup_processor:
                 pipeline_processors.append(silence_hangup_processor)
             pipeline_processors.extend([audio_buffer_input, stt])
@@ -1012,6 +1036,7 @@ async def run_voice_bundle_fastapi(
                             conversation_turns=conversation_turns,
                             transcript_text=transcript_text,
                             duration=duration_result,
+                            call_direction=call_direction,
                         )
                         logger.info(
                             "Queued finalize_telephony_recording for call_short_id={} "
@@ -1038,6 +1063,7 @@ async def run_voice_bundle_fastapi(
                             organization_id=organization_id,
                             evaluator_id=evaluator_id,
                             result_id=result_id,
+                            call_direction=call_direction,
                         )
                         db = SessionLocal()
                         try:
@@ -1061,6 +1087,7 @@ async def run_voice_bundle_fastapi(
                         organization_id=organization_id,
                         evaluator_id=evaluator_id,
                         result_id=result_id,
+                        call_direction=call_direction,
                     )
             else:
                 await audio_buffer_input.stop_recording()

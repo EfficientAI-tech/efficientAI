@@ -144,3 +144,49 @@ def test_create_persona_rejects_invalid_tts_config(authenticated_client):
         },
     )
     assert response.status_code == 422
+
+
+def test_voice_options_without_credentials_returns_empty(authenticated_client):
+    response = authenticated_client.get("/api/v1/personas/voice-options")
+    assert response.status_code == 200
+    assert response.json()["providers"] == []
+
+
+def test_voice_options_filters_to_configured_providers(
+    authenticated_client, make_ai_provider, make_integration
+):
+    make_ai_provider(provider="openai")
+
+    response = authenticated_client.get("/api/v1/personas/voice-options")
+    assert response.status_code == 200
+    provider_ids = {p["id"] for p in response.json()["providers"]}
+    assert "openai" in provider_ids
+    assert "elevenlabs" not in provider_ids
+
+    make_integration(platform="elevenlabs")
+    response_with_integration = authenticated_client.get("/api/v1/personas/voice-options")
+    provider_ids_with_integration = {
+        p["id"] for p in response_with_integration.json()["providers"]
+    }
+    assert "openai" in provider_ids_with_integration
+    assert "elevenlabs" in provider_ids_with_integration
+
+
+def test_generate_persona_prompt_requires_test_agent_prompt(
+    authenticated_client, make_agent, make_ai_provider, db_session
+):
+    make_ai_provider(provider="openai")
+    agent = make_agent(name="No Test Prompt Agent", description="")
+    agent.provider_prompt = "Production-only prompt"
+    db_session.commit()
+    db_session.refresh(agent)
+
+    response = authenticated_client.post(
+        "/api/v1/personas/generate-prompt",
+        json={
+            "agent_id": str(agent.id),
+            "source": "test_agent",
+        },
+    )
+    assert response.status_code == 400
+    assert "no test agent prompt" in response.json()["detail"].lower()

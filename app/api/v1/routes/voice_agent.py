@@ -301,6 +301,7 @@ async def websocket_endpoint(
         system_instruction = None
         caller_speaks_first = True
         caller_opening_text = None
+        persona_speaks_via_tts = False
         
         # Build system instruction from agent + persona + scenario
         from app.models.database import Agent, Persona, Scenario
@@ -353,6 +354,7 @@ async def websocket_endpoint(
             )
 
             system_instruction = build_live_test_agent_system_prompt(agent, persona, scenario)
+            persona_speaks_via_tts = True
             first_message_config = resolve_first_message_from_agent(agent)
             scenario_first_message = None
             if scenario.required_info and isinstance(scenario.required_info, dict):
@@ -543,6 +545,7 @@ async def websocket_endpoint(
                     silence_hangup_secs=agent_silence_hangup_secs,
                     caller_speaks_first=caller_speaks_first,
                     caller_opening_text=caller_opening_text,
+                    persona_speaks_via_tts=persona_speaks_via_tts,
                 )
             else:
                 call_metadata = await run_bot(

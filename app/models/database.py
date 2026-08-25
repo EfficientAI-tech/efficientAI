@@ -848,7 +848,7 @@ class TestAgentConversation(Base):
 
 
 class EvaluatorSuite(Base):
-    """Evaluator suite — one agent + one persona + N scenario combinations."""
+    """Evaluator suite — one agent + one or more personas × N scenario combinations."""
 
     __tablename__ = "evaluator_suites"
 

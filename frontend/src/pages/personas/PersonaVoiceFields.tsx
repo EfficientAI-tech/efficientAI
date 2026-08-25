@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronDown, Mic } from 'lucide-react'
 import ProviderLogo, { getProviderInfo } from '../../components/shared/ProviderLogo'
 import { filterTtsConfigForProvider } from './personaTtsParams'
@@ -63,6 +64,14 @@ export default function PersonaVoiceFields({
             </span>
             <span className="text-xs text-gray-500 ml-auto">Locked after creation</span>
           </div>
+        ) : providers.length === 0 ? (
+          <p className="text-sm text-gray-600">
+            No TTS providers are connected yet.{' '}
+            <Link to="/integrations" className="text-primary-600 hover:text-primary-700 underline font-medium">
+              Connect a provider in Integrations
+            </Link>{' '}
+            to choose a voice.
+          </p>
         ) : (
           <div className="grid grid-cols-2 gap-2">
             {providers.map((p) => {
