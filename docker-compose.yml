@@ -192,7 +192,7 @@ services:
       sh -c "celery -A app.workers.celery_app worker -Q platform --pool threads --concurrency 2 --loglevel=info &
       exec celery -A app.workers.celery_app beat --loglevel=info"
 
-  # Dedicated worker for call-import + evaluation queues. Celery drains
+  # Dedicated worker for call-import + evaluation + provider-sync queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
   # then ``eval-control`` (cancel/retry/materialize), then ``evaluations``
   # (fair dispatch + LLM scoring).
@@ -230,7 +230,7 @@ services:
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     # Thread pool: keep concurrency near Redis inflight caps + headroom when sharding
     # (each task may hold catalog + shard connections for tens of seconds).
-    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations --pool threads --concurrency 12
+    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations,provider-sync --pool threads --concurrency 12
 
   # Low-priority usage pricing: Redis flush + cost recompute/backfill.
   worker-usage:

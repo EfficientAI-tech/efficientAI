@@ -234,6 +234,7 @@ class Settings(BaseSettings):
         "vobiz.ai",
         "amazonaws.com",
         "cloudfront.net",
+        "elevenlabs.io",
     ]
 
     # Live telephony pipeline recording merge (dual-track → natural mono)

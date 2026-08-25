@@ -53,6 +53,15 @@ def _mark_job(db, job: ProviderSyncJob, *, status: Optional[str] = None, phase: 
     db.commit()
 
 
+def _is_job_cancelled(db, job_id: str) -> bool:
+    row = (
+        db.query(ProviderSyncJob.status)
+        .filter(ProviderSyncJob.id == UUID(job_id))
+        .first()
+    )
+    return bool(row and row[0] == "cancelled")
+
+
 def _record_error(
     db,
     *,
@@ -160,9 +169,13 @@ def sync_elevenlabs_agents_task(job_id: str) -> Dict[str, Any]:
         cursor = None
         total = 0
         while True:
+            if _is_job_cancelled(db, job_id):
+                return {"status": "cancelled"}
             last_req = _throttle(last_req, rps=settings.ELEVENLABS_SYNC_MAX_RPS)
             payload = provider.list_agents(page_size=100, cursor=cursor)
             for item in payload.get("agents", []):
+                if _is_job_cancelled(db, job_id):
+                    return {"status": "cancelled"}
                 provider_agent_id = str(item.get("id") or "").strip()
                 if not provider_agent_id:
                     continue
@@ -213,7 +226,7 @@ def sync_elevenlabs_agents_task(job_id: str) -> Dict[str, Any]:
             if not cursor:
                 break
 
-        _mark_job(db, job, status="running", phase="catalog")
+        _mark_job(db, job, status="completed", phase="complete")
         return {"status": "ok", "agents_synced": total}
     except Exception as exc:
         logger.exception("sync_elevenlabs_agents_task failed job_id={}", job_id)
@@ -262,8 +275,12 @@ def sync_elevenlabs_catalog_task(job_id: str) -> Dict[str, Any]:
         total = int(job.conversations_cataloged or 0)
         cursor_state = job.cursor_state if isinstance(job.cursor_state, dict) else {}
         for provider_agent_id in provider_agent_ids:
+            if _is_job_cancelled(db, job_id):
+                return {"status": "cancelled"}
             cursor = cursor_state.get(provider_agent_id)
             while True:
+                if _is_job_cancelled(db, job_id):
+                    return {"status": "cancelled"}
                 last_req = _throttle(last_req, rps=settings.ELEVENLABS_SYNC_MAX_RPS)
                 payload = provider.list_conversations(
                     agent_id=provider_agent_id,
@@ -273,6 +290,8 @@ def sync_elevenlabs_catalog_task(job_id: str) -> Dict[str, Any]:
                 )
                 conversations = payload.get("conversations") or []
                 for item in conversations:
+                    if _is_job_cancelled(db, job_id):
+                        return {"status": "cancelled"}
                     conversation_id = str(item.get("conversation_id") or "").strip()
                     if not conversation_id:
                         continue
@@ -372,6 +391,8 @@ def sync_elevenlabs_enrich_task(job_id: str) -> Dict[str, Any]:
 
         total = int(job.conversations_enriched or 0)
         for row in rows:
+            if _is_job_cancelled(db, job_id):
+                return {"status": "cancelled"}
             call_data = row.call_data if isinstance(row.call_data, dict) else {}
             if call_data.get("transcript") and call_data.get("analysis"):
                 continue
@@ -400,6 +421,8 @@ def sync_elevenlabs_enrich_task(job_id: str) -> Dict[str, Any]:
                     provider_call_id=str(provider_call_id),
                 )
                 db.rollback()
+        if _is_job_cancelled(db, job_id):
+            return {"status": "cancelled"}
         _mark_job(db, job, status="completed", phase="complete")
         return {"status": "ok", "conversations_enriched": total}
     except Exception as exc:

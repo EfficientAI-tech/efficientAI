@@ -758,7 +758,7 @@ async def cancel_provider_sync_job(
         raise HTTPException(status_code=404, detail="Sync job not found")
     if job.status not in {"completed", "failed", "cancelled"}:
         job.status = "cancelled"
-        job.phase = "failed"
+        job.phase = "cancelled"
         job.completed_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(job)

@@ -6,11 +6,16 @@ import uuid
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
-import httpx
 from loguru import logger
 
 from app.services.audio.voice_quality_service import get_recording_url
+from app.services.observability.recording_url_safety import (
+    build_elevenlabs_conversation_audio_url,
+    download_elevenlabs_recording_bytes,
+)
 from app.services.storage.s3_service import s3_service
+from app.services.telephony.exotel_client import ExotelInvalidContentError
+from app.services.telephony.recording_download import download_recording_url
 
 
 def resolve_observability_recording_url(
@@ -38,7 +43,10 @@ def resolve_observability_recording_url(
                 or raw_data.get("conversation_id")
             )
             if conversation_id:
-                return f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}/audio"
+                try:
+                    return build_elevenlabs_conversation_audio_url(str(conversation_id))
+                except ExotelInvalidContentError:
+                    return None
 
     if platform == "retell":
         multi_channel = call_data.get("recording_multi_channel_url")
@@ -54,16 +62,20 @@ def _download_recording_bytes(
     provider_platform: str,
     provider_api_key: Optional[str] = None,
 ) -> Tuple[bytes, str]:
-    headers: Dict[str, str] = {}
     platform = provider_platform.strip().lower()
-    if platform == "elevenlabs" and provider_api_key:
-        headers["xi-api-key"] = provider_api_key
+    if platform == "elevenlabs":
+        if not provider_api_key:
+            raise ExotelInvalidContentError("ElevenLabs recording download requires an API key")
+        return download_elevenlabs_recording_bytes(
+            recording_url,
+            api_key=provider_api_key,
+        )
 
-    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-        response = client.get(recording_url, headers=headers)
-        response.raise_for_status()
-        content_type = response.headers.get("content-type", "audio/mpeg")
-        return response.content, content_type
+    return download_recording_url(
+        recording_url,
+        timeout_seconds=120.0,
+        user_supplied=True,
+    )
 
 
 def _extension_for_content_type(content_type: str) -> str:

@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 from uuid import UUID
 
-import requests as http_requests
 from fastapi import HTTPException
 from fastapi import status
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.core.encryption import decrypt_api_key
 from app.models.database import Agent, CallRecording, Integration
+from app.services.observability.recording_url_safety import (
+    assert_elevenlabs_recording_url,
+    download_elevenlabs_recording_bytes,
+)
+from app.services.telephony.exotel_client import ExotelInvalidContentError
 
 
 def resolve_elevenlabs_audio_url(call_data: Dict[str, Any]) -> Optional[str]:
@@ -44,6 +49,19 @@ def stream_elevenlabs_audio_proxy(
             detail="No recording URL available",
         )
 
+    try:
+        assert_elevenlabs_recording_url(audio_url)
+    except ExotelInvalidContentError as exc:
+        logger.warning(
+            "Blocked ElevenLabs audio proxy for call_short_id={}: {}",
+            call_recording.call_short_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Recording URL is not allowed for provider proxy",
+        ) from exc
+
     agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
     if not agent or not agent.voice_ai_integration_id:
         raise HTTPException(
@@ -67,21 +85,38 @@ def stream_elevenlabs_audio_proxy(
         )
 
     decrypted_key = decrypt_api_key(integration.api_key)
-    upstream = http_requests.get(
-        audio_url,
-        headers={"xi-api-key": decrypted_key},
-        stream=True,
-        timeout=60,
-    )
-    if upstream.status_code != 200:
-        raise HTTPException(
-            status_code=upstream.status_code,
-            detail=f"ElevenLabs audio fetch failed ({upstream.status_code})",
+    try:
+        audio_bytes, content_type = download_elevenlabs_recording_bytes(
+            audio_url,
+            api_key=decrypted_key,
         )
+    except ExotelInvalidContentError as exc:
+        logger.warning(
+            "Blocked ElevenLabs audio download for call_short_id={}: {}",
+            call_recording.call_short_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Recording URL is not allowed for provider proxy",
+        ) from exc
+    except Exception as exc:
+        logger.warning(
+            "ElevenLabs audio fetch failed for call_short_id={}: {}",
+            call_recording.call_short_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to fetch ElevenLabs recording",
+        ) from exc
 
-    content_type = upstream.headers.get("content-type", "audio/mpeg")
+    def _iter_chunks(data: bytes, chunk_size: int = 8192) -> Iterator[bytes]:
+        for offset in range(0, len(data), chunk_size):
+            yield data[offset : offset + chunk_size]
+
     return StreamingResponse(
-        upstream.iter_content(chunk_size=8192),
+        _iter_chunks(audio_bytes),
         media_type=content_type,
         headers={
             "Content-Disposition": (
