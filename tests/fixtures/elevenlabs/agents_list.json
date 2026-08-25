@@ -1,0 +1,12 @@
+{
+  "agents": [
+    {
+      "agent_id": "agent_7101k5zvyjhmfg983brhmhkd98n6",
+      "name": "Customer Support Agent",
+      "archived": false,
+      "created_at_unix_secs": 1714423200
+    }
+  ],
+  "has_more": false,
+  "next_cursor": null
+}

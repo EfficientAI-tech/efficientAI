@@ -3,10 +3,12 @@ from uuid import uuid4
 from app.services.observability.live_event_emitter import LiveObservabilityEmitter
 
 
-def test_live_observability_emitter_posts_turns_and_end(db_session, monkeypatch):
+def test_live_observability_emitter_posts_turns_and_end(
+    db_session, seed_org, default_workspace, monkeypatch
+):
     monkeypatch.setattr("app.services.observability.live_event_emitter.settings.OBSERVABILITY_LIVE_INGEST_ENABLED", True)
-    org_id = uuid4()
-    workspace_id = uuid4()
+    org_id = seed_org.id
+    workspace_id = default_workspace.id
     emitter = LiveObservabilityEmitter(
         organization_id=org_id,
         workspace_id=workspace_id,

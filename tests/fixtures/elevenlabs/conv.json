@@ -1,0 +1,73 @@
+{
+  "conversation_id": "conv_9001k1zph3fkeh5s8xg9z90swaqa",
+  "agent_id": "agent_7101k5zvyjhmfg983brhmhkd98n6",
+  "status": "done",
+  "metadata": {
+    "start_time_unix_secs": 1714423232,
+    "call_duration_secs": 25,
+    "cost_fiat": 0.12
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "time_in_call_secs": 2,
+      "message": "Hello there",
+      "conversation_turn_metrics": {
+        "elapsed_time": 0.22,
+        "metrics": {
+          "convai_turn_asr_latency": {
+            "elapsed_time": 0.22
+          }
+        },
+        "llm_usage": {
+          "model_usage": {
+            "gpt-4o-mini": {
+              "input": {
+                "tokens": 12
+              },
+              "output_total": {
+                "tokens": 8
+              }
+            }
+          }
+        },
+        "convai_asr_provider": "elevenlabs-asr"
+      }
+    },
+    {
+      "role": "agent",
+      "time_in_call_secs": 4,
+      "message": "Hi, how can I help you today?",
+      "conversation_turn_metrics": {
+        "elapsed_time": 0.38,
+        "metrics": {
+          "convai_llm_service_ttfb": {
+            "elapsed_time": 0.18
+          },
+          "convai_tts_service_ttfb": {
+            "elapsed_time": 0.12
+          }
+        },
+        "convai_tts_model": "eleven_flash_v2_5"
+      }
+    },
+    {
+      "role": "user",
+      "time_in_call_secs": 12,
+      "message": "Tell me a quick fun fact.",
+      "conversation_turn_metrics": {
+        "elapsed_time": 0.24
+      }
+    },
+    {
+      "role": "agent",
+      "time_in_call_secs": 15,
+      "message": "Honey never spoils, even after thousands of years.",
+      "conversation_turn_metrics": {
+        "elapsed_time": 0.41,
+        "convai_tts_model": "eleven_flash_v2_5"
+      }
+    }
+  ],
+  "otlp_traces": null
+}

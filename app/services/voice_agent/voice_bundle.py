@@ -531,7 +531,6 @@ async def run_voice_bundle_fastapi(
     telephony_mode: bool = False,
     call_short_id: str | None = None,
     silence_hangup_secs: float | None = None,
-    workspace_id: str | None = None,
     live_observability_emitter=None,
 ):
     """

@@ -26,6 +26,7 @@ MANIFEST
 secrets/
 *.json
 !package.json
+!tests/fixtures/**/*.json
 .cursorrules
 
 # Virtual environments

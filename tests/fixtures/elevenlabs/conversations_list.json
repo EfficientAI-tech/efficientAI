@@ -1,0 +1,18 @@
+{
+  "conversations": [
+    {
+      "conversation_id": "conv_12345",
+      "agent_id": "agent_abc",
+      "start_time_unix_secs": 1724034000,
+      "call_duration_secs": 123,
+      "message_count": 12,
+      "status": "done",
+      "call_successful": "success",
+      "metadata": {
+        "source": "js_sdk"
+      }
+    }
+  ],
+  "has_more": false,
+  "next_cursor": null
+}
