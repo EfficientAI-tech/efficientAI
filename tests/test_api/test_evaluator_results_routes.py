@@ -478,3 +478,35 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
     assert response.status_code == 200
     assert captured["headers"]["Authorization"] == "Bearer vapi-secret"
 
+
+def test_re_evaluate_playground_result_without_evaluator_id(
+    authenticated_client,
+    make_agent,
+    make_evaluator_result,
+    monkeypatch,
+):
+    agent = make_agent()
+    result = make_evaluator_result(
+        result_id="776655",
+        evaluator_id=None,
+        agent_id=agent.id,
+        transcription="Speaker 1: hello\nSpeaker 2: hi there",
+        provider_platform="vapi",
+        status="completed",
+    )
+
+    class FakeTask:
+        id = "task-playground-re-eval"
+
+    monkeypatch.setattr(
+        "app.workers.celery_app.process_evaluator_result_task.delay",
+        lambda *_args, **_kwargs: FakeTask(),
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/evaluator-results/{result.result_id}/re-evaluate"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+

@@ -77,6 +77,24 @@ def test_csp_enforcing_header_when_report_only_disabled(security_client, monkeyp
     assert "Content-Security-Policy-Report-Only" not in response.headers
 
 
+def test_csp_allows_voice_provider_connect_src(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "CSP_ENABLED", True)
+    monkeypatch.setattr(settings, "CSP_REPORT_ONLY", False)
+
+    response = security_client.get("/health")
+    policy = response.headers["Content-Security-Policy"]
+
+    assert "https://api.vapi.ai" in policy
+    assert "https://*.daily.co" in policy
+    assert "wss://*.livekit.cloud" in policy
+    assert "https://api.elevenlabs.io" in policy
+    assert "https://*.ingest.sentry.io" in policy
+    assert "'unsafe-eval'" in policy
+    assert "blob:" in policy
+    assert "https://c.daily.co" in policy
+    assert "worker-src 'self' blob:" in policy
+
+
 def test_asset_routes_use_long_cache(security_client):
     response = security_client.get("/assets/app.js")
 

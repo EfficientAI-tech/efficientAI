@@ -442,20 +442,28 @@ async def generate_persona_prompt(
     provider_enum, model_str = _get_llm_provider_and_model(
         organization_id, db, data.provider, data.model, data.credential_id
     )
+    from app.services.usage.context import (
+        llm_usage_context,
+        usage_context_for_persona_generation,
+    )
+
     try:
-        result = generate_persona_prompt_from_agent(
-            agent,
-            source=data.source,
-            persona_name=data.persona_name,
-            persona_gender=data.persona_gender,
-            additional_context=data.additional_context,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=data.llm_config,
-            credential_id=data.credential_id,
-        )
+        with llm_usage_context(
+            usage_context_for_persona_generation(agent, workspace_id=workspace_id)
+        ):
+            result = generate_persona_prompt_from_agent(
+                agent,
+                source=data.source,
+                persona_name=data.persona_name,
+                persona_gender=data.persona_gender,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
         return GeneratePersonaPromptResponse(
             persona_prompt=result.persona_prompt,
             source_used=result.source_used,

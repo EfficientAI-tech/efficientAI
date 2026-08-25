@@ -588,6 +588,8 @@ def _resolve_call_duration_seconds(result) -> int:
 def _record_agent_call_usage(result, *, usage_ctx) -> None:
     if not _should_record_external_agent_call_usage(result):
         return
+    if _external_usage_already_recorded(result):
+        return
     try:
         from app.services.usage.llm_usage import record_call_usage
 
@@ -600,6 +602,30 @@ def _record_agent_call_usage(result, *, usage_ctx) -> None:
     except Exception as exc:
         logger.debug(
             "[EvaluatorResult {}] agent call usage record skipped: {}",
+            result.result_id,
+            exc,
+        )
+
+
+def _external_usage_already_recorded(result) -> bool:
+    call_data = getattr(result, "call_data", None)
+    if not isinstance(call_data, dict):
+        return False
+    return bool(call_data.get("external_usage_recorded"))
+
+
+def _record_external_agent_llm_usage(result, *, usage_ctx) -> None:
+    if not _should_record_external_agent_call_usage(result):
+        return
+    if _external_usage_already_recorded(result):
+        return
+    try:
+        from app.services.usage.external_agent_usage import record_external_agent_usage
+
+        record_external_agent_usage(result, usage_ctx=usage_ctx)
+    except Exception as exc:
+        logger.debug(
+            "[EvaluatorResult {}] external agent llm usage record skipped: {}",
             result.result_id,
             exc,
         )
@@ -852,6 +878,7 @@ def process_evaluator_result_task(self, result_id: str):
                 result.status = EvaluatorResultStatus.COMPLETED.value
                 result.error_message = None
                 _record_agent_call_usage(result, usage_ctx=usage_ctx)
+                _record_external_agent_llm_usage(result, usage_ctx=usage_ctx)
                 _commit_evaluator_result(db, result)
 
                 from app.services.billing.flexprice_service import (

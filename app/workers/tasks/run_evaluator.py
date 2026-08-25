@@ -71,18 +71,20 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 result.call_event = "task_started"
                 db.commit()
 
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                bridge_result = loop.run_until_complete(
-                    test_agent_bridge_service.bridge_test_agent_to_voice_agent(
-                        evaluator_id=evaluator_uuid,
-                        evaluator_result_id=result_uuid,
-                        organization_id=evaluator.organization_id,
-                        db=db,
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    bridge_result = loop.run_until_complete(
+                        test_agent_bridge_service.bridge_test_agent_to_voice_agent(
+                            evaluator_id=evaluator_uuid,
+                            evaluator_result_id=result_uuid,
+                            organization_id=evaluator.organization_id,
+                            db=db,
+                        )
                     )
-                )
+                finally:
+                    loop.close()
+                    asyncio.set_event_loop(None)
 
                 db.refresh(result)
 
@@ -119,10 +121,76 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 raise
 
         elif has_voice_bundle:
-            result.status = EvaluatorResultStatus.FAILED.value
-            result.error_message = "Standard voice agent flow not yet implemented for evaluator runs"
-            db.commit()
-            return {"error": "Standard flow not implemented"}
+            from app.models.database import Persona, Scenario
+            from app.services.testing.llm_to_llm_evaluator_simulation import (
+                run_llm_to_llm_evaluator_simulation,
+            )
+
+            persona = (
+                db.query(Persona).filter(Persona.id == evaluator.persona_id).first()
+                if evaluator.persona_id
+                else None
+            )
+            scenario = (
+                db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
+                if evaluator.scenario_id
+                else None
+            )
+            if not persona or not scenario:
+                result.status = EvaluatorResultStatus.FAILED.value
+                result.error_message = "Evaluator requires persona and scenario for voice-bundle simulation"
+                db.commit()
+                return {"error": "Missing persona or scenario"}
+
+            try:
+                result.status = EvaluatorResultStatus.CALL_INITIATING.value
+                result.call_event = "llm_simulation_started"
+                db.commit()
+
+                run_llm_to_llm_evaluator_simulation(
+                    evaluator=evaluator,
+                    result=result,
+                    agent=agent,
+                    persona=persona,
+                    scenario=scenario,
+                    organization_id=evaluator.organization_id,
+                    db=db,
+                )
+                result.status = EvaluatorResultStatus.QUEUED.value
+                result.call_event = "llm_simulation_completed"
+                db.commit()
+
+                from app.workers.celery_app import process_evaluator_result_task
+
+                task = process_evaluator_result_task.delay(str(result.id))
+                result.celery_task_id = task.id
+                db.commit()
+
+                from app.services.billing.flexprice_service import record_evaluator_run_completed
+
+                record_evaluator_run_completed(
+                    evaluator.organization_id,
+                    result.result_id,
+                    workspace_id=evaluator.workspace_id,
+                    evaluator_id=evaluator.id,
+                )
+
+                return {
+                    "evaluator_id": evaluator_id,
+                    "result_id": evaluator_result_id,
+                    "status": "simulated",
+                    "provider_platform": "internal",
+                }
+            except Exception as sim_error:
+                logger.error(
+                    f"[RunEvaluator {evaluator.evaluator_id}] LLM simulation error: {sim_error}",
+                    exc_info=True,
+                )
+                result.status = EvaluatorResultStatus.FAILED.value
+                result.error_message = str(sim_error)
+                result.call_event = "llm_simulation_error"
+                db.commit()
+                raise
 
         else:
             logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Agent missing required configuration")

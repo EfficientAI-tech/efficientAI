@@ -206,28 +206,85 @@ def usage_context_for_agent(
 
 
 def usage_context_for_evaluator_result(result: Any) -> LLMUsageContext:
-    """Usage context for processing an evaluator result (Vapi / playground runs)."""
-    if result.agent_id:
-        return LLMUsageContext(
-            organization_id=result.organization_id,
-            workspace_id=result.workspace_id,
-            product_section=LLMUsageProductSection.AGENTS,
-            resource_id=result.agent_id,
-            resource_type="agent",
-            extra={"agent_id": str(result.agent_id)},
-        )
-    extra: dict[str, str] = {"evaluator_result_id": str(result.id)}
+    """Usage context for post-run processing of synthetic evaluator results."""
+    extra: dict[str, str] = {
+        "evaluator_result_id": str(result.id),
+        "synthetic_testing": "pre_prod",
+    }
     if getattr(result, "result_id", None):
         extra["result_short_id"] = str(result.result_id)
+    if result.agent_id:
+        extra["agent_id"] = str(result.agent_id)
     if result.evaluator_id:
         extra["evaluator_id"] = str(result.evaluator_id)
+    if getattr(result, "persona_id", None):
+        extra["persona_id"] = str(result.persona_id)
+    if getattr(result, "scenario_id", None):
+        extra["scenario_id"] = str(result.scenario_id)
+    platform = getattr(result, "provider_platform", None)
+    if platform:
+        extra["provider_platform"] = str(platform).lower()
+
+    resource_id = result.evaluator_id or result.id
+    resource_type = "evaluator" if result.evaluator_id else "evaluator_result"
+    section = (
+        LLMUsageProductSection.EVALUATORS
+        if result.evaluator_id
+        else LLMUsageProductSection.PLAYGROUND
+    )
     return LLMUsageContext(
         organization_id=result.organization_id,
         workspace_id=result.workspace_id,
-        product_section=LLMUsageProductSection.EVALUATORS,
-        resource_id=result.id,
-        resource_type="evaluator_result",
+        product_section=section,
+        resource_id=resource_id,
+        resource_type=resource_type,
         extra=extra,
+    )
+
+
+def usage_context_for_metric_studio_run(
+    run: Any,
+    *,
+    source_kind: Optional[str] = None,
+    source_ref: Optional[str] = None,
+    result_row_id: Optional[UUID] = None,
+) -> LLMUsageContext:
+    """Usage context for Metrics Studio batch scoring."""
+    extra: dict[str, str] = {"metric_studio_run_id": str(run.id)}
+    if source_kind:
+        extra["source_kind"] = source_kind
+    if source_ref:
+        extra["source_ref"] = source_ref
+    if result_row_id:
+        extra["metric_studio_result_id"] = str(result_row_id)
+    if source_kind == "evaluator_result":
+        extra["synthetic_testing"] = "pre_prod"
+    return LLMUsageContext(
+        organization_id=run.organization_id,
+        workspace_id=run.workspace_id,
+        product_section=LLMUsageProductSection.METRICS,
+        resource_id=run.id,
+        resource_type="metric_studio_run",
+        extra=extra,
+    )
+
+
+def usage_context_for_persona_generation(
+    agent: Any,
+    *,
+    workspace_id: Optional[UUID] = None,
+) -> LLMUsageContext:
+    """Usage context for LLM-generated persona caller prompts."""
+    return LLMUsageContext(
+        organization_id=agent.organization_id,
+        workspace_id=workspace_id or agent.workspace_id,
+        product_section=LLMUsageProductSection.PERSONAS,
+        resource_id=agent.id,
+        resource_type="agent",
+        extra={
+            "agent_id": str(agent.id),
+            "synthetic_testing": "pre_prod",
+        },
     )
 
 
@@ -283,4 +340,68 @@ def usage_context_for_prompt_partial(partial: Any) -> LLMUsageContext:
         resource_id=partial.id,
         resource_type="prompt_partial",
         extra={"prompt_partial_id": str(partial.id)},
+    )
+
+
+def usage_context_for_playground_voice_call(
+    *,
+    organization_id: UUID,
+    workspace_id: Optional[UUID],
+    agent_id: Optional[UUID],
+    provider_platform: Optional[str],
+    call_short_id: Optional[str] = None,
+) -> LLMUsageContext:
+    """Usage context for live playground Voice AI Agent provider sessions."""
+    extra: dict[str, str] = {"synthetic_testing": "pre_prod"}
+    if agent_id:
+        extra["agent_id"] = str(agent_id)
+    if provider_platform:
+        extra["provider_platform"] = str(provider_platform).lower()
+    if call_short_id:
+        extra["call_short_id"] = call_short_id
+    return LLMUsageContext(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        product_section=LLMUsageProductSection.PLAYGROUND,
+        resource_id=agent_id,
+        resource_type="agent" if agent_id else None,
+        extra=extra,
+    )
+
+
+def usage_context_for_test_agent_simulation(
+    *,
+    organization_id: UUID,
+    workspace_id: Optional[UUID] = None,
+    agent_id: Optional[UUID] = None,
+    evaluator_id: Optional[UUID] = None,
+    persona_id: Optional[UUID] = None,
+    scenario_id: Optional[UUID] = None,
+    evaluator_result_id: Optional[UUID] = None,
+    conversation_id: Optional[UUID] = None,
+    provider_platform: Optional[str] = None,
+) -> LLMUsageContext:
+    """Usage context for synthetic LLM-to-LLM simulation (caller / test-agent leg)."""
+    extra: dict[str, str] = {"simulation": "llm_to_llm"}
+    if agent_id:
+        extra["agent_id"] = str(agent_id)
+    if evaluator_id:
+        extra["evaluator_id"] = str(evaluator_id)
+    if persona_id:
+        extra["persona_id"] = str(persona_id)
+    if scenario_id:
+        extra["scenario_id"] = str(scenario_id)
+    if evaluator_result_id:
+        extra["evaluator_result_id"] = str(evaluator_result_id)
+    if conversation_id:
+        extra["conversation_id"] = str(conversation_id)
+    if provider_platform:
+        extra["provider_platform"] = str(provider_platform)
+    return LLMUsageContext(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        product_section=LLMUsageProductSection.TEST_AGENT,
+        resource_id=agent_id,
+        resource_type="agent" if agent_id else None,
+        extra=extra,
     )

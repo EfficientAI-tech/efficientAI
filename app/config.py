@@ -128,15 +128,33 @@ class Settings(BaseSettings):
     # Content Security Policy (enforcing by default; set CSP_REPORT_ONLY=true for local report-only mode)
     CSP_ENABLED: bool = True
     CSP_REPORT_ONLY: bool = False
+    # Browser voice SDKs (Vapi/Daily, Retell/LiveKit, ElevenLabs convai) and their telemetry.
+    _CSP_VOICE_CONNECT_SRC: str = (
+        "https://api.vapi.ai "
+        "https://*.vapi.ai "
+        "https://*.daily.co "
+        "wss://*.daily.co "
+        "wss://*.livekit.cloud "
+        "https://api.elevenlabs.io "
+        "wss://api.elevenlabs.io "
+        "https://api.retellai.com "
+        "wss://api.retellai.com "
+        "https://*.ingest.sentry.io "
+        "https://*.ingest.us.sentry.io"
+    )
+    _CSP_VOICE_FRAME_SRC: str = "https://*.daily.co"
+    # Vapi → Daily.co call-machine bundle requires eval + blob worklets for audio
+    _CSP_DAILY_SCRIPT_SRC: str = "'unsafe-eval' blob: https://c.daily.co https://*.daily.co"
     CSP_POLICY: str = (
         "default-src 'self'; "
-        "script-src 'self'; "
+        f"script-src 'self' {_CSP_DAILY_SCRIPT_SRC}; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
-        "connect-src 'self' wss: ws:; "
+        f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC}; "
         "media-src 'self' blob: https:; "
-        "frame-src 'self' blob:; "
+        f"frame-src 'self' blob: {_CSP_VOICE_FRAME_SRC}; "
+        "worker-src 'self' blob:; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "

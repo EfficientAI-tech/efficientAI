@@ -29,7 +29,7 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
-  # csp_policy: "default-src 'self'; ..."  # optional override
+  # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
 
 # Database Configuration
 database:

@@ -864,15 +864,17 @@ def re_evaluate_result(
             detail="Cannot re-evaluate: this result has no transcription. It must be transcribed first."
         )
 
-    if not result.evaluator_id:
+    if not result.evaluator_id and not result.agent_id:
         raise HTTPException(
             status_code=400,
-            detail="Cannot re-evaluate: this result is not linked to an evaluator."
+            detail="Cannot re-evaluate: this result is not linked to an agent or evaluator."
         )
 
-    evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
-    if not evaluator:
-        raise HTTPException(status_code=404, detail="Linked evaluator no longer exists")
+    evaluator = None
+    if result.evaluator_id:
+        evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
+        if not evaluator:
+            raise HTTPException(status_code=404, detail="Linked evaluator no longer exists")
 
     # ------------------------------------------------------------------
     # If no audio in S3 yet, try to download from the voice provider

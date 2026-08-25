@@ -11,9 +11,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_for_sqlite(_element, _compiler, **_kw):
+    """Allow in-memory SQLite tests to create tables with JSONB columns."""
+    return "JSON"
 
 # Some local environments provide ALLOWED_AUDIO_FORMATS as a non-JSON string,
 # which breaks pydantic-settings parsing during module import in tests.

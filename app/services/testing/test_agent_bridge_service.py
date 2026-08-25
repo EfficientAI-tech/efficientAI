@@ -615,6 +615,12 @@ class TestAgentBridgeService:
                 test_agent_config = TestAgentConfig(
                     organization_id=organization_id,
                     workspace_id=getattr(agent, "workspace_id", None),
+                    agent_id=agent.id,
+                    evaluator_id=evaluator_id,
+                    persona_id=persona.id,
+                    scenario_id=scenario.id,
+                    evaluator_result_id=evaluator_result_id,
+                    db=db,
                     agent_name=agent.name or "Voice AI Agent",
                     agent_description=agent.description or "A voice AI assistant",
                     test_agent_simulation_prompt=simulation_prompt,

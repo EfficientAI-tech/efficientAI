@@ -294,12 +294,13 @@ def test_record_call_usage(fake_redis, org_ctx):
 
 
 def test_agent_usage_context_reuses_single_bucket(fake_redis):
-    """Stable agent context avoids per-call Redis/DB bucket explosion."""
+    """Stable evaluator context avoids per-call Redis/DB bucket explosion."""
     from app.services.usage.context import usage_context_for_evaluator_result
 
     org_id = uuid4()
     workspace_id = uuid4()
     agent_id = uuid4()
+    evaluator_id = uuid4()
     prefixes = set()
     for idx in range(3):
         result = SimpleNamespace(
@@ -307,7 +308,7 @@ def test_agent_usage_context_reuses_single_bucket(fake_redis):
             result_id=f"res-{idx}",
             organization_id=org_id,
             workspace_id=workspace_id,
-            evaluator_id=uuid4(),
+            evaluator_id=evaluator_id,
             agent_id=agent_id,
         )
         ctx = usage_context_for_evaluator_result(result)
