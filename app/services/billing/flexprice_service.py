@@ -36,6 +36,8 @@ CALL_IMPORT_ROW_IMPORTED = "call_import.row_imported"
 CALL_IMPORT_EVALUATION_STARTED = "call_import.evaluation_started"
 CALL_IMPORT_EVALUATION_COMPLETED = "call_import.evaluation_completed"
 CALL_IMPORT_EVALUATION_ROW_COMPLETED = "call_import.evaluation_row_completed"
+CALL_IMPORT_AUDIO_MINUTES_BILLED = "call_import.audio_minutes_billed"
+CALL_IMPORT_PDF_REPORT_GENERATED = "call_import.pdf_report_generated"
 PLAYGROUND_WEB_CALL_STARTED = "playground.web_call_started"
 PLAYGROUND_WEBSOCKET_SESSION_STARTED = "playground.websocket_session_started"
 PLAYGROUND_CALL_EVALUATED = "playground.call_evaluated"
@@ -459,6 +461,31 @@ def record_call_import_batch_created(
 # --- Call imports (evaluations) ---
 
 
+def record_call_import_evaluation_started(
+    organization_id: UUID,
+    evaluation_id: UUID,
+    *,
+    workspace_id: UUID,
+    call_import_id: UUID,
+    total_rows: int,
+    metric_count: int = 0,
+) -> None:
+    record_event(
+        CALL_IMPORT_EVALUATION_STARTED,
+        organization_id,
+        evaluation_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_CALL_IMPORTS,
+            "call_import_id": call_import_id,
+            "evaluation_id": evaluation_id,
+            "total_rows": total_rows,
+            "metric_count": metric_count,
+            "quantity": 1,
+        },
+    )
+
+
 def record_call_import_evaluation_completed(
     organization_id: UUID,
     evaluation_id: UUID,
@@ -467,6 +494,7 @@ def record_call_import_evaluation_completed(
     call_import_id: UUID,
     rows_billed: int,
     completed_total: int,
+    total_rows: int = 0,
     metric_count: int = 0,
 ) -> bool:
     """Bill one pass of an evaluation run for newly completed rows."""
@@ -481,8 +509,63 @@ def record_call_import_evaluation_completed(
             "evaluation_id": evaluation_id,
             "rows_billed": rows_billed,
             "completed_total": completed_total,
+            "total_rows": total_rows,
             "metric_count": metric_count,
             "quantity": rows_billed,
+        },
+    )
+
+
+def record_call_import_audio_minutes_billed(
+    organization_id: UUID,
+    evaluation_row_id: UUID,
+    *,
+    workspace_id: UUID,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    audio_seconds: int,
+    billable_minutes: int,
+) -> bool:
+    """Bill audio duration for one completed evaluation row."""
+    if billable_minutes <= 0:
+        return False
+    return record_event(
+        CALL_IMPORT_AUDIO_MINUTES_BILLED,
+        organization_id,
+        evaluation_row_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_CALL_IMPORTS,
+            "call_import_id": call_import_id,
+            "evaluation_id": evaluation_id,
+            "evaluation_row_id": evaluation_row_id,
+            "audio_seconds": audio_seconds,
+            "quantity": billable_minutes,
+        },
+    )
+
+
+def record_call_import_pdf_report_generated(
+    organization_id: UUID,
+    pdf_report_id: UUID,
+    *,
+    workspace_id: UUID,
+    evaluation_id: UUID,
+    call_import_id: UUID,
+    report_type: str,
+) -> None:
+    record_event(
+        CALL_IMPORT_PDF_REPORT_GENERATED,
+        organization_id,
+        pdf_report_id,
+        properties={
+            "workspace_id": workspace_id,
+            "feature": FEATURE_CALL_IMPORTS,
+            "call_import_id": call_import_id,
+            "evaluation_id": evaluation_id,
+            "pdf_report_id": pdf_report_id,
+            "report_type": report_type,
+            "quantity": 1,
         },
     )
 

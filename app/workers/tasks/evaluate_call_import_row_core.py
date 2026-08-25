@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+import os
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import UUID
@@ -20,6 +23,8 @@ from app.workers.tasks.helpers.llm_evaluation import MetricPromptGroup
 from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
+
+_BILLING_META_KEY = "_billing"
 
 _ALL_COLUMNS_BLOCK_MAX_CHARS = 16_000
 _ALL_COLUMNS_CELL_MAX_CHARS = 4_000
@@ -507,6 +512,18 @@ def commit_terminal_row_and_rollup(
     catalog_db: Session | None = None,
 ) -> None:
     parent_db = catalog_db if catalog_db is not None and catalog_db is not row_db else row_db
+    if (eval_row.status or "").lower() == "completed":
+        source_row = (
+            row_db.query(CallImportRow)
+            .filter(CallImportRow.id == eval_row.call_import_row_id)
+            .first()
+        )
+        maybe_bill_completed_eval_row_flexprice(
+            row_db,
+            evaluation,
+            eval_row,
+            source_row=source_row,
+        )
     row_db.commit()
     if parent_db is not row_db:
         evaluation = (
@@ -596,6 +613,7 @@ def rollup_parent(
             call_import_id=evaluation.call_import_id,
             rows_billed=delta,
             completed_total=completed,
+            total_rows=int(evaluation.total_rows or 0),
             metric_count=metric_count,
         )
         if billing_accepted:
@@ -709,3 +727,120 @@ def row_needs_llm_phase(
         db, evaluation, source_row, metrics
     )
     return bool(transcript_metrics or comparison_metrics)
+
+
+def cache_eval_row_audio_seconds(
+    eval_row: CallImportEvaluationRow,
+    audio_seconds: int,
+) -> None:
+    merged = dict(eval_row.metric_scores or {})
+    billing = dict(merged.get(_BILLING_META_KEY) or {})
+    billing["audio_seconds"] = max(0, int(audio_seconds))
+    merged[_BILLING_META_KEY] = billing
+    eval_row.metric_scores = merged
+
+
+def get_cached_eval_row_audio_seconds(eval_row: CallImportEvaluationRow) -> int:
+    merged = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
+    billing = merged.get(_BILLING_META_KEY) or {}
+    if not isinstance(billing, dict):
+        return 0
+    try:
+        return max(0, int(billing.get("audio_seconds") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def billable_audio_minutes(audio_seconds: int) -> int:
+    seconds = max(0, int(audio_seconds or 0))
+    if seconds <= 0:
+        return 0
+    return max(1, math.ceil(seconds / 60))
+
+
+def probe_recording_audio_seconds(recording_s3_key: str) -> int:
+    from app.services.storage.s3_service import s3_service
+    from app.services.usage.llm_usage import probe_audio_seconds
+
+    key = (recording_s3_key or "").strip()
+    if not key:
+        return 0
+    audio_bytes = s3_service.download_file_by_key(key)
+    if not audio_bytes:
+        return 0
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(tmp_fd)
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(audio_bytes)
+        return probe_audio_seconds(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def resolve_eval_row_audio_seconds(
+    db: Session,
+    eval_row: CallImportEvaluationRow,
+    source_row: CallImportRow | None,
+) -> int:
+    cached = get_cached_eval_row_audio_seconds(eval_row)
+    if cached > 0:
+        return cached
+    if source_row is None:
+        source_row = (
+            db.query(CallImportRow)
+            .filter(CallImportRow.id == eval_row.call_import_row_id)
+            .first()
+        )
+    if source_row is None:
+        return 0
+    recording_s3_key = (source_row.recording_s3_key or "").strip()
+    if not recording_s3_key:
+        return 0
+    seconds = probe_recording_audio_seconds(recording_s3_key)
+    if seconds > 0:
+        cache_eval_row_audio_seconds(eval_row, seconds)
+    return seconds
+
+
+def maybe_bill_completed_eval_row_flexprice(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_row: CallImportEvaluationRow,
+    *,
+    source_row: CallImportRow | None = None,
+) -> None:
+    if (eval_row.status or "").lower() != "completed":
+        return
+    from app.services.billing.flexprice_service import (
+        record_call_import_audio_minutes_billed,
+    )
+
+    if source_row is None:
+        source_row = (
+            db.query(CallImportRow)
+            .filter(CallImportRow.id == eval_row.call_import_row_id)
+            .first()
+        )
+    if source_row is None:
+        return
+    if not (source_row.recording_s3_key or "").strip():
+        return
+
+    audio_seconds = resolve_eval_row_audio_seconds(db, eval_row, source_row)
+    minutes = billable_audio_minutes(audio_seconds)
+    if minutes <= 0:
+        return
+
+    record_call_import_audio_minutes_billed(
+        evaluation.organization_id,
+        eval_row.id,
+        workspace_id=eval_row.workspace_id or evaluation.workspace_id,
+        evaluation_id=evaluation.id,
+        call_import_id=evaluation.call_import_id,
+        audio_seconds=audio_seconds,
+        billable_minutes=minutes,
+    )

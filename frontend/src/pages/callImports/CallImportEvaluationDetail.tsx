@@ -111,6 +111,10 @@ import {
   evaluationBulkOperationLabel,
   type BulkEvaluationOperation,
 } from './evaluationBulkOperation'
+import {
+  formatApiErrorDetail,
+  isReservedMetricScoreKey,
+} from './metricScoresMeta'
 
 const PIE_COLORS = [
   '#6366f1',
@@ -1282,12 +1286,16 @@ export default function CallImportEvaluationDetail() {
       setRerunMetricsOpen(false)
     },
     onError: (err: any) => {
+      const fallback = 'Failed to re-run the selected metrics.'
       setRerunError(
         err?.response?.status === 409
-          ? err?.response?.data?.detail || bulkOperationConflictMessage
-          : err?.response?.data?.detail ||
+          ? formatApiErrorDetail(
+              err?.response?.data?.detail,
+              bulkOperationConflictMessage,
+            )
+          : formatApiErrorDetail(err?.response?.data?.detail, fallback) ||
               err?.message ||
-              'Failed to re-run the selected metrics.',
+              fallback,
       )
     },
   })
@@ -1477,7 +1485,7 @@ export default function CallImportEvaluationDetail() {
       const scores = row.metric_scores
       if (!scores || typeof scores !== 'object') continue
       for (const [metricId, entry] of Object.entries(scores)) {
-        if (!metricId) continue
+        if (!metricId || isReservedMetricScoreKey(metricId)) continue
         if (childrenInGroups.has(metricId)) continue
         const fallbackName =
           entry && typeof entry === 'object' && 'metric_name' in entry

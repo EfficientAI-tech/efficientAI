@@ -220,6 +220,7 @@ def test_record_call_import_evaluation_completed_meters_pass_delta(mock_flexpric
         call_import_id=call_import_id,
         rows_billed=50,
         completed_total=1950,
+        total_rows=2000,
         metric_count=5,
     )
 
@@ -235,11 +236,133 @@ def test_record_call_import_evaluation_completed_meters_pass_delta(mock_flexpric
             "evaluation_id": str(evaluation_id),
             "rows_billed": "50",
             "completed_total": "1950",
+            "total_rows": "2000",
             "metric_count": "5",
             "quantity": "50",
         },
     )
     assert accepted is True
+
+
+@patch("flexprice.Flexprice")
+def test_record_call_import_evaluation_started(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    evaluation_id = uuid4()
+    workspace_id = uuid4()
+    call_import_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_call_import_evaluation_started(
+        org_id,
+        evaluation_id,
+        workspace_id=workspace_id,
+        call_import_id=call_import_id,
+        total_rows=100,
+        metric_count=3,
+    )
+
+    mock_client.events.ingest_event.assert_called_once_with(
+        event_name="call_import.evaluation_started",
+        external_customer_id=str(org_id),
+        event_id=str(evaluation_id),
+        source="efficientai",
+        properties={
+            "workspace_id": str(workspace_id),
+            "feature": "call_imports",
+            "call_import_id": str(call_import_id),
+            "evaluation_id": str(evaluation_id),
+            "total_rows": "100",
+            "metric_count": "3",
+            "quantity": "1",
+        },
+    )
+
+
+@patch("flexprice.Flexprice")
+def test_record_call_import_audio_minutes_billed(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    eval_row_id = uuid4()
+    evaluation_id = uuid4()
+    workspace_id = uuid4()
+    call_import_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    accepted = svc.record_call_import_audio_minutes_billed(
+        org_id,
+        eval_row_id,
+        workspace_id=workspace_id,
+        evaluation_id=evaluation_id,
+        call_import_id=call_import_id,
+        audio_seconds=90,
+        billable_minutes=2,
+    )
+
+    mock_client.events.ingest_event.assert_called_once_with(
+        event_name="call_import.audio_minutes_billed",
+        external_customer_id=str(org_id),
+        event_id=str(eval_row_id),
+        source="efficientai",
+        properties={
+            "workspace_id": str(workspace_id),
+            "feature": "call_imports",
+            "call_import_id": str(call_import_id),
+            "evaluation_id": str(evaluation_id),
+            "evaluation_row_id": str(eval_row_id),
+            "audio_seconds": "90",
+            "quantity": "2",
+        },
+    )
+    assert accepted is True
+
+
+@patch("flexprice.Flexprice")
+def test_record_call_import_pdf_report_generated(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    pdf_report_id = uuid4()
+    evaluation_id = uuid4()
+    workspace_id = uuid4()
+    call_import_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_call_import_pdf_report_generated(
+        org_id,
+        pdf_report_id,
+        workspace_id=workspace_id,
+        evaluation_id=evaluation_id,
+        call_import_id=call_import_id,
+        report_type="external",
+    )
+
+    mock_client.events.ingest_event.assert_called_once_with(
+        event_name="call_import.pdf_report_generated",
+        external_customer_id=str(org_id),
+        event_id=str(pdf_report_id),
+        source="efficientai",
+        properties={
+            "workspace_id": str(workspace_id),
+            "feature": "call_imports",
+            "call_import_id": str(call_import_id),
+            "evaluation_id": str(evaluation_id),
+            "pdf_report_id": str(pdf_report_id),
+            "report_type": "external",
+            "quantity": "1",
+        },
+    )
 
 
 @patch("flexprice.Flexprice")

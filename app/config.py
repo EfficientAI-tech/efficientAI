@@ -142,7 +142,14 @@ class Settings(BaseSettings):
         "https://*.ingest.sentry.io "
         "https://*.ingest.us.sentry.io"
     )
-    _CSP_VOICE_FRAME_SRC: str = "https://*.daily.co"
+    _CSP_FRAME_SRC: str = (
+        "https://*.daily.co "
+        "https://*.s3.amazonaws.com "
+        "https://*.amazonaws.com "
+        "https://*.cloudfront.net "
+        "https://storage.googleapis.com "
+        "https://*.blob.core.windows.net"
+    )
     # Vapi → Daily.co call-machine bundle requires eval + blob worklets for audio
     _CSP_DAILY_SCRIPT_SRC: str = "'unsafe-eval' blob: https://c.daily.co https://*.daily.co"
     CSP_POLICY: str = (
@@ -153,7 +160,7 @@ class Settings(BaseSettings):
         "img-src 'self' data: blob: https:; "
         f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC}; "
         "media-src 'self' blob: https:; "
-        f"frame-src 'self' blob: {_CSP_VOICE_FRAME_SRC}; "
+        f"frame-src 'self' blob: {_CSP_FRAME_SRC}; "
         "worker-src 'self' blob:; "
         "object-src 'none'; "
         "base-uri 'self'; "

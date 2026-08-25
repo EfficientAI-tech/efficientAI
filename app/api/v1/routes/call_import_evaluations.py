@@ -1281,6 +1281,20 @@ async def create_call_import_evaluation(
                 transcribe_overwrite=payload.transcribe_overwrite,
             )
 
+    from app.services.billing.flexprice_service import (
+        record_call_import_evaluation_started,
+    )
+
+    for evaluation in created_evaluations:
+        record_call_import_evaluation_started(
+            organization_id,
+            evaluation.id,
+            workspace_id=evaluation.workspace_id,
+            call_import_id=call_import.id,
+            total_rows=int(evaluation.total_rows or 0),
+            metric_count=len(leaf_metric_ids),
+        )
+
     for evaluation in created_evaluations:
         db.refresh(evaluation)
 
@@ -3980,6 +3994,18 @@ async def generate_call_import_evaluation_pdf_report(
             detail="Failed to store PDF report due to a concurrent duplicate request.",
         ) from None
     db.refresh(pdf_report)
+    from app.services.billing.flexprice_service import (
+        record_call_import_pdf_report_generated,
+    )
+
+    record_call_import_pdf_report_generated(
+        organization_id,
+        pdf_report.id,
+        workspace_id=pdf_report.workspace_id,
+        evaluation_id=evaluation.id,
+        call_import_id=call_import_id,
+        report_type=pdf_report.report_type,
+    )
     return _pdf_report_response_from_row(pdf_report)
 
 
@@ -6926,6 +6952,16 @@ def _resolve_alias(alias_map: Dict[str, str], key: str) -> str:
 # in ``app/workers/tasks/helpers/llm_evaluation.py`` — kept local here to
 # avoid a worker import cycle from the routes module.
 DISCOVERED_METRICS_KEY = "__discovered_metrics__"
+METRIC_SCORES_META_KEYS = frozenset({DISCOVERED_METRICS_KEY, "_billing"})
+
+
+def _is_metric_scores_meta_key(key: str) -> bool:
+    normalized = str(key or "").strip().lower()
+    if not normalized:
+        return True
+    if normalized in {item.lower() for item in METRIC_SCORES_META_KEYS}:
+        return True
+    return normalized.endswith("__discovered")
 
 # Allowed values for an LLM-suggested top-level metric type. Kept in
 # sync with ``DiscoveredMetricSuggestedType`` in
@@ -8674,7 +8710,8 @@ def _reset_eval_row_for_retry(
         eval_row.metric_scores = {
             key: value
             for key, value in existing.items()
-            if str(key).lower() not in target_keys
+            if _is_metric_scores_meta_key(str(key))
+            or str(key).lower() not in target_keys
         }
     else:
         eval_row.metric_scores = {}
@@ -9181,12 +9218,15 @@ async def retry_call_import_evaluation(
         payload.metric_ids if payload else None
     )
     if metric_ids is not None:
+        metric_ids = [
+            mid for mid in metric_ids if not _is_metric_scores_meta_key(str(mid))
+        ]
         if not metric_ids:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "metric_ids must be a non-empty list. Omit the "
-                    "field to re-run all metrics."
+                    "metric_ids must be a non-empty list of metric UUIDs. "
+                    "Omit the field to re-run all metrics."
                 ),
             )
 
