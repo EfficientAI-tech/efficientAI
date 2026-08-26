@@ -31,7 +31,11 @@ Signup and API-key flows call `provision_billing_customer()` so each org exists 
 ```bash
 python scripts/setup_flexprice_meters.py
 python scripts/setup_flexprice_meters.py --repair-call-imports   # if batch_created meters were duplicated
+python scripts/setup_flexprice_meters.py --repair-features --dry-run   # preview stale feature→meter links
+python scripts/setup_flexprice_meters.py --repair-features             # repoint license features (delete + recreate)
 ```
+
+Flexprice feature **PUT** cannot change `meter_id`. `--repair-features` deletes and recreates each `LICENSE_FEATURES` row on the canonical published meter. **Plan usage charges on meters are not affected.**
 
 Print the plan pricing checklist (no API):
 

@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 from scripts.setup_flexprice_meters import (
     AGENT_PLAYGROUND_PRIMARY_EVENT,
     EVALUATOR_RUN_COMPLETED_EVENT,
@@ -9,7 +11,10 @@ from scripts.setup_flexprice_meters import (
     PLAN_BILLABLE_METERS,
     SCENARIO_AI_TEXT_EVENT,
     VOICE_PLAYGROUND_PRIMARY_EVENT,
+    _feature_meter_is_canonical,
+    _pick_canonical_meter,
     meter_aggregation_matches,
+    repair_license_features,
 )
 from app.api.v1.routes.call_import_evaluations import (
     DISCOVERED_METRICS_KEY,
@@ -100,3 +105,76 @@ def test_metric_scores_meta_keys():
     assert _is_metric_scores_meta_key(DISCOVERED_METRICS_KEY) is True
     assert _is_metric_scores_meta_key("parent-id__discovered") is True
     assert _is_metric_scores_meta_key("550e8400-e29b-41d4-a716-446655440000") is False
+
+
+def test_pick_canonical_meter_prefers_priced_meter():
+    meters = [
+        {"id": "m-old", "aggregation": {"type": "SUM", "field": "quantity"}, "status": "published"},
+        {"id": "m-new", "aggregation": {"type": "SUM", "field": "quantity"}, "status": "published"},
+    ]
+    prices = [{"meter_id": "m-new", "amount": "0", "status": "published"}]
+    picked = _pick_canonical_meter(meters, prices, agg_type="SUM", agg_field="quantity")
+    assert picked["id"] == "m-new"
+
+
+def test_feature_meter_is_canonical():
+    feature = {"meter_id": "m1"}
+    meter = {
+        "id": "m1",
+        "status": "published",
+        "aggregation": {"type": "SUM", "field": "quantity"},
+    }
+    assert _feature_meter_is_canonical(
+        feature,
+        meter,
+        canonical_meter_id="m1",
+        agg_type="SUM",
+        agg_field="quantity",
+    )
+
+
+def test_repair_license_features_dry_run_flags_stale_call_imports():
+    client = MagicMock()
+    sdk = MagicMock()
+    client.get.side_effect = [
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "items": [
+                    {
+                        "id": "meter_old",
+                        "event_name": "call_import.batch_created",
+                        "aggregation": {"type": "COUNT"},
+                        "status": "archived",
+                    },
+                    {
+                        "id": "meter_new",
+                        "event_name": "call_import.batch_created",
+                        "aggregation": {"type": "SUM", "field": "quantity"},
+                        "status": "published",
+                    },
+                ],
+                "pagination": {"total": 2},
+            },
+        ),
+        MagicMock(status_code=200, json=lambda: {"items": [], "pagination": {"total": 0}}),
+        MagicMock(
+            status_code=200,
+            json=lambda: {
+                "items": [
+                    {
+                        "id": "feat_1",
+                        "lookup_key": "call_imports",
+                        "meter_id": "meter_old",
+                    }
+                ],
+                "pagination": {"total": 1},
+            },
+        ),
+    ]
+    client.get.return_value.raise_for_status = MagicMock()
+
+    result = repair_license_features(client, sdk, dry_run=True)
+    repaired_keys = {row["lookup_key"] for row in result["repaired"]}
+    assert "call_imports" in repaired_keys
+    sdk.features.delete_feature.assert_not_called()

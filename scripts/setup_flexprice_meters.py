@@ -701,6 +701,186 @@ def repair_call_import_batch_meter(client: httpx.Client) -> dict[str, Any]:
     return result
 
 
+def _aggregation_from_spec(spec: dict[str, Any]) -> tuple[str, str | None]:
+    aggregation = spec["aggregation"]
+    return aggregation["type"], aggregation.get("field")
+
+
+def _pick_canonical_meter(
+    meters: list[dict[str, Any]],
+    prices: list[dict[str, Any]],
+    *,
+    agg_type: str,
+    agg_field: str | None,
+) -> dict[str, Any] | None:
+    """Prefer published meters with correct aggregation; favor meters that already have plan prices."""
+    matching = [
+        meter
+        for meter in meters
+        if meter_aggregation_matches(meter, agg_type=agg_type, agg_field=agg_field)
+    ]
+    if not matching:
+        return None
+    priced = [meter for meter in matching if _active_prices_for_meter(prices, meter["id"])]
+    if priced:
+        return priced[0]
+    active = [meter for meter in matching if _is_active_meter(meter)]
+    pool = active or matching
+    return sorted(pool, key=lambda meter: meter.get("updated_at") or "", reverse=True)[0]
+
+
+def _list_all_features(client: httpx.Client) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        resp = client.get(
+            f"{_base_url()}/features",
+            headers=_headers(),
+            params={"limit": 200, "offset": offset},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        batch = data.get("items") or []
+        items.extend(batch)
+        pagination = data.get("pagination") or {}
+        total = pagination.get("total")
+        offset += len(batch)
+        if not batch or (total is not None and offset >= total):
+            break
+    return items
+
+
+def _feature_meter_is_canonical(
+    feature: dict[str, Any],
+    meter: dict[str, Any] | None,
+    *,
+    canonical_meter_id: str,
+    agg_type: str,
+    agg_field: str | None,
+) -> bool:
+    if feature.get("meter_id") != canonical_meter_id:
+        return False
+    if meter is None:
+        return False
+    if not _is_active_meter(meter):
+        return False
+    return meter_aggregation_matches(meter, agg_type=agg_type, agg_field=agg_field)
+
+
+def repair_license_features(
+    client: httpx.Client,
+    sdk: Flexprice,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Repoint LICENSE_FEATURES to canonical published meters (delete + recreate via API).
+
+    Flexprice feature PUT does not change meter_id; recreate is required.
+    Plan usage charges stay on meters and are unaffected.
+    """
+    result: dict[str, Any] = {
+        "repaired": [],
+        "skipped": [],
+        "failed": [],
+        "missing_feature": [],
+        "missing_meter": [],
+        "dry_run": dry_run,
+    }
+
+    meters_by_event = _list_meters_by_event(client, active_only=False)
+    all_prices = _list_prices(client)
+    features_by_key = {
+        feature["lookup_key"]: feature
+        for feature in _list_all_features(client)
+        if feature.get("lookup_key")
+    }
+
+    for spec in LICENSE_FEATURES:
+        lookup_key = spec["lookup_key"]
+        feature = features_by_key.get(lookup_key)
+        if feature is None:
+            result["missing_feature"].append(lookup_key)
+            continue
+
+        agg_type, agg_field = _aggregation_from_spec(spec)
+        event_name = spec["event_name"]
+        event_meters = meters_by_event.get(event_name, [])
+        active_event_meters = [meter for meter in event_meters if _is_active_meter(meter)]
+        canonical = _pick_canonical_meter(
+            active_event_meters or event_meters,
+            all_prices,
+            agg_type=agg_type,
+            agg_field=agg_field,
+        )
+
+        if canonical is None:
+            if dry_run:
+                result["missing_meter"].append(
+                    {"lookup_key": lookup_key, "event_name": event_name, "would_create": True}
+                )
+                continue
+            try:
+                canonical = _create_meter(
+                    client,
+                    event_name,
+                    spec["name"],
+                    agg_type,
+                    agg_field,
+                )
+            except Exception as exc:
+                result["failed"].append(f"{lookup_key}: create meter: {exc}")
+                continue
+            if canonical.get("skipped"):
+                result["failed"].append(f"{lookup_key}: could not create meter for {event_name}")
+                continue
+
+        canonical_id = canonical["id"]
+        current_meter_id = feature.get("meter_id")
+        current_meter = next(
+            (meter for meter in event_meters if meter.get("id") == current_meter_id),
+            None,
+        )
+        if _feature_meter_is_canonical(
+            feature,
+            current_meter,
+            canonical_meter_id=canonical_id,
+            agg_type=agg_type,
+            agg_field=agg_field,
+        ):
+            result["skipped"].append(lookup_key)
+            continue
+
+        entry: dict[str, Any] = {
+            "lookup_key": lookup_key,
+            "feature_id": feature["id"],
+            "from_meter_id": current_meter_id,
+            "to_meter_id": canonical_id,
+            "event_name": event_name,
+        }
+        if dry_run:
+            result["repaired"].append({**entry, "dry_run": True})
+            continue
+
+        try:
+            sdk.features.delete_feature(id=feature["id"])
+            recreated = sdk.features.create_feature(
+                name=spec["name"],
+                type_="metered",
+                lookup_key=lookup_key,
+                description=spec["description"],
+                unit_singular=spec.get("unit_singular"),
+                unit_plural=spec.get("unit_plural"),
+                meter_id=canonical_id,
+            )
+            result["repaired"].append(
+                {**entry, "new_feature_id": recreated.id, "dry_run": False}
+            )
+        except Exception as exc:
+            result["failed"].append(f"{lookup_key}: {exc}")
+
+    return result
+
+
 def _list_feature_lookup_keys(sdk: Flexprice) -> set[str]:
     keys: set[str] = set()
     offset = 0
@@ -825,6 +1005,16 @@ def main() -> int:
         action="store_true",
         help="Print JSON checklist of plan usage charges (no API calls).",
     )
+    parser.add_argument(
+        "--repair-features",
+        action="store_true",
+        help="Repoint license features to canonical completion-only meters (delete + recreate).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --repair-features, report changes without calling Flexprice write APIs.",
+    )
     args = parser.parse_args()
 
     if args.plan_guide:
@@ -844,6 +1034,21 @@ def main() -> int:
             summary["call_import_batch_repair"] = repair_call_import_batch_meter(http_client)
         if args.restore_plan_usage_prices:
             summary["plan_usage_restore"] = restore_missing_plan_usage_prices(http_client)
+        if args.repair_features:
+            with Flexprice(
+                server_url=settings.FLEXPRICE_API_HOST,
+                api_key_auth=settings.FLEXPRICE_API_KEY,
+            ) as sdk:
+                summary["feature_repair"] = repair_license_features(
+                    http_client,
+                    sdk,
+                    dry_run=args.dry_run,
+                )
+
+    if args.repair_features and args.dry_run:
+        print(json.dumps(summary, indent=2))
+        failed = summary.get("feature_repair", {}).get("failed") or []
+        return 1 if failed else 0
 
     bootstrap_summary = bootstrap_catalog()
     summary.update(bootstrap_summary)
@@ -861,7 +1066,8 @@ def main() -> int:
 
     failed_meters = bootstrap_summary["meters"]["failed"]
     failed_features = bootstrap_summary["features"]["failed"]
-    return 1 if (failed_meters or failed_features) else 0
+    repair_failed = (summary.get("feature_repair") or {}).get("failed") or []
+    return 1 if (failed_meters or failed_features or repair_failed) else 0
 
 
 if __name__ == "__main__":
