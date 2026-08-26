@@ -792,6 +792,81 @@ def test_record_scenario_ai_text_generated_includes_feature(mock_flexprice):
 
 
 @patch("flexprice.Flexprice")
+def test_record_prompt_partial_ai_assisted_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    request_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_prompt_partial_ai_assisted(
+        org_id,
+        request_id,
+        workspace_id=workspace_id,
+        mode="generate",
+        model="gpt-4o",
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "prompt_partial.ai_assisted"
+    assert payload["properties"]["feature"] == "prompt_partials"
+    assert payload["properties"]["mode"] == "generate"
+
+
+@patch("flexprice.Flexprice")
+def test_record_call_import_user_insights_generated_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+    evaluation_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_call_import_user_insights_generated(
+        org_id,
+        uuid4(),
+        workspace_id=workspace_id,
+        evaluation_id=evaluation_id,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "call_import.user_insights_generated"
+    assert payload["properties"]["feature"] == "call_imports"
+
+
+@patch("flexprice.Flexprice")
+def test_record_agent_test_setup_generated_includes_feature(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    org_id = uuid4()
+    workspace_id = uuid4()
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_agent_test_setup_generated(
+        org_id,
+        uuid4(),
+        workspace_id=workspace_id,
+        purpose="full_setup",
+        scenario_count=3,
+    )
+
+    payload = mock_client.events.ingest_event.call_args.kwargs
+    assert payload["event_name"] == "agent.test_setup_generated"
+    assert payload["properties"]["feature"] == "agent_playground"
+    assert payload["properties"]["purpose"] == "full_setup"
+
+
+@patch("flexprice.Flexprice")
 def test_record_tts_generation_started_does_not_ingest(mock_flexprice):
     settings.FLEXPRICE_ENABLED = True
     settings.FLEXPRICE_API_KEY = "test-key"

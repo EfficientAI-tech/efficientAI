@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from loguru import logger
 from sqlalchemy.orm.attributes import flag_modified
@@ -100,6 +100,17 @@ def generate_evaluation_user_insights_task(
             evaluation.user_insights = user_insights_state_to_db(state)
             flag_modified(evaluation, "user_insights")
             db.commit()
+            if state.status == "completed":
+                from app.services.billing.flexprice_service import (
+                    record_call_import_user_insights_generated,
+                )
+
+                record_call_import_user_insights_generated(
+                    evaluation.organization_id,
+                    uuid4(),
+                    workspace_id=evaluation.workspace_id,
+                    evaluation_id=evaluation.id,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "User insights generation failed for evaluation {}: {}",

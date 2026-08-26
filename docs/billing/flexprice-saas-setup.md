@@ -81,6 +81,11 @@ Do **not** put a heavy per-row price on both batch import and evaluation — cus
 | Metrics AI assist | `metrics.ai_assist` | per request |
 | Metric studio | `metric_studio.run_completed` | completed items (SUM quantity) |
 | Scenario AI | `scenario.ai_text_generated` | per generation |
+| Prompt partials AI | `prompt_partial.ai_assisted` | per request (generate / improve / flowchart / map) |
+| Call import user insights | `call_import.user_insights_generated` | per completed generation |
+| Call import prompt improvements | `call_import.prompt_improvements_generated` | per completed generation |
+| Persona prompt generation | `persona.prompt_generated` | per generation |
+| Agent test setup | `agent.test_setup_generated` | per API call (test prompt / scenarios / full setup) |
 
 Observability is **not billed** — no plan usage charges for observability events.
 
@@ -106,6 +111,10 @@ After `--repair-call-imports`, re-sync subscriptions if price IDs changed.
 | Evaluator run with audio | `evaluator.recording_minutes_billed` | billable minutes |
 | Complete GEPA run | `prompt_optimization.run_completed` | candidate count |
 | Complete judge alignment | `judge_alignment.run_completed` | samples scored |
+| Prompt partial AI generate | `prompt_partial.ai_assisted` | 1 (`mode=generate`) |
+| Call import user insights completes | `call_import.user_insights_generated` | 1 |
+| Persona prompt generate | `persona.prompt_generated` | 1 |
+| Agent test setup generate | `agent.test_setup_generated` | 1 |
 
 Use Flexprice **Price Lookup** with `external_customer_id = organization UUID`.
 

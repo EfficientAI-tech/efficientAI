@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from loguru import logger
 from sqlalchemy.orm.attributes import flag_modified
@@ -77,6 +77,16 @@ def generate_agent_flowchart_task(
         partial.agent_flowchart_status = "completed"
         flag_modified(partial, "agent_flowchart")
         db.commit()
+        from app.services.billing.flexprice_service import record_prompt_partial_ai_assisted
+
+        record_prompt_partial_ai_assisted(
+            partial.organization_id,
+            uuid4(),
+            workspace_id=partial.workspace_id,
+            mode="flowchart",
+            partial_id=partial.id,
+            model=model_str,
+        )
         logger.info(
             "Agent flowchart completed for partial {} ({} nodes)",
             partial_id,
@@ -162,6 +172,15 @@ def map_agent_flowchart_prompt_sections_task(
         partial.agent_flowchart_status = "completed"
         flag_modified(partial, "agent_flowchart")
         db.commit()
+        from app.services.billing.flexprice_service import record_prompt_partial_ai_assisted
+
+        record_prompt_partial_ai_assisted(
+            partial.organization_id,
+            uuid4(),
+            workspace_id=partial.workspace_id,
+            mode="flowchart_map",
+            partial_id=partial.id,
+        )
         logger.info("Agent flowchart prompt mapping completed for partial {}", partial_id)
     except Exception as exc:
         logger.exception(

@@ -29,6 +29,10 @@ Billable events (wire plan usage charges to these meters only):
 - metrics_ai_assist: ``metrics.ai_assist``
 - metric_studio: ``metric_studio.run_completed`` (``quantity`` = completed items)
 - scenario_ai: ``scenario.ai_text_generated``
+- prompt_partials: ``prompt_partial.ai_assisted`` (``mode``: generate | improve | flowchart | flowchart_map)
+- call_imports (add-ons): ``call_import.user_insights_generated``,
+  ``call_import.prompt_improvements_generated``
+- agent_playground (AI helpers): ``persona.prompt_generated``, ``agent.test_setup_generated``
 
 Not ingested: ``*_started``, ``*_requested``, ``*_created``, ``observability.*``,
 ``playground.call_evaluated``, ``test_agent.conversation_started``,
@@ -55,6 +59,7 @@ FEATURE_JUDGE_ALIGNMENT = "judge_alignment"
 FEATURE_METRICS_AI_ASSIST = "metrics_ai_assist"
 FEATURE_METRIC_STUDIO = "metric_studio"
 FEATURE_SCENARIO_AI = "scenario_ai"
+FEATURE_PROMPT_PARTIALS = "prompt_partials"
 
 # Log once when metering is inactive so AWS/worker misconfig is obvious.
 _disabled_skip_logged = False
@@ -93,6 +98,11 @@ METRICS_AI_ASSIST = "metrics.ai_assist"
 METRIC_STUDIO_ITEM_EVALUATED = "metric_studio.item_evaluated"
 METRIC_STUDIO_RUN_COMPLETED = "metric_studio.run_completed"
 SCENARIO_AI_TEXT_GENERATED = "scenario.ai_text_generated"
+PROMPT_PARTIAL_AI_ASSISTED = "prompt_partial.ai_assisted"
+CALL_IMPORT_USER_INSIGHTS_GENERATED = "call_import.user_insights_generated"
+CALL_IMPORT_PROMPT_IMPROVEMENTS_GENERATED = "call_import.prompt_improvements_generated"
+PERSONA_PROMPT_GENERATED = "persona.prompt_generated"
+AGENT_TEST_SETUP_GENERATED = "agent.test_setup_generated"
 # Legacy aliases (Flexprice meters may still exist under old names)
 METRICS_LLM_ASSIST = METRICS_AI_ASSIST
 CHAT_COMPLETION = SCENARIO_AI_TEXT_GENERATED
@@ -1198,4 +1208,142 @@ def record_chat_completion(
         model=model,
         purpose=purpose,
         scenario_count=scenario_count,
+    )
+
+
+# --- Prompt partials AI assist ---
+
+
+def record_prompt_partial_ai_assisted(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    mode: str,
+    partial_id: Optional[UUID] = None,
+    model: Optional[str] = None,
+) -> None:
+    if workspace_id is None:
+        return
+    record_event(
+        PROMPT_PARTIAL_AI_ASSISTED,
+        organization_id,
+        request_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_PROMPT_PARTIALS,
+            quantity=1,
+            request_id=request_id,
+            mode=mode,
+            partial_id=partial_id,
+            model=model,
+        ),
+    )
+
+
+# --- Call import AI add-ons ---
+
+
+def record_call_import_user_insights_generated(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    evaluation_id: UUID,
+) -> None:
+    if workspace_id is None:
+        return
+    record_event(
+        CALL_IMPORT_USER_INSIGHTS_GENERATED,
+        organization_id,
+        request_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=1,
+            request_id=request_id,
+            evaluation_id=evaluation_id,
+        ),
+    )
+
+
+def record_call_import_prompt_improvements_generated(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    evaluation_id: UUID,
+    imported_agent_id: Optional[UUID] = None,
+) -> None:
+    if workspace_id is None:
+        return
+    record_event(
+        CALL_IMPORT_PROMPT_IMPROVEMENTS_GENERATED,
+        organization_id,
+        request_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=1,
+            request_id=request_id,
+            evaluation_id=evaluation_id,
+            imported_agent_id=imported_agent_id,
+        ),
+    )
+
+
+# --- Agent / persona AI helpers ---
+
+
+def record_persona_prompt_generated(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    agent_id: UUID,
+    model: Optional[str] = None,
+    source: Optional[str] = None,
+) -> None:
+    if workspace_id is None:
+        return
+    record_event(
+        PERSONA_PROMPT_GENERATED,
+        organization_id,
+        request_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_AGENT_PLAYGROUND,
+            quantity=1,
+            request_id=request_id,
+            agent_id=agent_id,
+            model=model,
+            source=source,
+        ),
+    )
+
+
+def record_agent_test_setup_generated(
+    organization_id: UUID,
+    request_id: UUID,
+    *,
+    workspace_id: Optional[UUID],
+    purpose: str,
+    model: Optional[str] = None,
+    scenario_count: Optional[int] = None,
+) -> None:
+    if workspace_id is None:
+        return
+    record_event(
+        AGENT_TEST_SETUP_GENERATED,
+        organization_id,
+        request_id,
+        properties=_event_properties(
+            workspace_id,
+            FEATURE_AGENT_PLAYGROUND,
+            quantity=1,
+            request_id=request_id,
+            purpose=purpose,
+            model=model,
+            scenario_count=scenario_count,
+        ),
     )

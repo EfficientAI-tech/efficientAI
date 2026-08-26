@@ -3,12 +3,12 @@ Personas API Routes
 CRUD for TTS provider-tied voice personas, voice-options catalog,
 and custom voice management (ungated).
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 from loguru import logger
 
@@ -427,6 +427,7 @@ async def get_agent_prompt_sources(
 )
 async def generate_persona_prompt(
     data: GeneratePersonaPromptRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -464,6 +465,17 @@ async def generate_persona_prompt(
                 llm_config=data.llm_config,
                 credential_id=data.credential_id,
             )
+        from app.services.billing.flexprice_service import record_persona_prompt_generated
+
+        background_tasks.add_task(
+            record_persona_prompt_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            agent_id=agent.id,
+            model=result.model,
+            source=result.source_used,
+        )
         return GeneratePersonaPromptResponse(
             persona_prompt=result.persona_prompt,
             source_used=result.source_used,

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
-from app.services.billing.flexprice_service import record_scenario_ai_text_generated
+from app.services.billing.flexprice_service import record_agent_test_setup_generated
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
@@ -257,6 +257,7 @@ def _scenario_draft_responses(scenarios) -> list[GeneratedScenarioDraftResponse]
 @router.post("/generate-test-prompt", response_model=GenerateTestPromptResponse)
 async def generate_test_prompt(
     data: GenerateTestPromptRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -300,6 +301,14 @@ async def generate_test_prompt(
                 llm_config=data.llm_config,
                 credential_id=data.credential_id,
             )
+        background_tasks.add_task(
+            record_agent_test_setup_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            purpose="test_prompt",
+            model=result.model,
+        )
         return GenerateTestPromptResponse(
             sections=_test_prompt_section_responses(result.sections),
             test_agent_prompt=result.test_agent_prompt,
@@ -362,12 +371,12 @@ async def generate_scenarios_from_prompt(
                 credential_id=data.credential_id,
             )
         background_tasks.add_task(
-            record_scenario_ai_text_generated,
+            record_agent_test_setup_generated,
             organization_id,
             uuid4(),
             workspace_id=workspace_id,
+            purpose="scenarios",
             model=result.model,
-            purpose="scenarios_from_agent_prompt",
             scenario_count=len(result.scenarios),
         )
         return GenerateScenariosFromPromptResponse(
@@ -445,12 +454,12 @@ async def generate_test_setup(
                 credential_id=data.credential_id,
             )
         background_tasks.add_task(
-            record_scenario_ai_text_generated,
+            record_agent_test_setup_generated,
             organization_id,
             uuid4(),
             workspace_id=workspace_id,
+            purpose="full_setup",
             model=scenario_result.model,
-            purpose="scenarios_from_agent_prompt",
             scenario_count=len(scenario_result.scenarios),
         )
         return GenerateTestSetupResponse(

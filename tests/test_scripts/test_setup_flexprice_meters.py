@@ -39,6 +39,8 @@ def test_call_imports_plan_has_separate_paid_meters():
         "call_import.evaluation_completed",
         "call_import.recording_minutes_billed",
         "call_import.pdf_report_generated",
+        "call_import.user_insights_generated",
+        "call_import.prompt_improvements_generated",
     }
 
 
@@ -97,6 +99,14 @@ def test_metric_studio_license_feature_spec():
 def test_scenario_ai_license_feature_spec():
     spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "scenario_ai")
     assert spec["event_name"] == SCENARIO_AI_TEXT_EVENT
+    assert spec["aggregation"] == {"type": "COUNT"}
+
+
+def test_prompt_partials_license_feature_spec():
+    from scripts.setup_flexprice_meters import PROMPT_PARTIAL_AI_ASSISTED_EVENT
+
+    spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "prompt_partials")
+    assert spec["event_name"] == PROMPT_PARTIAL_AI_ASSISTED_EVENT
     assert spec["aggregation"] == {"type": "COUNT"}
 
 

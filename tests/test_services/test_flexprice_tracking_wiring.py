@@ -43,8 +43,28 @@ METRIC_STUDIO_WIRED = {
 SCENARIO_AI_WIRED = {
     "scenario.ai_text_generated": [
         "app/api/v1/routes/chat.py",
-        "app/api/v1/routes/agents.py",
     ],
+}
+
+PROMPT_PARTIALS_WIRED = {
+    "prompt_partial.ai_assisted": [
+        "app/api/v1/routes/prompt_partials.py",
+        "app/workers/tasks/agent_flowchart_jobs.py",
+    ],
+}
+
+CALL_IMPORT_AI_ADDONS_WIRED = {
+    "call_import.user_insights_generated": [
+        "app/workers/tasks/generate_evaluation_user_insights.py",
+    ],
+    "call_import.prompt_improvements_generated": [
+        "app/workers/tasks/generate_evaluation_prompt_improvements.py",
+    ],
+}
+
+AGENT_AI_HELPERS_WIRED = {
+    "persona.prompt_generated": ["app/api/v1/routes/personas.py"],
+    "agent.test_setup_generated": ["app/api/v1/routes/agents.py"],
 }
 
 
@@ -118,3 +138,37 @@ def test_scenario_ai_text_events_are_wired():
             assert _file_contains(path, "record_scenario_ai_text_generated") or _file_contains(
                 path, "record_chat_completion"
             ), f"{event_name} missing scenario flexprice hook in {path}"
+
+
+def test_prompt_partial_ai_events_are_wired():
+    for event_name, paths in PROMPT_PARTIALS_WIRED.items():
+        for path in paths:
+            assert _file_contains(path, "record_prompt_partial_ai_assisted"), (
+                f"{event_name} missing record_prompt_partial_ai_assisted in {path}"
+            )
+
+
+def test_call_import_ai_addon_events_are_wired():
+    record_fns = {
+        "call_import.user_insights_generated": "record_call_import_user_insights_generated",
+        "call_import.prompt_improvements_generated": (
+            "record_call_import_prompt_improvements_generated"
+        ),
+    }
+    for event_name, paths in CALL_IMPORT_AI_ADDONS_WIRED.items():
+        for path in paths:
+            assert _file_contains(path, record_fns[event_name]), (
+                f"{event_name} missing {record_fns[event_name]} in {path}"
+            )
+
+
+def test_agent_ai_helper_events_are_wired():
+    record_fns = {
+        "persona.prompt_generated": "record_persona_prompt_generated",
+        "agent.test_setup_generated": "record_agent_test_setup_generated",
+    }
+    for event_name, paths in AGENT_AI_HELPERS_WIRED.items():
+        for path in paths:
+            assert _file_contains(path, record_fns[event_name]), (
+                f"{event_name} missing {record_fns[event_name]} in {path}"
+            )

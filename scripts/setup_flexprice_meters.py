@@ -41,6 +41,11 @@ JUDGE_ALIGNMENT_PRIMARY_EVENT = "judge_alignment.run_completed"
 METRICS_AI_ASSIST_EVENT = "metrics.ai_assist"
 METRIC_STUDIO_PRIMARY_EVENT = "metric_studio.run_completed"
 SCENARIO_AI_TEXT_EVENT = "scenario.ai_text_generated"
+PROMPT_PARTIAL_AI_ASSISTED_EVENT = "prompt_partial.ai_assisted"
+CALL_IMPORT_USER_INSIGHTS_EVENT = "call_import.user_insights_generated"
+CALL_IMPORT_PROMPT_IMPROVEMENTS_EVENT = "call_import.prompt_improvements_generated"
+PERSONA_PROMPT_GENERATED_EVENT = "persona.prompt_generated"
+AGENT_TEST_SETUP_GENERATED_EVENT = "agent.test_setup_generated"
 
 # Standalone meters (not owned by a license feature primary event).
 # Each row: (event_name, display_name, aggregation_type, aggregation_field|None)
@@ -54,6 +59,13 @@ METERS: list[tuple[str, str, str, str | None]] = [
         "billable_minutes",
     ),
     ("call_import.pdf_report_generated", "Call Import PDF Reports", "SUM", "quantity"),
+    (CALL_IMPORT_USER_INSIGHTS_EVENT, "Call Import User Insights", "COUNT", None),
+    (
+        CALL_IMPORT_PROMPT_IMPROVEMENTS_EVENT,
+        "Call Import Prompt Improvements",
+        "COUNT",
+        None,
+    ),
     # Evaluators — run + optional audio (run_completed meter from evaluators feature)
     (
         "evaluator.recording_minutes_billed",
@@ -73,6 +85,9 @@ METERS: list[tuple[str, str, str, str | None]] = [
     ("tts.report_completed", "TTS Reports Completed", "SUM", "quantity"),
     # Legacy evaluations
     ("evaluation.completed", "Legacy Evaluation Completed", "SUM", "quantity"),
+    # Agent playground AI helpers
+    (PERSONA_PROMPT_GENERATED_EVENT, "Persona Prompt Generation", "COUNT", None),
+    (AGENT_TEST_SETUP_GENERATED_EVENT, "Agent Test Setup Generation", "COUNT", None),
 ]
 
 # Ops guide: meters to attach as plan USAGE charges (display order for SaaS plans).
@@ -106,6 +121,24 @@ PLAN_BILLABLE_METERS: list[dict[str, Any]] = [
     },
     {
         "product": "Call Imports",
+        "plan_line": "Call import user insights",
+        "event_name": CALL_IMPORT_USER_INSIGHTS_EVENT,
+        "meter_name": "Call Import User Insights",
+        "aggregation": "COUNT",
+        "charge": True,
+        "notes": "On-demand map-reduce insights generation per evaluation.",
+    },
+    {
+        "product": "Call Imports",
+        "plan_line": "Call import prompt improvements",
+        "event_name": CALL_IMPORT_PROMPT_IMPROVEMENTS_EVENT,
+        "meter_name": "Call Import Prompt Improvements",
+        "aggregation": "COUNT",
+        "charge": True,
+        "notes": "Prompt improvement suggestions from evaluation clusters.",
+    },
+    {
+        "product": "Call Imports",
         "plan_line": "Imported rows (entitlement cap)",
         "event_name": CALL_IMPORT_BATCH_EVENT,
         "meter_name": CALL_IMPORT_BATCH_METER_NAME,
@@ -130,6 +163,24 @@ PLAN_BILLABLE_METERS: list[dict[str, Any]] = [
         "aggregation": "SUM billable_minutes",
         "charge": True,
         "notes": "Standalone test-agent API only; not double-billed with playground eval.",
+    },
+    {
+        "product": "Agent Playground",
+        "plan_line": "Persona prompt generation",
+        "event_name": PERSONA_PROMPT_GENERATED_EVENT,
+        "meter_name": "Persona Prompt Generation",
+        "aggregation": "COUNT",
+        "charge": True,
+        "notes": "AI-generated caller persona prompts from agent prompts.",
+    },
+    {
+        "product": "Agent Playground",
+        "plan_line": "Agent test setup generation",
+        "event_name": AGENT_TEST_SETUP_GENERATED_EVENT,
+        "meter_name": "Agent Test Setup Generation",
+        "aggregation": "COUNT",
+        "charge": True,
+        "notes": "Test prompt and scenario draft generation for agents.",
     },
     {
         "product": "Voice Playground",
@@ -215,6 +266,15 @@ PLAN_BILLABLE_METERS: list[dict[str, Any]] = [
         "aggregation": "COUNT",
         "charge": True,
     },
+    {
+        "product": "Prompt Partials",
+        "plan_line": "Prompt partial AI assist",
+        "event_name": PROMPT_PARTIAL_AI_ASSISTED_EVENT,
+        "meter_name": "Prompt Partial AI Assist",
+        "aggregation": "COUNT",
+        "charge": True,
+        "notes": "Generate, improve, flowchart, and flowchart prompt mapping.",
+    },
 ]
 
 LICENSE_FEATURES: list[dict[str, Any]] = [
@@ -297,6 +357,15 @@ LICENSE_FEATURES: list[dict[str, Any]] = [
         "unit_singular": "generation",
         "unit_plural": "generations",
         "event_name": SCENARIO_AI_TEXT_EVENT,
+        "aggregation": {"type": "COUNT"},
+    },
+    {
+        "name": "Prompt Partials",
+        "lookup_key": "prompt_partials",
+        "description": "AI-assisted prompt partial generate, improve, and flowchart workflows",
+        "unit_singular": "request",
+        "unit_plural": "requests",
+        "event_name": PROMPT_PARTIAL_AI_ASSISTED_EVENT,
         "aggregation": {"type": "COUNT"},
     },
 ]
