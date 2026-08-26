@@ -145,44 +145,18 @@ def poll_call_metrics(
         # After polling is complete, create EvaluatorResult and trigger evaluation
         if call_complete and call_metrics and call_recording.agent_id:
             try:
-                from app.services.usage.external_agent_usage import (
-                    record_playground_provider_usage_from_call_data,
+                from app.services.playground.post_call_processing import (
+                    claim_playground_evaluator_result_slot,
+                    record_playground_post_call_usage_once,
                 )
 
-                db.refresh(call_recording)
-                if call_recording.evaluator_result_id:
-                    logger.info(
-                        f"[Poll Call Metrics] Skipping post-call processing — "
-                        f"evaluator result already exists for call {provider_call_id}"
-                    )
-                    return
-
-                platform_key = str(provider_platform or "").lower()
-                stored_data = (
-                    call_recording.call_data
-                    if isinstance(call_recording.call_data, dict)
-                    else {}
+                should_create_evaluator, call_metrics = record_playground_post_call_usage_once(
+                    db,
+                    call_recording_id,
+                    provider_platform=provider_platform,
+                    call_metrics=call_metrics if isinstance(call_metrics, dict) else {},
                 )
-                if stored_data.get("external_usage_recorded") and isinstance(call_metrics, dict):
-                    call_metrics["external_usage_recorded"] = True
-                elif isinstance(call_metrics, dict):
-                    call_metrics = record_playground_provider_usage_from_call_data(
-                        organization_id=call_recording.organization_id,
-                        workspace_id=call_recording.workspace_id,
-                        agent_id=call_recording.agent_id,
-                        provider_platform=platform_key,
-                        call_short_id=call_recording.call_short_id,
-                        call_data=call_metrics,
-                    )
-                call_recording.call_data = call_metrics
-                db.commit()
-
-                db.refresh(call_recording)
-                if call_recording.evaluator_result_id:
-                    logger.info(
-                        f"[Poll Call Metrics] Skipping evaluator creation — "
-                        f"another poll already created result for call {provider_call_id}"
-                    )
+                if not should_create_evaluator:
                     return
 
                 logger.info(f"[Poll Call Metrics] Call complete, creating EvaluatorResult for call {provider_call_id}")
@@ -269,18 +243,21 @@ def poll_call_metrics(
                 except Exception as audio_err:
                     logger.warning(f"[Poll Call Metrics] Audio download/upload failed: {audio_err}")
 
-                # Generate unique result ID
+                locked_recording = claim_playground_evaluator_result_slot(
+                    db,
+                    call_recording_id,
+                    provider_call_id=provider_call_id,
+                )
+                if not locked_recording:
+                    return
+
                 result_id = generate_unique_result_id(db)
-                
-                # Create EvaluatorResult. Background-task path: inherit the
-                # workspace from the call recording rather than the header
-                # (this task runs without a request context).
                 evaluator_result = EvaluatorResult(
                     result_id=result_id,
-                    organization_id=call_recording.organization_id,
-                    workspace_id=call_recording.workspace_id,
+                    organization_id=locked_recording.organization_id,
+                    workspace_id=locked_recording.workspace_id,
                     evaluator_id=None,
-                    agent_id=call_recording.agent_id,
+                    agent_id=locked_recording.agent_id,
                     persona_id=None,
                     scenario_id=None,
                     name=result_name,
@@ -293,12 +270,10 @@ def poll_call_metrics(
                     call_data=call_metrics,
                 )
                 db.add(evaluator_result)
+                db.flush()
+                locked_recording.evaluator_result_id = evaluator_result.id
                 db.commit()
                 db.refresh(evaluator_result)
-                
-                # Link the EvaluatorResult to CallRecording
-                call_recording.evaluator_result_id = evaluator_result.id
-                db.commit()
                 
                 logger.info(f"[Poll Call Metrics] Created EvaluatorResult {result_id} for call {provider_call_id}")
                 
