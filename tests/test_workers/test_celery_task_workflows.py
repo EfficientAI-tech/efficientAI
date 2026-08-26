@@ -606,7 +606,7 @@ def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monke
     )
     evaluator = Evaluator(
         id=uuid4(),
-        evaluator_id="bridge-eval",
+        evaluator_id="611111",
         organization_id=org.id,
         workspace_id=workspace_id,
         name="Bridge Evaluator",
@@ -616,7 +616,7 @@ def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monke
     )
     eval_result = EvaluatorResult(
         id=uuid4(),
-        result_id="bridge-result",
+        result_id="611112",
         organization_id=org.id,
         workspace_id=workspace_id,
         evaluator_id=evaluator.id,
