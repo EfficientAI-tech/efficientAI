@@ -1,14 +1,6 @@
 """API tests for evaluator results routes."""
 
 
-def _blob_storage_service():
-    """Resolve the blob storage singleton exposed as s3_service."""
-    import importlib
-
-    s3_module = importlib.import_module("app.services.storage.s3_service")
-    return s3_module.s3_service
-
-
 def test_derive_speaker_segments_supports_smallest_payload():
     from app.api.v1.routes.evaluator_results import _derive_speaker_segments_from_call_data
 
@@ -252,11 +244,13 @@ def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-aud
     fake = SimpleNamespace(
         is_enabled=lambda: True,
         download_file_by_key=lambda _key: audio_bytes,
+        upload_file_by_key=lambda *_args, **_kwargs: None,
     )
     blob_module = importlib.import_module("app.services.storage.blob_storage_service")
     s3_module = importlib.import_module("app.services.storage.s3_service")
-    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    # Patch the lazy s3_service alias first so undo restores the real singleton.
     monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
+    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
     return fake
 
 
@@ -465,12 +459,7 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
 
     monkeypatch.setattr("requests.get", fake_get)
     monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "vapi-secret")
-    storage = _blob_storage_service()
-    monkeypatch.setattr(
-        storage,
-        "upload_file_by_key",
-        lambda *_args, **_kwargs: None,
-    )
+    _patch_blob_storage_download(monkeypatch)
 
     class FakeTask:
         id = "task-1"

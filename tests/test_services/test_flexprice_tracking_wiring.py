@@ -23,6 +23,7 @@ AGENT_PLAYGROUND_WIRED = {
 EVALUATORS_WIRED = {
     "evaluator.run_requested": "app/api/v1/routes/evaluators.py",
     "evaluator.run_completed": "app/workers/tasks/process_evaluator_result.py",
+    "evaluator.recording_minutes_billed": "app/workers/tasks/process_evaluator_result.py",
 }
 
 JUDGE_ALIGNMENT_WIRED = {
@@ -81,6 +82,7 @@ def test_evaluator_events_are_wired():
         record_fn = {
             "evaluator.run_requested": "record_evaluator_run_requested",
             "evaluator.run_completed": "record_evaluator_run_completed",
+            "evaluator.recording_minutes_billed": "record_evaluator_recording_minutes_billed",
         }[event_name]
         assert _file_contains(path, record_fn), f"{event_name} missing {record_fn} in {path}"
 

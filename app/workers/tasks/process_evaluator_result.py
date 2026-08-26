@@ -866,6 +866,7 @@ def process_evaluator_result_task(self, result_id: str):
                 _commit_evaluator_result(db, result)
 
                 from app.services.billing.flexprice_service import (
+                    record_evaluator_recording_minutes_billed,
                     record_evaluator_run_completed,
                     record_playground_evaluation_completed,
                 )
@@ -887,7 +888,15 @@ def process_evaluator_result_task(self, result_id: str):
                         result.result_id,
                         workspace_id=result.workspace_id,
                         evaluator_id=result.evaluator_id,
+                        evaluator_result_id=result.id,
                     )
+                    if (result.audio_s3_key or "").strip():
+                        record_evaluator_recording_minutes_billed(
+                            result.organization_id,
+                            result.id,
+                            workspace_id=result.workspace_id,
+                            duration_seconds=result.duration_seconds,
+                        )
 
                 total_time = time.time() - task_start_time
                 logger.info(

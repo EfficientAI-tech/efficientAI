@@ -260,6 +260,9 @@ judge_alignment:
 # no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
 # true and provide FLEXPRICE_API_KEY (env var overrides api_key below).
 # Pytest always mocks Flexprice locally (EFFICIENTAI_PYTEST=1); never hits this API.
+# Setup guide: docs/billing/flexprice-saas-setup.md
+# Bootstrap meters: python scripts/setup_flexprice_meters.py
+# Plan pricing checklist: python scripts/setup_flexprice_meters.py --plan-guide
 # flexprice:
 #   enabled: false
 #   api_key: null

@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Create Flexprice features and meters for EfficientAI usage metering catalog."""
+"""Bootstrap Flexprice meters and license features for EfficientAI SaaS billing.
+
+Completion-only policy: only billable *completed* events get meters here. Track-only
+events (*_started, *_requested, *_created) are not catalogued.
+
+Call imports use multiple meters (separate plan usage charges):
+  - call_import.batch_created — feature primary; entitlements / included row cap ($0 typical)
+  - call_import.evaluation_completed — paid per evaluated row
+  - call_import.recording_minutes_billed — paid per audio minute
+  - call_import.pdf_report_generated — paid per PDF
+
+See docs/billing/flexprice-saas-setup.md for plan pricing and customer onboarding.
+"""
 
 from __future__ import annotations
 
@@ -20,63 +32,196 @@ CALL_IMPORT_BATCH_EVENT = "call_import.batch_created"
 CALL_IMPORT_BATCH_METER_NAME = "Call Imports"
 CALL_IMPORT_BATCH_AGG_TYPE = "SUM"
 CALL_IMPORT_BATCH_AGG_FIELD = "quantity"
-AGENT_PLAYGROUND_PRIMARY_EVENT = "playground.web_call_started"
-EVALUATOR_RUN_REQUESTED_EVENT = "evaluator.run_requested"
+
+AGENT_PLAYGROUND_PRIMARY_EVENT = "playground.evaluation_completed"
+VOICE_PLAYGROUND_PRIMARY_EVENT = "blind_test.response_submitted"
+GEPA_PRIMARY_EVENT = "prompt_optimization.run_completed"
+EVALUATOR_RUN_COMPLETED_EVENT = "evaluator.run_completed"
 JUDGE_ALIGNMENT_PRIMARY_EVENT = "judge_alignment.run_completed"
 METRICS_AI_ASSIST_EVENT = "metrics.ai_assist"
 METRIC_STUDIO_PRIMARY_EVENT = "metric_studio.run_completed"
 SCENARIO_AI_TEXT_EVENT = "scenario.ai_text_generated"
 
-# (event_name, display_name, aggregation_type, aggregation_field|None)
+# Standalone meters (not owned by a license feature primary event).
+# Each row: (event_name, display_name, aggregation_type, aggregation_field|None)
 METERS: list[tuple[str, str, str, str | None]] = [
-    # Voice playground
-    ("blind_test.share_created", "Blind Test Share Created", "COUNT", None),
-    ("blind_test.response_submitted", "Blind Test Response Submitted", "COUNT", None),
-    ("tts.generation_started", "TTS Generation Started", "COUNT", None),
-    ("tts.sample_synthesized", "TTS Sample Synthesized", "SUM", "quantity"),
-    ("tts.report_requested", "TTS Report Requested", "COUNT", None),
-    ("tts.report_completed", "TTS Report Completed", "COUNT", None),
-    # Call imports (batch_created meter comes from the call_imports license feature)
-    ("call_import.evaluation_started", "Call Import Evaluation Started", "COUNT", None),
-    ("call_import.evaluation_completed", "Call Import Evaluation Completed", "SUM", "quantity"),
+    # Call imports — paid usage (batch_created meter comes from call_imports feature)
+    ("call_import.evaluation_completed", "Call Import Evaluations", "SUM", "quantity"),
     (
         "call_import.recording_minutes_billed",
         "Call Import Recording Minutes",
         "SUM",
         "billable_minutes",
     ),
-    ("call_import.pdf_report_generated", "Call Import PDF Report Generated", "COUNT", None),
-    # Agent playground (web_call_started meter comes from the agent_playground license feature)
-    ("playground.websocket_session_started", "Playground Websocket Session Started", "COUNT", None),
-    ("playground.call_evaluated", "Playground Call Evaluated", "COUNT", None),
-    ("playground.evaluation_completed", "Playground Evaluation Completed", "COUNT", None),
-    # Evaluators (run_requested meter comes from the evaluators license feature)
-    ("evaluator.run_completed", "Evaluator Run Completed", "COUNT", None),
+    ("call_import.pdf_report_generated", "Call Import PDF Reports", "SUM", "quantity"),
+    # Evaluators — run + optional audio (run_completed meter from evaluators feature)
+    (
+        "evaluator.recording_minutes_billed",
+        "Evaluator Recording Minutes",
+        "SUM",
+        "billable_minutes",
+    ),
+    # Agent playground — test-agent API path (playground eval meter from feature)
+    (
+        "test_agent.conversation_ended",
+        "Test Agent Conversation Minutes",
+        "SUM",
+        "billable_minutes",
+    ),
+    # Voice playground — billable completions (feature primary = blind_test responses)
+    ("tts.sample_synthesized", "TTS Samples Synthesized", "SUM", "quantity"),
+    ("tts.report_completed", "TTS Reports Completed", "SUM", "quantity"),
     # Legacy evaluations
-    ("evaluation.created", "Evaluation Created", "COUNT", None),
-    ("evaluation.completed", "Evaluation Completed", "COUNT", None),
-    # Prompt optimization
-    ("prompt_optimization.run_started", "Prompt Optimization Run Started", "COUNT", None),
-    ("prompt_optimization.run_completed", "Prompt Optimization Run Completed", "COUNT", None),
-    # Judge alignment (run_completed meter comes from the judge_alignment license feature)
-    ("judge_alignment.run_started", "Judge Alignment Run Started", "COUNT", None),
-    # Observability
-    ("observability.call_ingested", "Observability Call Ingested", "COUNT", None),
-    ("observability.call_evaluated", "Observability Call Evaluated", "COUNT", None),
-    # Test agents
-    ("test_agent.conversation_started", "Test Agent Conversation Started", "COUNT", None),
-    ("test_agent.conversation_ended", "Test Agent Conversation Ended", "COUNT", None),
-    # Metric studio (run_completed meter comes from the metric_studio license feature)
-    ("metric_studio.item_evaluated", "Metric Studio Item Evaluated", "COUNT", None),
-    # Metrics AI assist (primary meter comes from the metrics_ai_assist license feature)
-    # Scenario AI text (primary meter comes from the scenario_ai license feature)
+    ("evaluation.completed", "Legacy Evaluation Completed", "SUM", "quantity"),
+]
+
+# Ops guide: meters to attach as plan USAGE charges (display order for SaaS plans).
+PLAN_BILLABLE_METERS: list[dict[str, Any]] = [
+    {
+        "product": "Call Imports",
+        "plan_line": "Call import evaluations",
+        "event_name": "call_import.evaluation_completed",
+        "meter_name": "Call Import Evaluations",
+        "aggregation": "SUM quantity",
+        "charge": True,
+        "notes": "Main compute line — one unit per newly completed row per eval pass.",
+    },
+    {
+        "product": "Call Imports",
+        "plan_line": "Call import audio minutes",
+        "event_name": "call_import.recording_minutes_billed",
+        "meter_name": "Call Import Recording Minutes",
+        "aggregation": "SUM billable_minutes",
+        "charge": True,
+        "notes": "Only rows with a recording; ceil(seconds/60), min 1.",
+    },
+    {
+        "product": "Call Imports",
+        "plan_line": "Call import PDF reports",
+        "event_name": "call_import.pdf_report_generated",
+        "meter_name": "Call Import PDF Reports",
+        "aggregation": "SUM quantity",
+        "charge": True,
+        "notes": "Optional export add-on.",
+    },
+    {
+        "product": "Call Imports",
+        "plan_line": "Imported rows (entitlement cap)",
+        "event_name": CALL_IMPORT_BATCH_EVENT,
+        "meter_name": CALL_IMPORT_BATCH_METER_NAME,
+        "aggregation": "SUM quantity",
+        "charge": False,
+        "notes": "Feature call_imports primary meter — tier included rows; $0 usage charge typical.",
+    },
+    {
+        "product": "Agent Playground",
+        "plan_line": "Playground evaluated calls",
+        "event_name": AGENT_PLAYGROUND_PRIMARY_EVENT,
+        "meter_name": "Agent Playground",
+        "aggregation": "SUM billable_minutes",
+        "charge": True,
+        "notes": "Billed when playground evaluation completes.",
+    },
+    {
+        "product": "Agent Playground",
+        "plan_line": "Test agent conversations",
+        "event_name": "test_agent.conversation_ended",
+        "meter_name": "Test Agent Conversation Minutes",
+        "aggregation": "SUM billable_minutes",
+        "charge": True,
+        "notes": "Standalone test-agent API only; not double-billed with playground eval.",
+    },
+    {
+        "product": "Voice Playground",
+        "plan_line": "Blind test responses",
+        "event_name": VOICE_PLAYGROUND_PRIMARY_EVENT,
+        "meter_name": "Voice Playground",
+        "aggregation": "SUM quantity",
+        "charge": True,
+    },
+    {
+        "product": "Voice Playground",
+        "plan_line": "TTS samples",
+        "event_name": "tts.sample_synthesized",
+        "meter_name": "TTS Samples Synthesized",
+        "aggregation": "SUM quantity",
+        "charge": True,
+    },
+    {
+        "product": "Voice Playground",
+        "plan_line": "TTS reports",
+        "event_name": "tts.report_completed",
+        "meter_name": "TTS Reports Completed",
+        "aggregation": "SUM quantity",
+        "charge": True,
+    },
+    {
+        "product": "Evaluators",
+        "plan_line": "Evaluator runs",
+        "event_name": EVALUATOR_RUN_COMPLETED_EVENT,
+        "meter_name": "Evaluators",
+        "aggregation": "COUNT",
+        "charge": True,
+    },
+    {
+        "product": "Evaluators",
+        "plan_line": "Evaluator audio minutes",
+        "event_name": "evaluator.recording_minutes_billed",
+        "meter_name": "Evaluator Recording Minutes",
+        "aggregation": "SUM billable_minutes",
+        "charge": True,
+        "notes": "When the run includes a recording; ceil(seconds/60), min 1.",
+    },
+    {
+        "product": "GEPA Optimization",
+        "plan_line": "Prompt optimization candidates",
+        "event_name": GEPA_PRIMARY_EVENT,
+        "meter_name": "GEPA Optimization",
+        "aggregation": "SUM quantity",
+        "charge": True,
+        "notes": "Quantity = candidates produced in the completed run.",
+    },
+    {
+        "product": "Judge Alignment",
+        "plan_line": "Judge alignment samples",
+        "event_name": JUDGE_ALIGNMENT_PRIMARY_EVENT,
+        "meter_name": "Judge Alignment",
+        "aggregation": "SUM quantity",
+        "charge": True,
+        "notes": "Quantity = samples scored in the completed run.",
+    },
+    {
+        "product": "Metrics AI Assist",
+        "plan_line": "Metrics AI assist",
+        "event_name": METRICS_AI_ASSIST_EVENT,
+        "meter_name": "Metrics AI Assist",
+        "aggregation": "COUNT",
+        "charge": True,
+    },
+    {
+        "product": "Metric Studio",
+        "plan_line": "Metric studio items",
+        "event_name": METRIC_STUDIO_PRIMARY_EVENT,
+        "meter_name": "Metric Studio",
+        "aggregation": "SUM quantity",
+        "charge": True,
+        "notes": "Quantity = completed items in the run.",
+    },
+    {
+        "product": "Scenario AI",
+        "plan_line": "Scenario AI generations",
+        "event_name": SCENARIO_AI_TEXT_EVENT,
+        "meter_name": "Scenario AI Text",
+        "aggregation": "COUNT",
+        "charge": True,
+    },
 ]
 
 LICENSE_FEATURES: list[dict[str, Any]] = [
     {
         "name": "Call Imports",
         "lookup_key": "call_imports",
-        "description": "CSV/audio call import batches, row processing, and evaluations",
+        "description": "CSV/audio call import batches — row cap and import volume",
         "unit_singular": "row",
         "unit_plural": "rows",
         "event_name": CALL_IMPORT_BATCH_EVENT,
@@ -85,52 +230,52 @@ LICENSE_FEATURES: list[dict[str, Any]] = [
     {
         "name": "Agent Playground",
         "lookup_key": "agent_playground",
-        "description": "Agent web calls, websocket sessions, evaluations, and test-agent conversations",
-        "unit_singular": "session",
-        "unit_plural": "sessions",
+        "description": "Agent playground calls scored after evaluation completes",
+        "unit_singular": "minute",
+        "unit_plural": "minutes",
         "event_name": AGENT_PLAYGROUND_PRIMARY_EVENT,
-        "aggregation": {"type": "COUNT"},
+        "aggregation": {"type": "SUM", "field": "billable_minutes"},
     },
     {
         "name": "Voice Playground",
         "lookup_key": "voice_playground",
-        "description": "TTS comparisons, blind tests, and voice quality reports",
-        "unit_singular": "share",
-        "unit_plural": "shares",
-        "event_name": "blind_test.share_created",
-        "aggregation": {"type": "COUNT"},
+        "description": "Blind test responses and voice quality workflows",
+        "unit_singular": "response",
+        "unit_plural": "responses",
+        "event_name": VOICE_PLAYGROUND_PRIMARY_EVENT,
+        "aggregation": {"type": "SUM", "field": "quantity"},
     },
     {
         "name": "GEPA Optimization",
         "lookup_key": "gepa_optimization",
         "description": "Prompt optimization (GEPA) runs",
-        "unit_singular": "run",
-        "unit_plural": "runs",
-        "event_name": "prompt_optimization.run_started",
-        "aggregation": {"type": "COUNT"},
+        "unit_singular": "candidate",
+        "unit_plural": "candidates",
+        "event_name": GEPA_PRIMARY_EVENT,
+        "aggregation": {"type": "SUM", "field": "quantity"},
     },
     {
         "name": "Evaluators",
         "lookup_key": "evaluators",
-        "description": "Batch evaluator simulation runs and completions",
+        "description": "Evaluator simulation runs that complete scoring",
         "unit_singular": "run",
         "unit_plural": "runs",
-        "event_name": EVALUATOR_RUN_REQUESTED_EVENT,
-        "aggregation": {"type": "SUM", "field": "quantity"},
+        "event_name": EVALUATOR_RUN_COMPLETED_EVENT,
+        "aggregation": {"type": "COUNT"},
     },
     {
         "name": "Judge Alignment",
         "lookup_key": "judge_alignment",
         "description": "Judge calibration runs on labeled datasets",
-        "unit_singular": "run",
-        "unit_plural": "runs",
+        "unit_singular": "sample",
+        "unit_plural": "samples",
         "event_name": JUDGE_ALIGNMENT_PRIMARY_EVENT,
-        "aggregation": {"type": "COUNT"},
+        "aggregation": {"type": "SUM", "field": "quantity"},
     },
     {
         "name": "Metrics AI Assist",
         "lookup_key": "metrics_ai_assist",
-        "description": "AI-assisted metric creation and bulk label parsing in Metrics Management",
+        "description": "AI-assisted metric creation in Metrics Management",
         "unit_singular": "request",
         "unit_plural": "requests",
         "event_name": METRICS_AI_ASSIST_EVENT,
@@ -140,15 +285,15 @@ LICENSE_FEATURES: list[dict[str, Any]] = [
         "name": "Metric Studio",
         "lookup_key": "metric_studio",
         "description": "Batch metric scoring runs in Metrics Studio",
-        "unit_singular": "run",
-        "unit_plural": "runs",
+        "unit_singular": "item",
+        "unit_plural": "items",
         "event_name": METRIC_STUDIO_PRIMARY_EVENT,
-        "aggregation": {"type": "COUNT"},
+        "aggregation": {"type": "SUM", "field": "quantity"},
     },
     {
         "name": "Scenario AI Text",
         "lookup_key": "scenario_ai",
-        "description": "AI-generated text for scenarios and similar assistant flows",
+        "description": "AI-generated text for scenarios and assistant flows",
         "unit_singular": "generation",
         "unit_plural": "generations",
         "event_name": SCENARIO_AI_TEXT_EVENT,
@@ -157,6 +302,9 @@ LICENSE_FEATURES: list[dict[str, Any]] = [
 ]
 
 FEATURE_OWNED_EVENT_NAMES = frozenset(spec["event_name"] for spec in LICENSE_FEATURES)
+
+# Backward-compatible alias for tests importing the old name.
+EVALUATOR_RUN_REQUESTED_EVENT = EVALUATOR_RUN_COMPLETED_EVENT
 
 
 def _headers() -> dict[str, str]:
@@ -364,7 +512,6 @@ def _terminate_orphaned_batch_prices(
 
 
 PLAN_USAGE_RESTORE_NAMES = ("Voice Playground", "Blind Test")
-# Fallback archived template price IDs when /prices list omits terminated prices.
 PLAN_USAGE_ARCHIVE_TEMPLATE_IDS: dict[str, str] = {
     "Voice Playground": "price_01KVT8P9T8E52KHB1CA6HCVPV0",
     "Blind Test": "price_01KW9E4W02NND35R6W87Y7863K",
@@ -645,6 +792,22 @@ def bootstrap_catalog() -> dict[str, Any]:
     }
 
 
+def print_plan_guide() -> None:
+    """Print SaaS plan usage charge checklist (stdout JSON)."""
+    paid = [row for row in PLAN_BILLABLE_METERS if row.get("charge")]
+    entitlements = [row for row in PLAN_BILLABLE_METERS if not row.get("charge")]
+    print(
+        json.dumps(
+            {
+                "paid_usage_charges": paid,
+                "entitlement_only": entitlements,
+                "docs": "docs/billing/flexprice-saas-setup.md",
+            },
+            indent=2,
+        )
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bootstrap or repair Flexprice metering catalog.")
     parser.add_argument(
@@ -657,7 +820,16 @@ def main() -> int:
         action="store_true",
         help="Recreate missing Voice Playground and Blind Test plan usage prices from archived templates.",
     )
+    parser.add_argument(
+        "--plan-guide",
+        action="store_true",
+        help="Print JSON checklist of plan usage charges (no API calls).",
+    )
     args = parser.parse_args()
+
+    if args.plan_guide:
+        print_plan_guide()
+        return 0
 
     if CONFIG_PATH.exists():
         load_config_from_file(str(CONFIG_PATH))
