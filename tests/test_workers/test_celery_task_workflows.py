@@ -13,6 +13,7 @@ from app.models.database import (
     Agent,
     Evaluator,
     EvaluatorResult,
+    Integration,
     Metric,
     Organization,
     PromptOptimizationRun,
@@ -578,6 +579,18 @@ def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monke
     db_session.add(voice_bundle)
     db_session.flush()
 
+    integration = Integration(
+        id=uuid4(),
+        organization_id=org.id,
+        platform="retell",
+        name="Bridge Integration",
+        api_key="encrypted-test-key",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+
     agent = Agent(
         id=uuid4(),
         organization_id=org.id,
@@ -588,7 +601,7 @@ def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monke
         call_type="outbound",
         call_medium="phone_call",
         voice_bundle_id=voice_bundle.id,
-        voice_ai_integration_id=uuid4(),
+        voice_ai_integration_id=integration.id,
         voice_ai_agent_id="provider-agent-1",
     )
     evaluator = Evaluator(
@@ -610,7 +623,7 @@ def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monke
         agent_id=agent.id,
         status="queued",
     )
-    db_session.add_all([agent, evaluator, eval_result])
+    db_session.add_all([integration, agent, evaluator, eval_result])
     db_session.commit()
 
     async def fake_bridge(**_kwargs):

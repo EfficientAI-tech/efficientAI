@@ -244,11 +244,25 @@ def test_evaluator_results_overview_and_aggregate(
     assert agg["completed_rows"] == 1
 
 
+def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-audio-bytes"):
+    """Patch both the blob singleton and the lazy s3_service alias."""
+    import importlib
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(
+        is_enabled=lambda: True,
+        download_file_by_key=lambda _key: audio_bytes,
+    )
+    blob_module = importlib.import_module("app.services.storage.blob_storage_service")
+    s3_module = importlib.import_module("app.services.storage.s3_service")
+    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
+    return fake
+
+
 def test_stream_evaluator_result_audio_from_s3(
     authenticated_client, make_evaluator_result, monkeypatch
 ):
-    storage = _blob_storage_service()
-
     make_evaluator_result(
         result_id="991122",
         audio_s3_key="audio/organizations/test/evaluations/call-1/recording.mp3",
@@ -258,12 +272,7 @@ def test_stream_evaluator_result_audio_from_s3(
         },
     )
 
-    monkeypatch.setattr(storage, "is_enabled", lambda: True)
-    monkeypatch.setattr(
-        storage,
-        "download_file_by_key",
-        lambda _key: b"fake-audio-bytes",
-    )
+    _patch_blob_storage_download(monkeypatch)
 
     response = authenticated_client.get("/api/v1/evaluator-results/991122/audio")
 

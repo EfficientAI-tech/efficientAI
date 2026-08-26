@@ -174,6 +174,9 @@ class _FakeS3:
         self.uploads.append({"key": key, "size": len(file_content), "content_type": content_type})
         return key
 
+    def download_file_by_key(self, key):
+        return b"fake-audio-bytes"
+
     def get_organization_root_prefix(self, organization_id: str) -> str:
         return f"{self.prefix}organizations/{organization_id}/"
 
