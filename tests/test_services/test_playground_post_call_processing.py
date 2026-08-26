@@ -167,7 +167,7 @@ def test_claim_playground_evaluator_result_slot_skips_after_evaluator_linked(
     )
 
 
-def test_record_playground_post_call_usage_once_applies_usage_only_after_commit(
+def test_record_playground_post_call_usage_once_retries_when_apply_fails(
     db_session, org_id, default_workspace, playground_agent, monkeypatch
 ):
     recording = _make_playground_recording(
@@ -177,21 +177,16 @@ def test_record_playground_post_call_usage_once_applies_usage_only_after_commit(
         agent_id=playground_agent.id,
         call_data={"call_status": "ended"},
     )
-    apply_calls = []
-    commit_attempts = {"count": 0}
-    original_commit = db_session.commit
+    apply_attempts = {"count": 0}
 
-    def _commit_once_fail():
-        commit_attempts["count"] += 1
-        if commit_attempts["count"] == 1:
-            db_session.rollback()
-            raise RuntimeError("simulated commit failure")
-        return original_commit()
+    def _apply_fail_once(**kwargs):
+        apply_attempts["count"] += 1
+        if apply_attempts["count"] == 1:
+            raise RuntimeError("simulated apply failure")
 
-    monkeypatch.setattr(db_session, "commit", _commit_once_fail)
     monkeypatch.setattr(
         "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
-        lambda **kwargs: apply_calls.append(kwargs),
+        _apply_fail_once,
     )
 
     proceed, _ = record_playground_post_call_usage_once(
@@ -201,7 +196,6 @@ def test_record_playground_post_call_usage_once_applies_usage_only_after_commit(
         call_metrics={"call_status": "ended", "duration_seconds": 42},
     )
     assert proceed is False
-    assert apply_calls == []
 
     db_session.refresh(recording)
     assert not (recording.call_data or {}).get("external_usage_recorded")
@@ -214,4 +208,4 @@ def test_record_playground_post_call_usage_once_applies_usage_only_after_commit(
     )
     assert proceed is True
     assert updated["external_usage_recorded"] is True
-    assert len(apply_calls) == 1
+    assert apply_attempts["count"] == 2
