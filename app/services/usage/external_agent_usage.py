@@ -21,6 +21,10 @@ class ExternalAgentUsageExtraction:
     tts_characters: int = 0
 
 
+class ExternalUsageRecordingError(RuntimeError):
+    """Raised when billable external provider usage could not be persisted."""
+
+
 def _as_int(value: Any) -> int:
     try:
         return max(0, int(value or 0))
@@ -241,7 +245,11 @@ def apply_playground_provider_usage_from_call_data(
         result_id=call_short_id or "playground",
     )
     with llm_usage_context(usage_ctx):
-        record_external_agent_usage(stub, usage_ctx=usage_ctx)
+        if not record_external_agent_usage(stub, usage_ctx=usage_ctx):
+            raise ExternalUsageRecordingError(
+                f"failed to persist external provider usage for call "
+                f"{call_short_id or 'playground'}"
+            )
 
 
 def record_playground_provider_usage_from_call_data(
@@ -274,8 +282,12 @@ def record_external_agent_usage(
     result: Any,
     *,
     usage_ctx: LLMUsageContext,
-) -> None:
-    """Record production-agent usage from stored provider call_data."""
+) -> bool:
+    """Record production-agent usage from stored provider call_data.
+
+    Returns True when usage was persisted or there was nothing billable to record.
+    Returns False when billable usage could not be stored.
+    """
     call_data = getattr(result, "call_data", None)
     platform = getattr(result, "provider_platform", None) or ""
     extraction = extract_external_agent_usage(
@@ -283,11 +295,15 @@ def record_external_agent_usage(
         platform=str(platform),
     )
     if extraction is None:
-        return
+        return True
 
     org_id = getattr(result, "organization_id", None)
     if org_id is None:
-        return
+        logger.warning(
+            "external agent usage record skipped: missing organization_id for result {}",
+            getattr(result, "result_id", result),
+        )
+        return False
 
     ctx = LLMUsageContext(
         organization_id=usage_ctx.organization_id,
@@ -303,15 +319,18 @@ def record_external_agent_usage(
         },
     )
 
-    try:
-        if extraction.llm and usage_snapshot_is_billable(extraction.llm):
+    outcomes: list[bool] = []
+    if extraction.llm and usage_snapshot_is_billable(extraction.llm):
+        outcomes.append(
             record_llm_usage(
                 extraction.model,
                 extraction.llm,
                 organization_id=org_id,
                 ctx=ctx,
             )
-        if extraction.stt_audio_seconds > 0:
+        )
+    if extraction.stt_audio_seconds > 0:
+        outcomes.append(
             record_stt_usage(
                 f"{platform}-stt",
                 audio_seconds=extraction.stt_audio_seconds,
@@ -319,16 +338,26 @@ def record_external_agent_usage(
                 ctx=ctx,
                 count_call=False,
             )
-        if extraction.tts_characters > 0:
+        )
+    if extraction.tts_characters > 0:
+        outcomes.append(
             record_tts_usage(
                 f"{platform}-tts",
                 characters=extraction.tts_characters,
                 organization_id=org_id,
                 ctx=ctx,
             )
-    except Exception as exc:
-        logger.debug(
-            "external agent usage record skipped for result {}: {}",
-            getattr(result, "result_id", result),
-            exc,
         )
+
+    if not outcomes:
+        return True
+
+    if all(outcomes):
+        return True
+
+    logger.warning(
+        "external agent usage record incomplete for result {} (platform={})",
+        getattr(result, "result_id", result),
+        platform,
+    )
+    return False

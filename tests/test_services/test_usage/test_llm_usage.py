@@ -376,6 +376,7 @@ def test_redis_failure_buffers_to_postgres(fake_redis, org_ctx, monkeypatch):
         captured["organization_id"] = organization_id
         captured["bucket"] = bucket
         captured["deltas"] = deltas
+        return True
 
     monkeypatch.setattr(usage_mod, "_buffer_to_postgres", _fake_buffer)
 

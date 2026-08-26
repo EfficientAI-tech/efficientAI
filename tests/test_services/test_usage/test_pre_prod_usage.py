@@ -9,7 +9,10 @@ from app.services.usage.context import (
     usage_context_for_metric_studio_run,
     usage_context_for_persona_generation,
 )
-from app.services.usage.external_agent_usage import extract_external_agent_usage
+from app.services.usage.external_agent_usage import (
+    extract_external_agent_usage,
+    record_external_agent_usage,
+)
 
 
 @pytest.fixture
@@ -194,6 +197,65 @@ def test_usage_context_for_evaluator_result_playground_section():
         )
     )
     assert ctx.product_section == LLMUsageProductSection.PLAYGROUND
+
+
+def test_record_external_agent_usage_returns_false_when_storage_fails(fake_redis, monkeypatch):
+    from app.services.usage import llm_usage as usage_mod
+    from app.services.usage.context import usage_context_for_playground_voice_call
+
+    org_id = uuid4()
+    agent_id = uuid4()
+    usage_ctx = usage_context_for_playground_voice_call(
+        organization_id=org_id,
+        workspace_id=uuid4(),
+        agent_id=agent_id,
+        provider_platform="vapi",
+        call_short_id="abc123",
+    )
+    result = SimpleNamespace(
+        organization_id=org_id,
+        provider_platform="vapi",
+        result_id="abc123",
+        call_data={
+            "costBreakdown": {
+                "llmPromptTokens": 40,
+                "llmCompletionTokens": 12,
+            },
+            "durationSeconds": 20,
+        },
+    )
+
+    monkeypatch.setattr(usage_mod, "_incr_pending", lambda *_args, **_kwargs: False)
+
+    assert record_external_agent_usage(result, usage_ctx=usage_ctx) is False
+
+
+def test_record_playground_provider_usage_from_call_data_raises_when_storage_fails(
+    fake_redis, monkeypatch
+):
+    from app.services.usage import llm_usage as usage_mod
+    from app.services.usage.external_agent_usage import (
+        ExternalUsageRecordingError,
+        record_playground_provider_usage_from_call_data,
+    )
+
+    monkeypatch.setattr(usage_mod, "_incr_pending", lambda *_args, **_kwargs: False)
+
+    with pytest.raises(ExternalUsageRecordingError):
+        record_playground_provider_usage_from_call_data(
+            organization_id=uuid4(),
+            workspace_id=uuid4(),
+            agent_id=uuid4(),
+            provider_platform="vapi",
+            call_short_id="abc123",
+            call_data={
+                "costBreakdown": {
+                    "llmPromptTokens": 40,
+                    "llmCompletionTokens": 12,
+                },
+                "durationSeconds": 20,
+            },
+        )
 
 
 def test_record_playground_provider_usage_from_call_data(fake_redis):

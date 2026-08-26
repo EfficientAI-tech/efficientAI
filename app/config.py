@@ -901,6 +901,11 @@ def load_config_from_file(config_path: str) -> None:
             settings.FLEXPRICE_API_KEY = flexprice_config["api_key"]
         if flexprice_config.get("api_host"):
             settings.FLEXPRICE_API_HOST = flexprice_config["api_host"]
+        if (
+            os.environ.get("EFFICIENTAI_PYTEST") == "1"
+            and os.environ.get("FLEXPRICE_TEST_ALLOW") != "1"
+        ):
+            settings.FLEXPRICE_ENABLED = False
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

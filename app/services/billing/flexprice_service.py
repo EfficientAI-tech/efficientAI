@@ -98,6 +98,14 @@ def _verbose_logging() -> bool:
     return os.getenv("FLEXPRICE_VERBOSE", "").lower() in {"1", "true", "yes"}
 
 
+def _pytest_blocks_external_billing() -> bool:
+    """Block real Flexprice I/O during pytest unless explicitly opted in."""
+    return (
+        os.environ.get("EFFICIENTAI_PYTEST") == "1"
+        and os.environ.get("FLEXPRICE_TEST_ALLOW") != "1"
+    )
+
+
 def _mask_api_key(api_key: Optional[str]) -> str:
     if not api_key:
         return "(missing)"
@@ -158,6 +166,8 @@ def log_startup_status(*, component: str = "app") -> None:
 
 def _verify_connectivity() -> Optional[str]:
     """Best-effort reachability probe; returns error text or None when OK."""
+    if _pytest_blocks_external_billing():
+        return None
     try:
         import httpx
 
@@ -227,6 +237,9 @@ def record_event(
     """
     global _disabled_skip_logged
 
+    if _pytest_blocks_external_billing():
+        return False
+
     inactive_reason = disabled_reason()
     if inactive_reason:
         if not _disabled_skip_logged:
@@ -291,6 +304,9 @@ def ensure_customer(
     email: Optional[str] = None,
 ) -> None:
     """Register an organization as a Flexprice customer. No-op when disabled."""
+    if _pytest_blocks_external_billing():
+        return
+
     inactive_reason = disabled_reason()
     if inactive_reason:
         if _verbose_logging():

@@ -10,7 +10,8 @@ from app.services.billing import flexprice_service as svc
 
 
 @pytest.fixture(autouse=True)
-def reset_flexprice_settings():
+def reset_flexprice_settings(monkeypatch):
+    monkeypatch.setenv("FLEXPRICE_TEST_ALLOW", "1")
     previous = (
         settings.FLEXPRICE_ENABLED,
         settings.FLEXPRICE_API_KEY,

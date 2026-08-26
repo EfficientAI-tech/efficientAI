@@ -167,6 +167,73 @@ def test_claim_playground_evaluator_result_slot_skips_after_evaluator_linked(
     )
 
 
+def test_record_playground_post_call_usage_once_retries_when_storage_fails(
+    db_session, org_id, default_workspace, playground_agent, monkeypatch
+):
+    recording = _make_playground_recording(
+        db_session,
+        org_id=org_id,
+        workspace_id=default_workspace.id,
+        agent_id=playground_agent.id,
+        call_data={"call_status": "ended"},
+    )
+
+    def _fail_storage(**_kwargs):
+        from app.services.usage.external_agent_usage import ExternalUsageRecordingError
+
+        raise ExternalUsageRecordingError("simulated storage failure")
+
+    monkeypatch.setattr(
+        "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
+        _fail_storage,
+    )
+
+    proceed, _ = record_playground_post_call_usage_once(
+        db_session,
+        recording.id,
+        provider_platform="vapi",
+        call_metrics={
+            "costBreakdown": {
+                "llmPromptTokens": 40,
+                "llmCompletionTokens": 12,
+            },
+            "durationSeconds": 20,
+        },
+    )
+    assert proceed is False
+
+    db_session.refresh(recording)
+    assert not (recording.call_data or {}).get("external_usage_recorded")
+
+
+def test_record_playground_post_call_usage_once_marks_recorded_without_billable_usage(
+    db_session, org_id, default_workspace, playground_agent, monkeypatch
+):
+    recording = _make_playground_recording(
+        db_session,
+        org_id=org_id,
+        workspace_id=default_workspace.id,
+        agent_id=playground_agent.id,
+        call_data={"call_status": "ended"},
+    )
+    apply_calls = []
+
+    monkeypatch.setattr(
+        "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
+        lambda **kwargs: apply_calls.append(kwargs),
+    )
+
+    proceed, updated = record_playground_post_call_usage_once(
+        db_session,
+        recording.id,
+        provider_platform="retell",
+        call_metrics={"call_status": "ended"},
+    )
+    assert proceed is True
+    assert updated["external_usage_recorded"] is True
+    assert len(apply_calls) == 1
+
+
 def test_record_playground_post_call_usage_once_retries_when_apply_fails(
     db_session, org_id, default_workspace, playground_agent, monkeypatch
 ):

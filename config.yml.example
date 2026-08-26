@@ -259,6 +259,7 @@ judge_alignment:
 # Flexprice usage-based billing (optional). When disabled or api_key is unset,
 # no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
 # true and provide FLEXPRICE_API_KEY (env var overrides api_key below).
+# Pytest always mocks Flexprice locally (EFFICIENTAI_PYTEST=1); never hits this API.
 # flexprice:
 #   enabled: false
 #   api_key: null
