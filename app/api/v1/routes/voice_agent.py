@@ -483,15 +483,6 @@ async def websocket_endpoint(
 
         if agent_id and workspace_id and not test_agent_bridge_mode:
             session_uuid = uuid4()
-            from app.services.billing.flexprice_service import record_test_agent_conversation_started
-
-            record_test_agent_conversation_started(
-                organization_id,
-                session_uuid,
-                workspace_id=workspace_id,
-                result_id=result_id,
-                agent_id=UUID(agent_id),
-            )
 
         agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
         try:
@@ -630,7 +621,6 @@ async def websocket_endpoint(
                     from app.models.enums import CallRecordingStatus
                     from app.utils.call_recordings import generate_unique_call_short_id
                     from app.workers.celery_app import process_evaluator_result_task
-                    from app.services.billing.flexprice_service import record_test_agent_conversation_ended
 
                     # Determine name for the result
                     if scenario_name and scenario_name != "Test Call":
@@ -691,18 +681,7 @@ async def websocket_endpoint(
                     db.commit()
                     db.refresh(evaluator_result)
 
-                    if session_uuid and workspace_id:
-                        turn_count = len(speaker_segments)
-                        record_test_agent_conversation_ended(
-                            organization_id,
-                            session_uuid,
-                            workspace_id=workspace_id,
-                            duration_seconds=call_metadata.get("duration"),
-                            turn_count=turn_count,
-                            result_id=result_id,
-                            agent_id=UUID(agent_id),
-                            call_short_id=call_short_id,
-                        )
+                    # Playground scoring bills via playground.evaluation_completed.
                     
                     logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}")
                     

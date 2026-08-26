@@ -484,22 +484,13 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
     )
     db_session.commit()
 
-    billing = {"evaluated": [], "completed": []}
-
-    def _capture_evaluated(_org_id, evaluation_attempt_id, **kw):
-        billing["evaluated"].append(
-            {"evaluation_attempt_id": evaluation_attempt_id, **kw}
-        )
+    billing = {"completed": []}
 
     def _capture_completed(_org_id, evaluation_attempt_id, **kw):
         billing["completed"].append(
             {"evaluation_attempt_id": evaluation_attempt_id, **kw}
         )
 
-    monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_playground_call_evaluated",
-        _capture_evaluated,
-    )
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_playground_evaluation_completed",
         _capture_completed,
@@ -524,22 +515,11 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
     result = task_module.process_evaluator_result_task.run(str(eval_result.id))
 
     assert result["status"] == "completed"
-    assert len(billing["evaluated"]) == 1
-    assert billing["evaluated"][0]["metric_count"] == 3
-    assert billing["evaluated"][0]["evaluator_result_id"] == eval_result.id
-    assert billing["evaluated"][0]["call_short_id"] == "123456"
-    assert str(billing["evaluated"][0]["evaluation_attempt_id"]).startswith(
-        f"{eval_result.id}:"
-    )
     assert len(billing["completed"]) == 1
     assert billing["completed"][0]["metric_count"] == 3
     assert billing["completed"][0]["evaluator_result_id"] == eval_result.id
     assert str(billing["completed"][0]["evaluation_attempt_id"]).startswith(
         f"{eval_result.id}:"
-    )
-    assert (
-        billing["evaluated"][0]["evaluation_attempt_id"]
-        == billing["completed"][0]["evaluation_attempt_id"]
     )
 
 

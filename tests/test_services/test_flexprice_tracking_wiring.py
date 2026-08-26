@@ -16,20 +16,13 @@ VOICE_PLAYGROUND_WIRED = {
 AGENT_PLAYGROUND_WIRED = {
     "playground.web_call_started": "app/api/v1/routes/playground.py",
     "playground.websocket_session_started": "app/api/v1/routes/playground.py",
-    "playground.call_evaluated": "app/workers/tasks/process_evaluator_result.py",
     "playground.evaluation_completed": "app/workers/tasks/process_evaluator_result.py",
-    "test_agent.conversation_started": "app/api/v1/routes/test_agents.py",
     "test_agent.conversation_ended": "app/api/v1/routes/test_agents.py",
-}
-
-VOICE_AGENT_TEST_AGENT_WIRED = {
-    "test_agent.conversation_started": "app/api/v1/routes/voice_agent.py",
-    "test_agent.conversation_ended": "app/api/v1/routes/voice_agent.py",
 }
 
 EVALUATORS_WIRED = {
     "evaluator.run_requested": "app/api/v1/routes/evaluators.py",
-    "evaluator.run_completed": "app/workers/tasks/run_evaluator.py",
+    "evaluator.run_completed": "app/workers/tasks/process_evaluator_result.py",
 }
 
 JUDGE_ALIGNMENT_WIRED = {
@@ -77,18 +70,7 @@ def test_agent_playground_events_are_wired():
         record_fn = {
             "playground.web_call_started": "record_playground_web_call_started",
             "playground.websocket_session_started": "record_playground_websocket_session_started",
-            "playground.call_evaluated": "record_playground_call_evaluated",
             "playground.evaluation_completed": "record_playground_evaluation_completed",
-            "test_agent.conversation_started": "record_test_agent_conversation_started",
-            "test_agent.conversation_ended": "record_test_agent_conversation_ended",
-        }[event_name]
-        assert _file_contains(path, record_fn), f"{event_name} missing {record_fn} in {path}"
-
-
-def test_voice_agent_test_agent_simulation_events_are_wired():
-    for event_name, path in VOICE_AGENT_TEST_AGENT_WIRED.items():
-        record_fn = {
-            "test_agent.conversation_started": "record_test_agent_conversation_started",
             "test_agent.conversation_ended": "record_test_agent_conversation_ended",
         }[event_name]
         assert _file_contains(path, record_fn), f"{event_name} missing {record_fn} in {path}"

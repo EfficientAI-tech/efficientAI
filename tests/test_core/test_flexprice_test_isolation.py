@@ -40,7 +40,7 @@ def test_record_wrappers_do_not_invoke_flexprice_sdk():
         total_rows=1,
         source="csv",
     )
-    fp.record_test_agent_conversation_started(org_id, uuid4(), workspace_id=ws_id)
+    fp.record_test_agent_conversation_ended(org_id, uuid4(), workspace_id=ws_id, duration_seconds=125.0)
 
 
 def test_flexprice_sdk_construction_is_forbidden():

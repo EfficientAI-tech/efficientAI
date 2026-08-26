@@ -758,22 +758,6 @@ def process_evaluator_result_task(self, result_id: str):
                 llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)
                 selected_metric_count = len(llm_metrics) + len(audio_metrics)
 
-                call_recording = _playground_call_recording(db, result)
-                if call_recording:
-                    from app.services.billing.flexprice_service import (
-                        record_playground_call_evaluated,
-                    )
-
-                    evaluation_attempt_id = f"{result.id}:{self.request.id}"
-                    record_playground_call_evaluated(
-                        result.organization_id,
-                        evaluation_attempt_id,
-                        evaluator_result_id=result.id,
-                        workspace_id=result.workspace_id,
-                        call_short_id=call_recording.call_short_id,
-                        metric_count=selected_metric_count,
-                    )
-
                 evaluation_time = None
 
                 # Step 3: Audio metrics evaluation
@@ -882,6 +866,7 @@ def process_evaluator_result_task(self, result_id: str):
                 _commit_evaluator_result(db, result)
 
                 from app.services.billing.flexprice_service import (
+                    record_evaluator_run_completed,
                     record_playground_evaluation_completed,
                 )
 
@@ -895,6 +880,13 @@ def process_evaluator_result_task(self, result_id: str):
                         call_short_id=call_recording.call_short_id,
                         duration_seconds=result.duration_seconds,
                         metric_count=len(metric_scores) or selected_metric_count,
+                    )
+                else:
+                    record_evaluator_run_completed(
+                        result.organization_id,
+                        result.result_id,
+                        workspace_id=result.workspace_id,
+                        evaluator_id=result.evaluator_id,
                     )
 
                 total_time = time.time() - task_start_time

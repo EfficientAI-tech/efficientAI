@@ -5,30 +5,32 @@ Every event uses ``external_customer_id=str(organization.id)`` and a stable
 ``event_id`` for idempotency. ``properties`` should include ``workspace_id`` and
 ``feature`` (license key) when the surface is gated.
 
-Plan pricing (Flexprice UI): bill on **successful delivery**, not attempts.
-Primary charge meters per product (add plan usage charges on these only):
+Ingest **only when value is delivered** (completed), never on ``*_started`` /
+``*_created`` / ``*_requested``. Event ``properties`` are minimal: ``workspace_id``,
+``feature``, and the billable ``quantity`` (plus ``billable_minutes`` when the
+meter sums minutes).
 
-- call_imports: ``call_import.batch_created``, ``call_import.evaluation_completed`` (one
-  event per finished evaluation pass; ``quantity`` = newly completed rows),
-  ``call_import.recording_minutes_billed`` (one per evaluated call with audio;
-  ``billable_minutes`` = rounded-up recording duration in minutes),
-  ``call_import.pdf_report_generated``
-- agent_playground: ``playground.evaluation_completed`` (main); optional secondary
-  ``test_agent.conversation_ended`` for test-agent-only flows — not both on the
-  same conversation
-- voice_playground: ``tts.sample_synthesized``, ``tts.report_completed``; optional
-  ``blind_test.share_created`` or ``blind_test.response_submitted``
-- evaluators: ``evaluator.run_completed`` (not ``run_requested``)
+Billable events (wire plan usage charges to these meters only):
+
+- call_imports: ``call_import.batch_created`` (``quantity`` = rows imported),
+  ``call_import.evaluation_completed`` (``quantity`` = newly completed rows),
+  ``call_import.recording_minutes_billed`` (``quantity`` = ``billable_minutes``),
+  ``call_import.pdf_report_generated`` (``quantity`` = 1)
+- agent_playground: ``playground.evaluation_completed`` (``quantity`` = ``billable_minutes``
+  from call duration) **or** ``test_agent.conversation_ended`` (same minute rollup for
+  standalone test-agent sessions without playground eval) — never both for the same session
+- voice_playground: ``tts.sample_synthesized``, ``tts.report_completed``,
+  ``blind_test.response_submitted``
+- evaluators: ``evaluator.run_completed`` when scoring finishes (``quantity`` = 1)
 - gepa_optimization: ``prompt_optimization.run_completed``
-- judge_alignment: ``judge_alignment.run_completed`` (not ``run_started``)
-- metrics_ai_assist: ``metrics.ai_assist`` (AI metric builder / bulk parse)
-- metric_studio: ``metric_studio.run_completed`` (main); ``metric_studio.item_evaluated`` optional
-- scenario_ai: ``scenario.ai_text_generated`` (AI text generation, e.g. scenario descriptions)
+- judge_alignment: ``judge_alignment.run_completed``
+- metrics_ai_assist: ``metrics.ai_assist``
+- metric_studio: ``metric_studio.run_completed`` (``quantity`` = completed items)
+- scenario_ai: ``scenario.ai_text_generated``
+- observability: ``observability.call_evaluated`` only
 
-Track-only (analytics, do not price): ``*_started``, ``call_evaluated``,
-``conversation_started``, ``web_call_started``, ``evaluation_started``, etc.
-``metric_count`` and ``duration_seconds`` in properties are metadata unless a
-meter explicitly SUMs those fields (call-import audio minutes does).
+Not ingested: ``*_started``, ``*_requested``, ``*_created``, ``playground.call_evaluated``,
+``test_agent.conversation_started``, ``metric_studio.item_evaluated``, etc.
 """
 
 from __future__ import annotations
@@ -223,6 +225,32 @@ def _coerce_properties(properties: Optional[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
+def _billable_minutes(duration_seconds: Optional[float]) -> int:
+    if duration_seconds is None:
+        return 1
+    seconds = float(duration_seconds)
+    if seconds <= 0:
+        return 1
+    import math
+
+    return max(1, int(math.ceil(seconds / 60.0)))
+
+
+def _billing_properties(
+    workspace_id: UUID,
+    feature: str,
+    *,
+    quantity: Optional[Union[int, float]] = None,
+    billable_minutes: Optional[int] = None,
+) -> dict[str, Any]:
+    props: dict[str, Any] = {"workspace_id": workspace_id, "feature": feature}
+    if quantity is not None:
+        props["quantity"] = quantity
+    if billable_minutes is not None:
+        props["billable_minutes"] = billable_minutes
+    return props
+
+
 def record_event(
     event_name: str,
     organization_id: UUID,
@@ -359,17 +387,7 @@ def record_blind_test_share_created(
     workspace_id: UUID,
     comparison_id: UUID,
 ) -> None:
-    record_event(
-        BLIND_TEST_SHARE_CREATED,
-        organization_id,
-        share_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_VOICE_PLAYGROUND,
-            "share_id": share_id,
-            "comparison_id": comparison_id,
-        },
-    )
+    """Not ingested — bill on blind_test.response_submitted instead."""
 
 
 def record_blind_test_response_submitted(
@@ -384,13 +402,11 @@ def record_blind_test_response_submitted(
         BLIND_TEST_RESPONSE_SUBMITTED,
         organization_id,
         response_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_VOICE_PLAYGROUND,
-            "share_id": share_id,
-            "response_count": response_count,
-            "quantity": response_count,
-        },
+        properties=_billing_properties(
+            workspace_id,
+            FEATURE_VOICE_PLAYGROUND,
+            quantity=max(1, response_count),
+        ),
     )
 
 
@@ -401,17 +417,7 @@ def record_tts_generation_started(
     workspace_id: UUID,
     sample_count: int,
 ) -> None:
-    record_event(
-        TTS_GENERATION_STARTED,
-        organization_id,
-        comparison_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_VOICE_PLAYGROUND,
-            "comparison_id": comparison_id,
-            "sample_count": sample_count,
-        },
-    )
+    """Not ingested — bill on tts.sample_synthesized per completed sample."""
 
 
 def record_tts_sample_synthesized(
@@ -424,20 +430,14 @@ def record_tts_sample_synthesized(
     side: Optional[str] = None,
     duration_seconds: Optional[float] = None,
 ) -> None:
+    del provider, side, duration_seconds
     record_event(
         TTS_SAMPLE_SYNTHESIZED,
         organization_id,
         sample_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_VOICE_PLAYGROUND,
-            "comparison_id": comparison_id,
-            "sample_id": sample_id,
-            "provider": provider,
-            "side": side,
-            "duration_seconds": duration_seconds,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_VOICE_PLAYGROUND, quantity=1
+        ),
     )
 
 
@@ -448,17 +448,7 @@ def record_tts_report_requested(
     workspace_id: UUID,
     comparison_id: UUID,
 ) -> None:
-    record_event(
-        TTS_REPORT_REQUESTED,
-        organization_id,
-        report_job_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_VOICE_PLAYGROUND,
-            "comparison_id": comparison_id,
-            "report_job_id": report_job_id,
-        },
-    )
+    """Not ingested — bill on tts.report_completed."""
 
 
 def record_tts_report_completed(
@@ -472,12 +462,9 @@ def record_tts_report_completed(
         TTS_REPORT_COMPLETED,
         organization_id,
         report_job_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_VOICE_PLAYGROUND,
-            "comparison_id": comparison_id,
-            "report_job_id": report_job_id,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_VOICE_PLAYGROUND, quantity=1
+        ),
     )
 
 
@@ -493,19 +480,16 @@ def record_call_import_batch_created(
     source: str,
     provider: Optional[str] = None,
 ) -> None:
+    del source, provider
     record_event(
         CALL_IMPORT_BATCH_CREATED,
         organization_id,
         call_import_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "total_rows": total_rows,
-            "quantity": total_rows,
-            "source": source,
-            "provider": provider,
-        },
+        properties=_billing_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=max(0, total_rows),
+        ),
     )
 
 
@@ -521,20 +505,7 @@ def record_call_import_evaluation_started(
     total_rows: int,
     metric_count: int = 0,
 ) -> None:
-    record_event(
-        CALL_IMPORT_EVALUATION_STARTED,
-        organization_id,
-        evaluation_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "evaluation_id": evaluation_id,
-            "total_rows": total_rows,
-            "metric_count": metric_count,
-            "quantity": 1,
-        },
-    )
+    """Not ingested — bill on call_import.evaluation_completed."""
 
 
 def record_call_import_evaluation_completed(
@@ -549,21 +520,18 @@ def record_call_import_evaluation_completed(
     metric_count: int = 0,
 ) -> bool:
     """Bill one finished evaluation pass for newly completed rows (not per row)."""
+    del call_import_id, total_rows, metric_count
+    if rows_billed <= 0:
+        return False
     return record_event(
         CALL_IMPORT_EVALUATION_COMPLETED,
         organization_id,
         f"{evaluation_id}:{completed_total}",
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "evaluation_id": evaluation_id,
-            "rows_billed": rows_billed,
-            "completed_total": completed_total,
-            "total_rows": total_rows,
-            "metric_count": metric_count,
-            "quantity": rows_billed,
-        },
+        properties=_billing_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=rows_billed,
+        ),
     )
 
 
@@ -578,24 +546,19 @@ def record_call_import_recording_minutes_billed(
     billable_minutes: int,
 ) -> bool:
     """Bill recording duration for one successfully evaluated call-import row."""
+    del evaluation_id, call_import_id, audio_seconds
     if billable_minutes <= 0:
         return False
     return record_event(
         CALL_IMPORT_RECORDING_MINUTES_BILLED,
         organization_id,
         evaluation_row_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "evaluation_id": evaluation_id,
-            "evaluation_row_id": evaluation_row_id,
-            "audio_seconds": audio_seconds,
-            "billable_minutes": billable_minutes,
-            "billing_unit": "minute",
-            # Flexprice generic field; same value as billable_minutes for older meters.
-            "quantity": billable_minutes,
-        },
+        properties=_billing_properties(
+            workspace_id,
+            FEATURE_CALL_IMPORTS,
+            quantity=billable_minutes,
+            billable_minutes=billable_minutes,
+        ),
     )
 
 
@@ -629,19 +592,14 @@ def record_call_import_pdf_report_generated(
     call_import_id: UUID,
     report_type: str,
 ) -> None:
+    del evaluation_id, call_import_id, report_type
     record_event(
         CALL_IMPORT_PDF_REPORT_GENERATED,
         organization_id,
         pdf_report_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_CALL_IMPORTS,
-            "call_import_id": call_import_id,
-            "evaluation_id": evaluation_id,
-            "pdf_report_id": pdf_report_id,
-            "report_type": report_type,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_CALL_IMPORTS, quantity=1
+        ),
     )
 
 
@@ -655,18 +613,7 @@ def record_playground_web_call_started(
     workspace_id: UUID,
     agent_id: UUID,
 ) -> None:
-    record_event(
-        PLAYGROUND_WEB_CALL_STARTED,
-        organization_id,
-        call_short_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_AGENT_PLAYGROUND,
-            "agent_id": agent_id,
-            "call_short_id": call_short_id,
-            "quantity": 1,
-        },
-    )
+    """Not ingested — bill on playground.evaluation_completed."""
 
 
 def record_playground_websocket_session_started(
@@ -675,17 +622,7 @@ def record_playground_websocket_session_started(
     *,
     workspace_id: UUID,
 ) -> None:
-    record_event(
-        PLAYGROUND_WEBSOCKET_SESSION_STARTED,
-        organization_id,
-        call_short_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_AGENT_PLAYGROUND,
-            "call_short_id": call_short_id,
-            "quantity": 1,
-        },
-    )
+    """Not ingested — bill on playground.evaluation_completed."""
 
 
 def record_playground_call_evaluated(
@@ -697,20 +634,7 @@ def record_playground_call_evaluated(
     call_short_id: str,
     metric_count: int,
 ) -> None:
-    record_event(
-        PLAYGROUND_CALL_EVALUATED,
-        organization_id,
-        evaluation_attempt_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_AGENT_PLAYGROUND,
-            "call_short_id": call_short_id,
-            "evaluator_result_id": evaluator_result_id,
-            "evaluation_attempt_id": evaluation_attempt_id,
-            "metric_count": metric_count,
-            "quantity": 1,
-        },
-    )
+    """Not ingested — bill on playground.evaluation_completed."""
 
 
 def record_playground_evaluation_completed(
@@ -723,20 +647,18 @@ def record_playground_evaluation_completed(
     duration_seconds: Optional[float] = None,
     metric_count: int = 0,
 ) -> None:
+    del evaluator_result_id, call_short_id, metric_count
+    minutes = _billable_minutes(duration_seconds)
     record_event(
         PLAYGROUND_EVALUATION_COMPLETED,
         organization_id,
         evaluation_attempt_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_AGENT_PLAYGROUND,
-            "call_short_id": call_short_id,
-            "evaluator_result_id": evaluator_result_id,
-            "evaluation_attempt_id": evaluation_attempt_id,
-            "duration_seconds": duration_seconds,
-            "metric_count": metric_count,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id,
+            FEATURE_AGENT_PLAYGROUND,
+            quantity=minutes,
+            billable_minutes=minutes,
+        ),
     )
 
 
@@ -750,16 +672,8 @@ def record_evaluator_run_requested(
     workspace_id: UUID,
     quantity: int,
 ) -> None:
-    record_event(
-        EVALUATOR_RUN_REQUESTED,
-        organization_id,
-        request_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_EVALUATORS,
-            "quantity": quantity,
-        },
-    )
+    """Not ingested — bill on evaluator.run_completed when scoring finishes."""
+    del organization_id, request_id, workspace_id, quantity
 
 
 def record_evaluator_run_completed(
@@ -770,18 +684,14 @@ def record_evaluator_run_completed(
     evaluator_id: UUID,
     call_count: int = 1,
 ) -> None:
+    del evaluator_id, call_count
     record_event(
         EVALUATOR_RUN_COMPLETED,
         organization_id,
         result_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_EVALUATORS,
-            "evaluator_id": evaluator_id,
-            "result_id": result_id,
-            "call_count": call_count,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_EVALUATORS, quantity=1
+        ),
     )
 
 
@@ -796,16 +706,8 @@ def record_evaluation_created(
     audio_id: UUID,
     metrics_requested: int,
 ) -> None:
-    record_event(
-        EVALUATION_CREATED,
-        organization_id,
-        evaluation_id,
-        properties={
-            "workspace_id": workspace_id,
-            "audio_id": audio_id,
-            "metrics_requested": metrics_requested,
-        },
-    )
+    """Not ingested — bill on evaluation.completed."""
+    del organization_id, evaluation_id, workspace_id, audio_id, metrics_requested
 
 
 def record_evaluation_completed(
@@ -818,7 +720,9 @@ def record_evaluation_completed(
         EVALUATION_COMPLETED,
         organization_id,
         evaluation_id,
-        properties={"workspace_id": workspace_id},
+        properties=_billing_properties(
+            workspace_id, FEATURE_EVALUATORS, quantity=1
+        ),
     )
 
 
@@ -833,18 +737,8 @@ def record_prompt_optimization_run_started(
     agent_id: UUID,
     max_metric_calls: Optional[int] = None,
 ) -> None:
-    record_event(
-        PROMPT_OPTIMIZATION_RUN_STARTED,
-        organization_id,
-        run_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_GEPA,
-            "run_id": run_id,
-            "agent_id": agent_id,
-            "max_metric_calls": max_metric_calls,
-        },
-    )
+    """Not ingested — bill on prompt_optimization.run_completed."""
+    del organization_id, run_id, workspace_id, agent_id, max_metric_calls
 
 
 def record_prompt_optimization_run_completed(
@@ -855,17 +749,12 @@ def record_prompt_optimization_run_completed(
     agent_id: UUID,
     candidates_count: int = 0,
 ) -> None:
+    del agent_id, candidates_count
     record_event(
         PROMPT_OPTIMIZATION_RUN_COMPLETED,
         organization_id,
         run_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_GEPA,
-            "run_id": run_id,
-            "agent_id": agent_id,
-            "candidates_count": candidates_count,
-        },
+        properties=_billing_properties(workspace_id, FEATURE_GEPA, quantity=1),
     )
 
 
@@ -880,19 +769,8 @@ def record_judge_alignment_run_started(
     dataset_id: UUID,
     sample_count: int,
 ) -> None:
-    record_event(
-        JUDGE_ALIGNMENT_RUN_STARTED,
-        organization_id,
-        run_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_JUDGE_ALIGNMENT,
-            "run_id": run_id,
-            "dataset_id": dataset_id,
-            "sample_count": sample_count,
-            "quantity": 1,
-        },
-    )
+    """Not ingested — bill on judge_alignment.run_completed."""
+    del organization_id, run_id, workspace_id, dataset_id, sample_count
 
 
 def record_judge_alignment_run_completed(
@@ -903,18 +781,14 @@ def record_judge_alignment_run_completed(
     dataset_id: UUID,
     samples_scored: int,
 ) -> None:
+    del dataset_id, samples_scored
     record_event(
         JUDGE_ALIGNMENT_RUN_COMPLETED,
         organization_id,
         run_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_JUDGE_ALIGNMENT,
-            "run_id": run_id,
-            "dataset_id": dataset_id,
-            "samples_scored": samples_scored,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_JUDGE_ALIGNMENT, quantity=1
+        ),
     )
 
 
@@ -928,16 +802,8 @@ def record_observability_call_ingested(
     workspace_id: UUID,
     provider: Optional[str] = None,
 ) -> None:
-    record_event(
-        OBSERVABILITY_CALL_INGESTED,
-        organization_id,
-        call_short_id,
-        properties={
-            "workspace_id": workspace_id,
-            "call_short_id": call_short_id,
-            "provider": provider,
-        },
-    )
+    """Not ingested — bill on observability.call_evaluated."""
+    del organization_id, call_short_id, workspace_id, provider
 
 
 def record_observability_call_evaluated(
@@ -950,10 +816,7 @@ def record_observability_call_evaluated(
         OBSERVABILITY_CALL_EVALUATED,
         organization_id,
         call_short_id,
-        properties={
-            "workspace_id": workspace_id,
-            "call_short_id": call_short_id,
-        },
+        properties={"workspace_id": workspace_id, "quantity": 1},
     )
 
 
@@ -969,24 +832,8 @@ def record_test_agent_conversation_started(
     agent_id: Optional[UUID] = None,
     call_short_id: Optional[str] = None,
 ) -> None:
-    properties: dict[str, Any] = {
-        "workspace_id": workspace_id,
-        "feature": FEATURE_AGENT_PLAYGROUND,
-        "conversation_id": conversation_id,
-        "quantity": 1,
-    }
-    if result_id is not None:
-        properties["result_id"] = result_id
-    if agent_id is not None:
-        properties["agent_id"] = agent_id
-    if call_short_id is not None:
-        properties["call_short_id"] = call_short_id
-    record_event(
-        TEST_AGENT_CONVERSATION_STARTED,
-        organization_id,
-        conversation_id,
-        properties=properties,
-    )
+    """Not ingested — bill on test_agent.conversation_ended."""
+    del organization_id, conversation_id, workspace_id, result_id, agent_id, call_short_id
 
 
 def record_test_agent_conversation_ended(
@@ -1000,26 +847,18 @@ def record_test_agent_conversation_ended(
     agent_id: Optional[UUID] = None,
     call_short_id: Optional[str] = None,
 ) -> None:
-    properties: dict[str, Any] = {
-        "workspace_id": workspace_id,
-        "feature": FEATURE_AGENT_PLAYGROUND,
-        "conversation_id": conversation_id,
-        "turn_count": turn_count,
-        "quantity": 1,
-    }
-    if duration_seconds is not None:
-        properties["duration_seconds"] = duration_seconds
-    if result_id is not None:
-        properties["result_id"] = result_id
-    if agent_id is not None:
-        properties["agent_id"] = agent_id
-    if call_short_id is not None:
-        properties["call_short_id"] = call_short_id
+    del turn_count, result_id, agent_id, call_short_id
+    minutes = _billable_minutes(duration_seconds)
     record_event(
         TEST_AGENT_CONVERSATION_ENDED,
         organization_id,
         conversation_id,
-        properties=properties,
+        properties=_billing_properties(
+            workspace_id,
+            FEATURE_AGENT_PLAYGROUND,
+            quantity=minutes,
+            billable_minutes=minutes,
+        ),
     )
 
 
@@ -1033,16 +872,16 @@ def record_metrics_ai_assist(
     workspace_id: Optional[UUID],
     mode: str,
 ) -> None:
+    del mode
+    if workspace_id is None:
+        return
     record_event(
         METRICS_AI_ASSIST,
         organization_id,
         request_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_METRICS_AI_ASSIST,
-            "mode": mode,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_METRICS_AI_ASSIST, quantity=1
+        ),
     )
 
 
@@ -1074,20 +913,15 @@ def record_metric_studio_item_evaluated(
     source_ref: str,
     metric_count: int = 0,
 ) -> None:
-    record_event(
-        METRIC_STUDIO_ITEM_EVALUATED,
+    """Not ingested — bill on metric_studio.run_completed."""
+    del (
         organization_id,
         result_row_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_METRIC_STUDIO,
-            "run_id": run_id,
-            "result_row_id": result_row_id,
-            "source_kind": source_kind,
-            "source_ref": source_ref,
-            "metric_count": metric_count,
-            "quantity": 1,
-        },
+        workspace_id,
+        run_id,
+        source_kind,
+        source_ref,
+        metric_count,
     )
 
 
@@ -1101,20 +935,17 @@ def record_metric_studio_run_completed(
     completed_items: int,
     failed_items: int,
 ) -> None:
+    del run_status, total_items, failed_items
+    billed = max(0, completed_items)
+    if billed <= 0:
+        return
     record_event(
         METRIC_STUDIO_RUN_COMPLETED,
         organization_id,
         run_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_METRIC_STUDIO,
-            "run_id": run_id,
-            "run_status": run_status,
-            "total_items": total_items,
-            "completed_items": completed_items,
-            "failed_items": failed_items,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_METRIC_STUDIO, quantity=billed
+        ),
     )
 
 
@@ -1130,18 +961,16 @@ def record_scenario_ai_text_generated(
     purpose: str = "scenario_description",
     scenario_count: Optional[int] = None,
 ) -> None:
+    del model, purpose, scenario_count
+    if workspace_id is None:
+        return
     record_event(
         SCENARIO_AI_TEXT_GENERATED,
         organization_id,
         request_id,
-        properties={
-            "workspace_id": workspace_id,
-            "feature": FEATURE_SCENARIO_AI,
-            "model": model,
-            "purpose": purpose,
-            "scenario_count": scenario_count,
-            "quantity": 1,
-        },
+        properties=_billing_properties(
+            workspace_id, FEATURE_SCENARIO_AI, quantity=1
+        ),
     )
 
 
