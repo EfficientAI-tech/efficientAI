@@ -209,7 +209,7 @@ def extract_external_agent_usage(
     return None
 
 
-def record_playground_provider_usage_from_call_data(
+def apply_playground_provider_usage_from_call_data(
     *,
     organization_id: UUID,
     workspace_id: Optional[UUID],
@@ -217,8 +217,8 @@ def record_playground_provider_usage_from_call_data(
     provider_platform: str,
     call_short_id: Optional[str],
     call_data: dict[str, Any],
-) -> dict[str, Any]:
-    """Record provider usage for a completed playground Voice AI call."""
+) -> None:
+    """Apply provider usage counters from call_data (no dedup guard)."""
     from types import SimpleNamespace
 
     from app.services.usage.context import (
@@ -227,9 +227,6 @@ def record_playground_provider_usage_from_call_data(
     )
 
     metrics = dict(call_data or {})
-    if metrics.get("external_usage_recorded"):
-        return metrics
-
     usage_ctx = usage_context_for_playground_voice_call(
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -245,6 +242,30 @@ def record_playground_provider_usage_from_call_data(
     )
     with llm_usage_context(usage_ctx):
         record_external_agent_usage(stub, usage_ctx=usage_ctx)
+
+
+def record_playground_provider_usage_from_call_data(
+    *,
+    organization_id: UUID,
+    workspace_id: Optional[UUID],
+    agent_id: Optional[UUID],
+    provider_platform: str,
+    call_short_id: Optional[str],
+    call_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Record provider usage for a completed playground Voice AI call."""
+    metrics = dict(call_data or {})
+    if metrics.get("external_usage_recorded"):
+        return metrics
+
+    apply_playground_provider_usage_from_call_data(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        provider_platform=provider_platform,
+        call_short_id=call_short_id,
+        call_data=metrics,
+    )
     metrics["external_usage_recorded"] = True
     return metrics
 

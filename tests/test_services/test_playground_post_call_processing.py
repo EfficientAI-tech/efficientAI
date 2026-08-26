@@ -64,15 +64,9 @@ def test_record_playground_post_call_usage_once_is_idempotent(
     call_metrics = {"call_status": "ended", "duration_seconds": 42}
     calls = []
 
-    def _fake_record(**kwargs):
-        calls.append(kwargs)
-        metrics = dict(kwargs["call_data"])
-        metrics["external_usage_recorded"] = True
-        return metrics
-
     monkeypatch.setattr(
-        "app.services.usage.external_agent_usage.record_playground_provider_usage_from_call_data",
-        _fake_record,
+        "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
+        lambda **kwargs: calls.append(kwargs),
     )
 
     proceed, updated = record_playground_post_call_usage_once(
@@ -119,12 +113,12 @@ def test_record_playground_post_call_usage_once_skips_when_evaluator_linked(
         evaluator_result_id=existing.id,
     )
 
-    def _fail_record(**_kwargs):
+    def _fail_apply(**_kwargs):
         raise AssertionError("usage should not be recorded when evaluator already exists")
 
     monkeypatch.setattr(
-        "app.services.usage.external_agent_usage.record_playground_provider_usage_from_call_data",
-        _fail_record,
+        "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
+        _fail_apply,
     )
 
     proceed, _ = record_playground_post_call_usage_once(
@@ -171,3 +165,53 @@ def test_claim_playground_evaluator_result_slot_skips_after_evaluator_linked(
         .count()
         == 1
     )
+
+
+def test_record_playground_post_call_usage_once_applies_usage_only_after_commit(
+    db_session, org_id, default_workspace, playground_agent, monkeypatch
+):
+    recording = _make_playground_recording(
+        db_session,
+        org_id=org_id,
+        workspace_id=default_workspace.id,
+        agent_id=playground_agent.id,
+        call_data={"call_status": "ended"},
+    )
+    apply_calls = []
+    commit_attempts = {"count": 0}
+    original_commit = db_session.commit
+
+    def _commit_once_fail():
+        commit_attempts["count"] += 1
+        if commit_attempts["count"] == 1:
+            db_session.rollback()
+            raise RuntimeError("simulated commit failure")
+        return original_commit()
+
+    monkeypatch.setattr(db_session, "commit", _commit_once_fail)
+    monkeypatch.setattr(
+        "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
+        lambda **kwargs: apply_calls.append(kwargs),
+    )
+
+    proceed, _ = record_playground_post_call_usage_once(
+        db_session,
+        recording.id,
+        provider_platform="retell",
+        call_metrics={"call_status": "ended", "duration_seconds": 42},
+    )
+    assert proceed is False
+    assert apply_calls == []
+
+    db_session.refresh(recording)
+    assert not (recording.call_data or {}).get("external_usage_recorded")
+
+    proceed, updated = record_playground_post_call_usage_once(
+        db_session,
+        recording.id,
+        provider_platform="retell",
+        call_metrics={"call_status": "ended", "duration_seconds": 42},
+    )
+    assert proceed is True
+    assert updated["external_usage_recorded"] is True
+    assert len(apply_calls) == 1

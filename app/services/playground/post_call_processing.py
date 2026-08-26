@@ -32,7 +32,7 @@ def record_playground_post_call_usage_once(
     Returns (should_create_evaluator, updated_call_metrics).
     """
     from app.services.usage.external_agent_usage import (
-        record_playground_provider_usage_from_call_data,
+        apply_playground_provider_usage_from_call_data,
     )
 
     locked = _lock_call_recording(db, call_recording_id)
@@ -54,18 +54,36 @@ def record_playground_post_call_usage_once(
 
     if stored_data.get("external_usage_recorded") and isinstance(metrics, dict):
         metrics["external_usage_recorded"] = True
+        locked.call_data = metrics
+        db.commit()
     elif isinstance(metrics, dict):
-        metrics = record_playground_provider_usage_from_call_data(
-            organization_id=locked.organization_id,
-            workspace_id=locked.workspace_id,
-            agent_id=locked.agent_id,
-            provider_platform=platform_key,
-            call_short_id=locked.call_short_id,
-            call_data=metrics,
-        )
+        metrics["external_usage_recorded"] = True
+        locked.call_data = metrics
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "[Poll Call Metrics] Failed to persist external_usage_recorded "
+                f"for call recording {call_recording_id}"
+            )
+            return False, call_metrics
 
-    locked.call_data = metrics
-    db.commit()
+        try:
+            apply_playground_provider_usage_from_call_data(
+                organization_id=locked.organization_id,
+                workspace_id=locked.workspace_id,
+                agent_id=locked.agent_id,
+                provider_platform=platform_key,
+                call_short_id=locked.call_short_id,
+                call_data=metrics,
+            )
+        except Exception:
+            logger.exception(
+                "[Poll Call Metrics] Usage counters failed after dedup commit "
+                f"for call recording {call_recording_id}"
+            )
+
     return True, metrics
 
 
