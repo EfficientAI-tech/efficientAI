@@ -13,6 +13,10 @@ def _noop_ensure_customer(*_args, **_kwargs) -> None:
     return None
 
 
+def _noop_ensure_subscription(*_args, **_kwargs) -> None:
+    return None
+
+
 def _noop_provision_billing_customer(*_args, **_kwargs) -> None:
     return None
 
@@ -39,6 +43,7 @@ def install_flexprice_test_isolation(monkeypatch) -> None:
 
     monkeypatch.setattr(fp, "record_event", _noop_record_event)
     monkeypatch.setattr(fp, "ensure_customer", _noop_ensure_customer)
+    monkeypatch.setattr(fp, "ensure_subscription", _noop_ensure_subscription)
     monkeypatch.setattr(org_prov, "provision_billing_customer", _noop_provision_billing_customer)
     monkeypatch.setattr("flexprice.Flexprice", _ForbiddenFlexprice)
 

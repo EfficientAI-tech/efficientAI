@@ -16,6 +16,10 @@ def reset_flexprice_settings(monkeypatch):
         settings.FLEXPRICE_ENABLED,
         settings.FLEXPRICE_API_KEY,
         settings.FLEXPRICE_API_HOST,
+        settings.FLEXPRICE_AUTO_SUBSCRIBE,
+        settings.FLEXPRICE_DEFAULT_PLAN_ID,
+        settings.FLEXPRICE_DEFAULT_CURRENCY,
+        settings.FLEXPRICE_DEFAULT_BILLING_PERIOD,
         svc._disabled_skip_logged,
     )
     svc._disabled_skip_logged = False
@@ -24,6 +28,10 @@ def reset_flexprice_settings(monkeypatch):
         settings.FLEXPRICE_ENABLED,
         settings.FLEXPRICE_API_KEY,
         settings.FLEXPRICE_API_HOST,
+        settings.FLEXPRICE_AUTO_SUBSCRIBE,
+        settings.FLEXPRICE_DEFAULT_PLAN_ID,
+        settings.FLEXPRICE_DEFAULT_CURRENCY,
+        settings.FLEXPRICE_DEFAULT_BILLING_PERIOD,
         svc._disabled_skip_logged,
     ) = previous
 
@@ -96,6 +104,82 @@ def test_ensure_customer_swallows_already_exists(mock_flexprice):
     mock_flexprice.return_value.__enter__.return_value = mock_client
 
     svc.ensure_customer(uuid4(), name="Acme Inc")
+
+
+@patch("flexprice.Flexprice")
+def test_ensure_subscription_no_op_when_auto_subscribe_disabled(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+    settings.FLEXPRICE_AUTO_SUBSCRIBE = False
+    settings.FLEXPRICE_DEFAULT_PLAN_ID = "plan_test"
+
+    svc.ensure_subscription(uuid4())
+
+    mock_flexprice.assert_not_called()
+
+
+@patch("flexprice.Flexprice")
+def test_ensure_subscription_no_op_when_plan_id_missing(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+    settings.FLEXPRICE_AUTO_SUBSCRIBE = True
+    settings.FLEXPRICE_DEFAULT_PLAN_ID = None
+
+    svc.ensure_subscription(uuid4())
+
+    mock_flexprice.assert_not_called()
+
+
+@patch("flexprice.Flexprice")
+def test_ensure_subscription_creates_when_none_exists(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+    settings.FLEXPRICE_API_HOST = "https://api.cloud.flexprice.io/v1"
+    settings.FLEXPRICE_AUTO_SUBSCRIBE = True
+    settings.FLEXPRICE_DEFAULT_PLAN_ID = "plan_01KVT8BTT0HRB419QVCTNHS9RV"
+    settings.FLEXPRICE_DEFAULT_CURRENCY = "usd"
+    settings.FLEXPRICE_DEFAULT_BILLING_PERIOD = "MONTHLY"
+
+    org_id = uuid4()
+    mock_client = MagicMock()
+    mock_client.subscriptions.query_subscription.return_value = MagicMock(items=[])
+    mock_client.subscriptions.create_subscription.return_value = MagicMock(
+        id="sub_test123"
+    )
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.ensure_subscription(org_id)
+
+    mock_client.subscriptions.query_subscription.assert_called_once_with(
+        external_customer_id=str(org_id),
+        plan_id="plan_01KVT8BTT0HRB419QVCTNHS9RV",
+        limit=1,
+    )
+    mock_client.subscriptions.create_subscription.assert_called_once_with(
+        billing_period="MONTHLY",
+        currency="usd",
+        plan_id="plan_01KVT8BTT0HRB419QVCTNHS9RV",
+        external_customer_id=str(org_id),
+        subscription_status="active",
+    )
+
+
+@patch("flexprice.Flexprice")
+def test_ensure_subscription_skips_when_subscription_exists(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+    settings.FLEXPRICE_AUTO_SUBSCRIBE = True
+    settings.FLEXPRICE_DEFAULT_PLAN_ID = "plan_test"
+
+    mock_client = MagicMock()
+    mock_client.subscriptions.query_subscription.return_value = MagicMock(
+        items=[MagicMock(id="sub_existing")]
+    )
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.ensure_subscription(uuid4())
+
+    mock_client.subscriptions.create_subscription.assert_not_called()
 
 
 @patch("flexprice.Flexprice")

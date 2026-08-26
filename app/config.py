@@ -250,6 +250,10 @@ class Settings(BaseSettings):
     FLEXPRICE_ENABLED: bool = False
     FLEXPRICE_API_KEY: Optional[str] = None
     FLEXPRICE_API_HOST: str = "https://us.api.flexprice.io/v1"
+    FLEXPRICE_AUTO_SUBSCRIBE: bool = False
+    FLEXPRICE_DEFAULT_PLAN_ID: Optional[str] = None
+    FLEXPRICE_DEFAULT_CURRENCY: str = "usd"
+    FLEXPRICE_DEFAULT_BILLING_PERIOD: str = "MONTHLY"
     # LLM gateway (optional platform-wide proxy for batch LLM calls).
     LLM_GATEWAY_ENABLED: bool = False
     LLM_GATEWAY_TYPE: str = "bifrost"  # bifrost | litellm_proxy
@@ -901,6 +905,14 @@ def load_config_from_file(config_path: str) -> None:
             settings.FLEXPRICE_API_KEY = flexprice_config["api_key"]
         if flexprice_config.get("api_host"):
             settings.FLEXPRICE_API_HOST = flexprice_config["api_host"]
+        if "auto_subscribe" in flexprice_config:
+            settings.FLEXPRICE_AUTO_SUBSCRIBE = bool(flexprice_config["auto_subscribe"])
+        if flexprice_config.get("default_plan_id"):
+            settings.FLEXPRICE_DEFAULT_PLAN_ID = flexprice_config["default_plan_id"]
+        if flexprice_config.get("default_currency"):
+            settings.FLEXPRICE_DEFAULT_CURRENCY = flexprice_config["default_currency"]
+        if flexprice_config.get("default_billing_period"):
+            settings.FLEXPRICE_DEFAULT_BILLING_PERIOD = flexprice_config["default_billing_period"]
         if (
             os.environ.get("EFFICIENTAI_PYTEST") == "1"
             and os.environ.get("FLEXPRICE_TEST_ALLOW") != "1"

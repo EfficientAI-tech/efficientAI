@@ -267,7 +267,12 @@ judge_alignment:
 #   enabled: false
 #   api_key: null
 #   api_host: "https://us.api.flexprice.io/v1"
-# Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
+#   auto_subscribe: false
+#   default_plan_id: null
+#   default_currency: "usd"
+#   default_billing_period: "MONTHLY"
+# Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST,
+#   FLEXPRICE_AUTO_SUBSCRIBE, FLEXPRICE_DEFAULT_PLAN_ID
 # Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 
 # Call-import worker concurrency (Redis fair-share for evaluations).

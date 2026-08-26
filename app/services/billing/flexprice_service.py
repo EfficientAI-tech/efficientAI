@@ -404,6 +404,89 @@ def ensure_customer(
         )
 
 
+def _subscription_inactive_reason() -> Optional[str]:
+    """Why auto-subscribe is off, or None when ensure_subscription may run."""
+    inactive = disabled_reason()
+    if inactive:
+        return inactive
+    if not settings.FLEXPRICE_AUTO_SUBSCRIBE:
+        return "flexprice.auto_subscribe is false (or FLEXPRICE_AUTO_SUBSCRIBE unset)"
+    if not (settings.FLEXPRICE_DEFAULT_PLAN_ID or "").strip():
+        return "flexprice.default_plan_id is unset (or FLEXPRICE_DEFAULT_PLAN_ID env missing)"
+    return None
+
+
+def _has_active_subscription(client, *, organization_id: UUID, plan_id: str) -> bool:
+    response = client.subscriptions.query_subscription(
+        external_customer_id=str(organization_id),
+        plan_id=plan_id,
+        limit=1,
+    )
+    items = getattr(response, "items", None) or []
+    return len(items) > 0
+
+
+def ensure_subscription(organization_id: UUID) -> None:
+    """Assign the default SaaS plan when auto-subscribe is enabled. Never raises."""
+    if _pytest_blocks_external_billing():
+        return
+
+    inactive_reason = _subscription_inactive_reason()
+    if inactive_reason:
+        if _verbose_logging():
+            logger.info(
+                "Flexprice SKIP ensure_subscription org={} ({})",
+                organization_id,
+                inactive_reason,
+            )
+        return
+
+    plan_id = settings.FLEXPRICE_DEFAULT_PLAN_ID.strip()
+    try:
+        from flexprice import Flexprice
+
+        with Flexprice(
+            server_url=settings.FLEXPRICE_API_HOST,
+            api_key_auth=settings.FLEXPRICE_API_KEY,
+        ) as client:
+            if _has_active_subscription(client, organization_id=organization_id, plan_id=plan_id):
+                logger.debug(
+                    "Flexprice ensure_subscription already active org={} plan_id={}",
+                    organization_id,
+                    plan_id,
+                )
+                return
+
+            created = client.subscriptions.create_subscription(
+                billing_period=settings.FLEXPRICE_DEFAULT_BILLING_PERIOD,
+                currency=settings.FLEXPRICE_DEFAULT_CURRENCY,
+                plan_id=plan_id,
+                external_customer_id=str(organization_id),
+                subscription_status="active",
+            )
+        logger.info(
+            "Flexprice ensure_subscription ok org={} plan_id={} subscription_id={}",
+            organization_id,
+            plan_id,
+            getattr(created, "id", None),
+        )
+    except Exception as exc:
+        if _is_customer_already_exists(exc) or "already exist" in str(exc).lower():
+            logger.debug(
+                "Flexprice ensure_subscription already exists org={} plan_id={}",
+                organization_id,
+                plan_id,
+            )
+            return
+        logger.warning(
+            "Flexprice ensure_subscription FAILED org={} plan_id={} host={} error={}",
+            organization_id,
+            plan_id,
+            settings.FLEXPRICE_API_HOST,
+            exc,
+        )
+
+
 # --- Voice playground ---
 
 

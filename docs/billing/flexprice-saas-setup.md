@@ -24,7 +24,19 @@ flexprice:
 
 Set `FLEXPRICE_API_KEY` in the environment (never commit keys).
 
-Signup and API-key flows call `provision_billing_customer()` so each org exists in Flexprice as `external_customer_id = organization.id`.
+Signup and API-key flows call `provision_billing_customer()` so each org exists in Flexprice as `external_customer_id = organization.id`. When `auto_subscribe` is enabled, new orgs also receive a subscription on `default_plan_id` (Platform plan).
+
+```yaml
+flexprice:
+  enabled: true
+  api_host: "https://api.cloud.flexprice.io/v1"
+  auto_subscribe: true
+  default_plan_id: "plan_01KVT8BTT0HRB419QVCTNHS9RV"
+  default_currency: "usd"
+  default_billing_period: "MONTHLY"
+```
+
+Env overrides: `FLEXPRICE_AUTO_SUBSCRIBE`, `FLEXPRICE_DEFAULT_PLAN_ID`. Leave `auto_subscribe: false` for self-hosted OSS (customer optional, no subscription).
 
 ## 2. Bootstrap meters and features
 
@@ -104,5 +116,5 @@ Pytest sets `EFFICIENTAI_PYTEST=1` and mocks all Flexprice I/O. Full suite never
 ## 8. Not yet wired (post-launch)
 
 - Flexprice entitlements replacing JWT license limits (`app/core/license.py`)
-- Auto-assign subscription on signup
 - Backfill existing orgs as Flexprice customers
+- Multiple plan tiers at signup (Basic $100, reference codes, Stripe checkout)
