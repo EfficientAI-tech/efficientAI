@@ -66,7 +66,7 @@ def test_resolve_caller_opening_text_prefers_scenario_override():
         persona_name="Alex",
         scenario_first_message="Hi, I need help with my bill.",
     )
-    assert opening == "Hi, I need help with my bill."
+    assert opening == "Hi, this is Alex. Hi, I need help with my bill."
 
 
 def test_should_caller_speak_first():

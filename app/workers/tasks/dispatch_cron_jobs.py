@@ -1,8 +1,6 @@
-"""Self-scheduling cron job dispatcher (replaces Celery Beat for platform jobs)."""
+"""Dispatch due org cron jobs to Celery workers (Beat-driven, no self-scheduling)."""
 
 from __future__ import annotations
-
-import os
 
 from loguru import logger
 
@@ -10,19 +8,10 @@ from app.database import SessionLocal
 from app.workers.config import celery_app
 
 
-def _dispatch_interval_seconds() -> int:
-    raw = os.environ.get("CRON_DISPATCH_INTERVAL_SECONDS", "30")
-    try:
-        return max(10, int(raw))
-    except (TypeError, ValueError):
-        return 30
-
-
 @celery_app.task(name="dispatch_cron_jobs")
 def dispatch_cron_jobs_task() -> dict:
     from app.services.cron.dispatcher_lock import (
         acquire_dispatcher_run_lock,
-        refresh_dispatcher_leader,
         release_dispatcher_run_lock,
     )
     from app.services.cron.job_dispatch import (
@@ -31,11 +20,7 @@ def dispatch_cron_jobs_task() -> dict:
         list_due_cron_jobs,
     )
 
-    interval = _dispatch_interval_seconds()
-    refresh_dispatcher_leader()
-
     if not acquire_dispatcher_run_lock():
-        dispatch_cron_jobs_task.apply_async(countdown=interval)
         return {"skipped": "locked"}
 
     dispatched: list[dict] = []
@@ -54,5 +39,4 @@ def dispatch_cron_jobs_task() -> dict:
         db.close()
         release_dispatcher_run_lock()
 
-    dispatch_cron_jobs_task.apply_async(countdown=interval)
     return {"dispatched": len(dispatched), "jobs": dispatched}

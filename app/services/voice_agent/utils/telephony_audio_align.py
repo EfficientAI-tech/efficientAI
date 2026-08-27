@@ -128,13 +128,6 @@ def analyze_dual_tracks(
     call_direction: Optional[str] = None,
 ) -> TelephonyTrackAnalysis:
     corr_lag, peak = estimate_bot_lag_samples(user_samples, bot_samples, sample_rate=sample_rate)
-    threshold = float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT", 0.35))
-    direction = (call_direction or "").strip().lower()
-    if direction in {"inbound", "outbound"}:
-        threshold = min(
-            threshold,
-            float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_TELEPHONY", 0.25)),
-        )
 
     leak_peak = _bot_speech_leak_correlation(
         user_samples,
@@ -153,21 +146,6 @@ def analyze_dual_tracks(
             user_duration_samples=len(user_samples),
             bot_duration_samples=len(bot_samples),
             reason="bot_track_too_short",
-        )
-
-    if effective_peak >= threshold:
-        reason = "bot_energy_on_inbound_leg"
-        if leak_peak >= threshold and peak < threshold:
-            reason = "bot_speech_leak_on_user_leg"
-        return TelephonyTrackAnalysis(
-            strategy=TelephonyMergeStrategy.USER_ONLY,
-            bot_delay_samples=0,
-            correlation_peak=effective_peak,
-            correlation_lag_samples=corr_lag,
-            user_sample_rate=sample_rate,
-            user_duration_samples=len(user_samples),
-            bot_duration_samples=len(bot_samples),
-            reason=reason,
         )
 
     default_delay_ms = int(getattr(settings, "TELEPHONY_BOT_PLAYBACK_DELAY_MS", 400))

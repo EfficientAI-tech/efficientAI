@@ -31,6 +31,18 @@ def test_ambient_bed_loops_and_mixes():
     assert np.array_equal(first, second)
 
 
+def test_ambient_bed_clone_is_independent():
+    bed_pcm = np.array([1000, -1000, 500, -500], dtype=np.int16)
+    original = AmbientBed(bed_pcm, volume=0.5)
+    cloned = original.clone()
+
+    speech = np.array([100, 200, 300, 400], dtype=np.int16).tobytes()
+    cloned.mix_speech(speech)
+
+    assert original._pos == 0
+    assert cloned._pos == 4
+
+
 def test_ambient_mixer_mixes_silence_frames():
     bed = AmbientBed(np.array([1000, -1000], dtype=np.int16), volume=0.5)
     mixer = AmbientMixer(bed)

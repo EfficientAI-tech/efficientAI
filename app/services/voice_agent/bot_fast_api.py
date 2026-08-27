@@ -221,13 +221,15 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         
         # Use a common start time for synchronization
         start_time = time.time()
-        recorder_alignment = "stream" if telephony_mode else "wall_clock"
+        recording_ambient_bed = None
+        if telephony_mode and ambient_mixer is not None:
+            recording_ambient_bed = ambient_mixer.bed.clone()
         user_recorder = AudioRecorder(
             user_audio_path,
             start_time,
             target_sample_rate=recorder_sample_rate,
             recorder_name="UserAudioRecorder",
-            alignment_mode=recorder_alignment,
+            alignment_mode="wall_clock",
             capture="input",
         )
         bot_recorder = AudioRecorder(
@@ -235,8 +237,9 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             start_time,
             target_sample_rate=recorder_sample_rate,
             recorder_name="BotAudioRecorder",
-            alignment_mode=recorder_alignment,
+            alignment_mode="wall_clock",
             capture="output",
+            ambient_bed=recording_ambient_bed,
         )
 
         from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
@@ -386,7 +389,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 organization_id=organization_id,
                 evaluator_id=evaluator_id,
                 result_id=result_id,
-                call_direction=call_direction,
+                call_direction=call_direction if telephony_mode else None,
             )
             
             # Extract conversation transcript from the LLM context

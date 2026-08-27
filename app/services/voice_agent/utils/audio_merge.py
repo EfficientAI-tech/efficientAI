@@ -83,6 +83,15 @@ def merge_and_upload_audio(
                     evaluator_id,
                     result_id,
                 )
+            elif bot_size > 100 and user_size <= 100:
+                logger.info("User track empty; uploading bot/outbound track only")
+                s3_key_result, duration_result = _upload_single_track(
+                    bot_audio_path,
+                    call_start_time,
+                    organization_id,
+                    evaluator_id,
+                    result_id,
+                )
             else:
                 logger.warning("Recorded audio files are too small, skipping merge/upload.")
         elif os.path.exists(user_audio_path) and os.path.getsize(user_audio_path) > 100:

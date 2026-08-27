@@ -772,12 +772,15 @@ async def run_voice_bundle_fastapi(
             AudioRecorder = get_audio_recorder_class()
             user_audio_path = telephony_recording_temp_path(suffix=".wav")
             bot_audio_path = telephony_recording_temp_path(suffix=".wav")
+            recording_ambient_bed = None
+            if ambient_mixer is not None:
+                recording_ambient_bed = ambient_mixer.bed.clone()
             user_recorder = AudioRecorder(
                 user_audio_path,
                 recording_start_time,
                 target_sample_rate=tts_sample_rate,
                 recorder_name="UserAudioRecorder",
-                alignment_mode="stream",
+                alignment_mode="wall_clock",
                 capture="input",
             )
             bot_recorder = AudioRecorder(
@@ -785,8 +788,9 @@ async def run_voice_bundle_fastapi(
                 recording_start_time,
                 target_sample_rate=tts_sample_rate,
                 recorder_name="BotAudioRecorder",
-                alignment_mode="stream",
+                alignment_mode="wall_clock",
                 capture="output",
+                ambient_bed=recording_ambient_bed,
             )
             audio_buffer_input = None
             audio_buffer_output = None
@@ -1087,7 +1091,7 @@ async def run_voice_bundle_fastapi(
                         organization_id=organization_id,
                         evaluator_id=evaluator_id,
                         result_id=result_id,
-                        call_direction=call_direction,
+                        call_direction=call_direction if telephony_mode else None,
                     )
             else:
                 await audio_buffer_input.stop_recording()

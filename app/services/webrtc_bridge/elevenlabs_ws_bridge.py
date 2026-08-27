@@ -10,14 +10,15 @@ The signed URL from create_web_call is the WebSocket endpoint.
 Audio format: 16-bit PCM mono at 16kHz.
 
 Turn-taking strategy (ElevenLabs has NO explicit start/stop talking events):
-  - ``agent_response`` events deliver the agent's full text; we accumulate it.
-  - ``audio`` events indicate the agent is actively speaking; we track
-    the timestamp of the last audio event.
-  - A background silence-detector fires ``on_agent_stop_talking`` and then
-    ``on_transcript_received`` once no audio has arrived for SILENCE_THRESHOLD_S.
-  - This mirrors the Retell pattern (accumulate transcript, deliver on stop)
-    and the Vapi pattern (accumulate model-output, deliver on speech-update
-    stopped).
+  - ``agent_response`` events deliver the agent's full text; we accumulate them
+    locally and only forward to ``on_transcript_received`` once inbound audio
+    has been silent for ``SILENCE_THRESHOLD_S`` (text often arrives before TTS
+    finishes — never flush on text alone).
+  - ``audio`` events indicate the agent is actively speaking; inbound PCM is fed
+    to the turn gate's Silero VAD for logging/backup only (ElevenLabs uses the
+    bridge silence detector as the authoritative end-of-turn signal).
+  - The silence detector delivers the held transcript, then fires
+    ``on_agent_stop_talking`` so ProductionTurnGate flushes after ``stop_secs``.
 
 All callbacks that may take a long time (LLM + TTS) are dispatched via
 ``asyncio.create_task`` so they never block the WebSocket receive loop.
@@ -44,7 +45,8 @@ NUM_CHANNELS = 1
 BYTES_PER_SAMPLE = 2  # 16-bit audio
 
 # How long (seconds) without an audio event before we consider the agent done.
-SILENCE_THRESHOLD_S = 0.7
+# ElevenLabs streams TTS in bursts; keep this above typical inter-chunk gaps.
+SILENCE_THRESHOLD_S = 1.5
 
 
 class ElevenLabsWSBridge:
@@ -349,7 +351,6 @@ class ElevenLabsWSBridge:
             text = event.get("agent_response", "").strip()
             if text:
                 logger.info(f"[ElevenLabsWS] Agent response text: {text[:120]}...")
-                # Accumulate; delivery happens when silence is detected
                 self._pending_agent_text = text
 
         # ----------------------------------------------------------
@@ -371,9 +372,7 @@ class ElevenLabsWSBridge:
             # Agent was interrupted — consider the turn over immediately
             if self._agent_is_talking:
                 self._agent_is_talking = False
-                if self.on_agent_stop_talking:
-                    asyncio.create_task(self.on_agent_stop_talking())
-                self._deliver_pending_transcript()
+                asyncio.create_task(self._deliver_turn_end())
 
         # ----------------------------------------------------------
         # ping — must pong to keep connection alive
@@ -431,11 +430,11 @@ class ElevenLabsWSBridge:
             self._silence_task = asyncio.create_task(self._silence_detector())
 
     async def _silence_detector(self):
-        """Background task that fires 'agent stopped talking' after silence.
+        """Background task that fires provider stop after inbound audio silence.
 
-        Polls ``_last_audio_ts``.  When no new audio has arrived for
-        ``SILENCE_THRESHOLD_S`` seconds, the agent is considered done
-        speaking and we deliver the accumulated transcript.
+        Transcript delivery is owned by ProductionTurnGate (VAD on inbound PCM).
+        This task only notifies ``on_agent_stop_talking`` for the provider-stop
+        fallback path.
         """
         try:
             while self.is_connected and self._agent_is_talking:
@@ -448,22 +447,33 @@ class ElevenLabsWSBridge:
                         f"[ElevenLabsWS] Silence detected ({elapsed:.2f}s) — agent stopped speaking"
                     )
                     self._agent_is_talking = False
-                    if self.on_agent_stop_talking:
-                        asyncio.create_task(self.on_agent_stop_talking())
-                    self._deliver_pending_transcript()
+                    await self._deliver_turn_end()
                     return
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.error(f"[ElevenLabsWS] Silence detector error: {e}", exc_info=True)
 
-    def _deliver_pending_transcript(self):
-        """Fire-and-forget delivery of the accumulated agent text."""
+    async def _deliver_turn_end(self):
+        """Deliver held agent text, then signal provider stop for the turn gate."""
         text = self._pending_agent_text.strip()
         self._pending_agent_text = ""
         if text and self.on_transcript_received:
             logger.info(
-                f"[ElevenLabsWS] Delivering transcript ({len(text)} chars): {text[:100]}..."
+                f"[ElevenLabsWS] Delivering agent transcript after silence "
+                f"({len(text)} chars): {text[:100]}..."
+            )
+            await self.on_transcript_received(text)
+        if self.on_agent_stop_talking:
+            await self.on_agent_stop_talking()
+
+    def _deliver_pending_transcript(self):
+        """Legacy helper — transcripts are held via on_transcript_received."""
+        text = self._pending_agent_text.strip()
+        self._pending_agent_text = ""
+        if text and self.on_transcript_received:
+            logger.info(
+                f"[ElevenLabsWS] Delivering held transcript ({len(text)} chars): {text[:100]}..."
             )
             asyncio.create_task(self.on_transcript_received(text))
         elif not text:

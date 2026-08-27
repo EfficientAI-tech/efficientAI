@@ -112,6 +112,14 @@ class AmbientBed:
         ).astype(np.int16)
         return mixed.tobytes()
 
+    def clone(self) -> "AmbientBed":
+        """Return an independent bed copy for recording without sharing playback position."""
+        return AmbientBed(
+            self._bed.copy(),
+            volume=self._volume,
+            loop=self._loop,
+        )
+
 
 class AmbientMixer(BaseAudioMixer):
     """Output-transport mixer that overlays a looping ambient bed on bot TTS audio."""

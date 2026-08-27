@@ -202,8 +202,8 @@ def _resolve_custom_ambient_s3_key(persona: Any) -> Optional[str]:
     return str(legacy_key) if legacy_key else None
 
 
-async def resolve_ambient_mixer(persona: Any, sample_rate: int) -> Optional[AmbientMixer]:
-    """Build an AmbientMixer for a persona at the given sample rate, or None."""
+def _build_ambient_mixer_sync(persona: Any, sample_rate: int) -> Optional[AmbientMixer]:
+    """Blocking ambient mixer construction (I/O + decode). Run via asyncio.to_thread."""
     source = persona_ambient_source(persona)
     volume = persona_ambient_volume(persona)
 
@@ -248,3 +248,10 @@ async def resolve_ambient_mixer(persona: Any, sample_rate: int) -> Optional[Ambi
 
     logger.warning("Unknown ambient source {} on persona {}", source, getattr(persona, "id", "?"))
     return None
+
+
+async def resolve_ambient_mixer(persona: Any, sample_rate: int) -> Optional[AmbientMixer]:
+    """Build an AmbientMixer for a persona at the given sample rate, or None."""
+    import asyncio
+
+    return await asyncio.to_thread(_build_ambient_mixer_sync, persona, sample_rate)

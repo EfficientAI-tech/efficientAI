@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { FileText, Loader2, Sparkles } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { Loader2, Sparkles } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import AIGeneratePanel from '../../components/shared/AIGeneratePanel'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
@@ -40,24 +40,6 @@ export default function PersonaPromptPanel({
 
   const hasTestAgentPrompt = Boolean(promptSources?.test_agent_prompt?.trim())
 
-  const seedMutation = useMutation({
-    mutationFn: async () => {
-      if (!selectedAgentId) {
-        throw new Error('Select an agent first')
-      }
-      const sources =
-        promptSources ?? (await apiClient.getPersonaAgentPromptSources(selectedAgentId))
-      const text = sources.test_agent_prompt
-      if (!text?.trim()) {
-        throw new Error('This agent has no test agent prompt')
-      }
-      return text.trim()
-    },
-    onSuccess: (text) => {
-      onChange(text)
-    },
-  })
-
   const labelClass = embedded ? 'text-xs font-medium text-gray-600' : 'text-sm font-medium text-gray-700'
   const textareaClass = embedded
     ? 'w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent resize-none'
@@ -71,13 +53,13 @@ export default function PersonaPromptPanel({
     }
   }
 
-  const canUseTestAgentPrompt =
+  const canGenerateFromTestAgent =
     Boolean(selectedAgentId) && !isLoadingSources && hasTestAgentPrompt
 
   return (
     <div className="space-y-3">
       <div>
-        <label className={`block ${labelClass} mb-1`}>Seed from agent</label>
+        <label className={`block ${labelClass} mb-1`}>Generate from agent</label>
         <select
           value={selectedAgentId}
           onChange={(e) => handleAgentChange(e.target.value)}
@@ -95,30 +77,20 @@ export default function PersonaPromptPanel({
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          disabled={!canUseTestAgentPrompt || seedMutation.isPending}
-          onClick={() => seedMutation.mutate()}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-        >
-          {seedMutation.isPending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <FileText className="h-3.5 w-3.5" />
-          )}
-          Use test agent prompt
-        </button>
-        <button
-          type="button"
-          disabled={!canUseTestAgentPrompt}
+          disabled={!canGenerateFromTestAgent}
           onClick={() => setShowAiPanel((v) => !v)}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50"
         >
           <Sparkles className="h-3.5 w-3.5" />
-          {showAiPanel ? 'Hide AI generate' : 'Generate with AI'}
+          {showAiPanel ? 'Hide generator' : 'Generate from test agent prompt'}
         </button>
       </div>
 
       {isLoadingSources && selectedAgentId ? (
-        <p className="text-xs text-gray-500">Loading agent prompts…</p>
+        <p className="text-xs text-gray-500 flex items-center gap-1.5">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading test agent prompt…
+        </p>
       ) : null}
 
       {selectedAgentId && !isLoadingSources && !hasTestAgentPrompt ? (
@@ -127,15 +99,9 @@ export default function PersonaPromptPanel({
         </p>
       ) : null}
 
-      {seedMutation.isError ? (
-        <p className="text-xs text-red-600">
-          {(seedMutation.error as Error)?.message || 'Failed to load prompt'}
-        </p>
-      ) : null}
-
-      {showAiPanel && canUseTestAgentPrompt ? (
+      {showAiPanel && canGenerateFromTestAgent ? (
         <AIGeneratePanel
-          title="Generate persona prompt from test agent"
+          title="Generate persona from test agent prompt"
           placeholder="Optional: describe caller personality, tone, or scenario context…"
           showToneAndFormat={false}
           requireDescription={false}
