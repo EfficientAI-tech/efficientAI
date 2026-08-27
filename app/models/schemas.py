@@ -1630,8 +1630,9 @@ SelectionMode = Literal["single_choice", "multi_label"]
 MetricScope = Literal["workspace", "organization"]
 
 # Max length for metric rubric text (description / example) accepted by
-# the API. DB columns are TEXT or unbounded VARCHAR; this cap is validation-only.
-METRIC_RUBRIC_TEXT_MAX_LENGTH = 32_000
+# the API (~1 MB of text). DB columns are TEXT or unbounded VARCHAR; this
+# cap is validation-only.
+METRIC_RUBRIC_TEXT_MAX_LENGTH = 1_000_000
 
 
 
@@ -1763,18 +1764,6 @@ class ChooseNextCombinationResponse(BaseModel):
     next_index: int
 
 
-# Metric Schemas
-SelectionMode = Literal["single_choice", "multi_label"]
-
-
-MetricScope = Literal["workspace", "organization"]
-
-# Max length for metric rubric text (description / example) accepted by
-# the API. DB columns are TEXT or unbounded VARCHAR; this cap is validation-only.
-METRIC_RUBRIC_TEXT_MAX_LENGTH = 32_000
-
-
-
 class MetricCreate(BaseModel):
     """Schema for creating a metric.
 
@@ -1793,7 +1782,7 @@ class MetricCreate(BaseModel):
       ignored server-side.
     """
     name: str
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=METRIC_RUBRIC_TEXT_MAX_LENGTH)
     # Optional illustrative example surfaced alongside ``description``
     # in the LLM judge's rubric. Today this is mainly populated on
     # child sub-labels (one example per categorization label) but
