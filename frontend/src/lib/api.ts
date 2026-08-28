@@ -3870,6 +3870,7 @@ class ApiClient {
     metadata?: Record<string, any>
     retell_llm_dynamic_variables?: Record<string, any>
     custom_sip_headers?: Record<string, string>
+    ui_surface?: 'agents_talk' | 'agent_playground'
   }): Promise<{
     call_type: string
     access_token?: string

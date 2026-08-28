@@ -463,6 +463,29 @@ def _delete_meter(client: httpx.Client, meter_id: str) -> None:
     resp.raise_for_status()
 
 
+def _archive_meter(client: httpx.Client, meter_id: str) -> dict[str, Any]:
+    """Remove or archive a meter; archive is the fallback when delete is blocked."""
+    for method, suffix in (("DELETE", ""), ("POST", "/archive")):
+        url = f"{_base_url()}/meters/{meter_id}{suffix}"
+        if method == "DELETE":
+            resp = client.delete(url, headers=_headers())
+        else:
+            resp = client.post(url, headers=_headers())
+        if resp.status_code in (200, 204, 404):
+            return {"meter_id": meter_id, "method": method, "status": resp.status_code}
+    resp.raise_for_status()
+    return {"meter_id": meter_id, "status": resp.status_code}
+
+
+PLAYGROUND_DEPRECATED_EVENTS = frozenset(
+    {
+        "playground.call_evaluated",
+        "playground.web_call_started",
+        "playground.websocket_session_started",
+    }
+)
+
+
 def _list_prices(client: httpx.Client) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     offset = 0
@@ -637,6 +660,108 @@ def restore_missing_plan_usage_prices(client: httpx.Client) -> dict[str, Any]:
             meter_id=template["meter_id"],
         )
         result["restored"].append({"display_name": display_name, "price_id": restored.get("id")})
+    return result
+
+
+def repair_playground_meters(
+    client: httpx.Client,
+    sdk: Flexprice,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Archive legacy playground meters; keep SUM(billable_minutes) evaluation_completed only."""
+    result: dict[str, Any] = {
+        "kept_meter_id": None,
+        "archived_meters": [],
+        "removed_features": [],
+        "skipped": [],
+        "errors": [],
+        "dry_run": dry_run,
+    }
+
+    meters_by_event = _list_meters_by_event(client, active_only=True)
+    all_prices = _list_prices(client)
+    canonical = _pick_canonical_meter(
+        meters_by_event.get(AGENT_PLAYGROUND_PRIMARY_EVENT, []),
+        all_prices,
+        agg_type="SUM",
+        agg_field="billable_minutes",
+    )
+    if canonical is None:
+        result["errors"].append(
+            "No published playground.evaluation_completed meter with SUM(billable_minutes)"
+        )
+        return result
+
+    result["kept_meter_id"] = canonical["id"]
+    to_archive: list[dict[str, Any]] = []
+    for event_name in PLAYGROUND_DEPRECATED_EVENTS:
+        to_archive.extend(meters_by_event.get(event_name, []))
+    for meter in meters_by_event.get(AGENT_PLAYGROUND_PRIMARY_EVENT, []):
+        if meter["id"] != canonical["id"]:
+            to_archive.append(meter)
+
+    seen_meter_ids: set[str] = set()
+    for meter in to_archive:
+        meter_id = meter["id"]
+        if meter_id in seen_meter_ids:
+            continue
+        seen_meter_ids.add(meter_id)
+        entry = {
+            "id": meter_id,
+            "event_name": meter.get("event_name"),
+            "name": meter.get("name"),
+        }
+        if dry_run:
+            result["archived_meters"].append({**entry, "dry_run": True})
+            continue
+        try:
+            archived = _archive_meter(client, meter_id)
+            result["archived_meters"].append({**entry, **archived})
+        except Exception as exc:
+            result["errors"].append(f"meter {meter_id}: {exc}")
+
+    agent_playground_features = [
+        feature
+        for feature in _list_all_features(client)
+        if feature.get("lookup_key") == "agent_playground"
+    ]
+    for feature in agent_playground_features:
+        if feature.get("meter_id") == canonical["id"]:
+            result["skipped"].append(feature["id"])
+            continue
+        entry = {
+            "id": feature["id"],
+            "meter_id": feature.get("meter_id"),
+            "name": feature.get("name"),
+        }
+        if dry_run:
+            result["removed_features"].append({**entry, "dry_run": True})
+            continue
+        try:
+            sdk.features.delete_feature(id=feature["id"])
+            result["removed_features"].append(entry)
+        except Exception as exc:
+            result["errors"].append(f"feature {feature['id']}: {exc}")
+
+    if not dry_run and len(agent_playground_features) == len(result["removed_features"]):
+        spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "agent_playground")
+        try:
+            created = sdk.features.create_feature(
+                name=spec["name"],
+                type_="metered",
+                lookup_key=spec["lookup_key"],
+                description=spec["description"],
+                unit_singular=spec.get("unit_singular"),
+                unit_plural=spec.get("unit_plural"),
+                meter_id=canonical["id"],
+            )
+            result["recreated_feature_id"] = created.id
+        except Exception as exc:
+            message = str(exc).lower()
+            if "already exist" not in message and "duplicate" not in message:
+                result["errors"].append(f"recreate agent_playground feature: {exc}")
+
     return result
 
 
@@ -1065,6 +1190,11 @@ def main() -> int:
         help="Remove duplicate batch_created meters and migrate pricing to SUM(quantity).",
     )
     parser.add_argument(
+        "--repair-playground",
+        action="store_true",
+        help="Archive legacy playground meters (call_evaluated, duplicates) and fix agent_playground feature.",
+    )
+    parser.add_argument(
         "--restore-plan-usage-prices",
         action="store_true",
         help="Recreate missing Voice Playground and Blind Test plan usage prices from archived templates.",
@@ -1099,6 +1229,20 @@ def main() -> int:
 
     summary: dict[str, Any] = {}
     with httpx.Client(timeout=60.0) as http_client:
+        if args.repair_playground:
+            with Flexprice(
+                server_url=settings.FLEXPRICE_API_HOST,
+                api_key_auth=settings.FLEXPRICE_API_KEY,
+            ) as sdk:
+                summary["playground_repair"] = repair_playground_meters(
+                    http_client,
+                    sdk,
+                    dry_run=args.dry_run,
+                )
+            if args.dry_run:
+                print(json.dumps(summary, indent=2))
+                failed = summary.get("playground_repair", {}).get("errors") or []
+                return 1 if failed else 0
         if args.repair_call_imports:
             summary["call_import_batch_repair"] = repair_call_import_batch_meter(http_client)
         if args.restore_plan_usage_prices:
@@ -1136,7 +1280,10 @@ def main() -> int:
     failed_meters = bootstrap_summary["meters"]["failed"]
     failed_features = bootstrap_summary["features"]["failed"]
     repair_failed = (summary.get("feature_repair") or {}).get("failed") or []
-    return 1 if (failed_meters or failed_features or repair_failed) else 0
+    playground_failed = (summary.get("playground_repair") or {}).get("errors") or []
+    if args.repair_playground and not args.repair_features and not args.repair_call_imports:
+        return 1 if playground_failed else 0
+    return 1 if (failed_meters or failed_features or repair_failed or playground_failed) else 0
 
 
 if __name__ == "__main__":

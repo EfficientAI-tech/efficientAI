@@ -9,6 +9,21 @@ from sqlalchemy.orm import Session
 
 from app.models.database import CallRecording
 
+PLAYGROUND_CALL_DATA_PRESERVE_KEYS = ("ui_surface", "external_usage_recorded")
+
+
+def merge_playground_call_data(
+    prev: Optional[dict[str, Any]],
+    new: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep internal audit fields when provider metrics replace call_data."""
+    merged = dict(new)
+    if isinstance(prev, dict):
+        for key in PLAYGROUND_CALL_DATA_PRESERVE_KEYS:
+            if prev.get(key) is not None:
+                merged[key] = prev[key]
+    return merged
+
 
 def _lock_call_recording(db: Session, call_recording_id: UUID) -> Optional[CallRecording]:
     return (
@@ -53,7 +68,7 @@ def record_playground_post_call_usage_once(
     platform_key = str(provider_platform or "").lower()
 
     if stored_data.get("external_usage_recorded") and isinstance(metrics, dict):
-        metrics["external_usage_recorded"] = True
+        metrics = merge_playground_call_data(stored_data, metrics)
         locked.call_data = metrics
         db.commit()
     elif isinstance(metrics, dict):
@@ -75,6 +90,7 @@ def record_playground_post_call_usage_once(
             return False, call_metrics
 
         metrics["external_usage_recorded"] = True
+        metrics = merge_playground_call_data(stored_data, metrics)
         locked.call_data = metrics
         try:
             db.commit()

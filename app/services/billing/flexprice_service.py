@@ -8,8 +8,10 @@ Every event uses ``external_customer_id=str(organization.id)`` and a stable
 Ingest **only when value is delivered** (completed), never on ``*_started`` /
 ``*_created`` / ``*_requested``. Event ``properties`` include billable fields
 (``workspace_id``, ``feature``, ``quantity``, ``billable_minutes``) plus audit
-IDs (``evaluation_id``, ``audio_seconds``, etc.) for support — audit fields are
-not used for Flexprice SUM/COUNT aggregation.
+IDs (``evaluation_id``, ``audio_seconds``, ``ui_surface``, etc.) for support —
+audit fields are not used for Flexprice SUM/COUNT aggregation. Set ``ui_surface``
+only when multiple UI paths share one event (e.g. ``agents_talk`` vs
+``agent_playground``); never wire meters to it.
 
 Billable events (wire plan usage charges to these meters only):
 
@@ -61,6 +63,10 @@ FEATURE_METRIC_STUDIO = "metric_studio"
 FEATURE_SCENARIO_AI = "scenario_ai"
 FEATURE_PROMPT_PARTIALS = "prompt_partials"
 
+# Audit-only ui_surface values (never wire Flexprice meters to these).
+UI_SURFACE_AGENTS_TALK = "agents_talk"
+UI_SURFACE_AGENT_PLAYGROUND = "agent_playground"
+
 # Log once when metering is inactive so AWS/worker misconfig is obvious.
 _disabled_skip_logged = False
 
@@ -103,6 +109,16 @@ CALL_IMPORT_USER_INSIGHTS_GENERATED = "call_import.user_insights_generated"
 CALL_IMPORT_PROMPT_IMPROVEMENTS_GENERATED = "call_import.prompt_improvements_generated"
 PERSONA_PROMPT_GENERATED = "persona.prompt_generated"
 AGENT_TEST_SETUP_GENERATED = "agent.test_setup_generated"
+# Deprecated meters — never ingest (bill on completion events instead).
+DEPRECATED_EVENT_NAMES = frozenset(
+    {
+        PLAYGROUND_CALL_EVALUATED,
+        PLAYGROUND_WEB_CALL_STARTED,
+        PLAYGROUND_WEBSOCKET_SESSION_STARTED,
+        TEST_AGENT_CONVERSATION_STARTED,
+        OBSERVABILITY_CALL_EVALUATED,
+    }
+)
 # Legacy aliases (Flexprice meters may still exist under old names)
 METRICS_LLM_ASSIST = METRICS_AI_ASSIST
 CHAT_COMPLETION = SCENARIO_AI_TEXT_GENERATED
@@ -270,6 +286,7 @@ def _event_properties(
     *,
     quantity: Optional[Union[int, float]] = None,
     billable_minutes: Optional[int] = None,
+    ui_surface: Optional[str] = None,
     **audit: Any,
 ) -> dict[str, Any]:
     """Billable fields plus optional audit metadata for support traceability."""
@@ -279,7 +296,14 @@ def _event_properties(
         quantity=quantity,
         billable_minutes=billable_minutes,
     )
+    surface = (str(ui_surface).strip() if ui_surface is not None else "") or None
+    if not surface and isinstance(audit.get("ui_surface"), str):
+        surface = audit["ui_surface"].strip() or None
+    if surface:
+        props["ui_surface"] = surface
     for key, value in audit.items():
+        if key == "ui_surface":
+            continue
         if value is None:
             continue
         if isinstance(value, str) and not value.strip():
@@ -320,6 +344,16 @@ def record_event(
                 organization_id,
                 event_id,
                 inactive_reason,
+            )
+        return False
+
+    if event_name in DEPRECATED_EVENT_NAMES:
+        if _verbose_logging():
+            logger.info(
+                "Flexprice SKIP deprecated {} org={} event_id={}",
+                event_name,
+                organization_id,
+                event_id,
             )
         return False
 
@@ -794,7 +828,9 @@ def record_playground_evaluation_completed(
     call_short_id: str,
     duration_seconds: Optional[float] = None,
     metric_count: int = 0,
+    ui_surface: Optional[str] = None,
 ) -> None:
+    """Bill playground voice/web call scoring. Pass ``ui_surface`` when known."""
     minutes = _billable_minutes(duration_seconds)
     record_event(
         PLAYGROUND_EVALUATION_COMPLETED,
@@ -809,6 +845,7 @@ def record_playground_evaluation_completed(
             call_short_id=call_short_id,
             duration_seconds=duration_seconds,
             metric_count=metric_count,
+            ui_surface=ui_surface,
         ),
     )
 

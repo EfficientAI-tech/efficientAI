@@ -74,6 +74,7 @@ def poll_call_metrics(
     """
     import time
     from app.database import SessionLocal
+    from app.services.playground.post_call_processing import merge_playground_call_data
     from app.services.voice_providers import get_voice_provider
     
     db = SessionLocal()
@@ -115,8 +116,8 @@ def poll_call_metrics(
                     if isinstance(call_recording.call_data, dict)
                     else {}
                 )
-                if prev_data.get("external_usage_recorded") and isinstance(call_metrics, dict):
-                    call_metrics["external_usage_recorded"] = True
+                if isinstance(call_metrics, dict):
+                    call_metrics = merge_playground_call_data(prev_data, call_metrics)
                 call_recording.call_data = call_metrics
                 call_recording.status = CallRecordingStatus.UPDATED
                 db.commit()
@@ -368,6 +369,7 @@ class WebCallCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     retell_llm_dynamic_variables: Optional[Dict[str, Any]] = None
     custom_sip_headers: Optional[Dict[str, str]] = None
+    ui_surface: Optional[str] = None
 
 
 @router.post("/web-call", response_model=Dict[str, Any])
@@ -502,13 +504,16 @@ async def create_web_call(
                 provider_call_id = web_call_response.get("call_id")
 
             call_short_id = generate_unique_call_short_id(db)
+            stored_call_data = dict(web_call_response)
+            if web_call_data.ui_surface:
+                stored_call_data["ui_surface"] = web_call_data.ui_surface
             call_recording = CallRecording(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 call_short_id=call_short_id,
                 status=CallRecordingStatus.PENDING,
                 source=CallRecordingSource.PLAYGROUND,
-                call_data=web_call_response,  # Store initial response
+                call_data=stored_call_data,
                 provider_call_id=provider_call_id,
                 provider_platform=integration.platform,
                 agent_id=agent.id
@@ -1147,8 +1152,13 @@ async def re_evaluate_call_recording(
                 if hasattr(provider, "retrieve_call_metrics"):
                     refreshed_call_data = provider.retrieve_call_metrics(call_recording.provider_call_id)
                     if isinstance(refreshed_call_data, dict) and refreshed_call_data:
-                        call_data = refreshed_call_data
-                        call_recording.call_data = refreshed_call_data
+                        prev_data = (
+                            call_recording.call_data
+                            if isinstance(call_recording.call_data, dict)
+                            else {}
+                        )
+                        call_data = merge_playground_call_data(prev_data, refreshed_call_data)
+                        call_recording.call_data = call_data
                         db.commit()
                         logger.info(f"[Re-evaluate] Refreshed provider call data for call {call_recording.provider_call_id}")
                         audio_bytes, resp = _download_audio_from_payload(call_data)

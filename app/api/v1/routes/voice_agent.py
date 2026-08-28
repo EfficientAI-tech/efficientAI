@@ -103,6 +103,7 @@ async def websocket_endpoint(
         agent_id = websocket.query_params.get("agent_id")
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
+        ui_surface = websocket.query_params.get("ui_surface")
         
         # Fetch agent and voice bundle once for routing and instructions
         agent = None
@@ -644,6 +645,8 @@ async def websocket_endpoint(
                         "recording_s3_key": call_metadata.get("s3_key"),
                         "duration_seconds": call_metadata.get("duration"),
                     }
+                    if ui_surface:
+                        playground_call_data["ui_surface"] = ui_surface
 
                     # Create evaluator result with QUEUED status
                     # persona_id and scenario_id can be None for test calls without persona/scenario
@@ -855,6 +858,7 @@ async def bot_connect(
     agent_id = request.query_params.get("agent_id")
     persona_id = request.query_params.get("persona_id")
     scenario_id = request.query_params.get("scenario_id")
+    ui_surface = request.query_params.get("ui_surface")
     
     # Determine which AI Provider to use based on agent configuration
     ai_provider = None
@@ -1000,6 +1004,7 @@ async def bot_connect(
         agent_id=agent_id,
         persona_id=persona_id,
         scenario_id=scenario_id,
+        ui_surface=ui_surface,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
         fallback_scheme=(
             request.headers.get("x-forwarded-proto")

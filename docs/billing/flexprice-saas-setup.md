@@ -43,6 +43,7 @@ Env overrides: `FLEXPRICE_AUTO_SUBSCRIBE`, `FLEXPRICE_DEFAULT_PLAN_ID`. Leave `a
 ```bash
 python scripts/setup_flexprice_meters.py
 python scripts/setup_flexprice_meters.py --repair-call-imports   # if batch_created meters were duplicated
+python scripts/setup_flexprice_meters.py --repair-playground   # archive call_evaluated + duplicate evaluation_completed meters
 python scripts/setup_flexprice_meters.py --repair-features --dry-run   # preview stale feature→meter links
 python scripts/setup_flexprice_meters.py --repair-features             # repoint license features (delete + recreate)
 ```

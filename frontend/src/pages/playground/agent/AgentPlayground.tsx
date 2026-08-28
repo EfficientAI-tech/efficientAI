@@ -294,6 +294,7 @@ export default function AgentPlayground() {
           metadata: {},
           retell_llm_dynamic_variables: {},
           custom_sip_headers: {},
+          ui_surface: 'agent_playground',
         })
 
         if (!webCallResponse.call_id || !webCallResponse.access_token) {
@@ -331,6 +332,7 @@ export default function AgentPlayground() {
         const webCallResponse = await apiClient.createWebCall({
           agent_id: fullAgent.id,
           metadata: {},
+          ui_surface: 'agent_playground',
         })
 
         if (webCallResponse.call_short_id) {
@@ -435,6 +437,7 @@ export default function AgentPlayground() {
         const webCallResponse = await apiClient.createWebCall({
           agent_id: fullAgent.id,
           metadata: {},
+          ui_surface: 'agent_playground',
         })
 
         if (webCallResponse.call_short_id) {
@@ -545,6 +548,7 @@ export default function AgentPlayground() {
         const webCallResponse = await apiClient.createWebCall({
           agent_id: fullAgent.id,
           metadata: {},
+          ui_surface: 'agent_playground',
         })
 
         if (webCallResponse.call_short_id) {
@@ -1574,7 +1578,7 @@ export default function AgentPlayground() {
             </div>
 
             <div className="p-6">
-              <VoiceAgent agentId={selectedAgent?.id} />
+              <VoiceAgent agentId={selectedAgent?.id} billingSurface="agent_playground" />
             </div>
           </div>
         </div>

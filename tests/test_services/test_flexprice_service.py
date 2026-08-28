@@ -445,6 +445,23 @@ def test_record_playground_call_evaluated_does_not_ingest(mock_flexprice):
 
 
 @patch("flexprice.Flexprice")
+def test_record_event_skips_deprecated_playground_call_evaluated(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    assert (
+        svc.record_event(
+            svc.PLAYGROUND_CALL_EVALUATED,
+            uuid4(),
+            "attempt-1",
+            properties={"workspace_id": uuid4(), "call_short_id": "123456"},
+        )
+        is False
+    )
+    mock_flexprice.assert_not_called()
+
+
+@patch("flexprice.Flexprice")
 def test_record_playground_web_call_started_does_not_ingest(mock_flexprice):
     settings.FLEXPRICE_ENABLED = True
     settings.FLEXPRICE_API_KEY = "test-key"
@@ -497,6 +514,45 @@ def test_record_playground_evaluation_completed_includes_feature(mock_flexprice)
     assert payload["properties"]["duration_seconds"] == "12.5"
     assert payload["properties"]["metric_count"] == "2"
     assert payload["properties"]["billable_minutes"] == "1"
+
+
+def test_event_properties_ui_surface_is_audit_only():
+    props = svc._event_properties(
+        uuid4(),
+        svc.FEATURE_AGENT_PLAYGROUND,
+        quantity=1,
+        ui_surface=svc.UI_SURFACE_AGENTS_TALK,
+    )
+    assert props["feature"] == "agent_playground"
+    assert props["ui_surface"] == "agents_talk"
+    assert "ui_surface" not in svc._billing_properties(uuid4(), svc.FEATURE_AGENT_PLAYGROUND, quantity=1)
+
+
+def test_event_properties_omits_blank_ui_surface():
+    props = svc._event_properties(uuid4(), svc.FEATURE_EVALUATORS, quantity=1, ui_surface="  ")
+    assert "ui_surface" not in props
+
+
+@patch("flexprice.Flexprice")
+def test_record_playground_evaluation_completed_includes_ui_surface(mock_flexprice):
+    settings.FLEXPRICE_ENABLED = True
+    settings.FLEXPRICE_API_KEY = "test-key"
+
+    mock_client = MagicMock()
+    mock_flexprice.return_value.__enter__.return_value = mock_client
+
+    svc.record_playground_evaluation_completed(
+        uuid4(),
+        "attempt-1",
+        evaluator_result_id=uuid4(),
+        workspace_id=uuid4(),
+        call_short_id="999",
+        duration_seconds=30,
+        ui_surface=svc.UI_SURFACE_AGENT_PLAYGROUND,
+    )
+
+    props = mock_client.events.ingest_event.call_args.kwargs["properties"]
+    assert props["ui_surface"] == "agent_playground"
 
 
 @patch("flexprice.Flexprice")

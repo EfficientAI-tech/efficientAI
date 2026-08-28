@@ -145,6 +145,7 @@ class SarvamSTTService(STTService):
         self._websocket_context = None
         self._socket_client = None
         self._receive_task = None
+        self._disconnected_logged = False
 
     def language_to_service_language(self, language: Language) -> str:
         """Convert efficientai Language enum to Sarvam's language code.
@@ -244,7 +245,17 @@ class SarvamSTTService(STTService):
             Frame: None (transcription results come via WebSocket callbacks).
         """
         if not self._socket_client:
-            logger.warning("WebSocket not connected, cannot process audio")
+            if not self._disconnected_logged:
+                self._disconnected_logged = True
+                logger.error(
+                    "Sarvam STT WebSocket not connected; dropping audio until reconnect"
+                )
+                await self.push_error(
+                    ErrorFrame(
+                        "Sarvam speech-to-text is unavailable. Check your Sarvam API key "
+                        "and network connection, then try the call again."
+                    )
+                )
             yield None
             return
 
@@ -329,15 +340,18 @@ class SarvamSTTService(STTService):
             # Start receive task using EfficientAI's task management
             self._receive_task = self.create_task(self._receive_task_handler())
 
+            self._disconnected_logged = False
             logger.info("Connected to Sarvam successfully")
 
         except ApiError as e:
             logger.error(f"Sarvam API error: {e}")
+            self._disconnected_logged = True
             await self.push_error(ErrorFrame(f"Sarvam API error: {e}"))
         except Exception as e:
             logger.error(f"Failed to connect to Sarvam: {e}")
             self._socket_client = None
             self._websocket_context = None
+            self._disconnected_logged = True
             await self.push_error(ErrorFrame(f"Failed to connect to Sarvam: {e}"))
 
     async def _disconnect(self):
@@ -356,6 +370,7 @@ class SarvamSTTService(STTService):
                 logger.debug("Disconnected from Sarvam WebSocket")
                 self._socket_client = None
                 self._websocket_context = None
+                self._disconnected_logged = False
 
     async def _receive_task_handler(self):
         """Handle incoming messages from Sarvam WebSocket.

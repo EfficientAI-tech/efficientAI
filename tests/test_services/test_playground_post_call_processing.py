@@ -14,8 +14,46 @@ from app.models.database import (
 )
 from app.services.playground.post_call_processing import (
     claim_playground_evaluator_result_slot,
+    merge_playground_call_data,
     record_playground_post_call_usage_once,
 )
+
+
+def test_merge_playground_call_data_preserves_ui_surface():
+    merged = merge_playground_call_data(
+        {"ui_surface": "agents_talk", "external_usage_recorded": True},
+        {"call_status": "ended", "duration_seconds": 30},
+    )
+    assert merged["ui_surface"] == "agents_talk"
+    assert merged["external_usage_recorded"] is True
+    assert merged["call_status"] == "ended"
+
+
+def test_record_playground_post_call_usage_once_preserves_ui_surface(
+    db_session, org_id, default_workspace, playground_agent, monkeypatch
+):
+    recording = _make_playground_recording(
+        db_session,
+        org_id=org_id,
+        workspace_id=default_workspace.id,
+        agent_id=playground_agent.id,
+        call_data={"ui_surface": "agent_playground", "call_status": "ended"},
+    )
+
+    monkeypatch.setattr(
+        "app.services.usage.external_agent_usage.apply_playground_provider_usage_from_call_data",
+        lambda **_kwargs: None,
+    )
+
+    proceed, updated = record_playground_post_call_usage_once(
+        db_session,
+        recording.id,
+        provider_platform="retell",
+        call_metrics={"call_status": "ended", "duration_seconds": 42},
+    )
+    assert proceed is True
+    assert updated["ui_surface"] == "agent_playground"
+    assert updated["external_usage_recorded"] is True
 
 
 @pytest.fixture

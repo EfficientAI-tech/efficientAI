@@ -873,6 +873,11 @@ def process_evaluator_result_task(self, result_id: str):
 
                 call_recording = _playground_call_recording(db, result)
                 if call_recording:
+                    call_data = (
+                        call_recording.call_data
+                        if isinstance(call_recording.call_data, dict)
+                        else {}
+                    )
                     record_playground_evaluation_completed(
                         result.organization_id,
                         f"{result.id}:{self.request.id}",
@@ -881,6 +886,7 @@ def process_evaluator_result_task(self, result_id: str):
                         call_short_id=call_recording.call_short_id,
                         duration_seconds=result.duration_seconds,
                         metric_count=len(metric_scores) or selected_metric_count,
+                        ui_surface=call_data.get("ui_surface"),
                     )
                 else:
                     record_evaluator_run_completed(
