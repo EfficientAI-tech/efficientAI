@@ -24,6 +24,7 @@ from app.api.v1.routes import (
     evaluator_suites,
     metrics,
     evaluator_results,
+    evaluator_result_metric_clusters,
     chat,
     playground,
     settings,
@@ -76,6 +77,7 @@ api_router.include_router(evaluators.router)
 api_router.include_router(evaluator_suites.router)
 api_router.include_router(metrics.router)
 api_router.include_router(evaluator_results.router)
+api_router.include_router(evaluator_result_metric_clusters.router)
 api_router.include_router(chat.router)
 api_router.include_router(playground.router)
 api_router.include_router(settings.router)

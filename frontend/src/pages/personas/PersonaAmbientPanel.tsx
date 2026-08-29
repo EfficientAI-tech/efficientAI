@@ -110,7 +110,10 @@ export default function PersonaAmbientPanel({
 
   const previewAsset = () => {
     if (!selectedAssetId) return
-    preview.togglePreview(`asset:${selectedAssetId}`, () => apiClient.previewAmbientLibraryAsset(selectedAssetId))
+    preview.togglePreview(`asset:${selectedAssetId}`, async () => {
+      const { url } = await apiClient.getAmbientLibraryPreviewUrl(selectedAssetId)
+      return url
+    })
   }
 
   const renderPreviewControls = (previewId: string, onToggle: () => void) => {

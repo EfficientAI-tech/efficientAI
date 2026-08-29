@@ -909,6 +909,41 @@ async def preview_ambient_library_asset(
     )
 
 
+class AmbientLibraryPreviewUrlResponse(BaseModel):
+    url: str
+    expires_in: int
+
+
+@router.get(
+    "/ambient-library/{asset_id}/preview-url",
+    response_model=AmbientLibraryPreviewUrlResponse,
+    operation_id="getAmbientLibraryPreviewUrl",
+)
+async def get_ambient_library_preview_url(
+    asset_id: UUID,
+    expiration: int = Query(default=3600, ge=60, le=86400),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    """Return a presigned URL for streaming ambient library preview in the browser."""
+    row = db.query(AmbientNoiseAsset).filter(
+        AmbientNoiseAsset.id == asset_id,
+        AmbientNoiseAsset.organization_id == organization_id,
+        AmbientNoiseAsset.workspace_id == workspace_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ambient library asset not found")
+    if not s3_service.is_enabled():
+        raise HTTPException(status_code=503, detail=s3_service.get_status_message())
+    try:
+        url = s3_service.generate_presigned_url_by_key(row.s3_key, expiration=expiration)
+    except StorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return AmbientLibraryPreviewUrlResponse(url=url, expires_in=expiration)
+
+
 # ============================================
 # PERSONA BY ID (parameterized routes last)
 # ============================================

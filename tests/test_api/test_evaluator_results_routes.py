@@ -226,7 +226,10 @@ def test_evaluator_results_overview_and_aggregate(
     assert overview.status_code == 200
     body = overview.json()
     assert body["workspace_counts"]["total"] >= 1
-    assert any(a["agent_id"] == str(agent.id) for a in body["agents"])
+    agent_entry = next(a for a in body["agents"] if a["agent_id"] == str(agent.id))
+    suite_entry = next(s for s in agent_entry["suites"] if s["suite_id"] == str(suite.id))
+    assert suite_entry["scenarios"]
+    assert suite_entry["scenarios"][0]["scenario_name"] == "Overview Scenario"
 
     suite_overview = authenticated_client.get(
         f"/api/v1/evaluator-results/overview?suite_id={suite.id}"

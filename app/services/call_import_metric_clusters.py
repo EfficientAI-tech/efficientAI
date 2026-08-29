@@ -37,9 +37,15 @@ from app.services.metric_clusters_rca_summary import (
     compute_rca_summary,
     enrich_metric_cluster_groups,
 )
+from app.services.metric_cluster_rows import (
+    MetricClusterSourceRow,
+    call_import_pair_to_cluster_row,
+    filter_cluster_rows_by_ids,
+)
 from app.services.metric_failure_policy import (
     effective_policies,
     is_metric_failure,
+    is_metric_failure_from_scores,
     policies_from_evaluation_raw,
     policy_has_failure_criteria,
 )
@@ -192,6 +198,23 @@ def filter_completed_row_pairs(
     return [(eval_row, source_row) for eval_row, source_row in pairs if str(eval_row.id) in allowed]
 
 
+def filter_completed_source_rows(
+    source_rows: Sequence[MetricClusterSourceRow],
+    evaluation_row_ids: Optional[Sequence[UUID]],
+) -> List[MetricClusterSourceRow]:
+    return filter_cluster_rows_by_ids(source_rows, evaluation_row_ids)
+
+
+def pairs_to_source_rows(
+    evaluation: CallImportEvaluation,
+    completed_row_pairs: Sequence[Tuple[CallImportEvaluationRow, CallImportRow]],
+) -> List[MetricClusterSourceRow]:
+    return [
+        call_import_pair_to_cluster_row(evaluation, eval_row, source_row)
+        for eval_row, source_row in completed_row_pairs
+    ]
+
+
 def resolve_clustering_policies(
     evaluation: CallImportEvaluation,
     metrics: Sequence[Metric],
@@ -215,6 +238,18 @@ def flagged_metric_names_for_row(
     metrics: Sequence[Metric],
     policies: Dict[str, MetricFailurePolicy],
 ) -> List[str]:
+    return flagged_metric_names_for_source_row(
+        call_import_pair_to_cluster_row(evaluation, eval_row, source_row),
+        metrics,
+        policies,
+    )
+
+
+def flagged_metric_names_for_source_row(
+    source_row: MetricClusterSourceRow,
+    metrics: Sequence[Metric],
+    policies: Dict[str, MetricFailurePolicy],
+) -> List[str]:
     names: List[str] = []
     for metric in metrics:
         if not _metric_is_quality(metric):
@@ -222,9 +257,7 @@ def flagged_metric_names_for_row(
         policy = policies.get(str(metric.id))
         if policy is None:
             continue
-        if _build_flagged_row_payload(
-            evaluation, eval_row, source_row, metric, policy
-        ):
+        if _build_flagged_row_payload_from_source(source_row, metric, policy):
             names.append(metric.name)
     return names
 
@@ -235,16 +268,23 @@ def list_eligible_cluster_rows(
     metrics: Sequence[Metric],
     policies: Dict[str, MetricFailurePolicy],
 ) -> List[Dict[str, Any]]:
+    source_rows = pairs_to_source_rows(evaluation, completed_row_pairs)
+    return list_eligible_cluster_source_rows(source_rows, metrics, policies)
+
+
+def list_eligible_cluster_source_rows(
+    source_rows: Sequence[MetricClusterSourceRow],
+    metrics: Sequence[Metric],
+    policies: Dict[str, MetricFailurePolicy],
+) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
-    for eval_row, source_row in completed_row_pairs:
-        flagged_names = flagged_metric_names_for_row(
-            evaluation, eval_row, source_row, metrics, policies
-        )
+    for source_row in source_rows:
+        flagged_names = flagged_metric_names_for_source_row(source_row, metrics, policies)
         if not flagged_names:
             continue
         items.append(
             {
-                "evaluation_row_id": eval_row.id,
+                "evaluation_row_id": source_row.row_id,
                 "conversation_id": source_row.conversation_id,
                 "row_index": source_row.row_index,
                 "flagged_metric_names": flagged_names,
@@ -267,7 +307,19 @@ def _build_flagged_row_payload(
     metric: Metric,
     policy: MetricFailurePolicy,
 ) -> Optional[Dict[str, Any]]:
-    scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
+    return _build_flagged_row_payload_from_source(
+        call_import_pair_to_cluster_row(evaluation, eval_row, source_row),
+        metric,
+        policy,
+    )
+
+
+def _build_flagged_row_payload_from_source(
+    source_row: MetricClusterSourceRow,
+    metric: Metric,
+    policy: MetricFailurePolicy,
+) -> Optional[Dict[str, Any]]:
+    scores = source_row.metric_scores if isinstance(source_row.metric_scores, dict) else {}
     entry = scores.get(str(metric.id))
     derived_from_children = False
     if not isinstance(entry, dict):
@@ -276,7 +328,7 @@ def _build_flagged_row_payload(
     if isinstance(entry, dict) and (entry.get("skipped") or entry.get("error")):
         return None
 
-    if not is_metric_failure(eval_row, metric, policy):
+    if not is_metric_failure_from_scores(scores, metric, policy):
         return None
 
     value = _score_value(entry, metric) if isinstance(entry, dict) else None
@@ -324,8 +376,6 @@ def _build_flagged_row_payload(
 
     rationale = entry.get("rationale") if isinstance(entry, dict) else None
     if (not isinstance(rationale, str) or not rationale.strip()) and derived_from_children:
-        # Parent entry is absent in this legacy shape; surface one child rationale
-        # so cluster prompts still receive failure context.
         for child_entry_raw in scores.values():
             if not isinstance(child_entry_raw, dict):
                 continue
@@ -342,14 +392,14 @@ def _build_flagged_row_payload(
         else ""
     )
     return {
-        "conversation_id": source_row.conversation_id or str(source_row.id),
-        "evaluation_row_id": str(eval_row.id),
+        "conversation_id": source_row.conversation_id,
+        "evaluation_row_id": str(source_row.row_id),
         "row_index": source_row.row_index,
         "metric_name": metric.name,
         "metric_id": str(metric.id),
         "value": str(value)[:120],
         "rationale": rationale_text,
-        "transcript": _pick_transcript(evaluation, source_row)[:ROW_TRANSCRIPT_CHAR_CAP],
+        "transcript": source_row.transcript[:ROW_TRANSCRIPT_CHAR_CAP],
     }
 
 
@@ -690,6 +740,37 @@ def estimate_metric_clusters_llm_calls(
     *,
     max_llm_calls: Optional[int] = None,
 ) -> Tuple[int, int]:
+    source_rows = pairs_to_source_rows(evaluation, completed_row_pairs)
+    return estimate_metric_clusters_llm_calls_for_source_rows(
+        evaluation.id,
+        metrics,
+        source_rows,
+        policies,
+        max_llm_calls=max_llm_calls,
+    )
+
+
+def _selected_evaluation_row_ids_from_raw(metric_clusters_raw: Any) -> List[str]:
+    if not isinstance(metric_clusters_raw, dict):
+        return []
+    ids_raw = metric_clusters_raw.get("selected_evaluation_row_ids")
+    if not isinstance(ids_raw, list):
+        return []
+    return [str(rid) for rid in ids_raw if rid]
+
+
+def _selected_evaluation_row_ids(evaluation: CallImportEvaluation) -> List[str]:
+    return _selected_evaluation_row_ids_from_raw(evaluation.metric_clusters)
+
+
+def estimate_metric_clusters_llm_calls_for_source_rows(
+    job_key: UUID,
+    metrics: Sequence[Metric],
+    source_rows: Sequence[MetricClusterSourceRow],
+    policies: Dict[str, MetricFailurePolicy],
+    *,
+    max_llm_calls: Optional[int] = None,
+) -> Tuple[int, int]:
     """Return ``(flagged_metric_count, total_estimated_llm_calls)``."""
     llm_budget = normalize_max_llm_calls(max_llm_calls)
     quality_metrics = [m for m in metrics if _metric_is_quality(m)]
@@ -703,12 +784,10 @@ def estimate_metric_clusters_llm_calls(
         if policy is None or not policy_has_failure_criteria(policy, metric):
             continue
         flagged_count = 0
-        for eval_row, source_row in completed_row_pairs:
-            if eval_row.status != "completed":
+        for source_row in source_rows:
+            if source_row.status != "completed":
                 continue
-            if _build_flagged_row_payload(
-                evaluation, eval_row, source_row, metric, policy
-            ):
+            if _build_flagged_row_payload_from_source(source_row, metric, policy):
                 flagged_count += 1
         if flagged_count <= 0:
             continue
@@ -717,31 +796,23 @@ def estimate_metric_clusters_llm_calls(
         _, num_batches = compute_extraction_plan(
             flagged_count, max_llm_calls=per_metric_cap
         )
-        extraction_calls += num_batches + 1  # extraction batches + synthesis
+        extraction_calls += num_batches + 1
 
     discovery = 1 if flagged_metric_count > 0 else 0
     total = extraction_calls + discovery
     return flagged_metric_count, max(total, 1)
 
 
-def _selected_evaluation_row_ids(evaluation: CallImportEvaluation) -> List[str]:
-    raw = evaluation.metric_clusters
-    if not isinstance(raw, dict):
-        return []
-    ids_raw = raw.get("selected_evaluation_row_ids")
-    if not isinstance(ids_raw, list):
-        return []
-    return [str(rid) for rid in ids_raw if rid]
-
-
-def generate_metric_clusters(
+def generate_metric_clusters_for_source_rows(
     db: Session,
-    evaluation: CallImportEvaluation,
+    *,
+    job_key: UUID,
+    metric_clusters_raw: Any,
+    completed_row_count: int,
     organization_id: UUID,
     provider: ModelProvider,
     model: str,
-    *,
-    completed_row_pairs: Sequence[Tuple[CallImportEvaluationRow, CallImportRow]],
+    source_rows: Sequence[MetricClusterSourceRow],
     metrics: Sequence[Metric],
     policies: Dict[str, MetricFailurePolicy],
     on_progress: Optional[ProgressCallback] = None,
@@ -751,13 +822,11 @@ def generate_metric_clusters(
     """Run per-metric clustering + proactive discovery for internal diagnostics."""
     llm_budget = normalize_max_llm_calls(max_llm_calls)
     quality_metrics = [m for m in metrics if _metric_is_quality(m)]
-    selected_row_ids = _selected_evaluation_row_ids(evaluation)
-    stored_policies, policy_source = policies_from_evaluation_raw(
-        evaluation.metric_clusters
-    )
+    selected_row_ids = _selected_evaluation_row_ids_from_raw(metric_clusters_raw)
+    stored_policies, policy_source = policies_from_evaluation_raw(metric_clusters_raw)
     failure_policies = policies or stored_policies
     policies_updated_raw = None
-    raw_mc = evaluation.metric_clusters
+    raw_mc = metric_clusters_raw
     if isinstance(raw_mc, dict) and raw_mc.get("failure_policies_updated_at"):
         try:
             policies_updated_raw = datetime.fromisoformat(
@@ -772,16 +841,12 @@ def generate_metric_clusters(
     extractions_by_metric: Dict[str, List[Dict[str, Any]]] = {}
     metrics_by_id: Dict[str, Metric] = {str(m.id): m for m in metrics}
     total_flagged = 0
-    analysed_calls = sum(
-        1
-        for eval_row, _source in completed_row_pairs
-        if eval_row.status == "completed"
-    )
+    analysed_calls = sum(1 for row in source_rows if row.status == "completed")
 
-    flagged_metric_count, total_calls_estimate = estimate_metric_clusters_llm_calls(
-        evaluation,
+    flagged_metric_count, total_calls_estimate = estimate_metric_clusters_llm_calls_for_source_rows(
+        job_key,
         metrics,
-        completed_row_pairs,
+        source_rows,
         policies,
         max_llm_calls=llm_budget,
     )
@@ -813,7 +878,7 @@ def generate_metric_clusters(
             discovered_problems=[],
             error_message=METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
             generated_at=datetime.now(timezone.utc),
-            generated_at_completed_rows=evaluation.completed_rows,
+            generated_at_completed_rows=completed_row_count,
             max_llm_calls=llm_budget,
             progress={
                 "completed_llm_calls": completed_calls,
@@ -833,12 +898,10 @@ def generate_metric_clusters(
         if policy is None or not policy_has_failure_criteria(policy, metric):
             continue
         flagged_payloads: List[Dict[str, Any]] = []
-        for eval_row, source_row in completed_row_pairs:
-            if eval_row.status != "completed":
+        for source_row in source_rows:
+            if source_row.status != "completed":
                 continue
-            payload = _build_flagged_row_payload(
-                evaluation, eval_row, source_row, metric, policy
-            )
+            payload = _build_flagged_row_payload_from_source(source_row, metric, policy)
             if payload:
                 flagged_payloads.append(payload)
                 all_flagged_samples.append(payload)
@@ -852,7 +915,7 @@ def generate_metric_clusters(
         batch_size, num_batches = compute_extraction_plan(
             flagged_count, max_llm_calls=max(20, extraction_cap // max(len(quality_metrics), 1))
         )
-        rng = random.Random(f"{evaluation.id}:{metric.id}")
+        rng = random.Random(f"{job_key}:{metric.id}")
         shuffled = list(flagged_payloads)
         rng.shuffle(shuffled)
         batches = _batch_rows(shuffled, batch_size)[:num_batches]
@@ -875,7 +938,7 @@ def generate_metric_clusters(
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Metric cluster extraction failed for {} / {}: {}",
-                    evaluation.id,
+                    job_key,
                     metric.id,
                     exc,
                 )
@@ -902,7 +965,7 @@ def generate_metric_clusters(
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Metric cluster synthesis failed for {} / {}: {}",
-                evaluation.id,
+                job_key,
                 metric.id,
                 exc,
             )
@@ -940,11 +1003,7 @@ def generate_metric_clusters(
             total_flagged=max(total_flagged, 1),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Proactive discovery failed for evaluation {}: {}",
-            evaluation.id,
-            exc,
-        )
+        logger.warning("Proactive discovery failed for job {}: {}", job_key, exc)
     completed_calls += 1
     if on_progress:
         on_progress(completed_calls, total_calls_estimate)
@@ -979,9 +1038,7 @@ def generate_metric_clusters(
         for g in groups
     ]
     if discovered:
-        overview_parts.append(
-            f"{len(discovered)} proactively discovered theme(s)"
-        )
+        overview_parts.append(f"{len(discovered)} proactively discovered theme(s)")
 
     return EvaluationMetricClustersState(
         status="completed",
@@ -990,7 +1047,7 @@ def generate_metric_clusters(
         rca_summary=rca_summary,
         overview="; ".join(overview_parts) if overview_parts else None,
         generated_at=datetime.now(timezone.utc),
-        generated_at_completed_rows=evaluation.completed_rows,
+        generated_at_completed_rows=completed_row_count,
         max_llm_calls=llm_budget,
         progress={
             "completed_llm_calls": completed_calls,
@@ -1004,6 +1061,38 @@ def generate_metric_clusters(
         failure_policies=failure_policies,
         failure_policies_source=policy_source,  # type: ignore[arg-type]
         failure_policies_updated_at=policies_updated_raw,
+    )
+
+
+def generate_metric_clusters(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    organization_id: UUID,
+    provider: ModelProvider,
+    model: str,
+    *,
+    completed_row_pairs: Sequence[Tuple[CallImportEvaluationRow, CallImportRow]],
+    metrics: Sequence[Metric],
+    policies: Dict[str, MetricFailurePolicy],
+    on_progress: Optional[ProgressCallback] = None,
+    max_llm_calls: Optional[int] = None,
+    is_cancelled: Optional[CancelCheck] = None,
+) -> EvaluationMetricClustersState:
+    source_rows = pairs_to_source_rows(evaluation, completed_row_pairs)
+    return generate_metric_clusters_for_source_rows(
+        db,
+        job_key=evaluation.id,
+        metric_clusters_raw=evaluation.metric_clusters,
+        completed_row_count=evaluation.completed_rows,
+        organization_id=organization_id,
+        provider=provider,
+        model=model,
+        source_rows=source_rows,
+        metrics=metrics,
+        policies=policies,
+        on_progress=on_progress,
+        max_llm_calls=max_llm_calls,
+        is_cancelled=is_cancelled,
     )
 
 

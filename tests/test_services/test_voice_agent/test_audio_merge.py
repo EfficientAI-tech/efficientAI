@@ -5,8 +5,15 @@ import wave
 import numpy as np
 import pytest
 
+from efficientai.audio.utils import mix_audio
+
 from app.services.voice_agent.utils import audio_merge as audio_merge_module
 from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
+from app.services.voice_agent.utils.telephony_audio_align import (
+    merge_telephony_tracks_to_mono,
+    read_wav_mono,
+    write_wav_mono,
+)
 
 
 def _write_wav(path: str, *, num_samples: int) -> None:
@@ -16,6 +23,45 @@ def _write_wav(path: str, *, num_samples: int) -> None:
         wf.setsampwidth(2)
         wf.setframerate(8000)
         wf.writeframes(samples.tobytes())
+
+
+def test_mix_audio_doubles_user_when_present_in_both_mixed_streams():
+    """Documents the old playground bug: mixing two already-mixed mono streams."""
+    user_only = np.full(800, 5000, dtype=np.int16).tobytes()
+    bot_only = np.full(800, 3000, dtype=np.int16).tobytes()
+    input_mix = mix_audio(user_only, bot_only)
+    remixed = mix_audio(input_mix, user_only)
+    input_samples = np.frombuffer(input_mix, dtype=np.int16)
+    remixed_samples = np.frombuffer(remixed, dtype=np.int16)
+    assert remixed_samples[0] > input_samples[0]
+    assert remixed_samples[0] == 13000  # (5000+3000) + 5000
+
+
+def test_merge_dual_tracks_does_not_double_isolated_user_track(tmp_path):
+    """Disk merge with an empty bot track uploads user audio without doubling."""
+    sample_rate = 8000
+    user_path = tmp_path / "user.wav"
+    bot_path = tmp_path / "bot.wav"
+    out_path = tmp_path / "out.wav"
+
+    user = np.zeros(sample_rate, dtype=np.int16)
+    user[100:200] = 5000
+    bot = np.zeros(sample_rate // 40, dtype=np.int16)
+    write_wav_mono(str(user_path), user, sample_rate)
+    write_wav_mono(str(bot_path), bot, sample_rate)
+
+    analysis, _duration = merge_telephony_tracks_to_mono(
+        str(user_path),
+        str(bot_path),
+        output_path=str(out_path),
+        call_direction="inbound",
+    )
+    from app.services.voice_agent.utils.telephony_audio_align import TelephonyMergeStrategy
+
+    assert analysis.strategy == TelephonyMergeStrategy.USER_ONLY
+    merged, _rate = read_wav_mono(str(out_path))
+    assert merged[150] == 5000
+    assert merged[150] != 10000
 
 
 def test_merge_and_upload_uses_bot_track_when_user_track_empty(tmp_path, monkeypatch):

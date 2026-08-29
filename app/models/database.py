@@ -1136,6 +1136,31 @@ class EvaluatorResult(Base):
     created_by = Column(String, nullable=True)
 
 
+class EvaluatorResultClusterJob(Base):
+    """Cached failure-cluster state for a filtered evaluator-results scope."""
+
+    __tablename__ = "evaluator_result_cluster_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    scope_key = Column(String(512), nullable=False)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    suite_id = Column(UUID(as_uuid=True), ForeignKey("evaluator_suites.id"), nullable=True)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=True)
+    metric_clusters = Column(JSON, nullable=True)
+    celery_task_id = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 # Enums moved to enums.py
 
 

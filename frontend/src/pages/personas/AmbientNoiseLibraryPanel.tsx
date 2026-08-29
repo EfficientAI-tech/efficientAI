@@ -168,7 +168,10 @@ export default function AmbientNoiseLibraryPanel() {
                     compact
                     previewId={previewId}
                     onToggle={() =>
-                      preview.togglePreview(previewId, () => apiClient.previewAmbientLibraryAsset(asset.id))
+                      preview.togglePreview(previewId, async () => {
+                        const { url } = await apiClient.getAmbientLibraryPreviewUrl(asset.id)
+                        return url
+                      })
                     }
                     currentTime={active ? preview.currentTime : 0}
                     duration={active ? preview.duration : 0}

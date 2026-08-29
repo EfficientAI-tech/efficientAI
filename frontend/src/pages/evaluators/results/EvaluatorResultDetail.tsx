@@ -403,12 +403,12 @@ export default function EvaluatorResultDetailPage({
     const scenarioId = resultData.scenario_id ?? resultData.scenario?.id
     const crumbs: { label: string; to?: string }[] = [{ label: 'Evaluation Results', to: '/results' }]
     const workspaceUrl = (suite?: string, scenario?: string) => {
-      if (!agentId) return '/results'
       const params = new URLSearchParams()
+      if (agentId) params.set('agent', String(agentId))
       if (suite) params.set('suite', suite)
       if (scenario) params.set('scenario', scenario)
       const qs = params.toString()
-      return `/results/agents/${agentId}${qs ? `?${qs}` : ''}`
+      return `/results${qs ? `?${qs}` : ''}`
     }
     if (agentId && resultData.agent?.name) {
       crumbs.push({ label: resultData.agent.name, to: workspaceUrl() })

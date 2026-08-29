@@ -2,6 +2,8 @@ import { useCallback, useRef, useState } from 'react'
 
 const DEFAULT_PREVIEW_VOLUME = 0.7
 
+export type AmbientPreviewSource = string | Blob
+
 export function formatPlaybackTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
   const mins = Math.floor(seconds / 60)
@@ -65,6 +67,7 @@ export function useAmbientPreview() {
 
   const attachAudio = useCallback((audio: HTMLAudioElement) => {
     audio.loop = true
+    audio.preload = 'metadata'
     audio.volume = volumeRef.current
     audio.onloadedmetadata = () => {
       setDuration(Number.isFinite(audio.duration) ? audio.duration : 0)
@@ -86,7 +89,7 @@ export function useAmbientPreview() {
   }, [stop])
 
   const togglePreview = useCallback(
-    async (id: string, loadBlob: () => Promise<Blob>) => {
+    async (id: string, loadSource: () => Promise<AmbientPreviewSource>) => {
       if (playingId === id || loadingId === id) {
         stop()
         return
@@ -97,9 +100,11 @@ export function useAmbientPreview() {
       setLoadingId(id)
 
       try {
-        const blob = await loadBlob()
-        const url = URL.createObjectURL(blob)
-        objectUrlRef.current = url
+        const source = await loadSource()
+        const url = typeof source === 'string' ? source : URL.createObjectURL(source)
+        if (typeof source !== 'string') {
+          objectUrlRef.current = url
+        }
 
         const audio = new Audio(url)
         attachAudio(audio)

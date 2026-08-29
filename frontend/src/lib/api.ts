@@ -1456,6 +1456,16 @@ class ApiClient {
     return response.data
   }
 
+  async getAmbientLibraryPreviewUrl(
+    assetId: string,
+    expiration: number = 3600,
+  ): Promise<{ url: string; expires_in: number }> {
+    const response = await this.client.get(`/api/v1/personas/ambient-library/${assetId}/preview-url`, {
+      params: { expiration },
+    })
+    return response.data
+  }
+
   async previewAmbientPreset(presetId: string): Promise<Blob> {
     const response = await this.client.get(`/api/v1/personas/ambient-presets/${presetId}/preview`, {
       responseType: 'blob',
@@ -4587,6 +4597,94 @@ class ApiClient {
     if (params.agentId) query.agent_id = params.agentId
     if (params.scenarioId) query.scenario_id = params.scenarioId
     const response = await this.client.get('/api/v1/evaluator-results/aggregate', { params: query })
+    return response.data
+  }
+
+  private _evaluatorResultClusterQuery(scope: {
+    agentId?: string
+    suiteId?: string
+    scenarioId?: string
+  }): Record<string, string> {
+    const query: Record<string, string> = {}
+    if (scope.agentId) query.agent_id = scope.agentId
+    if (scope.suiteId) query.suite_id = scope.suiteId
+    if (scope.scenarioId) query.scenario_id = scope.scenarioId
+    return query
+  }
+
+  async getEvaluatorResultMetricClusterFailurePolicies(scope: {
+    agentId?: string
+    suiteId?: string
+    scenarioId?: string
+  }): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.get(
+      '/api/v1/evaluator-results/metric-clusters/failure-policies',
+      { params: this._evaluatorResultClusterQuery(scope) },
+    )
+    return response.data
+  }
+
+  async saveEvaluatorResultMetricClusterFailurePolicies(
+    scope: { agentId?: string; suiteId?: string; scenarioId?: string },
+    policies: Record<string, import('../types/api').MetricFailurePolicy>,
+  ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.put(
+      '/api/v1/evaluator-results/metric-clusters/failure-policies',
+      { policies },
+      { params: this._evaluatorResultClusterQuery(scope) },
+    )
+    return response.data
+  }
+
+  async listEvaluatorResultMetricClusterEligibleRows(
+    scope: { agentId?: string; suiteId?: string; scenarioId?: string },
+    options?: { limit?: number; count_only?: boolean },
+  ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
+    const response = await this.client.get(
+      '/api/v1/evaluator-results/metric-clusters/eligible-rows',
+      { params: { ...this._evaluatorResultClusterQuery(scope), ...options } },
+    )
+    return response.data
+  }
+
+  async getEvaluatorResultMetricClusters(scope: {
+    agentId?: string
+    suiteId?: string
+    scenarioId?: string
+  }): Promise<import('../types/api').EvaluationMetricClustersState | null> {
+    const response = await this.client.get('/api/v1/evaluator-results/metric-clusters', {
+      params: this._evaluatorResultClusterQuery(scope),
+    })
+    return response.data
+  }
+
+  async generateEvaluatorResultMetricClusters(
+    scope: { agentId?: string; suiteId?: string; scenarioId?: string },
+    body: {
+      force?: boolean
+      regenerate?: boolean
+      provider?: string
+      model?: string
+      row_limit?: number
+      failure_policies?: Record<string, import('../types/api').MetricFailurePolicy>
+    },
+  ): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const response = await this.client.post('/api/v1/evaluator-results/metric-clusters', body, {
+      params: this._evaluatorResultClusterQuery(scope),
+    })
+    return response.data
+  }
+
+  async cancelEvaluatorResultMetricClusters(scope: {
+    agentId?: string
+    suiteId?: string
+    scenarioId?: string
+  }): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const response = await this.client.post(
+      '/api/v1/evaluator-results/metric-clusters/cancel',
+      {},
+      { params: this._evaluatorResultClusterQuery(scope) },
+    )
     return response.data
   }
 

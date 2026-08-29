@@ -2,31 +2,84 @@
 # VoiceMaker TTS service for Pipecat pipeline integration.
 #
 
-from typing import AsyncGenerator, Optional
+import base64
+import json
+from typing import Any, AsyncGenerator, Optional
 
-import aiohttp
 from loguru import logger
 from pydantic import BaseModel
 
 from efficientai.frames.frames import (
+    CancelFrame,
+    EndFrame,
     ErrorFrame,
     Frame,
+    InterruptionFrame,
+    StartFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
 )
-from efficientai.services.tts_service import TTSService
+from efficientai.processors.frame_processor import FrameDirection
+from efficientai.services.tts_service import InterruptibleTTSService
 from efficientai.utils.tracing.service_decorators import traced_tts
 
 from .http_tts import _infer_language_code
 
+try:
+    from websockets.asyncio.client import connect as websocket_connect
+    from websockets.protocol import State
+except ModuleNotFoundError as e:
+    logger.error(f"Exception: {e}")
+    logger.error("In order to use VoiceMaker, you need the websockets package.")
+    raise Exception(f"Missing module: {e}") from e
 
-class VoiceMakerTTSService(TTSService):
-    """VoiceMaker TTS service for real-time voice pipeline use.
 
-    Downloads audio from VoiceMaker's REST API and yields PCM frames
-    compatible with the Pipecat pipeline.
-    """
+VOICEMAKER_WS_URL = "wss://developer.voicemaker.in/api/v1/voice/convert"
+
+
+def normalize_voicemaker_engine(model: Optional[str]) -> Optional[str]:
+    """Strip the legacy voicemaker- prefix from an engine name."""
+    if model is None:
+        return None
+    engine = model
+    if engine.lower().startswith("voicemaker-"):
+        engine = engine[len("voicemaker-") :]
+    return engine
+
+
+def build_voicemaker_ws_payload(
+    *,
+    text: str,
+    voice_id: str,
+    language_code: str,
+    sample_rate: int,
+    engine: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a VoiceMaker WebSocket convert payload."""
+    payload: dict[str, Any] = {
+        "VoiceId": voice_id,
+        "Text": text,
+        "LanguageCode": language_code,
+        "OutputFormat": "wav",
+        "SampleRate": str(sample_rate),
+    }
+    normalized = normalize_voicemaker_engine(engine)
+    if normalized:
+        payload["Engine"] = normalized
+    return payload
+
+
+def pcm_from_voicemaker_audio(audio_b64: str) -> bytes:
+    """Decode a VoiceMaker audio chunk and strip a WAV header when present."""
+    audio = base64.b64decode(audio_b64)
+    if audio.startswith(b"RIFF") and len(audio) >= 44:
+        return audio[44:]
+    return audio
+
+
+class VoiceMakerTTSService(InterruptibleTTSService):
+    """VoiceMaker TTS service that streams audio over WebSocket."""
 
     class InputParams(BaseModel):
         output_format: str = "wav"
@@ -39,110 +92,176 @@ class VoiceMakerTTSService(TTSService):
         voice_id: str = "ai3-Jony",
         model: str = "neural",
         sample_rate: int = 24000,
+        url: str = VOICEMAKER_WS_URL,
         params: Optional[InputParams] = None,
         **kwargs,
     ):
-        super().__init__(sample_rate=sample_rate, **kwargs)
+        super().__init__(
+            aggregate_sentences=True,
+            push_text_frames=True,
+            pause_frame_processing=True,
+            push_stop_frames=False,
+            sample_rate=sample_rate,
+            **kwargs,
+        )
         self._api_key = api_key
-        self._voice_id = voice_id
         self._model = model
         self._params = params or VoiceMakerTTSService.InputParams(sample_rate_hz=sample_rate)
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._websocket_url = url
+        self.set_model_name(model)
+        self.set_voice(voice_id)
+        self._started = False
+        self._receive_task = None
+        self._disconnecting = False
 
     def can_generate_metrics(self) -> bool:
         return True
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
+    async def start(self, frame: StartFrame):
+        await super().start(frame)
+        await self._connect()
 
-    async def stop(self, frame: Frame):
+    async def stop(self, frame: EndFrame):
         await super().stop(frame)
-        if self._session:
-            await self._session.close()
-            self._session = None
+        await self._disconnect()
 
-    async def cancel(self, frame: Frame):
+    async def cancel(self, frame: CancelFrame):
         await super().cancel(frame)
-        if self._session:
-            await self._session.close()
-            self._session = None
+        await self._disconnect()
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+        await super().push_frame(frame, direction)
+        if isinstance(frame, (TTSStoppedFrame, InterruptionFrame)):
+            self._started = False
+
+    async def _connect(self):
+        await self._connect_websocket()
+        if self._websocket and not self._receive_task:
+            self._receive_task = self.create_task(self._receive_task_handler(self._report_error))
+
+    async def _disconnect(self):
+        try:
+            self._disconnecting = True
+            if self._receive_task:
+                await self.cancel_task(self._receive_task, timeout=2.0)
+                self._receive_task = None
+            await self._disconnect_websocket()
+        except Exception as e:
+            logger.error(f"{self} exception: {e}")
+            await self.push_error(ErrorFrame(error=f"{self} error: {e}"))
+        finally:
+            self._started = False
+            self._websocket = None
+            self._disconnecting = False
+
+    async def _connect_websocket(self):
+        try:
+            if self._websocket and self._websocket.state is State.OPEN:
+                return
+
+            self._websocket = await websocket_connect(
+                self._websocket_url,
+                additional_headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                },
+            )
+            logger.debug("Connected to VoiceMaker TTS Websocket")
+            await self._call_event_handler("on_connected")
+        except Exception as e:
+            logger.error(f"{self} exception: {e}")
+            await self.push_error(ErrorFrame(error=f"{self} error: {e}"))
+            self._websocket = None
+            await self._call_event_handler("on_connection_error", f"{e}")
+
+    async def _disconnect_websocket(self):
+        try:
+            await self.stop_all_metrics()
+            if self._websocket:
+                logger.debug("Disconnecting from VoiceMaker")
+                await self._websocket.close()
+        except Exception as e:
+            logger.error(f"{self} error closing websocket: {e}")
+            await self.push_error(ErrorFrame(error=f"{self} error: {e}"))
+        finally:
+            self._started = False
+            self._websocket = None
+            await self._call_event_handler("on_disconnected")
+
+    def _get_websocket(self):
+        if self._websocket:
+            return self._websocket
+        raise Exception("Websocket not connected")
+
+    def _payload_sample_rate(self) -> int:
+        return self.sample_rate or self._init_sample_rate or 24000
+
+    async def _send_text(self, text: str):
+        if self._disconnecting:
+            logger.warning("Service is disconnecting, ignoring text send")
+            return
+
+        if self._websocket and self._websocket.state is State.OPEN:
+            payload = build_voicemaker_ws_payload(
+                text=text,
+                voice_id=self._voice_id,
+                language_code=_infer_language_code(self._voice_id),
+                sample_rate=self._payload_sample_rate(),
+                engine=self._model,
+            )
+            await self._websocket.send(json.dumps(payload))
+        else:
+            logger.warning("WebSocket not ready, cannot send text")
+
+    async def _receive_messages(self):
+        async for message in self._get_websocket():
+            if not isinstance(message, str):
+                continue
+            msg = json.loads(message)
+            if not msg.get("success", False):
+                error_msg = msg.get("message") or "VoiceMaker TTS error"
+                errors = msg.get("errors") or []
+                if errors:
+                    error_msg = f"{error_msg}: {'; '.join(str(item) for item in errors)}"
+                logger.error(f"TTS Error: {error_msg}")
+                await self.push_frame(ErrorFrame(error=error_msg))
+                continue
+
+            audio_b64 = msg.get("audio")
+            if audio_b64:
+                await self.stop_ttfb_metrics()
+                pcm = pcm_from_voicemaker_audio(audio_b64)
+                if len(pcm) % 2 == 1:
+                    pcm = pcm + b"\x00"
+                if pcm:
+                    await self.push_frame(TTSAudioRawFrame(pcm, self._payload_sample_rate(), 1))
+
+            if msg.get("isFinal"):
+                await self.push_frame(TTSStoppedFrame())
+                self._started = False
 
     @traced_tts
     async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
         logger.debug(f"Generating VoiceMaker TTS: [{text}]")
 
-        language_code = _infer_language_code(self._voice_id)
-
-        payload = {
-            "VoiceId": self._voice_id,
-            "Text": text,
-            "LanguageCode": language_code,
-            "OutputFormat": "wav",
-            "SampleRate": str(self.sample_rate),
-            "ResponseType": "file",
-        }
-        if self._model:
-            engine = self._model
-            if engine.lower().startswith("voicemaker-"):
-                engine = engine[len("voicemaker-"):]
-            payload["Engine"] = engine
-
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
-
         try:
-            session = await self._get_session()
-            await self.start_ttfb_metrics()
+            if not self._websocket or self._websocket.state is State.CLOSED:
+                await self._connect()
 
-            async with session.post(
-                "https://developer.voicemaker.in/api/v1/voice/convert",
-                json=payload,
-                headers=headers,
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"VoiceMaker TTS error: {response.status} - {error_text[:300]}")
-                    yield ErrorFrame(error=f"VoiceMaker TTS error: {error_text[:300]}")
-                    return
-
-                data = await response.json()
-                audio_url = data.get("path")
-                if not audio_url:
-                    yield ErrorFrame(error="VoiceMaker returned no audio path")
-                    return
-
-            await self.start_tts_usage_metrics(text)
-            yield TTSStartedFrame()
-            await self.stop_ttfb_metrics()
-
-            async with session.get(audio_url) as audio_resp:
-                if audio_resp.status != 200:
-                    yield ErrorFrame(error=f"VoiceMaker audio download failed: {audio_resp.status}")
-                    return
-
-                audio_bytes = await audio_resp.read()
-
-                # Strip WAV header (44 bytes) to get raw PCM
-                pcm_data = audio_bytes[44:] if len(audio_bytes) > 44 else audio_bytes
-
-                # Yield in chunks for smooth pipeline flow
-                chunk_size = 4096
-                for i in range(0, len(pcm_data), chunk_size):
-                    chunk = pcm_data[i : i + chunk_size]
-                    if chunk:
-                        yield TTSAudioRawFrame(
-                            audio=chunk,
-                            sample_rate=self.sample_rate,
-                            num_channels=1,
-                        )
-
-            yield TTSStoppedFrame()
-
+            try:
+                if not self._started:
+                    await self.start_ttfb_metrics()
+                    yield TTSStartedFrame()
+                    self._started = True
+                await self._send_text(text)
+                await self.start_tts_usage_metrics(text)
+            except Exception as e:
+                logger.error(f"{self} exception: {e}")
+                yield ErrorFrame(error=f"{self} error: {e}")
+                yield TTSStoppedFrame()
+                await self._disconnect()
+                await self._connect()
+                return
+            yield None
         except Exception as e:
-            logger.error(f"VoiceMaker TTS exception: {e}")
-            yield ErrorFrame(error=f"VoiceMaker TTS exception: {str(e)}")
-            yield TTSStoppedFrame()
+            logger.error(f"{self} exception: {e}")
+            yield ErrorFrame(error=f"{self} error: {e}")

@@ -148,6 +148,18 @@ def build_evaluator_results_overview(
             for sid, sc in suite_counts.items():
                 meta = suite_meta.get(sid)
                 if meta and meta.agent_id == aid:
+                    scenario_summaries: List[EvaluatorResultsScenarioSummary] = []
+                    for (suite_key, scen_id), scen_counts in scenario_counts.items():
+                        if suite_key != sid:
+                            continue
+                        scenario_summaries.append(
+                            EvaluatorResultsScenarioSummary(
+                                scenario_id=scen_id,
+                                scenario_name=scenario_names.get(scen_id, "Scenario"),
+                                counts=scen_counts.to_schema(),
+                            )
+                        )
+                    scenario_summaries.sort(key=lambda s: s.scenario_name.lower())
                     agent_suites.append(
                         EvaluatorResultsSuiteSummary(
                             suite_id=sid,
@@ -155,6 +167,7 @@ def build_evaluator_results_overview(
                             agent_id=meta.agent_id,
                             persona_id=meta.persona_id,
                             counts=sc.to_schema(),
+                            scenarios=scenario_summaries or None,
                         )
                     )
             agent_suites.sort(key=lambda s: (s.suite_name or "").lower())
@@ -172,6 +185,18 @@ def build_evaluator_results_overview(
         for sid, sc in suite_counts.items():
             meta = suite_meta.get(sid)
             if meta and meta.agent_id == agent_id:
+                scenario_summaries = []
+                for (suite_key, scen_id), scen_counts in scenario_counts.items():
+                    if suite_key != sid:
+                        continue
+                    scenario_summaries.append(
+                        EvaluatorResultsScenarioSummary(
+                            scenario_id=scen_id,
+                            scenario_name=scenario_names.get(scen_id, "Scenario"),
+                            counts=scen_counts.to_schema(),
+                        )
+                    )
+                scenario_summaries.sort(key=lambda s: s.scenario_name.lower())
                 agent_suites.append(
                     EvaluatorResultsSuiteSummary(
                         suite_id=sid,
@@ -179,6 +204,7 @@ def build_evaluator_results_overview(
                         agent_id=meta.agent_id,
                         persona_id=meta.persona_id,
                         counts=sc.to_schema(),
+                        scenarios=scenario_summaries or None,
                     )
                 )
         agent_suites.sort(key=lambda s: (s.suite_name or "").lower())
