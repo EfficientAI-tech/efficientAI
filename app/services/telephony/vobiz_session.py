@@ -79,7 +79,11 @@ def create_call_session(
     ttl = max(int(ttl_seconds), 60)
     key = f"{_SESSION_PREFIX}{call_ref}"
     try:
-        _get_redis().setex(key, ttl, json.dumps(payload))
+        client = _get_redis()
+        if hasattr(client, "set"):
+            client.set(key, json.dumps(payload), ex=ttl)
+        else:
+            client.setex(key, ttl, json.dumps(payload))
     except redis.RedisError as exc:
         logger.warning("Redis unavailable for Vobiz session; using in-memory fallback: %s", exc)
         _purge_expired_in_memory()

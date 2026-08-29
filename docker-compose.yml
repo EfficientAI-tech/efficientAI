@@ -70,12 +70,18 @@ services:
       # AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=https;AccountName=...
       # AZURE_CONTAINER_NAME: your-container
       SERVICE_MODE: api
+      # Live observability ingest (Pipecat / external runtime → /observability/live/events)
+      OBSERVABILITY_LIVE_INGEST_ENABLED: ${OBSERVABILITY_LIVE_INGEST_ENABLED:-true}
+      OBSERVABILITY_LIVE_AGGREGATES_ENABLED: ${OBSERVABILITY_LIVE_AGGREGATES_ENABLED:-true}
+      OBSERVABILITY_LIVE_DASHBOARD_ENABLED: ${OBSERVABILITY_LIVE_DASHBOARD_ENABLED:-true}
       # Browser voice-agent WS when split (optional). Vobiz uses vobiz.webhook_base_url on telephony.
       # MEDIA_WS_BASE_URL: ${MEDIA_WS_BASE_URL:-ws://localhost:8001}
     volumes:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
+      # Mount local frontend build so UI changes appear without rebuilding the API image
+      - ./frontend/dist:/app/frontend/dist:ro
       # Optional: mount GCP service account for GCS auth
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     ports:
@@ -186,7 +192,7 @@ services:
       sh -c "celery -A app.workers.celery_app worker -Q platform --pool threads --concurrency 2 --loglevel=info &
       exec celery -A app.workers.celery_app beat --loglevel=info"
 
-  # Dedicated worker for call-import + evaluation queues. Celery drains
+  # Dedicated worker for call-import + evaluation + provider-sync queues. Celery drains
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
   # then ``eval-control`` (cancel/retry/materialize), then ``evaluations``
   # (fair dispatch + LLM scoring).
@@ -224,7 +230,7 @@ services:
       # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     # Thread pool: keep concurrency near Redis inflight caps + headroom when sharding
     # (each task may hold catalog + shard connections for tens of seconds).
-    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations --pool threads --concurrency 12
+    command: eai worker --config /app/config.yml --loglevel info --queues imports,diarization,eval-control,evaluations,provider-sync --pool threads --concurrency 12
 
   # Low-priority usage pricing: Redis flush + cost recompute/backfill.
   worker-usage:

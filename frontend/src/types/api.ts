@@ -376,6 +376,20 @@ export interface IntegrationCreate {
   is_default?: boolean
 }
 
+export interface ExternalProviderAgent {
+  id: string
+  name: string
+  archived: boolean
+  created_at?: string | number | null
+  metadata?: Record<string, unknown>
+}
+
+export interface ExternalProviderAgentListResponse {
+  agents: ExternalProviderAgent[]
+  has_more: boolean
+  next_cursor?: string | null
+}
+
 // VoiceBundle Types
 export enum ModelProvider {
   OPENAI = 'openai',
@@ -2156,12 +2170,34 @@ export interface ObservabilityCallData {
   endedReason?: string
   recording_s3_key?: string
   recording_url?: string
+  integration_id?: string
+  provider_trace?: {
+    source?: string
+    trace_source?: string
+    trace_id?: string
+    ingested_at?: string
+    storage?: 'inline' | 's3'
+    trace_s3_key?: string
+    normalized_trace?: Record<string, unknown>
+    otlp_traces?: Record<string, unknown>
+  }
   duration_seconds?: number
+  trace_id?: string
   agent_name?: string
   _agent_ref?: string | number
   direction?: string
   messages?: Array<{ role: string; content: string; start_time?: number; end_time?: number }>
   live_transcript?: Array<{ role: string; content: string; timestamp?: string; start_time?: number }>
+  speaker_segments?: Array<{
+    speaker?: string
+    role?: string
+    text?: string
+    content?: string
+    start?: number
+    end?: number
+    start_time?: number
+    end_time?: number
+  }>
   metadata?: Record<string, unknown>
   call_short_id?: string
 }
@@ -2176,11 +2212,78 @@ export interface ObservabilityCall {
   source?: string | null
   provider_platform?: string | null
   provider_call_id?: string | null
+  trace_id?: string | null
+  last_live_event_ts?: string | null
   agent_id?: string | null
+  evaluator_result_id?: string | null
   agent?: ObservabilityCallAgent | null
   created_at?: string | null
   updated_at?: string | null
   call_data?: ObservabilityCallData | null
   live_transcript?: Array<{ role: string; content: string; timestamp?: string }>
   display_name?: string | null
+}
+
+export interface ObservabilityCallsSummary {
+  total_calls: number
+  total_minutes: number
+  avg_duration_ms?: number
+  avg_latency_ms: number
+  trace_linked_calls?: number
+  trace_link_rate_pct?: number
+  trace_available_calls?: number
+  trace_available_rate_pct?: number
+  evaluated_calls?: number
+  evaluated_rate_pct?: number
+  event_breakdown?: {
+    call_ended?: number
+    call_failed?: number
+    call_started?: number
+    other?: number
+  }
+  live_feature_flags?: {
+    live_ingest_enabled?: boolean
+    live_aggregates_enabled?: boolean
+    live_dashboard_enabled?: boolean
+  }
+}
+
+export interface ObservabilityLiveLatencyMetricBreakdown {
+  p50_ms?: number | null
+  p90_ms?: number | null
+  p95_ms?: number | null
+  sample_count: number
+}
+
+export interface ObservabilityLiveLatencyWindow extends ObservabilityLiveLatencyMetricBreakdown {
+  window_seconds: number
+  metrics: Record<string, ObservabilityLiveLatencyMetricBreakdown>
+}
+
+export interface ObservabilityLiveLatencyResponse {
+  scope: 'workspace' | 'agent'
+  agent_id?: string
+  platform?: string | null
+  windows: {
+    '60s': ObservabilityLiveLatencyWindow
+    '300s': ObservabilityLiveLatencyWindow
+  }
+}
+
+export interface ObservabilityTraceSpan {
+  span_id: string | null
+  parent_span_id: string | null
+  name: string
+  start_time: number | null
+  end_time: number | null
+  duration_ms: number | null
+  attributes: Record<string, unknown>
+  status: string | null
+}
+
+export interface ObservabilityCallTrace {
+  trace_id: string
+  root_span_id?: string | null
+  spans: ObservabilityTraceSpan[]
+  trace_source?: string | null
 }

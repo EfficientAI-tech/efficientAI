@@ -71,9 +71,12 @@ def setup_tracing(
             }
         )
 
-        # Set up the tracer provider with the resource
-        tracer_provider = TracerProvider(resource=resource)
-        trace.set_tracer_provider(tracer_provider)
+        existing_provider = trace.get_tracer_provider()
+        if isinstance(existing_provider, TracerProvider):
+            tracer_provider = existing_provider
+        else:
+            tracer_provider = TracerProvider(resource=resource)
+            trace.set_tracer_provider(tracer_provider)
 
         # Add console exporter if requested (good for debugging)
         if console_export:

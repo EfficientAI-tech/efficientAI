@@ -76,7 +76,20 @@ api:
 # storage: "filesystem" (default, local Docker volume) or "s3" (durable, for production)
 # multi_tenant: false (default, single tenant) or true (per-org log isolation)
 observability:
-  enabled: false
+  enabled: true
+  live:
+    ingest_enabled: true
+    aggregates_enabled: true
+    dashboard_enabled: true
+    slo_alerts_enabled: true
+  tracing:
+    enabled: true
+    exporter: tempo_http
+    endpoint: "http://tempo:4318/v1/traces"
+    sample_rate: 1.0
+    query_backend: tempo
+    tempo_query_url: "http://tempo:3200"
+    # trace_query_url: "https://api.efficientai.ai/observability/v1/traces"
   loki:
     enabled: false
     url: "http://loki:3100"

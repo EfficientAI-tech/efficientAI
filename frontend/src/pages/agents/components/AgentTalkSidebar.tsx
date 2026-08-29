@@ -56,10 +56,11 @@ export default function AgentTalkSidebar({
   const vapiClientRef = useRef<any>(null)
   const elevenLabsConversationRef = useRef<any>(null)
   const smallestClientRef = useRef<any>(null)
+  const currentCallShortIdRef = useRef<string | null>(null)
+  const elevenLabsConversationIdStoredRef = useRef(false)
   const userInitiatedDisconnectRef = useRef(false)
   const wasOpenRef = useRef(false)
   const userSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const callShortIdRef = useRef<string | null>(null)
 
   const pulseUserSpeaking = (durationMs = 1200) => {
     setActiveSpeaker('user')
@@ -143,6 +144,33 @@ export default function AgentTalkSidebar({
     userInitiatedDisconnectRef.current = false
   }
 
+  const persistProviderCallId = async (providerCallId?: string | null) => {
+    const callShortId = currentCallShortIdRef.current
+    if (!callShortId || !providerCallId) return false
+    try {
+      await apiClient.updateCallRecording(callShortId, providerCallId)
+      return true
+    } catch (err) {
+      console.error('Failed to update call recording provider ID', err)
+      return false
+    }
+  }
+
+  const refreshCurrentCallRecording = (delayMs = 0) => {
+    const callShortId = currentCallShortIdRef.current
+    if (!callShortId) return
+    const run = () => {
+      apiClient.refreshCallRecording(callShortId).catch((err) => {
+        console.error('Failed to refresh call recording', err)
+      })
+    }
+    if (delayMs > 0) {
+      window.setTimeout(run, delayMs)
+      return
+    }
+    run()
+  }
+
   const handleConnectVoiceAI = async () => {
     if (!canTalkVoiceAI) return
     setIsConnecting(true)
@@ -199,6 +227,9 @@ export default function AgentTalkSidebar({
           setActiveSpeaker(null)
         })
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        if (webCall.call_short_id) {
+          currentCallShortIdRef.current = webCall.call_short_id
+        }
         await client.startCall({
           accessToken: webCall.access_token!,
           callId: webCall.call_id,
@@ -209,13 +240,7 @@ export default function AgentTalkSidebar({
         client.on('call-start', async (call: any) => {
           setIsConnected(true)
           setIsConnecting(false)
-          if (callShortIdRef.current && call?.id) {
-            try {
-              await apiClient.updateCallRecording(callShortIdRef.current, call.id)
-            } catch (err) {
-              console.error('Failed to update Vapi call recording', err)
-            }
-          }
+          await persistProviderCallId(call?.id)
         })
         client.on('speech-start', () => setActiveSpeaker('agent'))
         client.on('speech-end', () => setActiveSpeaker((prev) => (prev === 'agent' ? null : prev)))
@@ -232,36 +257,66 @@ export default function AgentTalkSidebar({
             }
           }
         })
-        client.on('call-end', async () => {
+        client.on('call-end', async (call: any) => {
+          await persistProviderCallId(call?.id)
+          refreshCurrentCallRecording()
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
-          if (callShortIdRef.current) {
-            apiClient.refreshCallRecording(callShortIdRef.current).catch((err) => {
-              console.error('Failed to refresh Vapi call recording', err)
-            })
-          }
         })
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
-        callShortIdRef.current = webCall.call_short_id ?? null
-        const vapiCall = await client.start(agent.voice_ai_agent_id!)
-        if (callShortIdRef.current && vapiCall?.id) {
-          try {
-            await apiClient.updateCallRecording(callShortIdRef.current, vapiCall.id)
-          } catch (err) {
-            console.error('Failed to update Vapi call recording from start()', err)
-          }
+        if (webCall.call_short_id) {
+          currentCallShortIdRef.current = webCall.call_short_id
         }
+        const vapiCall = await client.start(agent.voice_ai_agent_id!)
+        await persistProviderCallId(vapiCall?.id)
       } else if (isElevenLabs) {
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        if (webCall.call_short_id) {
+          currentCallShortIdRef.current = webCall.call_short_id
+        }
+        elevenLabsConversationIdStoredRef.current = false
         if (!webCall.signed_url) throw new Error('No signed URL')
+        const tryPersistElevenLabsConversationId = async (
+          conversation: { getId?: () => string | undefined } | null | undefined,
+          maxAttempts = 10,
+          intervalMs = 1000,
+        ) => {
+          if (!conversation?.getId) return false
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const conversationId = conversation.getId()
+            if (conversationId) {
+              const persisted = await persistProviderCallId(conversationId)
+              if (persisted) {
+                elevenLabsConversationIdStoredRef.current = true
+                return true
+              }
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs))
+          }
+          return false
+        }
         const conversation = await Conversation.startSession({
           signedUrl: webCall.signed_url,
           onConnect: () => {
             setIsConnected(true)
             setIsConnecting(false)
+            if (!elevenLabsConversationIdStoredRef.current) {
+              void tryPersistElevenLabsConversationId(
+                elevenLabsConversationRef.current,
+                20,
+                500,
+              )
+            }
           },
-          onDisconnect: () => {
+          onDisconnect: async () => {
+            if (!elevenLabsConversationIdStoredRef.current) {
+              await tryPersistElevenLabsConversationId(conversation, 3, 500)
+            }
+            if (elevenLabsConversationIdStoredRef.current) {
+              // ElevenLabs may still be finalizing when disconnect fires.
+              refreshCurrentCallRecording(5000)
+            }
             setIsConnected(false)
             setIsConnecting(false)
             setActiveSpeaker(null)
@@ -295,9 +350,13 @@ export default function AgentTalkSidebar({
           },
         })
         elevenLabsConversationRef.current = conversation
+        void tryPersistElevenLabsConversationId(conversation, 20, 500)
       } else if (isSmallest) {
         const { AtomsClient } = await import('atoms-client-sdk')
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        if (webCall.call_short_id) {
+          currentCallShortIdRef.current = webCall.call_short_id
+        }
         if (!webCall.access_token || !webCall.host) throw new Error('Missing Smallest credentials')
         const client = new AtomsClient()
         smallestClientRef.current = client
@@ -306,6 +365,7 @@ export default function AgentTalkSidebar({
           setIsConnecting(false)
         })
         client.on('session_ended', () => {
+          refreshCurrentCallRecording(3000)
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)

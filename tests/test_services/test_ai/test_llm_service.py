@@ -343,3 +343,72 @@ def test_generate_response_azure_foundry_uses_openai_v1_routing(monkeypatch):
     assert captured["model"] == "openai/gpt-5-mini"
     assert captured["api_base"] == "https://eaitest-resource.openai.azure.com/openai/v1"
     assert "azure_endpoint" not in captured
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("openai/gpt-5.6", True),
+        ("openai/gpt-5.6-sol", True),
+        ("openai/gpt-5-mini", True),
+        ("openai/gpt-5-chat-latest", False),
+        ("openai/gpt-4o-mini", False),
+        ("openai/o3-mini", True),
+    ],
+)
+def test_model_only_supports_default_temperature(model, expected):
+    assert llm_module._model_only_supports_default_temperature(model) is expected
+
+
+def test_normalize_temperature_for_model_drops_non_default():
+    call_kwargs = {"temperature": 0.7, "model": "openai/gpt-5.6"}
+    llm_module._normalize_temperature_for_model("openai/gpt-5.6", call_kwargs)
+    assert "temperature" not in call_kwargs
+
+
+def test_normalize_temperature_for_model_keeps_default_and_other_models():
+    gpt4_kwargs = {"temperature": 0.7}
+    llm_module._normalize_temperature_for_model("openai/gpt-4o-mini", gpt4_kwargs)
+    assert gpt4_kwargs["temperature"] == 0.7
+
+    gpt5_default_kwargs = {"temperature": 1}
+    llm_module._normalize_temperature_for_model("openai/gpt-5.6", gpt5_default_kwargs)
+    assert gpt5_default_kwargs["temperature"] == 1
+
+
+def test_generate_response_omits_temperature_for_gpt_5_6(monkeypatch):
+    service = LLMService()
+    provider = SimpleNamespace(api_key="encrypted-key")
+    monkeypatch.setattr(service, "_get_ai_provider", lambda *_args, **_kwargs: provider)
+
+    encryption_module = importlib.import_module("app.core.encryption")
+    monkeypatch.setattr(encryption_module, "decrypt_api_key", lambda value: "openai-api-key")
+
+    captured = {}
+
+    def _fake_completion(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_module.litellm, "completion", _fake_completion)
+
+    service.generate_response(
+        messages=[{"role": "user", "content": "hello"}],
+        llm_provider=ModelProvider.OPENAI,
+        llm_model="gpt-5.6",
+        organization_id=uuid4(),
+        db=_mock_org_db(),
+        temperature=0.7,
+        task_defaults={"temperature": 0.7},
+    )
+
+    assert captured["model"] == "openai/gpt-5.6"
+    assert "temperature" not in captured

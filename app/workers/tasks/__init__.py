@@ -23,6 +23,7 @@ from . import initiate_vobiz_outbound
 from . import finalize_telephony_recording
 from . import evaluate_studio_run_item
 from . import call_import_bulk_ops
+from . import elevenlabs_provider_sync
 from . import flush_usage_counters
 from . import recompute_usage_costs
 from . import prune_oss_usage_history
@@ -67,6 +68,10 @@ __all__ = [
     "materialize_call_import_rows_task",
     "delete_call_import_task",
     "materialize_call_import_evaluation_task",
+    "sync_elevenlabs_agents_task",
+    "sync_elevenlabs_catalog_task",
+    "sync_elevenlabs_enrich_task",
+    "run_elevenlabs_monitor_bridge_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -126,6 +131,12 @@ evaluate_studio_run_item_task = (
 )
 materialize_call_import_evaluation_task = (
     call_import_bulk_ops.materialize_call_import_evaluation_task
+)
+sync_elevenlabs_agents_task = elevenlabs_provider_sync.sync_elevenlabs_agents_task
+sync_elevenlabs_catalog_task = elevenlabs_provider_sync.sync_elevenlabs_catalog_task
+sync_elevenlabs_enrich_task = elevenlabs_provider_sync.sync_elevenlabs_enrich_task
+run_elevenlabs_monitor_bridge_task = (
+    elevenlabs_provider_sync.run_elevenlabs_monitor_bridge_task
 )
 flush_usage_counters_task = flush_usage_counters.flush_usage_counters_task
 recompute_usage_costs_task = recompute_usage_costs.recompute_usage_costs_task

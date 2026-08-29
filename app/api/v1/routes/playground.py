@@ -1239,8 +1239,6 @@ async def stream_call_audio(
     Proxy endpoint to stream playground call recording audio in the active workspace.
     Required for providers like ElevenLabs whose audio URLs need auth headers.
     """
-    import requests as http_requests
-
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
@@ -1278,43 +1276,16 @@ async def stream_call_audio(
 
     # ElevenLabs requires API key header – proxy the stream
     if platform == "elevenlabs":
-        audio_url = recording_urls.get("conversation_audio")
-        if not audio_url:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
-
-        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
-        if not agent or not agent.voice_ai_integration_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent or integration not found")
-
-        integration = db.query(Integration).filter(
-            Integration.id == agent.voice_ai_integration_id,
-            Integration.organization_id == organization_id,
-        ).first()
-        if not integration:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration not found")
-
-        decrypted_key = decrypt_api_key(integration.api_key)
-
-        upstream = http_requests.get(
-            audio_url,
-            headers={"xi-api-key": decrypted_key},
-            stream=True,
-            timeout=60,
+        from app.services.observability.provider_audio_proxy import (
+            stream_elevenlabs_audio_proxy,
         )
-        if upstream.status_code != 200:
-            raise HTTPException(
-                status_code=upstream.status_code,
-                detail=f"ElevenLabs audio fetch failed ({upstream.status_code})",
-            )
 
-        content_type = upstream.headers.get("content-type", "audio/mpeg")
-
-        return StreamingResponse(
-            upstream.iter_content(chunk_size=8192),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="call_{call_short_id}.mp3"',
-            },
+        return stream_elevenlabs_audio_proxy(
+            db=db,
+            organization_id=organization_id,
+            call_recording=call_recording,
+            call_data=call_data,
+            filename_prefix="call",
         )
 
     # Custom WebSocket sessions store audio in S3

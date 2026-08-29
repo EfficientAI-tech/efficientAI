@@ -62,10 +62,10 @@ def store_row_restricted_metrics(
         return
     key = f"{_RESTRICTED_ROW_KEY_PREFIX}{eval_row_id}"
     try:
-        _get_redis().setex(
+        _get_redis().set(
             key,
-            _RESTRICTED_ROW_TTL_SECONDS,
             json.dumps(restricted_metric_ids),
+            ex=_RESTRICTED_ROW_TTL_SECONDS,
         )
     except redis.RedisError as exc:
         logger.warning(
@@ -84,7 +84,7 @@ def store_evaluation_transcribe_overwrite(
         return
     key = f"{_TRANSCRIBE_OVERWRITE_KEY_PREFIX}{evaluation_id}"
     try:
-        _get_redis().setex(key, _RESTRICTED_ROW_TTL_SECONDS, "1")
+        _get_redis().set(key, "1", ex=_RESTRICTED_ROW_TTL_SECONDS)
     except redis.RedisError as exc:
         logger.warning(
             "Failed to store transcribe_overwrite for evaluation {}: {}",

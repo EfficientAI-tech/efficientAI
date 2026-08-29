@@ -552,6 +552,7 @@ def make_call_recording(db_session, org_id, seed_org, default_workspace):
             call_short_id=overrides.get("call_short_id", "123456"),
             status=overrides.get("status", CallRecordingStatus.PENDING),
             source=overrides.get("source", CallRecordingSource.WEBHOOK),
+            call_event=overrides.get("call_event"),
             call_data=overrides.get("call_data", {}),
             provider_call_id=overrides.get("provider_call_id"),
             provider_platform=overrides.get("provider_platform"),

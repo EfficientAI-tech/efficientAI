@@ -73,7 +73,7 @@ from app.services.billing.flexprice_service import log_startup_status  # noqa: E
 log_startup_status(component="celery-worker")
 
 # Queues consumed by the dedicated call-import / evaluation worker.
-IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
+IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations,provider-sync"
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
@@ -173,6 +173,10 @@ celery_app.conf.task_routes = {
     "evaluate_studio_run_item": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
     "map_agent_flowchart_prompt_sections": {"queue": "celery"},
+    "sync_elevenlabs_agents": {"queue": "provider-sync"},
+    "sync_elevenlabs_catalog": {"queue": "provider-sync"},
+    "sync_elevenlabs_enrich": {"queue": "provider-sync"},
+    "run_elevenlabs_monitor_bridge": {"queue": "provider-sync"},
     "flush_usage_counters": {"queue": USAGE_WORKER_QUEUE},
     "recompute_usage_costs": {"queue": USAGE_WORKER_QUEUE},
     "evaluate_alerts": {"queue": PLATFORM_WORKER_QUEUE},

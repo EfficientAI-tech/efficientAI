@@ -75,6 +75,11 @@ def get_audio_recorder_class():
             num_samples = len(audio_to_write) // (num_channels * 2)
             self.wave_file.writeframes(audio_to_write)
             self.total_samples_written += num_samples
+            if self.alignment_mode == "stream":
+                try:
+                    self.wave_file._file.flush()
+                except Exception:
+                    pass
 
         async def process_frame(self, frame, direction):
             await super().process_frame(frame, direction)

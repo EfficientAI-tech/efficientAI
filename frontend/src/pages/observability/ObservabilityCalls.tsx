@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Eye, RefreshCw, PhoneCall, Info, Activity, CheckCircle,
-  Clock, Loader, Trash2, PhoneOff, PhoneIncoming,
+  Clock, Loader, Trash2, PhoneOff, PhoneIncoming, Copy, Check, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
@@ -11,20 +11,87 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import { apiClient } from '../../lib/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../config/providers'
-import { IntegrationPlatform, ObservabilityCall } from '../../types/api'
+import {
+  IntegrationPlatform,
+  ObservabilityCall,
+  ObservabilityCallsSummary,
+  ObservabilityLiveLatencyResponse,
+} from '../../types/api'
 import { CallAgentLink } from './CallAgentLink'
+
+const LIVE_INGEST_PLATFORMS = new Set(['pipecat', 'livekit', 'external'])
+const PROVIDER_PLATFORMS = new Set(['retell', 'vapi', 'elevenlabs', 'efficientai'])
+
+type CallSourceFilter = 'all' | 'providers' | 'live' | 'simulated' | 'in_progress'
+
+function isSimulatedLiveCall(call: ObservabilityCall): boolean {
+  const platform = (call.provider_platform || '').toLowerCase()
+  const providerCallId = call.provider_call_id || ''
+  return platform === 'pipecat' && providerCallId.startsWith('pipecat-live-')
+}
+
+function isProviderCall(call: ObservabilityCall): boolean {
+  const platform = (call.provider_platform || '').toLowerCase()
+  if (PROVIDER_PLATFORMS.has(platform)) return true
+  return (call.source || '').toUpperCase() === 'PLAYGROUND'
+}
+
+function isLiveIngestCall(call: ObservabilityCall): boolean {
+  const platform = (call.provider_platform || '').toLowerCase()
+  return LIVE_INGEST_PLATFORMS.has(platform) && !isSimulatedLiveCall(call)
+}
+
+function matchesSourceFilter(call: ObservabilityCall, filter: CallSourceFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'providers') return isProviderCall(call)
+  if (filter === 'live') return isLiveIngestCall(call) || Boolean(call.is_live)
+  if (filter === 'simulated') return isSimulatedLiveCall(call)
+  if (filter === 'in_progress') return Boolean(call.is_live)
+  return true
+}
 
 export default function ObservabilityCalls() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null)
   const [eventFilter, setEventFilter] = useState<'all' | 'call_ended' | 'call_started' | 'other'>('all')
+  const [sourceFilter, setSourceFilter] = useState<CallSourceFilter>('all')
+  const [copiedWebhook, setCopiedWebhook] = useState<string | null>(null)
+  const [showSetupGuide, setShowSetupGuide] = useState(false)
+
+  const webhookBaseUrl = useMemo(() => {
+    const envBase = (import.meta as { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL
+    if (envBase && envBase.trim()) return envBase.replace(/\/$/, '')
+    if (typeof window !== 'undefined') return window.location.origin
+    return ''
+  }, [])
+
+  const webhookEndpoints = useMemo(
+    () => [
+      '/api/v1/observability/calls/webhook/{api_key}',
+      '/api/v1/observability/calls/webhook/retell/{api_key}',
+      '/api/v1/observability/calls/webhook/elevenlabs/{api_key}',
+      '/api/v1/observability/calls/webhook/vapi/{api_key}',
+    ],
+    [],
+  )
+
+  const copyWebhookUrl = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopiedWebhook(value)
+      setTimeout(() => setCopiedWebhook((current) => (current === value ? null : current)), 2000)
+    } catch {
+      // no-op: clipboard may be blocked by browser permissions
+    }
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (callShortId: string) => apiClient.deleteObservabilityCall(callShortId),
     onSuccess: () => {
       setSelectedCallId(null)
       queryClient.invalidateQueries({ queryKey: ['observability-calls'] })
+      queryClient.invalidateQueries({ queryKey: ['observability-calls-summary'] })
     },
   })
 
@@ -42,20 +109,57 @@ export default function ObservabilityCalls() {
     },
   })
 
+  const { data: summary } = useQuery<ObservabilityCallsSummary>({
+    queryKey: ['observability-calls-summary'],
+    queryFn: () => apiClient.getObservabilityCallsSummary(),
+  })
+  const liveDashboardEnabled = Boolean(summary?.live_feature_flags?.live_dashboard_enabled)
+  const liveAggregatesEnabled = Boolean(summary?.live_feature_flags?.live_aggregates_enabled)
+  const { data: liveLatency } = useQuery<ObservabilityLiveLatencyResponse>({
+    queryKey: ['observability-live-latency'],
+    queryFn: () => apiClient.getObservabilityLiveLatencyMetrics(),
+    enabled: liveDashboardEnabled && liveAggregatesEnabled,
+    refetchInterval: 5000,
+  })
+
   const summaryStats = useMemo(() => {
-    const total = calls.length
-    const ended = calls.filter((c) => c.call_event === 'call_ended').length
-    const started = calls.filter((c) => c.call_event === 'call_started').length
+    const total = summary?.total_calls ?? calls.length
+    const ended = summary?.event_breakdown?.call_ended ?? calls.filter((c) => c.call_event === 'call_ended').length
+    const started = summary?.event_breakdown?.call_started ?? calls.filter((c) => c.call_event === 'call_started').length
     const other = total - ended - started
-    return { total, ended, started, other }
-  }, [calls])
+    return {
+      total,
+      ended,
+      started,
+      other,
+      totalMinutes: summary?.total_minutes ?? 0,
+      avgDurationMs: summary?.avg_duration_ms ?? summary?.avg_latency_ms ?? 0,
+      traceLinkedCalls: summary?.trace_linked_calls ?? calls.filter((c) => !!c.trace_id).length,
+      traceLinkRatePct: summary?.trace_link_rate_pct ?? (total > 0 ? (calls.filter((c) => !!c.trace_id).length / total) * 100 : 0),
+      traceAvailableCalls: summary?.trace_available_calls ?? calls.filter((c) => !!c.trace_id).length,
+      traceAvailableRatePct:
+        summary?.trace_available_rate_pct ??
+        (total > 0 ? (calls.filter((c) => !!c.trace_id).length / total) * 100 : 0),
+      evaluatedCalls: summary?.evaluated_calls ?? calls.filter((c) => !!c.evaluator_result_id).length,
+      evaluatedRatePct: summary?.evaluated_rate_pct ?? (total > 0 ? (calls.filter((c) => !!c.evaluator_result_id).length / total) * 100 : 0),
+    }
+  }, [calls, summary])
+
+  const sourceFilterCounts = useMemo(() => ({
+    all: calls.length,
+    providers: calls.filter(isProviderCall).length,
+    live: calls.filter((c) => isLiveIngestCall(c) || Boolean(c.is_live)).length,
+    simulated: calls.filter(isSimulatedLiveCall).length,
+    in_progress: calls.filter((c) => Boolean(c.is_live)).length,
+  }), [calls])
 
   const filteredCalls = useMemo(() => {
-    if (eventFilter === 'all') return calls
-    if (eventFilter === 'call_ended') return calls.filter((c) => c.call_event === 'call_ended')
-    if (eventFilter === 'call_started') return calls.filter((c) => c.call_event === 'call_started')
-    return calls.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
-  }, [calls, eventFilter])
+    const bySource = calls.filter((c) => matchesSourceFilter(c, sourceFilter))
+    if (eventFilter === 'all') return bySource
+    if (eventFilter === 'call_ended') return bySource.filter((c) => c.call_event === 'call_ended')
+    if (eventFilter === 'call_started') return bySource.filter((c) => c.call_event === 'call_started')
+    return bySource.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
+  }, [calls, eventFilter, sourceFilter])
 
   const formatTimestamp = (timestamp: string): string => {
     const date = new Date(timestamp)
@@ -95,19 +199,53 @@ export default function ObservabilityCalls() {
       {/* Webhook info */}
       <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex gap-3 items-start">
         <Info className="h-5 w-5 text-blue-500 mt-0.5 flex-shrink-0" />
-        <div className="text-sm text-blue-800">
-          POST call data to{' '}
-          <code className="font-mono bg-blue-100 px-1.5 py-0.5 rounded text-xs">/api/v1/observability/calls</code>{' '}
-          with the{' '}
-          <code className="font-mono bg-blue-100 px-1.5 py-0.5 rounded text-xs">X-EFFICIENTAI-API-KEY</code>{' '}
-          header. Payloads are stored per organization and surfaced here.
+        <div className="text-sm text-blue-800 w-full">
+          <p>Use webhook URLs with your API key:</p>
+          <div className="mt-2 space-y-2">
+            {webhookEndpoints.map((path) => {
+              const fullUrl = `${webhookBaseUrl}${path}`
+              const copied = copiedWebhook === fullUrl
+              return (
+                <div key={path} className="flex items-center gap-2">
+                  <code className="block font-mono bg-blue-100 px-1.5 py-0.5 rounded text-xs flex-1 break-all">
+                    {fullUrl}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyWebhookUrl(fullUrl)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded border border-blue-200 bg-white text-blue-700 hover:bg-blue-50"
+                    aria-label={`Copy webhook url ${path}`}
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          Include <code className="font-mono bg-blue-100 px-1.5 py-0.5 rounded text-xs">trace_id</code> in payloads to link traces.
+          <button
+            type="button"
+            onClick={() => setShowSetupGuide((current) => !current)}
+            className="mt-3 inline-flex items-center gap-1 text-blue-700 hover:text-blue-900 font-medium"
+          >
+            Setup guide
+            {showSetupGuide ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+          {showSetupGuide && (
+            <div className="mt-2 rounded border border-blue-200 bg-white p-3 text-xs text-blue-900 space-y-1">
+              <p>Required fields: <code className="font-mono">id</code>, <code className="font-mono">trace_id</code>, and <code className="font-mono">messages</code>.</p>
+              <p>Use ISO-8601 UTC for <code className="font-mono">startedAt</code> and <code className="font-mono">endedAt</code>.</p>
+              <p>Provider-specific payload mapping is documented in <code className="font-mono">docs/telemetry/provider-webhook-map.md</code>.</p>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Summary Stats */}
       {!isLoading && calls.length > 0 && (
         <motion.div
-          className="grid grid-cols-2 md:grid-cols-4 gap-4"
+          className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4"
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
@@ -126,37 +264,96 @@ export default function ObservabilityCalls() {
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Ended</p>
-                <p className="text-2xl font-bold text-emerald-600 mt-1">{summaryStats.ended}</p>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Total Minutes</p>
+                <p className="text-2xl font-bold text-emerald-600 mt-1">
+                  {summaryStats.totalMinutes.toFixed(1)}
+                </p>
               </div>
               <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center">
                 <CheckCircle className="w-5 h-5 text-emerald-500" />
               </div>
             </div>
+            <p className="text-xs text-gray-500 mt-1">minutes</p>
           </div>
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Started</p>
-                <p className="text-2xl font-bold text-blue-600 mt-1">{summaryStats.started}</p>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Duration</p>
+                <p className="text-2xl font-bold text-blue-600 mt-1">
+                  {Math.round(summaryStats.avgDurationMs)}
+                </p>
               </div>
               <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
                 <PhoneIncoming className="w-5 h-5 text-blue-500" />
               </div>
             </div>
+            <p className="text-xs text-gray-500 mt-1">ms</p>
           </div>
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Other</p>
-                <p className="text-2xl font-bold text-amber-600 mt-1">{summaryStats.other}</p>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Ended</p>
+                <p className="text-2xl font-bold text-amber-600 mt-1">{summaryStats.ended}</p>
               </div>
               <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center">
                 <Clock className="w-5 h-5 text-amber-500" />
               </div>
             </div>
           </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Trace Available</p>
+                <p className="text-2xl font-bold text-violet-600 mt-1">{summaryStats.traceAvailableCalls}</p>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-violet-50 flex items-center justify-center">
+                <Activity className="w-5 h-5 text-violet-500" />
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">{summaryStats.traceAvailableRatePct.toFixed(1)}% available</p>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluated</p>
+                <p className="text-2xl font-bold text-purple-600 mt-1">{summaryStats.evaluatedCalls}</p>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center">
+                <CheckCircle className="w-5 h-5 text-purple-500" />
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">{summaryStats.evaluatedRatePct.toFixed(1)}% of calls</p>
+          </div>
         </motion.div>
+      )}
+
+      {liveDashboardEnabled && liveAggregatesEnabled && liveLatency && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-900">Live Quality (Rolling)</h3>
+            <span className="text-xs text-gray-500">1m / 5m windows</span>
+          </div>
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <LivePercentileCard
+              label="P50"
+              oneMinute={liveLatency.windows['60s'].p50_ms}
+              fiveMinute={liveLatency.windows['300s'].p50_ms}
+            />
+            <LivePercentileCard
+              label="P90"
+              oneMinute={liveLatency.windows['60s'].p90_ms}
+              fiveMinute={liveLatency.windows['300s'].p90_ms}
+            />
+            <LivePercentileCard
+              label="P95"
+              oneMinute={liveLatency.windows['60s'].p95_ms}
+              fiveMinute={liveLatency.windows['300s'].p95_ms}
+            />
+          </div>
+          <div className="mt-4 text-xs text-gray-500">
+            Samples: {liveLatency.windows['60s'].sample_count} (1m) / {liveLatency.windows['300s'].sample_count} (5m)
+          </div>
+        </div>
       )}
 
       {/* Call Records Table */}
@@ -168,25 +365,49 @@ export default function ObservabilityCalls() {
               <h2 className="text-lg font-semibold text-gray-900">Call Records</h2>
             </div>
             {calls.length > 0 && (
-              <div className="flex items-center gap-1">
-                {([
-                  { key: 'all' as const, label: 'All', count: summaryStats.total },
-                  { key: 'call_ended' as const, label: 'Ended', count: summaryStats.ended },
-                  { key: 'call_started' as const, label: 'Started', count: summaryStats.started },
-                  { key: 'other' as const, label: 'Other', count: summaryStats.other },
-                ] as const).map(({ key, label, count }) => (
-                  <button
-                    key={key}
-                    onClick={() => setEventFilter(key)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                      eventFilter === key
-                        ? 'bg-primary-100 text-primary-800 border border-primary-300'
-                        : 'text-gray-600 hover:bg-gray-100 border border-transparent'
-                    }`}
-                  >
-                    {label} ({count})
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1">
+                  {([
+                    { key: 'all' as const, label: 'All sources', count: sourceFilterCounts.all },
+                    { key: 'providers' as const, label: 'Providers', count: sourceFilterCounts.providers },
+                    { key: 'live' as const, label: 'Live ingest', count: sourceFilterCounts.live },
+                    { key: 'simulated' as const, label: 'Simulated', count: sourceFilterCounts.simulated },
+                    { key: 'in_progress' as const, label: 'In progress', count: sourceFilterCounts.in_progress },
+                  ] as const).map(({ key, label, count }) => (
+                    <button
+                      key={key}
+                      onClick={() => setSourceFilter(key)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        sourceFilter === key
+                          ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                          : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  ))}
+                </div>
+                <span className="hidden sm:inline text-gray-300">|</span>
+                <div className="flex items-center gap-1">
+                  {([
+                    { key: 'all' as const, label: 'All events', count: summaryStats.total },
+                    { key: 'call_ended' as const, label: 'Ended', count: summaryStats.ended },
+                    { key: 'call_started' as const, label: 'Started', count: summaryStats.started },
+                    { key: 'other' as const, label: 'Other', count: summaryStats.other },
+                  ] as const).map(({ key, label, count }) => (
+                    <button
+                      key={key}
+                      onClick={() => setEventFilter(key)}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        eventFilter === key
+                          ? 'bg-primary-100 text-primary-800 border border-primary-300'
+                          : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -208,7 +429,10 @@ export default function ObservabilityCalls() {
           <div className="p-12 text-center">
             <p className="text-gray-500 mb-2">No matching calls found.</p>
             <button
-              onClick={() => setEventFilter('all')}
+              onClick={() => {
+                setEventFilter('all')
+                setSourceFilter('all')
+              }}
               className="text-sm text-primary-600 hover:text-primary-800 font-medium"
             >
               Show all calls
@@ -233,6 +457,9 @@ export default function ObservabilityCalls() {
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Provider Call ID
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last Live Event
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Created
@@ -279,6 +506,11 @@ export default function ObservabilityCalls() {
                     </td>
                     <td className="px-4 py-4 whitespace-nowrap">
                       <span className="text-sm text-gray-500">
+                        {call.last_live_event_ts ? formatTimestamp(call.last_live_event_ts) : 'N/A'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 whitespace-nowrap">
+                      <span className="text-sm text-gray-500">
                         {call.created_at ? formatTimestamp(call.created_at) : 'N/A'}
                       </span>
                     </td>
@@ -317,6 +549,27 @@ export default function ObservabilityCalls() {
         onCancel={() => setSelectedCallId(null)}
         onConfirm={() => selectedCallId && deleteMutation.mutate(selectedCallId)}
       />
+    </div>
+  )
+}
+
+function LivePercentileCard({
+  label,
+  oneMinute,
+  fiveMinute,
+}: {
+  label: string
+  oneMinute?: number | null
+  fiveMinute?: number | null
+}) {
+  const format = (value?: number | null) => (typeof value === 'number' ? `${Math.round(value)} ms` : 'N/A')
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+      <p className="text-xs font-medium text-gray-600">{label}</p>
+      <p className="text-sm font-semibold text-gray-900 mt-1">{format(oneMinute)}</p>
+      <p className="text-xs text-gray-500 mt-0.5">1m</p>
+      <p className="text-sm font-semibold text-gray-900 mt-2">{format(fiveMinute)}</p>
+      <p className="text-xs text-gray-500 mt-0.5">5m</p>
     </div>
   )
 }

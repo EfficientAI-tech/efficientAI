@@ -63,6 +63,34 @@ _GEMINI_3_RE = re.compile(
     r"(?:^|[/-])gemini-3(?:\.\d+)?(?:[-.]|$)", re.IGNORECASE
 )
 
+# OpenAI/Azure reasoning families reject non-default temperature (must be 1
+# or omitted). Excludes ``gpt-5-chat*`` which supports flexible sampling.
+_OPENAI_FIXED_TEMPERATURE_RE = re.compile(
+    r"(?:^|[/-])(?:gpt-5(?!-chat)|o[134])(?:[-.]|$)",
+    re.IGNORECASE,
+)
+
+
+def _model_only_supports_default_temperature(model: str) -> bool:
+    """Return True when the provider rejects custom ``temperature`` values."""
+    model_name = (model or "").rsplit("/", 1)[-1]
+    return bool(_OPENAI_FIXED_TEMPERATURE_RE.search(model_name))
+
+
+def _normalize_temperature_for_model(model: str, call_kwargs: Dict[str, Any]) -> None:
+    """Drop ``temperature`` when the target model only supports the default."""
+    if not _model_only_supports_default_temperature(model):
+        return
+    temp = call_kwargs.get("temperature")
+    if temp is None or temp == 1:
+        return
+    logger.debug(
+        "[LLMService] Omitting temperature={} for {} (model only supports default)",
+        temp,
+        model,
+    )
+    call_kwargs.pop("temperature", None)
+
 
 def _gemini_family(model: str) -> Optional[str]:
     """Return ``"2.5"``, ``"3"``, or ``None`` for the given model name.
@@ -489,6 +517,7 @@ class LLMService:
             model=model_str,
             credential=credential_ctx,
         )
+        _normalize_temperature_for_model(model_str, call_kwargs)
 
         try:
             response = litellm.completion(**call_kwargs)

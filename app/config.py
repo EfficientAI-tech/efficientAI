@@ -162,6 +162,31 @@ class Settings(BaseSettings):
 
     # Observability / Loki
     OBSERVABILITY_ENABLED: bool = False
+    OBSERVABILITY_TRACING_ENABLED: bool = False
+    OBSERVABILITY_TRACING_EXPORTER: str = "efficientai_http"
+    OBSERVABILITY_TRACING_SAMPLE_RATE: float = 1.0
+    OBSERVABILITY_TRACING_INCLUDE_TRANSCRIPTS: bool = True
+    OBSERVABILITY_TRACE_QUOTA_PER_ORG_PER_DAY: Optional[int] = None
+    OBSERVABILITY_LIVE_INGEST_ENABLED: bool = False
+    OBSERVABILITY_LIVE_AGGREGATES_ENABLED: bool = False
+    OBSERVABILITY_LIVE_DASHBOARD_ENABLED: bool = False
+    OBSERVABILITY_LIVE_EVENT_IDEMPOTENCY_TTL_SECONDS: int = 86400
+    OBSERVABILITY_LIVE_EVENT_MAX_OUT_OF_ORDER_SEQ: int = 5
+    OBSERVABILITY_LIVE_EVENT_MAX_TS_DRIFT_SECONDS: int = 300
+    OBSERVABILITY_LIVE_SLO_ALERTS_ENABLED: bool = False
+    OBSERVABILITY_LIVE_SLO_AUTOMATION_ENABLED: bool = False
+    OBSERVABILITY_LIVE_SLO_P90_LLM_MS: int = 1800
+    OBSERVABILITY_LIVE_SLO_MIN_SAMPLE_COUNT: int = 20
+    OBSERVABILITY_ELEVENLABS_SKIP_RECORDING_ARCHIVE: bool = True
+    ELEVENLABS_SYNC_MAX_RPS: float = 5.0
+    ELEVENLABS_MONITOR_MAX_CONCURRENCY: int = 50
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "https://otel-http.efficientai.ai/v1/traces"
+    TRACING_QUERY_BACKEND: str = "cloud"  # cloud | tempo
+    EFFICIENT_AI_API_KEY: Optional[str] = None
+    EFFICIENT_AI_AGENT_ID: Optional[str] = None
+    EFFICIENT_AI_PROJECT_ID: Optional[str] = None
+    EFFICIENT_AI_TRACE_QUERY_URL: str = "https://api.efficientai.ai/observability/v1/traces"
+    TEMPO_QUERY_URL: str = "http://tempo:3200"
     LOKI_ENABLED: bool = False
     LOKI_URL: str = "http://loki:3100"
     LOKI_STORAGE: str = "filesystem"  # "filesystem" or "s3"
@@ -209,6 +234,7 @@ class Settings(BaseSettings):
         "vobiz.ai",
         "amazonaws.com",
         "cloudfront.net",
+        "elevenlabs.io",
     ]
 
     # Live telephony pipeline recording merge (dual-track → natural mono)
@@ -735,6 +761,55 @@ def load_config_from_file(config_path: str) -> None:
         obs_config = config_data["observability"]
         if "enabled" in obs_config:
             settings.OBSERVABILITY_ENABLED = bool(obs_config["enabled"])
+        if "tracing" in obs_config:
+            tracing_config = obs_config["tracing"] or {}
+            if "enabled" in tracing_config:
+                settings.OBSERVABILITY_TRACING_ENABLED = bool(tracing_config["enabled"])
+            if "exporter" in tracing_config:
+                settings.OBSERVABILITY_TRACING_EXPORTER = str(tracing_config["exporter"])
+            if "sample_rate" in tracing_config:
+                settings.OBSERVABILITY_TRACING_SAMPLE_RATE = float(tracing_config["sample_rate"])
+            if "include_transcripts" in tracing_config:
+                settings.OBSERVABILITY_TRACING_INCLUDE_TRANSCRIPTS = bool(
+                    tracing_config["include_transcripts"]
+                )
+            if "trace_quota_per_org_per_day" in tracing_config:
+                quota_value = tracing_config["trace_quota_per_org_per_day"]
+                settings.OBSERVABILITY_TRACE_QUOTA_PER_ORG_PER_DAY = (
+                    int(quota_value) if quota_value is not None else None
+                )
+            if "endpoint" in tracing_config and tracing_config["endpoint"]:
+                settings.OTEL_EXPORTER_OTLP_ENDPOINT = str(tracing_config["endpoint"])
+            if "query_backend" in tracing_config and tracing_config["query_backend"]:
+                settings.TRACING_QUERY_BACKEND = str(tracing_config["query_backend"])
+            if "trace_query_url" in tracing_config and tracing_config["trace_query_url"]:
+                settings.EFFICIENT_AI_TRACE_QUERY_URL = str(tracing_config["trace_query_url"])
+            if "tempo_query_url" in tracing_config and tracing_config["tempo_query_url"]:
+                settings.TEMPO_QUERY_URL = str(tracing_config["tempo_query_url"])
+        if "live" in obs_config:
+            live_config = obs_config["live"] or {}
+            if "ingest_enabled" in live_config:
+                settings.OBSERVABILITY_LIVE_INGEST_ENABLED = bool(live_config["ingest_enabled"])
+            if "aggregates_enabled" in live_config:
+                settings.OBSERVABILITY_LIVE_AGGREGATES_ENABLED = bool(live_config["aggregates_enabled"])
+            if "dashboard_enabled" in live_config:
+                settings.OBSERVABILITY_LIVE_DASHBOARD_ENABLED = bool(live_config["dashboard_enabled"])
+            if "slo_alerts_enabled" in live_config:
+                settings.OBSERVABILITY_LIVE_SLO_ALERTS_ENABLED = bool(live_config["slo_alerts_enabled"])
+            if "slo_automation_enabled" in live_config:
+                settings.OBSERVABILITY_LIVE_SLO_AUTOMATION_ENABLED = bool(
+                    live_config["slo_automation_enabled"]
+                )
+            if "elevenlabs_skip_recording_archive" in live_config:
+                settings.OBSERVABILITY_ELEVENLABS_SKIP_RECORDING_ARCHIVE = bool(
+                    live_config["elevenlabs_skip_recording_archive"]
+                )
+            if "elevenlabs_sync_max_rps" in live_config:
+                settings.ELEVENLABS_SYNC_MAX_RPS = float(live_config["elevenlabs_sync_max_rps"])
+            if "elevenlabs_monitor_max_concurrency" in live_config:
+                settings.ELEVENLABS_MONITOR_MAX_CONCURRENCY = int(
+                    live_config["elevenlabs_monitor_max_concurrency"]
+                )
         if "loki" in obs_config:
             loki_config = obs_config["loki"]
             if "enabled" in loki_config:

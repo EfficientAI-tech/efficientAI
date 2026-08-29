@@ -1,6 +1,7 @@
 """CLI for EfficientAI platform."""
 
 import click
+import platform
 import yaml
 import os
 import sys
@@ -9,6 +10,21 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+
+
+def _is_macos() -> bool:
+    return platform.system() == "Darwin"
+
+
+def _local_dev_celery_pool() -> str:
+    """Prefork forks after threads/ObjC init and crashes psycopg2 on macOS."""
+    return "threads" if _is_macos() else "prefork"
+
+
+def _local_dev_celery_concurrency(pool: str) -> int:
+    if pool == "threads":
+        return 4 if _is_macos() else 8
+    return 8
 
 
 @click.group()
@@ -395,12 +411,16 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
     
     click.echo(f"🚀 Starting Celery worker...")
     click.echo(f"   Log level: {loglevel}")
+    resolved_pool = pool or _local_dev_celery_pool()
+    resolved_concurrency = (
+        concurrency if concurrency is not None else _local_dev_celery_concurrency(resolved_pool)
+    )
     if queues:
         click.echo(f"   Queues: {queues}")
-    if concurrency is not None:
-        click.echo(f"   Concurrency: {concurrency}")
-    if pool:
-        click.echo(f"   Pool: {pool}")
+    click.echo(f"   Concurrency: {resolved_concurrency}")
+    click.echo(f"   Pool: {resolved_pool}")
+    if _is_macos() and pool is None:
+        click.echo("   macOS: defaulting to pool=threads (avoids prefork/psycopg2 crashes)")
     
     # Start Celery worker
     try:
@@ -408,10 +428,8 @@ def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optio
         cmd = ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"]
         if queues:
             cmd.append(f"--queues={queues}")
-        if concurrency is not None:
-            cmd.append(f"--concurrency={concurrency}")
-        if pool:
-            cmd.append(f"--pool={pool}")
+        cmd.append(f"--pool={resolved_pool}")
+        cmd.append(f"--concurrency={resolved_concurrency}")
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
         click.echo("\n👋 Celery worker stopped")
@@ -616,8 +634,19 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
         [sys.executable, "-m", "app.cli", "telephony-worker", "--config", str(config_path), "--port", str(port)],
         env=telephony_env,
     )
+    default_pool = _local_dev_celery_pool()
     celery_proc = subprocess.Popen(
-        ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"],
+        [
+            "celery",
+            "-A",
+            "app.workers.celery_app",
+            "worker",
+            f"--loglevel={loglevel}",
+            "-P",
+            default_pool,
+            "-c",
+            str(_local_dev_celery_concurrency(default_pool)),
+        ],
     )
     click.echo(f"🚀 Started media server (pid={media_proc.pid}) and Celery worker (pid={celery_proc.pid})")
 
@@ -951,6 +980,8 @@ def start_all(
 
     # Start Celery workers as subprocess(es) with output streaming
     try:
+        default_pool = _local_dev_celery_pool()
+        default_concurrency = _local_dev_celery_concurrency(default_pool)
         worker_process = _spawn_worker(
             [
                 "celery",
@@ -960,12 +991,21 @@ def start_all(
                 f"--loglevel={worker_loglevel}",
                 "-Q",
                 "celery,audio-metrics",
+                "-P",
+                default_pool,
                 "-c",
-                "8",
+                str(default_concurrency),
             ],
-            label="Celery worker (celery + audio-metrics queues, concurrency=8)",
+            label=(
+                f"Celery worker (celery + audio-metrics queues, "
+                f"pool={default_pool}, concurrency={default_concurrency})"
+            ),
             prefix="[WORKER]",
         )
+        if _is_macos():
+            click.echo(
+                "   macOS: Celery default worker uses pool=threads to avoid prefork/psycopg2 crashes"
+            )
 
         if imports_worker:
             from app.workers.config import IMPORTS_WORKER_QUEUES

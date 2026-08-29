@@ -1,5 +1,9 @@
 import { Link } from 'react-router-dom'
-import { Integration, IntegrationPlatform } from '../../../../types/api'
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import type { AxiosError } from 'axios'
+import { apiClient } from '../../../../lib/api'
+import { ExternalProviderAgent, Integration, IntegrationPlatform } from '../../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../../config/providers'
 
 const PLATFORM_OPTIONS: IntegrationPlatform[] = [
@@ -32,10 +36,46 @@ export default function PlatformConnectStep({
   onIntegrationChange,
   onAgentIdChange,
 }: PlatformConnectStepProps) {
+  const [manualAgentIdEnabled, setManualAgentIdEnabled] = useState(false)
   const activeIntegrations = integrations.filter((integration) => integration.is_active)
 
   const integrationsForPlatform = (platform: IntegrationPlatform) =>
     activeIntegrations.filter((integration) => integration.platform === platform)
+
+  const selectedIntegration = useMemo(
+    () => activeIntegrations.find((integration) => integration.id === voiceAiIntegrationId),
+    [activeIntegrations, voiceAiIntegrationId],
+  )
+
+  const externalAgentPlatformLabel =
+    selectedPlatform && [IntegrationPlatform.ELEVENLABS, IntegrationPlatform.VAPI, IntegrationPlatform.RETELL].includes(selectedPlatform)
+      ? getIntegrationPlatformLabel(selectedPlatform)
+      : 'provider'
+  const shouldLoadExternalAgents =
+    [IntegrationPlatform.ELEVENLABS, IntegrationPlatform.VAPI, IntegrationPlatform.RETELL].includes(selectedPlatform as IntegrationPlatform) &&
+    !!selectedIntegration?.id
+
+  const {
+    data: externalAgentPayload,
+    isLoading: externalAgentLoading,
+    isError: externalAgentError,
+    error: externalAgentQueryError,
+  } = useQuery({
+    queryKey: ['integration-external-agents', selectedIntegration?.id],
+    queryFn: () => apiClient.listIntegrationExternalAgents(selectedIntegration!.id),
+    enabled: shouldLoadExternalAgents,
+  })
+
+  const externalAgents: ExternalProviderAgent[] = externalAgentPayload?.agents || []
+  const externalAgentErrorMessage =
+    (externalAgentQueryError as AxiosError<{ detail?: string }>)?.response?.data?.detail ||
+    `Could not load ${externalAgentPlatformLabel} agents.`
+
+  const onIntegrationSelect = (integrationId: string) => {
+    onIntegrationChange(integrationId)
+    onAgentIdChange('')
+    setManualAgentIdEnabled(false)
+  }
 
   return (
     <div className="space-y-4">
@@ -104,7 +144,7 @@ export default function PlatformConnectStep({
                         <label className="block text-xs font-medium text-gray-600 mb-1">Integration *</label>
                         <select
                           value={voiceAiIntegrationId}
-                          onChange={(e) => onIntegrationChange(e.target.value)}
+                          onChange={(e) => onIntegrationSelect(e.target.value)}
                           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
                         >
                           <option value="">Select integration</option>
@@ -117,13 +157,66 @@ export default function PlatformConnectStep({
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1">Agent ID *</label>
-                        <input
-                          type="text"
-                          value={voiceAiAgentId}
-                          onChange={(e) => onAgentIdChange(e.target.value)}
-                          placeholder={`Enter ${label} agent ID`}
-                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 font-mono"
-                        />
+                        {[IntegrationPlatform.ELEVENLABS, IntegrationPlatform.VAPI, IntegrationPlatform.RETELL].includes(selectedPlatform as IntegrationPlatform) ? (
+                          <div className="space-y-2">
+                            {!manualAgentIdEnabled && (
+                              <select
+                                value={voiceAiAgentId}
+                                onChange={(e) => onAgentIdChange(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
+                                disabled={!voiceAiIntegrationId || externalAgentLoading}
+                              >
+                                <option value="">
+                                  {externalAgentLoading
+                                    ? `Loading ${externalAgentPlatformLabel} agents…`
+                                    : `Select ${externalAgentPlatformLabel} agent`}
+                                </option>
+                                {externalAgents.map((agent) => (
+                                  <option key={agent.id} value={agent.id}>
+                                    {agent.name || agent.id}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                            {externalAgentError && (
+                              <p className="text-[11px] text-amber-700">
+                                {externalAgentErrorMessage} You can enter the agent ID manually.
+                              </p>
+                            )}
+                            {!externalAgentLoading && !externalAgentError && externalAgents.length === 0 && (
+                              <p className="text-[11px] text-gray-500">
+                                No agents were returned by {externalAgentPlatformLabel} for this API key. Verify
+                                the key and that agents exist in your {externalAgentPlatformLabel} workspace.
+                              </p>
+                            )}
+                            {(manualAgentIdEnabled || externalAgentError || externalAgents.length === 0) && (
+                              <input
+                                type="text"
+                                value={voiceAiAgentId}
+                                onChange={(e) => onAgentIdChange(e.target.value)}
+                                placeholder={`Enter ${externalAgentPlatformLabel} agent ID`}
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 font-mono"
+                              />
+                            )}
+                            {!manualAgentIdEnabled && externalAgents.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setManualAgentIdEnabled(true)}
+                                className="text-[11px] text-indigo-600 hover:text-indigo-800"
+                              >
+                                Enter agent ID manually
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <input
+                            type="text"
+                            value={voiceAiAgentId}
+                            onChange={(e) => onAgentIdChange(e.target.value)}
+                            placeholder={`Enter ${label} agent ID`}
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 font-mono"
+                          />
+                        )}
                       </div>
                     </>
                   )}

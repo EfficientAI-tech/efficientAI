@@ -199,6 +199,78 @@ class VapiVoiceProvider(BaseVoiceProvider):
         except requests.exceptions.RequestException as e:
             raise ValueError(f"Failed to get Vapi agent: {str(e)}")
 
+    def list_agents(
+        self,
+        *,
+        page_size: int = 30,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List Vapi assistants and normalize to external-agents response shape."""
+        try:
+            url = f"{self.api_url}/assistant"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            params: Dict[str, Any] = {"limit": max(1, min(page_size, 100))}
+            if search:
+                params["search"] = search
+            if cursor:
+                # Some Vapi API variants expose cursor/pagination tokens.
+                params["cursor"] = cursor
+
+            response = requests.get(url, headers=headers, params=params, timeout=20)
+            if not response.ok:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text[:500]
+                raise ValueError(
+                    f"Vapi API error ({response.status_code}): {error_body}"
+                )
+
+            payload = response.json()
+            if isinstance(payload, list):
+                items = payload
+                has_more = False
+                next_cursor = None
+            elif isinstance(payload, dict):
+                items = payload.get("assistants") or payload.get("items") or payload.get("data") or []
+                if isinstance(items, dict):
+                    items = items.get("assistants") or items.get("items") or items.get("data") or []
+                has_more = bool(payload.get("has_more", False))
+                next_cursor = payload.get("next_cursor") or payload.get("cursor")
+            else:
+                items = []
+                has_more = False
+                next_cursor = None
+
+            normalized = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                assistant_id = item.get("id") or item.get("assistantId")
+                if not assistant_id:
+                    continue
+                normalized.append(
+                    {
+                        "id": str(assistant_id),
+                        "name": str(item.get("name") or assistant_id),
+                        "archived": bool(item.get("isArchived", False) or item.get("archived", False)),
+                        "created_at": item.get("createdAt") or item.get("created_at"),
+                        "metadata": item,
+                    }
+                )
+
+            return {
+                "agents": normalized,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            }
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Failed to list Vapi agents: {str(e)}")
+
     def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
         """Extract the system prompt from a Vapi assistant."""
         try:

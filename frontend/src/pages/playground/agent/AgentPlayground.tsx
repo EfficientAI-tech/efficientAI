@@ -450,6 +450,28 @@ export default function AgentPlayground() {
 
         let elevenLabsConversationIdStored = false
 
+        const tryPersistElevenLabsConversationId = async (
+          conversation: { getId?: () => string | undefined } | null | undefined,
+          maxAttempts = 10,
+          intervalMs = 1000,
+        ) => {
+          const callShortId = currentCallShortIdRef.current
+          if (!callShortId || !conversation?.getId) return false
+
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            const conversationId = conversation.getId()
+            if (conversationId) {
+              await apiClient.updateCallRecording(callShortId, conversationId)
+              elevenLabsConversationIdStored = true
+              console.log('Updated call recording with ElevenLabs conversation ID:', conversationId)
+              return true
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs))
+          }
+
+          return false
+        }
+
         const conversationInstance = await Conversation.startSession({
           signedUrl,
           onConnect: () => {
@@ -457,8 +479,15 @@ export default function AgentPlayground() {
             setIsConnected(true)
             setIsConnecting(false)
             showToast('Connected to agent', 'success')
+
+            if (!elevenLabsConversationIdStored) {
+              void tryPersistElevenLabsConversationId(elevenLabsConversationRef.current, 20, 500)
+                .catch((err) => {
+                  console.error('Failed to persist ElevenLabs conversation ID on connect:', err)
+                })
+            }
           },
-          onDisconnect: () => {
+          onDisconnect: async () => {
             console.log('ElevenLabs conversation disconnected')
             setIsConnected(false)
             setIsConnecting(false)
@@ -468,8 +497,16 @@ export default function AgentPlayground() {
             }
             userInitiatedDisconnectRef.current = false
 
-            // Only refresh if we successfully stored the conversation ID,
-            // otherwise the backend has no provider_call_id to fetch metrics for
+            if (!elevenLabsConversationIdStored) {
+              try {
+                await tryPersistElevenLabsConversationId(conversationInstance, 3, 500)
+              } catch (err) {
+                console.error('Final attempt to persist ElevenLabs conversation ID failed:', err)
+              }
+            }
+
+            // Only refresh if we successfully stored the conversation ID.
+            // Otherwise the backend has no provider_call_id to fetch metrics for.
             if (currentCallShortIdRef.current && elevenLabsConversationIdStored) {
               const callShortId = currentCallShortIdRef.current
               // ElevenLabs transitions through "processing" before "done",
@@ -502,18 +539,13 @@ export default function AgentPlayground() {
 
         elevenLabsConversationRef.current = conversationInstance
 
-        // Get conversation ID AFTER startSession resolves (the instance is now available)
+        // Try to capture conversation ID as soon as the session is available.
         try {
-          const conversationId = conversationInstance?.getId()
-          console.log('ElevenLabs conversation ID:', conversationId)
-          if (currentCallShortIdRef.current && conversationId) {
-            await apiClient.updateCallRecording(currentCallShortIdRef.current, conversationId)
-            elevenLabsConversationIdStored = true
-            console.log('Updated call recording with ElevenLabs conversation ID:', conversationId)
-          } else {
-            console.warn('Missing callShortId or conversationId for ElevenLabs update', {
+          const persisted = await tryPersistElevenLabsConversationId(conversationInstance, 20, 500)
+          if (!persisted) {
+            console.warn('Could not resolve ElevenLabs conversation ID before timeout', {
               callShortId: currentCallShortIdRef.current,
-              conversationId,
+              initialConversationId: conversationInstance?.getId?.(),
             })
           }
         } catch (e) {

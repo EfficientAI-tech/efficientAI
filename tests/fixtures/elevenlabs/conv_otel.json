@@ -1,0 +1,112 @@
+{
+  "conversation_id": "conv_9001k1zph3fkeh5s8xg9z90swaqa",
+  "agent_id": "agent_7101k5zvyjhmfg983brhmhkd98n6",
+  "status": "done",
+  "otlp_traces": {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "elevenlabs-convai"
+              }
+            },
+            {
+              "key": "elevenlabs.conversation_id",
+              "value": {
+                "stringValue": "conv_9001k1zph3fkeh5s8xg9z90swaqa"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "elevenlabs.convai",
+              "version": "1.0.0"
+            },
+            "spans": [
+              {
+                "traceId": "0af7651916cd43dd8448eb211c80319c",
+                "spanId": "1111111111111111",
+                "name": "elevenlabs.conversation",
+                "startTimeUnixNano": "1714423232000000000",
+                "endTimeUnixNano": "1714423257000000000",
+                "attributes": [
+                  {
+                    "key": "elevenlabs.source",
+                    "value": {
+                      "stringValue": "post_call_webhook"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              },
+              {
+                "traceId": "0af7651916cd43dd8448eb211c80319c",
+                "spanId": "2222222222222222",
+                "parentSpanId": "1111111111111111",
+                "name": "elevenlabs.recv.user_transcript",
+                "startTimeUnixNano": "1714423234000000000",
+                "endTimeUnixNano": "1714423234500000000",
+                "attributes": [
+                  {
+                    "key": "elevenlabs.user.text",
+                    "value": {
+                      "stringValue": "Hello there"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              },
+              {
+                "traceId": "0af7651916cd43dd8448eb211c80319c",
+                "spanId": "3333333333333333",
+                "parentSpanId": "1111111111111111",
+                "name": "elevenlabs.recv.agent_response",
+                "startTimeUnixNano": "1714423235000000000",
+                "endTimeUnixNano": "1714423237000000000",
+                "attributes": [
+                  {
+                    "key": "elevenlabs.agent.text",
+                    "value": {
+                      "stringValue": "Hi, how can I help you today?"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              },
+              {
+                "traceId": "0af7651916cd43dd8448eb211c80319c",
+                "spanId": "4444444444444444",
+                "parentSpanId": "3333333333333333",
+                "name": "elevenlabs.tool.lookup_fact",
+                "startTimeUnixNano": "1714423235600000000",
+                "endTimeUnixNano": "1714423235900000000",
+                "attributes": [
+                  {
+                    "key": "tool.name",
+                    "value": {
+                      "stringValue": "lookup_fact"
+                    }
+                  }
+                ],
+                "status": {
+                  "code": 1
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

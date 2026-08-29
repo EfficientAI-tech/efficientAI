@@ -49,7 +49,8 @@ from pathlib import Path
 from app.models.database import ModelProvider, AIProvider, Integration
 from app.core.encryption import decrypt_api_key
 from app.services.credentials import resolve_ai_provider, resolve_integration
-from app.services.storage.s3_service import s3_service
+from app.config import settings
+from app.services.storage.blob_storage_service import blob_storage_service
 from app.core.exceptions import StorageError
 from sqlalchemy.orm import Session
 
@@ -137,11 +138,12 @@ class TranscriptionService:
         """
         import os
 
-        # First, try S3 if enabled
-        if s3_service.is_enabled():
+        # First, try cloud blob storage when configured
+        if blob_storage_service.is_enabled() or settings.S3_ENABLED:
             try:
-                # Download from S3
-                audio_bytes = s3_service.download_file_by_key(audio_file_key)
+                if not blob_storage_service.is_enabled():
+                    blob_storage_service.reset_connection()
+                audio_bytes = blob_storage_service.download_file_by_key(audio_file_key)
 
                 # Determine file extension from key
                 file_ext = Path(audio_file_key).suffix.lstrip(".") or "wav"

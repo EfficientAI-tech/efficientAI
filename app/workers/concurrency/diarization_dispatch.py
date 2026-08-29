@@ -95,7 +95,10 @@ def store_row_diarization_params_batch(
             keys.append(_pending_params_key(row_uuid))
             ids.append(row_uuid)
         for key in keys:
-            pipe.setex(key, _PENDING_PARAMS_TTL_SECONDS, payload)
+            if hasattr(pipe, "set"):
+                pipe.set(key, payload, ex=_PENDING_PARAMS_TTL_SECONDS)
+            else:
+                pipe.setex(key, _PENDING_PARAMS_TTL_SECONDS, payload)
         results = pipe.execute()
         for row_uuid, ok in zip(ids, results):
             if ok:

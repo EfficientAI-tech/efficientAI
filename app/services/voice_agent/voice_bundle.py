@@ -19,6 +19,11 @@ import tempfile
 from dotenv import load_dotenv
 from loguru import logger
 
+from app.services.tracing.efficientai_otel import (
+    force_flush_tracing,
+    log_trace_export_status,
+    setup_efficientai_tracing,
+)
 from app.services.storage.s3_service import s3_service
 
 load_dotenv(override=True)
@@ -526,6 +531,7 @@ async def run_voice_bundle_fastapi(
     telephony_mode: bool = False,
     call_short_id: str | None = None,
     silence_hangup_secs: float | None = None,
+    live_observability_emitter=None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -542,6 +548,7 @@ async def run_voice_bundle_fastapi(
     duration_result = None
     transcript_text = None
     conversation_turns = []
+    conversation_trace_id = None
     
     # Storage for audio data from the buffer processor
     recorded_audio_data = {"audio": None, "sample_rate": None, "num_channels": None}
@@ -589,6 +596,14 @@ async def run_voice_bundle_fastapi(
         raise ValueError(f"Missing required API keys for voice bundle: {', '.join(missing)}")
 
     try:
+        setup_efficientai_tracing(service_name="efficientai-voice-bundle")
+        span_attributes = {
+            "organization_id": organization_id or "",
+            "agent_id": agent_id or "",
+        }
+        if workspace_id:
+            span_attributes["workspace_id"] = workspace_id
+
         from app.services.voice_agent.tts_sample_rate import (
             resolve_tts_sample_rate_hz,
             resolve_websocket_audio_in_sample_rate_hz,
@@ -697,6 +712,7 @@ async def run_voice_bundle_fastapi(
                 )
         else:
             llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model, params=llm_params)
+        setattr(llm, "_observability_bundle_type", getattr(voice_bundle, "bundle_type", None))
 
         # Build context with provided system instruction or a default
         base_instruction = (
@@ -757,6 +773,22 @@ async def run_voice_bundle_fastapi(
                 recorder_name="BotAudioRecorder",
                 alignment_mode="stream",
             )
+            if call_short_id:
+                from app.database import SessionLocal
+                from app.services.telephony.call_recording_lifecycle import register_live_recording_paths
+
+                db = SessionLocal()
+                try:
+                    register_live_recording_paths(
+                        db,
+                        call_short_id=call_short_id,
+                        user_audio_path=user_audio_path,
+                        bot_audio_path=bot_audio_path,
+                        sample_rate=tts_sample_rate,
+                    )
+                    db.commit()
+                finally:
+                    db.close()
             audio_buffer_input = None
             audio_buffer_output = None
             input_audio_chunks = []
@@ -788,6 +820,7 @@ async def run_voice_bundle_fastapi(
                 recorded_audio_data["num_channels"] = num_channels
 
         pipeline_task_ref: list = []
+        task = None
 
         async def on_silence_hangup():
             if pipeline_task_ref:
@@ -819,11 +852,15 @@ async def run_voice_bundle_fastapi(
             if silence_hangup_processor:
                 pipeline_processors.append(silence_hangup_processor)
             pipeline_processors.extend([audio_buffer_input, stt])
-        if telephony_mode and call_short_id:
+        if call_short_id or live_observability_emitter is not None:
             from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
-            user_transcript_processor = create_live_transcript_processor(call_short_id)
-            agent_transcript_processor = create_live_transcript_processor(call_short_id)
+            user_transcript_processor = create_live_transcript_processor(
+                call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
+            )
+            agent_transcript_processor = create_live_transcript_processor(
+                call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
+            )
             if user_transcript_processor:
                 pipeline_processors.append(user_transcript_processor)
         else:
@@ -833,7 +870,7 @@ async def run_voice_bundle_fastapi(
         pipeline_processors.append(context_aggregator.user())
         pipeline_processors.append(llm)
 
-        if telephony_mode and call_short_id and agent_transcript_processor:
+        if (call_short_id or live_observability_emitter is not None) and agent_transcript_processor:
             pipeline_processors.append(agent_transcript_processor)
 
         from app.services.usage.voice_usage_processor import create_llm_usage_recorder
@@ -868,6 +905,8 @@ async def run_voice_bundle_fastapi(
             task = imports["PipelineTask"](
                 pipeline,
                 params=pipeline_task_params,
+                enable_tracing=True,
+                additional_span_attributes=span_attributes,
             )
             pipeline_task_ref.append(task)
 
@@ -889,12 +928,25 @@ async def run_voice_bundle_fastapi(
             rtvi_processors = [ws_transport.input()]
             if silence_hangup_processor:
                 rtvi_processors.append(silence_hangup_processor)
+            rtvi_processors.extend([audio_buffer_input, stt])
+            if call_short_id or live_observability_emitter is not None:
+                from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
+
+                rtvi_user_transcript_processor = create_live_transcript_processor(
+                    call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
+                )
+                rtvi_agent_transcript_processor = create_live_transcript_processor(
+                    call_short_id, call_start_time=recording_start_time, live_observability_emitter=live_observability_emitter
+                )
+                if rtvi_user_transcript_processor:
+                    rtvi_processors.append(rtvi_user_transcript_processor)
+            else:
+                rtvi_user_transcript_processor = None
+                rtvi_agent_transcript_processor = None
+            rtvi_processors.extend([context_aggregator.user(), rtvi, llm])
+            if (call_short_id or live_observability_emitter is not None) and rtvi_agent_transcript_processor:
+                rtvi_processors.append(rtvi_agent_transcript_processor)
             rtvi_processors.extend([
-                audio_buffer_input,
-                stt,
-                context_aggregator.user(),
-                rtvi,
-                llm,
                 tts,
             ])
             usage_recorder = create_llm_usage_recorder(
@@ -916,6 +968,8 @@ async def run_voice_bundle_fastapi(
                 pipeline,
                 params=pipeline_task_params,
                 observers=[imports["RTVIObserver"](rtvi)],
+                enable_tracing=True,
+                additional_span_attributes=span_attributes,
             )
             if silence_hangup_processor:
                 pipeline_task_ref.append(task)
@@ -945,6 +999,10 @@ async def run_voice_bundle_fastapi(
         try:
             await runner.run(task)
         finally:
+            if task and getattr(task, "turn_trace_observer", None):
+                conversation_trace_id = task.turn_trace_observer.get_conversation_trace_id()
+            force_flush_tracing()
+            log_trace_export_status(conversation_trace_id)
             duration_result = time.time() - call_start_time
 
             try:
@@ -997,6 +1055,7 @@ async def run_voice_bundle_fastapi(
                             conversation_turns=conversation_turns,
                             transcript_text=transcript_text,
                             duration=duration_result,
+                            trace_id=conversation_trace_id,
                         )
                         logger.info(
                             "Queued finalize_telephony_recording for call_short_id={} "
@@ -1033,6 +1092,7 @@ async def run_voice_bundle_fastapi(
                                 transcript_text=transcript_text,
                                 s3_key=s3_key_result,
                                 duration=duration_result,
+                                trace_id=conversation_trace_id,
                             )
                         finally:
                             db.close()
@@ -1107,9 +1167,28 @@ async def run_voice_bundle_fastapi(
                             transcript_text=transcript_text,
                             s3_key=s3_key_result,
                             duration=duration_result,
+                            trace_id=conversation_trace_id,
                         )
                     finally:
                         db.close()
+
+            if call_short_id and not telephony_mode:
+                from app.database import SessionLocal
+                from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
+
+                db = SessionLocal()
+                try:
+                    persist_telephony_call_artifacts(
+                        db,
+                        call_short_id=call_short_id,
+                        conversation_turns=conversation_turns,
+                        transcript_text=transcript_text,
+                        s3_key=s3_key_result,
+                        duration=duration_result,
+                        trace_id=conversation_trace_id,
+                    )
+                finally:
+                    db.close()
 
             if telephony_mode and call_short_id:
                 # region agent log
@@ -1138,6 +1217,7 @@ async def run_voice_bundle_fastapi(
             "scenario_id": scenario_id,
             "transcription": transcript_text,
             "speaker_segments": conversation_turns if conversation_turns else None,
+            "trace_id": conversation_trace_id,
             "error": str(e),
         }
 
@@ -1149,6 +1229,7 @@ async def run_voice_bundle_fastapi(
         "scenario_id": scenario_id,
         "transcription": transcript_text,
         "speaker_segments": conversation_turns if conversation_turns else None,
+        "trace_id": conversation_trace_id,
     }
     if not s3_key_result and not transcript_text:
         metadata["error"] = "No audio file was uploaded and no transcript captured"

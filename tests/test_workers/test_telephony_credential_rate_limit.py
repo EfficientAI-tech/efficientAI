@@ -42,12 +42,14 @@ def redis_client(monkeypatch):
     monkeypatch.setattr(module, "telephony_credential_fingerprint", _test_fingerprint)
     monkeypatch.setattr(module, "_redis_client", client)
 
-    for key in client.scan_iter(match=f"{prefix}*"):
+    key_pattern = f"{module._KEY_PREFIX}:*:{prefix}*"
+
+    for key in client.scan_iter(match=key_pattern):
         client.delete(key)
 
     yield client
 
-    for key in client.scan_iter(match=f"{prefix}*"):
+    for key in client.scan_iter(match=key_pattern):
         client.delete(key)
     module._redis_client = None
 

@@ -114,3 +114,15 @@ class BaseVoiceProvider(ABC):
         """
         pass
 
+    def list_agents(self, **kwargs) -> Dict[str, Any]:
+        """Optional provider capability: list external agents for integration pickers."""
+        raise NotImplementedError("This provider does not support listing agents")
+
+    def retrieve_provider_trace(self, call_id: str, **kwargs) -> Dict[str, Any]:
+        """Optional provider capability: fetch provider-native execution trace payload."""
+        raise NotImplementedError("This provider does not support provider trace retrieval")
+
+    def list_conversations(self, **kwargs) -> Dict[str, Any]:
+        """Optional provider capability: list provider-side conversations/calls."""
+        raise NotImplementedError("This provider does not support listing conversations")
+

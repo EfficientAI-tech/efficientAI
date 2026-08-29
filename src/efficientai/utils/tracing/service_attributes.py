@@ -11,6 +11,7 @@ attributes to OpenTelemetry spans, following standard semantic conventions
 where applicable and EfficientAI-specific conventions for additional context.
 """
 
+import os
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Import for type checking only
@@ -21,6 +22,18 @@ from efficientai.utils.tracing.setup import is_tracing_available
 
 if is_tracing_available():
     from opentelemetry.trace import Span
+
+
+def _should_include_transcript_attributes() -> bool:
+    value = os.getenv("OBSERVABILITY_TRACING_INCLUDE_TRANSCRIPTS")
+    if value is not None:
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        from app.config import settings  # Imported lazily to avoid hard dependency in SDK-only contexts.
+
+        return bool(getattr(settings, "OBSERVABILITY_TRACING_INCLUDE_TRANSCRIPTS", True))
+    except Exception:
+        return True
 
 
 def _get_gen_ai_system_from_service_name(service_name: str) -> str:
@@ -94,6 +107,7 @@ def add_tts_span_attributes(
     span.set_attribute("gen_ai.operation.name", operation_name)
     span.set_attribute("gen_ai.output.type", "speech")
     span.set_attribute("voice_id", voice_id)
+    span.set_attribute("tts.provider", service_name.replace("TTSService", "").lower())
 
     # Add optional attributes
     if text:
@@ -101,6 +115,7 @@ def add_tts_span_attributes(
 
     if character_count is not None:
         span.set_attribute("metrics.character_count", character_count)
+        span.set_attribute("tts.characters", character_count)
 
     if ttfb is not None:
         span.set_attribute("metrics.ttfb", ttfb)
@@ -152,10 +167,12 @@ def add_stt_span_attributes(
     span.set_attribute("gen_ai.request.model", model)
     span.set_attribute("gen_ai.operation.name", operation_name)
     span.set_attribute("vad_enabled", vad_enabled)
+    span.set_attribute("stt.provider", service_name.replace("STTService", "").lower())
 
     # Add optional attributes
-    if transcript:
+    if transcript and _should_include_transcript_attributes():
         span.set_attribute("transcript", transcript)
+        span.set_attribute("stt.transcript", transcript)
 
     if is_final is not None:
         span.set_attribute("is_final", is_final)

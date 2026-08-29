@@ -28,6 +28,7 @@ def test_finalize_telephony_recording_task_wires_merge_persist(
         conversation_turns=[{"speaker": "user", "text": "hi", "start": 0, "end": 1}],
         transcript_text="user: hi",
         duration=40.0,
+        trace_id="0af7651916cd43dd8448eb211c80319c",
     )
 
     mock_merge.assert_called_once_with(
@@ -45,6 +46,7 @@ def test_finalize_telephony_recording_task_wires_merge_persist(
         transcript_text="user: hi",
         s3_key="org/eval/audio.wav",
         duration=42.5,
+        trace_id="0af7651916cd43dd8448eb211c80319c",
     )
     assert result["status"] == "ok"
     assert result["s3_key"] == "org/eval/audio.wav"

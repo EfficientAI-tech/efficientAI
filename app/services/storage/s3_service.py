@@ -75,7 +75,8 @@ class S3Service:
 
             self.s3_client = boto3.client("s3", **s3_kwargs)
 
-            # Test connection by checking if bucket exists (non-blocking)
+            # Best-effort bucket probe. Some IAM policies allow GetObject but not
+            # HeadBucket; keep the client so downloads can still succeed.
             try:
                 self.s3_client.head_bucket(Bucket=self.bucket_name)
             except ClientError as e:
@@ -84,11 +85,11 @@ class S3Service:
                     self._initialization_error = f"S3 bucket '{self.bucket_name}' does not exist"
                     self.s3_client = None
                 elif error_code == "403":
-                    self._initialization_error = f"Access denied to S3 bucket '{self.bucket_name}'. Check credentials."
-                    self.s3_client = None
+                    self._initialization_error = (
+                        f"HeadBucket denied for '{self.bucket_name}' (GetObject may still work)"
+                    )
                 else:
-                    self._initialization_error = f"Failed to connect to S3 bucket: {str(e)}"
-                    self.s3_client = None
+                    self._initialization_error = f"S3 bucket probe failed: {str(e)}"
             except NoCredentialsError:
                 self._initialization_error = "S3 credentials not found. Check your configuration."
                 self.s3_client = None

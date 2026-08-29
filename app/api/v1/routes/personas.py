@@ -644,7 +644,7 @@ async def update_persona(
             incoming = update_data.get("tts_provider")
             if incoming and str(incoming).strip().lower() != str(db_persona.tts_provider).strip().lower():
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="tts_provider cannot be changed after persona creation. Change the voice instead.",
                 )
             update_data.pop("tts_provider", None)
@@ -653,7 +653,7 @@ async def update_persona(
             try:
                 validate_persona_tts_config(provider, update_data["tts_config"])
             except ValueError as exc:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
             update_data["tts_config"] = _normalized_persona_tts_config(provider, update_data["tts_config"])
         for field, value in update_data.items():
             setattr(db_persona, field, value)
