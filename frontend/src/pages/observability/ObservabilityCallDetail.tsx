@@ -3,13 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
   ArrowLeft, Phone, Clock, PhoneIncoming, PhoneOutgoing,
-  MessageSquare, Trash2, Download, Tag,
+  MessageSquare, Trash2, Tag,
   Loader, XCircle, Sparkles, X,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import RecordingAudioPlayer from '../../components/audio/RecordingAudioPlayer'
 import { apiClient } from '../../lib/api'
 import RetellCallDetails from '../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../components/call-recordings/VapiCallDetails'
@@ -376,17 +377,10 @@ export default function ObservabilityCallDetail() {
               Loading recording...
             </div>
           ) : playbackUrl ? (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-              <audio controls src={playbackUrl} preload="metadata" className="w-full max-w-xl" />
-              <a
-                href={playbackUrl}
-                download={`call_${callRecording.call_short_id}.wav`}
-                className="inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-800"
-              >
-                <Download className="w-4 h-4" />
-                Download recording
-              </a>
-            </div>
+            <RecordingAudioPlayer
+              src={playbackUrl}
+              downloadUrl={playbackUrl}
+            />
           ) : null}
         </div>
       )}
@@ -412,9 +406,7 @@ export default function ObservabilityCallDetail() {
                   </span>
                 </div>
                 {(hasStorageRecording || providerRecordingUrl) && isLiveCall && playbackUrl && (
-                  <div className="flex items-center gap-2">
-                    <audio controls src={playbackUrl} preload="metadata" className="h-8 w-56" />
-                  </div>
+                  <span className="text-xs text-gray-500">Use the recording player above</span>
                 )}
               </div>
 

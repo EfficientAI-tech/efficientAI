@@ -43,18 +43,20 @@ export default function ObservabilityCalls() {
   })
 
   const summaryStats = useMemo(() => {
-    const total = calls.length
-    const ended = calls.filter((c) => c.call_event === 'call_ended').length
-    const started = calls.filter((c) => c.call_event === 'call_started').length
+    const productionCalls = calls.filter((call) => call.source !== 'playground')
+    const total = productionCalls.length
+    const ended = productionCalls.filter((c) => c.call_event === 'call_ended').length
+    const started = productionCalls.filter((c) => c.call_event === 'call_started').length
     const other = total - ended - started
     return { total, ended, started, other }
   }, [calls])
 
   const filteredCalls = useMemo(() => {
-    if (eventFilter === 'all') return calls
-    if (eventFilter === 'call_ended') return calls.filter((c) => c.call_event === 'call_ended')
-    if (eventFilter === 'call_started') return calls.filter((c) => c.call_event === 'call_started')
-    return calls.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
+    const productionCalls = calls.filter((call) => call.source !== 'playground')
+    if (eventFilter === 'all') return productionCalls
+    if (eventFilter === 'call_ended') return productionCalls.filter((c) => c.call_event === 'call_ended')
+    if (eventFilter === 'call_started') return productionCalls.filter((c) => c.call_event === 'call_started')
+    return productionCalls.filter((c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started')
   }, [calls, eventFilter])
 
   const formatTimestamp = (timestamp: string): string => {

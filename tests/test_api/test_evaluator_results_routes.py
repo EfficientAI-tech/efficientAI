@@ -481,3 +481,49 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
     assert response.status_code == 200
     assert captured["headers"]["Authorization"] == "Bearer vapi-secret"
 
+
+def test_list_evaluator_results_filter_by_date_range(
+    authenticated_client,
+    db_session,
+    make_evaluator,
+    make_evaluator_result,
+):
+    from datetime import datetime, timezone
+
+    evaluator = make_evaluator(evaluator_id="900001")
+    older = make_evaluator_result(
+        result_id="900011",
+        evaluator_id=evaluator.id,
+        name="Older run",
+    )
+    newer = make_evaluator_result(
+        result_id="900022",
+        evaluator_id=evaluator.id,
+        name="Newer run",
+    )
+    older.timestamp = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    newer.timestamp = datetime(2025, 6, 1, 12, 0, tzinfo=timezone.utc)
+    db_session.commit()
+
+    filtered = authenticated_client.get(
+        "/api/v1/evaluator-results",
+        params={
+            "since": "2025-01-01T00:00:00+00:00",
+            "until": "2025-12-31T23:59:59+00:00",
+        },
+    )
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert body["total"] == 1
+    assert body["items"][0]["result_id"] == "900022"
+
+    overview = authenticated_client.get(
+        "/api/v1/evaluator-results/overview",
+        params={
+            "since": "2025-01-01T00:00:00+00:00",
+            "until": "2025-12-31T23:59:59+00:00",
+        },
+    )
+    assert overview.status_code == 200
+    assert overview.json()["workspace_counts"]["total"] == 1
+

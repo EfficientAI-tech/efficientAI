@@ -216,7 +216,18 @@ class VoiceMakerTTSService(InterruptibleTTSService):
         async for message in self._get_websocket():
             if not isinstance(message, str):
                 continue
-            msg = json.loads(message)
+            if not message.strip():
+                continue
+            try:
+                msg = json.loads(message)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "{} ignoring non-JSON WebSocket frame ({} bytes): {!r}",
+                    self,
+                    len(message),
+                    message[:200],
+                )
+                continue
             if not msg.get("success", False):
                 error_msg = msg.get("message") or "VoiceMaker TTS error"
                 errors = msg.get("errors") or []

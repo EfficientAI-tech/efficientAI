@@ -262,6 +262,8 @@ def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str
 def get_evaluator_results_overview(
     agent_id: Optional[str] = Query(None, description="When set, return suites for this agent"),
     suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -286,6 +288,8 @@ def get_evaluator_results_overview(
         workspace_id=workspace_id,
         agent_id=agent_uuid,
         suite_id=suite_uuid,
+        since=since,
+        until=until,
     )
 
 

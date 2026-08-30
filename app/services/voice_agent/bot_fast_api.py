@@ -390,6 +390,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 evaluator_id=evaluator_id,
                 result_id=result_id,
                 call_direction=call_direction if telephony_mode else None,
+                user_audio_frames=user_recorder.audio_frames_received,
+                bot_audio_frames=bot_recorder.audio_frames_received,
             )
             
             # Extract conversation transcript from the LLM context

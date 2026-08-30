@@ -21,3 +21,59 @@ def test_list_get_delete_observability_calls(authenticated_client, make_call_rec
     )
     assert delete_response.status_code == 200
     assert delete_response.json()["message"] == "Call deleted"
+
+
+def test_playground_call_recordings_are_excluded_from_observability_list(
+    authenticated_client, make_call_recording
+):
+    make_call_recording(
+        call_short_id="111111",
+        source="playground",
+        provider_platform="retell",
+        provider_call_id="playground-call-1",
+        call_data={"messages": [{"role": "user", "content": "playground"}]},
+    )
+    make_call_recording(
+        call_short_id="222222",
+        source="webhook",
+        provider_platform="retell",
+        provider_call_id="live-call-1",
+        call_data={"messages": [{"role": "user", "content": "live"}]},
+    )
+
+    list_response = authenticated_client.get("/api/v1/observability/calls")
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert len(payload) == 1
+    assert payload[0]["call_short_id"] == "222222"
+
+
+def test_observability_webhook_does_not_reclassify_playground_call(
+    client, api_key, authenticated_client, make_call_recording, db_session
+):
+    playground_call = make_call_recording(
+        call_short_id="333333",
+        source="playground",
+        provider_platform="retell",
+        provider_call_id="shared-provider-call-id",
+        call_data={"messages": [{"role": "user", "content": "playground"}]},
+    )
+
+    webhook_response = client.post(
+        f"/api/v1/observability/calls/webhook/{api_key}",
+        json={
+            "id": "shared-provider-call-id",
+            "provider_platform": "retell",
+            "messages": [{"role": "user", "content": "webhook update"}],
+            "startedAt": "2025-10-15T09:22:21.787Z",
+        },
+    )
+    assert webhook_response.status_code == 201
+    assert webhook_response.json()["action"] == "skipped_playground"
+
+    db_session.refresh(playground_call)
+    assert playground_call.source.value == "playground"
+
+    list_response = authenticated_client.get("/api/v1/observability/calls")
+    assert list_response.status_code == 200
+    assert list_response.json() == []

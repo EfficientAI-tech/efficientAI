@@ -17,6 +17,8 @@ def merge_and_upload_audio(
     evaluator_id: str = None,
     result_id: str = None,
     call_direction: str | None = None,
+    user_audio_frames: int | None = None,
+    bot_audio_frames: int | None = None,
 ):
     """
     Merge user and bot telephony recordings with alignment analysis, upload mono WAV to S3,
@@ -29,6 +31,13 @@ def merge_and_upload_audio(
         if os.path.exists(user_audio_path) and os.path.exists(bot_audio_path):
             user_size = os.path.getsize(user_audio_path)
             bot_size = os.path.getsize(bot_audio_path)
+            logger.info(
+                "Recording merge input user_bytes={} bot_bytes={} user_audio_frames={} bot_audio_frames={}",
+                user_size,
+                bot_size,
+                user_audio_frames,
+                bot_audio_frames,
+            )
 
             if user_size > 100 and bot_size > 100:
                 merged_fd, merged_path = tempfile.mkstemp(suffix=".wav")

@@ -209,6 +209,15 @@ def _upsert_call_recording(
     )
 
     if call_recording:
+        if call_recording.source == CallRecordingSource.PLAYGROUND:
+            agent_obj = None
+            if call_recording.agent_id:
+                agent_obj = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+            response = _serialize_call_recording(
+                call_recording, include_data=True, agent=agent_obj
+            )
+            response["action"] = "skipped_playground"
+            return response
         call_recording.call_data = call_data_payload
         call_recording.status = CallRecordingStatus.UPDATED
         call_recording.source = source

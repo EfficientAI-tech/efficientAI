@@ -4568,6 +4568,8 @@ class ApiClient {
       if (p.suiteId) params.suite_id = p.suiteId
       if (p.scenarioId) params.scenario_id = p.scenarioId
       if (p.status) params.status = p.status
+      if (p.since) params.since = p.since
+      if (p.until) params.until = p.until
       if (p.unassignedOnly) params.unassigned_only = true
       if (p.playground !== undefined) params.playground = p.playground
       if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
@@ -4579,10 +4581,14 @@ class ApiClient {
   async getEvaluatorResultsOverview(params?: {
     agentId?: string
     suiteId?: string
+    since?: string
+    until?: string
   }): Promise<EvaluatorResultsOverviewResponse> {
     const query: Record<string, string> = {}
     if (params?.agentId) query.agent_id = params.agentId
     if (params?.suiteId) query.suite_id = params.suiteId
+    if (params?.since) query.since = params.since
+    if (params?.until) query.until = params.until
     const response = await this.client.get('/api/v1/evaluator-results/overview', { params: query })
     return response.data
   }
@@ -4591,11 +4597,15 @@ class ApiClient {
     suiteId?: string
     agentId?: string
     scenarioId?: string
+    since?: string
+    until?: string
   }): Promise<EvaluatorResultsAggregateResponse> {
     const query: Record<string, string> = {}
     if (params.suiteId) query.suite_id = params.suiteId
     if (params.agentId) query.agent_id = params.agentId
     if (params.scenarioId) query.scenario_id = params.scenarioId
+    if (params.since) query.since = params.since
+    if (params.until) query.until = params.until
     const response = await this.client.get('/api/v1/evaluator-results/aggregate', { params: query })
     return response.data
   }

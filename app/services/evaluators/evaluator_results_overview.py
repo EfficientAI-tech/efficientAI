@@ -76,16 +76,19 @@ def build_evaluator_results_overview(
     workspace_id: UUID,
     agent_id: Optional[UUID] = None,
     suite_id: Optional[UUID] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
 ) -> EvaluatorResultsOverviewResponse:
-    rows = (
-        db.query(EvaluatorResult)
-        .filter(
-            EvaluatorResult.organization_id == organization_id,
-            EvaluatorResult.workspace_id == workspace_id,
-            EvaluatorResult.evaluator_id.isnot(None),
-        )
-        .all()
+    query = db.query(EvaluatorResult).filter(
+        EvaluatorResult.organization_id == organization_id,
+        EvaluatorResult.workspace_id == workspace_id,
+        EvaluatorResult.evaluator_id.isnot(None),
     )
+    if since is not None:
+        query = query.filter(EvaluatorResult.timestamp >= since)
+    if until is not None:
+        query = query.filter(EvaluatorResult.timestamp <= until)
+    rows = query.all()
 
     evaluator_ids: Set[UUID] = {r.evaluator_id for r in rows if r.evaluator_id}
     evaluators = (

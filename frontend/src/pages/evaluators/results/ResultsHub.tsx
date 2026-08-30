@@ -7,15 +7,22 @@ import { useWorkspaceStore } from '../../../store/workspaceStore'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
 import ResultsCountCards from './ResultsCountCards'
 import ResultsRunsList from './ResultsRunsList'
+import ResultsDrillPath, { type ResultsDrillCrumb } from './ResultsDrillPath'
+import ResultsDateRangePicker from './ResultsDateRangePicker'
 import MetricClustersPanel from '../../../components/metricClusters/MetricClustersPanel'
 import { createEvaluatorResultsMetricClustersClient } from '../../../components/metricClusters/clients'
+import { dateRangeToSinceUntil } from './resultsDateRange'
 import type {
   EvaluatorResultsAgentSummary,
   EvaluatorResultsScenarioSummary,
   EvaluatorResultsSuiteSummary,
+  ListEvaluatorResultsParams,
 } from '../../../types/api'
 
 type HubTab = 'runs' | 'clusters'
+type StatusFilter = 'all' | 'completed' | 'failed' | 'in_progress'
+
+const STATUS_FILTERS = new Set<StatusFilter>(['all', 'completed', 'failed', 'in_progress'])
 
 function filterCountsForScope(
   overview: {
@@ -65,13 +72,32 @@ export default function ResultsHub() {
   const agentId = searchParams.get('agent') ?? ''
   const suiteId = searchParams.get('suite') ?? ''
   const scenarioId = searchParams.get('scenario') ?? ''
+  const startDate = searchParams.get('start')
+  const endDate = searchParams.get('end')
+  const statusParam = searchParams.get('status')
+  const statusFilter: StatusFilter =
+    statusParam && STATUS_FILTERS.has(statusParam as StatusFilter)
+      ? (statusParam as StatusFilter)
+      : 'all'
   const tabParam = searchParams.get('tab')
   const activeTab: HubTab =
     tabParam === 'clusters' && isFeatureEnabled('evaluation_clustering') ? 'clusters' : 'runs'
 
+  const dateBounds = useMemo(() => {
+    if (!startDate || !endDate) return undefined
+    return dateRangeToSinceUntil(startDate, endDate)
+  }, [startDate, endDate])
+
+  const overviewParams = useMemo(
+    () => ({
+      ...(dateBounds ? { since: dateBounds.since, until: dateBounds.until } : {}),
+    }),
+    [dateBounds],
+  )
+
   const { data: overview, isLoading: loadingOverview } = useQuery({
-    queryKey: ['evaluator-results-overview', activeWorkspaceId],
-    queryFn: () => apiClient.getEvaluatorResultsOverview(),
+    queryKey: ['evaluator-results-overview', activeWorkspaceId, overviewParams],
+    queryFn: () => apiClient.getEvaluatorResultsOverview(overviewParams),
   })
 
   const agents = overview?.agents ?? []
@@ -112,14 +138,17 @@ export default function ResultsHub() {
     }
   }, [agentId, suiteId, suiteOptions, searchParams, setSearchParams])
 
-  const listParams = useMemo(
-    () => ({
-      ...(agentId ? { agentId } : {}),
-      ...(suiteId ? { suiteId } : {}),
-      ...(scenarioId ? { scenarioId } : {}),
-    }),
-    [agentId, suiteId, scenarioId],
-  )
+  const listParams = useMemo((): Omit<ListEvaluatorResultsParams, 'skip' | 'limit' | 'status'> => {
+    const params: Omit<ListEvaluatorResultsParams, 'skip' | 'limit' | 'status'> = {}
+    if (agentId) params.agentId = agentId
+    if (suiteId) params.suiteId = suiteId
+    if (scenarioId) params.scenarioId = scenarioId
+    if (dateBounds) {
+      params.since = dateBounds.since
+      params.until = dateBounds.until
+    }
+    return params
+  }, [agentId, suiteId, scenarioId, dateBounds])
 
   const counts = overview
     ? filterCountsForScope(overview, agentId, suiteId, scenarioId, agents)
@@ -135,6 +164,8 @@ export default function ResultsHub() {
         suiteId: suiteId || undefined,
         agentId: agentId || undefined,
         scenarioId: scenarioId || undefined,
+        since: dateBounds?.since,
+        until: dateBounds?.until,
       }),
     enabled: showAggregate,
   })
@@ -163,30 +194,93 @@ export default function ResultsHub() {
     },
   })
 
-  const setFilter = (key: 'agent' | 'suite' | 'scenario', value: string) => {
+  const setParams = (updates: Record<string, string | null>) => {
     const next = new URLSearchParams(searchParams)
-    if (key === 'agent') {
-      if (value) next.set('agent', value)
-      else next.delete('agent')
-      next.delete('suite')
-      next.delete('scenario')
-    } else if (key === 'suite') {
-      if (value) next.set('suite', value)
-      else next.delete('suite')
-      next.delete('scenario')
-    } else {
-      if (value) next.set('scenario', value)
-      else next.delete('scenario')
+    for (const [key, value] of Object.entries(updates)) {
+      if (!value) next.delete(key)
+      else next.set(key, value)
     }
     setSearchParams(next)
   }
 
-  const setTab = (tab: HubTab) => {
-    const next = new URLSearchParams(searchParams)
-    if (tab === 'clusters') next.set('tab', 'clusters')
-    else next.delete('tab')
-    setSearchParams(next)
+  const setFilter = (key: 'agent' | 'suite' | 'scenario', value: string) => {
+    if (key === 'agent') {
+      setParams({
+        agent: value || null,
+        suite: null,
+        scenario: null,
+      })
+      return
+    }
+    if (key === 'suite') {
+      setParams({
+        suite: value || null,
+        scenario: null,
+      })
+      return
+    }
+    setParams({ scenario: value || null })
   }
+
+  const setDateRange = (start: string | null, end: string | null) => {
+    setParams({
+      start,
+      end,
+    })
+  }
+
+  const setStatusFilter = (status: StatusFilter) => {
+    setParams({ status: status === 'all' ? null : status })
+  }
+
+  const setTab = (tab: HubTab) => {
+    setParams({ tab: tab === 'clusters' ? 'clusters' : null })
+  }
+
+  const selectedAgent = agents.find((agent) => agent.agent_id === agentId)
+  const selectedSuite = suiteOptions.find((suite) => suite.suite_id === suiteId)
+  const selectedScenario = scenarioOptions.find((scenario) => scenario.scenario_id === scenarioId)
+
+  const drillCrumbs = useMemo((): ResultsDrillCrumb[] => {
+    const crumbs: ResultsDrillCrumb[] = [
+      {
+        label: 'All results',
+        onClick: agentId || suiteId || scenarioId
+          ? () => setParams({ agent: null, suite: null, scenario: null })
+          : undefined,
+      },
+    ]
+    if (selectedAgent) {
+      crumbs.push({
+        label: selectedAgent.agent_name,
+        onClick: suiteId || scenarioId
+          ? () => setParams({ agent: agentId, suite: null, scenario: null })
+          : undefined,
+      })
+    }
+    if (selectedSuite) {
+      crumbs.push({
+        label: selectedSuite.suite_name || 'Evaluator suite',
+        onClick: scenarioId
+          ? () => setParams({ agent: agentId, suite: suiteId, scenario: null })
+          : undefined,
+      })
+    }
+    if (selectedScenario) {
+      crumbs.push({
+        label: selectedScenario.scenario_name,
+      })
+    }
+    return crumbs
+  }, [agentId, scenarioId, selectedAgent, selectedScenario, selectedSuite, suiteId])
+
+  const drillLevelLabel = selectedScenario
+    ? 'Scenario runs'
+    : selectedSuite
+      ? 'Suite runs'
+      : selectedAgent
+        ? 'Agent runs'
+        : 'Workspace runs'
 
   const clustersEnabled = licenseLoaded && isFeatureEnabled('evaluation_clustering')
 
@@ -198,7 +292,7 @@ export default function ResultsHub() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Evaluation Results</h1>
           <p className="mt-2 text-sm text-gray-600">
-            All runs newest first — filter by agent, suite, and scenario
+            Drill down by agent, suite, scenario, and when the call happened
           </p>
         </div>
         <Link
@@ -209,7 +303,15 @@ export default function ResultsHub() {
         </Link>
       </div>
 
-      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
+        <ResultsDateRangePicker
+          start={startDate}
+          end={endDate}
+          onApply={setDateRange}
+        />
+
+        <ResultsDrillPath crumbs={drillCrumbs} levelLabel={drillLevelLabel} />
+
         <div className="grid gap-4 md:grid-cols-3">
           <label className="block text-sm">
             <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Agent</span>
@@ -326,6 +428,8 @@ export default function ResultsHub() {
             title="Evaluation runs"
             subtitle="Newest first across the current filter"
             listParams={listParams}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
             showAgentColumn={!agentId}
             showPersonaColumn={Boolean(suiteId || scenarioId)}
             showScenarioColumn={!scenarioId}

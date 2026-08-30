@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../../../components/Button'
+import RecordingAudioPlayer from '../../../components/audio/RecordingAudioPlayer'
 import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
@@ -1188,6 +1189,22 @@ export default function EvaluatorResultDetailPage({
           </div>
 
           <div className="p-6">
+            {audioUrl && (
+              <div className="mb-6">
+                <RecordingAudioPlayer
+                  src={audioUrl}
+                  downloadUrl={audioUrl}
+                  audioRef={audioRef}
+                  onLoadedMetadata={(duration) => {
+                    if (duration > 0 && duration !== Infinity) {
+                      setAudioDuration(duration)
+                    }
+                  }}
+                  onEnded={() => setActiveSegmentIndex(null)}
+                />
+              </div>
+            )}
+
             {/* Overview Tab */}
             {activeTab === 'overview' && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1204,18 +1221,6 @@ export default function EvaluatorResultDetailPage({
                           </span>
                         )}
                       </div>
-                      {audioUrl && (
-                        <div className="flex items-center gap-2">
-                          <audio controls src={audioUrl} className="h-8 w-56" />
-                          <a 
-                            href={audioUrl} 
-                            download 
-                            className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                          >
-                            <Download className="h-4 w-4" />
-                          </a>
-                        </div>
-                      )}
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -1414,18 +1419,6 @@ export default function EvaluatorResultDetailPage({
                     <MessageSquare className="h-4 w-4 text-indigo-500" />
                     <span className="text-sm font-medium text-gray-900">Full Transcript</span>
                   </div>
-                  {audioUrl && (
-                    <div className="flex items-center gap-2">
-                      <audio controls src={audioUrl} className="h-8 w-56" />
-                      <a 
-                        href={audioUrl} 
-                        download 
-                        className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                      >
-                        <Download className="h-4 w-4" />
-                      </a>
-                    </div>
-                  )}
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -1471,20 +1464,6 @@ export default function EvaluatorResultDetailPage({
                 </div>
               </div>
             )}
-
-            {/* Hidden audio element */}
-            <audio
-              ref={audioRef}
-              src={audioUrl || ''}
-              preload="metadata"
-              onEnded={() => setActiveSegmentIndex(null)}
-              onLoadedMetadata={() => {
-                if (audioRef.current?.duration && audioRef.current.duration !== Infinity) {
-                  setAudioDuration(audioRef.current.duration)
-                }
-              }}
-              className="hidden"
-            />
           </div>
         </div>
       ) : null}

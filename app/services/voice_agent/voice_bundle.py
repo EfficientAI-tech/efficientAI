@@ -1009,6 +1009,8 @@ async def run_voice_bundle_fastapi(
                         evaluator_id=evaluator_id,
                         result_id=result_id,
                         call_direction=call_direction,
+                        user_audio_frames=user_recorder.audio_frames_received,
+                        bot_audio_frames=bot_recorder.audio_frames_received,
                     )
                     db = SessionLocal()
                     try:
@@ -1033,6 +1035,8 @@ async def run_voice_bundle_fastapi(
                     evaluator_id=evaluator_id,
                     result_id=result_id,
                     call_direction=call_direction if telephony_mode else None,
+                    user_audio_frames=user_recorder.audio_frames_received,
+                    bot_audio_frames=bot_recorder.audio_frames_received,
                 )
 
             if telephony_mode and call_short_id:

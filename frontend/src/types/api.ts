@@ -202,6 +202,8 @@ export interface ListEvaluatorResultsParams {
   suiteId?: string
   scenarioId?: string
   status?: 'completed' | 'failed' | 'in_progress'
+  since?: string
+  until?: string
   unassignedOnly?: boolean
   playground?: boolean
   testAgentsOnly?: boolean
