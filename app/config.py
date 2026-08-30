@@ -212,7 +212,9 @@ class Settings(BaseSettings):
     ]
 
     # Live telephony pipeline recording merge (dual-track → natural mono)
-    TELEPHONY_BOT_PLAYBACK_DELAY_MS: int = 400
+    # Residual one-way carrier latency trim applied to the bot track at merge time.
+    # Keep at 0 unless measured on real calls; the recorders are already aligned.
+    TELEPHONY_BOT_PLAYBACK_DELAY_MS: int = 0
     TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT: float = 0.35
 
     # Judge Alignment (AlignEval-style hybrid integration).

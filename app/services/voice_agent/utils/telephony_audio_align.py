@@ -25,6 +25,7 @@ class TelephonyTrackAnalysis:
     bot_delay_samples: int
     correlation_peak: float
     correlation_lag_samples: int
+    leak_peak: float
     user_sample_rate: int
     user_duration_samples: int
     bot_duration_samples: int
@@ -89,7 +90,13 @@ def estimate_bot_lag_samples(
     sample_rate: int,
     max_lag_ms: int = 4000,
 ) -> Tuple[int, float]:
-    """Return (lag_samples, normalized_peak) where positive lag delays bot to align with user."""
+    """Return (lag_samples, normalized_peak) of the envelope cross-correlation peak.
+
+    DIAGNOSTIC ONLY -- do not use this lag to align the tracks. The user and bot
+    envelopes are anti-correlated in a turn-taking conversation, so the argmax is
+    the lag that best superimposes bot speech onto user speech, i.e. it maximises
+    overlap. It is meaningful only when both tracks carry the same signal (echo).
+    """
     if len(user) < sample_rate // 10 or len(bot) < sample_rate // 20:
         return 0, 0.0
 
@@ -134,29 +141,34 @@ def analyze_dual_tracks(
         bot_samples,
         sample_rate=sample_rate,
     )
-    effective_peak = max(peak, leak_peak)
 
     if len(bot_samples) < sample_rate // 20:
         return TelephonyTrackAnalysis(
             strategy=TelephonyMergeStrategy.USER_ONLY,
             bot_delay_samples=0,
-            correlation_peak=effective_peak,
+            correlation_peak=peak,
             correlation_lag_samples=corr_lag,
+            leak_peak=leak_peak,
             user_sample_rate=sample_rate,
             user_duration_samples=len(user_samples),
             bot_duration_samples=len(bot_samples),
             reason="bot_track_too_short",
         )
 
-    default_delay_ms = int(getattr(settings, "TELEPHONY_BOT_PLAYBACK_DELAY_MS", 400))
-    default_delay_samples = int(sample_rate * default_delay_ms / 1000)
-    bot_delay = max(0, corr_lag + default_delay_samples)
+    # Both recorders now timestamp against the same wall clock at true playout
+    # time (the bot recorder sits downstream of the transport output and anchors
+    # each utterance to BotStartedSpeaking), so the tracks are already aligned.
+    # The only legitimate shift left is a measured residual carrier latency;
+    # corr_lag is deliberately NOT applied -- see estimate_bot_lag_samples.
+    residual_delay_ms = int(getattr(settings, "TELEPHONY_BOT_PLAYBACK_DELAY_MS", 0))
+    bot_delay = max(0, int(sample_rate * residual_delay_ms / 1000))
 
     return TelephonyTrackAnalysis(
         strategy=TelephonyMergeStrategy.ALIGNED_MIX,
         bot_delay_samples=bot_delay,
-        correlation_peak=effective_peak,
+        correlation_peak=peak,
         correlation_lag_samples=corr_lag,
+        leak_peak=leak_peak,
         user_sample_rate=sample_rate,
         user_duration_samples=len(user_samples),
         bot_duration_samples=len(bot_samples),
@@ -220,15 +232,25 @@ def merge_telephony_tracks_to_mono(
 
     logger.info(
         "Telephony merge analysis strategy={} reason={} corr_peak={:.3f} corr_lag_samples={} "
-        "bot_delay_samples={} user_samples={} bot_samples={}",
+        "leak_peak={:.3f} bot_delay_samples={} user_samples={} bot_samples={}",
         analysis.strategy.value,
         analysis.reason,
         analysis.correlation_peak,
         analysis.correlation_lag_samples,
+        analysis.leak_peak,
         analysis.bot_delay_samples,
         analysis.user_duration_samples,
         analysis.bot_duration_samples,
     )
+
+    leak_threshold = float(getattr(settings, "TELEPHONY_MERGE_CORRELATION_DOUBLE_COUNT", 0.35))
+    if analysis.leak_peak >= leak_threshold:
+        logger.warning(
+            "Telephony merge: inbound user track appears to already contain bot speech "
+            "(leak_peak={:.3f}). The carrier is likely mixing the agent leg back into the "
+            "inbound stream; summing the bot track will duplicate it.",
+            analysis.leak_peak,
+        )
 
     if analysis.strategy == TelephonyMergeStrategy.USER_ONLY:
         merged = user

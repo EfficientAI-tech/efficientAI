@@ -771,7 +771,7 @@ async def run_voice_bundle_fastapi(
             recording_start_time,
             target_sample_rate=tts_sample_rate,
             recorder_name="BotAudioRecorder",
-            alignment_mode="wall_clock",
+            alignment_mode="playout",
             capture="output",
             ambient_bed=recording_ambient_bed,
         )
@@ -842,8 +842,8 @@ async def run_voice_bundle_fastapi(
         if usage_recorder:
             pipeline_processors.append(usage_recorder)
         pipeline_processors.extend([
-            bot_recorder,
             ws_transport.output(),
+            bot_recorder,
             context_aggregator.assistant(),
         ])
 
@@ -892,8 +892,8 @@ async def run_voice_bundle_fastapi(
             if usage_recorder:
                 rtvi_processors.append(usage_recorder)
             rtvi_processors.extend([
-                bot_recorder,
                 ws_transport.output(),
+                bot_recorder,
                 context_aggregator.assistant(),
             ])
             pipeline = imports["Pipeline"](rtvi_processors)

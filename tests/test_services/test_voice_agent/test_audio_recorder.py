@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock
 import numpy as np
 
 from app.services.voice_agent.audio_recorder import get_audio_recorder_class
-from efficientai.frames.frames import EndFrame, InputAudioRawFrame, OutputAudioRawFrame
+from efficientai.frames.frames import (
+    BotStartedSpeakingFrame,
+    EndFrame,
+    InputAudioRawFrame,
+    OutputAudioRawFrame,
+)
 from efficientai.processors.frame_processor import FrameDirection
 
 
@@ -277,5 +282,107 @@ def test_output_recorder_ambient_bed_fills_gap_pad(tmp_path):
             recorded = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
         gap_region = recorded[160:800]
         assert np.any(gap_region != 0)
+
+    asyncio.run(run())
+
+
+def test_playout_mode_does_not_compress_burst_audio(tmp_path):
+    """A TTS burst arriving faster than real time must keep its full duration.
+
+    Regression test for agent/user overlap: wall_clock mode padded per frame, so a
+    burst overshot the clock and subsequent silence was swallowed, pulling bot
+    speech earlier than it was heard.
+    """
+
+    async def run():
+        start = time.time()
+        recorder, path = _make_recorder(
+            tmp_path, capture="output", alignment_mode="playout", start_time=start
+        )
+        recorder.push_frame = AsyncMock()
+
+        await recorder.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        # 1s of audio (8000 samples) delivered in one burst, i.e. no wall-clock time.
+        for _ in range(10):
+            await recorder.process_frame(
+                OutputAudioRawFrame(
+                    audio=_tone_bytes(sample_rate=8000, num_samples=800),
+                    sample_rate=8000,
+                    num_channels=1,
+                ),
+                FrameDirection.DOWNSTREAM,
+            )
+        recorder._close_wave_file(trailing_pad=False)
+
+        # All 8000 audio samples survive; nothing is dropped or compressed.
+        # Only the sub-millisecond anchor pad is added on top.
+        total = _wav_sample_count(path)
+        assert 8000 <= total <= 8100, total
+
+    asyncio.run(run())
+
+
+def test_playout_mode_anchors_utterance_to_bot_started_speaking(tmp_path):
+    """Silence before an utterance reflects when the bot actually started speaking."""
+
+    async def run():
+        start = time.time() - 2.0  # call began 2s ago
+        recorder, path = _make_recorder(
+            tmp_path, capture="output", alignment_mode="playout", start_time=start
+        )
+        recorder.push_frame = AsyncMock()
+
+        await recorder.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        await recorder.process_frame(
+            OutputAudioRawFrame(
+                audio=_tone_bytes(sample_rate=8000, num_samples=800),
+                sample_rate=8000,
+                num_channels=1,
+            ),
+            FrameDirection.DOWNSTREAM,
+        )
+        recorder._close_wave_file(trailing_pad=False)
+
+        # ~2s of leading silence (16000 samples) then the 800 audio samples.
+        total = _wav_sample_count(path)
+        assert 16000 - 800 <= total - 800 <= 16000 + 800, total
+
+        with wave.open(path, "rb") as wf:
+            samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+        assert not np.any(samples[:15000])   # leading pad is silent
+        assert np.any(samples[-800:])        # utterance landed at the end
+
+    asyncio.run(run())
+
+
+def test_playout_mode_second_utterance_keeps_real_gap(tmp_path):
+    """Two bursts separated by real silence stay separated in the recording."""
+
+    async def run():
+        start = time.time()
+        recorder, path = _make_recorder(
+            tmp_path, capture="output", alignment_mode="playout", start_time=start
+        )
+        recorder.push_frame = AsyncMock()
+
+        async def utterance():
+            await recorder.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+            await recorder.process_frame(
+                OutputAudioRawFrame(
+                    audio=_tone_bytes(sample_rate=8000, num_samples=800),
+                    sample_rate=8000,
+                    num_channels=1,
+                ),
+                FrameDirection.DOWNSTREAM,
+            )
+
+        await utterance()
+        time.sleep(1.0)  # user is speaking here; bot track must stay silent
+        await utterance()
+        recorder._close_wave_file(trailing_pad=False)
+
+        # 800 + ~1s gap + 800. Under the old wall_clock mode the gap was swallowed.
+        total = _wav_sample_count(path)
+        assert total >= 8000, total
 
     asyncio.run(run())

@@ -26,6 +26,7 @@ def get_audio_recorder_class():
 
     from efficientai.frames.frames import (
         AudioRawFrame,
+        BotStartedSpeakingFrame,
         CancelFrame,
         EndFrame,
         InputAudioRawFrame,
@@ -60,6 +61,9 @@ def get_audio_recorder_class():
             self.audio_frames_received = 0
             self.last_frame_time = None
             self.total_samples_written = 0
+            # "playout" mode only: wall-clock time of the utterance we are about to
+            # write, captured from BotStartedSpeakingFrame.
+            self._pending_anchor_time = None
 
         def _resample_audio(
             self, audio_bytes: bytes, in_rate: int, out_rate: int, num_channels: int
@@ -151,7 +155,11 @@ def get_audio_recorder_class():
             if not self.wave_file:
                 return
             try:
-                if trailing_pad and self.alignment_mode == "wall_clock" and self.params_set:
+                if (
+                    trailing_pad
+                    and self.alignment_mode in ("wall_clock", "playout")
+                    and self.params_set
+                ):
                     self._write_wall_clock_pad(time.time())
             except Exception as e:
                 logger.error(f"Error writing trailing pad for {self.recorder_name}: {e}")
@@ -199,6 +207,22 @@ def get_audio_recorder_class():
                             audio_to_write = self._prepare_audio_bytes(audio_to_write)
                             self._write_audio(audio_to_write, self.num_channels)
                             self.last_frame_time = current_time
+                        elif self.alignment_mode == "playout":
+                            # Anchor each utterance to the wall-clock moment the bot
+                            # actually started speaking, then write its audio
+                            # contiguously. Frames reach us faster than real time
+                            # (the transport drains its send queue at ~2x), so padding
+                            # per-frame against the wall clock would compress the
+                            # track and pull bot speech earlier than it was heard.
+                            anchor = self._pending_anchor_time
+                            if anchor is None and self.total_samples_written == 0:
+                                anchor = current_time
+                            if anchor is not None:
+                                self._write_wall_clock_pad(anchor)
+                                self._pending_anchor_time = None
+                            audio_to_write = self._prepare_audio_bytes(audio_to_write)
+                            self._write_audio(audio_to_write, self.num_channels)
+                            self.last_frame_time = current_time
                         else:
                             self._write_wall_clock_pad(current_time)
                             audio_to_write = self._prepare_audio_bytes(audio_to_write)
@@ -206,6 +230,12 @@ def get_audio_recorder_class():
                             self.last_frame_time = current_time
                     except Exception as e:
                         logger.error(f"Error writing audio frame: {e}")
+
+            elif isinstance(frame, BotStartedSpeakingFrame):
+                # Emitted by the output transport as it drains its send queue, i.e.
+                # at playout time rather than TTS generation time.
+                if self.alignment_mode == "playout":
+                    self._pending_anchor_time = time.time()
 
             elif isinstance(frame, (EndFrame, CancelFrame)):
                 self._close_wave_file(trailing_pad=True)

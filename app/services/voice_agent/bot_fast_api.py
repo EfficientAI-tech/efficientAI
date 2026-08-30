@@ -237,7 +237,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             start_time,
             target_sample_rate=recorder_sample_rate,
             recorder_name="BotAudioRecorder",
-            alignment_mode="wall_clock",
+            alignment_mode="playout",
             capture="output",
             ambient_bed=recording_ambient_bed,
         )
@@ -289,8 +289,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             if agent_transcript_processor:
                 pipeline_processors.append(agent_transcript_processor)
             pipeline_processors.extend([
-                bot_recorder,
                 ws_transport.output(),
+                bot_recorder,
                 context_aggregator.assistant(),
             ])
             pipeline = imports["Pipeline"](pipeline_processors)
@@ -338,8 +338,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 pipeline_steps.append(usage_recorder)
             pipeline_steps.extend(
                 [
-                    bot_recorder,
                     ws_transport.output(),
+                    bot_recorder,
                     context_aggregator.assistant(),
                 ]
             )
