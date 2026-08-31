@@ -16,10 +16,7 @@ from app.models.schemas import (
     TestAgentConversationUpdate,
     TestAgentConversationResponse
 )
-from app.services.billing.flexprice_service import (
-    record_test_agent_conversation_ended,
-    record_test_agent_conversation_started,
-)
+from app.services.billing.flexprice_service import record_test_agent_conversation_ended
 from app.services.testing.test_agent_service import test_agent_service
 
 router = APIRouter(prefix="/test-agents", tags=["test-agents"])
@@ -101,12 +98,6 @@ async def start_conversation(
             conversation_id=conversation_id,
             organization_id=organization_id,
             db=db
-        )
-        background_tasks.add_task(
-            record_test_agent_conversation_started,
-            organization_id,
-            conversation_id,
-            workspace_id=workspace_id,
         )
         return conversation
     except ValueError as e:

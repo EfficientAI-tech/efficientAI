@@ -12,6 +12,7 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.auth.token_revocation import is_access_jti_revoked, revoke_access_jti
 from app.database import get_db
 from app.models.database import PlatformAdmin
 
@@ -56,6 +57,18 @@ def decode_platform_access_token(token: str) -> Dict[str, Any]:
         issuer=PLATFORM_ISSUER,
         options={"verify_aud": False},
     )
+
+
+def revoke_platform_access_token(token: str) -> None:
+    try:
+        claims = decode_platform_access_token(token)
+        jti = claims.get("jti")
+        exp = claims.get("exp")
+        if jti and exp:
+            ttl = max(int(exp) - int(datetime.now(timezone.utc).timestamp()), 1)
+            revoke_access_jti(jti, ttl)
+    except JWTError:
+        pass
 
 
 def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
@@ -105,6 +118,13 @@ def get_platform_admin(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid platform admin token scope.",
+        )
+
+    jti = claims.get("jti")
+    if jti and is_access_jti_revoked(jti):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked.",
         )
 
     try:

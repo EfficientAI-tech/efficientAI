@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from app.core.auth.platform_admin import (
     create_platform_access_token,
     get_platform_admin,
     platform_admin_feature_enabled,
+    revoke_platform_access_token,
 )
 from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
 from app.core.password import hash_password, validate_password_strength, verify_password
@@ -182,6 +184,26 @@ def platform_me(
     principal: PlatformAdminPrincipal = Depends(get_platform_admin),
 ) -> PlatformAdminSummary:
     return PlatformAdminSummary(id=str(principal.platform_admin_id), email=principal.email)
+
+
+def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
+
+
+@router.post("/auth/logout")
+def platform_logout(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    principal: PlatformAdminPrincipal = Depends(get_platform_admin),
+) -> dict:
+    bearer = _extract_bearer(authorization)
+    if bearer:
+        revoke_platform_access_token(bearer)
+    return {"success": True, "admin_id": str(principal.platform_admin_id)}
 
 
 @router.get("/organizations", response_model=OrganizationListResponse)

@@ -125,18 +125,43 @@ class Settings(BaseSettings):
     FRONTEND_DIR: str = "./frontend/dist"
     FRONTEND_BASE_URL: str = ""
 
-    # Content Security Policy (Report-Only by default; set CSP_REPORT_ONLY=false to enforce)
+    # Content Security Policy (enforcing by default; set CSP_REPORT_ONLY=true for local report-only mode)
     CSP_ENABLED: bool = True
-    CSP_REPORT_ONLY: bool = True
+    CSP_REPORT_ONLY: bool = False
+    # Browser voice SDKs (Vapi/Daily, Retell/LiveKit, ElevenLabs convai) and their telemetry.
+    _CSP_VOICE_CONNECT_SRC: str = (
+        "https://api.vapi.ai "
+        "https://*.vapi.ai "
+        "https://*.daily.co "
+        "wss://*.daily.co "
+        "wss://*.livekit.cloud "
+        "https://api.elevenlabs.io "
+        "wss://api.elevenlabs.io "
+        "https://api.retellai.com "
+        "wss://api.retellai.com "
+        "https://*.ingest.sentry.io "
+        "https://*.ingest.us.sentry.io"
+    )
+    _CSP_FRAME_SRC: str = (
+        "https://*.daily.co "
+        "https://*.s3.amazonaws.com "
+        "https://*.amazonaws.com "
+        "https://*.cloudfront.net "
+        "https://storage.googleapis.com "
+        "https://*.blob.core.windows.net"
+    )
+    # Vapi → Daily.co call-machine bundle requires eval + blob worklets for audio
+    _CSP_DAILY_SCRIPT_SRC: str = "'unsafe-eval' blob: https://c.daily.co https://*.daily.co"
     CSP_POLICY: str = (
         "default-src 'self'; "
-        "script-src 'self'; "
+        f"script-src 'self' {_CSP_DAILY_SCRIPT_SRC}; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
-        "connect-src 'self' wss: ws:; "
+        f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC}; "
         "media-src 'self' blob: https:; "
-        "frame-src 'self' blob:; "
+        f"frame-src 'self' blob: {_CSP_FRAME_SRC}; "
+        "worker-src 'self' blob:; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "form-action 'self'; "
@@ -225,6 +250,10 @@ class Settings(BaseSettings):
     FLEXPRICE_ENABLED: bool = False
     FLEXPRICE_API_KEY: Optional[str] = None
     FLEXPRICE_API_HOST: str = "https://us.api.flexprice.io/v1"
+    FLEXPRICE_AUTO_SUBSCRIBE: bool = False
+    FLEXPRICE_DEFAULT_PLAN_ID: Optional[str] = None
+    FLEXPRICE_DEFAULT_CURRENCY: str = "usd"
+    FLEXPRICE_DEFAULT_BILLING_PERIOD: str = "MONTHLY"
     # LLM gateway (optional platform-wide proxy for batch LLM calls).
     LLM_GATEWAY_ENABLED: bool = False
     LLM_GATEWAY_TYPE: str = "bifrost"  # bifrost | litellm_proxy
@@ -859,6 +888,15 @@ def load_config_from_file(config_path: str) -> None:
         if "trusted_ips" in operational_config:
             settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
 
+    if "security" in config_data:
+        security_config = config_data["security"]
+        if "csp_enabled" in security_config:
+            settings.CSP_ENABLED = bool(security_config["csp_enabled"])
+        if "csp_report_only" in security_config:
+            settings.CSP_REPORT_ONLY = bool(security_config["csp_report_only"])
+        if security_config.get("csp_policy"):
+            settings.CSP_POLICY = security_config["csp_policy"]
+
     if "flexprice" in config_data:
         flexprice_config = config_data["flexprice"]
         if "enabled" in flexprice_config:
@@ -867,6 +905,19 @@ def load_config_from_file(config_path: str) -> None:
             settings.FLEXPRICE_API_KEY = flexprice_config["api_key"]
         if flexprice_config.get("api_host"):
             settings.FLEXPRICE_API_HOST = flexprice_config["api_host"]
+        if "auto_subscribe" in flexprice_config:
+            settings.FLEXPRICE_AUTO_SUBSCRIBE = bool(flexprice_config["auto_subscribe"])
+        if flexprice_config.get("default_plan_id"):
+            settings.FLEXPRICE_DEFAULT_PLAN_ID = flexprice_config["default_plan_id"]
+        if flexprice_config.get("default_currency"):
+            settings.FLEXPRICE_DEFAULT_CURRENCY = flexprice_config["default_currency"]
+        if flexprice_config.get("default_billing_period"):
+            settings.FLEXPRICE_DEFAULT_BILLING_PERIOD = flexprice_config["default_billing_period"]
+        if (
+            os.environ.get("EFFICIENTAI_PYTEST") == "1"
+            and os.environ.get("FLEXPRICE_TEST_ALLOW") != "1"
+        ):
+            settings.FLEXPRICE_ENABLED = False
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

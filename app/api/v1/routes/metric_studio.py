@@ -25,6 +25,7 @@ from app.models.schemas import (
     MetricStudioRunRetryRequest,
 )
 from app.services.metric_studio.metric_selection import expand_studio_metric_selection
+from app.services.metric_studio.run_rollup import rollup_metric_studio_run
 from app.services.metric_studio.source_resolver import resolve_source
 
 router = APIRouter(prefix="/metric-studio", tags=["metric-studio"])
@@ -117,26 +118,7 @@ def _serialize_result(
 
 
 def _rollup_run_status(db: Session, run: MetricStudioRun) -> None:
-    results = (
-        db.query(MetricStudioRunResult)
-        .filter(MetricStudioRunResult.run_id == run.id)
-        .all()
-    )
-    completed = sum(1 for r in results if r.status == "completed")
-    failed = sum(1 for r in results if r.status == "failed")
-    pending = sum(1 for r in results if r.status in {"pending", "running"})
-    run.completed_items = completed
-    run.failed_items = failed
-    if pending:
-        run.status = "running"
-    elif failed and completed:
-        run.status = "partial"
-    elif failed:
-        run.status = "failed"
-    else:
-        run.status = "completed"
-        run.finished_at = datetime.now(timezone.utc)
-    db.flush()
+    rollup_metric_studio_run(db, run, emit_flexprice=True, commit=False)
 
 
 @router.post(
@@ -297,6 +279,8 @@ def get_metric_studio_run(
     )
     if not run:
         raise HTTPException(status_code=404, detail="Studio run not found.")
+    rollup_metric_studio_run(db, run, emit_flexprice=True, commit=True)
+    db.refresh(run)
     return _serialize_run(run)
 
 

@@ -17,6 +17,7 @@ from app.models.database import (
     MetricStudioRunResult,
 )
 from app.services.metric_studio.metric_selection import load_studio_run_metrics
+from app.services.metric_studio.run_rollup import rollup_metric_studio_run
 from app.services.metric_studio.source_resolver import resolve_source
 from app.workers.config import celery_app
 from app.workers.tasks.evaluate_call_import_row_core import (
@@ -40,28 +41,7 @@ def _now_utc() -> datetime:
 
 
 def _rollup_run(db: Session, run: MetricStudioRun) -> None:
-    results = (
-        db.query(MetricStudioRunResult)
-        .filter(MetricStudioRunResult.run_id == run.id)
-        .all()
-    )
-    completed = sum(1 for r in results if r.status == "completed")
-    failed = sum(1 for r in results if r.status == "failed")
-    pending = sum(1 for r in results if r.status in {"pending", "running"})
-    run.completed_items = completed
-    run.failed_items = failed
-    if pending:
-        run.status = "running"
-    elif failed and completed:
-        run.status = "partial"
-        run.finished_at = _now_utc()
-    elif failed:
-        run.status = "failed"
-        run.finished_at = _now_utc()
-    else:
-        run.status = "completed"
-        run.finished_at = _now_utc()
-    db.commit()
+    rollup_metric_studio_run(db, run, emit_flexprice=True, commit=True)
 
 
 @celery_app.task(
@@ -96,6 +76,18 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
         result_row.status = "running"
         result_row.started_at = result_row.started_at or _now_utc()
         db.commit()
+
+        from app.services.usage.context import (
+            llm_usage_context,
+            usage_context_for_metric_studio_run,
+        )
+
+        usage_ctx = usage_context_for_metric_studio_run(
+            run,
+            source_kind=result_row.source_kind,
+            source_ref=result_row.source_ref,
+            result_row_id=result_row.id,
+        )
 
         sample = resolve_source(
             db,
@@ -141,74 +133,75 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
             _rollup_run(db, run)
             return {"status": "failed"}
 
-        ai_providers = (
-            db.query(AIProvider)
-            .filter(
-                AIProvider.organization_id == run.organization_id,
-                AIProvider.is_active.is_(True),
+        with llm_usage_context(usage_ctx):
+            ai_providers = (
+                db.query(AIProvider)
+                .filter(
+                    AIProvider.organization_id == run.organization_id,
+                    AIProvider.is_active.is_(True),
+                )
+                .all()
             )
-            .all()
-        )
 
-        if audio_metrics and sample.audio_s3_key:
-            try:
-                audio_scores = evaluate_audio_metrics(
-                    audio_s3_key=sample.audio_s3_key,
-                    audio_metrics=audio_metrics,
-                    result_id=f"studio:{result_row.id}",
-                )
-                metric_scores.update(audio_scores)
-            except Exception as audio_err:
-                logger.error(
-                    f"[MetricStudio {result_row.id}] audio evaluation failed: {audio_err}",
-                    exc_info=True,
-                )
-                metric_scores.update(
-                    handle_audio_evaluation_error(audio_metrics, audio_err)
-                )
-
-        if llm_metrics and transcript:
-            result_id = f"studio:{result_row.id}"
-            production_text = (sample.transcript or "").strip()
-            diarised_text = (sample.diarised_transcript or "").strip()
-            comparison_ids = {
-                str(m.id)
-                for m in llm_metrics
-                if getattr(m, "compare_transcripts", False)
-            }
-            buckets = build_llm_config_buckets(
-                db,
-                llm_metrics,
-                overrides={},
-                run_provider=None,
-                run_model=None,
-                run_llm_config=None,
-                run_credential_id=None,
-            )
-            try:
-                for _config, groups in buckets.items():
-                    comparison_pair = None
-                    if bucket_needs_comparison_pair(
-                        groups,
-                        production_transcript=production_text,
-                        diarised_transcript=diarised_text,
-                        comparison_metric_ids=comparison_ids,
-                    ):
-                        comparison_pair = (production_text, diarised_text)
-                    bucket_metrics = flatten_metric_groups(groups)
-                    scores, _ = evaluate_with_llm(
-                        transcription=transcript,
-                        llm_metrics=bucket_metrics,
-                        ai_providers=ai_providers,
-                        organization_id=run.organization_id,
-                        result_id=result_id,
-                        db=db,
-                        comparison_pair=comparison_pair,
-                        metric_groups=groups,
+            if audio_metrics and sample.audio_s3_key:
+                try:
+                    audio_scores = evaluate_audio_metrics(
+                        audio_s3_key=sample.audio_s3_key,
+                        audio_metrics=audio_metrics,
+                        result_id=f"studio:{result_row.id}",
                     )
-                    metric_scores.update(scores)
-            except Exception as llm_err:
-                metric_scores.update(handle_llm_evaluation_error(llm_metrics, llm_err))
+                    metric_scores.update(audio_scores)
+                except Exception as audio_err:
+                    logger.error(
+                        f"[MetricStudio {result_row.id}] audio evaluation failed: {audio_err}",
+                        exc_info=True,
+                    )
+                    metric_scores.update(
+                        handle_audio_evaluation_error(audio_metrics, audio_err)
+                    )
+
+            if llm_metrics and transcript:
+                result_id = f"studio:{result_row.id}"
+                production_text = (sample.transcript or "").strip()
+                diarised_text = (sample.diarised_transcript or "").strip()
+                comparison_ids = {
+                    str(m.id)
+                    for m in llm_metrics
+                    if getattr(m, "compare_transcripts", False)
+                }
+                buckets = build_llm_config_buckets(
+                    db,
+                    llm_metrics,
+                    overrides={},
+                    run_provider=None,
+                    run_model=None,
+                    run_llm_config=None,
+                    run_credential_id=None,
+                )
+                try:
+                    for _config, groups in buckets.items():
+                        comparison_pair = None
+                        if bucket_needs_comparison_pair(
+                            groups,
+                            production_transcript=production_text,
+                            diarised_transcript=diarised_text,
+                            comparison_metric_ids=comparison_ids,
+                        ):
+                            comparison_pair = (production_text, diarised_text)
+                        bucket_metrics = flatten_metric_groups(groups)
+                        scores, _ = evaluate_with_llm(
+                            transcription=transcript,
+                            llm_metrics=bucket_metrics,
+                            ai_providers=ai_providers,
+                            organization_id=run.organization_id,
+                            result_id=result_id,
+                            db=db,
+                            comparison_pair=comparison_pair,
+                            metric_groups=groups,
+                        )
+                        metric_scores.update(scores)
+                except Exception as llm_err:
+                    metric_scores.update(handle_llm_evaluation_error(llm_metrics, llm_err))
 
         result_row.metric_scores = metric_scores
         flag_modified(result_row, "metric_scores")
@@ -223,6 +216,19 @@ def evaluate_studio_run_item_task(self, result_row_id: str) -> dict[str, Any]:
         result_row.error_message = None
         result_row.finished_at = _now_utc()
         db.commit()
+
+        from app.services.billing.flexprice_service import record_metric_studio_item_evaluated
+
+        record_metric_studio_item_evaluated(
+            run.organization_id,
+            result_row.id,
+            workspace_id=run.workspace_id,
+            run_id=run.id,
+            source_kind=result_row.source_kind,
+            source_ref=result_row.source_ref,
+            metric_count=len(metric_scores),
+        )
+
         _rollup_run(db, run)
         return {"status": "completed", "scores": len(metric_scores)}
     except Exception as exc:

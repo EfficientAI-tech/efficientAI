@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from loguru import logger
 from sqlalchemy.orm.attributes import flag_modified
@@ -125,6 +125,18 @@ def generate_evaluation_prompt_improvements_task(
             evaluation.prompt_improvements = prompt_improvements_state_to_db(state)
             flag_modified(evaluation, "prompt_improvements")
             db.commit()
+            if state.status == "completed":
+                from app.services.billing.flexprice_service import (
+                    record_call_import_prompt_improvements_generated,
+                )
+
+                record_call_import_prompt_improvements_generated(
+                    evaluation.organization_id,
+                    uuid4(),
+                    workspace_id=evaluation.workspace_id,
+                    evaluation_id=evaluation.id,
+                    imported_agent_id=UUID(imported_agent_id),
+                )
             logger.info(
                 "Prompt improvements completed for evaluation {} ({} suggestions)",
                 evaluation_id,

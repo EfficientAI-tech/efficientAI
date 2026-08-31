@@ -11,9 +11,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_for_sqlite(_element, _compiler, **_kw):
+    """Allow in-memory SQLite tests to create tables with JSONB columns."""
+    return "JSON"
 
 # Some local environments provide ALLOWED_AUDIO_FORMATS as a non-JSON string,
 # which breaks pydantic-settings parsing during module import in tests.
@@ -22,6 +30,10 @@ os.environ["ALLOWED_AUDIO_FORMATS"] = '["wav","mp3","flac","m4a"]'
 os.environ["UPLOAD_DIR"] = "/tmp/efficientai-test-uploads"
 # Local dev often sets SERVICE_MODE=media and config.yml media URLs; keep API tests on full app mode.
 os.environ["SERVICE_MODE"] = "api"
+# Pytest never uses real Flexprice billing (see tests/helpers/flexprice_stubs.py).
+os.environ["EFFICIENTAI_PYTEST"] = "1"
+os.environ["FLEXPRICE_ENABLED"] = "false"
+os.environ.pop("FLEXPRICE_API_KEY", None)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = _REPO_ROOT / "src"
@@ -32,6 +44,27 @@ for _path in (str(_REPO_ROOT), str(_SRC_ROOT)):
 _TASKS_PACKAGE_DIR = str(
     Path(__file__).resolve().parents[1] / "app" / "workers" / "tasks"
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_flexprice_locally(monkeypatch, request):
+    """Stub all Flexprice billing I/O; only test_flexprice_service.py uses a mocked SDK."""
+    from tests.helpers.flexprice_stubs import (
+        install_flexprice_test_isolation,
+        is_flexprice_unit_test_path,
+    )
+
+    fspath = getattr(request.node, "fspath", None)
+    if is_flexprice_unit_test_path(fspath):
+        yield
+        return
+
+    install_flexprice_test_isolation(monkeypatch)
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "FLEXPRICE_ENABLED", False, raising=False)
+    monkeypatch.setattr(settings, "FLEXPRICE_API_KEY", None, raising=False)
+    yield
 
 
 @pytest.fixture(autouse=True)

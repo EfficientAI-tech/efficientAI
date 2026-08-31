@@ -3,12 +3,12 @@ Personas API Routes
 CRUD for TTS provider-tied voice personas, voice-options catalog,
 and custom voice management (ungated).
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 from loguru import logger
 
@@ -427,6 +427,7 @@ async def get_agent_prompt_sources(
 )
 async def generate_persona_prompt(
     data: GeneratePersonaPromptRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -442,19 +443,38 @@ async def generate_persona_prompt(
     provider_enum, model_str = _get_llm_provider_and_model(
         organization_id, db, data.provider, data.model, data.credential_id
     )
+    from app.services.usage.context import (
+        llm_usage_context,
+        usage_context_for_persona_generation,
+    )
+
     try:
-        result = generate_persona_prompt_from_agent(
-            agent,
-            source=data.source,
-            persona_name=data.persona_name,
-            persona_gender=data.persona_gender,
-            additional_context=data.additional_context,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            llm_config=data.llm_config,
-            credential_id=data.credential_id,
+        with llm_usage_context(
+            usage_context_for_persona_generation(agent, workspace_id=workspace_id)
+        ):
+            result = generate_persona_prompt_from_agent(
+                agent,
+                source=data.source,
+                persona_name=data.persona_name,
+                persona_gender=data.persona_gender,
+                additional_context=data.additional_context,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                llm_config=data.llm_config,
+                credential_id=data.credential_id,
+            )
+        from app.services.billing.flexprice_service import record_persona_prompt_generated
+
+        background_tasks.add_task(
+            record_persona_prompt_generated,
+            organization_id,
+            uuid4(),
+            workspace_id=workspace_id,
+            agent_id=agent.id,
+            model=result.model,
+            source=result.source_used,
         )
         return GeneratePersonaPromptResponse(
             persona_prompt=result.persona_prompt,

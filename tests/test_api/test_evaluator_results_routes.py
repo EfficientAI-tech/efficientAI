@@ -1,14 +1,6 @@
 """API tests for evaluator results routes."""
 
 
-def _blob_storage_service():
-    """Resolve the blob storage singleton exposed as s3_service."""
-    import importlib
-
-    s3_module = importlib.import_module("app.services.storage.s3_service")
-    return s3_module.s3_service
-
-
 def test_derive_speaker_segments_supports_smallest_payload():
     from app.api.v1.routes.evaluator_results import _derive_speaker_segments_from_call_data
 
@@ -244,11 +236,27 @@ def test_evaluator_results_overview_and_aggregate(
     assert agg["completed_rows"] == 1
 
 
+def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-audio-bytes"):
+    """Patch both the blob singleton and the lazy s3_service alias."""
+    import importlib
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(
+        is_enabled=lambda: True,
+        download_file_by_key=lambda _key: audio_bytes,
+        upload_file_by_key=lambda *_args, **_kwargs: None,
+    )
+    blob_module = importlib.import_module("app.services.storage.blob_storage_service")
+    s3_module = importlib.import_module("app.services.storage.s3_service")
+    # Patch the lazy s3_service alias first so undo restores the real singleton.
+    monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
+    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    return fake
+
+
 def test_stream_evaluator_result_audio_from_s3(
     authenticated_client, make_evaluator_result, monkeypatch
 ):
-    storage = _blob_storage_service()
-
     make_evaluator_result(
         result_id="991122",
         audio_s3_key="audio/organizations/test/evaluations/call-1/recording.mp3",
@@ -258,12 +266,7 @@ def test_stream_evaluator_result_audio_from_s3(
         },
     )
 
-    monkeypatch.setattr(storage, "is_enabled", lambda: True)
-    monkeypatch.setattr(
-        storage,
-        "download_file_by_key",
-        lambda _key: b"fake-audio-bytes",
-    )
+    _patch_blob_storage_download(monkeypatch)
 
     response = authenticated_client.get("/api/v1/evaluator-results/991122/audio")
 
@@ -456,12 +459,7 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
 
     monkeypatch.setattr("requests.get", fake_get)
     monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "vapi-secret")
-    storage = _blob_storage_service()
-    monkeypatch.setattr(
-        storage,
-        "upload_file_by_key",
-        lambda *_args, **_kwargs: None,
-    )
+    _patch_blob_storage_download(monkeypatch)
 
     class FakeTask:
         id = "task-1"
@@ -477,4 +475,36 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
 
     assert response.status_code == 200
     assert captured["headers"]["Authorization"] == "Bearer vapi-secret"
+
+
+def test_re_evaluate_playground_result_without_evaluator_id(
+    authenticated_client,
+    make_agent,
+    make_evaluator_result,
+    monkeypatch,
+):
+    agent = make_agent()
+    result = make_evaluator_result(
+        result_id="776655",
+        evaluator_id=None,
+        agent_id=agent.id,
+        transcription="Speaker 1: hello\nSpeaker 2: hi there",
+        provider_platform="vapi",
+        status="completed",
+    )
+
+    class FakeTask:
+        id = "task-playground-re-eval"
+
+    monkeypatch.setattr(
+        "app.workers.celery_app.process_evaluator_result_task.delay",
+        lambda *_args, **_kwargs: FakeTask(),
+    )
+
+    response = authenticated_client.post(
+        f"/api/v1/evaluator-results/{result.result_id}/re-evaluate"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
 

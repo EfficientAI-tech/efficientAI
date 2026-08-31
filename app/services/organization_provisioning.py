@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.database import Workspace
-from app.services.billing.flexprice_service import ensure_customer
+from app.services.billing.flexprice_service import ensure_customer, ensure_subscription
 from app.services.workspace_rbac import (
     backfill_org_workspace_memberships,
     ensure_creator_workspace_admin,
@@ -62,3 +62,4 @@ def provision_billing_customer(
 ) -> None:
     """Register the org with Flexprice when billing is enabled (no-op otherwise)."""
     ensure_customer(organization_id, name=name, email=email)
+    ensure_subscription(organization_id)

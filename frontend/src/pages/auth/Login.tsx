@@ -6,6 +6,7 @@ import type { AuthConfigResponse, AuthProviderConfig, LoginOrgOption } from '../
 import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { consumeAuthRedirectMessage } from '../../lib/authSession'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import {
   consumePendingInviteToken,
   getPendingInviteToken,
@@ -219,8 +220,8 @@ export default function Login() {
       consumePendingInviteToken()
       setSession(res.access_token, res.user, res.refresh_token)
       navigate('/')
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Sign up failed')
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Sign up failed'))
     } finally {
       setIsLoading(false)
     }

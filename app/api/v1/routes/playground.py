@@ -74,6 +74,7 @@ def poll_call_metrics(
     """
     import time
     from app.database import SessionLocal
+    from app.services.playground.post_call_processing import merge_playground_call_data
     from app.services.voice_providers import get_voice_provider
     
     db = SessionLocal()
@@ -109,7 +110,14 @@ def poll_call_metrics(
                     # For other providers, implement similar method
                     continue
                 
-                # Update the call recording with metrics
+                # Update the call recording with metrics (preserve usage-recorded flag)
+                prev_data = (
+                    call_recording.call_data
+                    if isinstance(call_recording.call_data, dict)
+                    else {}
+                )
+                if isinstance(call_metrics, dict):
+                    call_metrics = merge_playground_call_data(prev_data, call_metrics)
                 call_recording.call_data = call_metrics
                 call_recording.status = CallRecordingStatus.UPDATED
                 db.commit()
@@ -138,6 +146,20 @@ def poll_call_metrics(
         # After polling is complete, create EvaluatorResult and trigger evaluation
         if call_complete and call_metrics and call_recording.agent_id:
             try:
+                from app.services.playground.post_call_processing import (
+                    claim_playground_evaluator_result_slot,
+                    record_playground_post_call_usage_once,
+                )
+
+                should_create_evaluator, call_metrics = record_playground_post_call_usage_once(
+                    db,
+                    call_recording_id,
+                    provider_platform=provider_platform,
+                    call_metrics=call_metrics if isinstance(call_metrics, dict) else {},
+                )
+                if not should_create_evaluator:
+                    return
+
                 logger.info(f"[Poll Call Metrics] Call complete, creating EvaluatorResult for call {provider_call_id}")
                 
                 # Extract transcript and speaker segments from call_data
@@ -222,18 +244,21 @@ def poll_call_metrics(
                 except Exception as audio_err:
                     logger.warning(f"[Poll Call Metrics] Audio download/upload failed: {audio_err}")
 
-                # Generate unique result ID
+                locked_recording = claim_playground_evaluator_result_slot(
+                    db,
+                    call_recording_id,
+                    provider_call_id=provider_call_id,
+                )
+                if not locked_recording:
+                    return
+
                 result_id = generate_unique_result_id(db)
-                
-                # Create EvaluatorResult. Background-task path: inherit the
-                # workspace from the call recording rather than the header
-                # (this task runs without a request context).
                 evaluator_result = EvaluatorResult(
                     result_id=result_id,
-                    organization_id=call_recording.organization_id,
-                    workspace_id=call_recording.workspace_id,
+                    organization_id=locked_recording.organization_id,
+                    workspace_id=locked_recording.workspace_id,
                     evaluator_id=None,
-                    agent_id=call_recording.agent_id,
+                    agent_id=locked_recording.agent_id,
                     persona_id=None,
                     scenario_id=None,
                     name=result_name,
@@ -246,12 +271,10 @@ def poll_call_metrics(
                     call_data=call_metrics,
                 )
                 db.add(evaluator_result)
+                db.flush()
+                locked_recording.evaluator_result_id = evaluator_result.id
                 db.commit()
                 db.refresh(evaluator_result)
-                
-                # Link the EvaluatorResult to CallRecording
-                call_recording.evaluator_result_id = evaluator_result.id
-                db.commit()
                 
                 logger.info(f"[Poll Call Metrics] Created EvaluatorResult {result_id} for call {provider_call_id}")
                 
@@ -321,13 +344,16 @@ async def update_call_recording(
             if integration:
                 try:
                     decrypted_api_key = decrypt_api_key(integration.api_key)
-                    background_tasks.add_task(
-                        poll_call_metrics,
-                        call_recording.id,
-                        call_recording.provider_call_id,
-                        call_recording.provider_platform,
-                        decrypted_api_key
-                    )
+                    platform_key = (call_recording.provider_platform or "").lower()
+                    # Vapi polls on call-end refresh only; update fires mid-call too.
+                    if platform_key != "vapi":
+                        background_tasks.add_task(
+                            poll_call_metrics,
+                            call_recording.id,
+                            call_recording.provider_call_id,
+                            call_recording.provider_platform,
+                            decrypted_api_key
+                        )
                 except:
                     pass
     
@@ -343,6 +369,7 @@ class WebCallCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     retell_llm_dynamic_variables: Optional[Dict[str, Any]] = None
     custom_sip_headers: Optional[Dict[str, str]] = None
+    ui_surface: Optional[str] = None
 
 
 @router.post("/web-call", response_model=Dict[str, Any])
@@ -477,13 +504,16 @@ async def create_web_call(
                 provider_call_id = web_call_response.get("call_id")
 
             call_short_id = generate_unique_call_short_id(db)
+            stored_call_data = dict(web_call_response)
+            if web_call_data.ui_surface:
+                stored_call_data["ui_surface"] = web_call_data.ui_surface
             call_recording = CallRecording(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
                 call_short_id=call_short_id,
                 status=CallRecordingStatus.PENDING,
                 source=CallRecordingSource.PLAYGROUND,
-                call_data=web_call_response,  # Store initial response
+                call_data=stored_call_data,
                 provider_call_id=provider_call_id,
                 provider_platform=integration.platform,
                 agent_id=agent.id
@@ -504,7 +534,7 @@ async def create_web_call(
             # Note: We need to pass the decrypted API key, but we should be careful with security
             # For now, we'll pass it to the background task
             # In production, you might want to store it temporarily or use a different approach
-            if provider_call_id:
+            if provider_call_id and plat_lower != "vapi":
                 background_tasks.add_task(
                     poll_call_metrics,
                     call_recording.id,
@@ -960,7 +990,10 @@ async def refresh_call_recording(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Integration not found"
         )
-    
+
+    if call_recording.evaluator_result_id:
+        return {"message": "Call recording already processed"}
+
     try:
         decrypted_api_key = decrypt_api_key(integration.api_key)
     except Exception as e:
@@ -1119,8 +1152,13 @@ async def re_evaluate_call_recording(
                 if hasattr(provider, "retrieve_call_metrics"):
                     refreshed_call_data = provider.retrieve_call_metrics(call_recording.provider_call_id)
                     if isinstance(refreshed_call_data, dict) and refreshed_call_data:
-                        call_data = refreshed_call_data
-                        call_recording.call_data = refreshed_call_data
+                        prev_data = (
+                            call_recording.call_data
+                            if isinstance(call_recording.call_data, dict)
+                            else {}
+                        )
+                        call_data = merge_playground_call_data(prev_data, refreshed_call_data)
+                        call_recording.call_data = call_data
                         db.commit()
                         logger.info(f"[Re-evaluate] Refreshed provider call data for call {call_recording.provider_call_id}")
                         audio_bytes, resp = _download_audio_from_payload(call_data)

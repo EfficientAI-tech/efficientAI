@@ -5,6 +5,7 @@ import { Building2, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody } from '@heroui/react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useAuthStore } from '../../store/authStore'
 
 export default function SelectOrganization() {
@@ -32,8 +33,8 @@ export default function SelectOrganization() {
     try {
       await switchOrg(orgId)
       navigate('/', { replace: true })
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || 'Could not enter the selected organization')
+    } catch (err: unknown) {
+      setError(getApiErrorMessage(err, 'Could not enter the selected organization'))
     } finally {
       setSwitchingTo(null)
     }

@@ -5,7 +5,7 @@
 app:
   name: "EfficientAI Voice AI Evaluation Platform"
   version: "0.1.0"
-  debug: true
+  debug: false
   secret_key: "your-secret-key-here-change-in-production"
   frontend_base_url: "http://localhost:8000"
 
@@ -15,11 +15,16 @@ server:
   port: 8000
 
 # Operational endpoints (/metrics). /health is always open for load balancers.
+# Not Spring Boot Actuator — /metrics is IP-gated via trusted_ips below.
 # Add VPC CIDRs here if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+
+security:
+  csp_enabled: true
+  csp_report_only: false
 
 # Database Configuration (Docker service name)
 database:
@@ -99,7 +104,7 @@ auth:
   local_password:
     # Lifetime of the Bearer tokens minted at POST /auth/login (in minutes).
     # Keep this short; clients re-authenticate silently.
-    token_ttl_minutes: 720  # 12 hours
+    token_ttl_minutes: 15
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
 
@@ -136,3 +141,9 @@ judge_alignment:
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
 # license:
 #   key: "eyJhbGciOi..."
+
+# Flexprice usage metering (optional). api_key from FLEXPRICE_API_KEY env.
+flexprice:
+  enabled: true
+  api_host: "https://api.cloud.flexprice.io/v1"
+  # api_key: use FLEXPRICE_API_KEY in .env / container env

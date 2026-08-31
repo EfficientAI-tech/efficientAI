@@ -22,6 +22,7 @@ interface VoiceAgentProps {
   agentId?: string
   customEndpoint?: string
   customEndpointLabel?: string
+  billingSurface?: 'agents_talk' | 'agent_playground'
   onSessionSaved?: () => void
   compact?: boolean
   sidebarLayout?: boolean
@@ -30,7 +31,7 @@ interface VoiceAgentProps {
 
 type TranscriptEntry = { role: 'user' | 'agent'; content: string; timestamp: string }
 
-export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpoint, customEndpointLabel, onSessionSaved, compact = false, sidebarLayout = false, agentDisplayName }: VoiceAgentProps) {
+export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpoint, customEndpointLabel, billingSurface, onSessionSaved, compact = false, sidebarLayout = false, agentDisplayName }: VoiceAgentProps) {
   const { selectedAgent } = useAgentStore()
   
   // Use agentId prop if provided, otherwise fall back to selectedAgent from store
@@ -419,6 +420,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
       }
       if (!customEndpoint && personaId) params.append('persona_id', personaId)
       if (!customEndpoint && scenarioId) params.append('scenario_id', scenarioId)
+      if (!customEndpoint && billingSurface) params.append('ui_surface', billingSurface)
 
       if (!customEndpoint && params.toString()) {
         endpointUrl += `?${params.toString()}`

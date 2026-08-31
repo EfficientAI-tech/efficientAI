@@ -5,7 +5,7 @@ API endpoints for managing voice agent WebSocket connections.
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request, status
 from sqlalchemy.orm import Session
-from uuid import UUID
+from uuid import UUID, uuid4
 from typing import Dict, Any, Optional, List
 from loguru import logger
 
@@ -103,6 +103,7 @@ async def websocket_endpoint(
         agent_id = websocket.query_params.get("agent_id")
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
+        ui_surface = websocket.query_params.get("ui_surface")
         
         # Fetch agent and voice bundle once for routing and instructions
         agent = None
@@ -478,7 +479,11 @@ async def websocket_endpoint(
         
         # Run the bot with the appropriate pipeline
         call_metadata = None
+        session_uuid: Optional[UUID] = None
         from app.services.voice_agent.call_silence_hangup import resolve_agent_silence_hangup_secs
+
+        if agent_id and workspace_id and not test_agent_bridge_mode:
+            session_uuid = uuid4()
 
         agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
         try:
@@ -608,9 +613,16 @@ async def websocket_endpoint(
             # evaluator_id is optional - can be None if no persona/scenario
             if result_id and agent_id:
                 try:
-                    from app.models.database import EvaluatorResult, EvaluatorResultStatus
+                    from app.models.database import (
+                        CallRecording,
+                        CallRecordingSource,
+                        EvaluatorResult,
+                        EvaluatorResultStatus,
+                    )
+                    from app.models.enums import CallRecordingStatus
+                    from app.utils.call_recordings import generate_unique_call_short_id
                     from app.workers.celery_app import process_evaluator_result_task
-                    
+
                     # Determine name for the result
                     if scenario_name and scenario_name != "Test Call":
                         result_name = scenario_name
@@ -618,9 +630,24 @@ async def websocket_endpoint(
                         result_name = f"Test Call - {agent.name}"
                     else:
                         result_name = "Test Call"
-                    
+
                     logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}")
-                    
+
+                    call_short_id = generate_unique_call_short_id(db)
+                    speaker_segments = call_metadata.get("speaker_segments") or []
+                    if not isinstance(speaker_segments, list):
+                        speaker_segments = []
+                    playground_call_data = {
+                        "source": "voice_bundle",
+                        "result_id": result_id,
+                        "transcript": call_metadata.get("transcription"),
+                        "speaker_segments": speaker_segments,
+                        "recording_s3_key": call_metadata.get("s3_key"),
+                        "duration_seconds": call_metadata.get("duration"),
+                    }
+                    if ui_surface:
+                        playground_call_data["ui_surface"] = ui_surface
+
                     # Create evaluator result with QUEUED status
                     # persona_id and scenario_id can be None for test calls without persona/scenario
                     evaluator_result = EvaluatorResult(
@@ -636,11 +663,28 @@ async def websocket_endpoint(
                         status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
                         audio_s3_key=call_metadata.get("s3_key"),
                         transcription=call_metadata.get("transcription"),
-                        speaker_segments=call_metadata.get("speaker_segments"),
+                        speaker_segments=speaker_segments or None,
                     )
                     db.add(evaluator_result)
+                    db.flush()
+
+                    call_recording = CallRecording(
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        call_short_id=call_short_id,
+                        status=CallRecordingStatus.UPDATED,
+                        source=CallRecordingSource.PLAYGROUND,
+                        call_data=playground_call_data,
+                        provider_call_id=f"voice_bundle_{result_id}",
+                        provider_platform="voice_bundle",
+                        agent_id=UUID(agent_id),
+                        evaluator_result_id=evaluator_result.id,
+                    )
+                    db.add(call_recording)
                     db.commit()
                     db.refresh(evaluator_result)
+
+                    # Playground scoring bills via playground.evaluation_completed.
                     
                     logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}")
                     
@@ -814,6 +858,7 @@ async def bot_connect(
     agent_id = request.query_params.get("agent_id")
     persona_id = request.query_params.get("persona_id")
     scenario_id = request.query_params.get("scenario_id")
+    ui_surface = request.query_params.get("ui_surface")
     
     # Determine which AI Provider to use based on agent configuration
     ai_provider = None
@@ -959,6 +1004,7 @@ async def bot_connect(
         agent_id=agent_id,
         persona_id=persona_id,
         scenario_id=scenario_id,
+        ui_surface=ui_surface,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
         fallback_scheme=(
             request.headers.get("x-forwarded-proto")

@@ -2,12 +2,12 @@
 Prompt Partials API Routes
 CRUD operations with version history for reusable prompt templates.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel
 from loguru import logger
 
@@ -187,12 +187,15 @@ from app.services.ai.llm_resolver import (
 @router.post("/generate")
 async def generate_prompt_with_ai(
     data: GeneratePromptRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Generate a new prompt using AI from a description."""
     from app.services.ai.llm_service import llm_service
+    from app.services.billing.flexprice_service import record_prompt_partial_ai_assisted
 
     if not data.description.strip():
         raise HTTPException(400, "Description is required")
@@ -225,6 +228,15 @@ async def generate_prompt_with_ai(
             task_defaults={"temperature": 0.7, "max_tokens": 4000},
             credential_id=data.credential_id,
         )
+        request_id = uuid4()
+        background_tasks.add_task(
+            record_prompt_partial_ai_assisted,
+            organization_id,
+            request_id,
+            workspace_id=workspace_id,
+            mode="generate",
+            model=model_str,
+        )
         return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
     except Exception as e:
         logger.error(f"[PromptPartials] AI generation failed: {repr(e)}")
@@ -234,12 +246,15 @@ async def generate_prompt_with_ai(
 @router.post("/improve")
 async def improve_prompt_with_ai(
     data: ImprovePromptRequest,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Improve/reformat existing prompt content using AI."""
     from app.services.ai.llm_service import llm_service
+    from app.services.billing.flexprice_service import record_prompt_partial_ai_assisted
 
     if not data.content.strip():
         raise HTTPException(400, "Content is required")
@@ -267,6 +282,15 @@ async def improve_prompt_with_ai(
             llm_config=data.llm_config,
             task_defaults={"temperature": 0.3, "max_tokens": 4000},
             credential_id=data.credential_id,
+        )
+        request_id = uuid4()
+        background_tasks.add_task(
+            record_prompt_partial_ai_assisted,
+            organization_id,
+            request_id,
+            workspace_id=workspace_id,
+            mode="improve",
+            model=model_str,
         )
         return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
     except Exception as e:
