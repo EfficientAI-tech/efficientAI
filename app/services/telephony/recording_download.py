@@ -107,7 +107,12 @@ def assert_recording_url_safe(
     user_supplied: bool,
     allowed_suffixes: Optional[List[str]] = None,
 ) -> None:
-    """Validate a recording URL before any outbound HTTP request."""
+    """Validate a recording URL before any outbound HTTP request.
+
+    Literal IP hosts are always rejected so credentialed fetches cannot send
+    Basic auth to a CSV-controlled address. ``user_supplied`` is kept for
+    call-site compatibility; redirect policy is enforced by the downloader.
+    """
     parsed = urlparse(recording_url.strip())
     if parsed.scheme not in {"http", "https"}:
         raise ExotelInvalidContentError(
@@ -125,24 +130,27 @@ def assert_recording_url_safe(
 
     try:
         literal_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal_ip = None
+
+    if literal_ip is not None:
         if _ip_is_blocked(literal_ip):
             raise ExotelInvalidContentError(
                 "Recording URL targets a blocked network address"
             )
-        if user_supplied:
+        raise ExotelInvalidContentError(
+            "Recording URLs must use allowlisted hostnames, not IP addresses"
+        )
+
+    if not _hostname_allowed(hostname, suffixes):
+        raise ExotelInvalidContentError(
+            f"Recording URL hostname is not allowlisted: {hostname}"
+        )
+    for resolved_ip in _resolve_host_ips(hostname):
+        if _ip_is_blocked(resolved_ip):
             raise ExotelInvalidContentError(
-                "User-supplied recording URLs must use allowlisted hostnames"
+                "Recording URL resolves to a blocked network address"
             )
-    except ValueError:
-        if not _hostname_allowed(hostname, suffixes):
-            raise ExotelInvalidContentError(
-                f"Recording URL hostname is not allowlisted: {hostname}"
-            )
-        for resolved_ip in _resolve_host_ips(hostname):
-            if _ip_is_blocked(resolved_ip):
-                raise ExotelInvalidContentError(
-                    "Recording URL resolves to a blocked network address"
-                )
 
 
 def download_recording_url(

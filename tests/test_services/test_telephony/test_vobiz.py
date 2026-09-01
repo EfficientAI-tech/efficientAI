@@ -11,7 +11,9 @@ from app.services.telephony.phone_routing import safe_normalize_phone
 from app.services.telephony.plivo_client import expand_phone_candidates, normalize_e164
 from app.services.telephony.vobiz_client import VobizClient, build_vobiz_client_for_org
 from app.services.telephony.vobiz_session import create_call_session, delete_call_session, get_call_session
+from app.services.telephony.carrier_media_serializer import build_carrier_frame_serializer
 from app.services.telephony.vobiz_xml import reject_call, speak_and_hangup, stream_to_agent
+from efficientai.serializers.plivo import PlivoFrameSerializer
 from efficientai.serializers.vobiz import VobizFrameSerializer
 
 
@@ -232,3 +234,92 @@ async def test_vobiz_serializer_round_trip_media_frame():
     frame = await serializer.deserialize(media_message)
     assert frame is not None
     assert len(frame.audio) > 0
+
+
+def test_carrier_frame_serializer_uses_plivo_credentials_for_plivo_calls(monkeypatch):
+    org_id = uuid4()
+    integration = MagicMock()
+    integration.auth_id = "enc-auth-id"
+    integration.auth_token = "enc-auth-token"
+
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.resolve_telephony_integration",
+        lambda provider, db, organization_id, **_kwargs: integration,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.decrypt_api_key",
+        lambda value: {"enc-auth-id": "plivo-auth-id", "enc-auth-token": "plivo-token"}[value],
+    )
+
+    serializer = build_carrier_frame_serializer(
+        provider_platform="plivo",
+        stream_id="stream-plivo",
+        call_id="call-plivo",
+        organization_id=org_id,
+        db=MagicMock(),
+    )
+
+    assert isinstance(serializer, PlivoFrameSerializer)
+    assert serializer._auth_id == "plivo-auth-id"
+    assert serializer._auth_token == "plivo-token"
+    assert serializer._call_id == "call-plivo"
+
+
+def test_carrier_frame_serializer_falls_back_to_platform_plivo_credentials(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.resolve_telephony_integration",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.settings.PLIVO_AUTH_ID",
+        "platform-plivo-id",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.settings.PLIVO_AUTH_TOKEN",
+        "platform-plivo-token",
+        raising=False,
+    )
+
+    serializer = build_carrier_frame_serializer(
+        provider_platform="plivo",
+        stream_id="stream-plivo",
+        call_id="call-plivo",
+        organization_id=uuid4(),
+        db=MagicMock(),
+    )
+
+    assert isinstance(serializer, PlivoFrameSerializer)
+    assert serializer._auth_id == "platform-plivo-id"
+    assert serializer._auth_token == "platform-plivo-token"
+
+
+def test_carrier_frame_serializer_keeps_vobiz_credentials_for_vobiz_calls(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.settings.VOBIZ_AUTH_ID",
+        "vobiz-auth-id",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.settings.VOBIZ_AUTH_TOKEN",
+        "vobiz-token",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.services.telephony.carrier_media_serializer.settings.VOBIZ_API_BASE",
+        "https://api.vobiz.ai",
+        raising=False,
+    )
+
+    serializer = build_carrier_frame_serializer(
+        provider_platform="vobiz",
+        stream_id="stream-vobiz",
+        call_id="call-vobiz",
+        organization_id=uuid4(),
+        db=MagicMock(),
+    )
+
+    assert isinstance(serializer, VobizFrameSerializer)
+    assert serializer._auth_id == "vobiz-auth-id"
+    assert serializer._auth_token == "vobiz-token"
+    assert serializer._call_id == "call-vobiz"

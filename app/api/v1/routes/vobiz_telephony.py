@@ -49,8 +49,8 @@ from app.services.telephony.vobiz_session import create_call_session, delete_cal
 from app.services.telephony.vobiz_xml import reject_call, speak_and_hangup, stream_to_agent
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
+from app.services.telephony.carrier_media_serializer import build_carrier_frame_serializer
 from efficientai.runner.utils import parse_telephony_websocket
-from efficientai.serializers.vobiz import VobizFrameSerializer
 
 # Exposed at module scope so tests can patch `.delay` without importing Celery tasks.
 initiate_vobiz_outbound_call_task = None
@@ -680,15 +680,12 @@ async def carrier_media_websocket(websocket: WebSocket):
                 persona_id=persona_id,
                 scenario_id=scenario_id,
             )
-            serializer = VobizFrameSerializer(
+            serializer = build_carrier_frame_serializer(
+                provider_platform=getattr(call_row, "provider_platform", None),
                 stream_id=stream_id,
                 call_id=call_id,
-                auth_id=settings.VOBIZ_AUTH_ID,
-                auth_token=settings.VOBIZ_AUTH_TOKEN,
-                params=VobizFrameSerializer.InputParams(
-                    sample_rate=8000,
-                    api_base=settings.VOBIZ_API_BASE,
-                ),
+                organization_id=UUID(session.organization_id),
+                db=db,
             )
 
             if context.use_voice_bundle_pipeline:

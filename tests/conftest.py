@@ -908,6 +908,7 @@ def _build_session_api_app():
     app.include_router(voice_agent.router, prefix="/api/v1")
     app.include_router(voice_playground.router, prefix="/api/v1")
     app.include_router(telephony.router, prefix="/api/v1")
+    app.include_router(telephony.plivo_webhook_router, prefix="/api/v1")
     app.include_router(vobiz_telephony.router, prefix="/api/v1")
     app.include_router(call_imports.router, prefix="/api/v1")
     app.include_router(call_import_schemas.router, prefix="/api/v1")

@@ -22,6 +22,30 @@ def test_assert_recording_url_safe_rejects_metadata_ip():
         )
 
 
+def test_assert_recording_url_safe_rejects_public_literal_ip_even_when_trusted():
+    with pytest.raises(ExotelInvalidContentError, match="not IP addresses"):
+        module.assert_recording_url_safe(
+            "https://203.0.113.10/recordings/call.mp3",
+            user_supplied=False,
+        )
+
+
+def test_download_recording_url_does_not_send_credentials_to_literal_ip(monkeypatch):
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+
+    with patch.object(module.httpx, "Client", return_value=mock_client):
+        with pytest.raises(ExotelInvalidContentError, match="not IP addresses"):
+            module.download_recording_url(
+                "https://203.0.113.10/recordings/call.mp3",
+                auth=("plivo-auth-id", "plivo-auth-token"),
+                credential_fingerprint="fp-plivo",
+            )
+
+    mock_client.get.assert_not_called()
+
+
 def test_assert_recording_url_safe_rejects_non_allowlisted_host(monkeypatch):
     monkeypatch.setattr(
         module.settings,
