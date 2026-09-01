@@ -268,7 +268,9 @@ def test_vobiz_inbound_routing_is_org_scoped(db_session, org_id, seed_org, make_
     agent = make_agent()
     _seed_vobiz_phone(db_session, org_id, phone_number="+919876543210", agent_id=agent.id)
 
-    resolved_agent_id, resolved_org_id = resolve_inbound_agent_for_number(db_session, "+919876543210")
+    resolved_agent_id, resolved_org_id, _resolved_integration_id = resolve_inbound_agent_for_number(
+        db_session, "+919876543210"
+    )
     assert resolved_agent_id == agent.id
     assert resolved_org_id == org_id
 

@@ -40,7 +40,9 @@ def build_inbound_stream_answer_xml(
     if not to_number:
         return speak_and_hangup("Call could not be routed.")
 
-    agent_id, organization_id = resolve_inbound_agent_for_number(db, to_number)
+    agent_id, organization_id, telephony_integration_id = resolve_inbound_agent_for_number(
+        db, to_number
+    )
     if not agent_id or not organization_id:
         logger.warning(
             "Inbound stream answer miss: to={} from={} call_uuid={}",
@@ -103,6 +105,7 @@ def build_inbound_stream_answer_xml(
         evaluator_id=inbound_evaluator_id,
         evaluator_result_id=inbound_evaluator_result_id,
         provider_platform=provider_platform,
+        telephony_integration_id=telephony_integration_id,
     )
 
     if call_uuid:

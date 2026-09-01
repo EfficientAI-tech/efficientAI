@@ -237,6 +237,7 @@ def create_inbound_call_recording(
     evaluator_id: Optional[UUID] = None,
     evaluator_result_id: Optional[UUID] = None,
     provider_platform: str = "vobiz",
+    telephony_integration_id: Optional[UUID] = None,
 ) -> CallRecording:
     existing = find_call_recording(db, call_ref=call_ref, provider_call_id=provider_call_id)
     if existing:
@@ -254,6 +255,8 @@ def create_inbound_call_recording(
     }
     if evaluator_id is not None:
         call_data["evaluator_id"] = str(evaluator_id)
+    if telephony_integration_id is not None:
+        call_data["telephony_integration_id"] = str(telephony_integration_id)
     row = CallRecording(
         organization_id=organization_id,
         workspace_id=agent.workspace_id,

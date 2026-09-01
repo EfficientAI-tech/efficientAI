@@ -241,10 +241,17 @@ def test_carrier_frame_serializer_uses_plivo_credentials_for_plivo_calls(monkeyp
     integration = MagicMock()
     integration.auth_id = "enc-auth-id"
     integration.auth_token = "enc-auth-token"
+    pinned_id = uuid4()
+
+    def _resolve(provider, db, organization_id, credential_id=None, **_kwargs):
+        assert provider == "plivo"
+        assert organization_id == org_id
+        assert credential_id == pinned_id
+        return integration
 
     monkeypatch.setattr(
         "app.services.telephony.carrier_media_serializer.resolve_telephony_integration",
-        lambda provider, db, organization_id, **_kwargs: integration,
+        _resolve,
     )
     monkeypatch.setattr(
         "app.services.telephony.carrier_media_serializer.decrypt_api_key",
@@ -257,6 +264,7 @@ def test_carrier_frame_serializer_uses_plivo_credentials_for_plivo_calls(monkeyp
         call_id="call-plivo",
         organization_id=org_id,
         db=MagicMock(),
+        telephony_integration_id=pinned_id,
     )
 
     assert isinstance(serializer, PlivoFrameSerializer)
@@ -266,9 +274,15 @@ def test_carrier_frame_serializer_uses_plivo_credentials_for_plivo_calls(monkeyp
 
 
 def test_carrier_frame_serializer_falls_back_to_platform_plivo_credentials(monkeypatch):
+    org_id = uuid4()
+
+    def _resolve(*_args, credential_id=None, **_kwargs):
+        assert credential_id is None
+        return None
+
     monkeypatch.setattr(
         "app.services.telephony.carrier_media_serializer.resolve_telephony_integration",
-        lambda *_args, **_kwargs: None,
+        _resolve,
     )
     monkeypatch.setattr(
         "app.services.telephony.carrier_media_serializer.settings.PLIVO_AUTH_ID",
@@ -285,7 +299,7 @@ def test_carrier_frame_serializer_falls_back_to_platform_plivo_credentials(monke
         provider_platform="plivo",
         stream_id="stream-plivo",
         call_id="call-plivo",
-        organization_id=uuid4(),
+        organization_id=org_id,
         db=MagicMock(),
     )
 

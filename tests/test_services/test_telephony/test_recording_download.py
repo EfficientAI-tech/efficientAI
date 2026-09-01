@@ -69,6 +69,22 @@ def test_download_recording_url_rejects_credentials_for_user_supplied_urls():
         )
 
 
+def test_download_recording_url_credentialed_rejects_shared_storage_host():
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.__exit__.return_value = False
+
+    with patch.object(module.httpx, "Client", return_value=mock_client):
+        with pytest.raises(ExotelInvalidContentError, match="not allowlisted"):
+            module.download_recording_url(
+                "https://evil-bucket.s3.amazonaws.com/recording.mp3",
+                auth=("plivo-auth-id", "plivo-auth-token"),
+                credential_fingerprint="fp-plivo",
+            )
+
+    mock_client.get.assert_not_called()
+
+
 def test_download_public_recording_fetches_allowlisted_host(monkeypatch):
     monkeypatch.setattr(
         module.settings,

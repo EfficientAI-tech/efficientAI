@@ -49,7 +49,10 @@ from app.services.telephony.vobiz_session import create_call_session, delete_cal
 from app.services.telephony.vobiz_xml import reject_call, speak_and_hangup, stream_to_agent
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
-from app.services.telephony.carrier_media_serializer import build_carrier_frame_serializer
+from app.services.telephony.carrier_media_serializer import (
+    build_carrier_frame_serializer,
+    telephony_integration_id_from_call_row,
+)
 from efficientai.runner.utils import parse_telephony_websocket
 
 # Exposed at module scope so tests can patch `.delay` without importing Celery tasks.
@@ -165,7 +168,9 @@ def _resolve_agent_for_answer(
         if session and session.agent_id and session.organization_id:
             return UUID(session.agent_id), UUID(session.organization_id), call_ref
 
-    agent_id, organization_id = resolve_inbound_agent_for_number(db, params.get("to"))
+    agent_id, organization_id, _telephony_integration_id = resolve_inbound_agent_for_number(
+        db, params.get("to")
+    )
     if not agent_id or not organization_id:
         return None, None, None
     return agent_id, organization_id, None
@@ -686,6 +691,7 @@ async def carrier_media_websocket(websocket: WebSocket):
                 call_id=call_id,
                 organization_id=UUID(session.organization_id),
                 db=db,
+                telephony_integration_id=telephony_integration_id_from_call_row(call_row),
             )
 
             if context.use_voice_bundle_pipeline:

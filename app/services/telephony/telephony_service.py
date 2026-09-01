@@ -535,6 +535,8 @@ class TelephonyService:
                 raise ValueError("No default workspace found for organization")
             workspace_id = default_workspace.id
 
+        call_data = dict(response or {})
+        call_data["telephony_integration_id"] = str(integration.id)
         db.add(
             CallRecording(
                 organization_id=org_id,
@@ -543,7 +545,7 @@ class TelephonyService:
                 status=CallRecordingStatus.PENDING,
                 source=CallRecordingSource.WEBHOOK,
                 call_event="outbound_initiated",
-                call_data=response,
+                call_data=call_data,
                 provider_call_id=call_uuid,
                 provider_platform=integration.provider,
                 agent_id=agent_id,
