@@ -71,7 +71,31 @@ EXTRACTION_MAX_TOKENS = 1800
 CLUSTER_SYNTHESIS_MAX_TOKENS = 2400
 DISCOVERY_MAX_TOKENS = 2000
 
-ProgressCallback = Callable[[int, int], None]
+MetricClusterProgressUpdate = Dict[str, Any]
+ProgressCallback = Callable[[MetricClusterProgressUpdate], None]
+
+
+def build_metric_cluster_progress(
+    *,
+    completed_llm_calls: int,
+    total_llm_calls: int,
+    completed_selected_calls: int = 0,
+    total_selected_calls: int = 0,
+    current_metric_name: Optional[str] = None,
+    current_metric_index: int = 0,
+    total_metrics: int = 0,
+) -> MetricClusterProgressUpdate:
+    payload: MetricClusterProgressUpdate = {
+        "completed_llm_calls": completed_llm_calls,
+        "total_llm_calls": total_llm_calls,
+        "completed_selected_calls": completed_selected_calls,
+        "total_selected_calls": total_selected_calls,
+        "current_metric_index": current_metric_index,
+        "total_metrics": total_metrics,
+    }
+    if current_metric_name:
+        payload["current_metric_name"] = current_metric_name
+    return payload
 CancelCheck = Callable[[], bool]
 
 
@@ -868,6 +892,7 @@ def generate_metric_clusters_for_source_rows(
 
     extraction_cap = max(1, llm_budget - DISCOVERY_CALLS - flagged_metric_count)
     completed_calls = 0
+    clusterable_metric_index = 0
 
     def _check_cancelled() -> Optional[EvaluationMetricClustersState]:
         if is_cancelled is None or not is_cancelled():
@@ -911,6 +936,21 @@ def generate_metric_clusters_for_source_rows(
 
         flagged_count = len(flagged_payloads)
         total_flagged += flagged_count
+        clusterable_metric_index += 1
+        processed_row_ids: set[str] = set()
+
+        if on_progress:
+            on_progress(
+                build_metric_cluster_progress(
+                    completed_llm_calls=completed_calls,
+                    total_llm_calls=total_calls_estimate,
+                    completed_selected_calls=0,
+                    total_selected_calls=flagged_count,
+                    current_metric_name=metric.name,
+                    current_metric_index=clusterable_metric_index,
+                    total_metrics=flagged_metric_count,
+                )
+            )
 
         batch_size, num_batches = compute_extraction_plan(
             flagged_count, max_llm_calls=max(20, extraction_cap // max(len(quality_metrics), 1))
@@ -942,9 +982,23 @@ def generate_metric_clusters_for_source_rows(
                     metric.id,
                     exc,
                 )
+            for row in batch:
+                row_id = row.get("evaluation_row_id")
+                if row_id:
+                    processed_row_ids.add(str(row_id))
             completed_calls += 1
             if on_progress:
-                on_progress(completed_calls, total_calls_estimate)
+                on_progress(
+                    build_metric_cluster_progress(
+                        completed_llm_calls=completed_calls,
+                        total_llm_calls=total_calls_estimate,
+                        completed_selected_calls=len(processed_row_ids),
+                        total_selected_calls=flagged_count,
+                        current_metric_name=metric.name,
+                        current_metric_index=clusterable_metric_index,
+                        total_metrics=flagged_metric_count,
+                    )
+                )
 
         cancelled_state = _check_cancelled()
         if cancelled_state is not None:
@@ -973,7 +1027,17 @@ def generate_metric_clusters_for_source_rows(
 
         completed_calls += 1
         if on_progress:
-            on_progress(completed_calls, total_calls_estimate)
+            on_progress(
+                build_metric_cluster_progress(
+                    completed_llm_calls=completed_calls,
+                    total_llm_calls=total_calls_estimate,
+                    completed_selected_calls=flagged_count,
+                    total_selected_calls=flagged_count,
+                    current_metric_name=metric.name,
+                    current_metric_index=clusterable_metric_index,
+                    total_metrics=flagged_metric_count,
+                )
+            )
 
         metric_id_str = str(metric.id)
         payloads_by_metric[metric_id_str] = list(flagged_payloads)
@@ -1006,7 +1070,16 @@ def generate_metric_clusters_for_source_rows(
         logger.warning("Proactive discovery failed for job {}: {}", job_key, exc)
     completed_calls += 1
     if on_progress:
-        on_progress(completed_calls, total_calls_estimate)
+        on_progress(
+            build_metric_cluster_progress(
+                completed_llm_calls=completed_calls,
+                total_llm_calls=total_calls_estimate,
+                completed_selected_calls=0,
+                total_selected_calls=0,
+                current_metric_index=clusterable_metric_index,
+                total_metrics=flagged_metric_count,
+            )
+        )
 
     if not groups and not discovered:
         return EvaluationMetricClustersState(
@@ -1138,14 +1211,20 @@ def metric_clusters_state_from_raw(
     snapshot = raw.get("generated_at_completed_rows")
     snapshot_int = int(snapshot) if isinstance(snapshot, (int, float)) else 0
     progress_raw = raw.get("progress")
-    progress = (
-        {
-            "completed_llm_calls": int(progress_raw.get("completed_llm_calls") or 0),
-            "total_llm_calls": int(progress_raw.get("total_llm_calls") or 0),
-        }
-        if isinstance(progress_raw, dict)
-        else None
-    )
+    progress: Optional[Dict[str, Any]] = None
+    if isinstance(progress_raw, dict):
+        progress = {}
+        for key, value in progress_raw.items():
+            if key == "current_metric_name" and isinstance(value, str):
+                progress[key] = value
+            elif isinstance(value, (int, float)):
+                progress[key] = int(value)
+            elif isinstance(value, str) and key not in progress:
+                progress[key] = value
+        if "completed_llm_calls" not in progress:
+            progress["completed_llm_calls"] = 0
+        if "total_llm_calls" not in progress:
+            progress["total_llm_calls"] = 0
 
     rca_summary = None
     rca_raw = raw.get("rca_summary")
@@ -1156,6 +1235,16 @@ def metric_clusters_state_from_raw(
             rca_summary = _RcaSummary.model_validate(rca_raw)
         except Exception:  # noqa: BLE001
             rca_summary = None
+
+    generation_scope = None
+    scope_raw = raw.get("generation_scope")
+    if isinstance(scope_raw, dict):
+        try:
+            from app.models.schemas import MetricClusterGenerationScope as _GenScope
+
+            generation_scope = _GenScope.model_validate(scope_raw)
+        except Exception:  # noqa: BLE001
+            generation_scope = None
 
     return EvaluationMetricClustersState(
         status=status,
@@ -1196,6 +1285,7 @@ def metric_clusters_state_from_raw(
             if isinstance(raw.get("failure_policies_updated_at"), str)
             else None
         ),
+        generation_scope=generation_scope,
     )
 
 
@@ -1231,6 +1321,11 @@ def metric_clusters_state_to_db(state: EvaluationMetricClustersState) -> Dict[st
         "rca_summary": (
             state.rca_summary.model_dump(mode="json")
             if state.rca_summary is not None
+            else None
+        ),
+        "generation_scope": (
+            state.generation_scope.model_dump(mode="json")
+            if state.generation_scope is not None
             else None
         ),
     }

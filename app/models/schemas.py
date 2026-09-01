@@ -4908,7 +4908,7 @@ class EvaluationUserInsightsState(BaseModel):
     overview: Optional[str] = None
     generated_at: Optional[datetime] = None
     generated_at_completed_rows: int = 0
-    progress: Optional[Dict[str, int]] = None
+    progress: Optional[Dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     llm_calls_used: int = 0
@@ -5071,6 +5071,35 @@ class MetricClustersRcaSummary(BaseModel):
     prompt_areas: List[RcaPromptAreaRow] = Field(default_factory=list)
 
 
+class MetricClusterGenerationScope(BaseModel):
+    """Snapshot of agent/scenario/date scope used for a cluster generation run."""
+
+    agent_id: UUID
+    agent_name: Optional[str] = None
+    scenario_ids: List[str] = Field(default_factory=list)
+    scenario_names: List[str] = Field(default_factory=list)
+    since: Optional[datetime] = None
+    until: Optional[datetime] = None
+    eligible_call_count: int = 0
+    selected_call_count: int = 0
+
+
+class EvaluatorResultClusterScopeSummary(BaseModel):
+    """Workspace cluster report keyed by agent/scenario/date scope."""
+
+    job_id: UUID
+    scope_key: str
+    generation_scope: MetricClusterGenerationScope
+    status: Literal["idle", "running", "completed", "failed", "cancelled"] = "idle"
+    generated_at: Optional[datetime] = None
+    is_stale: bool = False
+    has_results: bool = False
+
+
+class EvaluatorResultClusterScopeListResponse(BaseModel):
+    items: List[EvaluatorResultClusterScopeSummary] = Field(default_factory=list)
+
+
 class EvaluationMetricClustersState(BaseModel):
     """Cached per-metric failure clustering for internal diagnostics."""
 
@@ -5082,7 +5111,7 @@ class EvaluationMetricClustersState(BaseModel):
     overview: Optional[str] = None
     generated_at: Optional[datetime] = None
     generated_at_completed_rows: int = 0
-    progress: Optional[Dict[str, int]] = None
+    progress: Optional[Dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     llm_calls_used: int = 0
@@ -5097,6 +5126,7 @@ class EvaluationMetricClustersState(BaseModel):
     failure_policies_source: Literal["inferred", "user"] = "inferred"
     failure_policies_updated_at: Optional[datetime] = None
     rca_summary: Optional[MetricClustersRcaSummary] = None
+    generation_scope: Optional[MetricClusterGenerationScope] = None
 
 
 class MetricClusterEligibleRow(BaseModel):

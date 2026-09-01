@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 from uuid import UUID
 
@@ -16,6 +19,7 @@ from app.services.call_import_user_insights import _pick_transcript
 from app.services.evaluators.evaluator_results_query import classify_display_status
 
 ROW_TRANSCRIPT_CHAR_CAP = 3000
+SCOPE_KEY_MAX_LEN = 512
 
 
 @dataclass(frozen=True)
@@ -87,12 +91,45 @@ def filter_cluster_rows_by_ids(
     return [row for row in rows if str(row.row_id) in allowed]
 
 
+def _iso_or_star(value: Optional[datetime]) -> str:
+    if value is None:
+        return "*"
+    return value.isoformat()
+
+
 def build_evaluator_results_scope_key(
     *,
     agent_id: Optional[UUID] = None,
+    scenario_ids: Optional[Sequence[UUID]] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
     suite_id: Optional[UUID] = None,
     scenario_id: Optional[UUID] = None,
 ) -> str:
+    """Build a stable cache key for evaluator-result cluster jobs."""
+    if agent_id is not None and suite_id is None and scenario_id is None:
+        scen_part = "*"
+        if scenario_ids:
+            scen_part = ",".join(sorted(str(sid) for sid in scenario_ids))
+        since_part = _iso_or_star(since)
+        until_part = _iso_or_star(until)
+        key = (
+            f"agent:{agent_id}|scenarios:{scen_part}|since:{since_part}|until:{until_part}"
+        )
+        if len(key) <= SCOPE_KEY_MAX_LEN:
+            return key
+        canonical = json.dumps(
+            {
+                "agent_id": str(agent_id),
+                "scenario_ids": sorted(str(sid) for sid in scenario_ids or []),
+                "since": since_part,
+                "until": until_part,
+            },
+            sort_keys=True,
+        )
+        digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+        return f"agent:{agent_id}|hash:{digest}"
+
     parts: List[str] = []
     if agent_id:
         parts.append(f"agent:{agent_id}")

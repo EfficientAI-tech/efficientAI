@@ -1,22 +1,60 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, Loader2, X } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import AIProviderModelPicker from '../AIProviderModelPicker'
 import Button from '../Button'
-import type { MetricClustersClient } from './clients'
+import ResultsDateRangePicker from '../../pages/evaluators/results/ResultsDateRangePicker'
+import {
+  dateRangeToSinceUntil,
+} from '../../pages/evaluators/results/resultsDateRange'
+import ClusterReportDetailsTab from './ClusterReportDetailsTab'
+import ClusterReportVisualizationTab from './ClusterReportVisualizationTab'
+import type { MetricClustersClient, EvaluatorResultClusterScope } from './clients'
+import {
+  createEvaluatorResultsMetricClustersClient,
+} from './clients'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
   EvaluationMetricClustersState,
-  MetricClustersRcaSummary,
   MetricFailurePolicy,
   MetricFailurePolicyMetricPreview,
+  EvaluatorResultsAgentSummary,
   MetricClustersPanelProps,
+  ClusterReportView,
 } from './types'
 
 const METRIC_CLUSTER_ROW_PRESETS = [25, 50, 500] as const
 type MetricClusterRowPreset =
   (typeof METRIC_CLUSTER_ROW_PRESETS)[number] | 'all'
+
+function scenariosForAgent(agent: EvaluatorResultsAgentSummary) {
+  const seen = new Map<string, string>()
+  for (const suite of agent.suites ?? []) {
+    for (const scenario of suite.scenarios ?? []) {
+      seen.set(scenario.scenario_id, scenario.scenario_name)
+    }
+  }
+  return [...seen.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function clusterScopeToApi(scope: {
+  agentId: string
+  scenarioIds: string[]
+  startDate: string | null
+  endDate: string | null
+}): EvaluatorResultClusterScope {
+  const out: EvaluatorResultClusterScope = { agentId: scope.agentId }
+  if (scope.scenarioIds.length) out.scenarioIds = scope.scenarioIds
+  if (scope.startDate && scope.endDate) {
+    const bounds = dateRangeToSinceUntil(scope.startDate, scope.endDate)
+    out.since = bounds.since
+    out.until = bounds.until
+  }
+  return out
+}
 
 const PROVIDER_DISPLAY: Record<string, string> = {
   openai: 'OpenAI',
@@ -24,24 +62,6 @@ const PROVIDER_DISPLAY: Record<string, string> = {
   google: 'Google',
   deepseek: 'DeepSeek',
   groq: 'Groq',
-}
-
-function clampProseToSentences(
-  text: string,
-  maxSentences = 3,
-  maxChars = 300,
-): string {
-  const trimmed = text.trim().replace(/\s*\n+\s*/g, ' ')
-  if (!trimmed) return trimmed
-  const sentences = trimmed.split(/(?<=[.!?])\s+/).filter(Boolean)
-  let result = (sentences.length ? sentences.slice(0, maxSentences) : [trimmed])
-    .join(' ')
-    .trim()
-  if (result.length > maxChars) {
-    const cut = result.slice(0, maxChars - 3).replace(/\s+\S*$/, '')
-    result = `${cut || result.slice(0, maxChars)}...`
-  }
-  return result
 }
 
 function metricClusterSelectedCount(
@@ -326,13 +346,14 @@ function MetricFailurePolicyEditor({
 function MetricClusterGenerationModal({
   open,
   onClose,
-  client,
+  client: initialClient,
   defaultProvider = '',
   defaultModel = '',
   state,
   onGenerated,
   onError,
   overlayZIndexClass = 'z-50',
+  evaluatorScope,
 }: {
   open: boolean
   onClose: () => void
@@ -340,10 +361,12 @@ function MetricClusterGenerationModal({
   defaultProvider?: string
   defaultModel?: string
   state: EvaluationMetricClustersState | null
-  onGenerated: () => void
+  onGenerated: (nextState?: EvaluationMetricClustersState, scope?: EvaluatorResultClusterScope) => void
   onError?: (message: string | null) => void
   overlayZIndexClass?: string
+  evaluatorScope?: MetricClustersPanelProps['evaluatorScope']
 }) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pickerProvider, setPickerProvider] = useState('')
@@ -357,18 +380,67 @@ function MetricClusterGenerationModal({
     'inferred',
   )
   const [policiesTouched, setPoliciesTouched] = useState(false)
+  const [draftAgentId, setDraftAgentId] = useState('')
+  const [draftScenarioIds, setDraftScenarioIds] = useState<string[]>([])
+  const [draftStartDate, setDraftStartDate] = useState<string | null>(null)
+  const [draftEndDate, setDraftEndDate] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open || !evaluatorScope) return
+    const existing = evaluatorScope.scope
+    setDraftAgentId(existing?.agentId ?? '')
+    setDraftScenarioIds(existing?.scenarioIds ?? [])
+    if (existing?.since && existing?.until) {
+      setDraftStartDate(existing.since.slice(0, 10))
+      setDraftEndDate(existing.until.slice(0, 10))
+    } else {
+      setDraftStartDate(null)
+      setDraftEndDate(null)
+    }
+  }, [open, evaluatorScope])
+
+  const draftApiScope = useMemo(() => {
+    if (!evaluatorScope || !draftAgentId) return null
+    return clusterScopeToApi({
+      agentId: draftAgentId,
+      scenarioIds: draftScenarioIds,
+      startDate: draftStartDate,
+      endDate: draftEndDate,
+    })
+  }, [
+    draftAgentId,
+    draftEndDate,
+    draftScenarioIds,
+    draftStartDate,
+    evaluatorScope,
+  ])
+
+  const client = useMemo(() => {
+    if (draftApiScope) {
+      return createEvaluatorResultsMetricClustersClient(
+        draftApiScope,
+        activeWorkspaceId,
+      )
+    }
+    return initialClient
+  }, [activeWorkspaceId, draftApiScope, initialClient])
+
+  const selectedAgent = evaluatorScope?.agents.find(
+    (agent) => agent.agent_id === draftAgentId,
+  )
+  const scenarioOptions = selectedAgent ? scenariosForAgent(selectedAgent) : []
 
   const failurePoliciesQuery = useQuery({
     queryKey: [...client.queryKeyPrefix, 'failure-policies'],
     queryFn: () => client.getFailurePolicies(),
-    enabled: open,
+    enabled: open && (!evaluatorScope || Boolean(draftAgentId)),
     staleTime: 30_000,
   })
 
   const eligibleRowsQuery = useQuery({
     queryKey: [...client.queryKeyPrefix, 'eligible-rows'],
     queryFn: () => client.listEligibleRows({ count_only: true }),
-    enabled: open,
+    enabled: open && (!evaluatorScope || Boolean(draftAgentId)),
     staleTime: 30_000,
   })
 
@@ -430,6 +502,10 @@ function MetricClusterGenerationModal({
   }
 
   const handleGenerate = async () => {
+    if (evaluatorScope && !draftAgentId) {
+      reportError('Select an agent to cluster.')
+      return
+    }
     if (selectedRowCount === 0) {
       reportError('Select at least one call to cluster.')
       return
@@ -452,7 +528,7 @@ function MetricClusterGenerationModal({
     reportError(null)
     try {
       const force = hasExistingClusters
-      await client.generateClusters({
+      const nextState = await client.generateClusters({
         force,
         regenerate: force,
         provider: pickerProvider || undefined,
@@ -460,7 +536,10 @@ function MetricClusterGenerationModal({
         row_limit: rowPreset === 'all' ? undefined : rowPreset,
         failure_policies: policies,
       })
-      onGenerated()
+      if (evaluatorScope && draftApiScope) {
+        evaluatorScope.onScopeCommit(draftApiScope)
+      }
+      onGenerated(nextState, draftApiScope ?? undefined)
       onClose()
     } catch (e: any) {
       reportError(
@@ -506,6 +585,88 @@ function MetricClusterGenerationModal({
           </button>
         </div>
         <div className="px-6 py-5 overflow-y-auto flex-1">
+          {evaluatorScope ? (
+            <div className="mb-5 space-y-4 rounded-lg border border-gray-200 bg-gray-50/70 p-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1">
+                  Cluster scope
+                </p>
+                <p className="text-xs text-gray-600">
+                  Choose which agent, scenarios, and simulation dates to include.
+                </p>
+              </div>
+              <label className="block text-sm">
+                <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                  Agent
+                </span>
+                <select
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white"
+                  value={draftAgentId}
+                  disabled={generating}
+                  onChange={(e) => {
+                    setDraftAgentId(e.target.value)
+                    setDraftScenarioIds([])
+                    setPoliciesTouched(false)
+                  }}
+                >
+                  <option value="">Select an agent…</option>
+                  {evaluatorScope.agents.map((agent) => (
+                    <option key={agent.agent_id} value={agent.agent_id}>
+                      {agent.agent_name} ({agent.counts.total})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {draftAgentId ? (
+                <div>
+                  <p className="text-xs font-medium text-gray-700 mb-2">
+                    Scenarios (optional — leave all unchecked for every scenario)
+                  </p>
+                  {scenarioOptions.length ? (
+                    <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                      {scenarioOptions.map((scenario) => {
+                        const checked = draftScenarioIds.includes(scenario.id)
+                        return (
+                          <label
+                            key={scenario.id}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs text-gray-700"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={generating}
+                              onChange={(e) => {
+                                setDraftScenarioIds((prev) =>
+                                  e.target.checked
+                                    ? [...prev, scenario.id]
+                                    : prev.filter((id) => id !== scenario.id),
+                                )
+                                setPoliciesTouched(false)
+                              }}
+                            />
+                            {scenario.name}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">
+                      No scenarios found for this agent yet.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+              <ResultsDateRangePicker
+                start={draftStartDate}
+                end={draftEndDate}
+                onApply={(start, end) => {
+                  setDraftStartDate(start)
+                  setDraftEndDate(end)
+                  setPoliciesTouched(false)
+                }}
+              />
+            </div>
+          ) : null}
           <div className="mb-4">
             {failurePoliciesQuery.isLoading ? (
               <p className="text-xs text-gray-500">Loading failure policies…</p>
@@ -568,7 +729,11 @@ function MetricClusterGenerationModal({
             variant="primary"
             onClick={handleGenerate}
             isLoading={generating}
-            disabled={generating || selectedRowCount === 0}
+            disabled={
+              generating ||
+              selectedRowCount === 0 ||
+              (Boolean(evaluatorScope) && !draftAgentId)
+            }
           >
             Generate clusters
           </Button>
@@ -579,243 +744,6 @@ function MetricClusterGenerationModal({
   )
 }
 
-function RcaExecutiveBar({ pct, scaleMax }: { pct: number; scaleMax: number }) {
-  const width =
-    scaleMax > 0 ? Math.min(100, Math.round((pct / scaleMax) * 100)) : 0
-  return (
-    <div className="h-2.5 rounded-sm bg-[#e7ddd1] border border-[#d7cfc2] overflow-hidden w-full max-w-full">
-      <div
-        className="h-full bg-[#c7725e] rounded-sm transition-all"
-        style={{ width: `${width}%` }}
-      />
-    </div>
-  )
-}
-
-function RcaExecutiveInterpretation({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-md border border-rose-100 bg-rose-50/70 px-3 py-2.5 mt-3">
-      <p className="text-[10px] font-bold uppercase tracking-wide text-rose-800 mb-1">
-        Executive interpretation
-      </p>
-      <p className="text-xs text-gray-800 leading-relaxed">{children}</p>
-    </div>
-  )
-}
-
-function MetricClustersRcaSummaryPanel({
-  summary,
-}: {
-  summary: MetricClustersRcaSummary
-}) {
-  const topPattern = summary.repeated_patterns[0]
-  const topHotspot = summary.metric_hotspots[0]
-  const maxPatternShare = Math.max(
-    ...summary.repeated_patterns.map((r) => r.evidence_share_pct),
-    1,
-  )
-  const maxHotspotRate = Math.max(
-    ...summary.metric_hotspots.map((r) => r.metric_rate_pct),
-    1,
-  )
-  const totalFlagged =
-    summary.total_flagged_instances ??
-    summary.metric_hotspots.reduce((sum, r) => sum + r.flagged_calls, 0)
-
-  return (
-    <article className="rounded-lg border border-gray-200 bg-[#faf7f2]/80 p-4 space-y-6">
-      <div>
-        <h4 className="text-base font-semibold text-gray-900">
-          Executive summary — evaluation set
-        </h4>
-        <p className="text-xs text-gray-600 mt-1">
-          Top metrics by clustered failure patterns and overall flagged rate across{' '}
-          {summary.analysed_calls.toLocaleString()} analysed calls.
-        </p>
-      </div>
-
-      {summary.repeated_patterns.length ? (
-        <section className="space-y-2">
-          <div className="border-b border-gray-200 pb-2 space-y-1">
-            <h5 className="text-sm font-semibold text-gray-900">
-              Repeated failure patterns
-            </h5>
-            <p className="text-[10px] text-gray-500 uppercase tracking-wide">
-              Base: {summary.total_clusters} RCA clusters from{' '}
-              {summary.total_clustered_instances.toLocaleString()} clustered instances ·{' '}
-              {totalFlagged.toLocaleString()} flagged metric-call instances
-            </p>
-          </div>
-          <div className="overflow-x-auto rounded-md border border-gray-100 bg-white max-w-full mx-auto">
-            <table className="w-full table-fixed text-xs">
-              <colgroup>
-                <col className="w-[41%]" />
-                <col className="w-[12%]" />
-                <col className="w-[29%]" />
-                <col className="w-[18%]" />
-              </colgroup>
-              <thead>
-                <tr className="text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-100">
-                  <th className="px-2 py-2 font-semibold text-left">Finding</th>
-                  <th className="px-2 py-2 font-semibold text-center">
-                    Evidence share
-                  </th>
-                  <th className="px-2 py-2 font-semibold text-center">Distribution</th>
-                  <th className="px-2 py-2 font-semibold text-center">
-                    Evidence calls
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.repeated_patterns.map((row) => (
-                  <tr
-                    key={row.metric_id}
-                    className="border-b border-gray-50 align-top last:border-0"
-                  >
-                    <td className="px-2 py-2.5 text-left">
-                      <p className="font-bold text-gray-900 uppercase tracking-tight text-[11px]">
-                        {row.metric_name}
-                      </p>
-                      <p className="text-[10px] text-gray-500 mt-1 leading-snug break-words">
-                        Top RCA patterns: {row.top_rca_patterns}
-                      </p>
-                    </td>
-                    <td className="px-2 py-2.5 text-center tabular-nums font-semibold text-gray-900 align-top">
-                      {row.evidence_share_pct.toFixed(1)}%
-                    </td>
-                    <td className="px-2 py-2.5 align-middle">
-                      <RcaExecutiveBar
-                        pct={row.evidence_share_pct}
-                        scaleMax={maxPatternShare}
-                      />
-                    </td>
-                    <td className="px-2 py-2.5 text-center tabular-nums text-gray-900 align-top">
-                      <p className="font-semibold text-[11px]">
-                        {row.evidence_calls.toLocaleString()}
-                      </p>
-                      <p className="text-[10px] text-gray-500 font-medium mt-0.5">
-                        {row.evidence_share_pct.toFixed(1)}%
-                      </p>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {topPattern ? (
-            <RcaExecutiveInterpretation>
-              These rows group repeated RCA failure patterns by metric so the same
-              metric is not repeated across multiple rows. The largest group is{' '}
-              <span className="font-semibold">{topPattern.metric_name}</span>; focus
-              remediation there first using the example calls in each cluster below.
-            </RcaExecutiveInterpretation>
-          ) : null}
-        </section>
-      ) : null}
-
-      {summary.metric_hotspots.length ? (
-        <section className="space-y-2">
-          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-gray-200 pb-2">
-            <h5 className="text-sm font-semibold text-gray-900">Metric hotspots</h5>
-            <p className="text-[10px] text-gray-500 uppercase tracking-wide">
-              Base: selected metric flags across{' '}
-              {summary.analysed_calls.toLocaleString()} analysed calls
-            </p>
-          </div>
-          <div className="overflow-x-auto rounded-md border border-gray-100 bg-white">
-            <table className="w-full min-w-[520px] text-xs">
-              <thead>
-                <tr className="text-left text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-100">
-                  <th className="px-3 py-2 font-semibold w-[42%]">Finding</th>
-                  <th className="px-3 py-2 font-semibold text-right w-[14%]">
-                    Metric rate
-                  </th>
-                  <th className="px-3 py-2 font-semibold w-[26%]">Distribution</th>
-                  <th className="px-3 py-2 font-semibold text-right w-[18%]">
-                    Flagged calls
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {summary.metric_hotspots.map((row) => (
-                  <tr
-                    key={row.metric_id}
-                    className="border-b border-gray-50 align-top last:border-0"
-                  >
-                    <td className="px-3 py-2.5">
-                      <p className="font-bold text-gray-900 uppercase tracking-tight text-[11px]">
-                        {row.metric_name}
-                      </p>
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-gray-900">
-                      {row.metric_rate_pct.toFixed(2)}%
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <RcaExecutiveBar
-                        pct={row.metric_rate_pct}
-                        scaleMax={maxHotspotRate}
-                      />
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-gray-900">
-                      {row.flagged_calls.toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {topHotspot ? (
-            <RcaExecutiveInterpretation>
-              Across {summary.analysed_calls.toLocaleString()} analysed calls,{' '}
-              <span className="font-semibold">{topHotspot.metric_name}</span> has the
-              highest metric rate at {topHotspot.metric_rate_pct.toFixed(2)}%.
-            </RcaExecutiveInterpretation>
-          ) : null}
-        </section>
-      ) : null}
-
-      {summary.prompt_areas.length ? (
-        <section className="space-y-2 pt-2 border-t border-gray-200">
-          <h5 className="text-sm font-semibold text-gray-900">RCA data summary</h5>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600">
-            Prompt areas to inspect
-          </p>
-          <table className="w-full text-xs border border-gray-100 rounded-md overflow-hidden bg-white">
-            <thead className="bg-gray-50 text-gray-500">
-              <tr>
-                <th className="text-left px-3 py-2 font-medium">Area</th>
-                <th className="text-right px-3 py-2 font-medium">%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.prompt_areas.map((row) => (
-                <tr key={row.label} className="border-t border-gray-100">
-                  <td className="px-3 py-2 text-gray-800">{row.label}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-gray-700">
-                    {row.share_pct.toFixed(1)}%
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
-
-      <section className="pt-4 mt-2 border-t border-gray-200 space-y-1">
-        <h5 className="text-sm font-semibold text-gray-900">Appendix: What is a cluster?</h5>
-        <p className="text-xs text-gray-600 leading-relaxed">
-          A cluster groups flagged calls that share the same underlying failure theme within
-          a quality metric. Each cluster is labeled with an RCA pattern name and an
-          engineering gap type (such as MISSING, LOGIC_GAP, UNDERSPEC, or
-          EXISTS_NO_TRIGGER). Evidence share is the percentage of all clustered failure
-          instances attributed to that metric&apos;s patterns; evidence calls is the raw
-          count of those instances.
-        </p>
-      </section>
-    </article>
-  )
-}
-
 export function MetricClustersPanel({
   client,
   defaultProvider = '',
@@ -823,6 +751,11 @@ export function MetricClustersPanel({
   state,
   isLoading,
   onGenerated,
+  evaluatorScope,
+  registerOpenGenerateModal,
+  onGenerateModalOpenChange,
+  activeView = 'details',
+  onViewChange,
 }: MetricClustersPanelProps) {
   const [cancelling, setCancelling] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -830,6 +763,15 @@ export function MetricClustersPanel({
   const [pickerModel, setPickerModel] = useState('')
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [clusterActionModalOpen, setClusterActionModalOpen] = useState(false)
+
+  const setModalOpen = (open: boolean) => {
+    setClusterActionModalOpen(open)
+    onGenerateModalOpenChange?.(open)
+  }
+
+  useEffect(() => {
+    registerOpenGenerateModal?.(() => setModalOpen(true))
+  }, [registerOpenGenerateModal])
 
   useEffect(() => {
     if (state?.provider) {
@@ -876,13 +818,11 @@ export function MetricClustersPanel({
     </div>
   )
 
-  const selectedCountLabel = state?.selected_evaluation_row_ids?.length
-
   const clusterGenerationModal = (
     <MetricClusterGenerationModal
       open={clusterActionModalOpen}
       onClose={() => {
-        setClusterActionModalOpen(false)
+        setModalOpen(false)
         setError(null)
       }}
       client={client}
@@ -891,6 +831,7 @@ export function MetricClustersPanel({
       state={state}
       onGenerated={onGenerated}
       onError={setError}
+      evaluatorScope={evaluatorScope}
     />
   )
 
@@ -926,42 +867,66 @@ export function MetricClustersPanel({
 
   if (state?.status === 'running') {
     const progress = state.progress
-    const completed = progress?.completed_llm_calls ?? 0
-    const total = progress?.total_llm_calls ?? 0
-    const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0
+    const selectedCountLabel = state.selected_evaluation_row_ids?.length
+    const completedLlm = progress?.completed_llm_calls ?? 0
+    const totalLlm = progress?.total_llm_calls ?? 0
+    const completedCalls = progress?.completed_selected_calls ?? 0
+    const totalCalls =
+      progress?.total_selected_calls ??
+      selectedCountLabel ??
+      0
+    const callPct =
+      totalCalls > 0
+        ? Math.min(100, Math.round((completedCalls / totalCalls) * 100))
+        : totalLlm > 0
+          ? Math.min(100, Math.round((completedLlm / totalLlm) * 100))
+          : 0
     const providerLabel = state.provider
       ? PROVIDER_DISPLAY[state.provider] || state.provider
       : null
-    const callsLabel = selectedCountLabel
-      ? `${selectedCountLabel} selected call${selectedCountLabel === 1 ? '' : 's'}`
+    const callsLabel = totalCalls
+      ? `${totalCalls} selected call${totalCalls === 1 ? '' : 's'}`
       : 'flagged calls'
+    const metricStage =
+      progress?.current_metric_name &&
+      progress?.total_metrics &&
+      progress.total_metrics > 0
+        ? `Metric ${progress.current_metric_index ?? 0} of ${progress.total_metrics}: ${progress.current_metric_name}`
+        : null
     return (
-      <>
+      <div className="space-y-3">
         <section className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
             <p className="text-xs font-semibold text-gray-900 inline-flex items-center gap-1.5">
               <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
               Failure diagnostics — generating clusters
             </p>
-            {total > 0 ? (
+            {totalCalls > 0 ? (
               <p className="text-[10px] text-gray-600 tabular-nums">
-                {completed} / {total} LLM calls ({pct}%)
+                {completedCalls} / {totalCalls} calls ({callPct}%)
+              </p>
+            ) : totalLlm > 0 ? (
+              <p className="text-[10px] text-gray-600 tabular-nums">
+                {completedLlm} / {totalLlm} LLM calls ({callPct}%)
               </p>
             ) : null}
           </div>
+          {metricStage ? (
+            <p className="text-xs text-amber-900 mb-1">{metricStage}</p>
+          ) : null}
           <p className="text-xs text-amber-800 mb-2">
             Clustering {callsLabel} for each enabled quality metric.
           </p>
-          {total > 0 ? (
+          {totalCalls > 0 || totalLlm > 0 ? (
             <div className="mb-2">
               <div className="h-2.5 rounded-full bg-amber-100 overflow-hidden">
                 <div
                   className="h-full bg-amber-600 transition-all duration-300"
-                  style={{ width: `${pct}%` }}
+                  style={{ width: `${callPct}%` }}
                   role="progressbar"
-                  aria-valuenow={completed}
+                  aria-valuenow={completedCalls || completedLlm}
                   aria-valuemin={0}
-                  aria-valuemax={total}
+                  aria-valuemax={totalCalls || totalLlm}
                   aria-label="Cluster generation progress"
                 />
               </div>
@@ -971,6 +936,11 @@ export function MetricClustersPanel({
               <div className="h-full w-1/3 bg-amber-400 animate-pulse rounded-full" />
             </div>
           )}
+          {totalLlm > 0 ? (
+            <p className="text-[10px] text-gray-500 tabular-nums">
+              {completedLlm} / {totalLlm} LLM calls
+            </p>
+          ) : null}
           {providerLabel || state.model ? (
             <p className="text-[10px] text-gray-500">
               Using {providerLabel || 'LLM'}
@@ -990,13 +960,14 @@ export function MetricClustersPanel({
           {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
         </section>
         {clusterGenerationModal}
-      </>
+      </div>
     )
   }
 
   if (state?.status === 'cancelled') {
     return (
-      <section className="rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3">
+      <div className="space-y-3">
+        <section className="rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3">
         <p className="text-sm font-semibold text-gray-900 mb-1">
           Failure diagnostics stopped
         </p>
@@ -1010,296 +981,110 @@ export function MetricClustersPanel({
             {state.progress.total_llm_calls} LLM calls
           </p>
         ) : null}
-        <div className="mt-3">
-          <Button
-            variant="primary"
-            onClick={() => setClusterActionModalOpen(true)}
-            disabled={cancelling}
-          >
-            Generate clusters
-          </Button>
-        </div>
+        <p className="text-xs text-gray-600 mt-2">
+          Use New report above to start again.
+        </p>
+        </section>
         {clusterGenerationModal}
-      </section>
+      </div>
     )
   }
 
   if (state?.status === 'failed') {
     return (
-      <section className="rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
+      <div className="space-y-3">
+        <section className="rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
         <p className="text-sm font-semibold text-gray-900 mb-1">
           Failure diagnostics failed
         </p>
         <p className="text-sm text-red-700">
           {state.error_message || 'Cluster generation failed.'}
         </p>
-        <div className="mt-3">
-          <Button
-            variant="outline"
-            onClick={() => setClusterActionModalOpen(true)}
-          >
-            Retry
-          </Button>
+        <p className="text-xs text-gray-600 mt-2">
+          Use New report above to try again with a different scope or configuration.
+        </p>
+        </section>
+        {clusterGenerationModal}
+      </div>
+    )
+  }
+
+  if (!state || state.status === 'idle') {
+    return (
+      <section className="space-y-3">
+        <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
+        <div>
+          <h3 className="text-base font-semibold text-gray-900 mb-1">
+            No cluster results yet
+          </h3>
+          <p className="text-sm text-gray-600">
+            Select a cluster report above or use New report to generate clusters
+            for an agent, scenario set, and date range.
+          </p>
         </div>
+        </section>
         {clusterGenerationModal}
       </section>
     )
   }
 
-  if (!state || state.status === 'idle' || !state.groups.length) {
+  if (state.status === 'completed' && !state.groups.length) {
     return (
-      <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
-        <div className="mb-3">
+      <section className="space-y-3">
+        <section className="rounded-lg border border-amber-200 bg-amber-50/60 p-4">
           <h3 className="text-base font-semibold text-gray-900 mb-1">
-            Failure diagnostics (internal)
+            Report ready but no clusters found
           </h3>
           <p className="text-sm text-gray-600">
-            Choose which flagged calls to include, then cluster per enabled
-            quality metric (gap labels: LOGIC_GAP, UNDERSPEC, EXISTS_NO_TRIGGER,
-            MISSING).
+            Generation completed, but no failure clusters were produced for this
+            scope. Try New report with different calls or failure policies.
           </p>
-        </div>
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            variant="primary"
-            onClick={() => setClusterActionModalOpen(true)}
-            disabled={cancelling}
-          >
-            Generate clusters
-          </Button>
-        </div>
+        </section>
         {clusterGenerationModal}
       </section>
     )
   }
+
+  const subtabClass = (view: ClusterReportView) =>
+    `px-3 py-1.5 text-xs font-medium rounded transition ${
+      activeView === view
+        ? 'bg-white text-primary-700 shadow-sm'
+        : 'text-gray-600 hover:text-gray-900'
+    }`
 
   return (
     <section className="space-y-4">
-      <article className="rounded-lg border border-gray-200 bg-gray-50/40 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-base font-semibold text-gray-900">Generation</h3>
-          <Button
-            variant="primary"
-            className="shrink-0"
-            onClick={() => setClusterActionModalOpen(true)}
-          >
-            Generate clusters
-          </Button>
-        </div>
-        <div className="mt-2 space-y-1 min-w-0">
-          <p className="text-sm text-gray-600">
-            Select the calls and model in a modal, then generate clusters.
-            Run again after more rows complete or when you change the model.
-          </p>
-          {state.overview ? (
-            <p className="text-sm text-gray-600 break-words">
-              {clampProseToSentences(state.overview)}
-            </p>
-          ) : null}
-          {state.is_stale ? (
-            <p className="text-sm text-amber-700">
-              More rows completed since clusters were generated. Generate again
-              to refresh.
-            </p>
-          ) : null}
-          {state.selected_evaluation_row_ids?.length ? (
-            <p className="text-[10px] text-gray-500">
-              Based on {state.selected_evaluation_row_ids.length} selected call
-              {state.selected_evaluation_row_ids.length === 1 ? '' : 's'}.
-            </p>
-          ) : null}
-        </div>
-        {error ? <p className="text-sm text-red-600 mt-2">{error}</p> : null}
-      </article>
-
       {clusterGenerationModal}
 
-      <article className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
-        <div>
-          <h3 className="text-base font-semibold text-gray-900">Results</h3>
-          <p className="text-sm text-gray-600 mt-1">
-            Per-metric clusters of flagged calls with gap labels and Level-2
-            sub-categories.
-          </p>
-        </div>
-        {state.rca_summary ? (
-          <MetricClustersRcaSummaryPanel summary={state.rca_summary} />
-        ) : null}
-        {state.groups.map((group) => {
-          const topClusters = [...group.clusters]
-            .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
-            .slice(0, 5)
-          return (
-          <article
-            key={group.metric_id}
-            className="rounded-lg border border-gray-200 bg-white overflow-hidden"
-          >
-            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
-              <h4 className="text-base font-semibold text-gray-900">
-                {group.metric_name}
-              </h4>
-              <p className="text-xs text-gray-500">
-                {group.flagged_count} flagged calls · {topClusters.length}
-                {group.clusters.length > 5
-                  ? ` of ${group.clusters.length}`
-                  : ''}{' '}
-                cluster(s) shown
-                {state.failure_policies?.[group.metric_id] ? (
-                  <>
-                    {' '}
-                    · failure:{' '}
-                    {[
-                      ...(state.failure_policies[group.metric_id]
-                        .failure_values || []),
-                      ...(state.failure_policies[group.metric_id]
-                        .failure_child_names || []),
-                    ].join(', ') || 'numeric rule'}
-                  </>
-                ) : null}
-              </p>
-              {group.failure_reason ? (
-                <p className="text-xs text-gray-600 mt-1">
-                  <span className="font-semibold text-gray-700">Why flagged:</span>{' '}
-                  {group.failure_reason}
-                </p>
-              ) : null}
-            </div>
-            <div className="p-4 space-y-3">
-              {(() => {
-                const categorizedCalls = topClusters.reduce(
-                  (sum, cluster) => sum + Math.max(0, cluster.count || 0),
-                  0,
-                )
-                const totalFlagged = Math.max(0, group.flagged_count || 0)
-                return (
-                  <div className="rounded-md border border-gray-100 bg-gray-50/60 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
-                        Cluster breakdown
-                      </p>
-                      <span className="text-xs font-semibold text-gray-700">
-                        {categorizedCalls} / {totalFlagged}
-                      </span>
-                    </div>
-                  </div>
-                )
-              })()}
-              {topClusters.map((cluster) => {
-                const exampleHref = client.buildEvidenceHref(cluster.evidence)
-                return (
-                <div
-                  key={cluster.id}
-                  className="rounded-md border border-gray-100 p-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-semibold text-gray-900">
-                      {cluster.label}
-                    </p>
-                    <span className="text-xs font-bold uppercase text-primary-700">
-                      {cluster.gap_label.replace(/_/g, ' ')}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-600 mt-0.5">
-                    {cluster.count} calls · {cluster.share_pct.toFixed(1)}% share
-                  </p>
-                  {cluster.failure_reason ? (
-                    <p className="text-xs text-gray-600 mt-1">
-                      <span className="font-semibold">Why flagged:</span>{' '}
-                      {cluster.failure_reason}
-                    </p>
-                  ) : null}
-                  {group.flagged_count > 0 ? (
-                    <div className="mt-2">
-                      <div className="h-2.5 w-full rounded bg-primary-100 overflow-hidden">
-                        <div
-                          className="h-full rounded bg-primary-500"
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              (cluster.count / group.flagged_count) * 100,
-                            ).toFixed(1)}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                  {cluster.observation ? (
-                    <p className="text-sm text-gray-700 mt-2">
-                      {cluster.observation}
-                    </p>
-                  ) : null}
-                  {cluster.sub_clusters.length ? (
-                    <ul className="mt-2 text-xs text-gray-600 list-disc pl-4">
-                      {cluster.sub_clusters.map((sub) => (
-                        <li key={sub.label}>
-                          {sub.label} — {sub.count} ({sub.share_pct.toFixed(1)}%)
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {(cluster.evidence.quote ||
-                    cluster.evidence.turns?.length ||
-                    cluster.evidence.conversation_id) ? (
-                    <div className="mt-2 rounded-md bg-gray-50 border border-gray-100 p-2 space-y-1">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600">
-                        Example call
-                      </p>
-                      {cluster.evidence.turns?.length ? (
-                        cluster.evidence.turns.map((turn, i) => (
-                          <p key={i} className="text-xs text-gray-800">
-                            <span className="font-semibold text-primary-700">
-                              {turn.speaker}:
-                            </span>{' '}
-                            {turn.text}
-                          </p>
-                        ))
-                      ) : cluster.evidence.quote ? (
-                        <p className="text-xs text-gray-800">{cluster.evidence.quote}</p>
-                      ) : null}
-                      {exampleHref && cluster.evidence.conversation_id ? (
-                        <Link
-                          to={exampleHref}
-                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-700 hover:text-primary-800"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          {cluster.evidence.conversation_id}
-                        </Link>
-                      ) : cluster.evidence.conversation_id ? (
-                        <p className="text-[10px] text-gray-500 font-mono">
-                          {cluster.evidence.conversation_id}
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              )})}
-            </div>
-          </article>
-        )})}
-        {state.discovered_problems.length ? (
-          <article className="rounded-lg border border-dashed border-primary-200 bg-primary-50/30 p-4">
-            <h4 className="text-base font-semibold text-gray-900 mb-2">
-              Proactive problem discovery
-            </h4>
-            <div className="space-y-2">
-              {state.discovered_problems.map((item) => (
-                <div key={item.id} className="text-sm text-gray-800">
-                  <span className="font-semibold">{item.label}</span>
-                  <span className="text-primary-700 ml-2 uppercase text-xs font-semibold">
-                    {item.gap_label.replace(/_/g, ' ')}
-                  </span>
-                  <span className="text-gray-500 ml-2">
-                    {item.count} · {item.share_pct.toFixed(1)}%
-                  </span>
-                  {item.observation ? (
-                    <p className="mt-1 text-gray-600">{item.observation}</p>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </article>
-        ) : null}
-      </article>
+      <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50 w-fit">
+        <button
+          type="button"
+          onClick={() => onViewChange?.('details')}
+          className={subtabClass('details')}
+        >
+          Details
+        </button>
+        <button
+          type="button"
+          onClick={() => onViewChange?.('visualization')}
+          className={subtabClass('visualization')}
+        >
+          Visualization
+        </button>
+      </div>
+
+      {activeView === 'details' ? (
+        <ClusterReportDetailsTab
+          state={state}
+          client={client}
+          agents={evaluatorScope?.agents ?? []}
+          urlScope={evaluatorScope?.scope ?? null}
+        />
+      ) : (
+        <ClusterReportVisualizationTab state={state} />
+      )}
+
+      {error ? <p className="text-sm text-red-600">{error}</p> : null}
     </section>
   )
 }

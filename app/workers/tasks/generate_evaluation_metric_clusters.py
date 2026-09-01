@@ -106,16 +106,13 @@ def generate_evaluation_metric_clusters_task(
             db.refresh(evaluation)
             return metric_clusters_raw_is_cancelled(evaluation.metric_clusters)
 
-        def on_progress(completed: int, total: int) -> None:
+        def on_progress(update: dict) -> None:
             if _reload_cancelled():
                 return
             evaluation.metric_clusters = {
                 **(evaluation.metric_clusters or {}),
                 "status": "running",
-                "progress": {
-                    "completed_llm_calls": completed,
-                    "total_llm_calls": total,
-                },
+                "progress": update,
             }
             flag_modified(evaluation, "metric_clusters")
             db.commit()

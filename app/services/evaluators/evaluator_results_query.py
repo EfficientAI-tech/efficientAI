@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session, Query
@@ -55,6 +55,7 @@ def build_evaluator_results_query(
     agent_id: Optional[str] = None,
     suite_id: Optional[str] = None,
     scenario_id: Optional[str] = None,
+    scenario_ids: Optional[Sequence[str]] = None,
     status: Optional[str] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
@@ -118,6 +119,15 @@ def build_evaluator_results_query(
             query = query.filter(EvaluatorResult.scenario_id == scenario_uuid)
         except ValueError as exc:
             raise ValueError("Invalid scenario_id") from exc
+    elif scenario_ids:
+        parsed_ids: List[UUID] = []
+        for raw_id in scenario_ids:
+            try:
+                parsed_ids.append(UUID(str(raw_id)))
+            except ValueError as exc:
+                raise ValueError("Invalid scenario_id in scenario_ids") from exc
+        if parsed_ids:
+            query = query.filter(EvaluatorResult.scenario_id.in_(parsed_ids))
 
     if since is not None:
         query = query.filter(EvaluatorResult.timestamp >= since)

@@ -15,6 +15,7 @@ from app.services.call_import_metric_clusters import (
     metric_clusters_state_to_db,
 )
 from app.services.evaluators.evaluator_result_metric_clusters import (
+    _load_scope_kwargs,
     clustering_context_for_job,
     load_completed_evaluator_results,
 )
@@ -74,13 +75,20 @@ def generate_evaluator_result_metric_clusters_task(
                 [UUID(rid) for rid in evaluation_row_ids],
             )
         else:
+            scope = _load_scope_kwargs(job)
+            scenario_uuid_list = (
+                [UUID(sid) for sid in scope["scenario_ids"]] if scope["scenario_ids"] else None
+            )
             results = load_completed_evaluator_results(
                 db,
                 organization_id=job.organization_id,
                 workspace_id=job.workspace_id,
-                agent_id=job.agent_id,
-                suite_id=job.suite_id,
-                scenario_id=job.scenario_id,
+                agent_id=scope["agent_id"],
+                suite_id=scope["suite_id"],
+                scenario_id=scope["scenario_id"],
+                scenario_ids=scenario_uuid_list,
+                since=scope["since"],
+                until=scope["until"],
             )
             source_rows = [evaluator_result_to_cluster_row(r) for r in results]
 
@@ -89,16 +97,13 @@ def generate_evaluator_result_metric_clusters_task(
             db.refresh(job)
             return metric_clusters_raw_is_cancelled(job.metric_clusters)
 
-        def on_progress(completed: int, total: int) -> None:
+        def on_progress(update: dict) -> None:
             if _reload_cancelled():
                 return
             job.metric_clusters = {
                 **(job.metric_clusters or {}),
                 "status": "running",
-                "progress": {
-                    "completed_llm_calls": completed,
-                    "total_llm_calls": total,
-                },
+                "progress": update,
             }
             flag_modified(job, "metric_clusters")
             db.commit()
@@ -119,7 +124,10 @@ def generate_evaluator_result_metric_clusters_task(
             is_cancelled=_reload_cancelled,
         )
 
+        prior_raw = job.metric_clusters if isinstance(job.metric_clusters, dict) else {}
         job.metric_clusters = metric_clusters_state_to_db(state)
+        if isinstance(prior_raw.get("generation_scope"), dict):
+            job.metric_clusters["generation_scope"] = prior_raw["generation_scope"]
         job.celery_task_id = None
         flag_modified(job, "metric_clusters")
         db.commit()

@@ -1,13 +1,26 @@
-import type { EvaluationMetricClustersState } from '../../types/api'
-import type { MetricClustersClient } from './clients'
+import type {
+  EvaluationMetricClustersState,
+  EvaluatorResultsAgentSummary,
+} from '../../types/api'
+import type { EvaluatorResultClusterScope, MetricClustersClient } from './clients'
 
 export type {
   EvaluationMetricClustersState,
+  EvaluatorResultsAgentSummary,
   MetricClusterEvidence,
+  MetricClusterGenerationScope,
   MetricClustersRcaSummary,
   MetricFailurePolicy,
   MetricFailurePolicyMetricPreview,
 } from '../../types/api'
+
+export interface EvaluatorClusterScopeConfig {
+  agents: EvaluatorResultsAgentSummary[]
+  scope: EvaluatorResultClusterScope | null
+  onScopeCommit: (scope: EvaluatorResultClusterScope) => void
+}
+
+export type ClusterReportView = 'details' | 'visualization'
 
 export interface MetricClustersPanelProps {
   client: MetricClustersClient
@@ -15,5 +28,10 @@ export interface MetricClustersPanelProps {
   defaultModel?: string
   state: EvaluationMetricClustersState | null
   isLoading: boolean
-  onGenerated: () => void
+  onGenerated: (state?: EvaluationMetricClustersState, scope?: EvaluatorResultClusterScope) => void
+  evaluatorScope?: EvaluatorClusterScopeConfig
+  registerOpenGenerateModal?: (open: () => void) => void
+  onGenerateModalOpenChange?: (open: boolean) => void
+  activeView?: ClusterReportView
+  onViewChange?: (view: ClusterReportView) => void
 }

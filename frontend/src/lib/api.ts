@@ -4611,21 +4611,35 @@ class ApiClient {
   }
 
   private _evaluatorResultClusterQuery(scope: {
-    agentId?: string
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
     suiteId?: string
     scenarioId?: string
-  }): Record<string, string> {
-    const query: Record<string, string> = {}
-    if (scope.agentId) query.agent_id = scope.agentId
+    scopeKey?: string
+    jobId?: string
+  }): Record<string, string | string[]> {
+    const query: Record<string, string | string[]> = {
+      agent_id: scope.agentId,
+    }
+    if (scope.jobId) query.job_id = scope.jobId
+    else if (scope.scopeKey) query.scope_key = scope.scopeKey
+    if (scope.scenarioIds?.length) {
+      query.scenario_ids = scope.scenarioIds
+    }
+    if (scope.since) query.since = scope.since
+    if (scope.until) query.until = scope.until
     if (scope.suiteId) query.suite_id = scope.suiteId
     if (scope.scenarioId) query.scenario_id = scope.scenarioId
     return query
   }
 
   async getEvaluatorResultMetricClusterFailurePolicies(scope: {
-    agentId?: string
-    suiteId?: string
-    scenarioId?: string
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
   }): Promise<import('../types/api').MetricFailurePoliciesResponse> {
     const response = await this.client.get(
       '/api/v1/evaluator-results/metric-clusters/failure-policies',
@@ -4635,7 +4649,7 @@ class ApiClient {
   }
 
   async saveEvaluatorResultMetricClusterFailurePolicies(
-    scope: { agentId?: string; suiteId?: string; scenarioId?: string },
+    scope: { agentId: string; scenarioIds?: string[]; since?: string; until?: string },
     policies: Record<string, import('../types/api').MetricFailurePolicy>,
   ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
     const response = await this.client.put(
@@ -4647,7 +4661,7 @@ class ApiClient {
   }
 
   async listEvaluatorResultMetricClusterEligibleRows(
-    scope: { agentId?: string; suiteId?: string; scenarioId?: string },
+    scope: { agentId: string; scenarioIds?: string[]; since?: string; until?: string },
     options?: { limit?: number; count_only?: boolean },
   ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
     const response = await this.client.get(
@@ -4657,10 +4671,22 @@ class ApiClient {
     return response.data
   }
 
+  async listEvaluatorResultMetricClusterScopes(): Promise<
+    import('../types/api').EvaluatorResultClusterScopeListResponse
+  > {
+    const response = await this.client.get(
+      '/api/v1/evaluator-results/metric-clusters/scopes',
+    )
+    return response.data
+  }
+
   async getEvaluatorResultMetricClusters(scope: {
-    agentId?: string
-    suiteId?: string
-    scenarioId?: string
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    jobId?: string
+    scopeKey?: string
   }): Promise<import('../types/api').EvaluationMetricClustersState | null> {
     const response = await this.client.get('/api/v1/evaluator-results/metric-clusters', {
       params: this._evaluatorResultClusterQuery(scope),
@@ -4669,7 +4695,7 @@ class ApiClient {
   }
 
   async generateEvaluatorResultMetricClusters(
-    scope: { agentId?: string; suiteId?: string; scenarioId?: string },
+    scope: { agentId: string; scenarioIds?: string[]; since?: string; until?: string },
     body: {
       force?: boolean
       regenerate?: boolean
@@ -4686,9 +4712,11 @@ class ApiClient {
   }
 
   async cancelEvaluatorResultMetricClusters(scope: {
-    agentId?: string
-    suiteId?: string
-    scenarioId?: string
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    scopeKey?: string
   }): Promise<import('../types/api').EvaluationMetricClustersState> {
     const response = await this.client.post(
       '/api/v1/evaluator-results/metric-clusters/cancel',
@@ -4696,6 +4724,19 @@ class ApiClient {
       { params: this._evaluatorResultClusterQuery(scope) },
     )
     return response.data
+  }
+
+  async deleteEvaluatorResultMetricClusters(scope: {
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    jobId?: string
+    scopeKey?: string
+  }): Promise<void> {
+    await this.client.delete('/api/v1/evaluator-results/metric-clusters', {
+      params: this._evaluatorResultClusterQuery(scope),
+    })
   }
 
   async getEvaluatorResult(id: string, includeRelations: boolean = true): Promise<any> {

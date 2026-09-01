@@ -92,9 +92,13 @@ export function createCallImportMetricClustersClient(
 }
 
 export type EvaluatorResultClusterScope = {
-  agentId?: string
-  suiteId?: string
-  scenarioId?: string
+  agentId: string
+  scenarioIds?: string[]
+  since?: string
+  until?: string
+  jobId?: string
+  /** @deprecated Use jobId — scope_key contains characters that break URL parsing */
+  scopeKey?: string
 }
 
 export function createEvaluatorResultsMetricClustersClient(
@@ -104,9 +108,11 @@ export function createEvaluatorResultsMetricClustersClient(
   const queryKeyPrefix = [
     'evaluator-results-metric-clusters',
     workspaceId,
-    scope.agentId ?? '',
-    scope.suiteId ?? '',
-    scope.scenarioId ?? '',
+    scope.jobId ?? '',
+    scope.agentId,
+    scope.scenarioIds?.join(',') ?? '',
+    scope.since ?? '',
+    scope.until ?? '',
   ] as const
 
   return {

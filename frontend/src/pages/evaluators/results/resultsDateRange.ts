@@ -14,6 +14,12 @@ export function rangeForDays(days: number): { start: string; end: string } {
   return { start: toDateInput(start), end: toDateInput(end) }
 }
 
+export function isoToDateInput(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
+  return toDateInput(d)
+}
+
 export function dateRangeToSinceUntil(start: string, end: string): { since: string; until: string } {
   const sinceDate = new Date(`${start}T00:00:00`)
   const untilDate = new Date(`${end}T23:59:59.999`)

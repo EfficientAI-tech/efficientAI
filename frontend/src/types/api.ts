@@ -1422,7 +1422,15 @@ export interface EvaluationUserInsightsState {
   overview?: string | null
   generated_at?: string | null
   generated_at_completed_rows: number
-  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
+  progress?: {
+    completed_llm_calls: number
+    total_llm_calls: number
+    completed_selected_calls?: number
+    total_selected_calls?: number
+    current_metric_name?: string
+    current_metric_index?: number
+    total_metrics?: number
+  } | null
   provider?: string | null
   model?: string | null
   llm_calls_used: number
@@ -1566,6 +1574,31 @@ export interface MetricClusterEligibleRowsResponse {
   total: number
 }
 
+export interface MetricClusterGenerationScope {
+  agent_id: string
+  agent_name?: string | null
+  scenario_ids?: string[]
+  scenario_names?: string[]
+  since?: string | null
+  until?: string | null
+  eligible_call_count?: number
+  selected_call_count?: number
+}
+
+export interface EvaluatorResultClusterScopeSummary {
+  job_id: string
+  scope_key: string
+  generation_scope: MetricClusterGenerationScope
+  status: EvaluationMetricClustersState['status']
+  generated_at?: string | null
+  is_stale: boolean
+  has_results: boolean
+}
+
+export interface EvaluatorResultClusterScopeListResponse {
+  items: EvaluatorResultClusterScopeSummary[]
+}
+
 export interface EvaluationMetricClustersState {
   status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
   groups: MetricClusterGroup[]
@@ -1573,7 +1606,15 @@ export interface EvaluationMetricClustersState {
   overview?: string | null
   generated_at?: string | null
   generated_at_completed_rows: number
-  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
+  progress?: {
+    completed_llm_calls: number
+    total_llm_calls: number
+    completed_selected_calls?: number
+    total_selected_calls?: number
+    current_metric_name?: string
+    current_metric_index?: number
+    total_metrics?: number
+  } | null
   provider?: string | null
   model?: string | null
   llm_calls_used: number
@@ -1585,6 +1626,7 @@ export interface EvaluationMetricClustersState {
   failure_policies_source?: 'inferred' | 'user'
   failure_policies_updated_at?: string | null
   rca_summary?: MetricClustersRcaSummary | null
+  generation_scope?: MetricClusterGenerationScope | null
 }
 
 export interface AgentFlowNode {
