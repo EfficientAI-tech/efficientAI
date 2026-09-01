@@ -143,7 +143,7 @@ def test_inbound_evaluator_persona_scenario_wired_into_call_session(
     )
     from app.services.telephony.vobiz_agent_context import (
         build_system_instruction,
-        build_vobiz_ws_url,
+        build_carrier_ws_url,
     )
     from app.services.telephony.vobiz_session import create_call_session, get_call_session
 
@@ -220,7 +220,7 @@ def test_inbound_evaluator_persona_scenario_wired_into_call_session(
     assert stored.persona_id == str(persona.id)
     assert stored.scenario_id == str(scenario.id)
 
-    ws_url = build_vobiz_ws_url(
+    ws_url = build_carrier_ws_url(
         agent_id=str(agent.id),
         session=session.call_ref,
         persona_id=stored.persona_id,

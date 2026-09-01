@@ -1038,7 +1038,7 @@ def telephony_client(db_session):
 
     app.router.lifespan_context = _noop_lifespan
     app.include_router(vobiz_telephony.webhook_router, prefix="/api/v1")
-    app.include_router(vobiz_telephony.ws_router, prefix="/api/v1")
+    app.include_router(vobiz_telephony.carrier_ws_router, prefix="/api/v1")
 
     def _override_get_db():
         yield db_session

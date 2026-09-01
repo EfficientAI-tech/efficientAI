@@ -28,6 +28,24 @@ function normalizeCallMedium(value: string | undefined | null): 'phone_call' | '
   return value === 'web_call' ? 'web_call' : 'phone_call'
 }
 
+function agentToFormData(agent: NonNullable<Awaited<ReturnType<typeof apiClient.getAgent>>>): FormData {
+  return {
+    name: agent.name,
+    phone_number: agent.phone_number || '',
+    language: agent.language,
+    description: agent.description || '',
+    prompt_variables: agent.prompt_variables || {},
+    silence_hangup_secs: agent.silence_hangup_secs ?? 15,
+    call_type: agent.call_type,
+    call_medium: normalizeCallMedium(agent.call_medium),
+    telephony_phone_number_id: agent.telephony_phone_number_id || '',
+    voice_bundle_id: agent.voice_bundle_id || '',
+    voice_ai_integration_id: agent.voice_ai_integration_id || '',
+    voice_ai_agent_id: agent.voice_ai_agent_id || '',
+    provider_prompt: agent.provider_prompt || '',
+  }
+}
+
 interface FormData {
   name: string
   phone_number: string
@@ -134,24 +152,10 @@ export default function AgentWorkspaceDetail({
   }
 
   useEffect(() => {
-    if (agent) {
-      setFormData({
-        name: agent.name,
-        phone_number: agent.phone_number || '',
-        language: agent.language,
-        description: agent.description || '',
-        prompt_variables: agent.prompt_variables || {},
-        silence_hangup_secs: agent.silence_hangup_secs ?? 15,
-        call_type: agent.call_type,
-        call_medium: normalizeCallMedium(agent.call_medium),
-        telephony_phone_number_id: agent.telephony_phone_number_id || '',
-        voice_bundle_id: agent.voice_bundle_id || '',
-        voice_ai_integration_id: agent.voice_ai_integration_id || '',
-        voice_ai_agent_id: agent.voice_ai_agent_id || '',
-        provider_prompt: agent.provider_prompt || '',
-      })
+    if (agent && !isEditMode) {
+      setFormData(agentToFormData(agent))
     }
-  }, [agent])
+  }, [agent, isEditMode])
 
   const updateMutation = useMutation({
     mutationFn: (data: FormData) => {
@@ -183,6 +187,7 @@ export default function AgentWorkspaceDetail({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agent', agentRouteId] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+      queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
       setIsEditMode(false)
       showToast('Agent updated successfully!', 'success')
     },
@@ -272,23 +277,16 @@ export default function AgentWorkspaceDetail({
     updateMutation.mutate(formData)
   }
 
+  const handleEditClick = () => {
+    if (agent) {
+      setFormData(agentToFormData(agent))
+    }
+    setIsEditMode(true)
+  }
+
   const handleCancelEdit = () => {
     if (agent) {
-      setFormData({
-        name: agent.name,
-        phone_number: agent.phone_number || '',
-        language: agent.language,
-        description: agent.description || '',
-        prompt_variables: agent.prompt_variables || {},
-        silence_hangup_secs: agent.silence_hangup_secs ?? 15,
-        call_type: agent.call_type,
-        call_medium: normalizeCallMedium(agent.call_medium),
-        telephony_phone_number_id: agent.telephony_phone_number_id || '',
-        voice_bundle_id: agent.voice_bundle_id || '',
-        voice_ai_integration_id: agent.voice_ai_integration_id || '',
-        voice_ai_agent_id: agent.voice_ai_agent_id || '',
-        provider_prompt: agent.provider_prompt || '',
-      })
+      setFormData(agentToFormData(agent))
     }
     setIsEditMode(false)
   }
@@ -392,7 +390,7 @@ export default function AgentWorkspaceDetail({
               agentId={agent.agent_id}
               isEditMode={isEditMode}
               isPending={updateMutation.isPending}
-              onEditClick={() => setIsEditMode(true)}
+              onEditClick={handleEditClick}
               onCancelEdit={handleCancelEdit}
               onSave={handleSave}
             />

@@ -32,17 +32,17 @@ def test_webhook_router_exposes_carrier_callbacks():
     assert any(p.endswith("/webhooks/recording-ready") for p in paths)
 
 
-def test_ws_router_exposes_vobiz_media_socket():
-    paths = _router_paths(vobiz_telephony.ws_router)
-    assert any(p.endswith("/ws") for p in paths)
-    for route in vobiz_telephony.ws_router.routes:
+def test_ws_router_exposes_carrier_media_socket():
+    paths = _router_paths(vobiz_telephony.carrier_ws_router)
+    assert any("/telephony/carrier/ws" in p for p in paths)
+    for route in vobiz_telephony.carrier_ws_router.routes:
         assert isinstance(route, WebSocketRoute)
 
 
 def test_media_router_mounts_vobiz_edge_routers():
     paths = _router_paths(media_router)
     assert any("/telephony/vobiz/webhooks/answer" in p for p in paths)
-    assert any("/telephony/vobiz/ws" in p for p in paths)
+    assert any("/telephony/carrier/ws" in p for p in paths)
 
 
 def test_split_api_mode_skips_media_routes(monkeypatch):

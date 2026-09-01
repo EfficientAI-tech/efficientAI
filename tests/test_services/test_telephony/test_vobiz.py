@@ -36,12 +36,12 @@ def test_safe_normalize_phone_returns_none_for_invalid():
 
 def test_stream_to_agent_xml_contains_websocket_and_record():
     xml = stream_to_agent(
-        "wss://example.com/api/v1/telephony/vobiz/ws?agent_id=abc&session=xyz",
+        "wss://example.com/api/v1/telephony/carrier/ws?agent_id=abc&session=xyz",
         record_action_url="https://example.com/api/v1/telephony/vobiz/webhooks/recording-ready",
     )
     assert "<Stream bidirectional=\"true\"" in xml
     assert "audio/x-mulaw;rate=8000" in xml
-    assert "wss://example.com/api/v1/telephony/vobiz/ws" in xml
+    assert "wss://example.com/api/v1/telephony/carrier/ws" in xml
     assert "<Record action=" in xml
 
 

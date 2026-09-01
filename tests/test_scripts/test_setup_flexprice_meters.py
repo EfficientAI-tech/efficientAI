@@ -1,21 +1,38 @@
+import importlib.util
+from pathlib import Path
 from unittest.mock import MagicMock
 
-from scripts.setup_flexprice_meters import (
-    AGENT_PLAYGROUND_PRIMARY_EVENT,
-    EVALUATOR_RUN_COMPLETED_EVENT,
-    GEPA_PRIMARY_EVENT,
-    JUDGE_ALIGNMENT_PRIMARY_EVENT,
-    LICENSE_FEATURES,
-    METRICS_AI_ASSIST_EVENT,
-    METRIC_STUDIO_PRIMARY_EVENT,
-    PLAN_BILLABLE_METERS,
-    SCENARIO_AI_TEXT_EVENT,
-    VOICE_PLAYGROUND_PRIMARY_EVENT,
-    _feature_meter_is_canonical,
-    _pick_canonical_meter,
-    meter_aggregation_matches,
-    repair_license_features,
-)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup_flexprice_meters.py"
+
+
+def _load_setup_flexprice_meters():
+    spec = importlib.util.spec_from_file_location(
+        "setup_flexprice_meters",
+        SETUP_SCRIPT,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_setup_flexprice_meters = _load_setup_flexprice_meters()
+AGENT_PLAYGROUND_PRIMARY_EVENT = _setup_flexprice_meters.AGENT_PLAYGROUND_PRIMARY_EVENT
+EVALUATOR_RUN_COMPLETED_EVENT = _setup_flexprice_meters.EVALUATOR_RUN_COMPLETED_EVENT
+GEPA_PRIMARY_EVENT = _setup_flexprice_meters.GEPA_PRIMARY_EVENT
+JUDGE_ALIGNMENT_PRIMARY_EVENT = _setup_flexprice_meters.JUDGE_ALIGNMENT_PRIMARY_EVENT
+LICENSE_FEATURES = _setup_flexprice_meters.LICENSE_FEATURES
+METRICS_AI_ASSIST_EVENT = _setup_flexprice_meters.METRICS_AI_ASSIST_EVENT
+METRIC_STUDIO_PRIMARY_EVENT = _setup_flexprice_meters.METRIC_STUDIO_PRIMARY_EVENT
+PLAN_BILLABLE_METERS = _setup_flexprice_meters.PLAN_BILLABLE_METERS
+PROMPT_PARTIAL_AI_ASSISTED_EVENT = _setup_flexprice_meters.PROMPT_PARTIAL_AI_ASSISTED_EVENT
+SCENARIO_AI_TEXT_EVENT = _setup_flexprice_meters.SCENARIO_AI_TEXT_EVENT
+VOICE_PLAYGROUND_PRIMARY_EVENT = _setup_flexprice_meters.VOICE_PLAYGROUND_PRIMARY_EVENT
+_feature_meter_is_canonical = _setup_flexprice_meters._feature_meter_is_canonical
+_pick_canonical_meter = _setup_flexprice_meters._pick_canonical_meter
+meter_aggregation_matches = _setup_flexprice_meters.meter_aggregation_matches
+repair_license_features = _setup_flexprice_meters.repair_license_features
 from app.api.v1.routes.call_import_evaluations import (
     DISCOVERED_METRICS_KEY,
     _is_metric_scores_meta_key,
@@ -103,8 +120,6 @@ def test_scenario_ai_license_feature_spec():
 
 
 def test_prompt_partials_license_feature_spec():
-    from scripts.setup_flexprice_meters import PROMPT_PARTIAL_AI_ASSISTED_EVENT
-
     spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "prompt_partials")
     assert spec["event_name"] == PROMPT_PARTIAL_AI_ASSISTED_EVENT
     assert spec["aggregation"] == {"type": "COUNT"}

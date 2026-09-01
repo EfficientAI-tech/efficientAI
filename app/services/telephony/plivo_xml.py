@@ -23,7 +23,7 @@ def dial_number(to_number: str, caller_id: str) -> str:
     """Build XML to dial a target number with caller ID."""
     plivoxml = _get_plivoxml()
     response = plivoxml.ResponseElement()
-    dial = plivoxml.DialElement(callerId=caller_id)
+    dial = plivoxml.DialElement(caller_id=caller_id)
     dial.add(plivoxml.NumberElement(to_number))
     response.add(dial)
     return response.to_string()

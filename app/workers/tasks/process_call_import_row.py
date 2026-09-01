@@ -11,8 +11,11 @@ Recording-fetch strategy is CSV-URL-only:
     * **Exotel credentialed import**: download the CSV-supplied
       ``recording_url`` with HTTP Basic auth from the batch's pinned
       credentials.
-    * **Other credentialed providers** (e.g. Plivo): download the
-      CSV-supplied ``recording_url`` without auth (public links).
+    * **Plivo credentialed import**: download the CSV-supplied
+      ``recording_url`` with HTTP Basic auth from the batch's pinned
+      credentials.
+    * **Other credentialed providers**: download the CSV-supplied
+      ``recording_url`` without auth (public links).
 
 Transient download errors schedule a Celery retry; auth/4xx/oversize
 errors mark the row failed immediately.
@@ -220,11 +223,14 @@ def _row_or_import_gone(
     return None
 
 
+_CREDENTIALED_RECORDING_IMPORT_PROVIDERS = frozenset({"exotel", "plivo"})
+
+
 def _use_credentialed_recording_download(call_import, client) -> bool:
     """True when CSV recording URLs should be fetched with provider auth."""
     if client is None or not hasattr(client, "download_recording"):
         return False
-    return (call_import.provider or "").lower() == "exotel"
+    return (call_import.provider or "").lower() in _CREDENTIALED_RECORDING_IMPORT_PROVIDERS
 
 
 def _is_direct_url_import(call_import) -> bool:
@@ -498,8 +504,8 @@ def process_call_import_row_task(
         else:
             # ------------------------------------------------------------------
             # Credentialed import — download from the CSV-supplied URL only.
-            # Exotel URLs require HTTP Basic auth; other providers use public
-            # download (e.g. Plivo presigned links).
+            # Exotel and Plivo URLs require HTTP Basic auth; other providers
+            # use public download (e.g. presigned links).
             # ------------------------------------------------------------------
             audio_bytes: Optional[bytes] = None
             content_type: Optional[str] = None

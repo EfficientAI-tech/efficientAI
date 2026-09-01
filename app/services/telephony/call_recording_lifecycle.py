@@ -183,7 +183,6 @@ def _normalize_call_event(status: Optional[str]) -> str:
 def _find_by_call_ref(db: Session, call_ref: str) -> Optional[CallRecording]:
     rows = (
         db.query(CallRecording)
-        .filter(CallRecording.provider_platform == "vobiz")
         .order_by(CallRecording.created_at.desc())
         .limit(200)
         .all()
@@ -237,6 +236,7 @@ def create_inbound_call_recording(
     provider_call_id: Optional[str] = None,
     evaluator_id: Optional[UUID] = None,
     evaluator_result_id: Optional[UUID] = None,
+    provider_platform: str = "vobiz",
 ) -> CallRecording:
     existing = find_call_recording(db, call_ref=call_ref, provider_call_id=provider_call_id)
     if existing:
@@ -263,7 +263,7 @@ def create_inbound_call_recording(
         call_event="call_started",
         call_data=call_data,
         provider_call_id=provider_call_id,
-        provider_platform="vobiz",
+        provider_platform=provider_platform,
         agent_id=agent.id,
         evaluator_result_id=evaluator_result_id,
     )

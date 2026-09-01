@@ -108,7 +108,7 @@ def test_vobiz_answer_webhook_returns_stream_xml(telephony_client, db_session, o
     assert response.headers["content-type"].startswith("application/xml")
     body = response.text
     assert "<Stream bidirectional=\"true\"" in body
-    assert "wss://public.example.com/api/v1/telephony/vobiz/ws" in body
+    assert "wss://public.example.com/api/v1/telephony/carrier/ws" in body
     assert f"agent_id={agent.id}" in body
 
 

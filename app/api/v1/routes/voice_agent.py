@@ -503,6 +503,13 @@ async def websocket_endpoint(
                     ).lower() == "azure"
                     else None
                 )
+                from app.services.voice_agent.llm_voice_providers import resolve_voice_llm_base_url
+
+                llm_base_url = (
+                    resolve_voice_llm_base_url(db, organization_id, voice_bundle, llm_provider)
+                    if llm_provider and voice_bundle
+                    else None
+                )
 
                 # If in bridge mode, we need to bridge test agent to Retell call
                 # For now, we'll run the voice bundle normally and note that bridging
@@ -534,6 +541,7 @@ async def websocket_endpoint(
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
+                    llm_base_url=llm_base_url,
                     silence_hangup_secs=agent_silence_hangup_secs,
                 )
             else:

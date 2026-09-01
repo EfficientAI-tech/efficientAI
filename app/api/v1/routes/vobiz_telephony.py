@@ -19,7 +19,7 @@ from app.models.enums import CallRecordingStatus
 from app.services.telephony.phone_routing import resolve_inbound_agent_for_number
 from app.services.telephony.plivo_client import normalize_e164
 from app.services.telephony.vobiz_agent_context import (
-    build_vobiz_ws_url,
+    build_carrier_ws_url,
     extract_webhook_params,
     resolve_vobiz_agent_context,
     vobiz_webhook_base_url,
@@ -57,7 +57,8 @@ initiate_vobiz_outbound_call_task = None
 
 router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony"])
 webhook_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Webhooks"])
-ws_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Media"])
+carrier_ws_router = APIRouter(prefix="/telephony/carrier", tags=["Carrier Telephony Media"])
+ws_router = carrier_ws_router
 
 
 class VobizOutboundCallRequest(BaseModel):
@@ -478,7 +479,7 @@ async def vobiz_answer_webhook(
     if session_token and call_uuid:
         link_provider_call_id(db, call_ref=session_token, provider_call_id=call_uuid)
 
-    ws_url = build_vobiz_ws_url(
+    ws_url = build_carrier_ws_url(
         agent_id=str(agent_id),
         session=session_token,
         persona_id=persona_id,
@@ -612,8 +613,8 @@ async def vobiz_recording_ready_webhook(
     return {"status": "ok"}
 
 
-@ws_router.websocket("/ws")
-async def vobiz_media_websocket(websocket: WebSocket):
+@carrier_ws_router.websocket("/ws")
+async def carrier_media_websocket(websocket: WebSocket):
     agent_id = websocket.query_params.get("agent_id")
     session_token = websocket.query_params.get("session")
     persona_id = websocket.query_params.get("persona_id")
@@ -655,7 +656,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
     # endregion
     if not call_short_id:
         logger.warning(
-            "No CallRecording for Vobiz session {}; live transcript and recording will not be linked",
+            "No CallRecording for carrier media session {}; live transcript and recording will not be linked",
             session_token,
         )
     try:
@@ -707,6 +708,8 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     stt_api_key=context.stt_api_key,
                     tts_api_key=context.tts_api_key,
                     llm_api_key=context.llm_api_key,
+                    llm_endpoint_url=context.llm_endpoint_url,
+                    llm_base_url=context.llm_base_url,
                     serializer=serializer,
                     telephony_mode=True,
                     call_short_id=call_short_id,
@@ -734,12 +737,12 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     silence_hangup_secs=hangup_secs,
                 )
         except ValueError as e:
-            logger.error("Vobiz media websocket setup failed: {}", e)
+            logger.error("Carrier media websocket setup failed: {}", e)
             await websocket.close(code=1011, reason=str(e))
         except WebSocketDisconnect:
-            logger.info("Vobiz media websocket disconnected")
+            logger.info("Carrier media websocket disconnected")
         except Exception as e:
-            logger.error("Vobiz media websocket error: {}", e, exc_info=True)
+            logger.error("Carrier media websocket error: {}", e, exc_info=True)
             try:
                 await websocket.close(code=1011, reason="Server error")
             except Exception:
