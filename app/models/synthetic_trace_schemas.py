@@ -52,6 +52,7 @@ class SyntheticCallTraceSummary(BaseModel):
     response_latency_p95_ms: Optional[float] = None
     component_aggregates: Optional[Dict[str, Any]] = None
     failure_flags: Optional[List[str]] = None
+    call_recording_id: Optional[UUID] = None
 
     model_config = ConfigDict(from_attributes=True)
 

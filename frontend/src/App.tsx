@@ -64,6 +64,7 @@ import Observability from './pages/observability/Observability'
 import ObservabilityCalls from './pages/observability/ObservabilityCalls'
 import ObservabilityCallDetail from './pages/observability/ObservabilityCallDetail'
 import TestInsights from './pages/test-insights/TestInsights'
+import CallTraceDetail from './pages/test-insights/CallTraceDetail'
 
 // Alerting
 import Alerts from './pages/alerting/Alerts'
@@ -203,6 +204,7 @@ function App() {
           <Route path="observability/calls" element={<ObservabilityCalls />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
           <Route path="call-traces" element={<TestInsights />} />
+          <Route path="call-traces/:traceId" element={<CallTraceDetail />} />
           <Route path="test-insights" element={<PreserveSearchRedirect to="/call-traces" />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<UsagePage />} />

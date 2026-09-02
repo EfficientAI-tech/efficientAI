@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import {
@@ -7,18 +7,26 @@ import {
   Check,
   Copy,
   Eye,
-  Globe,
+  Loader,
   RefreshCw,
+  Route,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import SyntheticCallTracePanel from '../../components/call-recordings/SyntheticCallTracePanel'
 import Button from '../../components/Button'
+import TraceDetailDrawer from '../../components/call-recordings/TraceDetailDrawer'
+import { FAILURE_FLAG_LABELS } from '../../components/call-recordings/traceUtils'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 
 type Tab = 'runs' | 'setup'
+type StatusFilter = 'all' | 'open' | 'closed'
 
-const tracesQueryKey = (workspaceId: string | null) =>
-  ['observability-traces', workspaceId] as const
+const PAGE_SIZE = 25
+
+const tracesQueryKey = (
+  workspaceId: string | null,
+  page: number,
+  status: StatusFilter,
+) => ['observability-traces', workspaceId, page, status] as const
 
 function formatWhen(iso: string): string {
   return new Date(iso).toLocaleString()
@@ -51,7 +59,7 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
           () => {},
         )
       }}
-      className="inline-flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800"
+      className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-800"
       title={label ?? 'Copy'}
     >
       {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
@@ -60,83 +68,14 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusLabel({ status }: { status: string }) {
   const open = status === 'open'
   const label = status === 'finalized' ? 'closed' : status
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 text-xs font-medium rounded-full px-2.5 py-0.5 capitalize ${
-        open
-          ? 'bg-amber-50 text-amber-700 border border-amber-200'
-          : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-      }`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${open ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+    <span className={`text-sm capitalize ${open ? 'text-amber-700 font-medium' : 'text-gray-600'}`}>
+      {open && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5 align-middle" />}
       {label}
     </span>
-  )
-}
-
-function TransportBadge({ transport }: { transport?: string }) {
-  const t = (transport || 'webrtc').toLowerCase()
-  if (t !== 'webrtc') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px] font-medium rounded-md px-2 py-0.5 border bg-gray-50 text-gray-600 border-gray-100 capitalize">
-        {t}
-      </span>
-    )
-  }
-  return (
-    <span className="inline-flex items-center gap-1 text-[11px] font-medium rounded-md px-2 py-0.5 border bg-blue-50 text-blue-700 border-blue-100">
-      <Globe className="w-3 h-3" />
-      WebRTC
-    </span>
-  )
-}
-
-function TraceDetailShell({
-  traceId,
-  onClose,
-  layout,
-}: {
-  traceId: string
-  onClose: () => void
-  layout: 'desktop' | 'mobile'
-}) {
-  useEffect(() => {
-    if (layout !== 'mobile') return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [layout, onClose])
-
-  if (layout === 'mobile') {
-    return (
-      <>
-        <button
-          type="button"
-          className="fixed inset-0 z-40 bg-gray-900/50 backdrop-blur-[1px]"
-          aria-label="Close trace detail"
-          onClick={onClose}
-        />
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Call trace detail"
-          className="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-white shadow-2xl flex flex-col border-l border-gray-200"
-        >
-          <SyntheticCallTracePanel traceId={traceId} onClose={onClose} />
-        </div>
-      </>
-    )
-  }
-
-  return (
-    <div className="flex flex-1 min-w-0 min-h-[calc(100vh-11rem)] rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-      <SyntheticCallTracePanel traceId={traceId} onClose={onClose} />
-    </div>
   )
 }
 
@@ -148,10 +87,12 @@ export default function TestInsights() {
   const traceFromUrl = searchParams.get('trace')
   const [tab, setTab] = useState<Tab>('runs')
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(traceFromUrl)
+  const [page, setPage] = useState(0)
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [searchQuery, setSearchQuery] = useState('')
   const prevWorkspaceRef = useRef<string | null>(null)
-  const [isMobileView, setIsMobileView] = useState(() =>
-    typeof window !== 'undefined' ? window.matchMedia('(max-width: 1023px)').matches : false,
-  )
+
+  const apiStatus = statusFilter === 'all' ? undefined : statusFilter
 
   const {
     data: listData,
@@ -162,17 +103,19 @@ export default function TestInsights() {
     refetch: refetchTraces,
     dataUpdatedAt,
   } = useQuery({
-    queryKey: tracesQueryKey(activeWorkspaceId),
-    queryFn: () => apiClient.listSyntheticCallTraces({ limit: 100 }),
+    queryKey: tracesQueryKey(activeWorkspaceId, page, statusFilter),
+    queryFn: () =>
+      apiClient.listSyntheticCallTraces({
+        skip: page * PAGE_SIZE,
+        limit: PAGE_SIZE,
+        status: apiStatus,
+      }),
     enabled: tab === 'runs' && Boolean(activeWorkspaceId),
     retry: false,
-    refetchOnWindowFocus: true,
-    staleTime: 30_000,
-    refetchInterval: (query) => {
-      const items = query.state.data?.items ?? []
-      const hasOpen = items.some((t: { status?: string }) => t.status === 'open')
-      return hasOpen ? 15_000 : false
-    },
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   })
 
   const { data: setup, isLoading: loadingSetup } = useQuery({
@@ -184,15 +127,36 @@ export default function TestInsights() {
   })
 
   const traces = listData?.items ?? []
+  const totalCount = listData?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+
+  const filteredTraces = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return traces
+    return traces.filter((t: { call_short_id?: string; id?: string; transport?: string }) => {
+      const id = (t.call_short_id ?? t.id ?? '').toLowerCase()
+      const transport = (t.transport ?? '').toLowerCase()
+      return id.includes(q) || transport.includes(q)
+    })
+  }, [traces, searchQuery])
+
+  const summaryStats = useMemo(() => {
+    const open = traces.filter((t: { status?: string }) => t.status === 'open').length
+    const closed = traces.filter(
+      (t: { status?: string }) => t.status === 'closed' || t.status === 'finalized',
+    ).length
+    const withLatency = traces.filter(
+      (t: { response_latency_p50_ms?: number | null }) => t.response_latency_p50_ms != null,
+    ).length
+    return { open, closed, withLatency }
+  }, [traces])
+
   const listErrorMessage =
     listError && listErrorDetail instanceof Error
       ? listErrorDetail.message
       : listError
         ? 'Could not load traces'
         : null
-
-  const openTraces = traces.filter((t: any) => t.status === 'open').length
-  const withLatency = traces.filter((t: any) => t.response_latency_p50_ms != null).length
 
   const envBlock = setup?.one_time_env_vars
     ? Object.entries(setup.one_time_env_vars)
@@ -218,15 +182,12 @@ export default function TestInsights() {
 
   const handleRefresh = () => {
     void refetchTraces()
-    if (selectedTraceId) {
-      void queryClient.invalidateQueries({
-        queryKey: ['synthetic-call-trace', selectedTraceId, 'by-trace'],
-      })
-    }
+    void queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
   }
 
   useEffect(() => {
     if (prevWorkspaceRef.current !== null && prevWorkspaceRef.current !== activeWorkspaceId) {
+      setPage(0)
       setSelectedTraceId(null)
       setSearchParams(
         (prev) => {
@@ -252,69 +213,32 @@ export default function TestInsights() {
       .getSyntheticCallTraceForResult(resultFromUrl)
       .then((trace) => {
         if (!cancelled && trace?.id) {
-          setSelectedTraceId(trace.id)
-          setSearchParams(
-            (prev) => {
-              const next = new URLSearchParams(prev)
-              next.set('trace', trace.id)
-              next.delete('result')
-              return next
-            },
-            { replace: true },
-          )
+          openTrace(trace.id)
         }
       })
       .catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [resultFromUrl, traceFromUrl, setSearchParams])
-
-  const drawerOpen = Boolean(selectedTraceId)
-
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 1023px)')
-    const onChange = () => setIsMobileView(mq.matches)
-    onChange()
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [])
-
-  useEffect(() => {
-    if (!drawerOpen || !isMobileView) return
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = prev
-    }
-  }, [drawerOpen, isMobileView])
+  }, [resultFromUrl, traceFromUrl])
 
   const lastUpdatedLabel =
     dataUpdatedAt > 0 ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : null
 
-  const totalCount = listData?.total ?? traces.length
-  const showingPartial = totalCount > traces.length
-
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Call Traces</h1>
-          <p className="mt-1 text-sm text-gray-600 max-w-2xl leading-relaxed">
-            See how fast your voice agent responds on each turn — speech recognition, model, and
-            text-to-speech timing from a local Pipecat WebRTC call.
+          <h1 className="text-3xl font-bold text-gray-900">Call Traces</h1>
+          <p className="mt-2 text-sm text-gray-600">
+            Per-turn STT, LLM, and TTS latency from Pipecat voice agents
           </p>
         </div>
         {tab === 'runs' && (
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={fetchingList}
-            className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 disabled:opacity-50 shrink-0"
-          >
-            <RefreshCw className={`w-4 h-4 ${fetchingList ? 'animate-spin' : ''}`} />
+          <Button variant="outline" onClick={handleRefresh} disabled={fetchingList}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${fetchingList ? 'animate-spin' : ''}`} />
             Refresh
-          </button>
+          </Button>
         )}
       </div>
 
@@ -324,7 +248,7 @@ export default function TestInsights() {
           onClick={() => setTab('runs')}
           className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
             tab === 'runs'
-              ? 'border-indigo-600 text-indigo-600'
+              ? 'border-primary-600 text-primary-700'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
@@ -336,7 +260,7 @@ export default function TestInsights() {
           onClick={() => setTab('setup')}
           className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
             tab === 'setup'
-              ? 'border-indigo-600 text-indigo-600'
+              ? 'border-primary-600 text-primary-700'
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
@@ -346,71 +270,56 @@ export default function TestInsights() {
       </div>
 
       {tab === 'setup' && (
-        <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <div className="bg-white shadow rounded-lg border border-gray-200 overflow-hidden">
           {loadingSetup && <p className="p-6 text-sm text-gray-500">Loading setup…</p>}
           {setup && (
-            <div className="divide-y divide-gray-100">
-              <div className="p-6 bg-gradient-to-br from-indigo-50/80 to-white">
-                <h2 className="text-lg font-semibold text-gray-900">Local Pipecat WebRTC</h2>
+            <div className="divide-y divide-gray-200">
+              <div className="px-6 py-5">
+                <h2 className="text-lg font-semibold text-gray-900">Pipecat WebRTC integration</h2>
                 <p className="text-sm text-gray-600 mt-1 max-w-2xl">
-                  Run your Pipecat agent on your machine, talk in the browser, and traces show up
-                  here automatically. Full example:{' '}
-                  <code className="text-xs bg-white/80 px-1.5 py-0.5 rounded border border-gray-200">
-                    docs/examples/pipecat_multi_agent_webrtc_tracing.py
-                  </code>
+                  Run your Pipecat agent locally, connect via WebRTC, and traces appear here automatically.
                 </p>
               </div>
 
               {(setup.setup_steps ?? []).length > 0 && (
-                <div className="p-6 space-y-4">
+                <div className="px-6 py-5 space-y-3">
                   <h3 className="text-sm font-semibold text-gray-900">Quick start</h3>
-                  <ol className="space-y-4">
-                    {(setup.setup_steps as Array<{ title: string; detail: string }>).map(
-                      (step, idx) => (
-                        <li key={step.title} className="flex gap-4">
-                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">
-                            {idx + 1}
-                          </span>
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{step.title}</p>
-                            <p className="text-sm text-gray-600 mt-0.5 leading-relaxed">{step.detail}</p>
-                          </div>
-                        </li>
-                      ),
-                    )}
+                  <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
+                    {(setup.setup_steps as Array<{ title: string; detail: string }>).map((step) => (
+                      <li key={step.title}>
+                        <span className="font-medium text-gray-900">{step.title}</span>
+                        {' — '}
+                        {step.detail}
+                      </li>
+                    ))}
                   </ol>
                 </div>
               )}
 
-              <div className="p-6 space-y-4 bg-gray-50/50">
-                <h3 className="text-sm font-semibold text-gray-900">Your workspace settings</h3>
-                <div className="space-y-3">
+              <div className="px-6 py-5 bg-gray-50 space-y-3">
+                <h3 className="text-sm font-semibold text-gray-900">Workspace settings</h3>
+                <div className="rounded-lg border border-gray-200 bg-white p-4">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="text-xs font-medium text-gray-500">OTLP export URL</p>
+                    <CopyButton text={setup.otlp_endpoint} label="Copy export URL" />
+                  </div>
+                  <p className="font-mono text-xs text-gray-800 break-all">{setup.otlp_endpoint}</p>
+                </div>
+                {envBlock && (
                   <div className="rounded-lg border border-gray-200 bg-white p-4">
                     <div className="flex items-center justify-between gap-2 mb-2">
-                      <p className="text-xs font-medium text-gray-500">Trace export URL</p>
-                      <CopyButton text={setup.otlp_endpoint} label="Copy export URL" />
+                      <p className="text-xs font-medium text-gray-500">Environment variables</p>
+                      <CopyButton text={envBlock} label="Copy env block" />
                     </div>
-                    <p className="font-mono text-xs text-gray-800 break-all">{setup.otlp_endpoint}</p>
+                    <pre className="text-xs font-mono text-gray-800 whitespace-pre-wrap">{envBlock}</pre>
                   </div>
-                  {envBlock && (
-                    <div className="rounded-lg border border-gray-200 bg-white p-4">
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <p className="text-xs font-medium text-gray-500">Add to Pipecat .env</p>
-                        <CopyButton text={envBlock} label="Copy env block" />
-                      </div>
-                      <pre className="text-xs font-mono text-gray-800 whitespace-pre-wrap">{envBlock}</pre>
-                    </div>
-                  )}
-                </div>
-                {setup.per_call_correlation?.note && (
-                  <p className="text-sm text-gray-600 leading-relaxed">{setup.per_call_correlation.note}</p>
                 )}
               </div>
 
               {setup.pipecat_python_example && (
-                <div className="p-6 space-y-2">
+                <div className="px-6 py-5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-gray-900">Tracing snippet for bot.py</h3>
+                    <h3 className="text-sm font-semibold text-gray-900">Tracing snippet</h3>
                     <CopyButton text={setup.pipecat_python_example} label="Copy code" />
                   </div>
                   <pre className="text-xs font-mono bg-slate-900 text-slate-100 p-4 rounded-lg overflow-x-auto max-h-80">
@@ -424,190 +333,244 @@ export default function TestInsights() {
       )}
 
       {tab === 'runs' && !activeWorkspaceId && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-6 py-8 text-center text-sm text-amber-900">
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-6 py-8 text-center text-sm text-amber-900">
           Select a workspace to view call traces.
         </div>
       )}
 
       {tab === 'runs' && activeWorkspaceId && (
-        <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 lg:items-start">
-          <div className={`min-w-0 ${selectedTraceId ? 'lg:w-[44%] lg:shrink-0' : 'w-full'}`}>
-            {traces.length > 0 && (
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Total</p>
-                  <p className="text-2xl font-semibold text-gray-900 tabular-nums">{totalCount}</p>
-                  {showingPartial && (
-                    <p className="text-[10px] text-gray-400 mt-0.5">Showing {traces.length}</p>
-                  )}
+        <>
+          {!loadingList && traces.length > 0 && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-primary-400 bg-primary-50/40 px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-primary-800/70">Total</p>
+                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">{totalCount}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Open</p>
+                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">{summaryStats.open}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Closed</p>
+                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">{summaryStats.closed}</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">With latency</p>
+                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">{summaryStats.withLatency}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="bg-white shadow rounded-lg overflow-hidden border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Route className="h-5 w-5 text-gray-500" />
+                  <h2 className="text-lg font-semibold text-gray-900">Trace sessions</h2>
                 </div>
-                <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">In progress</p>
-                  <p className="text-2xl font-semibold text-amber-600 tabular-nums">{openTraces}</p>
+                <div className="flex items-center gap-1">
+                  {(
+                    [
+                      { key: 'all' as const, label: 'All' },
+                      { key: 'open' as const, label: 'Open' },
+                      { key: 'closed' as const, label: 'Closed' },
+                    ] as const
+                  ).map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setStatusFilter(key)
+                        setPage(0)
+                      }}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        statusFilter === key
+                          ? 'bg-primary-100 text-primary-800 border border-primary-300'
+                          : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
-                <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">With timing</p>
-                  <p className="text-2xl font-semibold text-indigo-600 tabular-nums">{withLatency}</p>
-                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="search"
+                  placeholder="Search call ID…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 w-40 sm:w-48 focus:ring-primary-500 focus:border-primary-500"
+                />
+                {lastUpdatedLabel && (
+                  <span className="text-xs text-gray-500 hidden sm:inline">{lastUpdatedLabel}</span>
+                )}
+              </div>
+            </div>
+
+            {loadingList && !listData && (
+              <div className="p-12 text-center">
+                <Loader className="w-6 h-6 text-primary-500 animate-spin mx-auto mb-3" />
+                <p className="text-sm text-gray-500">Loading traces…</p>
               </div>
             )}
 
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white flex justify-between items-center gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-900">Recent calls</h2>
-                  {lastUpdatedLabel && (
-                    <p className="text-xs text-gray-500 mt-0.5">{lastUpdatedLabel}</p>
-                  )}
-                </div>
+            {listErrorMessage && (
+              <div className="p-4 text-sm text-red-800 bg-red-50 border-b border-red-100">
+                Could not load traces: {listErrorMessage}
               </div>
+            )}
 
-              {loadingList && !listData && (
-                <p className="p-10 text-sm text-gray-500 text-center">Loading traces…</p>
-              )}
+            {!loadingList && !listError && traces.length === 0 && (
+              <div className="p-12 text-center text-sm text-gray-600">
+                <p className="font-medium text-gray-900 mb-1">No traces yet</p>
+                <p className="mb-4">Connect Pipecat and run a WebRTC call to see traces here.</p>
+                <button
+                  type="button"
+                  onClick={() => setTab('setup')}
+                  className="text-primary-600 hover:text-primary-800 font-medium"
+                >
+                  Connect Pipecat →
+                </button>
+              </div>
+            )}
 
-              {listErrorMessage && (
-                <div className="p-4 text-sm text-red-800 bg-red-50 border-b border-red-100 space-y-2">
-                  <p>Could not load traces: {listErrorMessage}</p>
-                  <button
-                    type="button"
-                    onClick={() => refetchTraces()}
-                    className="text-xs font-medium text-red-900 underline"
-                  >
-                    Retry
-                  </button>
-                </div>
-              )}
-
-              {!loadingList && !listError && activeWorkspaceId && traces.length === 0 && (
-                <div className="p-12 text-center text-sm text-gray-600 space-y-4">
-                  <div className="w-12 h-12 rounded-full bg-indigo-50 flex items-center justify-center mx-auto">
-                    <Activity className="w-6 h-6 text-indigo-400" />
-                  </div>
-                  <div>
-                    <p className="font-medium text-gray-900">No calls traced yet</p>
-                    <p className="mt-1 max-w-sm mx-auto">
-                      Connect your Pipecat agent, run a short WebRTC call at{' '}
-                      <code className="text-xs bg-gray-100 px-1 rounded">localhost:7860/client</code>,
-                      then refresh this list.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setTab('setup')}
-                    className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
-                  >
-                    Connect Pipecat →
-                  </button>
-                </div>
-              )}
-
-              {traces.length > 0 && (
+            {filteredTraces.length > 0 && (
+              <>
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-100">
-                    <thead>
-                      <tr className="bg-gray-50/80">
-                        <th className="px-4 py-3 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Call ID
                         </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                          Type
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Transport
                         </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Status
                         </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Turns
                         </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                          Median
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Median (p50)
                         </th>
-                        <th className="px-4 py-3 text-left text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-                          When
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Started
                         </th>
-                        <th className="px-4 py-3" />
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Actions
+                        </th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {traces.map((trace: any) => {
-                        const selected = selectedTraceId === trace.id
-                        return (
-                          <tr
-                            key={trace.id}
-                            role="button"
-                            tabIndex={0}
-                            className={`cursor-pointer transition-colors ${
-                              selected
-                                ? 'bg-indigo-50/70 ring-1 ring-inset ring-indigo-200'
-                                : 'hover:bg-gray-50/80'
-                            }`}
-                            onClick={() => openTrace(trace.id)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault()
-                                openTrace(trace.id)
-                              }
-                            }}
-                          >
-                            <td className="px-4 py-3.5 whitespace-nowrap">
-                              <span className="font-mono font-semibold text-indigo-600">
-                                #{trace.call_short_id || trace.id.slice(0, 8)}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3.5 whitespace-nowrap">
-                              <TransportBadge transport={trace.transport} />
-                            </td>
-                            <td className="px-4 py-3.5 whitespace-nowrap">
-                              <StatusBadge status={trace.status} />
-                            </td>
-                            <td className="px-4 py-3.5 whitespace-nowrap text-sm text-gray-700 tabular-nums font-medium">
-                              {trace.turn_count}
-                            </td>
-                            <td className="px-4 py-3.5 whitespace-nowrap text-sm tabular-nums">
-                              {trace.response_latency_p50_ms != null ? (
-                                <span className="font-medium text-gray-900">
-                                  {Math.round(trace.response_latency_p50_ms)}
-                                  <span className="text-gray-400 font-normal ml-0.5">ms</span>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {filteredTraces.map((trace: any) => (
+                        <tr
+                          key={trace.id}
+                          className={`transition-colors cursor-pointer ${
+                            selectedTraceId === trace.id
+                              ? 'bg-primary-50/60 hover:bg-primary-50/80'
+                              : 'hover:bg-gray-50'
+                          }`}
+                          onClick={() => openTrace(trace.id)}
+                        >
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className="font-mono font-semibold text-primary-600">
+                              #{trace.call_short_id || trace.id.slice(0, 8)}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 capitalize">
+                            {trace.transport ?? 'webrtc'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <div className="flex flex-col gap-1">
+                              <StatusLabel status={trace.status} />
+                              {(trace.failure_flags as string[] | undefined)?.map((flag) => (
+                                <span
+                                  key={flag}
+                                  className="inline-flex w-fit rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-800"
+                                >
+                                  {FAILURE_FLAG_LABELS[flag] ?? flag}
                                 </span>
-                              ) : (
-                                <span className="text-gray-300">—</span>
-                              )}
-                            </td>
-                            <td className="px-4 py-3.5 whitespace-nowrap text-sm text-gray-500">
-                              <span title={formatWhen(trace.started_at)}>{formatRelative(trace.started_at)}</span>
-                            </td>
-                            <td
-                              className="px-4 py-3.5 whitespace-nowrap text-right"
-                              onClick={(e) => e.stopPropagation()}
+                              ))}
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 tabular-nums">
+                            {trace.turn_count}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm tabular-nums font-medium text-primary-800">
+                            {trace.response_latency_p50_ms != null
+                              ? `${Math.round(trace.response_latency_p50_ms)} ms`
+                              : '—'}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                            <span title={formatWhen(trace.started_at)}>{formatRelative(trace.started_at)}</span>
+                          </td>
+                          <td
+                            className="px-6 py-4 whitespace-nowrap text-right"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => openTrace(trace.id)}
+                              leftIcon={<Eye className="w-4 h-4" />}
                             >
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => openTrace(trace.id)}
-                                leftIcon={<Eye className="w-4 h-4" />}
-                              >
-                                View
-                              </Button>
-                            </td>
-                          </tr>
-                        )
-                      })}
+                              View
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
-              )}
-            </div>
+
+                {totalPages > 1 && (
+                  <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between text-sm">
+                    <p className="text-gray-500">
+                      Page {page + 1} of {totalPages} · {totalCount} traces
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page === 0}
+                        onClick={() => setPage((p) => Math.max(0, p - 1))}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page >= totalPages - 1}
+                        onClick={() => setPage((p) => p + 1)}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {traces.length > 0 && filteredTraces.length === 0 && (
+              <div className="p-12 text-center text-sm text-gray-500">
+                No traces match your search.{' '}
+                <button type="button" onClick={() => setSearchQuery('')} className="text-primary-600 font-medium">
+                  Clear search
+                </button>
+              </div>
+            )}
           </div>
-
-          {selectedTraceId && !isMobileView && (
-            <TraceDetailShell traceId={selectedTraceId} onClose={closeTrace} layout="desktop" />
-          )}
-        </div>
+        </>
       )}
 
-      {drawerOpen && selectedTraceId && isMobileView && (
-        <TraceDetailShell traceId={selectedTraceId} onClose={closeTrace} layout="mobile" />
-      )}
+      <TraceDetailDrawer
+        traceId={selectedTraceId}
+        open={Boolean(selectedTraceId)}
+        onClose={closeTrace}
+      />
     </div>
   )
 }

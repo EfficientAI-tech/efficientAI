@@ -1,20 +1,21 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import {
-  Activity,
-  ChevronDown,
-  ChevronRight,
-  Clock,
-  Cpu,
-  Mic,
-  MessageSquare,
-  Radio,
-  Volume2,
-  X,
-  Zap,
-} from 'lucide-react'
+import { Clock, ChevronDown, ChevronRight, ExternalLink, Radio, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import TraceTurnDetail from './TraceTurnDetail'
+import TraceWaterfall from './TraceWaterfall'
+import TraceRecordingBar from './TraceRecordingBar'
+import { TurnSignalBadges } from './TraceTurnBadges'
+import {
+  FAILURE_FLAG_LABELS,
+  formatCallDuration,
+  formatMs,
+  isTurnIncomplete,
+  PIPELINE_MODE_LABELS,
+  sessionPipelineMode,
+  spanHasError,
+} from './traceUtils'
 
 interface SyntheticCallTracePanelProps {
   evaluatorResultId?: string
@@ -72,69 +73,38 @@ interface OtelSpan {
   start_time_unix_nano?: number | null
   end_time_unix_nano?: number | null
   attributes?: Record<string, unknown>
-  events?: Array<Record<string, unknown>>
+  events?: Array<{ name?: string; attributes?: Record<string, unknown> }>
 }
 
-type DetailTab = 'conversation' | 'latency' | 'raw'
+type DetailTab = 'trace' | 'waterfall' | 'transcript' | 'spans'
 type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
 
-const COMPONENT_STYLES: Record<
-  ComponentKind,
-  { label: string; bar: string; text: string; bg: string; border: string; icon: typeof Mic }
-> = {
-  stt: {
-    label: 'STT',
-    bar: 'bg-sky-500',
-    text: 'text-sky-700',
-    bg: 'bg-sky-50',
-    border: 'border-sky-200',
-    icon: Mic,
-  },
-  llm: {
-    label: 'LLM',
-    bar: 'bg-violet-500',
-    text: 'text-violet-700',
-    bg: 'bg-violet-50',
-    border: 'border-violet-200',
-    icon: Cpu,
-  },
-  tts: {
-    label: 'TTS',
-    bar: 'bg-emerald-500',
-    text: 'text-emerald-700',
-    bg: 'bg-emerald-50',
-    border: 'border-emerald-200',
-    icon: Volume2,
-  },
-  s2s: {
-    label: 'S2S',
-    bar: 'bg-fuchsia-500',
-    text: 'text-fuchsia-700',
-    bg: 'bg-fuchsia-50',
-    border: 'border-fuchsia-200',
-    icon: Radio,
-  },
+const COMPONENT_LABELS: Record<ComponentKind, string> = {
+  stt: 'STT',
+  llm: 'LLM',
+  tts: 'TTS',
+  s2s: 'S2S',
 }
 
-function formatMs(value?: number | null): string {
-  if (value == null || Number.isNaN(value)) return '—'
-  return `${Math.round(value)}ms`
-}
+const TABS: Array<{ id: DetailTab; label: string }> = [
+  { id: 'trace', label: 'Trace' },
+  { id: 'waterfall', label: 'Waterfall' },
+  { id: 'transcript', label: 'Transcript' },
+  { id: 'spans', label: 'Spans' },
+]
 
-function latencyTone(ms?: number | null): string {
-  if (ms == null) return 'text-gray-900'
-  if (ms < 800) return 'text-emerald-700'
-  if (ms < 2000) return 'text-amber-700'
-  return 'text-rose-700'
+function formatOffset(ms: number): string {
+  const totalSec = ms / 1000
+  const mins = Math.floor(totalSec / 60)
+  const sec = totalSec % 60
+  return `(+${String(mins).padStart(2, '0')}:${sec.toFixed(2).padStart(5, '0')})`
 }
 
 function shortModel(raw: unknown): string | null {
   if (raw == null) return null
   const text = String(raw).trim()
   if (!text) return null
-  if (text.includes('/models/')) {
-    return text.split('/models/')[1]?.split('/')[0] ?? text
-  }
+  if (text.includes('/models/')) return text.split('/models/')[1]?.split('/')[0] ?? text
   if (text.includes('/')) return text.split('/').pop() ?? text
   return text
 }
@@ -164,8 +134,7 @@ function metaFromSpan(span: OtelSpan): ComponentMeta {
     shortModel(attrs['gen_ai.request.model']) ??
     shortModel(attrs['param.model']) ??
     (kind === 'tts' || kind === 'stt' ? shortModel(attrs['settings.model']) : null)
-  const provider =
-    attrStr(attrs, 'gen_ai.provider.name') ?? attrStr(attrs, 'gen_ai.system')
+  const provider = attrStr(attrs, 'gen_ai.provider.name') ?? attrStr(attrs, 'gen_ai.system')
   return { model, provider: provider?.toLowerCase() ?? null }
 }
 
@@ -239,11 +208,6 @@ function turnMetaFromSpans(spans: OtelSpan[]): Partial<TraceTurnExtra> {
   return out
 }
 
-function providerLabel(provider?: string | null, model?: string | null): string {
-  if (provider && model) return `${provider} · ${model}`
-  return provider ?? model ?? '—'
-}
-
 function mergeTurnMeta(
   turn: TraceTurn,
   spanMeta: Partial<TraceTurnExtra>,
@@ -260,9 +224,8 @@ function mergeTurnMeta(
       ;(extra as Record<string, string>)[providerKey] = sessionModels[kind]!.provider!
     }
   }
-  if (isS2sTurn(turn)) {
-    fill('s2s')
-  } else {
+  if (isS2sTurn(turn)) fill('s2s')
+  else {
     fill('stt')
     fill('llm')
     fill('tts')
@@ -270,127 +233,43 @@ function mergeTurnMeta(
   return extra
 }
 
-function PipelineModelsBar({ models }: { models: PipelineModels }) {
-  const items = (['stt', 'llm', 'tts', 's2s'] as const)
-    .map((key) => ({ key, meta: models[key], ...COMPONENT_STYLES[key] }))
-    .filter((item) => item.meta?.model || item.meta?.provider)
-
-  if (items.length === 0) return null
-
-  return (
-    <div className="px-5 py-3 border-b border-gray-100 bg-slate-50/60 shrink-0">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2.5">
-        Voice pipeline models
-      </p>
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        {items.map(({ key, meta, label, icon: Icon, bg, border, text }) => (
-          <div key={key} className={`rounded-lg border ${border} ${bg} px-3 py-2.5`}>
-            <div className="flex items-center gap-2 mb-1">
-              <Icon className={`w-3.5 h-3.5 ${text}`} />
-              <span className={`text-[10px] font-bold uppercase tracking-wider ${text}`}>{label}</span>
-            </div>
-            <p className="text-xs font-semibold text-gray-900 truncate" title={meta?.model ?? undefined}>
-              {meta?.model ?? '—'}
-            </p>
-            {meta?.provider && (
-              <p className="text-[11px] text-gray-500 truncate mt-0.5">{meta.provider}</p>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-interface WaterfallSegment {
-  kind: ComponentKind
-  ms: number
-}
-
-function buildWaterfallSegments(turn: TraceTurn): WaterfallSegment[] {
-  if (isS2sTurn(turn)) {
-    const ms = turn.s2s_ttfb_ms ?? turn.sut_response_latency_ms
-    return ms != null ? [{ kind: 's2s', ms }] : []
+function turnOffsetMs(turns: TraceTurn[], turnNumber: number): number {
+  let ms = 0
+  for (const t of turns) {
+    if (t.turn_number >= turnNumber) break
+    ms += t.sut_response_latency_ms ?? 0
   }
-  const segments: WaterfallSegment[] = []
-  if (turn.stt_ttfb_ms != null) segments.push({ kind: 'stt', ms: turn.stt_ttfb_ms })
-  if (turn.llm_ttfb_ms != null) segments.push({ kind: 'llm', ms: turn.llm_ttfb_ms })
-  if (turn.tts_ttfb_ms != null) segments.push({ kind: 'tts', ms: turn.tts_ttfb_ms })
-  return segments
+  return ms
 }
 
-function LatencyWaterfall({
-  turn,
-  extra,
-  compact,
+function MetricTile({
+  label,
+  value,
+  unit,
+  highlight,
 }: {
-  turn: TraceTurn
-  extra: TraceTurnExtra
-  compact?: boolean
+  label: string
+  value: string
+  unit?: string
+  highlight?: boolean
 }) {
-  const segments = buildWaterfallSegments(turn)
-  const total = segments.reduce((sum, s) => sum + s.ms, 0) || turn.sut_response_latency_ms || 0
-
-  if (segments.length === 0) {
-    return (
-      <div className="text-xs text-gray-400 italic">
-        No component timing{turn.sut_response_latency_ms != null ? ` · total ${formatMs(turn.sut_response_latency_ms)}` : ''}
-      </div>
-    )
-  }
-
   return (
-    <div className={compact ? 'space-y-2' : 'space-y-3'}>
-      <div className="flex h-7 rounded-md overflow-hidden bg-gray-100 ring-1 ring-gray-200/80">
-        {segments.map((seg, idx) => {
-          const pct = total > 0 ? (seg.ms / total) * 100 : 100 / segments.length
-          const style = COMPONENT_STYLES[seg.kind]
-          const model = extra[`${seg.kind}_model` as keyof TraceTurnExtra] as string | undefined
-          const provider = extra[`${seg.kind}_provider` as keyof TraceTurnExtra] as string | undefined
-          return (
-            <div
-              key={`${seg.kind}-${idx}`}
-              className={`${style.bar} relative group min-w-[2rem] flex items-center justify-center`}
-              style={{ width: `${Math.max(pct, 8)}%` }}
-              title={`${style.label}: ${formatMs(seg.ms)} · ${providerLabel(provider, model)}`}
-            >
-              <span className="text-[10px] font-bold text-white/90 drop-shadow-sm px-1 truncate">
-                {formatMs(seg.ms)}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-
-      <div
-        className="grid gap-2"
-        style={{ gridTemplateColumns: `repeat(${segments.length}, minmax(0, 1fr))` }}
+    <div
+      className={`rounded-lg border px-3 py-3 ${
+        highlight ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200 bg-white'
+      }`}
+    >
+      <p
+        className={`text-[10px] font-semibold uppercase tracking-wider ${
+          highlight ? 'text-primary-800/70' : 'text-gray-400'
+        }`}
       >
-        {segments.map((seg, idx) => {
-          const style = COMPONENT_STYLES[seg.kind]
-          const Icon = style.icon
-          const model = extra[`${seg.kind}_model` as keyof TraceTurnExtra] as string | undefined
-          const provider = extra[`${seg.kind}_provider` as keyof TraceTurnExtra] as string | undefined
-          return (
-            <div
-              key={`${seg.kind}-detail-${idx}`}
-              className={`rounded-md border ${style.border} ${style.bg} px-2.5 py-2`}
-            >
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <Icon className={`w-3 h-3 ${style.text}`} />
-                <span className={`text-[10px] font-bold uppercase ${style.text}`}>{style.label}</span>
-                <span className="ml-auto text-xs font-semibold tabular-nums text-gray-900">
-                  {formatMs(seg.ms)}
-                </span>
-              </div>
-              <p className="text-[11px] font-medium text-gray-800 truncate" title={model}>
-                {model ?? '—'}
-              </p>
-              {provider && <p className="text-[10px] text-gray-500 truncate">{provider}</p>}
-            </div>
-          )
-        })}
-      </div>
+        {label}
+      </p>
+      <p className="mt-1 text-xl font-bold tabular-nums text-gray-900">
+        {value}
+        {unit && <span className="ml-0.5 text-sm font-medium text-gray-500">{unit}</span>}
+      </p>
     </div>
   )
 }
@@ -399,140 +278,52 @@ function RawSpanRow({ span }: { span: OtelSpan }) {
   const [open, setOpen] = useState(false)
   const kind = spanKind(span)
   const meta = metaFromSpan(span)
-  const ttfb = span.attributes?.['metrics.ttfb']
   const durationMs =
     span.start_time_unix_nano != null && span.end_time_unix_nano != null
       ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
       : null
-  const style = kind ? COMPONENT_STYLES[kind] : null
+  const hasError = spanHasError(span)
+
+  const stageLabel = kind ? COMPONENT_LABELS[kind] : 'Other'
+  const spanLabel = span.name
+  const modelLabel =
+    meta.model && meta.model !== span.name ? meta.model : meta.provider ?? '—'
 
   return (
-    <div className="rounded-lg border border-gray-200 bg-white text-xs overflow-hidden">
+    <div className="border-b border-gray-100 last:border-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:bg-gray-50"
+        className="w-full text-left hover:bg-gray-50"
       >
-        {open ? <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />}
-        {style && (
-          <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${style.bg} ${style.text}`}>
-            {style.label}
+        <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] items-center gap-4 px-4 py-3">
+          <span className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
+            {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+            <span
+              className={`inline-flex rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${
+                kind
+                  ? 'border-primary-300 bg-primary-50/60 text-primary-800'
+                  : 'border-gray-200 bg-gray-50 text-gray-600'
+              }`}
+            >
+              {stageLabel}
+            </span>
           </span>
-        )}
-        {!style && <span className="font-medium text-gray-600">{span.name}</span>}
-        <span className="text-gray-500 truncate hidden sm:inline">{meta.model ?? ''}</span>
-        <span className="ml-auto tabular-nums text-gray-600 shrink-0 font-medium">
-          {durationMs != null ? `${durationMs}ms` : '—'}
-          {ttfb != null && <span className="text-gray-400 font-normal"> · ttfb {Math.round(Number(ttfb) * 1000)}ms</span>}
-        </span>
+          <span className={`truncate font-mono text-xs ${hasError ? 'text-rose-700' : 'text-gray-800'}`}>
+            {spanLabel}
+          </span>
+          <span className="truncate font-mono text-xs text-gray-500">{modelLabel}</span>
+          <span className="text-right tabular-nums text-xs font-medium text-gray-900">
+            {durationMs != null ? `${durationMs}ms` : '—'}
+          </span>
+        </div>
       </button>
       {open && (
-        <pre className="text-[10px] font-mono bg-slate-50 border-t border-slate-100 px-3 py-2 overflow-x-auto max-h-48 whitespace-pre-wrap">
+        <pre className="mx-4 mb-3 max-h-48 overflow-x-auto rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-xs">
           {JSON.stringify(span.attributes ?? {}, null, 2)}
         </pre>
       )}
     </div>
-  )
-}
-
-function TurnCard({
-  turn,
-  spans,
-  sessionModels,
-}: {
-  turn: TraceTurn
-  spans: OtelSpan[]
-  sessionModels: PipelineModels
-}) {
-  const [showSpans, setShowSpans] = useState(false)
-  const spanMeta = useMemo(() => turnMetaFromSpans(spans), [spans])
-  const extra = useMemo(() => mergeTurnMeta(turn, spanMeta, sessionModels), [turn, spanMeta, sessionModels])
-  const parsed = parseTranscript(turn.transcript)
-  const userText = extra.user_text ?? parsed.user
-  const assistantText = extra.assistant_text ?? parsed.assistant
-  const agent = extra.agent_role ?? extra.agent_id
-  const interrupted = Boolean(extra.was_interrupted)
-  const componentSpans = spans
-    .filter((s) => spanKind(s) != null)
-    .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
-
-  return (
-    <article className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-      <header className="px-4 py-3 border-b border-gray-100 flex items-center justify-between gap-3 bg-gradient-to-r from-white to-gray-50/80">
-        <div className="flex items-center gap-2 flex-wrap min-w-0">
-          <span className="inline-flex items-center justify-center h-6 min-w-[1.5rem] px-1.5 rounded-md bg-gray-900 text-white text-xs font-bold">
-            {turn.turn_number}
-          </span>
-          {agent && (
-            <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-purple-100 text-purple-800">
-              {agent}
-            </span>
-          )}
-          {interrupted && (
-            <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-rose-100 text-rose-800">
-              Interrupted
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Zap className="w-3.5 h-3.5 text-indigo-400" />
-          <span className="text-[10px] uppercase tracking-wider text-gray-400 font-medium">Round-trip</span>
-          <span className={`text-base font-bold tabular-nums ${latencyTone(turn.sut_response_latency_ms)}`}>
-            {formatMs(turn.sut_response_latency_ms)}
-          </span>
-        </div>
-      </header>
-
-      <div className="px-4 py-4 space-y-4">
-        {(userText || assistantText) && (
-          <div className="space-y-2.5">
-            {userText && (
-              <div className="flex justify-end">
-                <div className="max-w-[88%] rounded-2xl rounded-tr-sm bg-indigo-600 text-white px-3.5 py-2.5 shadow-sm">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-indigo-200 mb-0.5">User</p>
-                  <p className="text-sm leading-relaxed">{userText}</p>
-                </div>
-              </div>
-            )}
-            {assistantText && (
-              <div className="flex justify-start">
-                <div className="max-w-[88%] rounded-2xl rounded-tl-sm bg-gray-100 border border-gray-200/80 px-3.5 py-2.5">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 mb-0.5">Agent</p>
-                  <p className="text-sm text-gray-900 leading-relaxed">{assistantText}</p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">
-            Latency waterfall
-          </p>
-          <LatencyWaterfall turn={turn} extra={extra} />
-        </div>
-
-        {componentSpans.length > 0 && (
-          <div className="pt-1 border-t border-gray-100">
-            <button
-              type="button"
-              onClick={() => setShowSpans((v) => !v)}
-              className="text-xs text-gray-500 hover:text-gray-800 inline-flex items-center gap-1 font-medium"
-            >
-              {showSpans ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-              {showSpans ? 'Hide' : 'View'} span details ({componentSpans.length})
-            </button>
-            {showSpans && (
-              <div className="mt-2 space-y-1.5">
-                {componentSpans.map((span) => (
-                  <RawSpanRow key={`${span.trace_id}-${span.span_id}`} span={span} />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </article>
   )
 }
 
@@ -542,7 +333,7 @@ export default function SyntheticCallTracePanel({
   callShortId,
   onClose,
 }: SyntheticCallTracePanelProps) {
-  const [tab, setTab] = useState<DetailTab>('conversation')
+  const [tab, setTab] = useState<DetailTab>('trace')
 
   const lookupKey = traceId ?? callShortId ?? evaluatorResultId
   const lookupMode = traceId ? 'by-trace' : callShortId ? 'by-call-short-id' : 'by-result'
@@ -562,185 +353,360 @@ export default function SyntheticCallTracePanel({
   const spansByTurn = useMemo(() => buildSpansByTurn(otelSpans), [otelSpans])
   const turns = (data?.turns ?? []) as TraceTurn[]
   const pipelineModels = (data?.pipeline_models ?? {}) as PipelineModels
+  const pipelineMode = useMemo(() => sessionPipelineMode(turns), [turns])
+
+  const { data: linkedAgent } = useQuery({
+    queryKey: ['trace-agent', data?.agent_id],
+    queryFn: () => apiClient.getAgent(data!.agent_id),
+    enabled: Boolean(data?.agent_id),
+  })
+
+  const traceTurnRows = useMemo(() => {
+    return turns.map((turn) => {
+      const turnSpans = spansByTurn.get(turn.turn_number) ?? []
+      const spanMeta = turnMetaFromSpans(turnSpans)
+      const extra = mergeTurnMeta(turn, spanMeta, pipelineModels)
+      const models: Partial<Record<ComponentKind, string>> = {}
+      for (const kind of ['stt', 'llm', 'tts', 's2s'] as const) {
+        const model = extra[`${kind}_model` as keyof TraceTurnExtra] as string | undefined
+        if (model) models[kind] = model
+      }
+      return {
+        turnNumber: turn.turn_number,
+        offsetMs: turnOffsetMs(turns, turn.turn_number),
+        sttMs: turn.stt_ttfb_ms,
+        llmMs: turn.llm_ttfb_ms,
+        ttsMs: turn.tts_ttfb_ms,
+        s2sMs: turn.s2s_ttfb_ms,
+        totalMs: turn.sut_response_latency_ms,
+        talkOver: turn.talk_over,
+        interrupted: extra.was_interrupted,
+        incomplete: isTurnIncomplete(turn, pipelineMode),
+        models,
+        spans: turnSpans.map((span) => ({
+          id: span.span_id,
+          kind: spanKind(span),
+          name: span.name,
+          model: metaFromSpan(span).model ?? undefined,
+          durationMs:
+            span.start_time_unix_nano != null && span.end_time_unix_nano != null
+              ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
+              : null,
+        })),
+      }
+    })
+  }, [turns, spansByTurn, pipelineModels, pipelineMode])
+
+  const transcriptMessages = useMemo(() => {
+    const messages: Array<{
+      role: 'user' | 'agent'
+      text: string
+      turn: number
+      offsetMs: number
+      latencyMs?: number
+      talkOver?: boolean
+      interrupted?: boolean
+      incomplete?: boolean
+    }> = []
+    for (const turn of turns) {
+      const spanMeta = turnMetaFromSpans(spansByTurn.get(turn.turn_number) ?? [])
+      const extra = mergeTurnMeta(turn, spanMeta, pipelineModels)
+      const parsed = parseTranscript(turn.transcript)
+      const offset = turnOffsetMs(turns, turn.turn_number)
+      const userText = extra.user_text ?? parsed.user
+      const assistantText = extra.assistant_text ?? parsed.assistant
+      const incomplete = isTurnIncomplete(turn, pipelineMode)
+      if (userText) {
+        messages.push({
+          role: 'user',
+          text: userText,
+          turn: turn.turn_number,
+          offsetMs: offset,
+          talkOver: turn.talk_over,
+          incomplete,
+        })
+      }
+      if (assistantText) {
+        messages.push({
+          role: 'agent',
+          text: assistantText,
+          turn: turn.turn_number,
+          offsetMs: offset + (turn.stt_ttfb_ms ?? 0),
+          latencyMs: turn.sut_response_latency_ms ?? undefined,
+          interrupted: extra.was_interrupted,
+          incomplete,
+        })
+      }
+    }
+    return messages
+  }, [turns, spansByTurn, pipelineModels, pipelineMode])
 
   if (isLoading) {
-    return <div className="flex items-center justify-center h-40 text-sm text-gray-500">Loading trace…</div>
+    return <div className="flex items-center justify-center h-48 text-sm text-gray-500">Loading trace…</div>
   }
 
   if (isError) {
     const message = (error as Error)?.message || 'Trace not available'
     if (message.includes('404') || message.toLowerCase().includes('not found')) {
       return (
-        <div className="p-6 text-sm text-gray-600">
-          No trace yet. Run a Pipecat WebRTC session with tracing, then see{' '}
-          <Link to="/call-traces" className="text-indigo-600 hover:text-indigo-800 font-medium">
+        <div className="p-8 text-sm text-gray-600">
+          No trace yet. Run a Pipecat session with tracing enabled, then see{' '}
+          <Link to="/call-traces" className="text-primary-600 hover:text-primary-800 font-medium">
             Call Traces → Connect Pipecat
           </Link>
         </div>
       )
     }
-    return <div className="p-6 text-sm text-amber-800 bg-amber-50">Could not load trace: {message}</div>
+    return <div className="p-8 text-sm text-red-800 bg-red-50">Could not load trace: {message}</div>
   }
 
   const trace = data
   if (!trace) return null
 
   const statusLabel = trace.status === 'finalized' ? 'closed' : trace.status
-  const aggregates = trace.component_aggregates as Record<string, { p50?: number }> | undefined
-  const isEmbedded = !onClose
+  const isDrawer = Boolean(onClose)
+  const isOpen = trace.status === 'open'
+
+  const medianMs =
+    trace.response_latency_p50_ms != null ? Math.round(trace.response_latency_p50_ms) : null
+  const p90Ms = trace.response_latency_p90_ms != null ? Math.round(trace.response_latency_p90_ms) : null
+  const p95Ms = trace.response_latency_p95_ms != null ? Math.round(trace.response_latency_p95_ms) : null
+
+  const startedLabel = trace.started_at
+    ? new Date(trace.started_at).toLocaleString(undefined, {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : null
+
+  const callDuration = formatCallDuration(trace.started_at, trace.ended_at)
+  const failureFlags = (trace.failure_flags ?? []) as string[]
+  const agentRouteId = linkedAgent?.agent_id || linkedAgent?.id || trace.agent_id
+  const agentLabel = linkedAgent?.name || (trace.agent_id ? 'Agent' : null)
 
   return (
-    <div
-      className={`flex flex-col w-full bg-gray-50/40 ${isEmbedded ? '' : 'h-full min-h-0'}`}
-    >
-      <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-gray-200 bg-white shrink-0">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h2 className="text-lg font-semibold text-gray-900 tracking-tight">
+    <div className={isDrawer ? 'flex h-full min-h-0 flex-col bg-gray-50' : 'bg-gray-50 pb-10'}>
+      <div
+        className={
+          isDrawer
+            ? 'shrink-0 overflow-x-hidden border-b border-gray-200 bg-white'
+            : 'sticky top-0 z-10 overflow-x-hidden border-b border-gray-200 bg-white shadow-sm'
+        }
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="font-mono text-xl font-bold tracking-tight text-primary-600">
               {trace.call_short_id ? `#${trace.call_short_id}` : 'Call trace'}
             </h2>
-            <span
-              className={`text-xs rounded-full px-2.5 py-0.5 capitalize font-medium ${
-                trace.status === 'open' ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
+            <div className="mt-2.5 flex flex-wrap items-center gap-2">
+              <span
+                className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium capitalize ${
+                  isOpen
+                    ? 'border-primary-300 bg-primary-50/60 text-primary-800'
+                    : 'border-gray-200 bg-gray-50 text-gray-600'
+                }`}
+              >
+                {isOpen && <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-primary-500" />}
+                {statusLabel}
+              </span>
+              <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs font-medium capitalize text-gray-700">
+                <Radio className="h-3 w-3 text-gray-400" />
+                {trace.transport ?? 'webrtc'}
+              </span>
+              {startedLabel && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs text-gray-600">
+                  <Clock className="h-3 w-3 text-gray-400" />
+                  {startedLabel}
+                </span>
+              )}
+              {callDuration && (
+                <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs text-gray-600">
+                  Duration {callDuration}
+                </span>
+              )}
+              {pipelineMode && (
+                <span className="inline-flex items-center rounded-full border border-primary-300 bg-primary-50/60 px-2.5 py-0.5 text-xs font-medium text-primary-800">
+                  {PIPELINE_MODE_LABELS[pipelineMode]}
+                </span>
+              )}
+              {failureFlags.map((flag) => (
+                <span
+                  key={flag}
+                  className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-xs font-medium text-rose-800"
+                >
+                  {FAILURE_FLAG_LABELS[flag] ?? flag}
+                </span>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
+              {agentRouteId && (
+                <Link
+                  to={`/agents/${agentRouteId}`}
+                  className="inline-flex items-center gap-1 font-medium text-primary-600 hover:text-primary-800"
+                >
+                  {agentLabel}
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              )}
+              {trace.evaluator_result_id && (
+                <Link
+                  to={`/results/${trace.evaluator_result_id}`}
+                  className="inline-flex items-center gap-1 font-medium text-primary-600 hover:text-primary-800"
+                >
+                  View eval result
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
+              )}
+            </div>
+          </div>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
+        </div>
+
+        <div className="space-y-3 px-5 py-4">
+          <TraceRecordingBar
+            callShortId={trace.call_short_id}
+            callRecordingId={trace.call_recording_id}
+            evaluatorResultId={trace.evaluator_result_id}
+          />
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <MetricTile
+              label="Response p50"
+              value={medianMs != null ? String(medianMs) : '—'}
+              unit={medianMs != null ? 'ms' : undefined}
+              highlight
+            />
+            <MetricTile
+              label="P90"
+              value={p90Ms != null ? String(p90Ms) : '—'}
+              unit={p90Ms != null ? 'ms' : undefined}
+            />
+            <MetricTile
+              label="P95"
+              value={p95Ms != null ? String(p95Ms) : '—'}
+              unit={p95Ms != null ? 'ms' : undefined}
+            />
+            <MetricTile label="Turns" value={String(trace.turn_count)} />
+          </div>
+        </div>
+
+        <div className="flex border-t border-gray-100 bg-white px-5">
+          {TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={`shrink-0 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                tab === id
+                  ? 'border-primary-600 text-gray-900'
+                  : 'border-transparent text-gray-500 hover:text-gray-800'
               }`}
             >
-              {statusLabel}
-            </span>
-            <span className="text-xs px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 font-medium">
-              {trace.transport === 'webrtc' ? 'WebRTC' : trace.transport}
-            </span>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={isDrawer ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : undefined}>
+        {tab === 'trace' && (
+          <div className="p-5 pb-16">
+            <TraceTurnDetail
+              rows={traceTurnRows}
+              pipelineModels={pipelineModels}
+              componentAggregates={
+                trace.component_aggregates as Record<string, { p50?: number; p90?: number; p95?: number }> | undefined
+              }
+            />
           </div>
-          <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
-            <span>{trace.turn_count} turns</span>
-            {trace.started_at && (
-              <span className="inline-flex items-center gap-1">
-                <Clock className="w-3 h-3" />
-                {new Date(trace.started_at).toLocaleString()}
-              </span>
+        )}
+
+        {tab === 'waterfall' && (
+          <div className="p-5 pb-16">
+            {traceTurnRows.length === 0 ? (
+              <p className="py-12 text-center text-sm text-gray-500">No waterfall data</p>
+            ) : (
+              <TraceWaterfall rows={traceTurnRows} />
             )}
           </div>
-        </div>
-        {onClose && (
-          <button type="button" onClick={onClose} className="p-2 rounded-lg text-gray-400 hover:bg-gray-100" aria-label="Close">
-            <X className="w-5 h-5" />
-          </button>
         )}
-      </div>
 
-      <div className="px-5 py-3 border-b border-gray-100 bg-white shrink-0">
-        <div className="grid grid-cols-3 gap-2">
-          {(['p50', 'p90', 'p95'] as const).map((label) => {
-            const value =
-              label === 'p50'
-                ? trace.response_latency_p50_ms
-                : label === 'p90'
-                  ? trace.response_latency_p90_ms
-                  : trace.response_latency_p95_ms
-            return (
-              <div key={label} className="rounded-lg bg-gray-50 border border-gray-100 px-3 py-2 text-center">
-                <p className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold">{label}</p>
-                <p className={`text-lg font-bold tabular-nums ${latencyTone(value)}`}>{formatMs(value)}</p>
-              </div>
-            )
-          })}
-        </div>
-        {aggregates && (
-          <div className="flex flex-wrap gap-1.5 mt-2.5">
-            {(['stt', 'llm', 'tts', 's2s'] as const).map((kind) => {
-              const p50 = aggregates[`${kind}_ttfb_ms`]?.p50
-              if (p50 == null) return null
-              const style = COMPONENT_STYLES[kind]
-              const sessionMeta = pipelineModels[kind]
-              return (
-                <span
-                  key={kind}
-                  className={`text-[10px] px-2 py-0.5 rounded-full border ${style.border} ${style.bg} ${style.text} font-medium`}
-                  title={providerLabel(sessionMeta?.provider, sessionMeta?.model)}
-                >
-                  {style.label} p50 {Math.round(p50)}ms
-                  {sessionMeta?.model && <span className="opacity-70"> · {sessionMeta.model}</span>}
-                </span>
-              )
-            })}
-          </div>
-        )}
-      </div>
-
-      <PipelineModelsBar models={pipelineModels} />
-
-      <div className="flex gap-0.5 px-4 py-2 border-b border-gray-200 bg-white shrink-0">
-        {(
-          [
-            ['conversation', 'Conversation', MessageSquare],
-            ['latency', 'Waterfall', Activity],
-            ['raw', 'Raw spans', Zap],
-          ] as const
-        ).map(([id, label, Icon]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setTab(id)}
-            className={`px-3 py-2 text-sm font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors ${
-              tab === id ? 'bg-gray-900 text-white shadow-sm' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
-            }`}
-          >
-            <Icon className="w-4 h-4" />
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div className={`${isEmbedded ? '' : 'flex-1 min-h-0'} overflow-y-auto px-4 py-4 space-y-3`}>
-        {tab === 'conversation' && (
-          <>
-            {turns.length === 0 ? (
-              <p className="text-center py-16 text-sm text-gray-500">No conversation turns yet</p>
+        {tab === 'transcript' && (
+          <div className="bg-gray-50/50 p-5 pb-16">
+            {transcriptMessages.length === 0 ? (
+              <p className="text-center py-16 text-sm text-gray-500">No transcript</p>
             ) : (
-              turns.map((turn) => (
-                <TurnCard
-                  key={turn.turn_number}
-                  turn={turn}
-                  spans={spansByTurn.get(turn.turn_number) ?? []}
-                  sessionModels={pipelineModels}
-                />
-              ))
-            )}
-          </>
-        )}
-
-        {tab === 'latency' && (
-          <div className="space-y-3">
-            {turns.length === 0 ? (
-              <p className="text-center py-16 text-sm text-gray-500">No latency data</p>
-            ) : (
-              turns.map((turn) => {
-                const spanMeta = turnMetaFromSpans(spansByTurn.get(turn.turn_number) ?? [])
-                const extra = mergeTurnMeta(turn, spanMeta, pipelineModels)
-                return (
-                  <div key={turn.turn_number} className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between mb-3">
-                      <span className="text-sm font-semibold text-gray-900">Turn {turn.turn_number}</span>
-                      <span className={`text-sm font-bold tabular-nums ${latencyTone(turn.sut_response_latency_ms)}`}>
-                        {formatMs(turn.sut_response_latency_ms)} total
-                      </span>
+              <div className="space-y-4 max-w-2xl mx-auto">
+                {transcriptMessages.map((msg, idx) => {
+                  const isUser = msg.role === 'user'
+                  return (
+                    <div key={`${msg.turn}-${msg.role}-${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+                      <div className="max-w-[85%]">
+                        <div
+                          className={`rounded-xl px-4 py-3 ${
+                            isUser
+                              ? 'bg-white border border-gray-200 text-gray-900'
+                              : 'bg-gray-100 border border-gray-200/80 text-gray-900'
+                          }`}
+                        >
+                          <div className="mb-1 flex flex-wrap items-center gap-2">
+                            <p className={`text-xs font-semibold ${isUser ? 'text-gray-700' : 'text-gray-600'}`}>
+                              {isUser ? 'User' : 'Agent'}
+                            </p>
+                            <TurnSignalBadges
+                              talkOver={isUser ? msg.talkOver : undefined}
+                              interrupted={!isUser ? msg.interrupted : undefined}
+                              incomplete={msg.incomplete}
+                            />
+                          </div>
+                          <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                        </div>
+                        <p className={`text-[11px] mt-1 tabular-nums text-gray-500 ${isUser ? 'text-right' : ''}`}>
+                          Turn {msg.turn} {formatOffset(msg.offsetMs)}
+                          {msg.latencyMs != null && (
+                            <span className="ml-2">· {formatMs(msg.latencyMs)}</span>
+                          )}
+                        </p>
+                      </div>
                     </div>
-                    <LatencyWaterfall turn={turn} extra={extra} compact />
-                  </div>
-                )
-              })
+                  )
+                })}
+              </div>
             )}
           </div>
         )}
 
-        {tab === 'raw' && (
-          <div className="space-y-1.5">
+        {tab === 'spans' && (
+          <div className="bg-white pb-16">
             {otelSpans.length === 0 ? (
-              <p className="text-center py-16 text-sm text-gray-500">No spans</p>
+              <p className="py-16 text-center text-sm text-gray-500">No spans</p>
             ) : (
-              otelSpans
-                .slice()
-                .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
-                .map((span) => <RawSpanRow key={`${span.trace_id}-${span.span_id}`} span={span} />)
+              <>
+                <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] items-center gap-4 border-b border-gray-200 bg-gray-50/80 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                  <span>Stage</span>
+                  <span>Span</span>
+                  <span>Model</span>
+                  <span className="text-right">Duration</span>
+                </div>
+                {otelSpans
+                  .slice()
+                  .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
+                  .map((span) => (
+                    <RawSpanRow key={`${span.trace_id}-${span.span_id}`} span={span} />
+                  ))}
+              </>
             )}
           </div>
         )}
