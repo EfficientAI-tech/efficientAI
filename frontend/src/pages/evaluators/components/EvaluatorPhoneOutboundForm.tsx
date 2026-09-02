@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { Phone } from 'lucide-react'
@@ -27,6 +27,7 @@ export default function EvaluatorPhoneOutboundForm({
   const [toNumber, setToNumber] = useState('')
   const [fromNumber, setFromNumber] = useState('')
 
+  const queryClient = useQueryClient()
   const { data: dialTargets = [] } = useQuery({
     queryKey: ['telephony-dial-targets'],
     queryFn: () => apiClient.listTelephonyDialTargets(),
@@ -42,7 +43,12 @@ export default function EvaluatorPhoneOutboundForm({
         to_number: toNumber,
         from_number: fromNumber || undefined,
       }),
-    onSuccess: () => showToast('Outbound call initiated', 'success'),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
+      const traceHint = data?.call_short_id ? ` Trace id ${data.call_short_id}.` : ''
+      const suffix = data?.result_id ? ` (result ${data.result_id})` : ''
+      showToast(`Outbound call initiated${suffix}.${traceHint} Export STT/LLM/TTS with this id.`, 'success')
+    },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail
       showToast(typeof detail === 'string' ? detail : 'Call failed', 'error')

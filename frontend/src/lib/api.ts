@@ -426,6 +426,15 @@ export interface VobizOutboundCallResponse {
   to_number: string
   call_ref: string
   call_short_id?: string
+  evaluator_result_id?: string
+  result_id?: string
+  otel_correlation?: {
+    otlp_endpoint: string
+    api_key_header: string
+    suggested_env_vars: Record<string, string>
+    suggested_otlp_headers: Record<string, string>
+    suggested_span_attributes: Record<string, string>
+  }
   message: string
 }
 
@@ -545,10 +554,15 @@ class ApiClient {
       const workspaceId = localStorage.getItem('activeWorkspaceId')
       if (accessToken) {
         config.headers.Authorization = `Bearer ${accessToken}`
+        // Logged-in UI sessions must not send a stale X-API-Key — the backend
+        // prefers API keys over Bearer and would return 401 on invalid keys.
+        if (config.headers['X-API-Key']) {
+          delete config.headers['X-API-Key']
+        }
       } else if (config.headers.Authorization) {
         delete config.headers.Authorization
       }
-      if (apiKey) {
+      if (!accessToken && apiKey) {
         config.headers['X-API-Key'] = apiKey
       } else if (config.headers['X-API-Key']) {
         delete config.headers['X-API-Key']
@@ -3946,6 +3960,7 @@ class ApiClient {
     transcript_entries: Array<{ role: 'user' | 'agent'; content: string; timestamp: string }>
     started_at?: string
     ended_at?: string
+    call_short_id?: string
     audio_file?: File
   }): Promise<{
     message: string
@@ -3962,6 +3977,9 @@ class ApiClient {
     }
     if (data.ended_at) {
       formData.append('ended_at', data.ended_at)
+    }
+    if (data.call_short_id) {
+      formData.append('call_short_id', data.call_short_id)
     }
     if (data.audio_file) {
       formData.append('audio_file', data.audio_file)
@@ -4544,6 +4562,93 @@ class ApiClient {
 
   async getEvaluatorResultMetrics(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
+    return response.data
+  }
+
+  async getSyntheticCallTraceForResult(evaluatorResultId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/observability/traces/results/${evaluatorResultId}`,
+    )
+    return response.data
+  }
+
+  async listSyntheticCallTraces(params?: {
+    skip?: number
+    limit?: number
+    status?: string
+  }): Promise<{ items: any[]; total: number }> {
+    const response = await this.client.get('/api/v1/observability/traces', { params })
+    return response.data
+  }
+
+  async getSyntheticCallTrace(traceId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/observability/traces/${traceId}`)
+    return response.data
+  }
+
+  async getSyntheticCallTraceByCallShortId(callShortId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/observability/traces/by-call-short-id/${callShortId}`,
+    )
+    return response.data
+  }
+
+  async getSyntheticCallTraceSetup(): Promise<any> {
+    const response = await this.client.get('/api/v1/observability/traces/setup')
+    return response.data
+  }
+
+  async createSyntheticTraceSession(data: {
+    transport?: 'webrtc' | 'websocket' | 'phone' | 'custom'
+    evaluator_result_id?: string
+  }): Promise<{
+    trace_id: string
+    call_short_id: string
+    workspace_id: string
+    transport: string
+    status: string
+    otel_correlation: {
+      otlp_endpoint: string
+      api_key_header: string
+      suggested_env_vars: Record<string, string>
+      suggested_otlp_headers: Record<string, string>
+      suggested_span_attributes: Record<string, string>
+    }
+  }> {
+    const response = await this.client.post('/api/v1/observability/traces/sessions', data)
+    return response.data
+  }
+
+  async closeSyntheticTraceSession(callShortId: string): Promise<{
+    trace_id: string
+    call_short_id: string
+    status: string
+  }> {
+    const response = await this.client.post(
+      `/api/v1/observability/traces/sessions/${callShortId}/close`,
+    )
+    return response.data
+  }
+
+  async ingestSyntheticTraceJson(data: {
+    call_short_id: string
+    spans: Array<{
+      name: string
+      turn_number: number
+      ttfb_ms?: number
+      attributes?: Record<string, unknown>
+    }>
+  }): Promise<{
+    accepted_spans: number
+    synthetic_call_trace_id?: string
+    correlated: boolean
+  }> {
+    const response = await this.client.post('/api/v1/observability/traces/ingest', data)
+    return response.data
+  }
+
+  async getEvaluatorResultOtelCorrelation(id: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/evaluator-results/${id}/otel-correlation`)
     return response.data
   }
 

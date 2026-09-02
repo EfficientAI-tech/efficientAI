@@ -76,6 +76,9 @@ class VobizOutboundCallResponse(BaseModel):
     to_number: str
     call_ref: str
     call_short_id: str = ""
+    evaluator_result_id: Optional[UUID] = None
+    result_id: Optional[str] = None
+    otel_correlation: Optional[Dict[str, Any]] = None
     message: str = "Outbound call initiated"
 
 
@@ -238,6 +241,7 @@ async def get_vobiz_outbound_pool(
 @router.post("/calls/outbound", response_model=VobizOutboundCallResponse)
 async def create_vobiz_outbound_call(
     payload: VobizOutboundCallRequest,
+    request: Request,
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
@@ -258,6 +262,7 @@ async def create_vobiz_outbound_call(
     persona_id = payload.persona_id
     scenario_id = payload.scenario_id
     evaluator_id = payload.evaluator_id
+    evaluator: Evaluator | None = None
 
     if payload.evaluator_id:
         evaluator = db.query(Evaluator).filter(
@@ -273,9 +278,52 @@ async def create_vobiz_outbound_call(
             ).first()
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found for evaluator")
-            payload = payload.model_copy(update={"agent_id": agent.id})
         persona_id = persona_id or evaluator.persona_id
         scenario_id = scenario_id or evaluator.scenario_id
+
+    to_number = normalize_e164(payload.to_number)
+
+    if evaluator and agent.workspace_id:
+        from app.services.evaluators.evaluator_phone_run_service import initiate_phone_evaluator_call
+
+        call_ref, call_short_id, result_response = initiate_phone_evaluator_call(
+            db,
+            organization_id,
+            agent.workspace_id,
+            evaluator,
+            agent,
+            to_number,
+            from_number=payload.from_number,
+        )
+        recording = (
+            db.query(CallRecording)
+            .filter(CallRecording.call_short_id == call_short_id)
+            .first()
+        )
+        from_number = ""
+        if recording and isinstance(recording.call_data, dict):
+            from_number = recording.call_data.get("from_number") or ""
+        from app.services.synthetic_traces.trace_service import build_session_otel_correlation
+
+        otel_correlation = None
+        if call_short_id and agent.workspace_id:
+            otel_correlation = build_session_otel_correlation(
+                api_base_url=str(request.base_url).rstrip("/"),
+                call_short_id=call_short_id,
+                workspace_id=agent.workspace_id,
+                evaluator_result_id=result_response.id if result_response else None,
+            )
+        return VobizOutboundCallResponse(
+            provider_request_uuid="",
+            call_status="queued",
+            from_number=from_number,
+            to_number=to_number,
+            call_ref=call_ref,
+            call_short_id=call_short_id,
+            evaluator_result_id=result_response.id if result_response else None,
+            result_id=result_response.result_id if result_response else None,
+            otel_correlation=otel_correlation,
+        )
 
     try:
         from_number, used_pool, provider = resolve_outbound_from_number(
@@ -638,6 +686,9 @@ async def vobiz_media_websocket(websocket: WebSocket):
     db = next(get_db())
     call_row = find_call_recording(db, call_ref=session_token, provider_call_id=None)
     call_short_id = call_row.call_short_id if call_row else None
+    evaluator_result_id = (
+        str(call_row.evaluator_result_id) if call_row and call_row.evaluator_result_id else None
+    )
     # region agent log
     from app.utils.debug_agent_log import agent_debug_log
 
@@ -702,6 +753,8 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     agent_id,
                     persona_id,
                     scenario_id,
+                    evaluator_id=session.evaluator_id,
+                    result_id=evaluator_result_id,
                     voice_bundle=context.voice_bundle,
                     persona=context.persona,
                     stt_api_key=context.stt_api_key,

@@ -39,9 +39,10 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
         from_number: fromNumber || undefined,
       }),
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
       queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-      showToast(`Queued ${data.total_runs} run${data.total_runs !== 1 ? 's' : ''}`, 'success')
+      showToast(`Queued ${data.total_runs} run${data.total_runs !== 1 ? 's' : ''}. Phone traces appear in Call Traces after each call — use Refresh.`, 'success')
       onClose()
     },
     onError: (err: any) => {

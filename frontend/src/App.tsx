@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import { useLicenseStore } from './store/licenseStore'
 import Layout from './components/Layout'
@@ -63,6 +63,7 @@ import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 import Observability from './pages/observability/Observability'
 import ObservabilityCalls from './pages/observability/ObservabilityCalls'
 import ObservabilityCallDetail from './pages/observability/ObservabilityCallDetail'
+import TestInsights from './pages/test-insights/TestInsights'
 
 // Alerting
 import Alerts from './pages/alerting/Alerts'
@@ -104,6 +105,11 @@ import CallImportEvaluationDetail from './pages/callImports/CallImportEvaluation
 import CallImportTagsPage from './pages/callImports/Tags'
 import CallImportSchemasPage from './pages/callImports/Schemas'
 
+
+function PreserveSearchRedirect({ to }: { to: string }) {
+  const location = useLocation()
+  return <Navigate to={`${to}${location.search}`} replace />
+}
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   // Either credential type counts as "signed in". The backend enforces the
@@ -196,6 +202,8 @@ function App() {
           <Route path="observability" element={<Observability />} />
           <Route path="observability/calls" element={<ObservabilityCalls />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
+          <Route path="call-traces" element={<TestInsights />} />
+          <Route path="test-insights" element={<PreserveSearchRedirect to="/call-traces" />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<UsagePage />} />
           <Route path="usage/pricing" element={<UsagePricingRedirect />} />

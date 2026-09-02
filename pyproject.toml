@@ -54,6 +54,7 @@ dependencies = [
     "websockets>=12.0",
     "pillow>=10.0.0",
     "protobuf>=4.25.0",
+    "opentelemetry-proto>=1.27.0",
     "requests>=2.31.0",
     "nltk>=3.8.0",
     "openai>=1.0.0",
@@ -67,9 +68,14 @@ dependencies = [
     "openpyxl>=3.1.0",
     "weasyprint>=62.0",
     "flexprice>=2.1.0",
+    "audioop-lts>=0.2.2; python_version >= '3.13'",
 ]
 
 [project.optional-dependencies]
+otel = [
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",

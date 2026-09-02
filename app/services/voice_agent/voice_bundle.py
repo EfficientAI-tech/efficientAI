@@ -788,6 +788,7 @@ async def run_voice_bundle_fastapi(
                 recorded_audio_data["num_channels"] = num_channels
 
         pipeline_task_ref: list = []
+        sut_latency_observer = None
 
         async def on_silence_hangup():
             if pipeline_task_ref:
@@ -865,9 +866,13 @@ async def run_voice_bundle_fastapi(
         pipeline = imports["Pipeline"](pipeline_processors)
 
         if telephony_mode:
+            from app.services.voice_agent.sut_latency_observer import SutLatencyObserver
+
+            sut_latency_observer = SutLatencyObserver()
             task = imports["PipelineTask"](
                 pipeline,
                 params=pipeline_task_params,
+                observers=[sut_latency_observer],
             )
             pipeline_task_ref.append(task)
 
@@ -983,6 +988,9 @@ async def run_voice_bundle_fastapi(
                 await bot_recorder.cleanup()
 
                 if telephony_mode and call_short_id:
+                    trace_turns = (
+                        sut_latency_observer.get_turns() if sut_latency_observer else None
+                    )
                     try:
                         from app.workers.celery_app import finalize_telephony_recording_task
 
@@ -997,6 +1005,7 @@ async def run_voice_bundle_fastapi(
                             conversation_turns=conversation_turns,
                             transcript_text=transcript_text,
                             duration=duration_result,
+                            trace_turns=trace_turns,
                         )
                         logger.info(
                             "Queued finalize_telephony_recording for call_short_id={} "
@@ -1033,6 +1042,7 @@ async def run_voice_bundle_fastapi(
                                 transcript_text=transcript_text,
                                 s3_key=s3_key_result,
                                 duration=duration_result,
+                                trace_turns=trace_turns,
                             )
                         finally:
                             db.close()
@@ -1098,6 +1108,9 @@ async def run_voice_bundle_fastapi(
                     from app.database import SessionLocal
                     from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
 
+                    trace_turns = (
+                        sut_latency_observer.get_turns() if sut_latency_observer else None
+                    )
                     db = SessionLocal()
                     try:
                         persist_telephony_call_artifacts(
@@ -1107,6 +1120,7 @@ async def run_voice_bundle_fastapi(
                             transcript_text=transcript_text,
                             s3_key=s3_key_result,
                             duration=duration_result,
+                            trace_turns=trace_turns,
                         )
                     finally:
                         db.close()

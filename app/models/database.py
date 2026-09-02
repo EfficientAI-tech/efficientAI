@@ -1099,6 +1099,12 @@ class EvaluatorResult(Base):
     
     # Data-plane shard routing (payload rows on shard DBs when sharding enabled)
     shard_id = Column(String(64), nullable=True, index=True)
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1179,6 +1185,87 @@ class CallRecordingPayload(Base):
     call_recording_id = Column(UUID(as_uuid=True), primary_key=True)
     workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     call_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyntheticCallTrace(Base):
+    """Catalog row for synthetic test call timing and OTLP traces."""
+
+    __tablename__ = "synthetic_call_traces"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    evaluator_result_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_results.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id", ondelete="SET NULL"), nullable=True)
+    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id", ondelete="SET NULL"), nullable=True)
+    call_recording_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_recordings.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    call_short_id = Column(String(6), nullable=True, index=True)
+    environment = Column(String(32), nullable=False, default="pre_prod")
+    provider_platform = Column(String(64), nullable=True)
+    transport = Column(String(32), nullable=False, default="phone")
+    tier = Column(String(32), nullable=False, default="black_box")
+    status = Column(String(32), nullable=False, default="open")
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    turn_count = Column(Integer, nullable=False, default=0)
+    response_latency_p50_ms = Column(Float, nullable=True)
+    response_latency_p90_ms = Column(Float, nullable=True)
+    response_latency_p95_ms = Column(Float, nullable=True)
+    component_aggregates = Column(JSON, nullable=True)
+    failure_flags = Column(JSON, nullable=True)
+    trace_version = Column(Integer, nullable=False, default=1)
+    shard_id = Column(String(64), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyntheticTracePayload(Base):
+    """Per-turn timing payload for a synthetic call trace."""
+
+    __tablename__ = "synthetic_trace_payloads"
+
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    turns = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyntheticTraceOtelPayload(Base):
+    """Full OTLP span tree for a synthetic call trace."""
+
+    __tablename__ = "synthetic_trace_otel_payloads"
+
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    spans = Column(JSON, nullable=False, default=list)
+    trace_ids = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

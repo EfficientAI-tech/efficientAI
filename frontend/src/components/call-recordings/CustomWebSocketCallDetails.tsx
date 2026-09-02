@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import SyntheticCallTracePanel from './SyntheticCallTracePanel'
 
 interface SpeakerSegment {
   speaker: string
@@ -243,8 +244,9 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
             </div>
           </div>
           <div className="p-3 bg-gray-50 rounded-lg">
-            <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">User / Agent turns</p>
-            <p className="text-sm font-medium text-gray-900">{userTurns} / {agentTurns}</p>
+            <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">Transcript turns</p>
+            <p className="text-sm font-medium text-gray-900">{userTurns} user / {agentTurns} agent</p>
+            <p className="text-[10px] text-gray-400 mt-1">From diarized transcript, not OTLP trace turns</p>
           </div>
         </div>
       </div>
@@ -396,6 +398,9 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
       {activeTab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
+            {callShortId && (
+              <SyntheticCallTracePanel callShortId={callShortId} />
+            )}
             <SummaryCard />
             <TranscriptCard />
           </div>

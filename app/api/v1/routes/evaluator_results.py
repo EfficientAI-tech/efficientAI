@@ -1,6 +1,6 @@
 """Evaluator Results routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
@@ -456,6 +456,7 @@ def get_evaluator_result(
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
         "call_data": result.call_data,
+        "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,
@@ -641,6 +642,31 @@ def get_evaluator_result_metrics(
         "result_id": result.result_id,
         "metrics": metrics_response
     }
+
+
+@router.get("/{id}/otel-correlation")
+def get_evaluator_result_otel_correlation(
+    id: str,
+    request: Request,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    """Return OTLP endpoint and correlation env vars for customer Pipecat setup."""
+    from app.models.synthetic_trace_schemas import OtelCorrelationInfo
+    from app.services.synthetic_traces.trace_service import build_otel_correlation
+
+    del api_key
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+    info = build_otel_correlation(
+        db,
+        result,
+        api_base_url=str(request.base_url).rstrip("/"),
+    )
+    return OtelCorrelationInfo(**info)
 
 
 @router.get("/{id}/audio")

@@ -654,6 +654,7 @@ async def create_custom_websocket_session(
     transcript_entries: str = Form("[]"),
     started_at: Optional[str] = Form(None),
     ended_at: Optional[str] = Form(None),
+    call_short_id: Optional[str] = Form(None),
     audio_file: Optional[UploadFile] = File(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -705,7 +706,7 @@ async def create_custom_websocket_session(
         [f"{'User' if item['role'] == 'user' else 'Agent'}: {item['content']}" for item in normalized_entries]
     )
 
-    call_short_id = generate_unique_call_short_id(db)
+    call_short_id = (call_short_id or "").strip() or generate_unique_call_short_id(db)
     audio_s3_key = None
     if audio_file:
         from app.services.storage.s3_service import s3_service
@@ -773,6 +774,24 @@ async def create_custom_websocket_session(
     db.add(call_recording)
     db.commit()
     db.refresh(call_recording)
+
+    from app.services.synthetic_traces.trace_service import (
+        close_trace_session,
+        link_trace_to_call_recording,
+    )
+
+    link_trace_to_call_recording(
+        db,
+        organization_id=organization_id,
+        call_short_id=call_short_id,
+        call_recording_id=call_recording.id,
+    )
+    close_trace_session(
+        db,
+        organization_id=organization_id,
+        call_short_id=call_short_id,
+        workspace_id=workspace_id,
+    )
 
     background_tasks.add_task(
         record_playground_websocket_session_started,

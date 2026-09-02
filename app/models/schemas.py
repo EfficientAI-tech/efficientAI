@@ -2317,6 +2317,7 @@ class EvaluatorResultResponse(BaseModel):
     provider_call_id: Optional[str] = None
     provider_platform: Optional[str] = None
     call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
+    synthetic_call_trace_id: Optional[UUID] = None
     
     created_at: datetime
     updated_at: datetime

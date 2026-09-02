@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
 import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -1157,6 +1157,25 @@ export default function EvaluatorResultDetailPage({
             )}
           </h2>
           <VobizCallDetails callData={resultData.call_data} />
+        </div>
+      )}
+
+      {resultData.id && (
+        <div className="mb-6 bg-white rounded-lg shadow p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Synthetic call trace</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              STT / LLM / TTS spans from your voice agent layer, correlated by{' '}
+              <code className="text-xs bg-gray-100 px-1 rounded">call_short_id</code>. Phone tests
+              may also include SUT response latency from EfficientAI&apos;s caller.
+            </p>
+          </div>
+          <Link
+            to={`/call-traces?result=${resultData.id}`}
+            className="text-sm font-medium text-indigo-600 hover:text-indigo-800"
+          >
+            Open Call Traces →
+          </Link>
         </div>
       )}
 

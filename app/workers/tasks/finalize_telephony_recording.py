@@ -26,6 +26,7 @@ def finalize_telephony_recording_task(
     conversation_turns: Optional[List[Dict[str, Any]]] = None,
     transcript_text: Optional[str] = None,
     duration: Optional[float] = None,
+    trace_turns: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
     """Merge dual-track WAVs, upload to S3, persist CallRecording, queue evaluator."""
     try:
@@ -48,6 +49,7 @@ def finalize_telephony_recording_task(
                 transcript_text=transcript_text,
                 s3_key=s3_key,
                 duration=effective_duration,
+                trace_turns=trace_turns,
             )
         finally:
             db.close()
