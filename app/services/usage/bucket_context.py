@@ -26,6 +26,18 @@ KNOWN_CONTEXT_KEYS = frozenset(
     }
 )
 
+# Per-request identifiers — useful in LLMUsageContext.extra but must not
+# create a new Redis/PG bucket per call.
+_HIGH_CARDINALITY_EXTRA_KEYS = frozenset(
+    {
+        "evaluator_result_id",
+        "result_short_id",
+        "metric_studio_result_id",
+        "conversation_id",
+        "call_short_id",
+    }
+)
+
 # Never store roll-up counters in JSONB — they stay as BIGINT columns for SUM().
 _FORBIDDEN_CONTEXT_KEYS = frozenset(
     {
@@ -58,7 +70,7 @@ def build_bucket_context(
         for key, value in extra.items():
             if value is None or key in ctx:
                 continue
-            if key in _FORBIDDEN_CONTEXT_KEYS:
+            if key in _FORBIDDEN_CONTEXT_KEYS or key in _HIGH_CARDINALITY_EXTRA_KEYS:
                 continue
             ctx[key] = str(value)
     return ctx

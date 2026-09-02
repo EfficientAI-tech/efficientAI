@@ -140,6 +140,13 @@ def evaluate_call_import_row_audio_task(
             result_id = f"call-import-eval:{eval_row.id}"
             audio_failed = False
 
+            if recording_s3_key:
+                from app.workers.tasks.evaluate_call_import_row_core import (
+                    resolve_eval_row_audio_seconds,
+                )
+
+                resolve_eval_row_audio_seconds(catalog_db, eval_row, source_row)
+
             if audio_metrics and recording_s3_key:
                 from app.workers.tasks.helpers.audio_evaluation import (
                     evaluate_audio_metrics,

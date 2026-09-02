@@ -373,13 +373,13 @@ def _buffer_to_postgres(
     organization_id: UUID,
     bucket: Dict[str, Any],
     deltas: Dict[str, int],
-) -> None:
+) -> bool:
     """Durable fallback when Redis is unavailable."""
     try:
         from app.database import SessionLocal
     except Exception as exc:
         logger.warning("usage postgres fallback unavailable: {}", exc)
-        return
+        return False
 
     usage_date = bucket["usage_date"]
     if isinstance(usage_date, str):
@@ -443,9 +443,11 @@ def _buffer_to_postgres(
             params,
         )
         db.commit()
+        return True
     except Exception as exc:
         db.rollback()
         logger.warning("usage postgres fallback insert failed: {}", exc)
+        return False
     finally:
         db.close()
 
@@ -455,7 +457,7 @@ def _incr_pending(
     prefix: str,
     deltas: Dict[str, int],
     bucket: Dict[str, Any],
-) -> None:
+) -> bool:
     hash_key = _pending_hash_key(organization_id)
     try:
         client = _client()
@@ -466,9 +468,10 @@ def _incr_pending(
         pipe.sadd("usage:pending:orgs", str(organization_id))
         pipe.expire(hash_key, _PENDING_TTL_SECONDS)
         pipe.execute()
+        return True
     except redis.RedisError as exc:
         logger.warning("usage redis counter failed, buffering to postgres: {}", exc)
-        _buffer_to_postgres(organization_id, bucket, deltas)
+        return _buffer_to_postgres(organization_id, bucket, deltas)
 
 
 def _context_for_record(
@@ -491,18 +494,22 @@ def record_llm_usage(
     organization_id: Optional[UUID] = None,
     ctx: Optional[LLMUsageContext] = None,
     usage_date: Optional[date] = None,
-) -> None:
-    """Increment counters for one LLM call (best-effort, never raises)."""
+) -> bool:
+    """Increment counters for one LLM call (best-effort, never raises).
+
+    Returns True when usage was persisted or there was nothing billable to record.
+    Returns False when billable usage could not be stored.
+    """
     if not model:
         model = "unknown"
     context = _context_for_record(organization_id=organization_id, ctx=ctx)
     if context is None:
         logger.warning("llm usage record skipped: missing organization_id")
-        return
+        return False
 
     deltas = _deltas_from_usage(usage)
     if not _has_billable_usage_deltas(deltas):
-        return
+        return True
 
     day = usage_date or datetime.now(timezone.utc).date()
     bucket = _bucket_from_context(
@@ -512,7 +519,7 @@ def record_llm_usage(
         usage_kind=USAGE_KIND_LLM,
     )
     prefix = _bucket_prefix(**bucket)
-    _incr_pending(context.organization_id, prefix, deltas, bucket)
+    return _incr_pending(context.organization_id, prefix, deltas, bucket)
 
 
 def record_stt_usage(
@@ -523,18 +530,18 @@ def record_stt_usage(
     ctx: Optional[LLMUsageContext] = None,
     usage_date: Optional[date] = None,
     count_call: bool = True,
-) -> None:
+) -> bool:
     """Increment counters for one STT call (audio seconds + optional call_count)."""
     if not model:
         model = "unknown"
     context = _context_for_record(organization_id=organization_id, ctx=ctx)
     if context is None:
         logger.warning("stt usage record skipped: missing organization_id")
-        return
+        return False
 
     seconds = int(max(0, math.ceil(float(audio_seconds or 0))))
     if seconds <= 0:
-        return
+        return True
     deltas = _deltas_from_stt(seconds, count_call=count_call)
     day = usage_date or datetime.now(timezone.utc).date()
     bucket = _bucket_from_context(
@@ -544,7 +551,7 @@ def record_stt_usage(
         usage_kind=USAGE_KIND_STT,
     )
     prefix = _bucket_prefix(**bucket)
-    _incr_pending(context.organization_id, prefix, deltas, bucket)
+    return _incr_pending(context.organization_id, prefix, deltas, bucket)
 
 
 def record_call_usage(
@@ -554,7 +561,7 @@ def record_call_usage(
     ctx: Optional[LLMUsageContext] = None,
     usage_date: Optional[date] = None,
     audio_seconds: int = 0,
-) -> None:
+) -> bool:
     """Record one completed call session (call_count + optional duration).
 
     Best-effort, never raises. Uses the same Redis-buffered path as other
@@ -565,7 +572,7 @@ def record_call_usage(
     context = _context_for_record(organization_id=organization_id, ctx=ctx)
     if context is None:
         logger.warning("call usage record skipped: missing organization_id")
-        return
+        return False
 
     seconds = max(0, int(audio_seconds or 0))
     deltas = {
@@ -586,7 +593,7 @@ def record_call_usage(
         usage_kind=USAGE_KIND_LLM,
     )
     prefix = _bucket_prefix(**bucket)
-    _incr_pending(context.organization_id, prefix, deltas, bucket)
+    return _incr_pending(context.organization_id, prefix, deltas, bucket)
 
 
 def record_tts_usage(
@@ -596,18 +603,18 @@ def record_tts_usage(
     organization_id: Optional[UUID] = None,
     ctx: Optional[LLMUsageContext] = None,
     usage_date: Optional[date] = None,
-) -> None:
+) -> bool:
     """Increment counters for one TTS call (characters + call_count)."""
     if not model:
         model = "unknown"
     context = _context_for_record(organization_id=organization_id, ctx=ctx)
     if context is None:
         logger.warning("tts usage record skipped: missing organization_id")
-        return
+        return False
 
     chars = max(0, int(characters or 0))
     if chars <= 0:
-        return
+        return True
     deltas = _deltas_from_tts(chars)
     day = usage_date or datetime.now(timezone.utc).date()
     bucket = _bucket_from_context(
@@ -617,7 +624,7 @@ def record_tts_usage(
         usage_kind=USAGE_KIND_TTS,
     )
     prefix = _bucket_prefix(**bucket)
-    _incr_pending(context.organization_id, prefix, deltas, bucket)
+    return _incr_pending(context.organization_id, prefix, deltas, bucket)
 
 
 def probe_audio_seconds(audio_file_path: str) -> int:

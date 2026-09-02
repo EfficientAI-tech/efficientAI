@@ -198,7 +198,7 @@ export default function AgentTalkSidebar({
           setIsConnected(false)
           setActiveSpeaker(null)
         })
-        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         await client.startCall({
           accessToken: webCall.access_token!,
           callId: webCall.call_id,
@@ -242,7 +242,7 @@ export default function AgentTalkSidebar({
             })
           }
         })
-        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         callShortIdRef.current = webCall.call_short_id ?? null
         const vapiCall = await client.start(agent.voice_ai_agent_id!)
         if (callShortIdRef.current && vapiCall?.id) {
@@ -253,7 +253,7 @@ export default function AgentTalkSidebar({
           }
         }
       } else if (isElevenLabs) {
-        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         if (!webCall.signed_url) throw new Error('No signed URL')
         const conversation = await Conversation.startSession({
           signedUrl: webCall.signed_url,
@@ -297,7 +297,7 @@ export default function AgentTalkSidebar({
         elevenLabsConversationRef.current = conversation
       } else if (isSmallest) {
         const { AtomsClient } = await import('atoms-client-sdk')
-        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {} })
+        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         if (!webCall.access_token || !webCall.host) throw new Error('Missing Smallest credentials')
         const client = new AtomsClient()
         smallestClientRef.current = client
@@ -375,7 +375,7 @@ export default function AgentTalkSidebar({
           {mode === 'test_agent' ? (
             canTalkTest ? (
               <div className="flex-1 min-h-0 flex flex-col p-4">
-                <VoiceAgent agentId={agent.id} compact sidebarLayout agentDisplayName={agent.name} />
+                <VoiceAgent agentId={agent.id} compact sidebarLayout agentDisplayName={agent.name} billingSurface="agents_talk" />
               </div>
             ) : (
               <div className="flex-1 flex items-center justify-center p-8 text-center text-sm text-gray-500">

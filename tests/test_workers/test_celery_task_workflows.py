@@ -11,12 +11,15 @@ import pytest
 
 from app.models.database import (
     Agent,
+    Evaluator,
     EvaluatorResult,
+    Integration,
     Metric,
     Organization,
     PromptOptimizationRun,
     TTSComparison,
     TTSSample,
+    VoiceBundle,
     Workspace,
 )
 
@@ -48,6 +51,25 @@ class RetryCalled(Exception):
     """Raised by task.retry in tests to assert retry paths."""
 
 
+def _load_run_evaluator_module():
+    """Load the real task module even when conftest/API tests stub workers.tasks."""
+    module_name = "app.workers.tasks.run_evaluator"
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "workers"
+        / "tasks"
+        / "run_evaluator.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load task module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_run_prompt_optimization_module():
     """Load the real task module even when conftest/API tests stub workers.tasks."""
     module_name = "app.workers.tasks.run_prompt_optimization"
@@ -74,15 +96,26 @@ def _load_run_prompt_optimization_module():
     return module
 
 
+class _FakeCeleryTaskSelf:
+    request = types.SimpleNamespace(id="test-celery-task-id")
+
+    def retry(self, **kwargs):
+        raise kwargs.get("exc")
+
+
 def _invoke_bound_task(task, *args):
     """Call a bind=True Celery task under real or conftest-fake decorators."""
     run = getattr(task, "run", task)
-    try:
-        return run(*args)
-    except TypeError as exc:
-        if "missing 1 required positional argument" in str(exc):
-            return run(None, *args)
-        raise
+    last_exc = None
+    for call_args in (args, (_FakeCeleryTaskSelf(), *args)):
+        try:
+            return run(*call_args)
+        except TypeError as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("bind=True task invocation failed")
 
 
 def _seed_org(db_session):
@@ -451,22 +484,13 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
     )
     db_session.commit()
 
-    billing = {"evaluated": [], "completed": []}
-
-    def _capture_evaluated(_org_id, evaluation_attempt_id, **kw):
-        billing["evaluated"].append(
-            {"evaluation_attempt_id": evaluation_attempt_id, **kw}
-        )
+    billing = {"completed": []}
 
     def _capture_completed(_org_id, evaluation_attempt_id, **kw):
         billing["completed"].append(
             {"evaluation_attempt_id": evaluation_attempt_id, **kw}
         )
 
-    monkeypatch.setattr(
-        "app.services.billing.flexprice_service.record_playground_call_evaluated",
-        _capture_evaluated,
-    )
     monkeypatch.setattr(
         "app.services.billing.flexprice_service.record_playground_evaluation_completed",
         _capture_completed,
@@ -491,22 +515,11 @@ def test_process_evaluator_result_emits_playground_billing_with_metric_count(
     result = task_module.process_evaluator_result_task.run(str(eval_result.id))
 
     assert result["status"] == "completed"
-    assert len(billing["evaluated"]) == 1
-    assert billing["evaluated"][0]["metric_count"] == 3
-    assert billing["evaluated"][0]["evaluator_result_id"] == eval_result.id
-    assert billing["evaluated"][0]["call_short_id"] == "123456"
-    assert str(billing["evaluated"][0]["evaluation_attempt_id"]).startswith(
-        f"{eval_result.id}:"
-    )
     assert len(billing["completed"]) == 1
     assert billing["completed"][0]["metric_count"] == 3
     assert billing["completed"][0]["evaluator_result_id"] == eval_result.id
     assert str(billing["completed"][0]["evaluation_attempt_id"]).startswith(
         f"{eval_result.id}:"
-    )
-    assert (
-        billing["evaluated"][0]["evaluation_attempt_id"]
-        == billing["completed"][0]["evaluation_attempt_id"]
     )
 
 
@@ -525,8 +538,104 @@ def test_process_evaluator_result_categorizes_audio_metrics_as_skipped_without_a
     assert skipped_scores[str(audio_metric.id)]["skipped"] == "audio_required"
 
 
+def test_run_evaluator_bridge_runs_without_existing_event_loop(db_session, monkeypatch):
+    task_module = _load_run_evaluator_module()
+
+    org = _seed_org(db_session)
+    workspace_id = _default_workspace_id(db_session, org.id)
+    voice_bundle = VoiceBundle(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Bridge Bundle",
+        bundle_type="stt_llm_tts",
+        stt_provider="openai",
+        stt_model="whisper-1",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        tts_provider="openai",
+        tts_model="tts-1",
+        tts_voice="alloy",
+    )
+    db_session.add(voice_bundle)
+    db_session.flush()
+
+    integration = Integration(
+        id=uuid4(),
+        organization_id=org.id,
+        platform="retell",
+        name="Bridge Integration",
+        api_key="encrypted-test-key",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+
+    agent = Agent(
+        id=uuid4(),
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Bridge Agent",
+        language="en",
+        description="Bridge test agent",
+        call_type="outbound",
+        call_medium="phone_call",
+        voice_bundle_id=voice_bundle.id,
+        voice_ai_integration_id=integration.id,
+        voice_ai_agent_id="provider-agent-1",
+    )
+    evaluator = Evaluator(
+        id=uuid4(),
+        evaluator_id="611111",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Bridge Evaluator",
+        agent_id=agent.id,
+        persona_id=None,
+        scenario_id=None,
+    )
+    eval_result = EvaluatorResult(
+        id=uuid4(),
+        result_id="611112",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        status="queued",
+    )
+    db_session.add_all([integration, agent, evaluator, eval_result])
+    db_session.commit()
+
+    async def fake_bridge(**_kwargs):
+        return {"status": "bridged"}
+
+    fake_bridge_module = types.ModuleType("app.services.testing.test_agent_bridge_service")
+    fake_bridge_module.test_agent_bridge_service = types.SimpleNamespace(
+        bridge_test_agent_to_voice_agent=fake_bridge
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "app.services.testing.test_agent_bridge_service",
+        fake_bridge_module,
+    )
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
+    monkeypatch.setattr(
+        "app.services.billing.flexprice_service.record_evaluator_run_completed",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = _invoke_bound_task(
+        task_module.run_evaluator_task,
+        str(evaluator.id),
+        str(eval_result.id),
+    )
+
+    assert result["status"] == "initiated"
+    assert result["bridge_result"] == {"status": "bridged"}
+
+
 def test_run_evaluator_returns_error_when_evaluator_missing(db_session, monkeypatch):
-    from app.workers.tasks import run_evaluator as task_module
+    task_module = _load_run_evaluator_module()
 
     org = _seed_org(db_session)
     eval_result = EvaluatorResult(
@@ -544,7 +653,11 @@ def test_run_evaluator_returns_error_when_evaluator_missing(db_session, monkeypa
     monkeypatch.setitem(sys.modules, "app.services.testing.test_agent_bridge_service", fake_bridge_module)
     monkeypatch.setattr(task_module, "SessionLocal", lambda: _worker_db(db_session))
 
-    result = task_module.run_evaluator_task.run(str(uuid4()), str(eval_result.id))
+    result = _invoke_bound_task(
+        task_module.run_evaluator_task,
+        str(uuid4()),
+        str(eval_result.id),
+    )
 
     assert result == {"error": "Evaluator not found"}
 

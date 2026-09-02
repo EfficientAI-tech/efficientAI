@@ -24,6 +24,7 @@ from app.models.database import (
 from app.services.ai.transcription_service import transcription_service
 from app.services.ai.llm_service import llm_service
 from app.services.ai.tts_service import tts_service
+from app.services.storage.s3_service import s3_service
 from app.services.testing.test_agent_simulation_prompt import build_test_agent_system_prompt
 from sqlalchemy.orm import Session
 
@@ -237,6 +238,20 @@ class TestAgentService:
         if not all([agent, persona, scenario]):
             raise ValueError("Missing agent, persona, or scenario")
 
+        from app.services.usage.context import (
+            llm_usage_context,
+            usage_context_for_test_agent_simulation,
+        )
+
+        usage_ctx = usage_context_for_test_agent_simulation(
+            organization_id=organization_id,
+            workspace_id=conversation.workspace_id,
+            agent_id=agent.id,
+            persona_id=persona.id,
+            scenario_id=scenario.id,
+            conversation_id=conversation.id,
+        )
+
         # Calculate timestamp
         if chunk_timestamp is None:
             if conversation.started_at:
@@ -260,19 +275,45 @@ class TestAgentService:
                 "error": f"Failed to convert audio format: {str(e)}",
             }
 
-        # Save audio chunk temporarily for transcription
+        with llm_usage_context(usage_ctx):
+            return self._process_audio_chunk_with_context(
+                conversation=conversation,
+                wav_audio_bytes=wav_audio_bytes,
+                voice_bundle=voice_bundle,
+                agent=agent,
+                persona=persona,
+                scenario=scenario,
+                organization_id=organization_id,
+                db=db,
+                chunk_timestamp=chunk_timestamp,
+            )
+
+    def _process_audio_chunk_with_context(
+        self,
+        *,
+        conversation: TestAgentConversation,
+        wav_audio_bytes: bytes,
+        voice_bundle: VoiceBundle,
+        agent: Agent,
+        persona: Persona,
+        scenario: Scenario,
+        organization_id: UUID,
+        db: Session,
+        chunk_timestamp: float,
+    ) -> Dict[str, Any]:
         temp_file_path = None
         try:
-            # Save converted WAV to temp file for transcription
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
                 temp_file.write(wav_audio_bytes)
                 temp_file_path = temp_file.name
 
-            # Upload to S3 temporarily for transcription service (it needs S3 key)
             chunk_file_id = uuid.uuid4()
-            chunk_s3_key = s3_service.upload_file(file_content=wav_audio_bytes, file_id=chunk_file_id, file_format="wav")
+            chunk_s3_key = s3_service.upload_file(
+                file_content=wav_audio_bytes,
+                file_id=chunk_file_id,
+                file_format="wav",
+            )
 
-            # Transcribe using STT
             transcription_result = transcription_service.transcribe(
                 audio_file_key=chunk_s3_key,
                 stt_provider=voice_bundle.stt_provider,
@@ -292,24 +333,24 @@ class TestAgentService:
                     "error": "No speech detected in audio chunk",
                 }
 
-            # Add voice agent turn to conversation
             conversation_turns = conversation.live_transcription or []
-            conversation_turns.append({"speaker": "voice_agent", "text": voice_agent_text, "timestamp": chunk_timestamp})
+            conversation_turns.append(
+                {
+                    "speaker": "voice_agent",
+                    "text": voice_agent_text,
+                    "timestamp": chunk_timestamp,
+                }
+            )
 
-            # Build conversation history for LLM
             messages = []
-
-            # System prompt
             system_prompt = self._build_system_prompt(agent, persona, scenario, db)
             messages.append({"role": "system", "content": system_prompt})
 
-            # Add conversation history (last 10 turns for context)
             recent_turns = conversation_turns[-10:]
             for turn in recent_turns:
                 role = "user" if turn["speaker"] == "voice_agent" else "assistant"
                 messages.append({"role": role, "content": turn["text"]})
 
-            # Generate response using LLM
             llm_result = llm_service.generate_response(
                 messages=messages,
                 llm_provider=voice_bundle.llm_provider,
@@ -331,7 +372,6 @@ class TestAgentService:
                     "error": "LLM did not generate a response",
                 }
 
-            # Convert response to speech using TTS
             from app.services.voice_agent.resolve_tts_voice import resolve_effective_tts_voice_id
 
             tts_voice = resolve_effective_tts_voice_id(
@@ -348,34 +388,44 @@ class TestAgentService:
                 config=voice_bundle.tts_config,
             )
 
-            # Upload response audio to S3 (temporarily, for reference)
             response_file_id = uuid.uuid4()
-            response_s3_key = s3_service.upload_file(file_content=response_audio_bytes, file_id=response_file_id, file_format="mp3")
+            s3_service.upload_file(
+                file_content=response_audio_bytes,
+                file_id=response_file_id,
+                file_format="mp3",
+            )
 
-            # Add test agent turn to conversation
             conversation_turns.append(
                 {
                     "speaker": "test_agent",
                     "text": test_agent_text,
-                    "timestamp": chunk_timestamp + transcription_result.get("processing_time", 0) + llm_result.get("processing_time", 0),
+                    "timestamp": chunk_timestamp
+                    + transcription_result.get("processing_time", 0)
+                    + llm_result.get("processing_time", 0),
                 }
             )
 
-            # Update conversation
             conversation.live_transcription = conversation_turns
-            conversation.full_transcript = "\n".join([f"{turn['speaker']}: {turn['text']}" for turn in conversation_turns])
+            conversation.full_transcript = "\n".join(
+                [f"{turn['speaker']}: {turn['text']}" for turn in conversation_turns]
+            )
             db.commit()
 
             return {
                 "response_audio": response_audio_bytes,
-                "transcription": {"voice_agent": voice_agent_text, "test_agent": test_agent_text},
+                "transcription": {
+                    "voice_agent": voice_agent_text,
+                    "test_agent": test_agent_text,
+                },
                 "metadata": {
-                    "processing_times": {"stt": transcription_result.get("processing_time", 0), "llm": llm_result.get("processing_time", 0)}
+                    "processing_times": {
+                        "stt": transcription_result.get("processing_time", 0),
+                        "llm": llm_result.get("processing_time", 0),
+                    }
                 },
             }
 
         finally:
-            # Clean up temp file
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.unlink(temp_file_path)

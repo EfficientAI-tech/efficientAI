@@ -41,6 +41,8 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/0
+      EFFICIENTAI_PYTEST: "1"
+      FLEXPRICE_ENABLED: "false"
 
     steps:
       - name: Checkout repository
@@ -83,6 +85,8 @@ jobs:
       SHARD_DATABASE_URL_02: postgresql://postgres:postgres@localhost:5432/efficientai_data_02
       SHARDING_INTEGRATION_TEST: "1"
       REDIS_URL: redis://localhost:6379/0
+      EFFICIENTAI_PYTEST: "1"
+      FLEXPRICE_ENABLED: "false"
 
     steps:
       - name: Checkout repository

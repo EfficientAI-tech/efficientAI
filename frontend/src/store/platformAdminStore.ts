@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { apiClient } from '../lib/api'
+import { clearPlatformAdminSession } from '../lib/authSession'
 
 type PlatformAdminUser = {
   id: string
@@ -24,7 +26,7 @@ function readStoredAdmin(): PlatformAdminUser | null {
   }
 }
 
-export const usePlatformAdminStore = create<PlatformAdminState>((set) => {
+export const usePlatformAdminStore = create<PlatformAdminState>((set, get) => {
   const storedToken = localStorage.getItem(STORAGE_TOKEN)
   const storedAdmin = readStoredAdmin()
 
@@ -37,9 +39,10 @@ export const usePlatformAdminStore = create<PlatformAdminState>((set) => {
       set({ accessToken: token, admin })
     },
     logout: () => {
-      localStorage.removeItem(STORAGE_TOKEN)
-      localStorage.removeItem(STORAGE_ADMIN)
+      const accessToken = get().accessToken
+      clearPlatformAdminSession()
       set({ accessToken: null, admin: null })
+      apiClient.revokePlatformSessionBestEffort(accessToken)
     },
   }
 })

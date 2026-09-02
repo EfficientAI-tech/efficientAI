@@ -336,6 +336,7 @@ export default function AgentPlayground() {
           metadata: {},
           retell_llm_dynamic_variables: {},
           custom_sip_headers: {},
+          ui_surface: 'agent_playground',
         })
 
         if (!webCallResponse.call_id || !webCallResponse.access_token) {
@@ -373,6 +374,7 @@ export default function AgentPlayground() {
         const webCallResponse = await apiClient.createWebCall({
           agent_id: fullAgent.id,
           metadata: {},
+          ui_surface: 'agent_playground',
         })
 
         if (webCallResponse.call_short_id) {
@@ -477,6 +479,7 @@ export default function AgentPlayground() {
         const webCallResponse = await apiClient.createWebCall({
           agent_id: fullAgent.id,
           metadata: {},
+          ui_surface: 'agent_playground',
         })
 
         if (webCallResponse.call_short_id) {
@@ -587,6 +590,7 @@ export default function AgentPlayground() {
         const webCallResponse = await apiClient.createWebCall({
           agent_id: fullAgent.id,
           metadata: {},
+          ui_surface: 'agent_playground',
         })
 
         if (webCallResponse.call_short_id) {
@@ -1763,6 +1767,7 @@ export default function AgentPlayground() {
                 agentId={selectedAgent?.id}
                 personaId={testPersonaId || undefined}
                 scenarioId={testScenarioId || undefined}
+                billingSurface="agent_playground"
                 runEvaluation={runPostCallEvaluation}
                 compact
                 sidebarLayout

@@ -68,6 +68,7 @@ def build_voice_agent_ws_url(
     persona_id: Optional[str] = None,
     scenario_id: Optional[str] = None,
     run_evaluation: bool = False,
+    ui_surface: Optional[str] = None,
     fallback_host: Optional[str] = None,
     fallback_scheme: str = "http",
 ) -> str:
@@ -89,5 +90,7 @@ def build_voice_agent_ws_url(
         query += f"&scenario_id={quote(scenario_id)}"
     if run_evaluation:
         query += "&run_evaluation=true"
+    if ui_surface:
+        query += f"&ui_surface={quote(ui_surface, safe='')}"
 
     return f"{base}{settings.API_V1_PREFIX}/voice-agent/ws?{query}"

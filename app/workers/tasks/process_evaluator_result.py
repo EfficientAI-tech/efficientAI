@@ -588,6 +588,8 @@ def _resolve_call_duration_seconds(result) -> int:
 def _record_agent_call_usage(result, *, usage_ctx) -> None:
     if not _should_record_external_agent_call_usage(result):
         return
+    if _external_usage_already_recorded(result):
+        return
     try:
         from app.services.usage.llm_usage import record_call_usage
 
@@ -600,6 +602,30 @@ def _record_agent_call_usage(result, *, usage_ctx) -> None:
     except Exception as exc:
         logger.debug(
             "[EvaluatorResult {}] agent call usage record skipped: {}",
+            result.result_id,
+            exc,
+        )
+
+
+def _external_usage_already_recorded(result) -> bool:
+    call_data = getattr(result, "call_data", None)
+    if not isinstance(call_data, dict):
+        return False
+    return bool(call_data.get("external_usage_recorded"))
+
+
+def _record_external_agent_llm_usage(result, *, usage_ctx) -> None:
+    if not _should_record_external_agent_call_usage(result):
+        return
+    if _external_usage_already_recorded(result):
+        return
+    try:
+        from app.services.usage.external_agent_usage import record_external_agent_usage
+
+        record_external_agent_usage(result, usage_ctx=usage_ctx)
+    except Exception as exc:
+        logger.debug(
+            "[EvaluatorResult {}] external agent llm usage record skipped: {}",
             result.result_id,
             exc,
         )
@@ -732,22 +758,6 @@ def process_evaluator_result_task(self, result_id: str):
                 llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)
                 selected_metric_count = len(llm_metrics) + len(audio_metrics)
 
-                call_recording = _playground_call_recording(db, result)
-                if call_recording:
-                    from app.services.billing.flexprice_service import (
-                        record_playground_call_evaluated,
-                    )
-
-                    evaluation_attempt_id = f"{result.id}:{self.request.id}"
-                    record_playground_call_evaluated(
-                        result.organization_id,
-                        evaluation_attempt_id,
-                        evaluator_result_id=result.id,
-                        workspace_id=result.workspace_id,
-                        call_short_id=call_recording.call_short_id,
-                        metric_count=selected_metric_count,
-                    )
-
                 evaluation_time = None
 
                 # Step 3: Audio metrics evaluation
@@ -852,14 +862,22 @@ def process_evaluator_result_task(self, result_id: str):
                 result.status = EvaluatorResultStatus.COMPLETED.value
                 result.error_message = None
                 _record_agent_call_usage(result, usage_ctx=usage_ctx)
+                _record_external_agent_llm_usage(result, usage_ctx=usage_ctx)
                 _commit_evaluator_result(db, result)
 
                 from app.services.billing.flexprice_service import (
+                    record_evaluator_recording_minutes_billed,
+                    record_evaluator_run_completed,
                     record_playground_evaluation_completed,
                 )
 
                 call_recording = _playground_call_recording(db, result)
                 if call_recording:
+                    call_data = (
+                        call_recording.call_data
+                        if isinstance(call_recording.call_data, dict)
+                        else {}
+                    )
                     record_playground_evaluation_completed(
                         result.organization_id,
                         f"{result.id}:{self.request.id}",
@@ -868,7 +886,23 @@ def process_evaluator_result_task(self, result_id: str):
                         call_short_id=call_recording.call_short_id,
                         duration_seconds=result.duration_seconds,
                         metric_count=len(metric_scores) or selected_metric_count,
+                        ui_surface=call_data.get("ui_surface"),
                     )
+                else:
+                    record_evaluator_run_completed(
+                        result.organization_id,
+                        result.result_id,
+                        workspace_id=result.workspace_id,
+                        evaluator_id=result.evaluator_id,
+                        evaluator_result_id=result.id,
+                    )
+                    if (result.audio_s3_key or "").strip():
+                        record_evaluator_recording_minutes_billed(
+                            result.organization_id,
+                            result.id,
+                            workspace_id=result.workspace_id,
+                            duration_seconds=result.duration_seconds,
+                        )
 
                 total_time = time.time() - task_start_time
                 logger.info(

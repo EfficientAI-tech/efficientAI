@@ -9,8 +9,8 @@ Receives transcripts from Retell's real-time events (no STT needed).
 import asyncio
 import io
 import os
+from dataclasses import dataclass
 from typing import Optional, Callable, Awaitable, List, Dict, Any, Union
-from dataclasses import dataclass, field
 from uuid import UUID
 from loguru import logger
 
@@ -94,6 +94,13 @@ class TestAgentConfig:
 
     organization_id: Optional[Union[UUID, str]] = None
     workspace_id: Optional[Union[UUID, str]] = None
+    agent_id: Optional[Union[UUID, str]] = None
+    evaluator_id: Optional[Union[UUID, str]] = None
+    persona_id: Optional[Union[UUID, str]] = None
+    scenario_id: Optional[Union[UUID, str]] = None
+    evaluator_result_id: Optional[Union[UUID, str]] = None
+    conversation_id: Optional[Union[UUID, str]] = None
+    db: Any = None
 
 
 class TestAgentProcessor:
@@ -350,37 +357,116 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 # Fire-and-forget so we don't block the caller
                 asyncio.create_task(self._do_process_transcript(pending))
     
+    def _build_simulation_context(self):
+        from app.services.usage.context import usage_context_for_test_agent_simulation
+
+        if not self.config.organization_id:
+            return None
+        return usage_context_for_test_agent_simulation(
+            organization_id=UUID(str(self.config.organization_id)),
+            workspace_id=(
+                UUID(str(self.config.workspace_id))
+                if self.config.workspace_id
+                else None
+            ),
+            agent_id=UUID(str(self.config.agent_id)) if self.config.agent_id else None,
+            evaluator_id=(
+                UUID(str(self.config.evaluator_id)) if self.config.evaluator_id else None
+            ),
+            persona_id=UUID(str(self.config.persona_id)) if self.config.persona_id else None,
+            scenario_id=UUID(str(self.config.scenario_id)) if self.config.scenario_id else None,
+            evaluator_result_id=(
+                UUID(str(self.config.evaluator_result_id))
+                if self.config.evaluator_result_id
+                else None
+            ),
+            conversation_id=(
+                UUID(str(self.config.conversation_id))
+                if self.config.conversation_id
+                else None
+            ),
+        )
+
+    def _sync_llm_call(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        from app.models.database import ModelProvider
+        from app.services.ai.llm_service import llm_service
+        from app.services.usage.context import llm_usage_context
+
+        ctx = self._build_simulation_context()
+        org_id = UUID(str(self.config.organization_id))
+        if ctx is not None:
+            with llm_usage_context(ctx):
+                return llm_service.generate_response(
+                    messages=messages,
+                    llm_provider=ModelProvider.OPENAI,
+                    llm_model=self.config.llm_model,
+                    organization_id=org_id,
+                    db=self.config.db,
+                    temperature=(
+                        self.config.llm_temperature
+                        if self.config.llm_temperature is not None
+                        else 0.7
+                    ),
+                    max_tokens=(
+                        self.config.llm_max_tokens
+                        if self.config.llm_max_tokens is not None
+                        else 150
+                    ),
+                )
+        return llm_service.generate_response(
+            messages=messages,
+            llm_provider=ModelProvider.OPENAI,
+            llm_model=self.config.llm_model,
+            organization_id=org_id,
+            db=self.config.db,
+            temperature=(
+                self.config.llm_temperature
+                if self.config.llm_temperature is not None
+                else 0.7
+            ),
+            max_tokens=(
+                self.config.llm_max_tokens
+                if self.config.llm_max_tokens is not None
+                else 150
+            ),
+        )
+
     async def _generate_llm_response(self) -> Optional[str]:
         """Generate a response using the LLM."""
         try:
             messages = [
                 {"role": "system", "content": self._system_prompt}
             ] + self.conversation_history
-            
-            if EFFICIENTAI_AVAILABLE and self._llm_service:
-                # Use EfficientAI LLM service
-                # Note: This is a simplified version - actual implementation
-                # would need to handle the frame-based processing
-                pass
-            
-            # Use direct OpenAI API
+
+            if self.config.db and self.config.organization_id:
+                result = await asyncio.to_thread(self._sync_llm_call, messages)
+                return (result.get("text") or "").strip()
+
             import openai
-            client = getattr(self, '_openai_client', None)
+            client = getattr(self, "_openai_client", None)
             if not client:
                 api_key = self.config.llm_api_key or os.getenv("OPENAI_API_KEY")
                 client = openai.AsyncOpenAI(api_key=api_key)
-            
+
             response = await client.chat.completions.create(
                 model=self.config.llm_model,
                 messages=messages,
-                max_tokens=self.config.llm_max_tokens if self.config.llm_max_tokens is not None else 150,
-                temperature=self.config.llm_temperature if self.config.llm_temperature is not None else 0.7,
+                max_tokens=(
+                    self.config.llm_max_tokens
+                    if self.config.llm_max_tokens is not None
+                    else 150
+                ),
+                temperature=(
+                    self.config.llm_temperature
+                    if self.config.llm_temperature is not None
+                    else 0.7
+                ),
             )
 
             self._record_llm_usage(response=response)
 
             return response.choices[0].message.content.strip()
-            
+
         except Exception as e:
             logger.error(f"[TestAgent] LLM error: {e}")
             return None
@@ -415,77 +501,41 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         return dict(self.config.tts_config or {})
 
     def _record_tts_usage(self, *, text: str) -> None:
-        if not self.config.organization_id:
+        ctx = self._build_simulation_context()
+        if ctx is None:
             return
         try:
-            from app.services.usage.context import (
-                LLMUsageContext,
-                LLMUsageProductSection,
-                llm_usage_context,
-            )
+            from app.services.usage.context import llm_usage_context
             from app.services.usage.llm_usage import record_tts_usage
 
             model = self.config.tts_model or TTS_DEFAULT_MODELS.get(
                 self.config.tts_provider.lower(), "unknown"
             )
-            org_id = UUID(str(self.config.organization_id))
-            ws_id = (
-                UUID(str(self.config.workspace_id))
-                if self.config.workspace_id
-                else None
-            )
-            with llm_usage_context(
-                LLMUsageContext(
-                    organization_id=org_id,
-                    workspace_id=ws_id,
-                    product_section=LLMUsageProductSection.TEST_AGENT,
-                )
-            ):
+            with llm_usage_context(ctx):
                 record_tts_usage(
                     model,
                     characters=len(text or ""),
-                    organization_id=org_id,
+                    organization_id=ctx.organization_id,
                 )
         except Exception as exc:
             logger.debug("test agent tts usage record skipped: {}", exc)
 
     def _record_llm_usage(self, *, response: Any) -> None:
-        if not self.config.organization_id:
+        ctx = self._build_simulation_context()
+        if ctx is None:
             return
         try:
-            from app.services.usage.context import (
-                LLMUsageContext,
-                LLMUsageProductSection,
-                llm_usage_context,
-            )
+            from app.services.usage.context import llm_usage_context
             from app.services.usage.llm_usage import record_llm_usage
-            from app.services.usage.normalize import UsageSnapshot
+            from app.services.usage.normalize import UsageSnapshot, normalize_llm_usage
 
-            usage = getattr(response, "usage", None)
-            if usage is None:
-                return
-            org_id = UUID(str(self.config.organization_id))
-            ws_id = (
-                UUID(str(self.config.workspace_id))
-                if self.config.workspace_id
-                else None
-            )
+            snapshot = normalize_llm_usage(raw_response=response)
             model = self.config.llm_model or "unknown"
-            snapshot = UsageSnapshot(
-                prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-                completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-            )
-            with llm_usage_context(
-                LLMUsageContext(
-                    organization_id=org_id,
-                    workspace_id=ws_id,
-                    product_section=LLMUsageProductSection.TEST_AGENT,
-                )
-            ):
+            with llm_usage_context(ctx):
                 record_llm_usage(
                     model,
                     snapshot,
-                    organization_id=org_id,
+                    organization_id=ctx.organization_id,
                 )
         except Exception as exc:
             logger.debug("test agent llm usage record skipped: {}", exc)

@@ -17,11 +17,19 @@ server:
   port: 8000
 
 # Operational endpoints (/metrics). /health is always open for ALB/kube probes.
+# This is FastAPI, not Spring Boot Actuator — scanners may flag /health or /metrics
+# under an "Actuator" template. /metrics is IP-gated; /health returns minimal status only.
 # Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+
+# HTTP security headers (CSP, X-Frame-Options, etc.)
+security:
+  csp_enabled: true
+  csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
+  # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
 
 # Database Configuration
 database:
@@ -251,11 +259,20 @@ judge_alignment:
 # Flexprice usage-based billing (optional). When disabled or api_key is unset,
 # no SDK calls are made and the app behaves as today. Cloud SaaS: set enabled
 # true and provide FLEXPRICE_API_KEY (env var overrides api_key below).
+# Pytest always mocks Flexprice locally (EFFICIENTAI_PYTEST=1); never hits this API.
+# Setup guide: docs/billing/flexprice-saas-setup.md
+# Bootstrap meters: python scripts/setup_flexprice_meters.py
+# Plan pricing checklist: python scripts/setup_flexprice_meters.py --plan-guide
 # flexprice:
 #   enabled: false
 #   api_key: null
 #   api_host: "https://us.api.flexprice.io/v1"
-# Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST
+#   auto_subscribe: false
+#   default_plan_id: null
+#   default_currency: "usd"
+#   default_billing_period: "MONTHLY"
+# Env override: FLEXPRICE_ENABLED, FLEXPRICE_API_KEY, FLEXPRICE_API_HOST,
+#   FLEXPRICE_AUTO_SUBSCRIBE, FLEXPRICE_DEFAULT_PLAN_ID
 # Debug: FLEXPRICE_VERBOSE=1 logs every skipped event (when inactive or verbose)
 
 # Call-import worker concurrency (Redis fair-share for evaluations).

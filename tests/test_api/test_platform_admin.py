@@ -191,6 +191,43 @@ def test_platform_reset_password(platform_admin_client, client, db_session, enab
     assert login.status_code == 200
 
 
+def test_platform_reset_password_rejects_weak_password(
+    platform_admin_client, db_session, enable_local_password
+):
+    org = Organization(name="Weak Reset Org")
+    user = User(
+        email="weak@reset.org",
+        password_hash=hash_password(TEST_PASSWORD),
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org, user])
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(
+            organization_id=org.id,
+            user_id=user.id,
+            role=RoleEnum.ADMIN.value,
+        )
+    )
+    db_session.commit()
+
+    response = platform_admin_client.post(
+        f"/api/v1/platform/organizations/{org.id}/users/{user.id}/reset-password",
+        json={"new_password": "alllowercase"},
+    )
+    assert response.status_code == 400
+    assert "uppercase" in response.json()["detail"].lower()
+
+
+def test_platform_logout_revokes_access_token(platform_admin_client):
+    logout = platform_admin_client.post("/api/v1/platform/auth/logout")
+    assert logout.status_code == 200
+
+    me = platform_admin_client.get("/api/v1/platform/auth/me")
+    assert me.status_code == 401
+
+
 def test_create_and_use_signup_reference_code(
     platform_admin_client, client, db_session, enable_local_password, monkeypatch
 ):

@@ -895,15 +895,17 @@ def re_evaluate_result(
                 db.refresh(evaluator)
             result.evaluator_id = evaluator.id
             db.commit()
-        else:
+        elif not result.agent_id:
             raise HTTPException(
                 status_code=400,
-                detail="Cannot re-evaluate: this result is not linked to an evaluator."
+                detail="Cannot re-evaluate: this result is not linked to an agent or evaluator."
             )
 
-    evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
-    if not evaluator:
-        raise HTTPException(status_code=404, detail="Linked evaluator no longer exists")
+    evaluator = None
+    if result.evaluator_id:
+        evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
+        if not evaluator:
+            raise HTTPException(status_code=404, detail="Linked evaluator no longer exists")
 
     # ------------------------------------------------------------------
     # If no audio in S3 yet, try to download from the voice provider

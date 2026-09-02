@@ -22,6 +22,7 @@ interface VoiceAgentProps {
   agentId?: string
   customEndpoint?: string
   customEndpointLabel?: string
+  billingSurface?: 'agents_talk' | 'agent_playground'
   onSessionSaved?: () => void
   compact?: boolean
   sidebarLayout?: boolean
@@ -41,6 +42,7 @@ export default function VoiceAgent({
   agentId,
   customEndpoint,
   customEndpointLabel,
+  billingSurface,
   onSessionSaved,
   compact = false,
   sidebarLayout = false,
@@ -440,6 +442,7 @@ export default function VoiceAgent({
       if (!customEndpoint && personaId) params.append('persona_id', personaId)
       if (!customEndpoint && scenarioId) params.append('scenario_id', scenarioId)
       if (!customEndpoint && runEvaluation) params.append('run_evaluation', 'true')
+      if (!customEndpoint && billingSurface) params.append('ui_surface', billingSurface)
 
       if (!customEndpoint && params.toString()) {
         endpointUrl += `?${params.toString()}`

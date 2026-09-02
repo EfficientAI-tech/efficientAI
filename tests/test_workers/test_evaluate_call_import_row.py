@@ -155,6 +155,29 @@ def _ensure_bound_task_run(task):
     return task
 
 
+class _EvalRowFakeStorage:
+    """Minimal blob storage stub for eval-row worker tests."""
+
+    prefix = "test-prefix/"
+
+    def is_enabled(self):
+        return True
+
+    def download_file_by_key(self, _key):
+        return b"fake-audio-bytes"
+
+
+def _patch_eval_row_storage(monkeypatch):
+    import importlib
+
+    fake = _EvalRowFakeStorage()
+    blob_module = importlib.import_module("app.services.storage.blob_storage_service")
+    s3_module = importlib.import_module("app.services.storage.s3_service")
+    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
+    return fake
+
+
 def _patch_row_location(monkeypatch, db_session):
     """Route shard-aware row lookup to the pytest session."""
 
@@ -199,6 +222,7 @@ def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
     """Stub SessionLocal and the LLM helper inside the eval task module."""
     import importlib
 
+    _patch_eval_row_storage(monkeypatch)
     session_factory = lambda: _NonClosingSession(db_session)
     monkeypatch.setattr("app.database.SessionLocal", session_factory)
     _patch_row_location(monkeypatch, db_session)
@@ -239,6 +263,7 @@ def _patch_dependencies(monkeypatch, db_session, *, evaluate_with_llm=None):
 def _patch_audio_task(monkeypatch, db_session):
     import importlib
 
+    _patch_eval_row_storage(monkeypatch)
     _patch_row_location(monkeypatch, db_session)
     audio_module = _load_real_task_module(
         "app.workers.tasks.evaluate_call_import_row_audio",

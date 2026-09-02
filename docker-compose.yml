@@ -120,6 +120,9 @@ services:
     command: eai telephony-worker --config /app/config.yml --host 0.0.0.0 --port 8001
 
   worker:
+    # Local dev: `eai start-all` already runs Celery workers. Skip this service
+    # when using start-all, or rebuild the image (`docker compose build worker`)
+    # so billing code matches your checkout — stale images emit deprecated events.
     # Pre-built image from GitHub Container Registry
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
