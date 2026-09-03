@@ -4807,6 +4807,12 @@ class ApiClient {
     return response.data
   }
 
+  getEvaluatorResultLiveEventsUrl(resultId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/evaluator-results/${resultId}/live-events`,
+    )
+  }
+
   async getEvaluatorResultMetrics(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
     return response.data

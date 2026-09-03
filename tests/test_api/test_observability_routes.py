@@ -77,3 +77,29 @@ def test_observability_webhook_does_not_reclassify_playground_call(
     list_response = authenticated_client.get("/api/v1/observability/calls")
     assert list_response.status_code == 200
     assert list_response.json() == []
+
+
+def test_evaluator_linked_calls_excluded_from_observability(
+    authenticated_client, make_evaluator_result, make_call_recording
+):
+    result = make_evaluator_result(result_id="556677")
+    make_call_recording(
+        call_short_id="998877",
+        evaluator_result_id=result.id,
+        source="webhook",
+        provider_platform="vobiz",
+    )
+    unlinked = make_call_recording(
+        call_short_id="112233",
+        source="webhook",
+        call_data={"messages": [{"role": "user", "content": "live"}]},
+    )
+
+    list_response = authenticated_client.get("/api/v1/observability/calls")
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert len(payload) == 1
+    assert payload[0]["call_short_id"] == unlinked.call_short_id
+
+    get_linked = authenticated_client.get("/api/v1/observability/calls/998877")
+    assert get_linked.status_code == 404

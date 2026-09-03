@@ -28,6 +28,7 @@ from app.models.schemas import (
 from app.services.evaluators.evaluator_results_query import (
     classify_display_status,
     is_in_progress_status,
+    playground_linked_evaluator_result_ids_subquery,
 )
 
 
@@ -83,6 +84,7 @@ def build_evaluator_results_overview(
         EvaluatorResult.organization_id == organization_id,
         EvaluatorResult.workspace_id == workspace_id,
         EvaluatorResult.evaluator_id.isnot(None),
+        ~EvaluatorResult.id.in_(playground_linked_evaluator_result_ids_subquery(db)),
     )
     if since is not None:
         query = query.filter(EvaluatorResult.timestamp >= since)

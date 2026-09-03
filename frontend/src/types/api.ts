@@ -1446,6 +1446,7 @@ export type MetricClusterGapLabel =
   | 'MISSING'
 
 export interface MetricSubCluster {
+  id?: string
   label: string
   count: number
   share_pct: number

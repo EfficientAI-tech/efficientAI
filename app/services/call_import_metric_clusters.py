@@ -629,6 +629,7 @@ def _synthesize_metric_clusters(
                 sub_count = int(sub.get("count") or 0)
                 sub_clusters.append(
                     MetricSubCluster(
+                        id=str(uuid.uuid4()),
                         label=sub_label,
                         count=sub_count,
                         share_pct=0.0,

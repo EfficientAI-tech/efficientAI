@@ -4988,6 +4988,7 @@ class MetricClusterEvidence(BaseModel):
 
 
 class MetricSubCluster(BaseModel):
+    id: Optional[str] = None
     label: str
     count: int = 0
     share_pct: float = 0.0

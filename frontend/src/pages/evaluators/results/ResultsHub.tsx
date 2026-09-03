@@ -18,6 +18,8 @@ import ResultsDrillPath, { type ResultsDrillCrumb } from './ResultsDrillPath'
 
 import ResultsDateRangePicker from './ResultsDateRangePicker'
 
+import ResultsDashboardTab from './ResultsDashboardTab'
+
 import MetricClustersPanel from '../../../components/metricClusters/MetricClustersPanel'
 
 import ClusterScopeHistory from '../../../components/metricClusters/ClusterScopeHistory'
@@ -44,7 +46,7 @@ import type {
 
 
 
-type HubTab = 'runs' | 'clusters'
+type HubTab = 'dashboard' | 'clusters' | 'runs'
 
 type StatusFilter = 'all' | 'completed' | 'failed' | 'in_progress'
 
@@ -113,7 +115,19 @@ export default function ResultsHub() {
 
   const activeTab: HubTab =
 
-    tabParam === 'clusters' && isFeatureEnabled('evaluation_clustering') ? 'clusters' : 'runs'
+    tabParam === 'clusters' && isFeatureEnabled('evaluation_clustering')
+
+      ? 'clusters'
+
+      : tabParam === 'runs'
+
+        ? 'runs'
+
+        : 'dashboard'
+
+
+
+  const showScopeFilters = activeTab === 'dashboard' || activeTab === 'runs'
 
 
 
@@ -147,7 +161,7 @@ export default function ResultsHub() {
 
     queryFn: () => apiClient.getEvaluatorResultsOverview(overviewParams),
 
-    enabled: activeTab === 'runs' || generateModalOpen,
+    enabled: showScopeFilters || generateModalOpen,
 
   })
 
@@ -250,38 +264,6 @@ export default function ResultsHub() {
     return params
 
   }, [agentId, suiteId, scenarioId, dateBounds])
-
-
-
-  const showAggregate =
-
-    Boolean(suiteId) || (Boolean(agentId) && Boolean(scenarioId))
-
-
-
-  const { data: aggregate } = useQuery({
-
-    queryKey: ['evaluator-results-aggregate', listParams],
-
-    queryFn: () =>
-
-      apiClient.getEvaluatorResultsAggregate({
-
-        suiteId: suiteId || undefined,
-
-        agentId: agentId || undefined,
-
-        scenarioId: scenarioId || undefined,
-
-        since: dateBounds?.since,
-
-        until: dateBounds?.until,
-
-      }),
-
-    enabled: showAggregate,
-
-  })
 
 
 
@@ -655,7 +637,7 @@ export default function ResultsHub() {
 
   const setTab = (tab: HubTab) => {
 
-    setParams({ tab: tab === 'clusters' ? 'clusters' : null })
+    setParams({ tab: tab === 'dashboard' ? null : tab })
 
   }
 
@@ -801,11 +783,11 @@ export default function ResultsHub() {
 
 
 
-      {activeTab === 'runs' && (loadingOverview || !overview) ? (
+      {showScopeFilters && (loadingOverview || !overview) ? (
 
         <p className="text-gray-500">Loading overview…</p>
 
-      ) : overview && overview.unassigned.counts.total > 0 ? (
+      ) : overview && overview.unassigned.counts.total > 0 && showScopeFilters ? (
 
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
 
@@ -823,7 +805,7 @@ export default function ResultsHub() {
 
 
 
-      {activeTab === 'runs' ? (
+      {showScopeFilters ? (
 
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm space-y-4">
 
@@ -953,11 +935,11 @@ export default function ResultsHub() {
 
           type="button"
 
-          onClick={() => setTab('runs')}
+          onClick={() => setTab('dashboard')}
 
           className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
 
-            activeTab === 'runs'
+            activeTab === 'dashboard'
 
               ? 'border-primary-600 text-primary-700'
 
@@ -967,7 +949,7 @@ export default function ResultsHub() {
 
         >
 
-          Runs
+          Dashboard
 
         </button>
 
@@ -997,43 +979,55 @@ export default function ResultsHub() {
 
         )}
 
+        <button
+
+          type="button"
+
+          onClick={() => setTab('runs')}
+
+          className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+
+            activeTab === 'runs'
+
+              ? 'border-primary-600 text-primary-700'
+
+              : 'border-transparent text-gray-600 hover:text-gray-900'
+
+          }`}
+
+        >
+
+          Runs
+
+        </button>
+
       </div>
 
 
 
-      {activeTab === 'runs' ? (
+      {activeTab === 'dashboard' ? (
+
+        <ResultsDashboardTab
+
+          agentId={agentId}
+
+          suiteId={suiteId}
+
+          scenarioId={scenarioId}
+
+          startDate={startDate}
+
+          endDate={endDate}
+
+          overview={overview}
+
+          loadingOverview={loadingOverview}
+
+        />
+
+      ) : activeTab === 'runs' ? (
 
         <div className="space-y-6">
-
-          {showAggregate && aggregate && aggregate.metrics.length > 0 && (
-
-            <div className="rounded-xl border border-gray-200 bg-white p-4">
-
-              <h3 className="text-sm font-semibold text-gray-900 mb-3">Quality snapshot</h3>
-
-              <div className="flex flex-wrap gap-4">
-
-                {aggregate.metrics.slice(0, 8).map((m) => (
-
-                  <div key={m.metric_id} className="text-sm">
-
-                    <span className="text-gray-500">{m.metric_name}: </span>
-
-                    <span className="font-medium text-gray-900">
-
-                      {m.mean != null ? m.mean.toFixed(2) : m.value_counts[0]?.label ?? '—'}
-
-                    </span>
-
-                  </div>
-
-                ))}
-
-              </div>
-
-            </div>
-
-          )}
 
           <ResultsRunsList
 

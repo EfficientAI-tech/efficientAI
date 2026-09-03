@@ -275,12 +275,14 @@ def test_is_cluster_job_stale_when_completed_rows_advance(
     db_session.add(suite)
     db_session.commit()
     evaluator = make_evaluator(
+        evaluator_id="654322",
         agent_id=agent.id,
         persona_id=result.persona_id,
         scenario_id=scenario.id,
         suite_id=suite.id,
     )
     make_evaluator_result(
+        result_id="112234",
         evaluator_id=evaluator.id,
         agent_id=agent.id,
         persona_id=result.persona_id,

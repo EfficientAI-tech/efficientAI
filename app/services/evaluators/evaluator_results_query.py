@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session, Query
 from sqlalchemy import and_, or_
 
-from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona
+from app.models.database import EvaluatorResult, Evaluator, Agent, VoiceBundle, Scenario, Persona, CallRecording, CallRecordingSource
 from app.models.schemas import (
     AgentResponse,
     EvaluatorResultResponse,
@@ -17,6 +17,7 @@ from app.models.schemas import (
     PersonaResponse,
     EvaluatorResponse,
 )
+from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_result_live_telephony
 from app.services.evaluators.evaluator_result_status import (
     effective_evaluator_result_status,
     repair_evaluator_result_status_if_needed,
@@ -46,6 +47,52 @@ def is_in_progress_status(display_status: str) -> bool:
     return True
 
 
+def playground_linked_evaluator_result_ids_subquery(db: Session):
+    """Evaluator results tied to Agent Playground call recordings."""
+    return (
+        db.query(CallRecording.evaluator_result_id)
+        .filter(
+            CallRecording.source == CallRecordingSource.PLAYGROUND,
+            CallRecording.evaluator_result_id.isnot(None),
+        )
+    )
+
+
+def apply_playground_scope_filter(
+    query: Query,
+    db: Session,
+    *,
+    playground: Optional[bool],
+    test_agents_only: Optional[bool],
+) -> Query:
+    playground_ids = playground_linked_evaluator_result_ids_subquery(db)
+
+    if playground is True:
+        if test_agents_only is True:
+            query = query.filter(
+                or_(
+                    EvaluatorResult.id.in_(playground_ids),
+                    and_(
+                        EvaluatorResult.evaluator_id.is_(None),
+                        EvaluatorResult.provider_platform.is_(None),
+                    ),
+                )
+            )
+        else:
+            query = query.filter(
+                or_(
+                    EvaluatorResult.id.in_(playground_ids),
+                    EvaluatorResult.evaluator_id.is_(None),
+                )
+            )
+    else:
+        query = query.filter(
+            EvaluatorResult.evaluator_id.isnot(None),
+            ~EvaluatorResult.id.in_(playground_ids),
+        )
+    return query
+
+
 def build_evaluator_results_query(
     db: Session,
     *,
@@ -68,17 +115,12 @@ def build_evaluator_results_query(
         EvaluatorResult.workspace_id == workspace_id,
     )
 
-    if playground is True:
-        if test_agents_only is True:
-            # Voice-bundle playground test agents (not Retell/Vapi). Includes runs
-            # that auto-link an evaluator when persona + scenario are selected.
-            query = query.filter(EvaluatorResult.provider_platform.is_(None))
-        else:
-            query = query.filter(EvaluatorResult.evaluator_id.is_(None))
-    elif playground is False:
-        query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
-    else:
-        query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
+    query = apply_playground_scope_filter(
+        query,
+        db,
+        playground=playground,
+        test_agents_only=test_agents_only,
+    )
 
     if unassigned_only:
         query = query.outerjoin(
@@ -208,7 +250,7 @@ def serialize_evaluator_result_row(
         "call_event": result.call_event,
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
-        "call_data": result.call_data,
+        "call_data": enrich_evaluator_result_live_telephony(db, result, result.call_data),
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,

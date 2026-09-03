@@ -80,6 +80,19 @@ def _load_agents_by_id(db: Session, agent_ids: List[UUID]) -> Dict[UUID, Agent]:
     return {agent.id: agent for agent in agents}
 
 
+def _observability_call_scope_filters(
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> tuple:
+    """Filters for Observability Calls: webhook ingests not tied to evaluator runs."""
+    return (
+        CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
+        CallRecording.source == CallRecordingSource.WEBHOOK,
+        CallRecording.evaluator_result_id.is_(None),
+    )
+
+
 def _serialize_call_recording(
     call_recording: CallRecording,
     include_data: bool = False,
@@ -406,11 +419,7 @@ async def list_calls(
 
     call_recordings = (
         db.query(CallRecording)
-        .filter(
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.WEBHOOK,
-        )
+        .filter(*_observability_call_scope_filters(organization_id, workspace_id))
         .order_by(CallRecording.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -445,9 +454,7 @@ async def get_call(
         db.query(CallRecording)
         .filter(
             CallRecording.call_short_id == call_short_id,
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.WEBHOOK,
+            *_observability_call_scope_filters(organization_id, workspace_id),
         )
         .first()
     )
@@ -497,10 +504,9 @@ async def stream_call_live_events(
     db: Session = Depends(get_db),
 ):
     """Server-sent events stream for live transcript turns during an active call."""
-    import asyncio
-    import json
-
     from fastapi.responses import StreamingResponse
+
+    from app.services.telephony.live_transcript_sse import stream_live_transcript_events
 
     del api_key
 
@@ -508,9 +514,7 @@ async def stream_call_live_events(
         db.query(CallRecording)
         .filter(
             CallRecording.call_short_id == call_short_id,
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.WEBHOOK,
+            *_observability_call_scope_filters(organization_id, workspace_id),
         )
         .first()
     )
@@ -521,46 +525,24 @@ async def stream_call_live_events(
     bound_org_id = organization_id
     bound_workspace_id = workspace_id
 
-    live_events = {
-        "outbound_initiated",
-        "ringing",
-        "call_started",
-        "call_in_progress",
-        "in-progress",
-        "answered",
-    }
+    def _fetch_recording(session):
+        return (
+            session.query(CallRecording)
+            .filter(
+                CallRecording.id == bound_recording_id,
+                CallRecording.call_short_id == call_short_id,
+                *_observability_call_scope_filters(bound_org_id, bound_workspace_id),
+            )
+            .first()
+        )
 
     async def event_generator():
-        from app.database import SessionLocal
-
-        seen = 0
-        while True:
-            session = SessionLocal()
-            try:
-                row = (
-                    session.query(CallRecording)
-                    .filter(
-                        CallRecording.id == bound_recording_id,
-                        CallRecording.call_short_id == call_short_id,
-                        CallRecording.organization_id == bound_org_id,
-                        CallRecording.workspace_id == bound_workspace_id,
-                        CallRecording.source == CallRecordingSource.WEBHOOK,
-                    )
-                    .first()
-                )
-                if not row:
-                    break
-                data = row.call_data if isinstance(row.call_data, dict) else {}
-                transcript = data.get("live_transcript") or []
-                if len(transcript) > seen:
-                    for entry in transcript[seen:]:
-                        yield f"data: {json.dumps(entry)}\n\n"
-                    seen = len(transcript)
-                if (row.call_event or "") not in live_events:
-                    break
-            finally:
-                session.close()
-            await asyncio.sleep(1)
+        async for chunk in stream_live_transcript_events(
+            call_short_id=call_short_id,
+            bound_recording_id=bound_recording_id,
+            fetch_recording=_fetch_recording,
+        ):
+            yield chunk
 
     return StreamingResponse(
         event_generator(),
@@ -592,9 +574,7 @@ async def stream_observability_call_audio(
         db.query(CallRecording)
         .filter(
             CallRecording.call_short_id == call_short_id,
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.WEBHOOK,
+            *_observability_call_scope_filters(organization_id, workspace_id),
         )
         .first()
     )
@@ -664,9 +644,7 @@ async def delete_call(
         db.query(CallRecording)
         .filter(
             CallRecording.call_short_id == call_short_id,
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.WEBHOOK,
+            *_observability_call_scope_filters(organization_id, workspace_id),
         )
         .first()
     )
@@ -779,9 +757,7 @@ async def evaluate_call(
         db.query(CallRecording)
         .filter(
             CallRecording.call_short_id == call_short_id,
-            CallRecording.organization_id == organization_id,
-            CallRecording.workspace_id == workspace_id,
-            CallRecording.source == CallRecordingSource.WEBHOOK,
+            *_observability_call_scope_filters(organization_id, workspace_id),
         )
         .first()
     )

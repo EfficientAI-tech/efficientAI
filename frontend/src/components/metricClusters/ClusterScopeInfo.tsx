@@ -50,6 +50,8 @@ export default function ClusterScopeInfo({
         ? `${display.selectedCallCount.toLocaleString()} selected call${display.selectedCallCount === 1 ? '' : 's'}`
         : null
 
+  const jobId = urlScope?.jobId ?? null
+
   return (
     <article className="rounded-lg border border-gray-200 bg-white px-4 py-3">
       <div className="min-w-0 space-y-2">
@@ -57,6 +59,14 @@ export default function ClusterScopeInfo({
           <p className="text-base font-semibold text-gray-900">
             {display.agentName}
           </p>
+          {jobId ? (
+            <code
+              className="text-[10px] font-mono text-gray-600 bg-gray-100 px-2 py-0.5 rounded"
+              title={jobId}
+            >
+              job {jobId.slice(0, 8)}…
+            </code>
+          ) : null}
           {state.is_stale ? (
             <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
               Stale

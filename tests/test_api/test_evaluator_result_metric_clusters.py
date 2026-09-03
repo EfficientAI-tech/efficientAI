@@ -122,7 +122,7 @@ def test_evaluator_result_metric_clusters_requires_license(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "app.core.license.is_feature_enabled",
+        "app.dependencies.is_feature_enabled",
         lambda feature, organization_id=None: False,
     )
     response = authenticated_client.get(
@@ -157,6 +157,8 @@ def test_generate_evaluator_result_metric_clusters_persists_generation_scope(
         make_evaluator_result=make_evaluator_result,
         make_metric=make_metric,
     )
+    result.timestamp = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    db_session.commit()
 
     def fake_apply_async(*, kwargs=None, **_kw):
         return types.SimpleNamespace(id="eval-cluster-task-2")
@@ -232,7 +234,7 @@ def _seed_completed_cluster_job(
                 "metric_id": str(uuid4()),
                 "metric_name": "Pass/Fail",
                 "flagged_count": 1,
-                "failure_reason": None,
+                "failure_reason": "",
                 "clusters": [],
             }
         ],
@@ -301,12 +303,14 @@ def test_get_evaluator_result_metric_clusters_marks_stale_without_full_hydration
     db_session.add(suite)
     db_session.commit()
     evaluator = make_evaluator(
+        evaluator_id="654322",
         agent_id=agent.id,
         persona_id=persona,
         scenario_id=scenario.id,
         suite_id=suite.id,
     )
     make_evaluator_result(
+        result_id="112234",
         evaluator_id=evaluator.id,
         agent_id=agent.id,
         persona_id=persona,

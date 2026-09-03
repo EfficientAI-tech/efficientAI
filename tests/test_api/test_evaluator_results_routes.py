@@ -36,6 +36,36 @@ def test_list_and_get_evaluator_results(authenticated_client, make_evaluator_res
     assert get_response.json()["result_id"] == "778899"
 
 
+def test_playground_linked_results_excluded_from_default_list(
+    authenticated_client,
+    make_evaluator,
+    make_evaluator_result,
+    make_call_recording,
+):
+    evaluator = make_evaluator(evaluator_id="991122")
+    playground_result = make_evaluator_result(
+        result_id="554433",
+        evaluator_id=evaluator.id,
+    )
+    make_call_recording(
+        call_short_id="665544",
+        source="playground",
+        evaluator_result_id=playground_result.id,
+    )
+    make_evaluator_result(result_id="776655", evaluator_id=evaluator.id)
+
+    list_response = authenticated_client.get("/api/v1/evaluator-results")
+    assert list_response.status_code == 200
+    ids = {item["result_id"] for item in list_response.json()["items"]}
+    assert "554433" not in ids
+    assert "776655" in ids
+
+    playground_response = authenticated_client.get("/api/v1/evaluator-results?playground=true")
+    assert playground_response.status_code == 200
+    playground_ids = {item["result_id"] for item in playground_response.json()["items"]}
+    assert "554433" in playground_ids
+
+
 def test_list_evaluator_results_filter_by_agent_id(
     authenticated_client, make_agent, make_evaluator, make_evaluator_result
 ):
@@ -96,11 +126,38 @@ def test_delete_evaluator_result_with_linked_call_recording(
     make_evaluator_result,
     make_call_recording,
 ):
+    from app.models.database import CallRecording
+
     result = make_evaluator_result(result_id="221133")
     recording = make_call_recording(
         call_short_id="887766",
         evaluator_result_id=result.id,
         provider_platform="vobiz",
+        source="webhook",
+    )
+
+    response = authenticated_client.delete(f"/api/v1/evaluator-results/{result.result_id}")
+
+    assert response.status_code == 204
+    assert (
+        db_session.query(CallRecording)
+        .filter(CallRecording.id == recording.id)
+        .first()
+        is None
+    )
+
+
+def test_delete_evaluator_result_keeps_playground_call_recording(
+    authenticated_client,
+    db_session,
+    make_evaluator_result,
+    make_call_recording,
+):
+    result = make_evaluator_result(result_id="221134")
+    recording = make_call_recording(
+        call_short_id="887767",
+        evaluator_result_id=result.id,
+        source="playground",
     )
 
     response = authenticated_client.delete(f"/api/v1/evaluator-results/{result.result_id}")
@@ -116,10 +173,12 @@ def test_delete_evaluator_results_bulk_with_linked_call_recording(
     make_evaluator_result,
     make_call_recording,
 ):
+    from app.models.database import CallRecording
+
     r1 = make_evaluator_result(result_id="111222")
     r2 = make_evaluator_result(result_id="333444")
-    rec1 = make_call_recording(call_short_id="111111", evaluator_result_id=r1.id)
-    rec2 = make_call_recording(call_short_id="222222", evaluator_result_id=r2.id)
+    rec1 = make_call_recording(call_short_id="111111", evaluator_result_id=r1.id, source="webhook")
+    rec2 = make_call_recording(call_short_id="222222", evaluator_result_id=r2.id, source="webhook")
 
     response = authenticated_client.delete(
         "/api/v1/evaluator-results",
@@ -127,10 +186,8 @@ def test_delete_evaluator_results_bulk_with_linked_call_recording(
     )
 
     assert response.status_code == 204
-    db_session.refresh(rec1)
-    db_session.refresh(rec2)
-    assert rec1.evaluator_result_id is None
-    assert rec2.evaluator_result_id is None
+    assert db_session.query(CallRecording).filter(CallRecording.id == rec1.id).first() is None
+    assert db_session.query(CallRecording).filter(CallRecording.id == rec2.id).first() is None
 
 
 def test_list_evaluator_results_scenario_and_status_filters(
@@ -237,6 +294,211 @@ def test_evaluator_results_overview_and_aggregate(
     agg = aggregate.json()
     assert agg["total_rows"] == 1
     assert agg["completed_rows"] == 1
+
+
+def test_evaluator_results_aggregate_agent_only_scope(
+    authenticated_client,
+    db_session,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+    make_evaluator_result,
+):
+    from app.models.database import EvaluatorSuite
+
+    agent = make_agent(name="Aggregate Agent")
+    persona = make_persona()
+    scenario = make_scenario(agent_id=agent.id, name="Agg Scenario")
+    suite = EvaluatorSuite(
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+        name="Agg Suite",
+        agent_id=agent.id,
+        persona_id=persona.id,
+    )
+    db_session.add(suite)
+    db_session.commit()
+    db_session.refresh(suite)
+
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        suite_id=suite.id,
+    )
+    make_evaluator_result(
+        result_id="556001",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+        metric_scores={"m1": {"value": 4, "type": "rating", "metric_name": "Quality"}},
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/evaluator-results/aggregate?agent_id={agent.id}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == str(agent.id)
+    assert body["total_rows"] == 1
+    assert body["completed_rows"] == 1
+
+
+def test_evaluator_results_aggregate_workspace_date_scope(
+    authenticated_client,
+    db_session,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+    make_evaluator_result,
+):
+    from app.models.database import EvaluatorSuite
+
+    agent = make_agent(name="Workspace Agg Agent")
+    persona = make_persona()
+    scenario = make_scenario(agent_id=agent.id, name="Workspace Scenario")
+    suite = EvaluatorSuite(
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+        name="Workspace Suite",
+        agent_id=agent.id,
+        persona_id=persona.id,
+    )
+    db_session.add(suite)
+    db_session.commit()
+    db_session.refresh(suite)
+
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        suite_id=suite.id,
+    )
+    make_evaluator_result(
+        result_id="556002",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+    )
+
+    response = authenticated_client.get("/api/v1/evaluator-results/aggregate")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == "workspace"
+    assert body["total_rows"] >= 1
+
+
+def test_evaluator_results_aggregate_categorization_parent_rollup(
+    authenticated_client,
+    db_session,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+    make_evaluator_result,
+    make_metric,
+):
+    from app.models.database import EvaluatorSuite
+
+    agent = make_agent(name="Categorization Agent")
+    persona = make_persona()
+    scenario = make_scenario(agent_id=agent.id, name="Cat Scenario")
+    suite = EvaluatorSuite(
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+        name="Cat Suite",
+        agent_id=agent.id,
+        persona_id=persona.id,
+    )
+    db_session.add(suite)
+    db_session.commit()
+    db_session.refresh(suite)
+
+    parent = make_metric(
+        name="AI Reveal",
+        metric_type="category",
+        selection_mode="single_choice",
+    )
+    yes_child = make_metric(
+        name="Yes",
+        metric_type="boolean",
+        parent_metric_id=parent.id,
+    )
+    no_child = make_metric(
+        name="No",
+        metric_type="boolean",
+        parent_metric_id=parent.id,
+    )
+
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        suite_id=suite.id,
+    )
+    parent_id = str(parent.id)
+    yes_id = str(yes_child.id)
+    no_id = str(no_child.id)
+    make_evaluator_result(
+        result_id="557001",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+        metric_scores={
+            parent_id: {
+                "type": "category",
+                "metric_name": "AI Reveal",
+                "selection_mode": "single_choice",
+                "value": "Yes",
+                "chosen_child_name": "Yes",
+                "chosen_child_id": yes_id,
+            },
+            yes_id: {"type": "boolean", "metric_name": "Yes", "value": True},
+            no_id: {"type": "boolean", "metric_name": "No", "value": False},
+        },
+    )
+    make_evaluator_result(
+        result_id="557002",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+        metric_scores={
+            parent_id: {
+                "type": "category",
+                "metric_name": "AI Reveal",
+                "selection_mode": "single_choice",
+                "value": "No",
+                "chosen_child_name": "No",
+                "chosen_child_id": no_id,
+            },
+            yes_id: {"type": "boolean", "metric_name": "Yes", "value": False},
+            no_id: {"type": "boolean", "metric_name": "No", "value": True},
+        },
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/evaluator-results/aggregate?suite_id={suite.id}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    metric_ids = {m["metric_id"] for m in body["metrics"]}
+    assert yes_id not in metric_ids
+    assert no_id not in metric_ids
+    parent_metric = next(m for m in body["metrics"] if m["metric_id"] == parent_id)
+    assert parent_metric["metric_name"] == "AI Reveal"
+    labels = {vc["label"]: vc["count"] for vc in parent_metric["value_counts"]}
+    assert labels.get("Yes") == 1
+    assert labels.get("No") == 1
 
 
 def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-audio-bytes"):

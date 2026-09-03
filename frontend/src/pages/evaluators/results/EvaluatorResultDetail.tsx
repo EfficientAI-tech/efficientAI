@@ -13,6 +13,7 @@ import VobizCallDetails from '../../../components/call-recordings/VobizCallDetai
 import { useToast } from '../../../hooks/useToast'
 import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
+import LiveTranscriptPanel, { type LiveTranscriptTurn } from '../../../components/call-recordings/LiveTranscriptPanel'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
 import { getProviderRecordingUrl, hasEvaluatorResultRecording } from '../../../lib/recordingUrls'
 
@@ -363,7 +364,15 @@ export default function EvaluatorResultDetailPage({
   const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [reEvalInProgress, setReEvalInProgress] = useState(false)
+  const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
   const audioRef = useRef<HTMLAudioElement>(null)
+
+  const LIVE_CALL_STATUSES = new Set([
+    'call_initiating',
+    'call_connecting',
+    'call_in_progress',
+    'call_ended',
+  ])
 
   const { data: result, isLoading, error, refetch: refetchResult } = useQuery({
     queryKey: ['evaluator-result', id],
@@ -467,6 +476,48 @@ export default function EvaluatorResultDetailPage({
       setReEvalInProgress(false)
     }
   }, [result?.status, reEvalInProgress])
+
+  useEffect(() => {
+    const existing = result?.call_data?.live_transcript
+    if (!Array.isArray(existing) || existing.length === 0) return
+    setLiveTranscript((prev) => (existing.length >= prev.length ? existing : prev))
+  }, [result?.call_data?.live_transcript])
+
+  useEffect(() => {
+    if (!id || !result) return
+    const displayStatus = displayEvaluatorResultStatus(result)
+    const isLive =
+      LIVE_CALL_STATUSES.has(displayStatus) || Boolean(result.call_data?.is_live)
+    if (!isLive) return
+
+    const streamId = result.result_id || id
+    let eventSource: EventSource | null = null
+    try {
+      eventSource = new EventSource(apiClient.getEvaluatorResultLiveEventsUrl(streamId))
+      eventSource.onmessage = (event) => {
+        try {
+          const entry = JSON.parse(event.data) as LiveTranscriptTurn
+          setLiveTranscript((prev) => [...prev, entry])
+        } catch {
+          // ignore malformed events
+        }
+      }
+    } catch {
+      // polling via react-query still updates live_transcript from call_data
+    }
+
+    return () => {
+      eventSource?.close()
+    }
+  }, [id, result?.result_id, result?.status, result?.call_data?.is_live])
+
+  useEffect(() => {
+    if (!result) return
+    const displayStatus = displayEvaluatorResultStatus(result)
+    if (LIVE_CALL_STATUSES.has(displayStatus) || result.call_data?.is_live) {
+      setActiveTab('transcript')
+    }
+  }, [result?.status, result?.call_data?.is_live])
 
   useEffect(() => {
     if (result?.status === 'completed') {
@@ -777,6 +828,15 @@ export default function EvaluatorResultDetailPage({
 
   const resultData = result as EvaluatorResultDetail
   const displayStatus = displayEvaluatorResultStatus(resultData)
+  const isLiveCall =
+    LIVE_CALL_STATUSES.has(displayStatus) ||
+    Boolean(resultData.call_data?.is_live)
+  const liveTranscriptTurns: LiveTranscriptTurn[] =
+    liveTranscript.length > 0
+      ? liveTranscript
+      : Array.isArray(resultData.call_data?.live_transcript)
+        ? resultData.call_data.live_transcript
+        : []
   const statusConfig = getStatusConfig(displayStatus)
   const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
   const providerRecordingUrl = getProviderRecordingUrl(resultData.call_data, resultData.provider_platform)
@@ -784,7 +844,9 @@ export default function EvaluatorResultDetailPage({
     hasEvaluatorResultRecording(resultData) ||
     resultData.transcription ||
     resultData.speaker_segments?.length ||
-    (Array.isArray(resultData.call_data?.messages) && resultData.call_data.messages.length > 0)
+    (Array.isArray(resultData.call_data?.messages) && resultData.call_data.messages.length > 0) ||
+    isLiveCall ||
+    liveTranscriptTurns.length > 0
   )
 
   return (
@@ -1210,6 +1272,14 @@ export default function EvaluatorResultDetailPage({
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Transcript Preview (2 cols) */}
                 <div className="lg:col-span-2">
+                  {isLiveCall || (liveTranscriptTurns.length > 0 && LIVE_CALL_STATUSES.has(displayStatus)) ? (
+                    <LiveTranscriptPanel
+                      turns={liveTranscriptTurns}
+                      isLive={isLiveCall && displayStatus !== 'call_ended'}
+                      agentName={resultData.agent?.name || 'Agent'}
+                      heightClass="h-[560px]"
+                    />
+                  ) : (
                   <div className="rounded-xl border border-gray-100 bg-gray-50/30 flex flex-col h-[560px]">
                     <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
                       <div className="flex items-center gap-2">
@@ -1265,6 +1335,7 @@ export default function EvaluatorResultDetailPage({
                       )}
                     </div>
                   </div>
+                  )}
                 </div>
 
                 {/* Call Info Sidebar (1 col) */}
@@ -1394,15 +1465,6 @@ export default function EvaluatorResultDetailPage({
                           ) : (
                             <p className="text-sm text-gray-600">Recording available in player above</p>
                           )}
-                          {resultData.call_data?.call_short_id && (
-                            <a
-                              href={`/observability/calls/${resultData.call_data.call_short_id}`}
-                              className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-700"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                              View in Observability
-                            </a>
-                          )}
                         </div>
                       )}
                     </div>
@@ -1413,6 +1475,14 @@ export default function EvaluatorResultDetailPage({
 
             {/* Full Transcript Tab */}
             {activeTab === 'transcript' && (
+              isLiveCall || liveTranscriptTurns.length > 0 ? (
+                <LiveTranscriptPanel
+                  turns={liveTranscriptTurns}
+                  isLive={isLiveCall && displayStatus !== 'call_ended'}
+                  agentName={resultData.agent?.name || 'Agent'}
+                  heightClass="h-[650px]"
+                />
+              ) : (
               <div className="rounded-xl border border-gray-100 bg-gray-50/30 flex flex-col h-[650px]">
                 <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
                   <div className="flex items-center gap-2">
@@ -1463,6 +1533,7 @@ export default function EvaluatorResultDetailPage({
                   )}
                 </div>
               </div>
+              )
             )}
           </div>
         </div>

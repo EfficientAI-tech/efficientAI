@@ -128,6 +128,98 @@ def test_enqueue_linked_evaluator_result_copies_artifacts_and_dispatches(
     assert result.duration_seconds == 42.0
 
 
+def test_enqueue_dispatches_when_status_is_call_in_progress(
+    db_session, seed_org, default_workspace, monkeypatch
+):
+    org = seed_org
+    workspace_id = default_workspace.id
+
+    result = EvaluatorResult(
+        result_id="123457",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Live call ended",
+        status=EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+    )
+    db_session.add(result)
+    db_session.flush()
+
+    recording = CallRecording(
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        call_short_id="654322",
+        status=CallRecordingStatus.UPDATED,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="call_ended",
+        provider_platform="vobiz",
+        provider_call_id=str(uuid4()),
+        evaluator_result_id=result.id,
+        call_data={
+            "messages": [{"role": "user", "content": "Done"}],
+            "recording_s3_key": "audio/org/eval/live.mp3",
+        },
+    )
+    db_session.add(recording)
+    db_session.commit()
+
+    delayed = []
+
+    class _CapturingTask:
+        def delay(self, result_id):
+            delayed.append(result_id)
+            return _FakeAsyncResult()
+
+    import sys
+    import types
+
+    fake_celery_app = types.ModuleType("app.workers.celery_app")
+    fake_celery_app.process_evaluator_result_task = _CapturingTask()
+    monkeypatch.setitem(sys.modules, "app.workers.celery_app", fake_celery_app)
+
+    assert enqueue_linked_evaluator_result_if_ready(db_session, recording) is True
+    assert len(delayed) == 1
+
+
+def test_mark_call_in_progress_syncs_linked_evaluator_result(
+    db_session, seed_org, default_workspace
+):
+    from app.services.telephony.call_recording_lifecycle import mark_call_in_progress
+
+    org = seed_org
+    workspace_id = default_workspace.id
+
+    result = EvaluatorResult(
+        result_id="888777",
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        name="Outbound eval",
+        status=EvaluatorResultStatus.CALL_INITIATING.value,
+    )
+    db_session.add(result)
+    db_session.flush()
+
+    recording = CallRecording(
+        organization_id=org.id,
+        workspace_id=workspace_id,
+        call_short_id="777888",
+        status=CallRecordingStatus.PENDING,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="outbound_initiated",
+        call_data={"call_ref": "ref-live-sync", "live_transcript": []},
+        evaluator_result_id=result.id,
+        provider_platform="vobiz",
+    )
+    db_session.add(recording)
+    db_session.commit()
+
+    updated = mark_call_in_progress(db_session, call_ref="ref-live-sync")
+    assert updated is not None
+
+    db_session.refresh(result)
+    assert result.status == EvaluatorResultStatus.CALL_IN_PROGRESS.value
+    assert result.call_event == "call_in_progress"
+
+
 def test_inbound_evaluator_persona_scenario_wired_into_call_session(
     db_session, seed_org, default_workspace, monkeypatch
 ):
