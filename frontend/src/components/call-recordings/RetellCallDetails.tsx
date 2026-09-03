@@ -56,14 +56,29 @@ interface RetellCallData {
   collected_dynamic_variables?: Record<string, any>
 }
 
+export type RetellDetailSection = 'full' | 'transcript' | 'cost' | 'latency' | 'analysis' | 'system'
+
 interface RetellCallDetailsProps {
   callData: RetellCallData
   hideTranscript?: boolean
+  section?: RetellDetailSection
+  compact?: boolean
+  evaluatorAnalysis?: {
+    call_summary?: string
+    user_sentiment?: string
+    call_successful?: boolean
+  } | null
 }
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
-export default function RetellCallDetails({ callData, hideTranscript = false }: RetellCallDetailsProps) {
+export default function RetellCallDetails({
+  callData,
+  hideTranscript = false,
+  section = 'full',
+  compact = false,
+  evaluatorAnalysis = null,
+}: RetellCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
 
   const formatDuration = (ms?: number) => {
@@ -100,6 +115,16 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
     value: item.cost
   })) || []
 
+  const mergedAnalysis = callData.call_analysis || (evaluatorAnalysis
+    ? {
+        call_summary: evaluatorAnalysis.call_summary,
+        user_sentiment: evaluatorAnalysis.user_sentiment,
+        call_successful: evaluatorAnalysis.call_successful,
+      }
+    : undefined)
+  const usingEvaluatorSummary = !callData.call_analysis && !!evaluatorAnalysis?.call_summary
+  const publicLogUrl = (callData as any).public_log_url as string | undefined
+
   const SummaryCard = () => (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -107,12 +132,17 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
         Call Analysis
       </h3>
 
-      {callData.call_analysis ? (
+      {mergedAnalysis ? (
         <div className="space-y-6">
+          {usingEvaluatorSummary && (
+            <p className="text-xs text-gray-500">
+              Retell post-call analysis is still pending — showing EfficientAI-generated summary from the evaluation.
+            </p>
+          )}
           <div className="p-4 bg-indigo-50 rounded-lg border border-indigo-100">
             <p className="text-sm font-medium text-indigo-900 mb-2">Summary</p>
             <p className="text-sm text-indigo-800 leading-relaxed">
-              {callData.call_analysis.call_summary || "No summary available."}
+              {mergedAnalysis.call_summary || "No summary available."}
             </p>
           </div>
 
@@ -120,8 +150,8 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
             <div className="p-4 bg-gray-50 rounded-lg">
               <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Sentiment</p>
               <div className="flex items-center gap-2">
-                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getSentimentColor(callData.call_analysis.user_sentiment)}`}>
-                  {callData.call_analysis.user_sentiment || 'Neutral'}
+                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getSentimentColor(mergedAnalysis.user_sentiment)}`}>
+                  {mergedAnalysis.user_sentiment || 'Neutral'}
                 </span>
               </div>
             </div>
@@ -129,11 +159,11 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
             <div className="p-4 bg-gray-50 rounded-lg">
               <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Success Status</p>
               <div className="flex items-center gap-2">
-                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${callData.call_analysis.call_successful
+                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${mergedAnalysis.call_successful
                   ? 'text-green-700 bg-green-100'
                   : 'text-yellow-700 bg-yellow-100'
                   }`}>
-                  {callData.call_analysis.call_successful ? 'Successful' : 'Unsuccessful'}
+                  {mergedAnalysis.call_successful ? 'Successful' : 'Unsuccessful'}
                 </span>
               </div>
             </div>
@@ -141,7 +171,7 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
             <div className="p-4 bg-gray-50 rounded-lg">
               <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Voicemail</p>
               <span className="text-sm font-medium text-gray-900">
-                {callData.call_analysis.in_voicemail ? 'Yes' : 'No'}
+                {callData.call_analysis?.in_voicemail ? 'Yes' : 'No'}
               </span>
             </div>
 
@@ -152,21 +182,34 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
               </span>
             </div>
           </div>
+
+          {publicLogUrl && (
+            <a
+              href={publicLogUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex text-sm text-indigo-600 hover:text-indigo-800"
+            >
+              Open Retell call log
+            </a>
+          )}
         </div>
       ) : (
-        <div className="text-center py-8 text-gray-500">Analysis not available</div>
+        <div className="text-center py-8 text-gray-500">
+          Analysis not available yet. Use Sync provider data after the call ends.
+        </div>
       )}
     </div>
   )
 
   const TranscriptCard = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[600px]">
+    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col ${compact ? 'max-h-[min(60vh,520px)]' : 'h-[600px]'}`}>
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
           <MessageSquare className="h-5 w-5 text-indigo-600" />
           Transcript
         </h3>
-        {callData.recording_url && (
+        {!compact && callData.recording_url && (
           <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
             <audio controls src={callData.recording_url} className="h-8 w-64" />
             <a href={callData.recording_url} download className="text-gray-500 hover:text-indigo-600 p-1">
@@ -201,9 +244,7 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
     </div>
   )
 
-  const StatsParams = () => (
-    <div className="space-y-6">
-      {/* Cost Card */}
+  const CostSection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <DollarSign className="h-5 w-5 text-indigo-600" />
@@ -251,8 +292,9 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
           </div>
         </div>
       </div>
+  )
 
-      {/* Latency Chart */}
+  const LatencySection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <Activity className="h-5 w-5 text-indigo-600" />
@@ -276,8 +318,9 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
           </ResponsiveContainer>
         </div>
       </div>
+  )
 
-      {/* System Info */}
+  const SystemSection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <Server className="h-5 w-5 text-indigo-600" />
@@ -302,9 +345,21 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
           </div>
         </div>
       </div>
+  )
 
+  const StatsParams = () => (
+    <div className="space-y-6">
+      <CostSection />
+      <LatencySection />
+      <SystemSection />
     </div>
   )
+
+  if (section === 'transcript') return <TranscriptCard />
+  if (section === 'cost') return <CostSection />
+  if (section === 'latency') return <LatencySection />
+  if (section === 'analysis') return <SummaryCard />
+  if (section === 'system') return <SystemSection />
 
   if (hideTranscript) {
     return (

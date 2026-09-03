@@ -349,7 +349,11 @@ export default function CreateAgentModal({
   }
 
   const handlePlatformIntegrationChange = (integrationId: string) => {
-    setFormData((prev) => ({ ...prev, voice_ai_integration_id: integrationId }))
+    setFormData((prev) => ({
+      ...prev,
+      voice_ai_integration_id: integrationId,
+      voice_ai_agent_id: '',
+    }))
     setProductionPrompt('')
     setPromptFetchError(null)
     setHasFetchedPlatformPrompt(false)

@@ -232,9 +232,13 @@ interface TestVoiceAgentResultData {
 
 interface TestVoiceAgentResultDetailsProps {
   resultData: TestVoiceAgentResultData
+  metricsOnly?: boolean
 }
 
-export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAgentResultDetailsProps) {
+export default function TestVoiceAgentResultDetails({
+  resultData,
+  metricsOnly = false,
+}: TestVoiceAgentResultDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript' | 'debug'>('overview')
 
   const formatDuration = (seconds?: number | null) => {
@@ -777,6 +781,10 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
 
   return (
     <div className="space-y-6">
+      {metricsOnly ? (
+        <MetricsCard />
+      ) : (
+        <>
       {/* Navigation Tabs */}
       <div className="flex border-b border-gray-200">
         <button
@@ -833,6 +841,8 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
       )}
 
       {activeTab === 'debug' && <DebugView />}
+        </>
+      )}
     </div>
   )
 }

@@ -101,15 +101,30 @@ interface VapiCallData {
   raw_data?: any
 }
 
+export type VapiDetailSection = 'full' | 'transcript' | 'cost' | 'latency' | 'analysis' | 'system'
+
 interface VapiCallDetailsProps {
   callData: VapiCallData
   hideTranscript?: boolean
+  section?: VapiDetailSection
+  compact?: boolean
+  evaluatorAnalysis?: {
+    call_summary?: string
+    user_sentiment?: string
+    call_successful?: boolean
+  } | null
 }
 
 const COLORS = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#10b981'];
 type LatencyStats = NonNullable<NonNullable<VapiCallData['analysis']>['latency_stats']>
 
-export default function VapiCallDetails({ callData, hideTranscript = false }: VapiCallDetailsProps) {
+export default function VapiCallDetails({
+  callData,
+  hideTranscript = false,
+  section = 'full',
+  compact = false,
+  evaluatorAnalysis = null,
+}: VapiCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
 
   const formatDuration = (seconds?: number) => {
@@ -227,10 +242,22 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
   ].filter(item => item.value > 0)
 
   const SummaryCard = () => {
-    const summary = rawAnalysis.summary || raw.summary || callData.analysis?.summary
-    const successEval = rawAnalysis.successEvaluation ?? callData.analysis?.success_evaluation
+    const providerSummary = rawAnalysis.summary || raw.summary || callData.analysis?.summary
+    const summary = providerSummary || evaluatorAnalysis?.call_summary
+    const successEval =
+      rawAnalysis.successEvaluation ??
+      callData.analysis?.success_evaluation ??
+      (evaluatorAnalysis?.call_successful !== undefined ? evaluatorAnalysis.call_successful : undefined)
     const interruptionCount = perf.numAssistantInterrupted ?? callData.analysis?.interruption_count ?? 0
     const isSuccessful = successEval === true || successEval === 'true'
+    const usingEvaluatorSummary = !providerSummary && !!evaluatorAnalysis?.call_summary
+    const hasPipelineMetrics = latencyData.length > 0
+    const hasContent =
+      !!summary ||
+      successEval !== undefined ||
+      !!evaluatorAnalysis?.user_sentiment ||
+      !!endedReason ||
+      hasPipelineMetrics
     
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -239,8 +266,13 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
           Call Analysis
         </h3>
 
-        {summary || successEval !== undefined ? (
+        {hasContent ? (
           <div className="space-y-6">
+            {usingEvaluatorSummary && (
+              <p className="text-xs text-gray-500">
+                Vapi post-call analysis is still pending — showing EfficientAI-generated summary from the evaluation.
+              </p>
+            )}
             {summary && (
               <div className="p-4 bg-violet-50 rounded-lg border border-violet-100">
                 <p className="text-sm font-medium text-violet-900 mb-2">Summary</p>
@@ -251,6 +283,15 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
             )}
 
             <div className="grid grid-cols-2 gap-4">
+              {evaluatorAnalysis?.user_sentiment && (
+                <div className="p-4 bg-gray-50 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">User Sentiment</p>
+                  <span className="text-sm font-medium text-gray-900 capitalize">
+                    {evaluatorAnalysis.user_sentiment}
+                  </span>
+                </div>
+              )}
+
               <div className="p-4 bg-gray-50 rounded-lg">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Success</p>
                 <div className="flex items-center gap-2">
@@ -295,20 +336,22 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
             </div>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">Analysis not available</div>
+          <div className="text-center py-8 text-gray-500">
+            Analysis not available yet. Use Sync provider data after the call ends.
+          </div>
         )}
       </div>
     )
   }
 
   const TranscriptCard = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[600px]">
+    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col ${compact ? 'max-h-[min(60vh,520px)]' : 'h-[600px]'}`}>
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
           <MessageSquare className="h-5 w-5 text-violet-600" />
           Transcript
         </h3>
-        {recordingUrl && (
+        {!compact && recordingUrl && (
           <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
             <audio controls src={recordingUrl} className="h-8 w-64" />
             <a href={recordingUrl} download className="text-gray-500 hover:text-violet-600 p-1">
@@ -361,9 +404,7 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
     </div>
   )
 
-  const StatsParams = () => (
-    <div className="space-y-6">
-      {/* Cost Card */}
+  const CostSection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <DollarSign className="h-5 w-5 text-violet-600" />
@@ -467,8 +508,9 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
           </div>
         </div>
       </div>
+  )
 
-      {/* Latency Chart */}
+  const LatencySection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <Activity className="h-5 w-5 text-violet-600" />
@@ -536,9 +578,42 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
             )}
           </div>
         )}
-      </div>
 
-      {/* System Info */}
+        {(latencyStats?.turn_latencies?.length || perf.turnLatencies?.length) ? (
+          <div className="mt-6 pt-4 border-t border-gray-200">
+            <p className="text-sm font-semibold text-gray-900 mb-3">Per-turn pipeline latency (Vapi)</p>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="py-2 pr-4">Turn</th>
+                    <th className="py-2 pr-4">STT</th>
+                    <th className="py-2 pr-4">LLM</th>
+                    <th className="py-2 pr-4">TTS</th>
+                    <th className="py-2 pr-4">Endpointing</th>
+                    <th className="py-2">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(latencyStats.turn_latencies || perf.turnLatencies || []).map((turn: any, idx: number) => (
+                    <tr key={idx} className="border-b border-gray-100">
+                      <td className="py-2 pr-4 font-medium">{idx + 1}</td>
+                      <td className="py-2 pr-4">{turn.transcriberLatency ?? '—'}ms</td>
+                      <td className="py-2 pr-4">{turn.modelLatency ?? '—'}ms</td>
+                      <td className="py-2 pr-4">{turn.voiceLatency ?? '—'}ms</td>
+                      <td className="py-2 pr-4">{turn.endpointingLatency ?? '—'}ms</td>
+                      <td className="py-2">{turn.turnLatency ?? '—'}ms</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+      </div>
+  )
+
+  const SystemSection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <Server className="h-5 w-5 text-violet-600" />
@@ -572,6 +647,20 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
         </div>
 
         {/* Recording URLs */}
+        {(artifact.presignedLogUrl || artifact.logUrl) && (
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <p className="text-xs text-gray-500 uppercase font-semibold mb-2">Provider logs</p>
+            <a
+              href={artifact.presignedLogUrl || artifact.logUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-violet-600 hover:text-violet-800"
+            >
+              Open Vapi call log
+            </a>
+          </div>
+        )}
+
         {Object.values(recordingLinks).some(Boolean) && (
           <div className="mt-4 pt-4 border-t border-gray-200">
             <p className="text-xs text-gray-500 uppercase font-semibold mb-2">Recordings</p>
@@ -624,8 +713,21 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
           </div>
         )}
       </div>
+  )
+
+  const StatsParams = () => (
+    <div className="space-y-6">
+      <CostSection />
+      <LatencySection />
+      <SystemSection />
     </div>
   )
+
+  if (section === 'transcript') return <TranscriptCard />
+  if (section === 'cost') return <CostSection />
+  if (section === 'latency') return <LatencySection />
+  if (section === 'analysis') return <SummaryCard />
+  if (section === 'system') return <SystemSection />
 
   if (hideTranscript) {
     return (

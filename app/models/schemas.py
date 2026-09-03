@@ -283,6 +283,20 @@ class PreviewIntegrationAgentPromptResponse(BaseModel):
     provider_prompt: str
 
 
+class IntegrationVoiceAgentListItem(BaseModel):
+    id: str
+    name: str
+
+
+class ListIntegrationVoiceAgentsResponse(BaseModel):
+    agents: List[IntegrationVoiceAgentListItem]
+    platform: str
+    cached: bool = False
+    truncated: bool = False
+    list_supported: bool = True
+    message: Optional[str] = None
+
+
 
 
 class AgentPhoneAssignmentConflict(BaseModel):

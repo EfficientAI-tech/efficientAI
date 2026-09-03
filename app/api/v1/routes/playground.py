@@ -2,7 +2,7 @@
 Playground API Routes
 API endpoints for testing voice agents in the playground
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks, Form, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks, Form, File, UploadFile, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
@@ -41,6 +41,80 @@ from app.utils.call_recordings import generate_unique_call_short_id
 from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
 
 router = APIRouter(prefix="/playground", tags=["playground"])
+
+
+def _resolve_playground_audio_url(
+    call_data: dict[str, Any],
+    platform: str,
+    *,
+    stereo: bool = False,
+) -> Optional[str]:
+    artifact = call_data.get("artifact", {}) if isinstance(call_data.get("artifact"), dict) else {}
+    recording = artifact.get("recording", {}) if isinstance(artifact.get("recording"), dict) else {}
+    mono_recording = recording.get("mono", {}) if isinstance(recording.get("mono"), dict) else {}
+    recording_urls = call_data.get("recording_urls", {}) if isinstance(call_data.get("recording_urls"), dict) else {}
+
+    plat = (platform or "").lower()
+    if plat == "vapi":
+        from app.services.voice_providers.vapi_recording import extract_vapi_recording_url
+
+        return extract_vapi_recording_url(call_data, stereo=stereo)
+
+    return (
+        call_data.get("recordingUrl")
+        or call_data.get("stereoRecordingUrl")
+        or artifact.get("recordingUrl")
+        or artifact.get("stereoRecordingUrl")
+        or mono_recording.get("combinedUrl")
+        or recording_urls.get("combined_url")
+        or recording_urls.get("stereo_url")
+        or call_data.get("recording_url")
+        or recording_urls.get("conversation_audio")
+    )
+
+
+def _refresh_call_recording_from_provider_sync(
+    db: Session,
+    call_recording: CallRecording,
+    organization_id: UUID,
+) -> bool:
+    """Re-fetch provider call payload to refresh expiring presigned recording URLs."""
+    from app.services.playground.post_call_processing import persist_provider_call_metrics
+
+    if not call_recording.provider_call_id or not call_recording.provider_platform:
+        return False
+
+    agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+    if not agent or not agent.voice_ai_integration_id:
+        return False
+
+    integration = db.query(Integration).filter(
+        Integration.id == agent.voice_ai_integration_id,
+        Integration.organization_id == organization_id,
+    ).first()
+    if not integration:
+        return False
+
+    try:
+        provider_class = get_voice_provider(call_recording.provider_platform)
+        provider = provider_class(api_key=decrypt_api_key(integration.api_key))
+        if not hasattr(provider, "retrieve_call_metrics"):
+            return False
+        metrics = provider.retrieve_call_metrics(call_recording.provider_call_id)
+        if not isinstance(metrics, dict):
+            return False
+        persist_provider_call_metrics(db, call_recording.id, metrics)
+        db.refresh(call_recording)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "[Audio Proxy] Failed to refresh provider call data for %s: %s",
+            call_recording.call_short_id,
+            exc,
+        )
+        return False
+
+
 def generate_unique_result_id(db: Session) -> str:
     """Generate a unique 6-digit result ID for EvaluatorResult."""
     max_attempts = 100
@@ -50,6 +124,58 @@ def generate_unique_result_id(db: Session) -> str:
         if not existing:
             return candidate_id
     raise ValueError("Failed to generate unique result ID")
+
+
+def sync_provider_call_metrics(
+    call_recording_id: UUID,
+    provider_call_id: str,
+    provider_platform: str,
+    integration_api_key: str,
+    max_attempts: int = 12,
+    poll_interval: int = 5,
+):
+    """Re-fetch provider metrics and update stored call_data (no evaluator creation)."""
+    import time
+
+    from app.database import SessionLocal
+    from app.services.playground.post_call_processing import (
+        call_metrics_indicate_ended,
+        persist_provider_call_metrics,
+        provider_metrics_enriched,
+    )
+
+    db = SessionLocal()
+    try:
+        call_recording = db.query(CallRecording).filter(CallRecording.id == call_recording_id).first()
+        if not call_recording or not provider_call_id:
+            return
+
+        try:
+            provider_class = get_voice_provider(provider_platform)
+            provider = provider_class(api_key=integration_api_key)
+        except ValueError:
+            return
+
+        if not hasattr(provider, "retrieve_call_metrics"):
+            return
+
+        call_metrics: dict[str, Any] | None = None
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                time.sleep(poll_interval)
+            try:
+                call_metrics = provider.retrieve_call_metrics(provider_call_id)
+                if not isinstance(call_metrics, dict):
+                    continue
+                persist_provider_call_metrics(db, call_recording_id, call_metrics)
+                if provider_metrics_enriched(provider_platform, call_metrics):
+                    break
+                if call_metrics_indicate_ended(call_metrics) and attempt >= 3:
+                    break
+            except Exception as exc:
+                logger.warning(f"[Sync Provider Metrics] attempt {attempt + 1} failed: {exc}")
+    finally:
+        db.close()
 
 
 def poll_call_metrics(
@@ -74,7 +200,11 @@ def poll_call_metrics(
     """
     import time
     from app.database import SessionLocal
-    from app.services.playground.post_call_processing import merge_playground_call_data
+    from app.services.playground.post_call_processing import (
+        call_metrics_indicate_ended,
+        merge_playground_call_data,
+        provider_metrics_enriched,
+    )
     from app.services.voice_providers import get_voice_provider
     
     db = SessionLocal()
@@ -123,19 +253,11 @@ def poll_call_metrics(
                 db.commit()
                 db.refresh(call_recording)
                 
-                # Check if call is complete (supports raw + normalized payloads)
-                call_status = (
-                    call_metrics.get("call_status")
-                    or call_metrics.get("status")
-                    or ""
-                )
-                call_status = str(call_status).lower()
-                end_timestamp = call_metrics.get("end_timestamp") or call_metrics.get("endedAt")
-                
-                # If call is complete, stop polling
-                if end_timestamp or call_status in ["ended", "completed", "failed", "end-of-call-report", "done"]:
+                # Keep polling after hangup until provider enriches analysis/latency payloads.
+                if call_metrics_indicate_ended(call_metrics):
                     call_complete = True
-                    break
+                    if provider_metrics_enriched(provider_platform, call_metrics):
+                        break
                     
             except Exception as e:
                 # Log error but continue polling
@@ -937,12 +1059,14 @@ async def get_call_recording(
             EvaluatorResult.id == call_recording.evaluator_result_id
         ).first()
         if evaluator_result:
+            eval_call_data = evaluator_result.call_data if isinstance(evaluator_result.call_data, dict) else {}
             evaluation_info = {
                 "id": str(evaluator_result.id),
                 "result_id": evaluator_result.result_id,
                 "status": evaluator_result.status,
                 "metric_scores": evaluator_result.metric_scores,
                 "transcription": evaluator_result.transcription,
+                "call_analysis": eval_call_data.get("call_analysis"),
             }
     
     return {
@@ -1010,9 +1134,6 @@ async def refresh_call_recording(
             detail="Integration not found"
         )
 
-    if call_recording.evaluator_result_id:
-        return {"message": "Call recording already processed"}
-
     try:
         decrypted_api_key = decrypt_api_key(integration.api_key)
     except Exception as e:
@@ -1020,6 +1141,16 @@ async def refresh_call_recording(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to decrypt API key: {str(e)}"
         )
+
+    if call_recording.evaluator_result_id:
+        background_tasks.add_task(
+            sync_provider_call_metrics,
+            call_recording.id,
+            call_recording.provider_call_id,
+            call_recording.provider_platform,
+            decrypted_api_key,
+        )
+        return {"message": "Provider metrics sync initiated"}
     
     # Start background task to poll for call metrics
     background_tasks.add_task(
@@ -1284,9 +1415,84 @@ async def re_evaluate_call_recording(
     }
 
 
+@router.get("/call-recordings/{call_short_id}/logs", response_model=Dict[str, Any])
+async def get_call_recording_logs(
+    call_short_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Return normalized provider logs for Vapi and Retell playground calls."""
+    del api_key  # Dependency enforcement only
+    from app.services.playground.provider_call_logs import (
+        fetch_retell_call_logs,
+        fetch_vapi_call_logs,
+    )
+
+    call_recording = db.query(CallRecording).filter(
+        CallRecording.call_short_id == call_short_id,
+        CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
+    ).first()
+
+    if not call_recording:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call recording not found")
+
+    platform = (call_recording.provider_platform or "").lower()
+    call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+
+    if platform not in ("vapi", "retell"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provider logs are only available for Vapi and Retell calls",
+        )
+
+    try:
+        if platform == "retell":
+            entries = fetch_retell_call_logs(call_data)
+            return {"platform": platform, "entries": entries, "count": len(entries)}
+
+        if not call_recording.provider_call_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Call recording does not have a provider call id",
+            )
+
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+        if not agent or not agent.voice_ai_integration_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent or integration not found")
+
+        integration = db.query(Integration).filter(
+            Integration.id == agent.voice_ai_integration_id,
+            Integration.organization_id == organization_id,
+        ).first()
+        if not integration:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration not found")
+
+        decrypted_api_key = decrypt_api_key(integration.api_key)
+        entries = fetch_vapi_call_logs(
+            api_key=decrypted_api_key,
+            provider_call_id=call_recording.provider_call_id,
+            call_data=call_data,
+        )
+        return {"platform": platform, "entries": entries, "count": len(entries)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("[CallLogs] Failed to fetch logs for %s: %s", call_short_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to fetch provider logs. Try Refresh on the call first.",
+        )
+
+
 @router.get("/call-recordings/{call_short_id}/audio")
 async def stream_call_audio(
     call_short_id: str,
+    proxy: bool = Query(False, description="Stream audio through API (CORS-safe for waveform)"),
+    stereo: bool = Query(False, description="Prefer stereo recording when available"),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1309,31 +1515,52 @@ async def stream_call_audio(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call recording not found")
 
     call_data = call_recording.call_data or {}
-    recording_urls = call_data.get("recording_urls", {})
     platform = (call_recording.provider_platform or "").lower()
 
-    # For Retell / Vapi / Smallest the URL is public – redirect directly
     if platform in ("retell", "vapi", "smallest"):
-        artifact = call_data.get("artifact", {})
-        recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
-        mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
-        url = (
-            call_data.get("recordingUrl")
-            or call_data.get("stereoRecordingUrl")
-            or artifact.get("recordingUrl")
-            or artifact.get("stereoRecordingUrl")
-            or mono_recording.get("combinedUrl")
-            or recording_urls.get("combined_url")
-            or recording_urls.get("stereo_url")
-            or call_data.get("recording_url")
-            or recording_urls.get("conversation_audio")
-        )
+        url = _resolve_playground_audio_url(call_data, platform, stereo=stereo and platform == "vapi")
         if not url:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
+        if proxy:
+            import requests as http_requests
+
+            upstream = http_requests.get(url, stream=True, timeout=90)
+            if upstream.status_code in (401, 403) and platform == "vapi":
+                upstream.close()
+                if not _refresh_call_recording_from_provider_sync(db, call_recording, organization_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=(
+                            "Provider recording URL expired. "
+                            "Use Sync provider data on the call, then try again."
+                        ),
+                    )
+                call_data = call_recording.call_data or {}
+                url = _resolve_playground_audio_url(call_data, platform, stereo=stereo)
+                if not url:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="No recording URL available after refresh",
+                    )
+                upstream = http_requests.get(url, stream=True, timeout=90)
+            if upstream.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=(
+                        "Provider recording URL expired or unavailable. "
+                        "Use Sync provider data on the call, then try again."
+                    ),
+                )
+            content_type = upstream.headers.get("content-type", "audio/wav")
+            return StreamingResponse(
+                upstream.iter_content(chunk_size=8192),
+                media_type=content_type,
+                headers={"Content-Disposition": f'inline; filename="call_{call_short_id}.wav"'},
+            )
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url)
 
-    # ElevenLabs requires API key header – proxy the stream
+    recording_urls = call_data.get("recording_urls", {})
     if platform == "elevenlabs":
         audio_url = recording_urls.get("conversation_audio")
         if not audio_url:

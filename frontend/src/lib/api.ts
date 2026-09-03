@@ -72,6 +72,7 @@ import type {
   CallImportRetryFailedRowsResponse,
   Workspace,
   LLMGenerationConfig,
+  ListIntegrationVoiceAgentsResponse,
   TestAgent,
 } from '../types/api'
 
@@ -1706,6 +1707,22 @@ class ApiClient {
     const response = await this.client.post(
       `/api/v1/integrations/${integrationId}/preview-agent-prompt`,
       { voice_ai_agent_id: voiceAiAgentId },
+    )
+    return response.data
+  }
+
+  async listIntegrationVoiceAgents(
+    integrationId: string,
+    options?: { refresh?: boolean; search?: string },
+  ): Promise<ListIntegrationVoiceAgentsResponse> {
+    const response = await this.client.get(
+      `/api/v1/integrations/${integrationId}/voice-agents`,
+      {
+        params: {
+          ...(options?.refresh ? { refresh: true } : {}),
+          ...(options?.search ? { search: options.search } : {}),
+        },
+      },
     )
     return response.data
   }
@@ -3918,6 +3935,29 @@ class ApiClient {
     return response.data
   }
 
+  async getCallRecordingLogs(callShortId: string): Promise<{
+    platform: string
+    entries: Array<{
+      time?: string | null
+      level?: string | null
+      category?: string | null
+      summary?: string | null
+      raw?: Record<string, unknown>
+    }>
+    count: number
+  }> {
+    const response = await this.client.get(`/api/v1/playground/call-recordings/${callShortId}/logs`)
+    return response.data
+  }
+
+  getCallRecordingAudioStreamUrl(callShortId: string, options?: { stereo?: boolean }): string {
+    const params = new URLSearchParams({ proxy: 'true' })
+    if (options?.stereo) params.set('stereo', 'true')
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
+    )
+  }
+
   async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
     const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
     return response.data
@@ -3946,12 +3986,27 @@ class ApiClient {
     return response.data
   }
 
-  async getCallRecordingAudioUrl(callShortId: string): Promise<string> {
+  async getCallRecordingAudioUrl(callShortId: string, options?: { stereo?: boolean }): Promise<string> {
+    const params = new URLSearchParams({ proxy: 'true' })
+    if (options?.stereo) params.set('stereo', 'true')
     const response = await this.client.get(
-      `/api/v1/playground/call-recordings/${callShortId}/audio`,
+      `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
       { responseType: 'blob' }
     )
     return URL.createObjectURL(response.data)
+  }
+
+  async getCallRecordingAudioBuffer(
+    callShortId: string,
+    options?: { stereo?: boolean },
+  ): Promise<ArrayBuffer> {
+    const params = new URLSearchParams({ proxy: 'true' })
+    if (options?.stereo) params.set('stereo', 'true')
+    const response = await this.client.get(
+      `/api/v1/playground/call-recordings/${callShortId}/audio?${params.toString()}`,
+      { responseType: 'arraybuffer' },
+    )
+    return response.data as ArrayBuffer
   }
 
   async createCustomWebsocketSession(data: {
@@ -4601,6 +4656,7 @@ class ApiClient {
   async createSyntheticTraceSession(data: {
     transport?: 'webrtc' | 'websocket' | 'phone' | 'custom'
     evaluator_result_id?: string
+    agent_id?: string
   }): Promise<{
     trace_id: string
     call_short_id: string
@@ -4658,6 +4714,14 @@ class ApiClient {
       { responseType: 'blob' },
     )
     return URL.createObjectURL(response.data)
+  }
+
+  async getEvaluatorResultAudioBuffer(resultId: string): Promise<ArrayBuffer> {
+    const response = await this.client.get(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+      { responseType: 'arraybuffer' },
+    )
+    return response.data as ArrayBuffer
   }
 
   async createEvaluatorResultManual(data: {

@@ -105,6 +105,7 @@ VALID_TRACE_TRANSPORTS = ("webrtc", "websocket", "phone", "custom")
 
 class TraceSessionCreateRequest(BaseModel):
     evaluator_result_id: Optional[UUID] = None
+    agent_id: Optional[UUID] = None
     transport: str = "websocket"
 
 

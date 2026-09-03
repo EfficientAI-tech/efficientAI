@@ -57,23 +57,35 @@ class FrontendWatcher:
         return False
     
     def build_frontend(self):
-        """Rebuild the frontend."""
+        """Rebuild the frontend atomically to avoid serving half-written dist."""
+        import shutil
+
         with self.build_lock:
             try:
                 click.echo("\n🔄 Frontend files changed, rebuilding...")
+                staging_dir = self.frontend_dir / "dist.staging"
+                dist_dir = self.frontend_dir / "dist"
+                shutil.rmtree(staging_dir, ignore_errors=True)
                 result = subprocess.run(
-                    ["npm", "run", "build"],
+                    ["npm", "run", "build", "--", "--outDir", "dist.staging"],
                     cwd=self.frontend_dir,
                     check=False,
                     capture_output=True,
                     text=True,
                 )
                 if result.returncode == 0:
+                    backup_dir = self.frontend_dir / "dist.prev"
+                    shutil.rmtree(backup_dir, ignore_errors=True)
+                    if dist_dir.exists():
+                        dist_dir.rename(backup_dir)
+                    staging_dir.rename(dist_dir)
+                    shutil.rmtree(backup_dir, ignore_errors=True)
                     click.echo("✅ Frontend rebuilt successfully")
                 else:
-                    click.echo(f"⚠️  Frontend build had warnings (check logs)", err=True)
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                    click.echo("⚠️  Frontend build had warnings (check logs)", err=True)
                     if result.stderr:
-                        click.echo(result.stderr[:500], err=True)  # Show first 500 chars
+                        click.echo(result.stderr[:500], err=True)
             except Exception as e:
                 click.echo(f"❌ Frontend build error: {e}", err=True)
     

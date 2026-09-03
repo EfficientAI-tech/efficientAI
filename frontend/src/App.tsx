@@ -61,7 +61,6 @@ import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 
 // Observability
 import Observability from './pages/observability/Observability'
-import ObservabilityCalls from './pages/observability/ObservabilityCalls'
 import ObservabilityCallDetail from './pages/observability/ObservabilityCallDetail'
 import TestInsights from './pages/test-insights/TestInsights'
 import CallTraceDetail from './pages/test-insights/CallTraceDetail'
@@ -201,11 +200,13 @@ function App() {
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
-          <Route path="observability/calls" element={<ObservabilityCalls />} />
+          <Route path="observability/calls" element={<Navigate to="/calls" replace />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
-          <Route path="call-traces" element={<TestInsights />} />
+          <Route path="calls" element={<TestInsights />} />
+          <Route path="calls/:traceId" element={<CallTraceDetail />} />
+          <Route path="call-traces" element={<Navigate to="/calls" replace />} />
           <Route path="call-traces/:traceId" element={<CallTraceDetail />} />
-          <Route path="test-insights" element={<PreserveSearchRedirect to="/call-traces" />} />
+          <Route path="test-insights" element={<PreserveSearchRedirect to="/calls" />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<UsagePage />} />
           <Route path="usage/pricing" element={<UsagePricingRedirect />} />

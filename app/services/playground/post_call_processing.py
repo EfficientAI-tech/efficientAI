@@ -11,6 +11,34 @@ from app.models.database import CallRecording
 
 PLAYGROUND_CALL_DATA_PRESERVE_KEYS = ("ui_surface", "external_usage_recorded")
 
+_ENDED_STATUSES = frozenset(
+    {"ended", "completed", "failed", "end-of-call-report", "done"}
+)
+
+
+def call_metrics_indicate_ended(metrics: dict[str, Any]) -> bool:
+    status = str(metrics.get("call_status") or metrics.get("status") or "").lower()
+    end_timestamp = metrics.get("end_timestamp") or metrics.get("endedAt")
+    return bool(end_timestamp) or status in _ENDED_STATUSES
+
+
+def provider_metrics_enriched(provider_platform: str, metrics: dict[str, Any]) -> bool:
+    """True when the provider payload has analysis and/or pipeline latency details."""
+    plat = str(provider_platform or "").lower()
+    if plat == "vapi":
+        analysis = metrics.get("analysis") if isinstance(metrics.get("analysis"), dict) else {}
+        perf = (metrics.get("artifact") or {}).get("performanceMetrics") or {}
+        return bool(analysis.get("summary")) or bool(perf.get("turnLatencies"))
+    if plat == "retell":
+        return bool(metrics.get("call_analysis")) or bool(metrics.get("latency"))
+    if plat == "elevenlabs":
+        status = str(metrics.get("status") or "").lower()
+        return status in {"done", "completed"} or bool(metrics.get("conversation_turn_metrics"))
+    if plat == "smallest":
+        raw = metrics.get("raw_data") if isinstance(metrics.get("raw_data"), dict) else {}
+        return bool(raw.get("latencyStats")) or bool(metrics.get("transcript"))
+    return call_metrics_indicate_ended(metrics)
+
 
 def merge_playground_call_data(
     prev: Optional[dict[str, Any]],
@@ -131,3 +159,45 @@ def claim_playground_evaluator_result_slot(
         return None
 
     return locked
+
+
+def persist_provider_call_metrics(
+    db: Session,
+    call_recording_id: UUID,
+    call_metrics: dict[str, Any],
+) -> bool:
+    """Update stored provider call_data without creating an evaluator result."""
+    from app.models.enums import CallRecordingStatus
+
+    locked = _lock_call_recording(db, call_recording_id)
+    if not locked:
+        db.rollback()
+        return False
+
+    prev_data = locked.call_data if isinstance(locked.call_data, dict) else {}
+    merged = merge_playground_call_data(prev_data, call_metrics)
+    locked.call_data = merged
+    locked.status = CallRecordingStatus.UPDATED
+    db.commit()
+    return True
+
+
+def persist_provider_call_metrics(
+    db: Session,
+    call_recording_id: UUID,
+    call_metrics: dict[str, Any],
+) -> bool:
+    """Update stored provider call_data without creating an evaluator result."""
+    from app.models.enums import CallRecordingStatus
+
+    locked = _lock_call_recording(db, call_recording_id)
+    if not locked:
+        db.rollback()
+        return False
+
+    prev_data = locked.call_data if isinstance(locked.call_data, dict) else {}
+    merged = merge_playground_call_data(prev_data, call_metrics)
+    locked.call_data = merged
+    locked.status = CallRecordingStatus.UPDATED
+    db.commit()
+    return True

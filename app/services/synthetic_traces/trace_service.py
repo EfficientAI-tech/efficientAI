@@ -363,6 +363,43 @@ def link_trace_to_call_recording(
     return trace
 
 
+def link_trace_to_evaluator_result(
+    db: Session,
+    *,
+    organization_id: UUID,
+    call_short_id: str,
+    evaluator_result_id: UUID,
+    call_recording_id: Optional[UUID] = None,
+) -> Optional[SyntheticCallTrace]:
+    trace = (
+        db.query(SyntheticCallTrace)
+        .filter(
+            SyntheticCallTrace.organization_id == organization_id,
+            SyntheticCallTrace.call_short_id == call_short_id,
+        )
+        .order_by(SyntheticCallTrace.created_at.desc())
+        .first()
+    )
+    if not trace:
+        return None
+    trace.evaluator_result_id = evaluator_result_id
+    if call_recording_id:
+        trace.call_recording_id = call_recording_id
+    result = (
+        db.query(EvaluatorResult)
+        .filter(
+            EvaluatorResult.id == evaluator_result_id,
+            EvaluatorResult.organization_id == organization_id,
+        )
+        .first()
+    )
+    if result:
+        result.synthetic_call_trace_id = trace.id
+    db.commit()
+    db.refresh(trace)
+    return trace
+
+
 OBSERVABILITY_TRACES_API_PATH = "/api/v1/observability/traces"
 
 

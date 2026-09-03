@@ -98,7 +98,7 @@ Respond to what the user said in a creative and helpful way. Keep your responses
 """
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None, serializer=None, telephony_mode: bool = False, call_short_id: str = None, silence_hangup_secs: float | None = None, workspace_id: str = None, tracing_task_kwargs: dict | None = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -273,6 +273,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                     audio_in_sample_rate=transport_in_sample_rate,
                     audio_out_sample_rate=transport_out_sample_rate,
                 ),
+                **(tracing_task_kwargs or {}),
             )
             pipeline_task_ref.append(task)
 
@@ -323,6 +324,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                     enable_usage_metrics=True,
                 ),
                 observers=[imports["RTVIObserver"](rtvi)],
+                **(tracing_task_kwargs or {}),
             )
 
             @rtvi.event_handler("on_client_ready")

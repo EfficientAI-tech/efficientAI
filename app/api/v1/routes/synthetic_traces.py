@@ -193,6 +193,7 @@ def create_trace_session(
             organization_id=organization_id,
             workspace_id=workspace_id,
             evaluator_result_id=payload.evaluator_result_id,
+            agent_id=payload.agent_id,
             transport=payload.transport,
         )
     except ValueError as exc:

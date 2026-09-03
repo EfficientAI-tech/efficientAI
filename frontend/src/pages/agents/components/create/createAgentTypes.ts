@@ -35,7 +35,7 @@ export const TELEPHONY_STEPS = [
 ] as const
 
 export const PLATFORM_STEPS = [
-  { id: 1, title: 'Connect', description: 'Choose platform, integration, Agent ID' },
+  { id: 1, title: 'Connect', description: 'Choose platform, integration, agent' },
   { id: 2, title: 'Voice', description: 'Select voice bundle' },
   { id: 3, title: 'Prompts', description: 'Imported prompt → test prompt' },
 ] as const

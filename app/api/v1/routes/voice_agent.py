@@ -72,6 +72,10 @@ async def websocket_endpoint(
     await websocket.accept()
     print("[MEDIA-WS] WebSocket connection accepted", flush=True)
 
+    trace_call_short_id: Optional[str] = None
+    organization_id: Optional[UUID] = None
+    workspace_id: Optional[UUID] = None
+
     try:
         db = next(get_db())
 
@@ -104,6 +108,8 @@ async def websocket_endpoint(
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
         ui_surface = websocket.query_params.get("ui_surface")
+        trace_call_short_id = (websocket.query_params.get("call_short_id") or "").strip() or None
+        trace_api_key = api_key
         
         # Fetch agent and voice bundle once for routing and instructions
         agent = None
@@ -127,7 +133,7 @@ async def websocket_endpoint(
         # Resolve workspace_id: derive from agent when available, otherwise fall
         # back to the organization's default workspace so created records remain
         # workspace-scoped.
-        workspace_id: Optional[UUID] = None
+        workspace_id = None
         if agent and getattr(agent, "workspace_id", None):
             workspace_id = agent.workspace_id
         else:
@@ -486,6 +492,23 @@ async def websocket_endpoint(
             session_uuid = uuid4()
 
         agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
+        tracing_task_kwargs: Dict[str, Any] = {}
+        if trace_call_short_id and workspace_id and organization_id:
+            from app.services.voice_agent.playground_tracing import build_pipeline_tracing_kwargs
+
+            tracing_task_kwargs = build_pipeline_tracing_kwargs(
+                call_short_id=trace_call_short_id,
+                workspace_id=str(workspace_id),
+                organization_id=str(organization_id),
+                agent_id=agent_id,
+                api_key=trace_api_key,
+            )
+            if not tracing_task_kwargs:
+                logger.warning(
+                    "Playground OTLP tracing disabled for call_short_id={} "
+                    "(install efficientai[otel] on the media/API process)",
+                    trace_call_short_id,
+                )
         try:
             if use_voice_bundle_pipeline:
                 # Resolve per-provider keys for voice bundle
@@ -535,6 +558,7 @@ async def websocket_endpoint(
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    tracing_task_kwargs=tracing_task_kwargs,
                 )
             else:
                 call_metadata = await run_bot(
@@ -549,6 +573,8 @@ async def websocket_endpoint(
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    workspace_id=str(workspace_id) if workspace_id else None,
+                    tracing_task_kwargs=tracing_task_kwargs,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
@@ -633,7 +659,7 @@ async def websocket_endpoint(
 
                     logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}")
 
-                    call_short_id = generate_unique_call_short_id(db)
+                    call_short_id = trace_call_short_id or generate_unique_call_short_id(db)
                     speaker_segments = call_metadata.get("speaker_segments") or []
                     if not isinstance(speaker_segments, list):
                         speaker_segments = []
@@ -681,6 +707,19 @@ async def websocket_endpoint(
                         evaluator_result_id=evaluator_result.id,
                     )
                     db.add(call_recording)
+                    db.flush()
+
+                    if trace_call_short_id:
+                        from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
+
+                        link_trace_to_evaluator_result(
+                            db,
+                            organization_id=organization_id,
+                            call_short_id=trace_call_short_id,
+                            evaluator_result_id=evaluator_result.id,
+                            call_recording_id=call_recording.id,
+                        )
+
                     db.commit()
                     db.refresh(evaluator_result)
 
@@ -738,6 +777,21 @@ async def websocket_endpoint(
         except:
             pass
     finally:
+        try:
+            if trace_call_short_id and organization_id:
+                from app.services.voice_agent.playground_tracing import flush_playground_tracing
+                from app.services.synthetic_traces.trace_service import close_trace_session
+
+                flush_playground_tracing()
+                if 'db' in locals():
+                    close_trace_session(
+                        db,
+                        organization_id=organization_id,
+                        call_short_id=trace_call_short_id,
+                        workspace_id=workspace_id,
+                    )
+        except Exception as trace_close_error:
+            logger.warning(f"Failed to close playground trace session: {trace_close_error}")
         try:
             if 'db' in locals():
                 db.close()
@@ -859,6 +913,7 @@ async def bot_connect(
     persona_id = request.query_params.get("persona_id")
     scenario_id = request.query_params.get("scenario_id")
     ui_surface = request.query_params.get("ui_surface")
+    call_short_id = request.query_params.get("call_short_id")
     
     # Determine which AI Provider to use based on agent configuration
     ai_provider = None
@@ -1005,6 +1060,7 @@ async def bot_connect(
         persona_id=persona_id,
         scenario_id=scenario_id,
         ui_surface=ui_surface,
+        call_short_id=call_short_id,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
         fallback_scheme=(
             request.headers.get("x-forwarded-proto")

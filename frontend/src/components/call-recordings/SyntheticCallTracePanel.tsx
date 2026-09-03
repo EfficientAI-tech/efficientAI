@@ -5,7 +5,9 @@ import { Clock, ChevronDown, ChevronRight, ExternalLink, Radio, X } from 'lucide
 import { apiClient } from '../../lib/api'
 import TraceTurnDetail from './TraceTurnDetail'
 import TraceWaterfall from './TraceWaterfall'
-import TraceRecordingBar from './TraceRecordingBar'
+import CallWaveformPlayer from './CallWaveformPlayer'
+import CallEventTimeline from './CallEventTimeline'
+import { buildOtelCallTimeline } from './callTimelineUtils'
 import { TurnSignalBadges } from './TraceTurnBadges'
 import {
   FAILURE_FLAG_LABELS,
@@ -22,6 +24,8 @@ interface SyntheticCallTracePanelProps {
   traceId?: string
   callShortId?: string
   onClose?: () => void
+  embedded?: boolean
+  hideRecording?: boolean
 }
 
 interface ComponentMeta {
@@ -76,7 +80,7 @@ interface OtelSpan {
   events?: Array<{ name?: string; attributes?: Record<string, unknown> }>
 }
 
-type DetailTab = 'trace' | 'waterfall' | 'transcript' | 'spans'
+type DetailTab = 'trace' | 'waterfall' | 'transcript' | 'timeline' | 'spans'
 type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
 
 const COMPONENT_LABELS: Record<ComponentKind, string> = {
@@ -90,6 +94,7 @@ const TABS: Array<{ id: DetailTab; label: string }> = [
   { id: 'trace', label: 'Trace' },
   { id: 'waterfall', label: 'Waterfall' },
   { id: 'transcript', label: 'Transcript' },
+  { id: 'timeline', label: 'Timeline' },
   { id: 'spans', label: 'Spans' },
 ]
 
@@ -332,8 +337,11 @@ export default function SyntheticCallTracePanel({
   traceId,
   callShortId,
   onClose,
+  embedded = false,
+  hideRecording = false,
 }: SyntheticCallTracePanelProps) {
   const [tab, setTab] = useState<DetailTab>('trace')
+  const visibleTabs = embedded ? TABS.filter((item) => item.id !== 'transcript') : TABS
 
   const lookupKey = traceId ?? callShortId ?? evaluatorResultId
   const lookupMode = traceId ? 'by-trace' : callShortId ? 'by-call-short-id' : 'by-result'
@@ -441,23 +449,54 @@ export default function SyntheticCallTracePanel({
     return messages
   }, [turns, spansByTurn, pipelineModels, pipelineMode])
 
-  if (isLoading) {
-    return <div className="flex items-center justify-center h-48 text-sm text-gray-500">Loading trace…</div>
+  const timelineEvents = useMemo(() => {
+    const spanEvents = buildOtelCallTimeline(otelSpans)
+    const messageEvents = transcriptMessages.map((msg, idx) => ({
+      id: `turn-msg-${idx}`,
+      offsetMs: msg.offsetMs,
+      category: 'message' as const,
+      level: 'info' as const,
+      title: msg.role === 'user' ? `User spoke (turn ${msg.turn})` : `Agent spoke (turn ${msg.turn})`,
+      detail: msg.text,
+    }))
+    return [...spanEvents, ...messageEvents].sort(
+      (a, b) => a.offsetMs - b.offsetMs || a.title.localeCompare(b.title),
+    )
+  }, [otelSpans, transcriptMessages])
+
+  if (isLoading && !data) {
+    return (
+      <div className={`space-y-3 ${embedded ? 'p-1' : 'p-5'}`}>
+        <div className="h-8 w-48 animate-pulse rounded-lg bg-gray-100" />
+        <div className={`animate-pulse rounded-xl bg-gray-100 ${embedded ? 'h-32' : 'h-48'}`} />
+        <div className="h-64 animate-pulse rounded-xl bg-gray-100" />
+      </div>
+    )
   }
 
   if (isError) {
     const message = (error as Error)?.message || 'Trace not available'
     if (message.includes('404') || message.toLowerCase().includes('not found')) {
       return (
-        <div className="p-8 text-sm text-gray-600">
-          No trace yet. Run a Pipecat session with tracing enabled, then see{' '}
-          <Link to="/call-traces" className="text-primary-600 hover:text-primary-800 font-medium">
-            Call Traces → Connect Pipecat
-          </Link>
+        <div className={`text-sm text-gray-600 ${embedded ? 'rounded-xl border border-gray-200 bg-white p-6' : 'p-8'}`}>
+          {embedded ? (
+            <p>No pipeline trace for this run yet. OTLP tracing is available for internal Test Agent web sessions.</p>
+          ) : (
+            <>
+              No trace yet. Run a Pipecat session with tracing enabled, then see{' '}
+              <Link to="/calls" className="text-primary-600 hover:text-primary-800 font-medium">
+                Connect Pipecat →
+              </Link>
+            </>
+          )}
         </div>
       )
     }
-    return <div className="p-8 text-sm text-red-800 bg-red-50">Could not load trace: {message}</div>
+    return (
+      <div className={`text-sm text-red-800 bg-red-50 ${embedded ? 'rounded-xl border border-red-200 p-4' : 'p-8'}`}>
+        Could not load trace: {message}
+      </div>
+    )
   }
 
   const trace = data
@@ -487,6 +526,133 @@ export default function SyntheticCallTracePanel({
   const failureFlags = (trace.failure_flags ?? []) as string[]
   const agentRouteId = linkedAgent?.agent_id || linkedAgent?.id || trace.agent_id
   const agentLabel = linkedAgent?.name || (trace.agent_id ? 'Agent' : null)
+
+  const tabContent = (
+    <>
+      {tab === 'trace' && (
+        <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
+          <TraceTurnDetail
+            rows={traceTurnRows}
+            pipelineModels={pipelineModels}
+            componentAggregates={
+              trace.component_aggregates as Record<string, { p50?: number; p90?: number; p95?: number }> | undefined
+            }
+          />
+        </div>
+      )}
+
+      {tab === 'waterfall' && (
+        <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
+          {traceTurnRows.length === 0 ? (
+            <p className="py-12 text-center text-sm text-gray-500">No waterfall data</p>
+          ) : (
+            <TraceWaterfall rows={traceTurnRows} />
+          )}
+        </div>
+      )}
+
+      {tab === 'transcript' && !embedded && (
+        <div className="bg-gray-50/50 p-5 pb-16">
+          {transcriptMessages.length === 0 ? (
+            <p className="text-center py-16 text-sm text-gray-500">No transcript</p>
+          ) : (
+            <div className="space-y-4 max-w-2xl mx-auto">
+              {transcriptMessages.map((msg, idx) => {
+                const isUser = msg.role === 'user'
+                return (
+                  <div key={`${msg.turn}-${msg.role}-${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+                    <div className="max-w-[85%]">
+                      <div
+                        className={`rounded-xl px-4 py-3 ${
+                          isUser
+                            ? 'bg-white border border-gray-200 text-gray-900'
+                            : 'bg-gray-100 border border-gray-200/80 text-gray-900'
+                        }`}
+                      >
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <p className={`text-xs font-semibold ${isUser ? 'text-gray-700' : 'text-gray-600'}`}>
+                            {isUser ? 'User' : 'Agent'}
+                          </p>
+                          <TurnSignalBadges
+                            talkOver={isUser ? msg.talkOver : undefined}
+                            interrupted={!isUser ? msg.interrupted : undefined}
+                            incomplete={msg.incomplete}
+                          />
+                        </div>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                      </div>
+                      <p className={`text-[11px] mt-1 tabular-nums text-gray-500 ${isUser ? 'text-right' : ''}`}>
+                        Turn {msg.turn} {formatOffset(msg.offsetMs)}
+                        {msg.latencyMs != null && (
+                          <span className="ml-2">· {formatMs(msg.latencyMs)}</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'timeline' && (
+        <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
+          <CallEventTimeline
+            events={timelineEvents}
+            emptyMessage="No pipeline events captured for this session."
+          />
+        </div>
+      )}
+
+      {tab === 'spans' && (
+        <div className={embedded ? 'overflow-hidden rounded-xl border border-gray-200 bg-white pb-4' : 'bg-white pb-16'}>
+          {otelSpans.length === 0 ? (
+            <p className="py-16 text-center text-sm text-gray-500">No spans</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] items-center gap-4 border-b border-gray-200 bg-gray-50/80 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                <span>Stage</span>
+                <span>Span</span>
+                <span>Model</span>
+                <span className="text-right">Duration</span>
+              </div>
+              {otelSpans
+                .slice()
+                .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
+                .map((span) => (
+                  <RawSpanRow key={`${span.trace_id}-${span.span_id}`} span={span} />
+                ))}
+            </>
+          )}
+        </div>
+      )}
+    </>
+  )
+
+  if (embedded) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white">
+        <div className="flex flex-wrap gap-1 border-b border-gray-100 px-2">
+          {visibleTabs.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                tab === id
+                  ? 'border-primary-600 text-gray-900'
+                  : 'border-transparent text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="p-4">{tabContent}</div>
+      </div>
+    )
+  }
 
   return (
     <div className={isDrawer ? 'flex h-full min-h-0 flex-col bg-gray-50' : 'bg-gray-50 pb-10'}>
@@ -576,11 +742,15 @@ export default function SyntheticCallTracePanel({
         </div>
 
         <div className="space-y-3 px-5 py-4">
-          <TraceRecordingBar
-            callShortId={trace.call_short_id}
-            callRecordingId={trace.call_recording_id}
-            evaluatorResultId={trace.evaluator_result_id}
-          />
+          {!hideRecording && (
+            <CallWaveformPlayer
+              callShortId={trace.call_short_id}
+              callRecordingId={trace.call_recording_id ?? trace.call_short_id}
+              evaluatorResultId={
+                trace.call_short_id ? undefined : (trace.evaluator_result_id ?? evaluatorResultId)
+              }
+            />
+          )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <MetricTile
               label="Response p50"
@@ -603,7 +773,7 @@ export default function SyntheticCallTracePanel({
         </div>
 
         <div className="flex border-t border-gray-100 bg-white px-5">
-          {TABS.map(({ id, label }) => (
+          {visibleTabs.map(({ id, label }) => (
             <button
               key={id}
               type="button"
@@ -621,95 +791,7 @@ export default function SyntheticCallTracePanel({
       </div>
 
       <div className={isDrawer ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : undefined}>
-        {tab === 'trace' && (
-          <div className="p-5 pb-16">
-            <TraceTurnDetail
-              rows={traceTurnRows}
-              pipelineModels={pipelineModels}
-              componentAggregates={
-                trace.component_aggregates as Record<string, { p50?: number; p90?: number; p95?: number }> | undefined
-              }
-            />
-          </div>
-        )}
-
-        {tab === 'waterfall' && (
-          <div className="p-5 pb-16">
-            {traceTurnRows.length === 0 ? (
-              <p className="py-12 text-center text-sm text-gray-500">No waterfall data</p>
-            ) : (
-              <TraceWaterfall rows={traceTurnRows} />
-            )}
-          </div>
-        )}
-
-        {tab === 'transcript' && (
-          <div className="bg-gray-50/50 p-5 pb-16">
-            {transcriptMessages.length === 0 ? (
-              <p className="text-center py-16 text-sm text-gray-500">No transcript</p>
-            ) : (
-              <div className="space-y-4 max-w-2xl mx-auto">
-                {transcriptMessages.map((msg, idx) => {
-                  const isUser = msg.role === 'user'
-                  return (
-                    <div key={`${msg.turn}-${msg.role}-${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
-                      <div className="max-w-[85%]">
-                        <div
-                          className={`rounded-xl px-4 py-3 ${
-                            isUser
-                              ? 'bg-white border border-gray-200 text-gray-900'
-                              : 'bg-gray-100 border border-gray-200/80 text-gray-900'
-                          }`}
-                        >
-                          <div className="mb-1 flex flex-wrap items-center gap-2">
-                            <p className={`text-xs font-semibold ${isUser ? 'text-gray-700' : 'text-gray-600'}`}>
-                              {isUser ? 'User' : 'Agent'}
-                            </p>
-                            <TurnSignalBadges
-                              talkOver={isUser ? msg.talkOver : undefined}
-                              interrupted={!isUser ? msg.interrupted : undefined}
-                              incomplete={msg.incomplete}
-                            />
-                          </div>
-                          <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-                        </div>
-                        <p className={`text-[11px] mt-1 tabular-nums text-gray-500 ${isUser ? 'text-right' : ''}`}>
-                          Turn {msg.turn} {formatOffset(msg.offsetMs)}
-                          {msg.latencyMs != null && (
-                            <span className="ml-2">· {formatMs(msg.latencyMs)}</span>
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {tab === 'spans' && (
-          <div className="bg-white pb-16">
-            {otelSpans.length === 0 ? (
-              <p className="py-16 text-center text-sm text-gray-500">No spans</p>
-            ) : (
-              <>
-                <div className="grid grid-cols-[3.5rem_minmax(0,1fr)_minmax(0,1.2fr)_4.5rem] items-center gap-4 border-b border-gray-200 bg-gray-50/80 px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                  <span>Stage</span>
-                  <span>Span</span>
-                  <span>Model</span>
-                  <span className="text-right">Duration</span>
-                </div>
-                {otelSpans
-                  .slice()
-                  .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
-                  .map((span) => (
-                    <RawSpanRow key={`${span.trace_id}-${span.span_id}`} span={span} />
-                  ))}
-              </>
-            )}
-          </div>
-        )}
+        {tabContent}
       </div>
     </div>
   )

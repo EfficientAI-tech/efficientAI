@@ -89,6 +89,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
   const micStreamRef = useRef<MediaStream | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
+  const traceSessionRef = useRef<string | null>(null)
 
   const appendTranscript = (entry: TranscriptEntry) => {
     setTranscriptEntries((prev) => [...prev, entry])
@@ -333,6 +334,24 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
       setTranscriptEntries([])
       setSessionStartedAt(new Date().toISOString())
       setSessionEndedAt(null)
+      traceSessionRef.current = null
+
+      let traceCallShortId: string | null = null
+      if (!customEndpoint && (accessToken || apiKey)) {
+        try {
+          const session = await apiClient.createSyntheticTraceSession({
+            transport: 'websocket',
+            ...(effectiveAgentId ? { agent_id: effectiveAgentId } : {}),
+          })
+          traceCallShortId = session.call_short_id
+          traceSessionRef.current = session.call_short_id
+          log(`Trace session ${session.call_short_id}`, 'system')
+        } catch (sessionErr: any) {
+          const msg =
+            sessionErr?.response?.data?.detail || sessionErr?.message || 'trace session failed'
+          log(`Trace session skipped: ${msg}`, 'system')
+        }
+      }
 
       try {
         micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -365,6 +384,11 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
             setSessionEndedAt(new Date().toISOString())
             stopRecording()
             log('Client disconnected', 'system')
+            const traceId = traceSessionRef.current
+            if (traceId) {
+              traceSessionRef.current = null
+              apiClient.closeSyntheticTraceSession(traceId).catch(() => undefined)
+            }
           },
           onBotReady: (data) => {
             log(`Bot ready: ${JSON.stringify(data)}`, 'system')
@@ -421,6 +445,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
       if (!customEndpoint && personaId) params.append('persona_id', personaId)
       if (!customEndpoint && scenarioId) params.append('scenario_id', scenarioId)
       if (!customEndpoint && billingSurface) params.append('ui_surface', billingSurface)
+      if (!customEndpoint && traceCallShortId) params.append('call_short_id', traceCallShortId)
 
       if (!customEndpoint && params.toString()) {
         endpointUrl += `?${params.toString()}`

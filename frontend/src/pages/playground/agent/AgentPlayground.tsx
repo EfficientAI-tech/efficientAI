@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Activity } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
@@ -11,7 +11,10 @@ import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from '../../../components/VoiceAgent'
 import GenericVoiceWSClient from '../../../components/GenericVoiceWSClient'
+import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 import { getProtocolById } from '../../../lib/wsProtocols'
+import { prefetchCallRecordingQuery, warmCallRecordingQueryFromList } from '../../../lib/callRecordingQuery'
+import { prefetchCallRecordingAudio } from '../../../lib/waveformAudioCache'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
 
@@ -130,6 +133,22 @@ export default function AgentPlayground() {
   const [selectedCallIds, setSelectedCallIds] = useState<Set<string>>(new Set())
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
+  const [otlpTraceResultId, setOtlpTraceResultId] = useState<string | null>(null)
+  const [voiceAiCallShortId, setVoiceAiCallShortId] = useState<string | null>(null)
+
+  const isVoiceAiProviderRecording = (recording: { provider_platform?: string | null }) => {
+    const platform = (recording.provider_platform || '').toLowerCase()
+    return (
+      platform === IntegrationPlatform.RETELL ||
+      platform === IntegrationPlatform.VAPI ||
+      platform === IntegrationPlatform.ELEVENLABS ||
+      platform === IntegrationPlatform.SMALLEST ||
+      platform === 'retell' ||
+      platform === 'vapi' ||
+      platform === 'elevenlabs' ||
+      platform === 'smallest'
+    )
+  }
   const [isDeletingSelectedTests, setIsDeletingSelectedTests] = useState(false)
 
 
@@ -730,6 +749,12 @@ export default function AgentPlayground() {
   }
 
 
+  const handleOpenVoiceAiDrawer = (callShortId: string) => {
+    prefetchCallRecordingAudio(callShortId, false)
+    void prefetchCallRecordingQuery(queryClient, callShortId)
+    setVoiceAiCallShortId(callShortId)
+  }
+
   const handleViewCallRecording = (callShortId: string) => {
     navigate(`/playground/call-recordings/${callShortId}`)
   }
@@ -746,8 +771,12 @@ export default function AgentPlayground() {
     }
   }
 
-  const voiceAICallRecordings = callRecordings.filter((recording: any) => recording.provider_platform !== 'custom_websocket')
+  const voiceAICallRecordings = callRecordings.filter(isVoiceAiProviderRecording)
   const customWebsocketSessions = callRecordings.filter((recording: any) => recording.provider_platform === 'custom_websocket')
+
+  useEffect(() => {
+    warmCallRecordingQueryFromList(queryClient, callRecordings)
+  }, [callRecordings, queryClient])
 
 
   const toggleCallSelection = (callShortId: string) => {
@@ -971,6 +1000,9 @@ export default function AgentPlayground() {
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
                           </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
+                            Trace
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
@@ -1021,6 +1053,17 @@ export default function AgentPlayground() {
                                   ? new Date(result.created_at).toLocaleString()
                                   : 'N/A'}
                               </td>
+                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => setOtlpTraceResultId(result.id)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                  title="View OTLP call trace"
+                                >
+                                  <Activity className="h-3.5 w-3.5" />
+                                  Trace
+                                </button>
+                              </td>
                             </tr>
                           )
                         })}
@@ -1050,7 +1093,9 @@ export default function AgentPlayground() {
                 )}
                 {voiceAICallRecordings.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                    <p className="text-sm text-gray-600">No call recordings found</p>
+                    <p className="text-sm text-gray-600">
+                      No Retell, Vapi, ElevenLabs, or Smallest calls yet. Start a Voice AI Agent test from the agent sidebar.
+                    </p>
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -1095,7 +1140,11 @@ export default function AgentPlayground() {
                             <tr
                               key={recording.id}
                               className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
-                              onClick={() => handleViewCallRecording(recording.call_short_id)}
+                              onClick={() => handleOpenVoiceAiDrawer(recording.call_short_id)}
+                              onMouseEnter={() => {
+                                prefetchCallRecordingAudio(recording.call_short_id, false)
+                                void prefetchCallRecordingQuery(queryClient, recording.call_short_id)
+                              }}
                             >
                               <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <button
@@ -1578,11 +1627,28 @@ export default function AgentPlayground() {
             </div>
 
             <div className="p-6">
-              <VoiceAgent agentId={selectedAgent?.id} billingSurface="agent_playground" />
+              <VoiceAgent
+                agentId={selectedAgent?.id}
+                billingSurface="agent_playground"
+                onSessionSaved={() => {
+                  queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+                }}
+              />
             </div>
           </div>
         </div>
       )}
+
+      <TraceDetailDrawer
+        open={Boolean(otlpTraceResultId)}
+        evaluatorResultId={otlpTraceResultId}
+        onClose={() => setOtlpTraceResultId(null)}
+      />
+      <TraceDetailDrawer
+        open={Boolean(voiceAiCallShortId)}
+        callShortId={voiceAiCallShortId}
+        onClose={() => setVoiceAiCallShortId(null)}
+      />
     </>
   )
 }

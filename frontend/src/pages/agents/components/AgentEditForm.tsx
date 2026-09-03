@@ -21,6 +21,7 @@ import {
 } from '../../../lib/llmModelOptions'
 import { useAgentPhoneAssignmentCheck } from './useAgentPhoneAssignmentCheck'
 import { formatAgentPhoneConflictMessage } from './agentPhoneValidation'
+import VoiceAgentPicker from './create/VoiceAgentPicker'
 
 interface FormData {
   name: string
@@ -830,7 +831,13 @@ export default function AgentEditForm({
             <div className="flex items-center gap-3">
               <select
                 value={formData.voice_ai_integration_id}
-                onChange={(e) => onChange({ ...formData, voice_ai_integration_id: e.target.value })}
+                onChange={(e) =>
+                  onChange({
+                    ...formData,
+                    voice_ai_integration_id: e.target.value,
+                    voice_ai_agent_id: '',
+                  })
+                }
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
               >
                 <option value="">Select an Integration</option>
@@ -862,16 +869,22 @@ export default function AgentEditForm({
               )}
             </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Agent ID</label>
-            <input
-              type="text"
+          {formData.voice_ai_integration_id ? (
+            <VoiceAgentPicker
+              integrationId={formData.voice_ai_integration_id}
+              platformLabel={
+                selectedVoiceIntegration
+                  ? getIntegrationPlatformLabel(
+                      selectedVoiceIntegration.platform as IntegrationPlatform,
+                    )
+                  : 'provider'
+              }
               value={formData.voice_ai_agent_id}
-              onChange={(e) => onChange({ ...formData, voice_ai_agent_id: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-              placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
+              onChange={(agentId) => onChange({ ...formData, voice_ai_agent_id: agentId })}
             />
-          </div>
+          ) : (
+            <p className="text-sm text-gray-500">Select an integration to choose an agent.</p>
+          )}
         </div>
       )}
 

@@ -11,18 +11,19 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { CHART_BAR, STAGE_COLORS } from '../../lib/callDetailTheme'
 
 type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
 
 const SLICE_COLORS: Record<ComponentKind, string> = {
-  stt: '#d4d4d8',
-  llm: '#a16207',
-  tts: '#a1a1aa',
-  s2s: '#71717a',
+  stt: STAGE_COLORS.stt,
+  llm: STAGE_COLORS.llm,
+  tts: STAGE_COLORS.tts,
+  s2s: STAGE_COLORS.s2s,
 }
 
-const BAR_FILL_DEFAULT = '#a1a1aa'
-const BAR_FILL_PEAK = '#854d0e'
+const BAR_FILL_DEFAULT = CHART_BAR.default
+const BAR_FILL_PEAK = CHART_BAR.peak
 
 const STAGE_LABELS: Record<ComponentKind, string> = {
   stt: 'STT',

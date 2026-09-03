@@ -526,6 +526,7 @@ async def run_voice_bundle_fastapi(
     telephony_mode: bool = False,
     call_short_id: str | None = None,
     silence_hangup_secs: float | None = None,
+    tracing_task_kwargs: dict | None = None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -873,6 +874,7 @@ async def run_voice_bundle_fastapi(
                 pipeline,
                 params=pipeline_task_params,
                 observers=[sut_latency_observer],
+                **(tracing_task_kwargs or {}),
             )
             pipeline_task_ref.append(task)
 
@@ -921,6 +923,7 @@ async def run_voice_bundle_fastapi(
                 pipeline,
                 params=pipeline_task_params,
                 observers=[imports["RTVIObserver"](rtvi)],
+                **(tracing_task_kwargs or {}),
             )
             if silence_hangup_processor:
                 pipeline_task_ref.append(task)
