@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import {
-  DollarSign, MessageSquare, TrendingUp, Activity, Server, CheckCircle, XCircle, Clock, Zap, Download, Loader
+  DollarSign, MessageSquare, TrendingUp, Activity, Server, CheckCircle, XCircle, Clock, Zap, Loader
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import RecordingAudioPlayer from '../audio/RecordingAudioPlayer'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell
@@ -326,19 +327,19 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
           {audioLoading && (
             <Loader className="h-4 w-4 text-gray-400 animate-spin" />
           )}
-          {audioBlobUrl && (
-            <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-              <audio controls src={audioBlobUrl} className="h-8 w-64" />
-              <a href={audioBlobUrl} download={`call_${callShortId || 'recording'}.mp3`} className="text-gray-500 hover:text-emerald-600 p-1">
-                <Download className="h-4 w-4" />
-              </a>
-            </div>
-          )}
           {audioError && hasAudio && (
             <span className="text-xs text-gray-400">Audio unavailable</span>
           )}
         </div>
       </div>
+      {audioBlobUrl && (
+        <div className="mb-4 flex-shrink-0">
+          <RecordingAudioPlayer
+            src={audioBlobUrl}
+            downloadUrl={audioBlobUrl}
+          />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
         {transcriptEntries.length > 0 ? (

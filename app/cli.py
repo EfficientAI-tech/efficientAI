@@ -1600,7 +1600,17 @@ def usage_recompute(
     help="Merge generated pricing into app/config/models.json",
 )
 @click.option("--stdout", is_flag=True, help="Print pricing_catalog.json to stdout")
-def usage_sync_litellm(local: bool, write_models: bool, stdout: bool):
+@click.option(
+    "--import-missing-fireworks",
+    is_flag=True,
+    help="Add current Fireworks serverless chat models missing from models.json",
+)
+def usage_sync_litellm(
+    local: bool,
+    write_models: bool,
+    stdout: bool,
+    import_missing_fireworks: bool,
+):
     """Fetch LiteLLM prices and regenerate pricing_catalog.json."""
     import subprocess
     import sys as sys_module
@@ -1613,6 +1623,8 @@ def usage_sync_litellm(local: bool, write_models: bool, stdout: bool):
         cmd.append("--write-models")
     if stdout:
         cmd.append("--stdout")
+    if import_missing_fireworks:
+        cmd.append("--import-missing-fireworks")
     subprocess.run(cmd, check=True)
 
 

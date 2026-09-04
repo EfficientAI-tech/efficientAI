@@ -1,21 +1,41 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
 from unittest.mock import MagicMock
 
-from scripts.setup_flexprice_meters import (
-    AGENT_PLAYGROUND_PRIMARY_EVENT,
-    EVALUATOR_RUN_COMPLETED_EVENT,
-    GEPA_PRIMARY_EVENT,
-    JUDGE_ALIGNMENT_PRIMARY_EVENT,
-    LICENSE_FEATURES,
-    METRICS_AI_ASSIST_EVENT,
-    METRIC_STUDIO_PRIMARY_EVENT,
-    PLAN_BILLABLE_METERS,
-    SCENARIO_AI_TEXT_EVENT,
-    VOICE_PLAYGROUND_PRIMARY_EVENT,
-    _feature_meter_is_canonical,
-    _pick_canonical_meter,
-    meter_aggregation_matches,
-    repair_license_features,
-)
+# Load by file path. A top-level `scripts` import collides with nemo-toolkit's
+# site-packages package of the same name (see newenv).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SETUP_SCRIPT = _REPO_ROOT / "scripts" / "setup_flexprice_meters.py"
+
+
+def _load_setup_flexprice_meters():
+    spec = importlib.util.spec_from_file_location(
+        "setup_flexprice_meters", _SETUP_SCRIPT
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_setup = _load_setup_flexprice_meters()
+AGENT_PLAYGROUND_PRIMARY_EVENT = _setup.AGENT_PLAYGROUND_PRIMARY_EVENT
+EVALUATOR_RUN_COMPLETED_EVENT = _setup.EVALUATOR_RUN_COMPLETED_EVENT
+GEPA_PRIMARY_EVENT = _setup.GEPA_PRIMARY_EVENT
+JUDGE_ALIGNMENT_PRIMARY_EVENT = _setup.JUDGE_ALIGNMENT_PRIMARY_EVENT
+LICENSE_FEATURES = _setup.LICENSE_FEATURES
+METRICS_AI_ASSIST_EVENT = _setup.METRICS_AI_ASSIST_EVENT
+METRIC_STUDIO_PRIMARY_EVENT = _setup.METRIC_STUDIO_PRIMARY_EVENT
+PLAN_BILLABLE_METERS = _setup.PLAN_BILLABLE_METERS
+PROMPT_PARTIAL_AI_ASSISTED_EVENT = _setup.PROMPT_PARTIAL_AI_ASSISTED_EVENT
+SCENARIO_AI_TEXT_EVENT = _setup.SCENARIO_AI_TEXT_EVENT
+VOICE_PLAYGROUND_PRIMARY_EVENT = _setup.VOICE_PLAYGROUND_PRIMARY_EVENT
+_feature_meter_is_canonical = _setup._feature_meter_is_canonical
+_pick_canonical_meter = _setup._pick_canonical_meter
+meter_aggregation_matches = _setup.meter_aggregation_matches
+repair_license_features = _setup.repair_license_features
 from app.api.v1.routes.call_import_evaluations import (
     DISCOVERED_METRICS_KEY,
     _is_metric_scores_meta_key,
@@ -103,8 +123,6 @@ def test_scenario_ai_license_feature_spec():
 
 
 def test_prompt_partials_license_feature_spec():
-    from scripts.setup_flexprice_meters import PROMPT_PARTIAL_AI_ASSISTED_EVENT
-
     spec = next(item for item in LICENSE_FEATURES if item["lookup_key"] == "prompt_partials")
     assert spec["event_name"] == PROMPT_PARTIAL_AI_ASSISTED_EVENT
     assert spec["aggregation"] == {"type": "COUNT"}

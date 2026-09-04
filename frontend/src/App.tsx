@@ -48,11 +48,11 @@ import EvaluateTestAgents from './pages/evaluators/evaluators/EvaluateTestAgents
 import EvaluatorDetail from './pages/evaluators/evaluators/EvaluatorDetail'
 
 // Evaluator Results
-import ResultsOverview from './pages/evaluators/results/ResultsOverview'
-import ResultsAgentWorkspace from './pages/evaluators/results/ResultsAgentWorkspace'
+import ResultsHub from './pages/evaluators/results/ResultsHub'
 import {
   RedirectAgentScenarioToWorkspace,
   RedirectAgentSuiteToWorkspace,
+  RedirectAgentWorkspaceToHub,
 } from './pages/evaluators/results/ResultsAgentWorkspaceRedirects'
 import ResultsUnassigned from './pages/evaluators/results/ResultsUnassigned'
 import EvaluatorResultDetail from './pages/evaluators/results/EvaluatorResultDetail'
@@ -181,9 +181,9 @@ function App() {
             <Route path="studio" element={<MetricsStudio />} />
             <Route path="studio/runs/:runId" element={<MetricsStudioRunDetail />} />
           </Route>
-          <Route path="results" element={<ResultsOverview />} />
+          <Route path="results" element={<ResultsHub />} />
           <Route path="results/unassigned" element={<ResultsUnassigned />} />
-          <Route path="results/agents/:agentId" element={<ResultsAgentWorkspace />} />
+          <Route path="results/agents/:agentId" element={<RedirectAgentWorkspaceToHub />} />
           <Route
             path="results/agents/:agentId/suites/:suiteId"
             element={<RedirectAgentSuiteToWorkspace />}

@@ -63,6 +63,7 @@ class TestAgentConfig:
     scenario_description: str = "General inquiry call"
     scenario_goal: str = "Have a conversation and evaluate the agent"
     first_message: str = "Hello, I'm calling because I need some help."
+    caller_speaks_first: bool = True
     
     # Context about the voice AI agent being tested
     agent_name: str = "Voice AI Agent"
@@ -218,11 +219,16 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         Generate the first message to start the conversation.
         
         Returns:
-            Audio bytes of the first message, or None if failed
+            Audio bytes of the first message, or None if failed or caller waits
         """
+        if not self.config.caller_speaks_first:
+            logger.info("[TestAgent] Caller configured to wait for production agent greeting")
+            return None
+
         try:
-            # Use configured first message or generate one
-            first_text = self.config.first_message
+            first_text = (self.config.first_message or "").strip()
+            if not first_text:
+                return None
             
             # Add to conversation history
             self.conversation_history.append({

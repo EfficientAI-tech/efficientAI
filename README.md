@@ -63,12 +63,12 @@ There are two ways to run the application:
    | `redis` | Redis (Celery broker + usage counters) |
    | `api` | HTTP API + frontend |
    | `media` | Live voice WebSocket media server |
-   | `worker` | Celery: `celery` (evaluator cron dispatch), `audio-metrics` queues |
+   | `worker` | Celery: `celery` (evaluator cron runs), `audio-metrics` queues |
    | `beat` | Celery Beat scheduler + `platform` queue worker (alerts, FX, OSS prune) — **single replica** |
    | `worker-imports` | Celery: `imports`, `diarization`, `eval-control`, `evaluations` |
-   | `worker-usage` | Celery: `usage` queue (flush Redis counters + cost recompute) |
+   | `worker-usage` | Celery: `usage` queue (flush Redis counters, cost recompute, evaluator cron dispatch) |
 
-   **Usage costs:** token/cost rollups stay stale without `beat`, `worker-usage`, and default `worker` (evaluator crons; or `eai start-all`).
+   **Usage costs:** token/cost rollups stay stale without `beat`, `worker-usage`, and default `worker` (evaluator cron runs; or `eai start-all`).
    
    **Using a specific version:**
    ```bash
@@ -416,7 +416,7 @@ eai usage recompute --config config.yml --sync
 | `USAGE_FLUSH_BEAT_SECONDS` | `120` | Celery Beat flush interval (~2 min lag vs Redis) |
 | `USAGE_FLUSH_LOCK_TTL_SECONDS` | `300` | Per-org flush lock TTL |
 | `USAGE_READ_CACHE_TTL_SECONDS` | `90` | Redis cache TTL for usage summary/breakdown/filters |
-| `CRON_DISPATCH_INTERVAL_SECONDS` | `30` | Evaluator cron dispatcher tick (default worker) |
+| `CRON_DISPATCH_INTERVAL_SECONDS` | `30` | Evaluator cron dispatch interval (Beat → worker-usage) |
 
 Usage UI reads Postgres only (summary/breakdown/filters); Redis counters flush on the Celery Beat schedule (~2 min eventual consistency). If Redis backlog grows, lower `USAGE_FLUSH_BEAT_SECONDS` or raise `USAGE_FLUSH_MAX_BATCHES_PER_RUN`.
 

@@ -31,6 +31,11 @@ import Button from '../../../components/Button'
 import type { AgentTalkMode } from './AgentTalkSidebar'
 import { agentProviderPromptTag } from './agentFlowchartUtils'
 import TestAgentSubTabNav, { type TestAgentSubTab } from './TestAgentSubTabNav'
+import {
+  PRODUCTION_FIRST_MESSAGE_OPTIONS,
+  callerFirstMessageHelperText,
+  templateFromApi,
+} from './agentTestSetupConstants'
 
 function stripCodeFences(text: string): string {
   const trimmed = text.trim()
@@ -283,6 +288,7 @@ export default function AgentInfoView({
 
             <VoiceBundleDetailCard
               bundle={linkedBundle}
+              paramTuningMode="readonly"
               onEdit={
                 linkedBundle && onEditVoiceBundle ? () => onEditVoiceBundle(linkedBundle.id) : undefined
               }
@@ -292,12 +298,12 @@ export default function AgentInfoView({
         )}
 
         {testAgentSubTab === 'prompt' && (
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
                 <h3 className="text-base font-semibold text-gray-900">Test Agent Prompt</h3>
                 <p className="text-sm text-gray-500 mt-0.5">
-                  System prompt used for internal test-agent behavior and evaluation context.
+                  First-message behavior and caller system prompt for test runs.
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -318,19 +324,66 @@ export default function AgentInfoView({
             </div>
 
             {testPromptView === 'text' ? (
-              <div className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
-                <div className="p-5 max-h-[50vh] overflow-y-auto">
-                  {agent.description ? (
-                    <div className={PROSE}>
-                      <ReactMarkdown>{agent.description}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-400 italic">
-                      No prompt configured. Use Edit to add one.
-                    </p>
-                  )}
-                </div>
-              </div>
+              <>
+                {(() => {
+                  const template = agent.test_agent_template
+                    ? templateFromApi(agent.test_agent_template)
+                    : null
+                  const modeLabel = template
+                    ? PRODUCTION_FIRST_MESSAGE_OPTIONS.find(
+                        (option) => option.value === template.first_message.production_mode,
+                      )?.label
+                    : null
+
+                  return template ? (
+                    <section className="rounded-lg border border-indigo-200 bg-indigo-50/40 overflow-hidden">
+                      <div className="border-b border-indigo-100 bg-indigo-50/80 px-4 py-3">
+                        <h4 className="text-sm font-semibold text-gray-900">First message</h4>
+                      </div>
+                      <div className="p-4 space-y-2 text-sm text-gray-700 bg-white/60">
+                        {modeLabel ? (
+                          <p>
+                            <span className="font-medium text-gray-900">Mode:</span> {modeLabel}
+                          </p>
+                        ) : null}
+                        {template.first_message.production_message?.trim() ? (
+                          <p>
+                            <span className="font-medium text-gray-900">Production greeting:</span>{' '}
+                            {template.first_message.production_message.trim()}
+                          </p>
+                        ) : null}
+                        {template.first_message.caller_message?.trim() &&
+                        template.first_message.caller_mode === 'speak_first' ? (
+                          <p>
+                            <span className="font-medium text-gray-900">Caller opening:</span>{' '}
+                            &ldquo;{template.first_message.caller_message.trim()}&rdquo;
+                          </p>
+                        ) : null}
+                        <p className="text-xs text-gray-600">
+                          {callerFirstMessageHelperText(template.first_message)}
+                        </p>
+                      </div>
+                    </section>
+                  ) : null
+                })()}
+
+                <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                  <div className="border-b border-gray-200 bg-white px-4 py-3">
+                    <h4 className="text-sm font-semibold text-gray-900">System prompt</h4>
+                  </div>
+                  <div className="p-5">
+                    {agent.description ? (
+                      <div className={PROSE}>
+                        <ReactMarkdown>{agent.description}</ReactMarkdown>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-400 italic">
+                        No prompt configured. Use Edit to add one.
+                      </p>
+                    )}
+                  </div>
+                </section>
+              </>
             ) : (
               <AgentPromptVisualization
                 agentId={agent.id}

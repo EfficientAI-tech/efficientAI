@@ -8,6 +8,7 @@ from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
+    BackgroundNoiseSourceEnum,
     IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
@@ -173,6 +174,37 @@ class ErrorResponse(BaseModel):
 # Enums moved to enums.py
 
 
+
+
+
+# Test agent template schemas (defined before AgentCreate/AgentUpdate)
+class TestPromptSectionResponse(BaseModel):
+    """One canonical section of a generated test agent prompt."""
+    key: str
+    title: str
+    content: str
+
+
+class TestAgentFirstMessageResponse(BaseModel):
+    """Who speaks first on production vs test caller sides."""
+    production_mode: str
+    production_message: Optional[str] = None
+    caller_mode: str
+    caller_message: Optional[str] = None
+
+
+class TestAgentTemplateResponse(BaseModel):
+    """Structured test agent template stored on agents."""
+    sections: List[TestPromptSectionResponse]
+    first_message: TestAgentFirstMessageResponse
+
+
+class TestAgentTemplateInput(BaseModel):
+    """Structured test agent template for create/update."""
+    sections: List[TestPromptSectionResponse]
+    first_message: TestAgentFirstMessageResponse
+
+
 # Agent Schemas
 class AgentCreate(BaseModel):
     """Schema for creating a new agent"""
@@ -188,6 +220,7 @@ class AgentCreate(BaseModel):
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
     provider_prompt: Optional[str] = None
+    test_agent_template: Optional[TestAgentTemplateInput] = None
     silence_hangup_secs: int = Field(
         default=15,
         ge=0,
@@ -245,6 +278,7 @@ class AgentUpdate(BaseModel):
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
     provider_prompt: Optional[str] = None
+    test_agent_template: Optional[TestAgentTemplateInput] = None
     prompt_variables: Optional[Dict[str, str]] = None
     silence_hangup_secs: Optional[int] = Field(default=None, ge=0, le=600)
 
@@ -303,15 +337,6 @@ class AgentPhoneAssignmentCheckResponse(BaseModel):
 
 
 
-class TestPromptSectionResponse(BaseModel):
-    """One canonical section of a generated test agent prompt."""
-    key: str
-    title: str
-    content: str
-
-
-
-
 class GeneratedScenarioDraftResponse(BaseModel):
     """LLM-generated scenario draft before persistence."""
     name: str
@@ -339,6 +364,8 @@ class GenerateTestPromptRequest(BaseModel):
 class GenerateTestPromptResponse(BaseModel):
     sections: List[TestPromptSectionResponse]
     test_agent_prompt: str
+    first_message: TestAgentFirstMessageResponse
+    test_agent_template: TestAgentTemplateResponse
     provider: str
     model: str
 
@@ -388,6 +415,8 @@ class GenerateTestSetupRequest(BaseModel):
 class GenerateTestSetupResponse(BaseModel):
     sections: List[TestPromptSectionResponse]
     test_agent_prompt: str
+    first_message: TestAgentFirstMessageResponse
+    test_agent_template: TestAgentTemplateResponse
     scenarios: List[GeneratedScenarioDraftResponse]
     provider: str
     model: str
@@ -410,6 +439,7 @@ class AgentResponse(BaseModel):
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]
     provider_prompt: Optional[str] = None
+    test_agent_template: Optional[TestAgentTemplateResponse] = None
     prompt_variables: Optional[Dict[str, str]] = None
     silence_hangup_secs: int = Field(
         default=15,
@@ -496,12 +526,38 @@ class PersonaCreate(BaseModel):
     response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
     max_turns: Optional[int] = Field(None, ge=1, le=100)
     allow_interruptions: Optional[bool] = None
+    background_noise_source: BackgroundNoiseSourceEnum = BackgroundNoiseSourceEnum.NONE
+    background_noise_preset: Optional[str] = None
+    background_noise_volume: Optional[float] = Field(None, ge=0.05, le=0.60)
+    background_noise_asset_id: Optional[UUID] = None
 
     @model_validator(mode="after")
     def validate_tts_config(self):
         from app.services.personas.persona_tts_config import validate_persona_tts_config
 
         validate_persona_tts_config(self.tts_provider, self.tts_config)
+        return self
+
+    @model_validator(mode="after")
+    def validate_ambient_fields(self):
+        from app.services.personas.persona_ambient_noise import validate_persona_ambient_fields
+
+        validated = validate_persona_ambient_fields(
+            source=self.background_noise_source.value,
+            preset=self.background_noise_preset,
+            volume=self.background_noise_volume,
+            s3_key=None,
+            asset_id=self.background_noise_asset_id,
+        )
+        if validated["background_noise_source"] == BackgroundNoiseSourceEnum.CUSTOM.value:
+            if not self.background_noise_asset_id:
+                raise ValueError(
+                    "Select an uploaded ambient bed from the Environment tab or upload one under Background Noise"
+                )
+        self.background_noise_source = BackgroundNoiseSourceEnum(validated["background_noise_source"])
+        self.background_noise_preset = validated["background_noise_preset"]
+        self.background_noise_volume = validated["background_noise_volume"]
+        self.background_noise_asset_id = validated["background_noise_asset_id"]
         return self
 
 
@@ -520,6 +576,10 @@ class PersonaUpdate(BaseModel):
     response_delay_ms: Optional[int] = Field(None, ge=0, le=10000)
     max_turns: Optional[int] = Field(None, ge=1, le=100)
     allow_interruptions: Optional[bool] = None
+    background_noise_source: Optional[BackgroundNoiseSourceEnum] = None
+    background_noise_preset: Optional[str] = None
+    background_noise_volume: Optional[float] = Field(None, ge=0.05, le=0.60)
+    background_noise_asset_id: Optional[UUID] = None
 
     @model_validator(mode="after")
     def validate_tts_config(self):
@@ -546,6 +606,11 @@ class PersonaResponse(BaseModel):
     response_delay_ms: Optional[int] = None
     max_turns: Optional[int] = None
     allow_interruptions: Optional[bool] = None
+    background_noise_source: str = BackgroundNoiseSourceEnum.NONE.value
+    background_noise_preset: Optional[str] = None
+    background_noise_volume: Optional[float] = None
+    background_noise_s3_key: Optional[str] = None
+    background_noise_asset_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
 
@@ -561,6 +626,21 @@ class PersonaResponse(BaseModel):
         return v
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class AmbientNoiseAssetResponse(BaseModel):
+    id: UUID
+    name: str
+    s3_key: str
+    original_filename: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AmbientNoiseAssetUpdateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
 
 
 class PersonaCloneRequest(BaseModel):
@@ -1640,10 +1720,18 @@ class EvaluatorSuiteCombinationResponse(BaseModel):
     """One agent+persona+scenario combination inside a suite."""
     id: UUID
     evaluator_id: str
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
     scenario_id: Optional[UUID] = None
     scenario_name: Optional[str] = None
     scenario_description: Optional[str] = None
     scenario_required_info: Optional[Any] = None
+
+
+class EvaluatorSuitePersonaSummary(BaseModel):
+    """Persona referenced by a suite combination grid."""
+    id: UUID
+    name: Optional[str] = None
 
 
 
@@ -1652,7 +1740,8 @@ class EvaluatorSuiteCreate(BaseModel):
     """Schema for creating an evaluator suite."""
     name: Optional[str] = None
     agent_id: UUID
-    persona_id: UUID
+    persona_id: Optional[UUID] = None
+    persona_ids: Optional[List[UUID]] = None
     scenario_ids: List[UUID]
     metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
@@ -1684,6 +1773,8 @@ class EvaluatorSuiteResponse(BaseModel):
     name: Optional[str] = None
     agent_id: UUID
     persona_id: UUID
+    persona_ids: List[UUID] = Field(default_factory=list)
+    personas: List[EvaluatorSuitePersonaSummary] = Field(default_factory=list)
     agent_name: Optional[str] = None
     persona_name: Optional[str] = None
     agent_call_type: Optional[str] = None
@@ -1709,6 +1800,16 @@ class EvaluatorSuiteResponse(BaseModel):
 class EvaluatorSuiteAddScenariosRequest(BaseModel):
     """Schema for adding scenarios to an existing suite."""
     scenario_ids: List[UUID]
+
+
+class EvaluatorSuiteAddPersonasRequest(BaseModel):
+    """Schema for adding personas to an existing suite."""
+    persona_ids: List[UUID]
+
+
+class EvaluatorSuiteReplacePersonasRequest(BaseModel):
+    """Schema for replacing the persona set on an existing suite."""
+    persona_ids: List[UUID] = Field(..., min_length=1)
 
 
 
@@ -1742,6 +1843,8 @@ class RunNextCombinationRequest(BaseModel):
 class RunNextCombinationResponse(BaseModel):
     """Schema for round-robin run response."""
     evaluator_id: UUID
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
     scenario_id: Optional[UUID] = None
     scenario_name: str
     combination_index: int
@@ -1758,6 +1861,8 @@ class RunNextCombinationResponse(BaseModel):
 class ChooseNextCombinationResponse(BaseModel):
     """Advance inbound round-robin without initiating a call or evaluation run."""
     evaluator_id: UUID
+    persona_id: Optional[UUID] = None
+    persona_name: Optional[str] = None
     scenario_id: Optional[UUID] = None
     scenario_name: str
     combination_index: int
@@ -4792,7 +4897,7 @@ class EvaluationUserInsightsState(BaseModel):
     overview: Optional[str] = None
     generated_at: Optional[datetime] = None
     generated_at_completed_rows: int = 0
-    progress: Optional[Dict[str, int]] = None
+    progress: Optional[Dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     llm_calls_used: int = 0
@@ -4883,6 +4988,7 @@ class MetricClusterEvidence(BaseModel):
 
 
 class MetricSubCluster(BaseModel):
+    id: Optional[str] = None
     label: str
     count: int = 0
     share_pct: float = 0.0
@@ -4955,6 +5061,35 @@ class MetricClustersRcaSummary(BaseModel):
     prompt_areas: List[RcaPromptAreaRow] = Field(default_factory=list)
 
 
+class MetricClusterGenerationScope(BaseModel):
+    """Snapshot of agent/scenario/date scope used for a cluster generation run."""
+
+    agent_id: UUID
+    agent_name: Optional[str] = None
+    scenario_ids: List[str] = Field(default_factory=list)
+    scenario_names: List[str] = Field(default_factory=list)
+    since: Optional[datetime] = None
+    until: Optional[datetime] = None
+    eligible_call_count: int = 0
+    selected_call_count: int = 0
+
+
+class EvaluatorResultClusterScopeSummary(BaseModel):
+    """Workspace cluster report keyed by agent/scenario/date scope."""
+
+    job_id: UUID
+    scope_key: str
+    generation_scope: MetricClusterGenerationScope
+    status: Literal["idle", "running", "completed", "failed", "cancelled"] = "idle"
+    generated_at: Optional[datetime] = None
+    is_stale: bool = False
+    has_results: bool = False
+
+
+class EvaluatorResultClusterScopeListResponse(BaseModel):
+    items: List[EvaluatorResultClusterScopeSummary] = Field(default_factory=list)
+
+
 class EvaluationMetricClustersState(BaseModel):
     """Cached per-metric failure clustering for internal diagnostics."""
 
@@ -4966,7 +5101,7 @@ class EvaluationMetricClustersState(BaseModel):
     overview: Optional[str] = None
     generated_at: Optional[datetime] = None
     generated_at_completed_rows: int = 0
-    progress: Optional[Dict[str, int]] = None
+    progress: Optional[Dict[str, Any]] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     llm_calls_used: int = 0
@@ -4981,6 +5116,7 @@ class EvaluationMetricClustersState(BaseModel):
     failure_policies_source: Literal["inferred", "user"] = "inferred"
     failure_policies_updated_at: Optional[datetime] = None
     rca_summary: Optional[MetricClustersRcaSummary] = None
+    generation_scope: Optional[MetricClusterGenerationScope] = None
 
 
 class MetricClusterEligibleRow(BaseModel):

@@ -1,1 +1,1 @@
-export { default } from './ResultsOverview'
+export { default } from './ResultsHub'

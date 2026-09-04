@@ -1,3 +1,6 @@
+import type { TestAgentTemplateDraft } from '../agentTestSetupConstants'
+import { defaultTestAgentTemplate } from '../agentTestSetupConstants'
+
 export type CreateAgentPath = 'telephony' | 'platform'
 
 export interface CreateAgentFormData {
@@ -5,6 +8,7 @@ export interface CreateAgentFormData {
   phone_number: string
   language: string
   description: string
+  test_agent_template: TestAgentTemplateDraft
   call_type: string
   call_medium: 'phone_call'
   telephony_phone_number_id: string
@@ -19,6 +23,7 @@ export const DEFAULT_CREATE_AGENT_FORM: CreateAgentFormData = {
   phone_number: '',
   language: 'en',
   description: '',
+  test_agent_template: defaultTestAgentTemplate(),
   call_type: 'outbound',
   call_medium: 'phone_call',
   telephony_phone_number_id: '',

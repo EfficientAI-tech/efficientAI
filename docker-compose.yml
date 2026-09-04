@@ -193,8 +193,9 @@ services:
   # ``imports`` (recording fetch) before ``diarization`` (manual diarise),
   # then ``eval-control`` (cancel/retry/materialize), then ``evaluations``
   # (fair dispatch + LLM scoring).
-  # The default ``worker`` service handles ``celery`` (evaluator cron dispatch only)
+  # The default ``worker`` service handles ``celery`` (evaluator cron runs)
   # and ``audio-metrics`` (Praat/UTMOS audio metric tasks).
+  # Evaluator cron dispatch runs on ``worker-usage`` (Beat schedule).
   # Platform schedules run via ``beat`` (scheduler + ``platform`` queue worker).
   worker-imports:
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}

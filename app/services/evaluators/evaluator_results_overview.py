@@ -28,6 +28,7 @@ from app.models.schemas import (
 from app.services.evaluators.evaluator_results_query import (
     classify_display_status,
     is_in_progress_status,
+    playground_linked_evaluator_result_ids_subquery,
 )
 
 
@@ -76,16 +77,20 @@ def build_evaluator_results_overview(
     workspace_id: UUID,
     agent_id: Optional[UUID] = None,
     suite_id: Optional[UUID] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
 ) -> EvaluatorResultsOverviewResponse:
-    rows = (
-        db.query(EvaluatorResult)
-        .filter(
-            EvaluatorResult.organization_id == organization_id,
-            EvaluatorResult.workspace_id == workspace_id,
-            EvaluatorResult.evaluator_id.isnot(None),
-        )
-        .all()
+    query = db.query(EvaluatorResult).filter(
+        EvaluatorResult.organization_id == organization_id,
+        EvaluatorResult.workspace_id == workspace_id,
+        EvaluatorResult.evaluator_id.isnot(None),
+        ~EvaluatorResult.id.in_(playground_linked_evaluator_result_ids_subquery(db)),
     )
+    if since is not None:
+        query = query.filter(EvaluatorResult.timestamp >= since)
+    if until is not None:
+        query = query.filter(EvaluatorResult.timestamp <= until)
+    rows = query.all()
 
     evaluator_ids: Set[UUID] = {r.evaluator_id for r in rows if r.evaluator_id}
     evaluators = (
@@ -148,6 +153,18 @@ def build_evaluator_results_overview(
             for sid, sc in suite_counts.items():
                 meta = suite_meta.get(sid)
                 if meta and meta.agent_id == aid:
+                    scenario_summaries: List[EvaluatorResultsScenarioSummary] = []
+                    for (suite_key, scen_id), scen_counts in scenario_counts.items():
+                        if suite_key != sid:
+                            continue
+                        scenario_summaries.append(
+                            EvaluatorResultsScenarioSummary(
+                                scenario_id=scen_id,
+                                scenario_name=scenario_names.get(scen_id, "Scenario"),
+                                counts=scen_counts.to_schema(),
+                            )
+                        )
+                    scenario_summaries.sort(key=lambda s: s.scenario_name.lower())
                     agent_suites.append(
                         EvaluatorResultsSuiteSummary(
                             suite_id=sid,
@@ -155,6 +172,7 @@ def build_evaluator_results_overview(
                             agent_id=meta.agent_id,
                             persona_id=meta.persona_id,
                             counts=sc.to_schema(),
+                            scenarios=scenario_summaries or None,
                         )
                     )
             agent_suites.sort(key=lambda s: (s.suite_name or "").lower())
@@ -172,6 +190,18 @@ def build_evaluator_results_overview(
         for sid, sc in suite_counts.items():
             meta = suite_meta.get(sid)
             if meta and meta.agent_id == agent_id:
+                scenario_summaries = []
+                for (suite_key, scen_id), scen_counts in scenario_counts.items():
+                    if suite_key != sid:
+                        continue
+                    scenario_summaries.append(
+                        EvaluatorResultsScenarioSummary(
+                            scenario_id=scen_id,
+                            scenario_name=scenario_names.get(scen_id, "Scenario"),
+                            counts=scen_counts.to_schema(),
+                        )
+                    )
+                scenario_summaries.sort(key=lambda s: s.scenario_name.lower())
                 agent_suites.append(
                     EvaluatorResultsSuiteSummary(
                         suite_id=sid,
@@ -179,6 +209,7 @@ def build_evaluator_results_overview(
                         agent_id=meta.agent_id,
                         persona_id=meta.persona_id,
                         counts=sc.to_schema(),
+                        scenarios=scenario_summaries or None,
                     )
                 )
         agent_suites.sort(key=lambda s: (s.suite_name or "").lower())

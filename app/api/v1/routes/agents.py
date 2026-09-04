@@ -36,9 +36,55 @@ from app.models.schemas import (
     GenerateTestSetupResponse,
     GeneratedScenarioDraftResponse,
     TestPromptSectionResponse,
+    TestAgentFirstMessageResponse,
+    TestAgentTemplateResponse,
+    TestAgentTemplateInput,
+)
+from app.services.testing.test_agent_template import (
+    TestAgentFirstMessage,
+    TestAgentTemplate,
+    assemble_test_agent_prompt,
+    normalize_first_message,
+    normalize_sections,
+    template_from_generation,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _first_message_response(first_message: TestAgentFirstMessage) -> TestAgentFirstMessageResponse:
+    return TestAgentFirstMessageResponse(
+        production_mode=first_message.production_mode,
+        production_message=first_message.production_message,
+        caller_mode=first_message.caller_mode,
+        caller_message=first_message.caller_message,
+    )
+
+
+def _template_response(template: TestAgentTemplate) -> TestAgentTemplateResponse:
+    return TestAgentTemplateResponse(
+        sections=_test_prompt_section_responses(template.sections),
+        first_message=_first_message_response(template.first_message),
+    )
+
+
+def _template_input_to_storage(template_input: TestAgentTemplateInput) -> dict:
+    sections = normalize_sections([s.model_dump() for s in template_input.sections])
+    first_message = normalize_first_message(template_input.first_message.model_dump())
+    return template_from_generation(sections, first_message).to_dict()
+
+
+def _apply_test_agent_template_fields(
+    *,
+    description: Optional[str],
+    template_input: Optional[TestAgentTemplateInput],
+) -> tuple[Optional[str], Optional[dict]]:
+    """Return (description, test_agent_template_json) for persistence."""
+    if template_input is None:
+        return description, None
+    template_dict = _template_input_to_storage(template_input)
+    assembled = assemble_test_agent_prompt(normalize_sections(template_dict.get("sections")))
+    return assembled or description, template_dict
 
 
 def _validate_agent_phone_assignment(
@@ -133,7 +179,7 @@ GENERATE_AGENT_DESCRIPTION_SYSTEM = (
     "well-formatted agent description in markdown.\n\n"
     "Guidelines:\n"
     "- Use clear markdown structure: headings, bullet points, numbered lists\n"
-    "- Include sections for: Purpose, Behavior, Expected Interactions, Personality Traits, and Constraints\n"
+    "- Include sections for: Role and Goal, Talking Style, Questions to Ask, Information to Relay, and Constraints\n"
     "- Be specific about the agent's role, tone of voice, and how it should handle conversations\n"
     "- Include example scenarios or edge cases where helpful\n"
     "- Return ONLY the description in markdown, no preamble or explanation about what you did"
@@ -312,6 +358,8 @@ async def generate_test_prompt(
         return GenerateTestPromptResponse(
             sections=_test_prompt_section_responses(result.sections),
             test_agent_prompt=result.test_agent_prompt,
+            first_message=_first_message_response(result.first_message),
+            test_agent_template=_template_response(result.test_agent_template),
             provider=result.provider,
             model=result.model,
         )
@@ -465,6 +513,8 @@ async def generate_test_setup(
         return GenerateTestSetupResponse(
             sections=_test_prompt_section_responses(prompt_result.sections),
             test_agent_prompt=prompt_result.test_agent_prompt,
+            first_message=_first_message_response(prompt_result.first_message),
+            test_agent_template=_template_response(prompt_result.test_agent_template),
             scenarios=_scenario_draft_responses(scenario_result.scenarios),
             provider=prompt_result.provider,
             model=prompt_result.model,
@@ -607,6 +657,11 @@ async def create_agent(
 
     # Generate unique 6-digit agent_id
     agent_id = generate_unique_agent_id(db)
+
+    description, template_dict = _apply_test_agent_template_fields(
+        description=agent.description,
+        template_input=agent.test_agent_template,
+    )
     
     db_agent = Agent(
         agent_id=agent_id,
@@ -615,7 +670,8 @@ async def create_agent(
         name=agent.name,
         phone_number=agent.phone_number,
         language=agent.language,
-        description=agent.description,
+        description=description,
+        test_agent_template=template_dict,
         call_type=agent.call_type,
         call_medium=agent.call_medium,
         telephony_phone_number_id=agent.telephony_phone_number_id,
@@ -844,6 +900,15 @@ async def update_agent(
             )
 
     update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+
+    if "test_agent_template" in update_data:
+        template_input = agent_update.test_agent_template
+        assembled_description, template_dict = _apply_test_agent_template_fields(
+            description=update_data.get("description", db_agent.description),
+            template_input=template_input,
+        )
+        update_data["description"] = assembled_description
+        update_data["test_agent_template"] = template_dict
 
     effective_call_medium = (
         agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium

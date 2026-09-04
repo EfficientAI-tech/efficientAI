@@ -49,7 +49,7 @@ def initiate_phone_evaluator_call(
         persona_id=evaluator.persona_id,
         scenario_id=evaluator.scenario_id,
         name=scenario_name,
-        status=EvaluatorResultStatus.QUEUED.value,
+        status=EvaluatorResultStatus.CALL_INITIATING.value,
         audio_s3_key=None,
     )
     db.add(evaluator_result)

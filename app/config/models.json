@@ -1075,6 +1075,267 @@
       "output_per_1m": 0.9
     }
   },
+  "deepseek-v4-flash-0731": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "deepseek v4 flash 0731 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.14,
+      "output_per_1m": 0.28,
+      "cache_read_per_1m": 0.028
+    }
+  },
+  "glm-4p7": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "glm 4p7 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.6,
+      "output_per_1m": 2.2,
+      "cache_read_per_1m": 0.3
+    }
+  },
+  "glm-5p1-fast": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "glm 5p1 fast via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.8,
+      "output_per_1m": 8.8,
+      "cache_read_per_1m": 0.52
+    }
+  },
+  "glm-5p2": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "glm 5p2 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.4,
+      "output_per_1m": 4.4,
+      "cache_read_per_1m": 0.14
+    }
+  },
+  "glm-5p2-fast": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "glm 5p2 fast via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.1,
+      "output_per_1m": 6.6,
+      "cache_read_per_1m": 0.21
+    }
+  },
+  "glm-5p2-fast-us": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "glm 5p2 fast us via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.1,
+      "output_per_1m": 6.6,
+      "cache_read_per_1m": 0.21
+    }
+  },
+  "kimi-k2p6-fast": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "kimi k2p6 fast via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.3
+    }
+  },
+  "kimi-k2p7-code": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "kimi k2p7 code via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.95,
+      "output_per_1m": 4.0,
+      "cache_read_per_1m": 0.19
+    }
+  },
+  "kimi-k2p7-code-fast": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "kimi k2p7 code fast via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 1.9,
+      "output_per_1m": 8.0,
+      "cache_read_per_1m": 0.38
+    }
+  },
+  "kimi-k3": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "kimi k3 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.0,
+      "output_per_1m": 15.0,
+      "cache_read_per_1m": 0.3
+    }
+  },
+  "kimi-k3-fast": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "kimi k3 fast via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 4.5,
+      "output_per_1m": 22.5,
+      "cache_read_per_1m": 0.45
+    }
+  },
+  "kimi-k3-us": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "kimi k3 us via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 3.3,
+      "output_per_1m": 16.5,
+      "cache_read_per_1m": 0.33
+    }
+  },
+  "llama4-maverick-instruct-basic": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "llama4 maverick instruct basic via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.22,
+      "output_per_1m": 0.88
+    }
+  },
+  "llama4-scout-instruct-basic": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "llama4 scout instruct basic via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.15,
+      "output_per_1m": 0.6
+    }
+  },
+  "minimax-m2p1": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "minimax m2p1 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.03
+    }
+  },
+  "minimax-m3": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "minimax m3 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.3,
+      "output_per_1m": 1.2,
+      "cache_read_per_1m": 0.06
+    }
+  },
+  "muse-glimmer-30b": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "muse glimmer 30b via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.35,
+      "output_per_1m": 1.5,
+      "cache_read_per_1m": 0.04
+    }
+  },
+  "nemotron-3-ultra-nvfp4": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "nemotron 3 ultra nvfp4 via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.6,
+      "output_per_1m": 2.4,
+      "cache_read_per_1m": 0.12
+    }
+  },
+  "nemotron-lightning-3p5-30b-a3b": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "nemotron lightning 3p5 30b a3b via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.05,
+      "output_per_1m": 0.2,
+      "cache_read_per_1m": 0.01
+    }
+  },
+  "qwen3-coder-480b-a35b-instruct": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "qwen3 coder 480b a35b instruct via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.45,
+      "output_per_1m": 1.8
+    }
+  },
+  "qwen3p7-plus": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "qwen3p7 plus via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 0.4,
+      "output_per_1m": 1.6,
+      "cache_read_per_1m": 0.08
+    }
+  },
+  "qwen3p8-max": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "qwen3p8 max via Fireworks",
+    "pricing": {
+      "source": "litellm_import",
+      "usage_kind": "llm",
+      "input_per_1m": 2.0,
+      "output_per_1m": 6.0,
+      "cache_read_per_1m": 0.25
+    }
+  },
   "google-speech-v2": {
     "provider": "google",
     "model_type": "stt",

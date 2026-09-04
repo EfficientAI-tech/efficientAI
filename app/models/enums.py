@@ -81,12 +81,21 @@ class AccentEnum(str, enum.Enum):
     GERMAN = "german"
     NEUTRAL = "neutral"
 
+class BackgroundNoiseSourceEnum(str, enum.Enum):
+    """Where persona ambient audio is loaded from."""
+    NONE = "none"
+    PLATFORM = "platform"
+    CUSTOM = "custom"
+
+
 class BackgroundNoiseEnum(str, enum.Enum):
-    """Background noise options"""
+    """Platform ambient preset names."""
     NONE = "none"
     OFFICE = "office"
     STREET = "street"
+    TRAFFIC = "traffic"
     CAFE = "cafe"
+    CONCERT = "concert"
     HOME = "home"
     CALL_CENTER = "call_center"
 

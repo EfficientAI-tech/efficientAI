@@ -87,12 +87,24 @@ def _usage_flush_beat_seconds() -> float:
         return 120.0
 
 
+def _cron_dispatch_beat_seconds() -> float:
+    raw = os.environ.get("CRON_DISPATCH_INTERVAL_SECONDS", "30")
+    try:
+        return max(10.0, float(raw))
+    except (TypeError, ValueError):
+        return 30.0
+
+
 def _platform_beat_schedule() -> dict:
     """Periodic platform tasks — run from dedicated ``celery beat`` (single replica)."""
     return {
         "flush-usage-counters": {
             "task": "flush_usage_counters",
             "schedule": _usage_flush_beat_seconds(),
+        },
+        "dispatch-cron-jobs": {
+            "task": "dispatch_cron_jobs",
+            "schedule": _cron_dispatch_beat_seconds(),
         },
         "evaluate-alerts": {
             "task": "evaluate_alerts",
@@ -169,6 +181,7 @@ celery_app.conf.task_routes = {
     "generate_evaluation_tldr_insights": {"queue": "evaluations"},
     "generate_evaluation_user_insights": {"queue": "evaluations"},
     "generate_evaluation_metric_clusters": {"queue": "evaluations"},
+    "generate_evaluator_result_metric_clusters": {"queue": "evaluations"},
     "generate_evaluation_prompt_improvements": {"queue": "evaluations"},
     "evaluate_studio_run_item": {"queue": "evaluations"},
     "generate_agent_flowchart": {"queue": "celery"},
@@ -178,8 +191,6 @@ celery_app.conf.task_routes = {
     "evaluate_alerts": {"queue": PLATFORM_WORKER_QUEUE},
     "refresh_fx_rates": {"queue": PLATFORM_WORKER_QUEUE},
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
-    "dispatch_cron_jobs": {"queue": "celery"},
+    "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},
 }
-
-from app.workers import cron_bootstrap  # noqa: F401,E402

@@ -26,6 +26,7 @@ def finalize_telephony_recording_task(
     conversation_turns: Optional[List[Dict[str, Any]]] = None,
     transcript_text: Optional[str] = None,
     duration: Optional[float] = None,
+    call_direction: Optional[str] = None,
 ) -> dict:
     """Merge dual-track WAVs, upload to S3, persist CallRecording, queue evaluator."""
     try:
@@ -36,6 +37,7 @@ def finalize_telephony_recording_task(
             organization_id=organization_id,
             evaluator_id=evaluator_id,
             result_id=result_id,
+            call_direction=call_direction,
         )
         effective_duration = merged_duration if merged_duration is not None else duration
 

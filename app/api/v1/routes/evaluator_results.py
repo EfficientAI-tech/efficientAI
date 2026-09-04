@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
-from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording, Agent, Integration
+from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording, CallRecordingSource, Agent, Integration
 import random
 from datetime import datetime
 from app.models.schemas import (
@@ -60,16 +60,23 @@ def _lookup_evaluator_result(
         ).first()
 
 
-def _detach_call_recordings_from_evaluator_results(
+def _cleanup_call_recordings_for_deleted_evaluator_results(
     db: Session,
     evaluator_result_ids: List[UUID],
 ) -> None:
-    """Clear FK references so observability call rows survive result deletion."""
+    """Remove eval-telephony webhook recordings; detach playground recordings."""
     if not evaluator_result_ids:
         return
-    db.query(CallRecording).filter(
-        CallRecording.evaluator_result_id.in_(evaluator_result_ids)
-    ).update({CallRecording.evaluator_result_id: None}, synchronize_session=False)
+    recordings = (
+        db.query(CallRecording)
+        .filter(CallRecording.evaluator_result_id.in_(evaluator_result_ids))
+        .all()
+    )
+    for recording in recordings:
+        if recording.source == CallRecordingSource.PLAYGROUND:
+            recording.evaluator_result_id = None
+        else:
+            db.delete(recording)
 
 
 def _derive_speaker_segments_from_call_data(
@@ -262,6 +269,8 @@ def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str
 def get_evaluator_results_overview(
     agent_id: Optional[str] = Query(None, description="When set, return suites for this agent"),
     suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -286,6 +295,8 @@ def get_evaluator_results_overview(
         workspace_id=workspace_id,
         agent_id=agent_uuid,
         suite_id=suite_uuid,
+        since=since,
+        until=until,
     )
 
 
@@ -427,10 +438,13 @@ def get_evaluator_result(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
+    from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_result_live_telephony
     from app.services.live_entity_storage import hydrate_evaluator_results
 
     hydrate_evaluator_results([result])
     repair_evaluator_result_status_if_needed(db, result)
+    
+    enriched_call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
     
     # Build response
     response_data = {
@@ -455,7 +469,7 @@ def get_evaluator_result(
         "call_event": result.call_event,
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
-        "call_data": result.call_data,
+        "call_data": enriched_call_data,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,
@@ -511,6 +525,69 @@ def get_evaluator_result(
     return EvaluatorResultResponse(**response_data)
 
 
+@router.get("/{id}/live-events")
+async def stream_evaluator_result_live_events(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """SSE stream of live transcript turns for an in-progress eval telephony call."""
+    from fastapi.responses import StreamingResponse
+
+    from app.services.evaluators.evaluator_result_telephony import find_evaluator_telephony_recording
+    from app.services.telephony.live_transcript_sse import stream_live_transcript_events
+
+    del api_key
+
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    call_recording = find_evaluator_telephony_recording(db, result)
+    if not call_recording:
+        raise HTTPException(status_code=404, detail="No live telephony call linked to this result")
+
+    bound_recording_id = call_recording.id
+    call_short_id = call_recording.call_short_id
+    bound_result_id = result.id
+
+    def _fetch_recording(session):
+        row = (
+            session.query(CallRecording)
+            .filter(
+                CallRecording.id == bound_recording_id,
+                CallRecording.evaluator_result_id == bound_result_id,
+                CallRecording.source == CallRecordingSource.WEBHOOK,
+            )
+            .first()
+        )
+        if row:
+            from app.services.live_entity_storage import hydrate_call_recordings
+
+            hydrate_call_recordings([row])
+        return row
+
+    async def event_generator():
+        async for chunk in stream_live_transcript_events(
+            call_short_id=call_short_id,
+            bound_recording_id=bound_recording_id,
+            fetch_recording=_fetch_recording,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_evaluator_result(
     id: str,
@@ -540,7 +617,7 @@ def delete_evaluator_result(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
-    _detach_call_recordings_from_evaluator_results(db, [result.id])
+    _cleanup_call_recordings_for_deleted_evaluator_results(db, [result.id])
     db.delete(result)
     db.commit()
     return None
@@ -579,7 +656,7 @@ def delete_evaluator_results_bulk(
             to_delete.append(result)
 
     if to_delete:
-        _detach_call_recordings_from_evaluator_results(
+        _cleanup_call_recordings_for_deleted_evaluator_results(
             db, [row.id for row in to_delete]
         )
         for result in to_delete:
@@ -864,11 +941,38 @@ def re_evaluate_result(
             detail="Cannot re-evaluate: this result has no transcription. It must be transcribed first."
         )
 
-    if not result.evaluator_id and not result.agent_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot re-evaluate: this result is not linked to an agent or evaluator."
-        )
+    if not result.evaluator_id:
+        if result.agent_id and result.persona_id and result.scenario_id:
+            from app.api.v1.routes.evaluators import generate_unique_evaluator_id
+
+            evaluator = db.query(Evaluator).filter(
+                Evaluator.agent_id == result.agent_id,
+                Evaluator.persona_id == result.persona_id,
+                Evaluator.scenario_id == result.scenario_id,
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
+            ).first()
+            if not evaluator:
+                new_evaluator_id = generate_unique_evaluator_id(db)
+                evaluator = Evaluator(
+                    evaluator_id=new_evaluator_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agent_id=result.agent_id,
+                    persona_id=result.persona_id,
+                    scenario_id=result.scenario_id,
+                    tags=["auto-created", "test-voice-agent"],
+                )
+                db.add(evaluator)
+                db.commit()
+                db.refresh(evaluator)
+            result.evaluator_id = evaluator.id
+            db.commit()
+        elif not result.agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot re-evaluate: this result is not linked to an agent or evaluator."
+            )
 
     evaluator = None
     if result.evaluator_id:
