@@ -40,6 +40,7 @@ function agentToFormData(agent: NonNullable<Awaited<ReturnType<typeof apiClient.
     phone_number: agent.phone_number || '',
     language: agent.language,
     description: agent.description || '',
+    test_agent_template: templateFromApi(agent.test_agent_template),
     prompt_variables: agent.prompt_variables || {},
     silence_hangup_secs: agent.silence_hangup_secs ?? 15,
     call_type: agent.call_type,
