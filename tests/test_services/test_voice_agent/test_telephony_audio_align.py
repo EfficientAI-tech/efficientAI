@@ -35,14 +35,52 @@ def test_mix_aligned_mono_applies_bot_delay():
     assert merged[50] == 0
 
 
-def test_analyze_chooses_user_only_when_bot_on_inbound():
+def test_analyze_chooses_user_only_when_bot_track_too_short():
     sample_rate = 8000
-    bot = np.zeros(sample_rate, dtype=np.int16)
-    bot[400:800] = 5000
-    user = bot.copy()
-    user[400:800] += 2000
-    analysis = analyze_dual_tracks(user, bot, sample_rate=sample_rate)
+    bot = np.zeros(sample_rate // 40, dtype=np.int16)
+    user = np.zeros(sample_rate, dtype=np.int16)
+    user[400:800] = 5000
+    analysis = analyze_dual_tracks(user, bot, sample_rate=sample_rate, call_direction="inbound")
     assert analysis.strategy == TelephonyMergeStrategy.USER_ONLY
+    assert analysis.reason == "bot_track_too_short"
+
+
+def test_analyze_keeps_aligned_mix_when_bot_leaks_during_bot_speech():
+    sample_rate = 8000
+    bot = np.zeros(sample_rate * 2, dtype=np.int16)
+    bot[800:1600] = 6000
+    user = np.zeros(sample_rate * 2, dtype=np.int16)
+    user[820:1620] = (bot[800:1600] * 0.7).astype(np.int16)
+    user[200:600] = 3000
+    analysis = analyze_dual_tracks(user, bot, sample_rate=sample_rate, call_direction="outbound")
+    assert analysis.strategy == TelephonyMergeStrategy.ALIGNED_MIX
+    assert analysis.reason == "aligned_mix"
+
+
+def test_merge_keeps_both_tracks_when_bot_leaks(tmp_path):
+    sample_rate = 8000
+    user_path = tmp_path / "user.wav"
+    bot_path = tmp_path / "bot.wav"
+    out_path = tmp_path / "out.wav"
+
+    bot = np.zeros(sample_rate * 2, dtype=np.int16)
+    bot[800:1600] = 6000
+    user = np.zeros(sample_rate * 2, dtype=np.int16)
+    user[820:1620] = (bot[800:1600] * 0.7).astype(np.int16)
+    user[200:600] = 3000
+    write_wav_mono(str(user_path), user, sample_rate)
+    write_wav_mono(str(bot_path), bot, sample_rate)
+
+    analysis, _duration = merge_telephony_tracks_to_mono(
+        str(user_path),
+        str(bot_path),
+        output_path=str(out_path),
+        call_direction="outbound",
+    )
+    assert analysis.strategy == TelephonyMergeStrategy.ALIGNED_MIX
+    merged, _ = read_wav_mono(str(out_path))
+    assert np.any(merged[800:1600] != 0)
+    assert np.any(merged[200:600] != 0)
 
 
 def test_merge_with_delayed_bot_track(tmp_path):

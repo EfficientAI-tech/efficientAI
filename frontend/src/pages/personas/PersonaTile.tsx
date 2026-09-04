@@ -110,7 +110,7 @@ export default function PersonaTile({ persona, onClick, onDelete }: PersonaTileP
       </div>
 
       <div className="px-5 py-2.5 border-t border-gray-100 bg-gray-50/60 text-xs text-gray-500 group-hover:text-primary-600 transition-colors">
-        Click to edit prompt, voice, TTS, and behavior
+        Click to edit prompt, voice, TTS, behavior, and environment
       </div>
     </article>
   )

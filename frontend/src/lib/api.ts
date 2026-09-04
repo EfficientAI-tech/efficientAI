@@ -432,10 +432,17 @@ export interface VobizOutboundCallResponse {
 export interface EvaluatorSuiteCombination {
   id: string
   evaluator_id: string
+  persona_id?: string
+  persona_name?: string | null
   scenario_id: string
   scenario_name?: string | null
   scenario_description?: string | null
   scenario_required_info?: Record<string, unknown> | null
+}
+
+export interface EvaluatorSuitePersonaSummary {
+  id: string
+  name?: string | null
 }
 
 export interface EvaluatorSuite {
@@ -444,6 +451,8 @@ export interface EvaluatorSuite {
   name?: string | null
   agent_id: string
   persona_id: string
+  persona_ids?: string[]
+  personas?: EvaluatorSuitePersonaSummary[]
   agent_name?: string | null
   persona_name?: string | null
   agent_call_type?: string | null
@@ -471,6 +480,8 @@ export interface RunEvaluatorSuiteResponse {
 
 export interface RunNextCombinationResponse {
   evaluator_id: string
+  persona_id?: string | null
+  persona_name?: string | null
   scenario_id: string
   scenario_name: string
   combination_index: number
@@ -484,6 +495,8 @@ export interface RunNextCombinationResponse {
 
 export interface ChooseNextCombinationResponse {
   evaluator_id: string
+  persona_id?: string | null
+  persona_name?: string | null
   scenario_id: string
   scenario_name: string
   combination_index: number
@@ -1274,6 +1287,21 @@ class ApiClient {
   ): Promise<{
     sections: Array<{ key: string; title: string; content: string }>
     test_agent_prompt: string
+    first_message: {
+      production_mode: string
+      production_message?: string | null
+      caller_mode: string
+      caller_message?: string | null
+    }
+    test_agent_template: {
+      sections: Array<{ key: string; title: string; content: string }>
+      first_message: {
+        production_mode: string
+        production_message?: string | null
+        caller_mode: string
+        caller_message?: string | null
+      }
+    }
     provider: string
     model: string
   }> {
@@ -1441,6 +1469,82 @@ class ApiClient {
 
   async deletePersonaCustomVoice(customVoiceId: string): Promise<any> {
     const response = await this.client.delete(`/api/v1/personas/custom-voices/${customVoiceId}`)
+    return response.data
+  }
+
+  async listAmbientPresets(): Promise<{ presets: { id: string; label: string }[] }> {
+    const response = await this.client.get('/api/v1/personas/ambient-presets')
+    return response.data
+  }
+
+  async listAmbientLibrary(): Promise<
+    Array<{
+      id: string
+      name: string
+      original_filename?: string | null
+      created_at?: string
+    }>
+  > {
+    const response = await this.client.get('/api/v1/personas/ambient-library')
+    return response.data
+  }
+
+  async uploadAmbientLibraryAsset(file: File, name?: string): Promise<any> {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (name) {
+      formData.append('name', name)
+    }
+    const response = await this.client.post('/api/v1/personas/ambient-library', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async updateAmbientLibraryAsset(assetId: string, data: { name: string }): Promise<any> {
+    const response = await this.client.patch(`/api/v1/personas/ambient-library/${assetId}`, data)
+    return response.data
+  }
+
+  async deleteAmbientLibraryAsset(assetId: string): Promise<void> {
+    await this.client.delete(`/api/v1/personas/ambient-library/${assetId}`)
+  }
+
+  async previewAmbientLibraryAsset(assetId: string): Promise<Blob> {
+    const response = await this.client.get(`/api/v1/personas/ambient-library/${assetId}/preview`, {
+      responseType: 'blob',
+    })
+    return response.data
+  }
+
+  async getAmbientLibraryPreviewUrl(
+    assetId: string,
+    expiration: number = 3600,
+  ): Promise<{ url: string; expires_in: number }> {
+    const response = await this.client.get(`/api/v1/personas/ambient-library/${assetId}/preview-url`, {
+      params: { expiration },
+    })
+    return response.data
+  }
+
+  async previewAmbientPreset(presetId: string): Promise<Blob> {
+    const response = await this.client.get(`/api/v1/personas/ambient-presets/${presetId}/preview`, {
+      responseType: 'blob',
+    })
+    return response.data
+  }
+
+  async uploadPersonaAmbientAudio(personaId: string, file: File): Promise<any> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post(`/api/v1/personas/${personaId}/ambient-audio`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async deletePersonaAmbientAudio(personaId: string): Promise<any> {
+    const response = await this.client.delete(`/api/v1/personas/${personaId}/ambient-audio`)
     return response.data
   }
 
@@ -4167,7 +4271,8 @@ class ApiClient {
   async createEvaluatorSuite(data: {
     name?: string
     agent_id: string
-    persona_id: string
+    persona_id?: string
+    persona_ids?: string[]
     scenario_ids: string[]
     metric_ids?: string[]
     llm_provider?: string
@@ -4214,6 +4319,27 @@ class ApiClient {
   async removeEvaluatorSuiteScenario(suiteId: string, scenarioId: string): Promise<EvaluatorSuite> {
     const response = await this.client.delete(
       `/api/v1/evaluator-suites/${suiteId}/scenarios/${scenarioId}`,
+    )
+    return response.data
+  }
+
+  async addEvaluatorSuitePersonas(suiteId: string, personaIds: string[]): Promise<EvaluatorSuite> {
+    const response = await this.client.post(`/api/v1/evaluator-suites/${suiteId}/personas`, {
+      persona_ids: personaIds,
+    })
+    return response.data
+  }
+
+  async replaceEvaluatorSuitePersonas(suiteId: string, personaIds: string[]): Promise<EvaluatorSuite> {
+    const response = await this.client.put(`/api/v1/evaluator-suites/${suiteId}/personas`, {
+      persona_ids: personaIds,
+    })
+    return response.data
+  }
+
+  async removeEvaluatorSuitePersona(suiteId: string, personaId: string): Promise<EvaluatorSuite> {
+    const response = await this.client.delete(
+      `/api/v1/evaluator-suites/${suiteId}/personas/${personaId}`,
     )
     return response.data
   }
@@ -4504,6 +4630,8 @@ class ApiClient {
       if (p.suiteId) params.suite_id = p.suiteId
       if (p.scenarioId) params.scenario_id = p.scenarioId
       if (p.status) params.status = p.status
+      if (p.since) params.since = p.since
+      if (p.until) params.until = p.until
       if (p.unassignedOnly) params.unassigned_only = true
       if (p.playground !== undefined) params.playground = p.playground
       if (p.testAgentsOnly !== undefined) params.test_agents_only = p.testAgentsOnly
@@ -4515,10 +4643,14 @@ class ApiClient {
   async getEvaluatorResultsOverview(params?: {
     agentId?: string
     suiteId?: string
+    since?: string
+    until?: string
   }): Promise<EvaluatorResultsOverviewResponse> {
     const query: Record<string, string> = {}
     if (params?.agentId) query.agent_id = params.agentId
     if (params?.suiteId) query.suite_id = params.suiteId
+    if (params?.since) query.since = params.since
+    if (params?.until) query.until = params.until
     const response = await this.client.get('/api/v1/evaluator-results/overview', { params: query })
     return response.data
   }
@@ -4527,19 +4659,158 @@ class ApiClient {
     suiteId?: string
     agentId?: string
     scenarioId?: string
+    since?: string
+    until?: string
   }): Promise<EvaluatorResultsAggregateResponse> {
     const query: Record<string, string> = {}
     if (params.suiteId) query.suite_id = params.suiteId
     if (params.agentId) query.agent_id = params.agentId
     if (params.scenarioId) query.scenario_id = params.scenarioId
+    if (params.since) query.since = params.since
+    if (params.until) query.until = params.until
     const response = await this.client.get('/api/v1/evaluator-results/aggregate', { params: query })
     return response.data
+  }
+
+  private _evaluatorResultClusterQuery(scope: {
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    suiteId?: string
+    scenarioId?: string
+    scopeKey?: string
+    jobId?: string
+  }): Record<string, string | string[]> {
+    const query: Record<string, string | string[]> = {
+      agent_id: scope.agentId,
+    }
+    if (scope.jobId) query.job_id = scope.jobId
+    else if (scope.scopeKey) query.scope_key = scope.scopeKey
+    if (scope.scenarioIds?.length) {
+      query.scenario_ids = scope.scenarioIds
+    }
+    if (scope.since) query.since = scope.since
+    if (scope.until) query.until = scope.until
+    if (scope.suiteId) query.suite_id = scope.suiteId
+    if (scope.scenarioId) query.scenario_id = scope.scenarioId
+    return query
+  }
+
+  async getEvaluatorResultMetricClusterFailurePolicies(scope: {
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+  }): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.get(
+      '/api/v1/evaluator-results/metric-clusters/failure-policies',
+      { params: this._evaluatorResultClusterQuery(scope) },
+    )
+    return response.data
+  }
+
+  async saveEvaluatorResultMetricClusterFailurePolicies(
+    scope: { agentId: string; scenarioIds?: string[]; since?: string; until?: string },
+    policies: Record<string, import('../types/api').MetricFailurePolicy>,
+  ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.put(
+      '/api/v1/evaluator-results/metric-clusters/failure-policies',
+      { policies },
+      { params: this._evaluatorResultClusterQuery(scope) },
+    )
+    return response.data
+  }
+
+  async listEvaluatorResultMetricClusterEligibleRows(
+    scope: { agentId: string; scenarioIds?: string[]; since?: string; until?: string },
+    options?: { limit?: number; count_only?: boolean },
+  ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
+    const response = await this.client.get(
+      '/api/v1/evaluator-results/metric-clusters/eligible-rows',
+      { params: { ...this._evaluatorResultClusterQuery(scope), ...options } },
+    )
+    return response.data
+  }
+
+  async listEvaluatorResultMetricClusterScopes(): Promise<
+    import('../types/api').EvaluatorResultClusterScopeListResponse
+  > {
+    const response = await this.client.get(
+      '/api/v1/evaluator-results/metric-clusters/scopes',
+    )
+    return response.data
+  }
+
+  async getEvaluatorResultMetricClusters(scope: {
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    jobId?: string
+    scopeKey?: string
+  }): Promise<import('../types/api').EvaluationMetricClustersState | null> {
+    const response = await this.client.get('/api/v1/evaluator-results/metric-clusters', {
+      params: this._evaluatorResultClusterQuery(scope),
+    })
+    return response.data
+  }
+
+  async generateEvaluatorResultMetricClusters(
+    scope: { agentId: string; scenarioIds?: string[]; since?: string; until?: string },
+    body: {
+      force?: boolean
+      regenerate?: boolean
+      provider?: string
+      model?: string
+      row_limit?: number
+      failure_policies?: Record<string, import('../types/api').MetricFailurePolicy>
+    },
+  ): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const response = await this.client.post('/api/v1/evaluator-results/metric-clusters', body, {
+      params: this._evaluatorResultClusterQuery(scope),
+    })
+    return response.data
+  }
+
+  async cancelEvaluatorResultMetricClusters(scope: {
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    scopeKey?: string
+  }): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const response = await this.client.post(
+      '/api/v1/evaluator-results/metric-clusters/cancel',
+      {},
+      { params: this._evaluatorResultClusterQuery(scope) },
+    )
+    return response.data
+  }
+
+  async deleteEvaluatorResultMetricClusters(scope: {
+    agentId: string
+    scenarioIds?: string[]
+    since?: string
+    until?: string
+    jobId?: string
+    scopeKey?: string
+  }): Promise<void> {
+    await this.client.delete('/api/v1/evaluator-results/metric-clusters', {
+      params: this._evaluatorResultClusterQuery(scope),
+    })
   }
 
   async getEvaluatorResult(id: string, includeRelations: boolean = true): Promise<any> {
     const params = includeRelations ? { include_relations: 'true' } : {}
     const response = await this.client.get(`/api/v1/evaluator-results/${id}`, { params })
     return response.data
+  }
+
+  getEvaluatorResultLiveEventsUrl(resultId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/evaluator-results/${resultId}/live-events`,
+    )
   }
 
   async getEvaluatorResultMetrics(id: string): Promise<any> {

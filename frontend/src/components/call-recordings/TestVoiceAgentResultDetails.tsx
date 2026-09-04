@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import {
-  Clock, MessageSquare, TrendingUp, Download, Server, BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
+  Clock, MessageSquare, TrendingUp, Server, BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
 } from 'lucide-react'
+import RecordingAudioPlayer from '../audio/RecordingAudioPlayer'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -190,7 +191,7 @@ interface TestVoiceAgentResultData {
   name?: string
   timestamp?: string
   duration_seconds?: number | null
-  status?: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
+  status?: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed' | 'call_ended'
   transcription?: string | null
   speaker_segments?: Array<{
     speaker: string
@@ -620,15 +621,12 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
           <MessageSquare className="h-5 w-5 text-indigo-600" />
           Transcript
         </h3>
-        {resultData.audioUrl && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-            <audio controls src={resultData.audioUrl} className="h-8 w-64" />
-            <a href={resultData.audioUrl} download className="text-gray-500 hover:text-indigo-600 p-1">
-              <Download className="h-4 w-4" />
-            </a>
-          </div>
-        )}
       </div>
+      {resultData.audioUrl && (
+        <div className="mb-4 flex-shrink-0">
+          <RecordingAudioPlayer src={resultData.audioUrl} downloadUrl={resultData.audioUrl} />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
         {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (

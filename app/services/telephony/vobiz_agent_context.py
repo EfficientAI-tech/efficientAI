@@ -93,6 +93,16 @@ def _resolve_voice_llm_urls(
     return llm_endpoint_url, llm_base_url
 
 
+@dataclass
+class VobizTelephonyRunParams:
+    """Voice pipeline parameters for a live Vobiz media session."""
+
+    system_instruction: Optional[str]
+    persona_speaks_via_tts: bool = False
+    caller_speaks_first: bool = True
+    caller_opening_text: Optional[str] = None
+
+
 def _resolve_api_key_for_provider(db: Session, organization_id: UUID, provider: ModelProvider) -> Optional[str]:
     provider_value = provider.value if hasattr(provider, "value") else provider
 
@@ -323,6 +333,73 @@ def resolve_vobiz_agent_context(
         llm_api_key=llm_api_key,
         llm_endpoint_url=llm_endpoint_url,
         llm_base_url=llm_base_url,
+    )
+
+
+def resolve_vobiz_telephony_run_params(
+    db: Session,
+    *,
+    context: VobizAgentContext,
+    call_direction: str,
+    persona_id: Optional[str] = None,
+    scenario_id: Optional[str] = None,
+    evaluator_id: Optional[str] = None,
+) -> VobizTelephonyRunParams:
+    """
+    Choose production-agent vs simulated-customer prompts for telephony.
+
+    Phone evaluator outbound runs simulate the persona/customer on the media leg
+    (customer receiving or participating in a call). Live inbound answers with a
+    human PSTN caller keep the production agent prompt and input-side ambient only.
+    """
+    direction = (call_direction or "outbound").strip().lower()
+    if direction != "outbound" or not evaluator_id or not persona_id or not scenario_id:
+        return VobizTelephonyRunParams(system_instruction=context.system_instruction)
+
+    persona = context.persona
+    if persona is None:
+        return VobizTelephonyRunParams(system_instruction=context.system_instruction)
+
+    try:
+        scenario_uuid = UUID(scenario_id)
+    except ValueError:
+        return VobizTelephonyRunParams(system_instruction=context.system_instruction)
+
+    scenario_query = db.query(Scenario).filter(
+        Scenario.id == scenario_uuid,
+        Scenario.organization_id == context.organization_id,
+    )
+    if context.workspace_id is not None:
+        scenario_query = scenario_query.filter(Scenario.workspace_id == context.workspace_id)
+    scenario = scenario_query.first()
+    if scenario is None:
+        return VobizTelephonyRunParams(system_instruction=context.system_instruction)
+
+    from app.services.testing.test_agent_simulation_prompt import build_live_test_agent_system_prompt
+    from app.services.testing.test_agent_template import (
+        resolve_caller_opening_text,
+        resolve_first_message_from_agent,
+        should_caller_speak_first,
+    )
+
+    first_message_config = resolve_first_message_from_agent(context.agent)
+    scenario_first_message = None
+    if scenario.required_info and isinstance(scenario.required_info, dict):
+        scenario_first_message = scenario.required_info.get("first_message")
+
+    return VobizTelephonyRunParams(
+        system_instruction=build_live_test_agent_system_prompt(
+            context.agent,
+            persona,
+            scenario,
+        ),
+        persona_speaks_via_tts=True,
+        caller_speaks_first=should_caller_speak_first(first_message_config),
+        caller_opening_text=resolve_caller_opening_text(
+            first_message=first_message_config,
+            persona_name=persona.name or "Test Caller",
+            scenario_first_message=scenario_first_message,
+        ),
     )
 
 

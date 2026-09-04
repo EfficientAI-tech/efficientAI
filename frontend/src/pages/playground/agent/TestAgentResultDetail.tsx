@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, RotateCcw } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import TestVoiceAgentResultDetails from '../../../components/call-recordings/TestVoiceAgentResultDetails'
@@ -9,12 +9,20 @@ import TestVoiceAgentResultDetails from '../../../components/call-recordings/Tes
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { ToastContainer } = useToast()
+  const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
 
   const { data: result, isLoading } = useQuery({
     queryKey: ['test-agent-result', id],
     queryFn: () => apiClient.getEvaluatorResult(id!, true),
     enabled: !!id,
+    refetchInterval: (query) => {
+      const status = (query.state.data as { status?: string } | undefined)?.status
+      if (status && ['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(status)) {
+        return 5000
+      }
+      return false
+    },
   })
 
   const { data: presignedUrl } = useQuery({
@@ -25,6 +33,31 @@ export default function TestAgentResultDetail() {
     },
     enabled: !!result?.audio_s3_key,
   })
+
+  const reEvaluateMutation = useMutation({
+    mutationFn: () => apiClient.reEvaluateResult(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['test-agent-result', id] })
+      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+      showToast('Evaluation queued', 'success')
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to queue evaluation'
+      showToast(typeof detail === 'string' ? detail : 'Failed to queue evaluation', 'error')
+    },
+  })
+
+  const canRunEvaluation =
+    !!result?.transcription &&
+    result.status !== 'completed' &&
+    !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
+
+  const getStatusClass = (status: string) => {
+    if (status === 'completed') return 'bg-green-100 text-green-800'
+    if (status === 'failed') return 'bg-red-100 text-red-800'
+    if (status === 'call_ended') return 'bg-gray-100 text-gray-700'
+    return 'bg-yellow-100 text-yellow-800'
+  }
 
   if (isLoading) {
     return (
@@ -48,7 +81,6 @@ export default function TestAgentResultDetail() {
     )
   }
 
-  // Prepare the result data with audio URL and extract call_analysis from call_data
   const resultData = {
     ...result,
     call_analysis: result.call_data?.call_analysis || undefined,
@@ -59,7 +91,6 @@ export default function TestAgentResultDetail() {
     <>
       <ToastContainer />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
         <div className="mb-6">
           <Button
             variant="outline"
@@ -70,21 +101,26 @@ export default function TestAgentResultDetail() {
             Back to Playground
           </Button>
           <div className="bg-white shadow rounded-lg p-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Test Agent Call Details</h1>
                 <p className="text-sm text-gray-500 mt-1">
                   Call ID: <span className="font-mono font-semibold text-primary-600">{result.result_id}</span>
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                  result.status === 'completed'
-                    ? 'bg-green-100 text-green-800'
-                    : result.status === 'failed'
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-yellow-100 text-yellow-800'
-                }`}>
+              <div className="flex items-center gap-3">
+                {canRunEvaluation && (
+                  <Button
+                    variant="outline"
+                    onClick={() => reEvaluateMutation.mutate()}
+                    disabled={reEvaluateMutation.isPending}
+                    isLoading={reEvaluateMutation.isPending}
+                    leftIcon={!reEvaluateMutation.isPending ? <RotateCcw className="h-4 w-4" /> : undefined}
+                  >
+                    Run evaluation
+                  </Button>
+                )}
+                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusClass(result.status)}`}>
                   {result.status}
                 </span>
               </div>
@@ -92,7 +128,6 @@ export default function TestAgentResultDetail() {
           </div>
         </div>
 
-        {/* Call Details - Using the same component structure as RetellCallDetails */}
         <div className="bg-white shadow rounded-lg p-6">
           <TestVoiceAgentResultDetails resultData={resultData} />
         </div>

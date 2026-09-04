@@ -16,6 +16,9 @@ def merge_and_upload_audio(
     organization_id: str = None,
     evaluator_id: str = None,
     result_id: str = None,
+    call_direction: str | None = None,
+    user_audio_frames: int | None = None,
+    bot_audio_frames: int | None = None,
 ):
     """
     Merge user and bot telephony recordings with alignment analysis, upload mono WAV to S3,
@@ -28,6 +31,13 @@ def merge_and_upload_audio(
         if os.path.exists(user_audio_path) and os.path.exists(bot_audio_path):
             user_size = os.path.getsize(user_audio_path)
             bot_size = os.path.getsize(bot_audio_path)
+            logger.info(
+                "Recording merge input user_bytes={} bot_bytes={} user_audio_frames={} bot_audio_frames={}",
+                user_size,
+                bot_size,
+                user_audio_frames,
+                bot_audio_frames,
+            )
 
             if user_size > 100 and bot_size > 100:
                 merged_fd, merged_path = tempfile.mkstemp(suffix=".wav")
@@ -44,6 +54,7 @@ def merge_and_upload_audio(
                         user_audio_path,
                         bot_audio_path,
                         output_path=merged_path,
+                        call_direction=call_direction,
                     )
                 except Exception as merge_exc:
                     logger.error("Telephony aligned merge failed: {}", merge_exc, exc_info=True)
@@ -76,6 +87,15 @@ def merge_and_upload_audio(
                 logger.info("Bot track empty; uploading inbound user track only")
                 s3_key_result, duration_result = _upload_single_track(
                     user_audio_path,
+                    call_start_time,
+                    organization_id,
+                    evaluator_id,
+                    result_id,
+                )
+            elif bot_size > 100 and user_size <= 100:
+                logger.info("User track empty; uploading bot/outbound track only")
+                s3_key_result, duration_result = _upload_single_track(
+                    bot_audio_path,
                     call_start_time,
                     organization_id,
                     evaluator_id,

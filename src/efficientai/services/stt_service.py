@@ -195,6 +195,14 @@ class STTService(AIService):
             frame: The frame to process.
             direction: The direction of frame processing.
         """
+        if isinstance(frame, StartFrame):
+            # Push StartFrame before start(), because downstream processors
+            # (RTVI, TTS, transport output) must not wait on STT connect.
+            await super(AIService, self).process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            await self.start(frame)
+            return
+
         await super().process_frame(frame, direction)
 
         if isinstance(frame, AudioRawFrame):

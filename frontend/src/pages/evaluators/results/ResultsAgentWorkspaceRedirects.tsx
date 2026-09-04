@@ -1,11 +1,11 @@
 import { Navigate, useParams } from 'react-router-dom'
 
-/** Legacy nested routes → query-based agent workspace. */
+/** Legacy nested routes → query-based results hub. */
 export function RedirectAgentSuiteToWorkspace() {
   const { agentId, suiteId } = useParams<{ agentId: string; suiteId: string }>()
   return (
     <Navigate
-      to={`/results/agents/${agentId}?suite=${suiteId}`}
+      to={`/results?agent=${agentId}&suite=${suiteId}`}
       replace
     />
   )
@@ -19,8 +19,13 @@ export function RedirectAgentScenarioToWorkspace() {
   }>()
   return (
     <Navigate
-      to={`/results/agents/${agentId}?suite=${suiteId}&scenario=${scenarioId}`}
+      to={`/results?agent=${agentId}&suite=${suiteId}&scenario=${scenarioId}`}
       replace
     />
   )
+}
+
+export function RedirectAgentWorkspaceToHub() {
+  const { agentId } = useParams<{ agentId: string }>()
+  return <Navigate to={`/results?agent=${agentId}`} replace />
 }

@@ -374,7 +374,9 @@ def _install_static_stubs():
 
     if "app.services.audio" not in sys.modules:
         fake_audio_pkg = types.ModuleType("app.services.audio")
-        fake_audio_pkg.__path__ = []
+        fake_audio_pkg.__path__ = [
+            str(Path(__file__).resolve().parents[1] / "app" / "services" / "audio")
+        ]
         fake_audio_service_module = types.ModuleType("app.services.audio.audio_service")
         fake_voice_quality_module = types.ModuleType("app.services.audio.voice_quality_service")
 
@@ -455,7 +457,9 @@ def _install_static_stubs():
 
     if "app.services.testing.test_agent_service" not in sys.modules:
         fake_testing_pkg = types.ModuleType("app.services.testing")
-        fake_testing_pkg.__path__ = []
+        fake_testing_pkg.__path__ = [
+            str(Path(__file__).resolve().parents[1] / "app" / "services" / "testing")
+        ]
         fake_test_agent_service_module = types.ModuleType("app.services.testing.test_agent_service")
 
         class _FakeTestAgentService:
@@ -845,6 +849,7 @@ def _build_session_api_app():
         cron_jobs,
         data_sources,
         evaluations,
+        evaluator_result_metric_clusters,
         evaluator_results,
         evaluators,
         evaluator_suites,
@@ -890,6 +895,7 @@ def _build_session_api_app():
     app.include_router(aiproviders.router, prefix="/api/v1")
     app.include_router(llm_gateway.router, prefix="/api/v1")
     app.include_router(metrics.router, prefix="/api/v1")
+    app.include_router(evaluator_result_metric_clusters.router, prefix="/api/v1")
     app.include_router(evaluator_results.router, prefix="/api/v1")
     app.include_router(voicebundles.router, prefix="/api/v1")
     app.include_router(test_agents.router, prefix="/api/v1")

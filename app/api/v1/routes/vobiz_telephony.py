@@ -700,7 +700,7 @@ async def carrier_media_websocket(websocket: WebSocket):
                 hangup_secs = resolve_agent_silence_hangup_secs(context.agent)
                 await run_voice_bundle_fastapi(
                     websocket,
-                    context.system_instruction,
+                    run_params.system_instruction,
                     str(context.organization_id),
                     str(context.workspace_id) if context.workspace_id else None,
                     agent_id,
@@ -717,6 +717,10 @@ async def carrier_media_websocket(websocket: WebSocket):
                     telephony_mode=True,
                     call_short_id=call_short_id,
                     silence_hangup_secs=hangup_secs,
+                    call_direction=session.direction,
+                    caller_speaks_first=run_params.caller_speaks_first,
+                    caller_opening_text=run_params.caller_opening_text,
+                    persona_speaks_via_tts=run_params.persona_speaks_via_tts,
                 )
             else:
                 if not context.google_api_key:
@@ -728,7 +732,7 @@ async def carrier_media_websocket(websocket: WebSocket):
                 await run_bot(
                     websocket,
                     context.google_api_key,
-                    context.system_instruction,
+                    run_params.system_instruction,
                     str(context.organization_id),
                     agent_id,
                     persona_id,
@@ -738,6 +742,9 @@ async def carrier_media_websocket(websocket: WebSocket):
                     telephony_mode=True,
                     call_short_id=call_short_id,
                     silence_hangup_secs=hangup_secs,
+                    persona=context.persona,
+                    call_direction=session.direction,
+                    persona_speaks_via_tts=run_params.persona_speaks_via_tts,
                 )
         except ValueError as e:
             logger.error("Carrier media websocket setup failed: {}", e)

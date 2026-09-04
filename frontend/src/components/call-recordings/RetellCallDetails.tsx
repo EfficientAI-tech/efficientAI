@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import {
-  DollarSign, MessageSquare, TrendingUp, Download, Activity, Server
+  DollarSign, MessageSquare, TrendingUp, Activity, Server
 } from 'lucide-react'
+import RecordingAudioPlayer from '../audio/RecordingAudioPlayer'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell
@@ -166,15 +167,12 @@ export default function RetellCallDetails({ callData, hideTranscript = false }: 
           <MessageSquare className="h-5 w-5 text-indigo-600" />
           Transcript
         </h3>
-        {callData.recording_url && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-            <audio controls src={callData.recording_url} className="h-8 w-64" />
-            <a href={callData.recording_url} download className="text-gray-500 hover:text-indigo-600 p-1">
-              <Download className="h-4 w-4" />
-            </a>
-          </div>
-        )}
       </div>
+      {callData.recording_url && (
+        <div className="mb-4 flex-shrink-0">
+          <RecordingAudioPlayer src={callData.recording_url} downloadUrl={callData.recording_url} />
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
         {callData.transcript_object?.map((msg, idx) => (

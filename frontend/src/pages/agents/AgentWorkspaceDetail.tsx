@@ -13,6 +13,12 @@ import AgentEditForm from './components/AgentEditForm'
 import AgentTalkSidebar, { type AgentTalkMode } from './components/AgentTalkSidebar'
 import { Save, X } from 'lucide-react'
 import { extractPhoneConflictDetail } from './components/agentPhoneValidation'
+import {
+  TestAgentTemplateDraft,
+  assembleTestAgentPrompt,
+  defaultTestAgentTemplate,
+  templateFromApi,
+} from './components/agentTestSetupConstants'
 
 const VALID_TABS: AgentDetailTab[] = ['overview', 'test_agent', 'voice_ai_agent']
 
@@ -51,6 +57,7 @@ interface FormData {
   phone_number: string
   language: string
   description: string
+  test_agent_template: TestAgentTemplateDraft
   prompt_variables: Record<string, string>
   silence_hangup_secs: number
   call_type: string
@@ -109,6 +116,7 @@ export default function AgentWorkspaceDetail({
     phone_number: '',
     language: 'en',
     description: '',
+    test_agent_template: defaultTestAgentTemplate(),
     prompt_variables: {},
     silence_hangup_secs: 15,
     call_type: 'outbound',
@@ -164,7 +172,10 @@ export default function AgentWorkspaceDetail({
         language: data.language,
         call_type: data.call_type,
         call_medium: data.call_medium,
-        description: data.description?.trim() || null,
+        description:
+          data.description?.trim() ||
+          assembleTestAgentPrompt(data.test_agent_template.sections),
+        test_agent_template: data.test_agent_template,
         prompt_variables: data.prompt_variables || {},
         silence_hangup_secs: data.silence_hangup_secs ?? 15,
       }
@@ -368,10 +379,10 @@ export default function AgentWorkspaceDetail({
 
   return (
     <div
-      className={`flex-1 min-w-0 transition-[margin] ${talkSidebarOpen ? 'lg:mr-[28rem]' : ''}`}
+      className={`flex flex-1 min-w-0 min-h-0 flex-col transition-[margin] ${talkSidebarOpen ? 'lg:mr-[28rem]' : ''}`}
     >
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
-        <div className="border-b border-gray-200 px-4 pt-3 pb-0">
+      <div className="flex flex-col flex-1 min-h-0 min-h-[calc(100vh-11rem)] bg-white rounded-xl border border-gray-200 shadow-sm">
+        <div className="shrink-0 border-b border-gray-200 px-4 pt-3 pb-0">
           <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
             <div className="min-w-0 flex-1">
               <h2 className="text-lg font-semibold text-gray-900 truncate">
@@ -419,7 +430,7 @@ export default function AgentWorkspaceDetail({
           </nav>
         </div>
 
-        <div className="p-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4">
           {!isEditMode ? (
             <AgentInfoView
               agent={agent}

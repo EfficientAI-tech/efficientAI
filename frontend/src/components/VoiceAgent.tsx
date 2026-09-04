@@ -27,11 +27,32 @@ interface VoiceAgentProps {
   compact?: boolean
   sidebarLayout?: boolean
   agentDisplayName?: string
+  connectDisabled?: boolean
+  connectDisabledReason?: string
+  runEvaluation?: boolean
+  userTranscriptLabel?: string
+  botTranscriptLabel?: string
 }
 
 type TranscriptEntry = { role: 'user' | 'agent'; content: string; timestamp: string }
 
-export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpoint, customEndpointLabel, billingSurface, onSessionSaved, compact = false, sidebarLayout = false, agentDisplayName }: VoiceAgentProps) {
+export default function VoiceAgent({
+  personaId,
+  scenarioId,
+  agentId,
+  customEndpoint,
+  customEndpointLabel,
+  billingSurface,
+  onSessionSaved,
+  compact = false,
+  sidebarLayout = false,
+  agentDisplayName,
+  connectDisabled = false,
+  connectDisabledReason,
+  runEvaluation = false,
+  userTranscriptLabel = 'You',
+  botTranscriptLabel = 'Agent',
+}: VoiceAgentProps) {
   const { selectedAgent } = useAgentStore()
   
   // Use agentId prop if provided, otherwise fall back to selectedAgent from store
@@ -420,6 +441,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
       }
       if (!customEndpoint && personaId) params.append('persona_id', personaId)
       if (!customEndpoint && scenarioId) params.append('scenario_id', scenarioId)
+      if (!customEndpoint && runEvaluation) params.append('run_evaluation', 'true')
       if (!customEndpoint && billingSurface) params.append('ui_surface', billingSurface)
 
       if (!customEndpoint && params.toString()) {
@@ -536,7 +558,7 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
                 entry.role === 'user' ? 'bg-blue-50 text-blue-900 ml-2' : 'bg-gray-100 text-gray-800 mr-2'
               }`}
             >
-              <span className="font-semibold opacity-60">{entry.role === 'user' ? 'You' : 'Agent'}: </span>
+              <span className="font-semibold opacity-60">{entry.role === 'user' ? userTranscriptLabel : botTranscriptLabel}: </span>
               {entry.content}
             </div>
           ))
@@ -569,7 +591,8 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
             onClick={connect}
             isLoading={isConnecting}
             leftIcon={isConnecting ? <Loader className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
-            disabled={isConnecting}
+            disabled={isConnecting || connectDisabled}
+            title={connectDisabled ? connectDisabledReason : undefined}
           >
             Start call
           </Button>
@@ -660,7 +683,8 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
                 onClick={connect}
                 isLoading={isConnecting}
                 leftIcon={isConnecting ? <Loader className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
-                disabled={isConnecting}
+                disabled={isConnecting || connectDisabled}
+                title={connectDisabled ? connectDisabledReason : undefined}
               >
                 Connect
               </Button>

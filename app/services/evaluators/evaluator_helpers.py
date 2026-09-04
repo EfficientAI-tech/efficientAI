@@ -205,7 +205,7 @@ def load_suite_combinations(
             Evaluator.organization_id == organization_id,
             Evaluator.workspace_id == workspace_id,
         )
-        .order_by(Evaluator.scenario_id)
+        .order_by(Evaluator.persona_id, Evaluator.scenario_id)
         .all()
     )
 

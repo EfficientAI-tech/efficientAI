@@ -8,9 +8,9 @@ sidebar_position: 4
 
 ## What is an Evaluator Suite?
 
-An **Evaluator Suite** groups one **Agent**, one **Persona**, and **multiple Scenarios** into test combinations.
+An **Evaluator Suite** groups one **Agent**, one or more **Personas**, and **multiple Scenarios** into test combinations.
 
-Each scenario becomes one combination (1:1:N). You can:
+Each persona × scenario pair becomes one combination (1:M:N). You can:
 
 - Choose **metrics** to score at the suite level (optional — defaults to all enabled agent metrics)
 - **Outbound / web**: run every combination **X times** (total runs = N × X)
@@ -20,8 +20,8 @@ Each scenario becomes one combination (1:1:N). You can:
 
 ## Creating a Suite (4-step wizard)
 
-1. **Agent & Persona** — pick one agent and one TTS-compatible persona
-2. **Scenarios** — multi-select scenarios (each becomes a combination)
+1. **Agent & Personas** — pick one agent and one or more TTS-compatible personas
+2. **Scenarios** — multi-select scenarios (each persona × scenario becomes a combination)
 3. **Metrics** — optional metric picker
 4. **Review** — name, tags, default runs per combination
 
@@ -42,6 +42,9 @@ Each scenario becomes one combination (1:1:N). You can:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/v1/evaluator-suites` | Create suite + combinations |
+| PUT | `/api/v1/evaluator-suites/{id}/personas` | Replace persona set on a suite |
+| POST | `/api/v1/evaluator-suites/{id}/personas` | Add personas to a suite |
+| DELETE | `/api/v1/evaluator-suites/{id}/personas/{persona_id}` | Remove a persona from a suite |
 | GET | `/api/v1/evaluator-suites` | List suites |
 | POST | `/api/v1/evaluator-suites/{id}/run` | Batch run (outbound/web) |
 | POST | `/api/v1/evaluator-suites/{id}/activate` | Set active inbound suite for the agent |

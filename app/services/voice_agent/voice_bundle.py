@@ -12,14 +12,9 @@ at module import time. Services are only loaded when actually used.
 
 import os
 import time
-import wave
-import uuid
-import tempfile
 
 from dotenv import load_dotenv
 from loguru import logger
-
-from app.services.storage.s3_service import s3_service
 
 load_dotenv(override=True)
 
@@ -39,7 +34,6 @@ def _get_core_imports():
     from efficientai.processors.aggregators.llm_context import LLMContext
     from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
     from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-    from efficientai.processors.audio.audio_buffer_processor import AudioBufferProcessor
     from efficientai.runner.types import RunnerArguments
     from efficientai.runner.utils import create_transport
     from efficientai.serializers.protobuf import ProtobufFrameSerializer
@@ -61,7 +55,6 @@ def _get_core_imports():
         "RTVIConfig": RTVIConfig,
         "RTVIObserver": RTVIObserver,
         "RTVIProcessor": RTVIProcessor,
-        "AudioBufferProcessor": AudioBufferProcessor,
         "RunnerArguments": RunnerArguments,
         "create_transport": create_transport,
         "ProtobufFrameSerializer": ProtobufFrameSerializer,
@@ -521,10 +514,14 @@ async def run_voice_bundle_fastapi(
     telephony_mode: bool = False,
     call_short_id: str | None = None,
     silence_hangup_secs: float | None = None,
+    caller_speaks_first: bool = True,
+    caller_opening_text: str | None = None,
+    call_direction: str = "outbound",
+    persona_speaks_via_tts: bool = False,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
-    Uses AudioBufferProcessor for proper conversation audio recording.
+    Records dual-track WAV via AudioRecorder and merges/uploads after the call.
     """
     # Lazy load all efficientai dependencies
     imports = _get_imports()
@@ -537,9 +534,6 @@ async def run_voice_bundle_fastapi(
     duration_result = None
     transcript_text = None
     conversation_turns = []
-    
-    # Storage for audio data from the buffer processor
-    recorded_audio_data = {"audio": None, "sample_rate": None, "num_channels": None}
 
     # Resolve STT provider config from the registry
     stt_provider_value = _resolve_provider(voice_bundle, "stt_provider", DEFAULT_STT_PROVIDER)
@@ -602,6 +596,27 @@ async def run_voice_bundle_fastapi(
         transport_out_sample_rate = resolve_websocket_audio_out_sample_rate_hz(
             telephony_mode=telephony_mode,
         )
+        ambient_mixer = None
+        ambient_input_processor = None
+        if persona is not None and telephony_mode:
+            from app.services.audio.ambient_telephony import resolve_ambient_for_telephony
+            from app.services.audio.ambient_input_processor import get_ambient_input_processor_class
+
+            ambient_config = await resolve_ambient_for_telephony(
+                persona,
+                call_direction=call_direction,
+                input_sample_rate=transport_in_sample_rate,
+                output_sample_rate=transport_out_sample_rate,
+                persona_speaks_via_tts=persona_speaks_via_tts,
+            )
+            ambient_mixer = ambient_config.output_mixer
+            if ambient_config.input_bed is not None:
+                AmbientInputProcessor = get_ambient_input_processor_class()
+                ambient_input_processor = AmbientInputProcessor(ambient_config.input_bed)
+        elif persona is not None:
+            from app.services.audio.ambient_catalog import resolve_ambient_mixer
+
+            ambient_mixer = await resolve_ambient_mixer(persona, transport_out_sample_rate)
         ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
             params=imports["FastAPIWebsocketParams"](
@@ -612,6 +627,7 @@ async def run_voice_bundle_fastapi(
                 audio_out_sample_rate=transport_out_sample_rate,
                 vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
                 serializer=transport_serializer,
+                audio_out_mixer=ambient_mixer,
             ),
         )
 
@@ -719,77 +735,46 @@ async def run_voice_bundle_fastapi(
                 "or special Unicode characters. Use only plain spoken words."
             )
 
-        messages = [
-            {
-                "role": "system",
-                "content": base_instruction,
-            },
-            {
-                "role": "user",
-                "content": "Start by greeting the user warmly and introducing yourself based on the system instruction.",
-            },
-        ]
+        messages = [{"role": "system", "content": base_instruction}]
+        if caller_speaks_first:
+            bootstrap = (
+                f"Say your opening line now, in character, word for word if possible: "
+                f"\"{caller_opening_text.strip()}\""
+                if caller_opening_text and caller_opening_text.strip()
+                else "Introduce yourself using your name from the system prompt, then begin the scenario naturally."
+            )
+            messages.append({"role": "user", "content": bootstrap})
 
         context = imports["LLMContext"](messages)
         context_aggregator = imports["LLMContextAggregatorPair"](context)
 
-        use_aligned_recorders = telephony_mode
-        user_recorder = None
-        bot_recorder = None
-        user_audio_path = None
-        bot_audio_path = None
+        from app.services.voice_agent.audio_recorder import get_audio_recorder_class
+        from app.services.voice_agent.telephony_recording_paths import telephony_recording_temp_path
+
+        AudioRecorder = get_audio_recorder_class()
+        user_audio_path = telephony_recording_temp_path(suffix=".wav")
+        bot_audio_path = telephony_recording_temp_path(suffix=".wav")
         recording_start_time = time.time()
-
-        if use_aligned_recorders:
-            from app.services.voice_agent.audio_recorder import get_audio_recorder_class
-            from app.services.voice_agent.telephony_recording_paths import telephony_recording_temp_path
-
-            AudioRecorder = get_audio_recorder_class()
-            user_audio_path = telephony_recording_temp_path(suffix=".wav")
-            bot_audio_path = telephony_recording_temp_path(suffix=".wav")
-            user_recorder = AudioRecorder(
-                user_audio_path,
-                recording_start_time,
-                target_sample_rate=tts_sample_rate,
-                recorder_name="UserAudioRecorder",
-                alignment_mode="stream",
-            )
-            bot_recorder = AudioRecorder(
-                bot_audio_path,
-                recording_start_time,
-                target_sample_rate=tts_sample_rate,
-                recorder_name="BotAudioRecorder",
-                alignment_mode="stream",
-            )
-            audio_buffer_input = None
-            audio_buffer_output = None
-            input_audio_chunks = []
-            output_audio_chunks = []
-        else:
-            audio_buffer_input = imports["AudioBufferProcessor"](
-                sample_rate=tts_sample_rate,
-                num_channels=1,
-            )
-            audio_buffer_output = imports["AudioBufferProcessor"](
-                sample_rate=tts_sample_rate,
-                num_channels=1,
-            )
-            input_audio_chunks = []
-            output_audio_chunks = []
-
-            @audio_buffer_input.event_handler("on_audio_data")
-            async def on_input_audio_data(buffer, audio, sample_rate, num_channels):
-                logger.debug(f"Input AudioBuffer captured {len(audio)} bytes")
-                if audio and len(audio) > 0:
-                    input_audio_chunks.append(audio)
-
-            @audio_buffer_output.event_handler("on_audio_data")
-            async def on_output_audio_data(buffer, audio, sample_rate, num_channels):
-                logger.debug(f"Output AudioBuffer captured {len(audio)} bytes")
-                if audio and len(audio) > 0:
-                    output_audio_chunks.append(audio)
-                recorded_audio_data["sample_rate"] = sample_rate
-                recorded_audio_data["num_channels"] = num_channels
+        recording_ambient_bed = None
+        if ambient_mixer is not None:
+            recording_ambient_bed = ambient_mixer.bed.clone()
+        user_recorder = AudioRecorder(
+            user_audio_path,
+            recording_start_time,
+            target_sample_rate=tts_sample_rate,
+            recorder_name="UserAudioRecorder",
+            alignment_mode="wall_clock",
+            capture="input",
+        )
+        bot_recorder = AudioRecorder(
+            bot_audio_path,
+            recording_start_time,
+            target_sample_rate=tts_sample_rate,
+            recorder_name="BotAudioRecorder",
+            alignment_mode="playout",
+            capture="output",
+            ambient_bed=recording_ambient_bed,
+        )
 
         pipeline_task_ref: list = []
 
@@ -813,16 +798,12 @@ async def run_voice_bundle_fastapi(
             audio_out_sample_rate=transport_out_sample_rate,
         )
 
-        if use_aligned_recorders:
-            pipeline_processors = [ws_transport.input()]
-            if silence_hangup_processor:
-                pipeline_processors.append(silence_hangup_processor)
-            pipeline_processors.extend([user_recorder, stt])
-        else:
-            pipeline_processors = [ws_transport.input()]
-            if silence_hangup_processor:
-                pipeline_processors.append(silence_hangup_processor)
-            pipeline_processors.extend([audio_buffer_input, stt])
+        pipeline_processors = [ws_transport.input()]
+        if ambient_input_processor:
+            pipeline_processors.append(ambient_input_processor)
+        if silence_hangup_processor:
+            pipeline_processors.append(silence_hangup_processor)
+        pipeline_processors.extend([user_recorder, stt])
         if telephony_mode and call_short_id:
             from app.services.voice_agent.live_transcript_processor import create_live_transcript_processor
 
@@ -861,8 +842,8 @@ async def run_voice_bundle_fastapi(
         if usage_recorder:
             pipeline_processors.append(usage_recorder)
         pipeline_processors.extend([
-            bot_recorder if use_aligned_recorders else audio_buffer_output,
             ws_transport.output(),
+            bot_recorder,
             context_aggregator.assistant(),
         ])
 
@@ -878,10 +859,8 @@ async def run_voice_bundle_fastapi(
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):
                 logger.info("Vobiz telephony client connected via WebSocket (voice bundle)")
-                if not use_aligned_recorders:
-                    await audio_buffer_input.start_recording()
-                    await audio_buffer_output.start_recording()
-                await task.queue_frames([imports["LLMRunFrame"]()])
+                if caller_speaks_first:
+                    await task.queue_frames([imports["LLMRunFrame"]()])
 
             @ws_transport.event_handler("on_client_disconnected")
             async def on_client_disconnected(transport, client):
@@ -891,13 +870,15 @@ async def run_voice_bundle_fastapi(
             rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
 
             rtvi_processors = [ws_transport.input()]
+            if ambient_input_processor:
+                rtvi_processors.append(ambient_input_processor)
             if silence_hangup_processor:
                 rtvi_processors.append(silence_hangup_processor)
             rtvi_processors.extend([
-                audio_buffer_input,
+                user_recorder,
+                rtvi,
                 stt,
                 context_aggregator.user(),
-                rtvi,
                 llm,
                 tts,
             ])
@@ -911,8 +892,8 @@ async def run_voice_bundle_fastapi(
             if usage_recorder:
                 rtvi_processors.append(usage_recorder)
             rtvi_processors.extend([
-                audio_buffer_output,
                 ws_transport.output(),
+                bot_recorder,
                 context_aggregator.assistant(),
             ])
             pipeline = imports["Pipeline"](rtvi_processors)
@@ -927,10 +908,10 @@ async def run_voice_bundle_fastapi(
             @rtvi.event_handler("on_client_ready")
             async def on_client_ready(rtvi):
                 await rtvi.set_bot_ready()
-                await audio_buffer_input.start_recording()
-                await audio_buffer_output.start_recording()
-                logger.info("AudioBufferProcessors started recording (input + output)")
-                await task.queue_frames([imports["LLMRunFrame"]()])
+                if caller_speaks_first:
+                    await task.queue_frames([imports["LLMRunFrame"]()])
+                else:
+                    logger.info("Caller waits for production agent — skipping initial LLM run")
 
             @ws_transport.event_handler("on_client_connected")
             async def on_client_connected(transport, client):
@@ -982,66 +963,43 @@ async def run_voice_bundle_fastapi(
                 conversation_turns = []
                 transcript_text = None
 
-            if use_aligned_recorders:
-                await user_recorder.cleanup()
-                await bot_recorder.cleanup()
+            await user_recorder.cleanup()
+            await bot_recorder.cleanup()
 
-                if telephony_mode and call_short_id:
-                    try:
-                        from app.workers.celery_app import finalize_telephony_recording_task
+            if telephony_mode and call_short_id:
+                try:
+                    from app.workers.celery_app import finalize_telephony_recording_task
 
-                        finalize_telephony_recording_task.delay(
-                            call_short_id=call_short_id,
-                            user_audio_path=user_audio_path,
-                            bot_audio_path=bot_audio_path,
-                            call_start_time=call_start_time,
-                            organization_id=organization_id,
-                            evaluator_id=evaluator_id,
-                            result_id=result_id,
-                            conversation_turns=conversation_turns,
-                            transcript_text=transcript_text,
-                            duration=duration_result,
-                        )
-                        logger.info(
-                            "Queued finalize_telephony_recording for call_short_id={} "
-                            "user_audio={} bot_audio={}",
-                            call_short_id,
-                            user_audio_path,
-                            bot_audio_path,
-                        )
-                    except Exception as celery_err:
-                        logger.warning(
-                            "Celery unavailable for post-call recording finalize ({}); running inline",
-                            celery_err,
-                        )
-                        from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
-                        from app.database import SessionLocal
-                        from app.services.telephony.call_recording_lifecycle import (
-                            persist_telephony_call_artifacts,
-                        )
-
-                        s3_key_result, duration_result = merge_and_upload_audio(
-                            user_audio_path=user_audio_path,
-                            bot_audio_path=bot_audio_path,
-                            call_start_time=call_start_time,
-                            organization_id=organization_id,
-                            evaluator_id=evaluator_id,
-                            result_id=result_id,
-                        )
-                        db = SessionLocal()
-                        try:
-                            persist_telephony_call_artifacts(
-                                db,
-                                call_short_id=call_short_id,
-                                conversation_turns=conversation_turns,
-                                transcript_text=transcript_text,
-                                s3_key=s3_key_result,
-                                duration=duration_result,
-                            )
-                        finally:
-                            db.close()
-                elif user_audio_path and bot_audio_path:
+                    finalize_telephony_recording_task.delay(
+                        call_short_id=call_short_id,
+                        user_audio_path=user_audio_path,
+                        bot_audio_path=bot_audio_path,
+                        call_start_time=call_start_time,
+                        organization_id=organization_id,
+                        evaluator_id=evaluator_id,
+                        result_id=result_id,
+                        conversation_turns=conversation_turns,
+                        transcript_text=transcript_text,
+                        duration=duration_result,
+                        call_direction=call_direction,
+                    )
+                    logger.info(
+                        "Queued finalize_telephony_recording for call_short_id={} "
+                        "user_audio={} bot_audio={}",
+                        call_short_id,
+                        user_audio_path,
+                        bot_audio_path,
+                    )
+                except Exception as celery_err:
+                    logger.warning(
+                        "Celery unavailable for post-call recording finalize ({}); running inline",
+                        celery_err,
+                    )
                     from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
+                    from app.database import SessionLocal
+                    from app.services.telephony.call_recording_lifecycle import (
+                        persist_telephony_call_artifacts,
+                    )
 
                     s3_key_result, duration_result = merge_and_upload_audio(
                         user_audio_path=user_audio_path,
@@ -1050,58 +1008,10 @@ async def run_voice_bundle_fastapi(
                         organization_id=organization_id,
                         evaluator_id=evaluator_id,
                         result_id=result_id,
+                        call_direction=call_direction,
+                        user_audio_frames=user_recorder.audio_frames_received,
+                        bot_audio_frames=bot_recorder.audio_frames_received,
                     )
-            else:
-                await audio_buffer_input.stop_recording()
-                await audio_buffer_output.stop_recording()
-                logger.info("AudioBufferProcessors stopped recording")
-
-                total_input_audio = b"".join(input_audio_chunks) if input_audio_chunks else b""
-                total_output_audio = b"".join(output_audio_chunks) if output_audio_chunks else b""
-                logger.info(
-                    f"Input audio: {len(total_input_audio)} bytes, "
-                    f"Output audio: {len(total_output_audio)} bytes"
-                )
-
-                if len(total_input_audio) > 100 or len(total_output_audio) > 100:
-                    try:
-                        import io
-                        from efficientai.audio.utils import mix_audio
-
-                        sample_rate = recorded_audio_data.get("sample_rate") or tts_sample_rate
-                        num_channels = 1
-                        mixed_audio = mix_audio(total_input_audio, total_output_audio)
-                        logger.info(f"Mixed audio: {len(mixed_audio)} bytes")
-
-                        wav_buffer = io.BytesIO()
-                        with wave.open(wav_buffer, "wb") as wf:
-                            wf.setnchannels(num_channels)
-                            wf.setsampwidth(2)
-                            wf.setframerate(sample_rate)
-                            wf.writeframes(mixed_audio)
-
-                        wav_buffer.seek(0)
-                        file_content = wav_buffer.read()
-                        file_id = uuid.uuid4()
-                        meaningful_id = result_id if result_id else f"{int(time.time())}-{file_id.hex[:8]}"
-                        s3_key_result = s3_service.upload_file(
-                            file_content=file_content,
-                            file_id=file_id,
-                            file_format="wav",
-                            organization_id=organization_id,
-                            evaluator_id=evaluator_id,
-                            meaningful_id=meaningful_id,
-                        )
-                        logger.info(f"✅ Conversation audio uploaded to S3: {s3_key_result}")
-                    except Exception as e:
-                        logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
-                else:
-                    logger.warning("No audio data captured or audio too small to upload")
-
-                if telephony_mode and call_short_id:
-                    from app.database import SessionLocal
-                    from app.services.telephony.call_recording_lifecycle import persist_telephony_call_artifacts
-
                     db = SessionLocal()
                     try:
                         persist_telephony_call_artifacts(
@@ -1114,6 +1024,20 @@ async def run_voice_bundle_fastapi(
                         )
                     finally:
                         db.close()
+            elif user_audio_path and bot_audio_path:
+                from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
+
+                s3_key_result, duration_result = merge_and_upload_audio(
+                    user_audio_path=user_audio_path,
+                    bot_audio_path=bot_audio_path,
+                    call_start_time=call_start_time,
+                    organization_id=organization_id,
+                    evaluator_id=evaluator_id,
+                    result_id=result_id,
+                    call_direction=call_direction if telephony_mode else None,
+                    user_audio_frames=user_recorder.audio_frames_received,
+                    bot_audio_frames=bot_recorder.audio_frames_received,
+                )
 
             if telephony_mode and call_short_id:
                 # region agent log
@@ -1126,7 +1050,7 @@ async def run_voice_bundle_fastapi(
                         "call_short_id": call_short_id,
                         "conversation_turns_count": len(conversation_turns),
                         "s3_key_set": bool(s3_key_result),
-                        "aligned_recorders": use_aligned_recorders,
+                        "aligned_recorders": True,
                     },
                     "H4",
                 )

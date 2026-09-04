@@ -18,13 +18,16 @@ export default function EvaluatorInboundCallPanel({
 }: Props) {
   const isActive = suite.is_active
   const nextIdx = suite.round_robin_index % Math.max(suite.combination_count, 1)
-  const nextScenario = suite.combinations[nextIdx]?.scenario_name
+  const nextCombo = suite.combinations[nextIdx]
+  const nextRotationLabel = nextCombo
+    ? [nextCombo.persona_name, nextCombo.scenario_name].filter(Boolean).join(' · ')
+    : undefined
 
   const chooseNextMutation = useMutation({
     mutationFn: () => apiClient.chooseNextCombination(suite.id),
     onSuccess: (data) => {
       onSuiteUpdated?.()
-      showToast?.(`Next scenario: ${data.scenario_name}`, 'success')
+      showToast?.(`Next: ${[data.persona_name, data.scenario_name].filter(Boolean).join(' · ') || data.scenario_name}`, 'success')
     },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail
@@ -84,7 +87,7 @@ export default function EvaluatorInboundCallPanel({
             <RotateCcw className="h-4 w-4" />
             Next in rotation
           </div>
-          <p className="mt-2 text-amber-900 font-semibold">{nextScenario || '—'}</p>
+          <p className="mt-2 text-amber-900 font-semibold">{nextRotationLabel || '—'}</p>
           <p className="text-xs text-amber-700 mt-1">
             Position {nextIdx + 1} of {suite.combination_count}
           </p>

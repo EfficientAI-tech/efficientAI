@@ -146,6 +146,7 @@ export interface EvaluatorResultRow {
   metric_scores: Record<string, EvaluatorResultMetricScore> | null
   error_message: string | null
   agent?: { id: string; name: string } | null
+  persona?: { id: string; name: string } | null
   scenario?: { id: string; name: string } | null
 }
 
@@ -201,6 +202,8 @@ export interface ListEvaluatorResultsParams {
   suiteId?: string
   scenarioId?: string
   status?: 'completed' | 'failed' | 'in_progress'
+  since?: string
+  until?: string
   unassignedOnly?: boolean
   playground?: boolean
   testAgentsOnly?: boolean
@@ -540,6 +543,18 @@ export interface AgentPhoneAssignmentCheckResponse {
   conflict?: AgentPhoneAssignmentConflict | null
 }
 
+export interface TestAgentFirstMessage {
+  production_mode: string
+  production_message?: string | null
+  caller_mode: string
+  caller_message?: string | null
+}
+
+export interface TestAgentTemplate {
+  sections: Array<{ key: string; title: string; content: string }>
+  first_message: TestAgentFirstMessage
+}
+
 export interface TestAgent {
   id: string
   agent_id?: string | null
@@ -548,6 +563,7 @@ export interface TestAgent {
   telephony_phone_number_id?: string | null
   language: string
   description: string | null
+  test_agent_template?: TestAgentTemplate | null
   prompt_variables?: Record<string, string> | null
   silence_hangup_secs?: number
   call_type: string
@@ -1406,7 +1422,15 @@ export interface EvaluationUserInsightsState {
   overview?: string | null
   generated_at?: string | null
   generated_at_completed_rows: number
-  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
+  progress?: {
+    completed_llm_calls: number
+    total_llm_calls: number
+    completed_selected_calls?: number
+    total_selected_calls?: number
+    current_metric_name?: string
+    current_metric_index?: number
+    total_metrics?: number
+  } | null
   provider?: string | null
   model?: string | null
   llm_calls_used: number
@@ -1422,6 +1446,7 @@ export type MetricClusterGapLabel =
   | 'MISSING'
 
 export interface MetricSubCluster {
+  id?: string
   label: string
   count: number
   share_pct: number
@@ -1550,6 +1575,31 @@ export interface MetricClusterEligibleRowsResponse {
   total: number
 }
 
+export interface MetricClusterGenerationScope {
+  agent_id: string
+  agent_name?: string | null
+  scenario_ids?: string[]
+  scenario_names?: string[]
+  since?: string | null
+  until?: string | null
+  eligible_call_count?: number
+  selected_call_count?: number
+}
+
+export interface EvaluatorResultClusterScopeSummary {
+  job_id: string
+  scope_key: string
+  generation_scope: MetricClusterGenerationScope
+  status: EvaluationMetricClustersState['status']
+  generated_at?: string | null
+  is_stale: boolean
+  has_results: boolean
+}
+
+export interface EvaluatorResultClusterScopeListResponse {
+  items: EvaluatorResultClusterScopeSummary[]
+}
+
 export interface EvaluationMetricClustersState {
   status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
   groups: MetricClusterGroup[]
@@ -1557,7 +1607,15 @@ export interface EvaluationMetricClustersState {
   overview?: string | null
   generated_at?: string | null
   generated_at_completed_rows: number
-  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
+  progress?: {
+    completed_llm_calls: number
+    total_llm_calls: number
+    completed_selected_calls?: number
+    total_selected_calls?: number
+    current_metric_name?: string
+    current_metric_index?: number
+    total_metrics?: number
+  } | null
   provider?: string | null
   model?: string | null
   llm_calls_used: number
@@ -1569,6 +1627,7 @@ export interface EvaluationMetricClustersState {
   failure_policies_source?: 'inferred' | 'user'
   failure_policies_updated_at?: string | null
   rca_summary?: MetricClustersRcaSummary | null
+  generation_scope?: MetricClusterGenerationScope | null
 }
 
 export interface AgentFlowNode {

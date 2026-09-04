@@ -11,6 +11,7 @@ from app.services.testing.test_agent_simulation_prompt import (
     get_agent_base_prompt,
     merge_generated_description_with_scenario_appendix,
     build_test_agent_system_prompt,
+    build_live_test_agent_system_prompt,
     build_persona_description_for_bridge,
     resolve_persona_max_turns,
     scenario_reference_token,
@@ -73,12 +74,14 @@ def test_format_persona_block_includes_traits():
 
 def test_build_test_agent_system_prompt_has_three_sections():
     prompt = build_test_agent_system_prompt(_agent(), _persona(), _scenario(), max_turns=5)
-    assert "TEST AGENT SIMULATION PROMPT" in prompt
+    assert "You are Alex, a real person on a phone call." in prompt
+    assert "CONTEXT (for your eyes only" in prompt
     assert "PERSONA" in prompt
     assert "INSTRUCTIONS:" in prompt
     assert "After 5 exchanges" in prompt
     assert "Handle support calls." in prompt
     assert "Name: Alex" in prompt
+    assert "Never say you are a test agent" in prompt
 
 
 def test_merge_scenario_appendix_replaces_existing_section():
@@ -120,3 +123,25 @@ def test_resolve_persona_max_turns_uses_persona_value():
 def test_build_test_agent_system_prompt_uses_persona_max_turns():
     prompt = build_test_agent_system_prompt(_agent(), _persona(max_turns=3), _scenario())
     assert "After 3 exchanges" in prompt
+
+
+def test_build_live_test_agent_system_prompt_combines_template_persona_scenario():
+    agent = _agent(
+        description="## Role and Goal\n\nAct as a billing caller.",
+        provider_prompt="You are the bank support agent.",
+    )
+    prompt = build_live_test_agent_system_prompt(agent, _persona(), _scenario(), max_turns=4)
+    assert "You are Alex, a real person on a phone call." in prompt
+    assert "CALLER PROMPT" in prompt
+    assert "Act as a billing caller." in prompt
+    assert "## Caller identity" in prompt
+    assert "You are Alex." in prompt
+    assert "PERSONA" in prompt
+    assert "Name: Alex" in prompt
+    assert "SCENARIO" in prompt
+    assert "Billing dispute" in prompt
+    assert "Play this scenario as Alex." in prompt
+    assert "PRODUCTION AGENT CONTEXT" in prompt
+    assert "You are the bank support agent." in prompt
+    assert "After about 4 exchanges" in prompt
+    assert "Never say you are a test agent" in prompt

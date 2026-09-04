@@ -295,6 +295,9 @@ def mark_call_in_progress(
     if not data.get("started_at"):
         data["started_at"] = _now_iso()
     _save_call_data(db, row, data)
+    from app.services.evaluators.evaluator_inbound_service import sync_linked_evaluator_result_call_state
+
+    sync_linked_evaluator_result_call_state(db, row)
     return row
 
 
@@ -319,6 +322,9 @@ def update_call_from_vobiz_event(
     if event == "call_ended" or event == "failed":
         data["ended_at"] = _now_iso()
     _save_call_data(db, row, data)
+    from app.services.evaluators.evaluator_inbound_service import sync_linked_evaluator_result_call_state
+
+    sync_linked_evaluator_result_call_state(db, row)
     return row
 
 
@@ -391,6 +397,9 @@ def finalize_call_on_media_disconnect(
             "H3",
         )
         # endregion
+        from app.services.evaluators.evaluator_inbound_service import sync_linked_evaluator_result_call_state
+
+        sync_linked_evaluator_result_call_state(db, updated)
         # Evaluator dispatch runs after recording artifacts exist (Celery finalize or
         # carrier recording webhook). Enqueue here only when audio is already on the row.
         if updated.evaluator_result_id:

@@ -37,6 +37,7 @@ def test_finalize_telephony_recording_task_wires_merge_persist(
         organization_id="org-1",
         evaluator_id="eval-1",
         result_id="res-1",
+        call_direction=None,
     )
     mock_persist.assert_called_once_with(
         db,

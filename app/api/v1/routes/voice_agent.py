@@ -13,6 +13,12 @@ from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
 from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
+
+
+def _parse_bool_query(value: Optional[str], *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
@@ -103,6 +109,7 @@ async def websocket_endpoint(
         agent_id = websocket.query_params.get("agent_id")
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
+        run_evaluation = _parse_bool_query(websocket.query_params.get("run_evaluation"), default=False)
         ui_surface = websocket.query_params.get("ui_surface")
         
         # Fetch agent and voice bundle once for routing and instructions
@@ -293,21 +300,23 @@ async def websocket_endpoint(
                 return
         
         system_instruction = None
-        instruction_parts = []
+        caller_speaks_first = True
+        caller_opening_text = None
+        persona_speaks_via_tts = False
         
-        # Build system instruction as a bundle: Agent + Persona + Scenario
+        # Build system instruction from agent + persona + scenario
         from app.models.database import Agent, Persona, Scenario
+        
+        persona = None
+        scenario = None
         
         # 1. Add Agent description (base instruction) and get voice bundle for model
         model_name = None
         if agent:
-            if agent.description:
-                instruction_parts.append(agent.description)
             if voice_bundle and voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
                 model_name = voice_bundle.s2s_model
         
-        # 2. Add Persona information (characteristics)
-        persona = None
+        # 2. Load Persona
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
@@ -318,23 +327,10 @@ async def websocket_endpoint(
                 if workspace_id is not None:
                     persona_query = persona_query.filter(Persona.workspace_id == workspace_id)
                 persona = persona_query.first()
-                if persona:
-                    persona_parts = []
-                    persona_parts.append(f"\n\nPersona: {persona.name}")
-                    if persona.gender:
-                        gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
-                        persona_parts.append(f"Gender: {gender_val}")
-                    if getattr(persona, "tts_provider", None):
-                        persona_parts.append(f"Voice provider: {persona.tts_provider}")
-                    if getattr(persona, "tts_voice_name", None):
-                        persona_parts.append(f"Voice: {persona.tts_voice_name}")
-
-                    if persona_parts:
-                        instruction_parts.append("\n".join(persona_parts))
             except ValueError:
                 pass
         
-        # 3. Add Scenario information (context and goals)
+        # 3. Load Scenario
         if scenario_id:
             try:
                 scenario_uuid = UUID(scenario_id)
@@ -345,24 +341,33 @@ async def websocket_endpoint(
                 if workspace_id is not None:
                     scenario_query = scenario_query.filter(Scenario.workspace_id == workspace_id)
                 scenario = scenario_query.first()
-                if scenario:
-                    scenario_parts = []
-                    scenario_parts.append(f"\n\nScenario: {scenario.name}")
-                    if scenario.description:
-                        scenario_parts.append(f"Description: {scenario.description}")
-                    if scenario.required_info:
-                        required_info_str = ", ".join([f"{k}: {v}" for k, v in scenario.required_info.items()]) if isinstance(scenario.required_info, dict) else str(scenario.required_info)
-                        if required_info_str:
-                            scenario_parts.append(f"Required information to collect: {required_info_str}")
-                    
-                    if scenario_parts:
-                        instruction_parts.append("\n".join(scenario_parts))
             except ValueError:
                 pass
-        
-        # Combine all parts into final system instruction
-        if instruction_parts:
-            system_instruction = "\n".join(instruction_parts)
+
+        if agent and persona and scenario:
+            from app.services.testing.test_agent_simulation_prompt import (
+                build_live_test_agent_system_prompt,
+            )
+            from app.services.testing.test_agent_template import (
+                resolve_caller_opening_text,
+                resolve_first_message_from_agent,
+                should_caller_speak_first,
+            )
+
+            system_instruction = build_live_test_agent_system_prompt(agent, persona, scenario)
+            persona_speaks_via_tts = True
+            first_message_config = resolve_first_message_from_agent(agent)
+            scenario_first_message = None
+            if scenario.required_info and isinstance(scenario.required_info, dict):
+                scenario_first_message = scenario.required_info.get("first_message")
+            caller_opening_text = resolve_caller_opening_text(
+                first_message=first_message_config,
+                persona_name=persona.name or "Test Caller",
+                scenario_first_message=scenario_first_message,
+            )
+            caller_speaks_first = should_caller_speak_first(first_message_config)
+        elif agent and agent.description:
+            system_instruction = agent.description.strip()
         
         # Generate result_id BEFORE running bot (for meaningful S3 path)
         # Evaluator is only created if persona_id and scenario_id are provided
@@ -543,6 +548,9 @@ async def websocket_endpoint(
                     llm_endpoint_url=llm_endpoint_url,
                     llm_base_url=llm_base_url,
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    caller_speaks_first=caller_speaks_first,
+                    caller_opening_text=caller_opening_text,
+                    persona_speaks_via_tts=persona_speaks_via_tts,
                 )
             else:
                 call_metadata = await run_bot(
@@ -557,6 +565,7 @@ async def websocket_endpoint(
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    persona=persona,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
@@ -639,7 +648,13 @@ async def websocket_endpoint(
                     else:
                         result_name = "Test Call"
 
-                    logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}")
+                    logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}, run_evaluation={run_evaluation}")
+
+                    initial_status = (
+                        EvaluatorResultStatus.QUEUED.value
+                        if run_evaluation
+                        else EvaluatorResultStatus.CALL_ENDED.value
+                    )
 
                     call_short_id = generate_unique_call_short_id(db)
                     speaker_segments = call_metadata.get("speaker_segments") or []
@@ -655,9 +670,6 @@ async def websocket_endpoint(
                     }
                     if ui_surface:
                         playground_call_data["ui_surface"] = ui_surface
-
-                    # Create evaluator result with QUEUED status
-                    # persona_id and scenario_id can be None for test calls without persona/scenario
                     evaluator_result = EvaluatorResult(
                         result_id=result_id,
                         organization_id=organization_id,
@@ -668,7 +680,7 @@ async def websocket_endpoint(
                         scenario_id=UUID(scenario_id) if scenario_id else None,  # Optional
                         name=result_name,
                         duration_seconds=call_metadata.get("duration"),
-                        status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
+                        status=initial_status,
                         audio_s3_key=call_metadata.get("s3_key"),
                         transcription=call_metadata.get("transcription"),
                         speaker_segments=speaker_segments or None,
@@ -694,44 +706,42 @@ async def websocket_endpoint(
 
                     # Playground scoring bills via playground.evaluation_completed.
                     
-                    logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}")
+                    logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}, status={initial_status}")
                     
-                    # Trigger Celery task
-                    try:
-                        logger.info(f"Triggering Celery task for evaluator result: {evaluator_result.id}")
-                        
-                        # Check if Celery app is properly configured
-                        from app.workers.celery_app import celery_app
-                        logger.info(f"Celery broker URL: {celery_app.conf.broker_url}")
-                        logger.info(f"Celery result backend: {celery_app.conf.result_backend}")
-                        
-                        # Verify task is registered
-                        if 'process_evaluator_result' not in celery_app.tasks:
-                            logger.error("❌ Task 'process_evaluator_result' is not registered in Celery app!")
-                            logger.error(f"Available tasks: {list(celery_app.tasks.keys())}")
-                        else:
-                            logger.info("✅ Task 'process_evaluator_result' is registered")
-                        
-                        task = process_evaluator_result_task.delay(str(evaluator_result.id))
-                        logger.info(f"✅ Celery task triggered: task_id={task.id}, task_state={task.state}")
-                        
-                        # Try to get task info to verify it was queued
+                    if run_evaluation:
                         try:
-                            task_info = task.info
-                            logger.info(f"Task info: {task_info}")
-                        except Exception as info_error:
-                            logger.warning(f"Could not get task info (this is normal for async tasks): {info_error}")
-                        
-                        evaluator_result.celery_task_id = task.id
-                        db.commit()
-                        logger.info(f"✅ Updated evaluator result with celery_task_id: {task.id}")
-                    except Exception as task_error:
-                        logger.error(f"❌ Failed to trigger Celery task: {task_error}", exc_info=True)
-                        # Still log that we created the result even if task trigger failed
-                        logger.warning(f"Evaluator result {result_id} created but Celery task was not triggered. Task may need to be triggered manually.")
-                        logger.warning(f"Please ensure Celery worker is running: celery -A app.workers.celery_app worker --loglevel=info")
-                    
-                    logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
+                            logger.info(f"Triggering Celery task for evaluator result: {evaluator_result.id}")
+
+                            from app.workers.celery_app import celery_app
+                            logger.info(f"Celery broker URL: {celery_app.conf.broker_url}")
+                            logger.info(f"Celery result backend: {celery_app.conf.result_backend}")
+
+                            if 'process_evaluator_result' not in celery_app.tasks:
+                                logger.error("❌ Task 'process_evaluator_result' is not registered in Celery app!")
+                                logger.error(f"Available tasks: {list(celery_app.tasks.keys())}")
+                            else:
+                                logger.info("✅ Task 'process_evaluator_result' is registered")
+
+                            task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                            logger.info(f"✅ Celery task triggered: task_id={task.id}, task_state={task.state}")
+
+                            try:
+                                task_info = task.info
+                                logger.info(f"Task info: {task_info}")
+                            except Exception as info_error:
+                                logger.warning(f"Could not get task info (this is normal for async tasks): {info_error}")
+
+                            evaluator_result.celery_task_id = task.id
+                            db.commit()
+                            logger.info(f"✅ Updated evaluator result with celery_task_id: {task.id}")
+                        except Exception as task_error:
+                            logger.error(f"❌ Failed to trigger Celery task: {task_error}", exc_info=True)
+                            logger.warning(f"Evaluator result {result_id} created but Celery task was not triggered. Task may need to be triggered manually.")
+                            logger.warning("Please ensure Celery worker is running: celery -A app.workers.celery_app worker --loglevel=info")
+                    else:
+                        logger.info(f"Skipping post-call evaluation for result {result_id} (run_evaluation=false)")
+
+                    logger.info(f"✅ Created evaluator result {result_id}" + (" and triggered processing task" if run_evaluation else ""))
                 except Exception as e:
                     logger.error(f"❌ Error creating evaluator result: {e}", exc_info=True)
         
@@ -866,6 +876,7 @@ async def bot_connect(
     agent_id = request.query_params.get("agent_id")
     persona_id = request.query_params.get("persona_id")
     scenario_id = request.query_params.get("scenario_id")
+    run_evaluation = _parse_bool_query(request.query_params.get("run_evaluation"), default=False)
     ui_surface = request.query_params.get("ui_surface")
     
     # Determine which AI Provider to use based on agent configuration
@@ -1012,6 +1023,7 @@ async def bot_connect(
         agent_id=agent_id,
         persona_id=persona_id,
         scenario_id=scenario_id,
+        run_evaluation=run_evaluation,
         ui_surface=ui_surface,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
         fallback_scheme=(

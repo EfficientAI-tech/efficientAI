@@ -2,6 +2,7 @@ import PersonaPromptPanel from './PersonaPromptPanel'
 import PersonaVoiceFields from './PersonaVoiceFields'
 import PersonaTtsParamsPanel from './PersonaTtsParamsPanel'
 import PersonaBehaviorPanel from './PersonaBehaviorPanel'
+import PersonaAmbientPanel from './PersonaAmbientPanel'
 import type { PersonaFormData, PersonaTileTab, ProviderOption } from './personaTypes'
 
 interface PersonaTabContentProps {
@@ -53,6 +54,29 @@ export default function PersonaTabContent({
         provider={draft.tts_provider}
         value={draft.tts_config}
         onChange={(tts_config) => onChange({ ...draft, tts_config })}
+        embedded
+      />
+    )
+  }
+
+  if (tab === 'environment') {
+    return (
+      <PersonaAmbientPanel
+        value={{
+          background_noise_source: draft.background_noise_source,
+          background_noise_preset: draft.background_noise_preset,
+          background_noise_volume: draft.background_noise_volume,
+          background_noise_asset_id: draft.background_noise_asset_id,
+        }}
+        onChange={(ambient) =>
+          onChange({
+            ...draft,
+            background_noise_source: ambient.background_noise_source || 'none',
+            background_noise_preset: ambient.background_noise_preset ?? null,
+            background_noise_volume: ambient.background_noise_volume ?? null,
+            background_noise_asset_id: ambient.background_noise_asset_id ?? null,
+          })
+        }
         embedded
       />
     )

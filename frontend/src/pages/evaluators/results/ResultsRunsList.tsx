@@ -30,8 +30,11 @@ interface ResultsRunsListProps {
   crumbs?: HierarchyCrumb[]
   embedded?: boolean
   listParams: Omit<ListEvaluatorResultsParams, 'skip' | 'limit' | 'status'>
+  statusFilter?: StatusFilter
+  onStatusFilterChange?: (status: StatusFilter) => void
   counts?: { total: number; completed: number; failed: number; in_progress: number }
   showAgentColumn?: boolean
+  showPersonaColumn?: boolean
   showScenarioColumn?: boolean
   /** Opens result in agent workspace when set; otherwise navigates to /results/:id */
   onResultClick?: (resultId: string) => void
@@ -43,15 +46,19 @@ export default function ResultsRunsList({
   crumbs = [],
   embedded = false,
   listParams,
+  statusFilter: controlledStatusFilter,
+  onStatusFilterChange,
   counts,
   showAgentColumn = false,
+  showPersonaColumn = false,
   showScenarioColumn = false,
   onResultClick,
 }: ResultsRunsListProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [page, setPage] = useState(0)
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [localStatusFilter, setLocalStatusFilter] = useState<StatusFilter>('all')
+  const statusFilter = controlledStatusFilter ?? localStatusFilter
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set())
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [reEvaluatingIds, setReEvaluatingIds] = useState<Set<string>>(new Set())
@@ -62,6 +69,12 @@ export default function ResultsRunsList({
       : statusFilter === 'in_progress'
         ? 'in_progress'
         : statusFilter
+
+  const updateStatusFilter = (next: StatusFilter) => {
+    if (onStatusFilterChange) onStatusFilterChange(next)
+    else setLocalStatusFilter(next)
+    setPage(0)
+  }
 
   const { data, isLoading, isFetching } = useQuery({
     queryKey: ['evaluator-results', listParams, page, apiStatus],
@@ -159,10 +172,7 @@ export default function ResultsRunsList({
               <button
                 key={key}
                 type="button"
-                onClick={() => {
-                  setStatusFilter(key)
-                  setPage(0)
-                }}
+                onClick={() => updateStatusFilter(key)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-lg ${
                   statusFilter === key
                     ? 'bg-primary-100 text-primary-800 border border-primary-300'
@@ -195,6 +205,9 @@ export default function ResultsRunsList({
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
                   {showAgentColumn && (
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
+                  )}
+                  {showPersonaColumn && (
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Persona</th>
                   )}
                   {showScenarioColumn && (
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Scenario</th>
@@ -232,6 +245,9 @@ export default function ResultsRunsList({
                       <td className="px-4 py-3 text-sm text-gray-900">{result.name}</td>
                       {showAgentColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.agent?.name ?? '—'}</td>
+                      )}
+                      {showPersonaColumn && (
+                        <td className="px-4 py-3 text-sm text-gray-600">{result.persona?.name ?? '—'}</td>
                       )}
                       {showScenarioColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.scenario?.name ?? '—'}</td>

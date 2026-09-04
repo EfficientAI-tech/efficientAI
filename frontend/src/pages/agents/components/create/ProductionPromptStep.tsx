@@ -1,8 +1,12 @@
-import { useState } from 'react'
-import { Sparkles, Loader2, Eye, Code } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
+import { Sparkles, Loader2 } from 'lucide-react'
 import { AIProvider } from '../../../../types/api'
 import { formatGatewayCredentialLabel } from '../../../../lib/llmModelOptions'
+import TestAgentTemplateEditor from '../TestAgentTemplateEditor'
+import {
+  TestAgentTemplateDraft,
+  assembleTestAgentPrompt,
+  isTemplateFilled,
+} from '../agentTestSetupConstants'
 
 interface ProductionPromptStepProps {
   agentName: string
@@ -13,8 +17,8 @@ interface ProductionPromptStepProps {
   productionPromptReadOnly?: boolean
   isFetchingProductionPrompt?: boolean
   fetchError?: string | null
-  testAgentPrompt: string
-  onTestAgentPromptChange: (value: string) => void
+  testAgentTemplate: TestAgentTemplateDraft
+  onTestAgentTemplateChange: (value: TestAgentTemplateDraft) => void
   additionalContext: string
   onAdditionalContextChange: (value: string) => void
   aiProviders: AIProvider[]
@@ -36,8 +40,8 @@ export default function ProductionPromptStep({
   productionPromptReadOnly = false,
   isFetchingProductionPrompt = false,
   fetchError = null,
-  testAgentPrompt,
-  onTestAgentPromptChange,
+  testAgentTemplate,
+  onTestAgentTemplateChange,
   additionalContext,
   onAdditionalContextChange,
   aiProviders,
@@ -52,11 +56,8 @@ export default function ProductionPromptStep({
   isGenerating,
   canGenerate,
 }: ProductionPromptStepProps) {
-  const [productionPromptView, setProductionPromptView] = useState<'write' | 'preview'>(
-    productionPromptReadOnly ? 'preview' : 'write',
-  )
-  const [testPromptView, setTestPromptView] = useState<'write' | 'preview'>('write')
-  const wordCount = testAgentPrompt.trim().split(/\s+/).filter(Boolean).length
+  const assembledPrompt = assembleTestAgentPrompt(testAgentTemplate.sections)
+  const wordCount = assembledPrompt.trim().split(/\s+/).filter(Boolean).length
 
   const productionProse =
     'prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700'
@@ -68,42 +69,25 @@ export default function ProductionPromptStep({
           <label className="block text-sm font-medium text-gray-700">
             Production Agent Prompt *
           </label>
-          {!isFetchingProductionPrompt && (
-            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-              <button
-                type="button"
-                onClick={() => setProductionPromptView('write')}
-                disabled={productionPromptReadOnly}
-                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                  productionPromptView === 'write'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                } disabled:opacity-40 disabled:cursor-not-allowed`}
-              >
-                <Code className="h-3 w-3" />
-                Write
-              </button>
-              <button
-                type="button"
-                onClick={() => setProductionPromptView('preview')}
-                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                  productionPromptView === 'preview'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <Eye className="h-3 w-3" />
-                Preview
-              </button>
-            </div>
-          )}
         </div>
         {isFetchingProductionPrompt ? (
           <div className="flex items-center gap-2 text-sm text-gray-500 py-8 justify-center border border-gray-200 rounded-lg bg-gray-50">
             <Loader2 className="h-4 w-4 animate-spin" />
             Fetching production prompt from provider…
           </div>
-        ) : productionPromptView === 'write' && !productionPromptReadOnly ? (
+        ) : productionPromptReadOnly ? (
+          <div className="min-h-[200px] max-h-[400px] overflow-y-auto border border-gray-300 rounded-lg p-4 bg-gray-50">
+            {productionPrompt.trim() ? (
+              <div className={productionProse}>
+                <p className="whitespace-pre-wrap text-sm text-gray-700">{productionPrompt}</p>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400 italic">
+                Production prompt will appear here after connecting your platform…
+              </p>
+            )}
+          </div>
+        ) : (
           <textarea
             value={productionPrompt}
             onChange={(e) => onProductionPromptChange(e.target.value)}
@@ -111,24 +95,8 @@ export default function ProductionPromptStep({
             placeholder="Paste the production system prompt from your voice platform…"
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm"
           />
-        ) : (
-          <div className="min-h-[200px] max-h-[400px] overflow-y-auto border border-gray-300 rounded-lg p-4 bg-gray-50">
-            {productionPrompt.trim() ? (
-              <div className={productionProse}>
-                <ReactMarkdown>{productionPrompt}</ReactMarkdown>
-              </div>
-            ) : (
-              <p className="text-sm text-gray-400 italic">
-                {productionPromptReadOnly
-                  ? 'Production prompt will appear here after connecting your platform…'
-                  : 'Nothing to preview yet…'}
-              </p>
-            )}
-          </div>
         )}
-        {fetchError && (
-          <p className="mt-1 text-xs text-red-600">{fetchError}</p>
-        )}
+        {fetchError && <p className="mt-1 text-xs text-red-600">{fetchError}</p>}
       </div>
 
       <div className="p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
@@ -168,7 +136,9 @@ export default function ProductionPromptStep({
                 <option value="">{gatewayDirectModel}</option>
               ) : (
                 selectableModels.map((model) => (
-                  <option key={model} value={model}>{model}</option>
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
                 ))
               )}
             </select>
@@ -193,12 +163,12 @@ export default function ProductionPromptStep({
           {isGenerating ? (
             <>
               <Loader2 className="h-3 w-3 animate-spin" />
-              Generating test prompt…
+              Generating test template…
             </>
           ) : (
             <>
               <Sparkles className="h-3 w-3" />
-              Generate test prompt
+              Generate from production
             </>
           )}
         </button>
@@ -206,62 +176,24 @@ export default function ProductionPromptStep({
 
       <div>
         <div className="flex items-center justify-between mb-2">
-          <label className="block text-sm font-medium text-gray-700">Test Agent Prompt *</label>
-          <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-            <button
-              type="button"
-              onClick={() => setTestPromptView('write')}
-              className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                testPromptView === 'write'
-                  ? 'bg-white text-gray-900 shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Code className="h-3 w-3" />
-              Write
-            </button>
-            <button
-              type="button"
-              onClick={() => setTestPromptView('preview')}
-              className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                testPromptView === 'preview'
-                  ? 'bg-white text-gray-900 shadow-sm'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Eye className="h-3 w-3" />
-              Preview
-            </button>
-          </div>
+          <label className="block text-sm font-medium text-gray-700">Test Agent Template *</label>
         </div>
-
-        {testPromptView === 'write' ? (
-          <textarea
-            value={testAgentPrompt}
-            onChange={(e) => onTestAgentPromptChange(e.target.value)}
-            className="w-full min-h-[280px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
-            rows={12}
-            placeholder="Generate a test prompt from your production prompt, or edit manually…"
-          />
-        ) : (
-          <div className="min-h-[280px] max-h-[480px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none">
-            {testAgentPrompt ? (
-              <ReactMarkdown>{testAgentPrompt}</ReactMarkdown>
-            ) : (
-              <p className="text-gray-400 italic">Nothing to preview yet…</p>
-            )}
-          </div>
-        )}
-        <p className={`mt-1 text-xs ${wordCount >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
-          {wordCount}/10 words minimum
+        <TestAgentTemplateEditor
+          template={testAgentTemplate}
+          onChange={onTestAgentTemplateChange}
+        />
+        <p className={`mt-2 text-xs ${wordCount >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
+          {wordCount}/10 words minimum in assembled prompt
         </p>
       </div>
     </div>
   )
 }
 
-export function isPromptStepValid(productionPrompt: string, testAgentPrompt: string): boolean {
+export function isPromptStepValid(
+  productionPrompt: string,
+  testAgentTemplate: TestAgentTemplateDraft,
+): boolean {
   if (!productionPrompt.trim()) return false
-  const words = testAgentPrompt.trim().split(/\s+/).filter(Boolean)
-  return words.length >= 10
+  return isTemplateFilled(testAgentTemplate)
 }

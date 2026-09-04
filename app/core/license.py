@@ -43,6 +43,11 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "Bulk-import production call recordings via CSV and run batch evaluations on them.",
         "category": "evaluation",
     },
+    "evaluation_clustering": {
+        "title": "Evaluation Failure Clustering",
+        "description": "Cluster failed evaluation runs from LLM rationales to surface recurring failure patterns.",
+        "category": "evaluation",
+    },
     # --- Authentication features (gate pluggable auth providers) ---
     "oidc_sso": {
         "title": "Enterprise SSO (OIDC)",

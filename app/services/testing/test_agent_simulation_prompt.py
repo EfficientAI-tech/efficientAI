@@ -6,6 +6,7 @@ import re
 from typing import Any, Optional, Sequence, TYPE_CHECKING
 
 from app.models.database import Agent, Persona, Scenario
+from app.services.testing.test_agent_template import SPOKEN_IDENTITY_GUARDRAIL
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -77,6 +78,24 @@ def format_scenario_prompt(scenario: Scenario) -> str:
     if required:
         parts.append(f"Required information:\n{required}")
     return "\n".join(parts) if parts else "General test call scenario"
+
+
+def append_persona_identity_to_caller_prompt(caller_template: str, persona_name: str) -> str:
+    """Append explicit caller identity so the LLM speaks as the selected persona."""
+    name = (persona_name or "").strip()
+    base = (caller_template or "").strip()
+    if not name:
+        return base or "Simulate a natural caller for the scenario below."
+    identity = (
+        f"## Caller identity\n\n"
+        f"You are {name}. Introduce yourself as {name} and stay in character as {name} "
+        f"for the entire call."
+    )
+    if not base:
+        return identity
+    if name.lower() in base.lower():
+        return f"{base}\n\n{identity}"
+    return f"{base}\n\n{identity}"
 
 
 def compose_test_agent_simulation_prompt(agent: Agent, scenario: Scenario) -> str:
@@ -151,23 +170,26 @@ def build_test_agent_system_prompt(
 ) -> str:
     """Full caller LLM system prompt: simulation core + persona + instructions."""
     under_test_name = (agent_name or agent.name or "Voice AI Agent").strip()
+    persona_name = (persona.name or "Caller").strip()
     effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
     simulation = compose_test_agent_simulation_prompt(agent, scenario)
     persona_block = format_persona_block(
         persona,
         persona_description=persona_description or build_persona_description_for_bridge(persona),
     )
-    return f"""You are simulating a caller in a voice conversation. Your role is to test a voice AI agent.
+    return f"""You are {persona_name}, a real person on a phone call.
 
-TEST AGENT SIMULATION PROMPT
+{SPOKEN_IDENTITY_GUARDRAIL}
+
+CONTEXT (for your eyes only — do not read aloud)
 {simulation}
 
 PERSONA
 {persona_block}
 
 INSTRUCTIONS:
-1. You are CALLING the voice AI agent described in the test agent simulation prompt
-2. Stay in character as the persona described
+1. You are CALLING the voice AI agent described above
+2. Stay in character as {persona_name} at all times
 3. Follow the scenario and work toward the goal
 4. Speak naturally as if on a phone call
 5. Keep responses concise (1-3 sentences) for natural conversation flow
@@ -178,6 +200,72 @@ INSTRUCTIONS:
 
 You are calling: {under_test_name}
 After {effective_max_turns} exchanges, wrap up the conversation politely."""
+
+
+def build_live_test_agent_system_prompt(
+    agent: Agent,
+    persona: Persona,
+    scenario: Scenario,
+    *,
+    max_turns: Optional[int] = None,
+    persona_description: Optional[str] = None,
+) -> str:
+    """System prompt for live playground calls: caller template + persona + scenario.
+
+    The human plays the production agent; the voice bundle simulates the caller.
+    """
+    agent_name = (agent.name or "Voice AI Agent").strip()
+    persona_name = (persona.name or "Caller").strip()
+    effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
+    caller_template = append_persona_identity_to_caller_prompt(
+        strip_scenario_reference_appendix(agent.description or "").strip(),
+        persona_name,
+    )
+
+    production_context = (getattr(agent, "provider_prompt", None) or "").strip()
+    persona_block = format_persona_block(
+        persona,
+        persona_description=persona_description or build_persona_description_for_bridge(persona),
+    )
+    scenario_block = format_scenario_prompt(scenario)
+    if persona_name:
+        scenario_block = f"{scenario_block}\n\nPlay this scenario as {persona_name}."
+
+    parts = [
+        f"You are {persona_name}, a real person on a phone call.",
+        SPOKEN_IDENTITY_GUARDRAIL,
+        "",
+        "CALLER PROMPT",
+        caller_template,
+        "",
+        "PERSONA",
+        persona_block,
+        "",
+        "SCENARIO",
+        scenario_block,
+    ]
+    if production_context:
+        parts.extend(
+            [
+                "",
+                "PRODUCTION AGENT CONTEXT (what you are testing)",
+                production_context,
+            ]
+        )
+    parts.extend(
+        [
+            "",
+            "INSTRUCTIONS:",
+            f"1. You are {persona_name} — speak only as this person",
+            "2. Follow the scenario and work toward the goal",
+            "3. Speak naturally as if on a phone call",
+            "4. Keep responses concise (1-3 sentences)",
+            "5. Respond ONLY with spoken words — no stage directions or markdown",
+            f"6. The human on the other end is the production agent ({agent_name})",
+            f"7. After about {effective_max_turns} exchanges, wrap up politely.",
+        ]
+    )
+    return "\n".join(parts)
 
 
 def format_scenarios_reference_appendix(scenarios: Sequence[Scenario]) -> str:
