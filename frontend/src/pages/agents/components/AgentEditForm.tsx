@@ -161,20 +161,16 @@ export default function AgentEditForm({
     }
 
     if (!canUseProviderNumbers || telephonyNumbers.length === 0) {
-      setPhoneNumberInputMode('custom')
-      return
-    }
-
-    const selectedExists = telephonyNumbers.some((n) => n.id === formData.telephony_phone_number_id)
-    if (!selectedExists && phoneNumberInputMode === 'provider') {
-      onChange({ ...formData, telephony_phone_number_id: '', phone_number: '' })
+      if (phoneNumberInputMode === 'provider') {
+        setPhoneNumberInputMode('custom')
+      }
     }
   }, [
-    formData,
-    onChange,
+    formData.call_medium,
+    formData.telephony_phone_number_id,
     phoneNumberInputMode,
     canUseProviderNumbers,
-    telephonyNumbers,
+    telephonyNumbers.length,
   ])
 
   const generateFromProductionMutation = useMutation({
@@ -431,23 +427,27 @@ export default function AgentEditForm({
                       disabled={!canUseProviderNumbers || telephonyNumbers.length === 0}
                     >
                       <option value="">Select a synced telephony number</option>
-                      {telephonyNumbers.map((number) => (
-                        <option
-                          key={number.id}
-                          value={number.id}
-                          disabled={!!number.agent_id && number.id !== formData.telephony_phone_number_id}
-                        >
-                          {number.phone_number}
-                          {number.provider
-                            ? ` [${getTelephonyProviderLabel(number.provider as TelephonyProvider)}]`
-                            : ''}
-                          {number.region ? ` - ${number.region}` : ''}
-                          {number.country_iso2 ? ` (${number.country_iso2})` : ''}
-                          {number.agent_id && number.id !== formData.telephony_phone_number_id
-                            ? ` [Assigned to ${number.linked_agent_name || 'another agent'}]`
-                            : ''}
-                        </option>
-                      ))}
+                      {telephonyNumbers.map((number) => {
+                        const assignedToOtherAgent =
+                          !!number.agent_id && number.agent_id !== agentId
+                        return (
+                          <option
+                            key={number.id}
+                            value={number.id}
+                            disabled={assignedToOtherAgent}
+                          >
+                            {number.phone_number}
+                            {number.provider
+                              ? ` [${getTelephonyProviderLabel(number.provider as TelephonyProvider)}]`
+                              : ''}
+                            {number.region ? ` - ${number.region}` : ''}
+                            {number.country_iso2 ? ` (${number.country_iso2})` : ''}
+                            {assignedToOtherAgent
+                              ? ` [Assigned to ${number.linked_agent_name || 'another agent'}]`
+                              : ''}
+                          </option>
+                        )
+                      })}
                     </select>
                   ) : (
                     <input

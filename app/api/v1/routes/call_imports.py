@@ -1360,11 +1360,14 @@ def _validate_direct_url_import_ready(
         )
 
 
-def _validate_exotel_import_ready(
+def _validate_credentialed_import_ready(
+    provider: str,
     parameters: List[CallImportSchemaParameter],
     parameter_mapping: Dict[str, Any],
 ) -> None:
-    """Ensure Exotel credentialed import has a mapped recording_url column."""
+    """Ensure credentialed import has a mapped recording_url column."""
+    provider_key = (provider or "").lower()
+    provider_label = provider_key.capitalize()
     rec_url_param = next(
         (
             p
@@ -1377,7 +1380,7 @@ def _validate_exotel_import_ready(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Exotel import requires a schema parameter of type "
+                f"{provider_label} import requires a schema parameter of type "
                 "'recording_url'."
             ),
         )
@@ -1386,10 +1389,18 @@ def _validate_exotel_import_ready(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Exotel import requires the 'recording_url' parameter to "
+                f"{provider_label} import requires the 'recording_url' parameter to "
                 "be mapped to a source column."
             ),
         )
+
+
+def _validate_exotel_import_ready(
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, Any],
+) -> None:
+    """Ensure Exotel credentialed import has a mapped recording_url column."""
+    _validate_credentialed_import_ready("exotel", parameters, parameter_mapping)
 
 
 def _is_manual_audio_call_import(call_import: CallImport) -> bool:
@@ -2150,9 +2161,11 @@ async def start_call_import(
             payload.provider or "",
         )
         _validate_telephony_credentials_live(db, organization_id, integration)
-        if (integration.provider or "").lower() == "exotel":
-            _validate_exotel_import_ready(
-                parameters, dict(call_import.parameter_mapping or {})
+        if (integration.provider or "").lower() in {"exotel", "plivo"}:
+            _validate_credentialed_import_ready(
+                integration.provider,
+                parameters,
+                dict(call_import.parameter_mapping or {}),
             )
     else:
         _validate_direct_url_import_ready(
@@ -2345,8 +2358,10 @@ async def upload_call_import_csv(
         integration = _resolve_telephony_integration(
             db, organization_id, telephony_integration_id, provider or ""
         )
-        if (integration.provider or "").lower() == "exotel":
-            _validate_exotel_import_ready(parameters, cleaned_mapping)
+        if (integration.provider or "").lower() in {"exotel", "plivo"}:
+            _validate_credentialed_import_ready(
+                integration.provider, parameters, cleaned_mapping
+            )
     else:
         _validate_direct_url_import_ready(parameters, cleaned_mapping)
         integration = None
@@ -3527,14 +3542,15 @@ async def retry_failed_call_import_rows(
             _validate_telephony_credentials_live(db, organization_id, integration)
             call_import.provider = integration.provider
             call_import.telephony_integration_id = integration.id
-            if (integration.provider or "").lower() == "exotel":
+            if (integration.provider or "").lower() in {"exotel", "plivo"}:
                 schema = _resolve_schema(
                     db,
                     organization_id,
                     call_import.workspace_id,
                     call_import.schema_id,
                 )
-                _validate_exotel_import_ready(
+                _validate_credentialed_import_ready(
+                    integration.provider,
                     list(schema.parameters),
                     dict(call_import.parameter_mapping or {}),
                 )

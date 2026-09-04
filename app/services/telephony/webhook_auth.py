@@ -135,6 +135,38 @@ def _auth_token_for_vobiz_org(db: Session, org_id: UUID) -> Optional[str]:
     return _platform_vobiz_auth_token()
 
 
+def _platform_plivo_auth_token() -> Optional[str]:
+    token = (settings.PLIVO_AUTH_TOKEN or "").strip()
+    return token or None
+
+
+def _resolve_plivo_auth_token_by_auth_id(auth_id: str, db: Session) -> Optional[str]:
+    candidate = (auth_id or "").strip()
+    if not candidate:
+        return None
+
+    platform_id = (settings.PLIVO_AUTH_ID or "").strip()
+    if platform_id and candidate.lower() == platform_id.lower():
+        return _platform_plivo_auth_token()
+
+    rows = (
+        db.query(TelephonyIntegration)
+        .filter(
+            TelephonyIntegration.provider == "plivo",
+            TelephonyIntegration.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in rows:
+        try:
+            stored_id = decrypt_api_key(row.auth_id).strip()
+        except Exception:
+            continue
+        if stored_id.lower() == candidate.lower():
+            return decrypt_api_key(row.auth_token).strip()
+    return None
+
+
 def _resolve_auth_token_for_call_event(
     params: Dict[str, Any],
     db: Session,
@@ -181,7 +213,27 @@ def resolve_plivo_auth_token(
         phone_number = params.get("To") or params.get("to")
         return _resolve_auth_token_for_phone(phone_number, db)
     if webhook_kind == "events":
-        return _resolve_auth_token_for_call_event(params, db)
+        token = _resolve_auth_token_for_call_event(params, db)
+        if token:
+            return token
+
+        parent_auth_id = (
+            params.get("ParentAuthID")
+            or params.get("AuthID")
+            or params.get("auth_id")
+        )
+        if parent_auth_id:
+            token = _resolve_plivo_auth_token_by_auth_id(str(parent_auth_id), db)
+            if token:
+                return token
+
+        phone_number = (
+            params.get("To")
+            or params.get("to")
+            or params.get("From")
+            or params.get("from")
+        )
+        return _resolve_auth_token_for_phone(phone_number, db)
     return None
 
 

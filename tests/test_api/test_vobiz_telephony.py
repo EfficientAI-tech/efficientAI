@@ -108,7 +108,7 @@ def test_vobiz_answer_webhook_returns_stream_xml(telephony_client, db_session, o
     assert response.headers["content-type"].startswith("application/xml")
     body = response.text
     assert "<Stream bidirectional=\"true\"" in body
-    assert "wss://public.example.com/api/v1/telephony/vobiz/ws" in body
+    assert "wss://public.example.com/api/v1/telephony/carrier/ws" in body
     assert f"agent_id={agent.id}" in body
 
 
@@ -268,7 +268,9 @@ def test_vobiz_inbound_routing_is_org_scoped(db_session, org_id, seed_org, make_
     agent = make_agent()
     _seed_vobiz_phone(db_session, org_id, phone_number="+919876543210", agent_id=agent.id)
 
-    resolved_agent_id, resolved_org_id = resolve_inbound_agent_for_number(db_session, "+919876543210")
+    resolved_agent_id, resolved_org_id, _resolved_integration_id = resolve_inbound_agent_for_number(
+        db_session, "+919876543210"
+    )
     assert resolved_agent_id == agent.id
     assert resolved_org_id == org_id
 

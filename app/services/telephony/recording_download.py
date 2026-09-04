@@ -29,6 +29,13 @@ _DEFAULT_ALLOWED_HOST_SUFFIXES = (
     "cloudfront.net",
 )
 
+# Credentialed telephony fetches must not send Basic auth to shared storage hosts.
+_CREDENTIALED_ALLOWED_HOST_SUFFIXES = (
+    "exotel.com",
+    "plivo.com",
+    "vobiz.ai",
+)
+
 _BLOCKED_NETWORKS = (
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -107,7 +114,12 @@ def assert_recording_url_safe(
     user_supplied: bool,
     allowed_suffixes: Optional[List[str]] = None,
 ) -> None:
-    """Validate a recording URL before any outbound HTTP request."""
+    """Validate a recording URL before any outbound HTTP request.
+
+    Literal IP hosts are always rejected so credentialed fetches cannot send
+    Basic auth to a CSV-controlled address. ``user_supplied`` is kept for
+    call-site compatibility; redirect policy is enforced by the downloader.
+    """
     parsed = urlparse(recording_url.strip())
     if parsed.scheme not in {"http", "https"}:
         raise ExotelInvalidContentError(
@@ -125,24 +137,27 @@ def assert_recording_url_safe(
 
     try:
         literal_ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal_ip = None
+
+    if literal_ip is not None:
         if _ip_is_blocked(literal_ip):
             raise ExotelInvalidContentError(
                 "Recording URL targets a blocked network address"
             )
-        if user_supplied:
+        raise ExotelInvalidContentError(
+            "Recording URLs must use allowlisted hostnames, not IP addresses"
+        )
+
+    if not _hostname_allowed(hostname, suffixes):
+        raise ExotelInvalidContentError(
+            f"Recording URL hostname is not allowlisted: {hostname}"
+        )
+    for resolved_ip in _resolve_host_ips(hostname):
+        if _ip_is_blocked(resolved_ip):
             raise ExotelInvalidContentError(
-                "User-supplied recording URLs must use allowlisted hostnames"
+                "Recording URL resolves to a blocked network address"
             )
-    except ValueError:
-        if not _hostname_allowed(hostname, suffixes):
-            raise ExotelInvalidContentError(
-                f"Recording URL hostname is not allowlisted: {hostname}"
-            )
-        for resolved_ip in _resolve_host_ips(hostname):
-            if _ip_is_blocked(resolved_ip):
-                raise ExotelInvalidContentError(
-                    "Recording URL resolves to a blocked network address"
-                )
 
 
 def download_recording_url(
@@ -166,13 +181,26 @@ def download_recording_url(
             "User-supplied recording URLs must not be fetched with credentials"
         )
 
-    assert_recording_url_safe(recording_url, user_supplied=user_supplied)
+    if auth is not None:
+        allowed_suffixes = list(_CREDENTIALED_ALLOWED_HOST_SUFFIXES)
+    else:
+        allowed_suffixes = _allowed_host_suffixes()
+
+    assert_recording_url_safe(
+        recording_url,
+        user_supplied=user_supplied,
+        allowed_suffixes=allowed_suffixes,
+    )
 
     request_hooks: Optional[dict[str, List[Callable[..., None]]]] = None
     if not user_supplied:
 
         def _validate_redirect(request: httpx.Request) -> None:
-            assert_recording_url_safe(str(request.url), user_supplied=False)
+            assert_recording_url_safe(
+                str(request.url),
+                user_supplied=False,
+                allowed_suffixes=allowed_suffixes,
+            )
 
         request_hooks = {"request": [_validate_redirect]}
 

@@ -13,6 +13,11 @@ from app.models.database import Agent, TelephonyIntegration, TelephonyPhoneNumbe
 from app.models.enums import TelephonyProvider
 from app.services.telephony.phone_routing import sync_agent_telephony_number_link
 from app.services.telephony.plivo_client import PlivoClient, expand_phone_candidates, normalize_e164
+from app.services.telephony.plivo_webhook_urls import (
+    legacy_answer_webhook_url,
+    plivo_answer_webhook_url,
+    plivo_hangup_webhook_url,
+)
 from app.services.telephony.telephony_service import telephony_service
 from app.services.telephony.vobiz_agent_context import vobiz_webhook_base_url
 from app.services.telephony.vobiz_client import VobizClient, build_vobiz_client_for_org
@@ -42,21 +47,15 @@ def _vobiz_answer_webhook_url() -> str:
 
 
 def _plivo_answer_webhook_url() -> str:
-    base = (settings.PLIVO_WEBHOOK_BASE_URL or "").strip().rstrip("/")
-    if not base:
-        raise ValueError(
-            "Plivo webhook base URL is not configured. Set plivo.webhook_base_url in platform config."
-        )
-    return f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/answer"
+    return plivo_answer_webhook_url()
 
 
 def _plivo_hangup_webhook_url() -> str:
-    base = (settings.PLIVO_WEBHOOK_BASE_URL or "").strip().rstrip("/")
-    return f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/events"
+    return plivo_hangup_webhook_url()
 
 
 def _exotel_voice_webhook_url() -> str:
-    return _plivo_answer_webhook_url()
+    return legacy_answer_webhook_url()
 
 
 def _normalize_remote_number(provider: str, item: Dict[str, Any]) -> Optional[str]:
@@ -161,27 +160,111 @@ def _list_remote_numbers(
     raise ValueError(f"Unsupported provider: {provider}")
 
 
-def _remote_metadata(provider: str, item: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_country_iso2(
+    raw: Optional[str],
+    *,
+    e164: Optional[str] = None,
+) -> Optional[str]:
+    """Normalize provider country values to ISO-3166 alpha-2 for storage."""
+    value = (raw or "").strip()
+    if not value:
+        return _country_iso2_from_e164(e164)
+
+    if len(value) == 2 and value.isalpha():
+        return value.upper()
+
+    mapped = _COUNTRY_NAME_TO_ISO2.get(value.lower())
+    if mapped:
+        return mapped
+
+    return _country_iso2_from_e164(e164)
+
+
+def _country_iso2_from_e164(e164: Optional[str]) -> Optional[str]:
+    if not e164:
+        return None
+    digits = str(e164).strip().lstrip("+")
+    if not digits.isdigit():
+        return None
+    for length in (3, 2, 1):
+        prefix = digits[:length]
+        iso2 = _CALLING_CODE_TO_ISO2.get(prefix)
+        if iso2:
+            return iso2
+    return None
+
+
+def _extract_application_id(value: Optional[str]) -> Optional[str]:
+    """Extract a Plivo-style application id from a URI or raw id."""
+    if not value:
+        return None
+    text = str(value).strip().rstrip("/")
+    if "/Application/" in text:
+        tail = text.rsplit("/Application/", 1)[-1]
+        app_id = tail.split("/", 1)[0].strip()
+        return app_id or None
+    return text or None
+
+
+_COUNTRY_NAME_TO_ISO2 = {
+    "india": "IN",
+    "united states": "US",
+    "united states of america": "US",
+    "usa": "US",
+    "united kingdom": "GB",
+    "uk": "GB",
+    "canada": "CA",
+    "australia": "AU",
+    "germany": "DE",
+    "france": "FR",
+    "singapore": "SG",
+}
+
+_CALLING_CODE_TO_ISO2 = {
+    "91": "IN",
+    "1": "US",
+    "44": "GB",
+    "61": "AU",
+    "49": "DE",
+    "33": "FR",
+    "65": "SG",
+    "971": "AE",
+}
+
+
+def _remote_metadata(
+    provider: str,
+    item: Dict[str, Any],
+    *,
+    e164: Optional[str] = None,
+) -> Dict[str, Any]:
     provider_key = provider.lower()
     if provider_key == TelephonyProvider.EXOTEL.value:
+        raw_country = item.get("Country") or item.get("country")
         return {
             "provider_number_id": item.get("Sid") or item.get("sid"),
-            "country": item.get("Country") or item.get("country"),
+            "country": raw_country,
+            "country_iso2": _normalize_country_iso2(raw_country, e164=e164),
             "region": item.get("Region") or item.get("region") or item.get("FriendlyName"),
             "capabilities": None,
             "status": item.get("Status") or item.get("status"),
             "application_id": item.get("VoiceUrl") or item.get("voice_url"),
         }
+    raw_country = item.get("country") or item.get("Country")
+    application_id = _extract_application_id(
+        item.get("application_id")
+        or item.get("app_id")
+        or item.get("Application")
+        or item.get("application")
+    )
     return {
         "provider_number_id": item.get("id") or item.get("Sid") or item.get("sid"),
-        "country": item.get("country") or item.get("Country"),
+        "country": raw_country,
+        "country_iso2": _normalize_country_iso2(raw_country, e164=e164),
         "region": item.get("region") or item.get("Region"),
         "capabilities": item.get("capabilities"),
         "status": item.get("status") or item.get("Status"),
-        "application_id": item.get("application_id")
-        or item.get("app_id")
-        or item.get("Application")
-        or item.get("application"),
+        "application_id": application_id,
     }
 
 
@@ -250,7 +333,7 @@ def list_available_numbers(
         if not e164:
             continue
         imported = imported_by_phone.get(e164)
-        meta = _remote_metadata(provider_key, item)
+        meta = _remote_metadata(provider_key, item, e164=e164)
         results.append(
             {
                 "e164": e164,
@@ -295,7 +378,7 @@ def import_numbers(
         e164 = _normalize_remote_number(provider_key, item)
         if e164:
             enriched = dict(item)
-            enriched.update(_remote_metadata(provider_key, item))
+            enriched.update(_remote_metadata(provider_key, item, e164=e164))
             remote_by_e164[e164] = enriched
 
     agent: Optional[Agent] = None
@@ -374,7 +457,7 @@ def import_numbers(
             row.inbound_enabled = True
             row.outbound_enabled = True
             row.source = "imported"
-            row.country_iso2 = remote.get("country") or row.country_iso2
+            row.country_iso2 = remote.get("country_iso2") or row.country_iso2
             row.region = remote.get("region") or row.region
             row.capabilities = remote.get("capabilities") or row.capabilities
             row.provider_app_id = remote.get("application_id") or row.provider_app_id
@@ -385,7 +468,7 @@ def import_numbers(
                 organization_id=org_id,
                 telephony_integration_id=integration_id,
                 phone_number=e164,
-                country_iso2=remote.get("country"),
+                country_iso2=remote.get("country_iso2"),
                 region=remote.get("region"),
                 capabilities=remote.get("capabilities"),
                 provider_app_id=remote.get("application_id"),
