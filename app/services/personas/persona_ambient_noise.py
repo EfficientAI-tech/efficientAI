@@ -20,6 +20,10 @@ ALLOWED_AMBIENT_EXTENSIONS = {"wav", "mp3", "ogg", "m4a", "flac"}
 MAX_AMBIENT_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
+def ambient_upload_size_error_message(max_bytes: int = MAX_AMBIENT_UPLOAD_BYTES) -> str:
+    return f"Ambient audio must be at most {max_bytes // (1024 * 1024)} MB"
+
+
 def normalize_ambient_source(value: Optional[str]) -> str:
     if not value:
         return BackgroundNoiseSourceEnum.NONE.value

@@ -39,6 +39,7 @@ from app.services.personas.persona_prompt_generation import (
 from app.services.personas.persona_ambient_noise import (
     ALLOWED_AMBIENT_EXTENSIONS,
     MAX_AMBIENT_UPLOAD_BYTES,
+    ambient_upload_size_error_message,
     persona_ambient_s3_key,
     validate_persona_ambient_fields,
 )
@@ -49,8 +50,8 @@ from app.services.personas.ambient_library import (
     validate_ambient_upload_bytes,
 )
 from app.services.audio.ambient_catalog import get_ambient_asset_provider, list_ambient_presets, normalize_ambient_preset
-from app.services.audio.ambient_mixer import decode_audio_bytes_to_pcm_int16
 from app.services.storage.s3_service import s3_service, StorageError
+from app.utils.upload_limits import UploadTooLargeError, read_upload_with_limit
 
 router = APIRouter(prefix="/personas", tags=["personas"])
 
@@ -803,9 +804,14 @@ async def upload_ambient_library_asset(
         )
 
     filename = file.filename or ""
-    file_bytes = await file.read()
     try:
+        file_bytes = await read_upload_with_limit(file, MAX_AMBIENT_UPLOAD_BYTES)
         extension = validate_ambient_upload_bytes(file_bytes, filename=filename)
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ambient_upload_size_error_message(exc.max_bytes),
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -1306,22 +1312,16 @@ async def upload_persona_ambient_audio(
             detail=f"Unsupported ambient audio format. Allowed: {', '.join(sorted(ALLOWED_AMBIENT_EXTENSIONS))}",
         )
 
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")
-    if len(file_bytes) > MAX_AMBIENT_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Ambient audio must be at most {MAX_AMBIENT_UPLOAD_BYTES // (1024 * 1024)} MB",
-        )
-
     try:
-        decode_audio_bytes_to_pcm_int16(file_bytes, 16000)
-    except Exception as exc:
+        file_bytes = await read_upload_with_limit(file, MAX_AMBIENT_UPLOAD_BYTES)
+        validate_ambient_upload_bytes(file_bytes, filename=filename)
+    except UploadTooLargeError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not decode ambient audio file: {exc}",
+            detail=ambient_upload_size_error_message(exc.max_bytes),
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     s3_key = persona_ambient_s3_key(organization_id, persona_id, extension)
     content_type = file.content_type or f"audio/{extension}"

@@ -10,6 +10,7 @@ from app.services.audio.ambient_mixer import decode_audio_bytes_to_pcm_int16
 from app.services.personas.persona_ambient_noise import (
     ALLOWED_AMBIENT_EXTENSIONS,
     MAX_AMBIENT_UPLOAD_BYTES,
+    ambient_upload_size_error_message,
 )
 
 
@@ -38,10 +39,11 @@ def validate_ambient_upload_bytes(file_bytes: bytes, *, filename: str) -> str:
     if not file_bytes:
         raise ValueError("Uploaded file is empty")
     if len(file_bytes) > MAX_AMBIENT_UPLOAD_BYTES:
-        raise ValueError(
-            f"Ambient audio must be at most {MAX_AMBIENT_UPLOAD_BYTES // (1024 * 1024)} MB"
-        )
-    decode_audio_bytes_to_pcm_int16(file_bytes, 16000)
+        raise ValueError(ambient_upload_size_error_message())
+    try:
+        decode_audio_bytes_to_pcm_int16(file_bytes, 16000)
+    except Exception as exc:
+        raise ValueError(f"Could not decode ambient audio file: {exc}") from exc
     return extension
 
 
