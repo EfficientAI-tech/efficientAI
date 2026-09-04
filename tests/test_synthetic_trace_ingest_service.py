@@ -7,6 +7,7 @@ from app.models.database import (
     CallRecordingSource,
     EvaluatorResult,
     EvaluatorResultStatus,
+    SyntheticCallTrace,
 )
 from app.models.enums import CallRecordingStatus
 from app.services.synthetic_traces.otlp_mapper import (
@@ -214,7 +215,7 @@ def test_backfill_creates_trace_from_vobiz_call_recording(
     db_session.commit()
 
     created = backfill_missing_traces_from_call_recordings(
-        db_session, organization_id=org_id
+        db_session, organization_id=org_id, workspace_id=default_workspace.id
     )
     assert created == 1
 
@@ -233,6 +234,56 @@ def test_backfill_creates_trace_from_vobiz_call_recording(
     assert total == 1
     assert rows[0].evaluator_result_id == result.id
     assert rows[0].status == "closed"
+
+
+def test_backfill_does_not_create_traces_for_other_workspaces(
+    db_session,
+    org_id,
+    default_workspace,
+):
+    other_workspace_id = uuid4()
+    result_other = EvaluatorResult(
+        id=uuid4(),
+        result_id="900099",
+        organization_id=org_id,
+        workspace_id=other_workspace_id,
+        evaluator_id=uuid4(),
+        agent_id=uuid4(),
+        persona_id=uuid4(),
+        scenario_id=uuid4(),
+        name="Other workspace phone test",
+        status=EvaluatorResultStatus.COMPLETED.value,
+    )
+    db_session.add(result_other)
+    db_session.commit()
+
+    recording_other = CallRecording(
+        organization_id=org_id,
+        workspace_id=other_workspace_id,
+        call_short_id="666666",
+        status=CallRecordingStatus.UPDATED,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="call_ended",
+        call_data={"ended_at": "2026-08-31T12:00:00Z"},
+        provider_platform="vobiz",
+        evaluator_result_id=result_other.id,
+    )
+    db_session.add(recording_other)
+    db_session.commit()
+
+    created = backfill_missing_traces_from_call_recordings(
+        db_session,
+        organization_id=org_id,
+        workspace_id=default_workspace.id,
+    )
+    assert created == 0
+
+    trace = (
+        db_session.query(SyntheticCallTrace)
+        .filter(SyntheticCallTrace.evaluator_result_id == result_other.id)
+        .first()
+    )
+    assert trace is None
 
 
 def test_ingest_otlp_spans_prefers_span_call_short_id_over_stale_header(

@@ -6,9 +6,17 @@ import { extractWavPeaks, isWavBuffer } from '../../lib/waveformPeaksFast'
 import {
   fetchCallRecordingAudio,
   fetchEvaluatorRecordingAudio,
+  fetchObservabilityCallAudio,
   getCachedEvaluatorWaveform,
   getCachedWaveform,
+  getRawAudioBuffer,
+  playbackKeyForCall,
+  playbackKeyForEvaluator,
+  playbackKeyForObservability,
   preferStereoWaveform,
+  releasePlaybackBlobUrl,
+  resolvePlaybackBlobUrl,
+  retainPlaybackBlobUrl,
   setCachedEvaluatorWaveform,
   setCachedWaveform,
   type CachedWaveformTrack,
@@ -41,8 +49,7 @@ function formatClock(seconds: number): string {
 }
 
 function shouldFetchStereo(callData: Record<string, unknown> | null | undefined, platform?: string | null): boolean {
-  const platformName = (platform || '').toLowerCase()
-  return preferStereoWaveform(callData, platform) || platformName === 'vapi'
+  return preferStereoWaveform(callData, platform)
 }
 
 function tracksFromPeaks(peaks: ArrayBuffer[], stereo: boolean): WaveformTrack[] {
@@ -140,24 +147,6 @@ async function buildWaveformTracks(
     }
   }
   return decodePeaksOnMainThread(arrayBuffer, stereo)
-}
-
-function guessAudioMimeType(arrayBuffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(arrayBuffer, 0, Math.min(12, arrayBuffer.byteLength))
-  if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
-    return 'audio/wav'
-  }
-  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
-    return 'audio/mpeg'
-  }
-  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) {
-    return 'audio/mpeg'
-  }
-  return 'audio/wav'
-}
-
-function createBlobUrl(arrayBuffer: ArrayBuffer): string {
-  return URL.createObjectURL(new Blob([arrayBuffer], { type: guessAudioMimeType(arrayBuffer) }))
 }
 
 function drawMirroredTrack(
@@ -284,25 +273,30 @@ function paintCanvas(canvas: HTMLCanvasElement, container: HTMLDivElement, state
 
 export default function CallWaveformPlayer({
   callShortId,
+  observabilityCallShortId,
   callRecordingId,
   evaluatorResultId,
   callData,
   platform,
+  audioRevision,
 }: {
   callShortId?: string
+  observabilityCallShortId?: string
   callRecordingId?: string | null
   evaluatorResultId?: string
   callData?: Record<string, unknown> | null
   platform?: string | null
+  audioRevision?: string | null
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const blobRef = useRef<string | null>(null)
-  const ownsBlobRef = useRef(false)
+  const playbackKeyRef = useRef<string | null>(null)
   const draggingRef = useRef(false)
   const loadedStereoRef = useRef(false)
   const decodeTaskRef = useRef(0)
+  const pendingPlaybackRestoreRef = useRef<{ time: number; play: boolean } | null>(null)
   const paintStateRef = useRef<PaintState>({
     tracks: [],
     progressRatio: 0,
@@ -324,6 +318,7 @@ export default function CallWaveformPlayer({
   const [decoding, setDecoding] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [playbackRate, setPlaybackRate] = useState(1)
+  const [playbackSeekable, setPlaybackSeekable] = useState(false)
 
   const wantStereo = useMemo(() => shouldFetchStereo(callData, platform), [callData, platform])
   const showStereoLayout = tracks.length > 1 || (wantStereo && decoding)
@@ -345,21 +340,29 @@ export default function CallWaveformPlayer({
     paintCanvas(canvas, container, paintStateRef.current)
   }, [])
 
-  const setBlobFromBuffer = useCallback((arrayBuffer: ArrayBuffer) => {
-    if (blobRef.current && ownsBlobRef.current) URL.revokeObjectURL(blobRef.current)
-    const url = createBlobUrl(arrayBuffer)
+  const setPlaybackFromBuffer = useCallback((playbackKey: string, arrayBuffer: ArrayBuffer) => {
+    const url = resolvePlaybackBlobUrl(playbackKey, arrayBuffer)
+    if (!url) return null
+    if (playbackKeyRef.current && playbackKeyRef.current !== playbackKey) {
+      releasePlaybackBlobUrl(playbackKeyRef.current)
+    }
+    retainPlaybackBlobUrl(playbackKey)
+    playbackKeyRef.current = playbackKey
     blobRef.current = url
-    ownsBlobRef.current = true
+    setPlaybackSeekable(true)
     setAudioUrl(url)
     return url
   }, [])
 
-  const setStreamAudioUrl = useCallback((url: string) => {
-    if (blobRef.current && ownsBlobRef.current) URL.revokeObjectURL(blobRef.current)
-    blobRef.current = url
-    ownsBlobRef.current = false
-    setAudioUrl(url)
-    return url
+  const bindPlaybackUrl = useCallback((playbackKey: string, playbackUrl: string) => {
+    if (playbackKeyRef.current && playbackKeyRef.current !== playbackKey) {
+      releasePlaybackBlobUrl(playbackKeyRef.current)
+    }
+    retainPlaybackBlobUrl(playbackKey)
+    playbackKeyRef.current = playbackKey
+    blobRef.current = playbackUrl
+    setPlaybackSeekable(true)
+    setAudioUrl(playbackUrl)
   }, [])
 
   const decodeAndSetTracks = useCallback(
@@ -370,7 +373,6 @@ export default function CallWaveformPlayer({
         cacheCallShortId?: string
         cacheEvaluatorId?: string
         usedStereo?: boolean
-        blobUrl?: string
         cancelled?: () => boolean
       },
     ) => {
@@ -384,28 +386,24 @@ export default function CallWaveformPlayer({
         if (taskId !== decodeTaskRef.current || options?.cancelled?.()) return
 
         setTracks(decodedTracks)
-        setDuration((prev) => (prev > 0 ? prev : decodedDuration))
+        setDuration((prev) => {
+          if (Number.isFinite(decodedDuration) && decodedDuration > 0) return decodedDuration
+          return prev
+        })
         setDecoding(false)
         setLoadError(null)
         if (stereo && decodedTracks.length > 1) loadedStereoRef.current = true
-
-        const blobUrl = options?.blobUrl ?? blobRef.current
-        if (!blobUrl || options?.cancelled?.()) return
 
         if (options?.cacheEvaluatorId) {
           setCachedEvaluatorWaveform(options.cacheEvaluatorId, {
             tracks: decodedTracks as CachedWaveformTrack[],
             duration: decodedDuration,
-            blobUrl,
           })
-          ownsBlobRef.current = false
         } else if (options?.cacheCallShortId) {
           setCachedWaveform(options.cacheCallShortId, options.usedStereo ?? stereo, {
             tracks: decodedTracks as CachedWaveformTrack[],
             duration: decodedDuration,
-            blobUrl,
           })
-          ownsBlobRef.current = false
         }
       } catch {
         if (taskId === decodeTaskRef.current) {
@@ -424,13 +422,21 @@ export default function CallWaveformPlayer({
     decodeTaskRef.current += 1
     setPlaying(false)
     setCurrentTime(0)
+    setPlaybackSeekable(false)
+    setTracks([])
+    setDuration(0)
+    setLoadError(null)
+    audioRef.current?.pause()
 
-    function applyCached(cached: ReturnType<typeof getCachedWaveform>) {
+    function applyCached(
+      cached: ReturnType<typeof getCachedWaveform>,
+      playbackKey: string,
+    ) {
       if (!cached || cancelled) return false
-      if (blobRef.current && ownsBlobRef.current) URL.revokeObjectURL(blobRef.current)
-      blobRef.current = cached.blobUrl
-      ownsBlobRef.current = false
-      setAudioUrl(cached.blobUrl)
+      const buffer = getRawAudioBuffer(playbackKey)
+      const playbackUrl = resolvePlaybackBlobUrl(playbackKey, buffer)
+      if (!playbackUrl) return false
+      bindPlaybackUrl(playbackKey, playbackUrl)
       setTracks(Array.isArray(cached.tracks) ? cached.tracks : [])
       setDuration(
         typeof cached.duration === 'number' && Number.isFinite(cached.duration) ? cached.duration : 0,
@@ -448,40 +454,43 @@ export default function CallWaveformPlayer({
       cacheCallShortId?: string,
       cacheEvaluatorId?: string,
       usedStereo?: boolean,
-      blobUrl?: string,
     ) {
       if (!arrayBuffer?.byteLength || cancelled) return
-      const playbackUrl = blobUrl ?? blobRef.current
-      if (!playbackUrl) return
       loadedStereoRef.current = usedStereo ?? stereo
       void decodeAndSetTracks(arrayBuffer, stereo, {
         cacheCallShortId,
         cacheEvaluatorId,
         usedStereo: usedStereo ?? stereo,
-        blobUrl: playbackUrl,
         cancelled: isCancelled,
       })
     }
 
     async function load() {
-      if (!callRecordingId && !callShortId && !evaluatorResultId) return
+      if (!callRecordingId && !callShortId && !evaluatorResultId && !observabilityCallShortId) return
 
       const stereo = shouldFetchStereo(callDataRef.current, platformRef.current)
 
-      if (callShortId && applyCached(getCachedWaveform(callShortId, stereo))) return
-      if (callShortId && !stereo && applyCached(getCachedWaveform(callShortId, false))) return
-      if (evaluatorResultId && applyCached(getCachedEvaluatorWaveform(evaluatorResultId))) return
+      if (callShortId) {
+        const monoKey = playbackKeyForCall(callShortId, false)
+        const stereoKey = playbackKeyForCall(callShortId, stereo)
+        if (applyCached(getCachedWaveform(callShortId, stereo), stereoKey)) return
+        if (!stereo && applyCached(getCachedWaveform(callShortId, false), monoKey)) return
+      }
+      if (evaluatorResultId) {
+        const evalKey = playbackKeyForEvaluator(evaluatorResultId)
+        if (applyCached(getCachedEvaluatorWaveform(evaluatorResultId), evalKey)) return
+      }
 
       setDecoding(false)
       setLoadError(null)
       setTracks([])
       setDuration(0)
       setCurrentTime(0)
+      setFetching(true)
+      setAudioUrl(null)
 
       if (callShortId) {
-        setStreamAudioUrl(apiClient.getCallRecordingAudioStreamUrl(callShortId, { stereo: false }))
-        setFetching(false)
-
+        const playbackKey = playbackKeyForCall(callShortId, false)
         void (async () => {
           try {
             const arrayBuffer = await fetchCallRecordingAudio(callShortId, false)
@@ -491,25 +500,49 @@ export default function CallWaveformPlayer({
               }
               return
             }
+            setPlaybackFromBuffer(playbackKey, arrayBuffer)
+            setFetching(false)
             await loadWaveformFromBuffer(arrayBuffer, false, callShortId, undefined, false)
           } catch {
             if (!cancelled) setLoadError('Could not load recording waveform.')
+          } finally {
+            if (!cancelled) setFetching(false)
           }
         })()
         return
       }
 
-      setFetching(true)
-      setAudioUrl(null)
+      if (observabilityCallShortId) {
+        const playbackKey = playbackKeyForObservability(observabilityCallShortId)
+        void (async () => {
+          try {
+            const arrayBuffer = await fetchObservabilityCallAudio(observabilityCallShortId)
+            if (!arrayBuffer?.byteLength || cancelled) {
+              if (!cancelled) setLoadError('Recording unavailable for this observability call.')
+              return
+            }
+            setPlaybackFromBuffer(playbackKey, arrayBuffer)
+            setFetching(false)
+            await loadWaveformFromBuffer(arrayBuffer, false)
+          } catch {
+            if (!cancelled) setLoadError('Could not load recording waveform.')
+          } finally {
+            if (!cancelled) setFetching(false)
+          }
+        })()
+        return
+      }
 
       try {
         let arrayBuffer: ArrayBuffer | null = null
         let usedStereo = false
         let cacheEvaluatorId: string | undefined
+        let playbackKey: string | undefined
 
         if (evaluatorResultId) {
           arrayBuffer = await fetchEvaluatorRecordingAudio(evaluatorResultId)
           cacheEvaluatorId = evaluatorResultId
+          playbackKey = playbackKeyForEvaluator(evaluatorResultId)
         }
 
         if (!arrayBuffer?.byteLength || cancelled) {
@@ -519,14 +552,14 @@ export default function CallWaveformPlayer({
           return
         }
 
-        const blobUrl = setBlobFromBuffer(arrayBuffer)
+        if (playbackKey) setPlaybackFromBuffer(playbackKey, arrayBuffer)
         setFetching(false)
         loadedStereoRef.current = usedStereo
+        setPlaybackSeekable(true)
 
         void decodeAndSetTracks(arrayBuffer, usedStereo, {
           cacheEvaluatorId,
           usedStereo,
-          blobUrl,
           cancelled: isCancelled,
         })
       } catch {
@@ -540,9 +573,55 @@ export default function CallWaveformPlayer({
     return () => {
       cancelled = true
       decodeTaskRef.current += 1
-      if (blobRef.current && ownsBlobRef.current) URL.revokeObjectURL(blobRef.current)
+      audioRef.current?.pause()
+      if (playbackKeyRef.current) {
+        releasePlaybackBlobUrl(playbackKeyRef.current)
+        playbackKeyRef.current = null
+      }
     }
-  }, [callRecordingId, callShortId, evaluatorResultId, decodeAndSetTracks, setBlobFromBuffer, setStreamAudioUrl])
+  }, [
+    callRecordingId,
+    callShortId,
+    observabilityCallShortId,
+    evaluatorResultId,
+    audioRevision,
+    decodeAndSetTracks,
+    setPlaybackFromBuffer,
+    bindPlaybackUrl,
+  ])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio || !audioUrl) return
+
+    const syncDuration = () => {
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration)
+      }
+    }
+
+    const restorePending = () => {
+      syncDuration()
+      const pending = pendingPlaybackRestoreRef.current
+      if (!pending) return
+      const nextTime = Math.min(pending.time, audio.duration || pending.time)
+      audio.currentTime = nextTime
+      setCurrentTime(nextTime)
+      paintStateRef.current.progressRatio = audio.duration > 0 ? nextTime / audio.duration : 0
+      repaint()
+      if (pending.play) {
+        void audio.play().catch(() => undefined)
+      }
+      pendingPlaybackRestoreRef.current = null
+    }
+
+    audio.addEventListener('loadedmetadata', restorePending)
+    if (audio.readyState >= 1) restorePending()
+
+    return () => {
+      audio.removeEventListener('loadedmetadata', restorePending)
+    }
+  }, [audioUrl, repaint])
 
   useEffect(() => {
     if (!callShortId || !wantStereo || loadedStereoRef.current || tracks.length > 1) return
@@ -556,7 +635,6 @@ export default function CallWaveformPlayer({
       await decodeAndSetTracks(arrayBuffer, true, {
         cacheCallShortId: callShortId,
         usedStereo: true,
-        blobUrl: playbackUrl,
         cancelled: () => cancelled,
       })
     })()
@@ -591,12 +669,15 @@ export default function CallWaveformPlayer({
     let lastUiUpdate = 0
     const tick = (now: number) => {
       const audio = audioRef.current
-      if (audio && duration > 0) {
-        paintStateRef.current.progressRatio = audio.currentTime / duration
-        repaint()
-        if (now - lastUiUpdate > 250) {
-          setCurrentTime(audio.currentTime)
-          lastUiUpdate = now
+      if (audio) {
+        const d = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration
+        if (d > 0) {
+          paintStateRef.current.progressRatio = audio.currentTime / d
+          repaint()
+          if (now - lastUiUpdate > 250) {
+            setCurrentTime(audio.currentTime)
+            lastUiUpdate = now
+          }
         }
       }
       frame = requestAnimationFrame(tick)
@@ -605,17 +686,25 @@ export default function CallWaveformPlayer({
     return () => cancelAnimationFrame(frame)
   }, [playing, duration, repaint])
 
-  const seekFromClientX = (clientX: number) => {
-    const container = containerRef.current
-    const audio = audioRef.current
-    if (!container || !audio || !duration) return
-    const rect = container.getBoundingClientRect()
-    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-    audio.currentTime = ratio * duration
-    setCurrentTime(audio.currentTime)
-    paintStateRef.current.progressRatio = ratio
-    repaint()
-  }
+  const seekFromClientX = useCallback(
+    (clientX: number) => {
+      const container = containerRef.current
+      const audio = audioRef.current
+      if (!container || !audio) return
+      const audioDuration =
+        Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration
+      if (!audioDuration) return
+      const rect = container.getBoundingClientRect()
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+      const nextTime = ratio * audioDuration
+      if (audio.ended) audio.pause()
+      audio.currentTime = nextTime
+      setCurrentTime(nextTime)
+      paintStateRef.current.progressRatio = ratio
+      repaint()
+    },
+    [duration, repaint],
+  )
 
   const togglePlay = async () => {
     const audio = audioRef.current
@@ -653,10 +742,10 @@ export default function CallWaveformPlayer({
     }
   }
 
-  if (!callRecordingId && !callShortId && !evaluatorResultId) return null
+  if (!callRecordingId && !callShortId && !evaluatorResultId && !observabilityCallShortId) return null
 
   const canPlay = Boolean(audioUrl) && !fetching
-  const canSeek = canPlay && duration > 0
+  const canSeek = canPlay && duration > 0 && playbackSeekable
 
   return (
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -689,19 +778,26 @@ export default function CallWaveformPlayer({
             <div
               ref={containerRef}
               className={`relative select-none rounded-lg ${canSeek ? 'cursor-pointer' : 'cursor-default'}`}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
                 if (!canSeek) return
                 draggingRef.current = true
+                e.currentTarget.setPointerCapture(e.pointerId)
                 seekFromClientX(e.clientX)
               }}
-              onMouseMove={(e) => {
+              onPointerMove={(e) => {
                 if (draggingRef.current) seekFromClientX(e.clientX)
               }}
-              onMouseUp={() => {
+              onPointerUp={(e) => {
                 draggingRef.current = false
+                if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                }
               }}
-              onMouseLeave={() => {
+              onPointerCancel={(e) => {
                 draggingRef.current = false
+                if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                  e.currentTarget.releasePointerCapture(e.pointerId)
+                }
               }}
             >
               <canvas ref={canvasRef} className="block w-full rounded-lg" />
@@ -752,12 +848,40 @@ export default function CallWaveformPlayer({
           preload="auto"
           className="hidden"
           onLoadedMetadata={(e) => {
-            const nextDuration = e.currentTarget?.duration
+            const el = e.currentTarget
+            const nextDuration = el?.duration
             if (typeof nextDuration === 'number' && Number.isFinite(nextDuration) && nextDuration > 0) {
-              setDuration((prev) => (prev > 0 ? prev : nextDuration))
+              setDuration(nextDuration)
             }
           }}
-          onEnded={() => setPlaying(false)}
+          onTimeUpdate={(e) => {
+            if (draggingRef.current) return
+            const el = e.currentTarget
+            if (!Number.isFinite(el.currentTime)) return
+            setCurrentTime(el.currentTime)
+            if (el.duration > 0) {
+              paintStateRef.current.progressRatio = el.currentTime / el.duration
+              repaint()
+            }
+          }}
+          onSeeked={(e) => {
+            const el = e.currentTarget
+            if (!Number.isFinite(el.currentTime)) return
+            setCurrentTime(el.currentTime)
+            if (el.duration > 0) {
+              paintStateRef.current.progressRatio = el.currentTime / el.duration
+              repaint()
+            }
+          }}
+          onEnded={() => {
+            setPlaying(false)
+            const el = audioRef.current
+            if (el && Number.isFinite(el.duration) && el.duration > 0) {
+              setCurrentTime(el.duration)
+              paintStateRef.current.progressRatio = 1
+              repaint()
+            }
+          }}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
         />

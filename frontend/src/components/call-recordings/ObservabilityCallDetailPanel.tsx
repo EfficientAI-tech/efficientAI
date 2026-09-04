@@ -8,9 +8,7 @@ import {
   PhoneOutgoing,
   MessageSquare,
   Trash2,
-  Download,
   Tag,
-  Loader,
   Sparkles,
   X,
 } from 'lucide-react'
@@ -19,12 +17,13 @@ import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../Button'
 import ConfirmModal from '../ConfirmModal'
 import { apiClient } from '../../lib/api'
+import CallWaveformPlayer from './CallWaveformPlayer'
 import { getObservabilityCallPlaceholder } from '../../lib/observabilityCallQuery'
+import { prefetchObservabilityCallAudio } from '../../lib/waveformAudioCache'
 import RetellCallDetails from './RetellCallDetails'
 import VapiCallDetails from './VapiCallDetails'
 import VobizCallDetails from './VobizCallDetails'
 import { ObservabilityCall } from '../../types/api'
-import { useRecordingPresignedUrl } from '../../hooks/useRecordingPresignedUrl'
 import { CallAgentLink } from '../../pages/observability/CallAgentLink'
 import { EndReasonBadge, EventBadge, PlatformBadge } from '../../pages/observability/observabilityCallUi'
 
@@ -67,16 +66,21 @@ export default function ObservabilityCallDetailPanel({
   })
 
   useEffect(() => {
+    setLiveTranscript([])
+  }, [callShortId])
+
+  useEffect(() => {
     const existing = callRecording?.call_data?.live_transcript
     if (!Array.isArray(existing) || existing.length === 0) return
-    setLiveTranscript((prev) => (existing.length >= prev.length ? existing : prev))
-  }, [callRecording?.call_data?.live_transcript])
+    setLiveTranscript(existing)
+  }, [callRecording?.call_data?.live_transcript, callShortId])
 
   useEffect(() => {
     if (callRecording?.call_event === 'call_ended') {
       queryClient.invalidateQueries({ queryKey: ['observability-call', callShortId] })
     }
   }, [callRecording?.call_event, callShortId, queryClient])
+
 
   useEffect(() => {
     if (!callShortId || !callRecording) return
@@ -104,12 +108,18 @@ export default function ObservabilityCallDetailPanel({
     }
   }, [callShortId, callRecording?.call_event, callRecording?.is_live])
 
-  const storageKey = callRecording?.call_data?.recording_s3_key ?? undefined
-  const providerRecordingUrl = callRecording?.call_data?.recording_url ?? null
-  const hasStorageRecording = !!storageKey
+  useEffect(() => {
+    if (!callShortId || !callRecording) return
+    const isLive =
+      callRecording.is_live || LIVE_EVENTS.has((callRecording.call_event || '').toLowerCase())
+    if (isLive) return
+    if (callRecording.call_data?.recording_s3_key || callRecording.call_data?.recording_url) {
+      prefetchObservabilityCallAudio(callShortId)
+    }
+  }, [callShortId, callRecording?.call_data, callRecording?.call_event, callRecording?.is_live])
 
-  const { data: presignedRecording, isLoading: presignedLoading } =
-    useRecordingPresignedUrl(storageKey)
+  const providerRecordingUrl = callRecording?.call_data?.recording_url ?? null
+  const hasStorageRecording = Boolean(callRecording?.call_data?.recording_s3_key)
 
   const { data: evaluators = [] } = useQuery({
     queryKey: ['evaluators'],
@@ -180,8 +190,7 @@ export default function ObservabilityCallDetailPanel({
       : messagesFromLive.length > 0
         ? messagesFromLive
         : undefined
-  const playbackUrl = presignedRecording?.url || providerRecordingUrl
-  const audioLoading = hasStorageRecording && presignedLoading && !playbackUrl
+  const hasRecording = hasStorageRecording || Boolean(providerRecordingUrl)
   const isLiveCall =
     callRecording.is_live || LIVE_EVENTS.has((callRecording.call_event || '').toLowerCase())
 
@@ -343,27 +352,10 @@ export default function ObservabilityCallDetailPanel({
           </section>
         ) : null}
 
-        {(hasStorageRecording || providerRecordingUrl) && !isLiveCall ? (
+        {(hasRecording) && !isLiveCall ? (
           <section className="rounded-xl border border-gray-200 bg-white p-5">
             <h3 className="mb-3 text-sm font-semibold text-gray-900">Call recording</h3>
-            {audioLoading ? (
-              <div className="flex items-center gap-2 text-sm text-gray-500">
-                <Loader className="h-4 w-4 animate-spin" />
-                Loading recording…
-              </div>
-            ) : playbackUrl ? (
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <audio controls src={playbackUrl} preload="metadata" className="w-full max-w-xl" />
-                <a
-                  href={playbackUrl}
-                  download={`call_${callRecording.call_short_id}.wav`}
-                  className="inline-flex items-center gap-2 text-sm text-primary-600 hover:text-primary-800"
-                >
-                  <Download className="h-4 w-4" />
-                  Download
-                </a>
-              </div>
-            ) : null}
+            <CallWaveformPlayer observabilityCallShortId={callShortId} />
           </section>
         ) : null}
 

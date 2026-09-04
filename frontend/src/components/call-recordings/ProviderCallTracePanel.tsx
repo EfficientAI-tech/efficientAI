@@ -1,9 +1,9 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import { getCallRecordingPlaceholder, hasCallRecordingDetails } from '../../lib/callRecordingQuery'
-import { preferStereoWaveform, prefetchCallRecordingAudio } from '../../lib/waveformAudioCache'
+import { getCallRecordingPlaceholder, hasEnrichedCallRecordingDetails } from '../../lib/callRecordingQuery'
+import { clearCallRecordingAudioCache, preferStereoWaveform, prefetchCallRecordingAudio } from '../../lib/waveformAudioCache'
 import VoiceAiCallDetailPanel from './VoiceAiCallDetailPanel'
 
 interface ProviderCallTracePanelProps {
@@ -13,6 +13,7 @@ interface ProviderCallTracePanelProps {
 
 export default function ProviderCallTracePanel({ callShortId, onClose }: ProviderCallTracePanelProps) {
   const queryClient = useQueryClient()
+  const [refreshing, setRefreshing] = useState(false)
 
   const { data: recording, isError, error, isFetching } = useQuery({
     queryKey: ['call-recording', callShortId],
@@ -21,7 +22,7 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
     placeholderData: () => getCallRecordingPlaceholder(queryClient, callShortId),
     staleTime: 30_000,
     refetchOnMount: (query) =>
-      hasCallRecordingDetails(query.state.data as Record<string, unknown> | undefined)
+      hasEnrichedCallRecordingDetails(query.state.data as Record<string, unknown> | undefined)
         ? true
         : 'always',
   })
@@ -34,8 +35,15 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
   }, [callShortId, recording?.call_data, recording?.provider_platform])
 
   const handleRefresh = async () => {
-    await apiClient.refreshCallRecording(callShortId)
-    await queryClient.invalidateQueries({ queryKey: ['call-recording', callShortId] })
+    setRefreshing(true)
+    try {
+      clearCallRecordingAudioCache(callShortId)
+      await apiClient.refreshCallRecording(callShortId)
+      await queryClient.invalidateQueries({ queryKey: ['call-recording', callShortId] })
+      await queryClient.invalidateQueries({ queryKey: ['call-recording-logs', callShortId] })
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   const errorMessage =
@@ -74,10 +82,10 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
             <button
               type="button"
               onClick={handleRefresh}
-              disabled={isFetching}
+              disabled={isFetching || refreshing}
               className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${isFetching || refreshing ? 'animate-spin' : ''}`} />
               Refresh
             </button>
             {onClose ? (
@@ -101,9 +109,10 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
           </div>
         ) : recording ? (
           <VoiceAiCallDetailPanel
+            key={`${callShortId}-${recording.updated_at ?? ''}`}
             recording={recording as Parameters<typeof VoiceAiCallDetailPanel>[0]['recording']}
             callShortId={callShortId}
-            detailsLoading={isFetching && !hasCallRecordingDetails(recording as Record<string, unknown>)}
+            detailsLoading={isFetching && !hasEnrichedCallRecordingDetails(recording as Record<string, unknown>)}
           />
         ) : null}
       </div>

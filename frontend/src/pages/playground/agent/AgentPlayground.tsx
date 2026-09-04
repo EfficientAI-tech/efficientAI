@@ -13,7 +13,7 @@ import VoiceAgent from '../../../components/VoiceAgent'
 import GenericVoiceWSClient from '../../../components/GenericVoiceWSClient'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 import { getProtocolById } from '../../../lib/wsProtocols'
-import { prefetchCallRecordingQuery, warmCallRecordingQueryFromList } from '../../../lib/callRecordingQuery'
+import { prefetchCallRecordingQuery, refreshCallRecordingQueries, warmCallRecordingQueryFromList } from '../../../lib/callRecordingQuery'
 import { prefetchCallRecordingAudio } from '../../../lib/waveformAudioCache'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
@@ -293,9 +293,9 @@ export default function AgentPlayground() {
 
           // Trigger refresh of metrics
           if (currentCallShortIdRef.current) {
-            apiClient.refreshCallRecording(currentCallShortIdRef.current)
-              .then(() => refetchCallRecordings())
-              .catch(err => console.error('Failed to refresh metrics', err))
+            refreshCallRecordingQueries(queryClient, currentCallShortIdRef.current).catch((err) =>
+              console.error('Failed to refresh metrics', err),
+            )
           }
         })
 
@@ -403,9 +403,9 @@ export default function AgentPlayground() {
               }
             }
 
-            apiClient.refreshCallRecording(currentCallShortIdRef.current)
-              .then(() => refetchCallRecordings())
-              .catch(err => console.error('Failed to refresh metrics', err))
+            refreshCallRecordingQueries(queryClient, currentCallShortIdRef.current).catch((err) =>
+              console.error('Failed to refresh metrics', err),
+            )
           }
         })
 
@@ -497,9 +497,9 @@ export default function AgentPlayground() {
               // ElevenLabs transitions through "processing" before "done",
               // so wait a few seconds before requesting metrics
               setTimeout(() => {
-                apiClient.refreshCallRecording(callShortId)
-                  .then(() => refetchCallRecordings())
-                  .catch(err => console.error('Failed to refresh metrics', err))
+                refreshCallRecordingQueries(queryClient, callShortId).catch((err) =>
+                  console.error('Failed to refresh metrics', err),
+                )
               }, 5000)
             }
           },
@@ -599,9 +599,9 @@ export default function AgentPlayground() {
           if (currentCallShortIdRef.current) {
             const callShortId = currentCallShortIdRef.current
             setTimeout(() => {
-              apiClient.refreshCallRecording(callShortId)
-                .then(() => refetchCallRecordings())
-                .catch(err => console.error('Failed to refresh metrics', err))
+              refreshCallRecordingQueries(queryClient, callShortId).catch((err) =>
+                console.error('Failed to refresh metrics', err),
+              )
             }, 3000)
           }
         })

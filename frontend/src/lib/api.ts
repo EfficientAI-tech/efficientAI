@@ -3958,7 +3958,7 @@ class ApiClient {
     )
   }
 
-  async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
+  async refreshCallRecording(callShortId: string): Promise<{ message: string; enriched?: boolean }> {
     const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
     return response.data
   }
@@ -3994,6 +3994,14 @@ class ApiClient {
       { responseType: 'blob' }
     )
     return URL.createObjectURL(response.data)
+  }
+
+  async getObservabilityCallAudioBuffer(callShortId: string): Promise<ArrayBuffer> {
+    const response = await this.client.get(
+      `/api/v1/observability/calls/${callShortId}/audio?proxy=true`,
+      { responseType: 'arraybuffer' },
+    )
+    return response.data as ArrayBuffer
   }
 
   async getCallRecordingAudioBuffer(

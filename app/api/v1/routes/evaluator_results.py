@@ -431,6 +431,22 @@ def get_evaluator_result(
 
     hydrate_evaluator_results([result])
     repair_evaluator_result_status_if_needed(db, result)
+
+    call_recording_source = None
+    if isinstance(result.call_data, dict):
+        linked_call_short_id = result.call_data.get("call_short_id")
+        if isinstance(linked_call_short_id, str) and linked_call_short_id:
+            linked_recording = (
+                db.query(CallRecording)
+                .filter(
+                    CallRecording.call_short_id == linked_call_short_id,
+                    CallRecording.organization_id == organization_id,
+                    CallRecording.workspace_id == workspace_id,
+                )
+                .first()
+            )
+            if linked_recording and linked_recording.source:
+                call_recording_source = linked_recording.source.value
     
     # Build response
     response_data = {
@@ -456,6 +472,7 @@ def get_evaluator_result(
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
         "call_data": result.call_data,
+        "call_recording_source": call_recording_source,
         "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,

@@ -7,6 +7,7 @@ import { Activity, ArrowLeft } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import TestVoiceAgentResultDetails from '../../../components/call-recordings/TestVoiceAgentResultDetails'
+import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 
 export default function TestAgentResultDetail() {
@@ -53,9 +54,12 @@ export default function TestAgentResultDetail() {
 
   const callShortId =
     typeof result.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : null
-  const platform = (result.provider_platform || '').toLowerCase()
-  const useProviderDrawer =
-    Boolean(callShortId) && ['vapi', 'retell', 'elevenlabs', 'smallest'].includes(platform)
+  const drawerTargets = resolveTraceDrawerTargets({
+    callShortId,
+    providerPlatform: result.provider_platform,
+    callRecordingSource: (result as { call_recording_source?: string | null }).call_recording_source,
+    evaluatorResultId: result.id,
+  })
 
   return (
     <>
@@ -107,8 +111,9 @@ export default function TestAgentResultDetail() {
 
       <TraceDetailDrawer
         open={traceDrawerOpen}
-        callShortId={useProviderDrawer ? callShortId : null}
-        evaluatorResultId={useProviderDrawer ? null : result.id}
+        callShortId={drawerTargets.callShortId}
+        observabilityCallShortId={drawerTargets.observabilityCallShortId}
+        evaluatorResultId={drawerTargets.evaluatorResultId}
         onClose={() => setTraceDrawerOpen(false)}
       />
     </>

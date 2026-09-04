@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { getCallRecordingPlaceholder, hasCallRecordingDetails } from '../../../lib/callRecordingQuery'
+import { getCallRecordingPlaceholder, hasEnrichedCallRecordingDetails, refreshCallRecordingQueries } from '../../../lib/callRecordingQuery'
 import ConfirmModal from '../../../components/ConfirmModal'
 import { ArrowLeft, RefreshCw, Trash2, BarChart3, CheckCircle, XCircle, HelpCircle, Brain, Sparkles, AudioWaveform, Loader, RotateCcw, Activity } from 'lucide-react'
 import Button from '../../../components/Button'
@@ -414,7 +414,7 @@ export default function CallRecordingDetail() {
     placeholderData: () =>
       callShortId ? getCallRecordingPlaceholder(queryClient, callShortId) : undefined,
     refetchOnMount: (query) =>
-      hasCallRecordingDetails(query.state.data as Record<string, unknown> | undefined)
+      hasEnrichedCallRecordingDetails(query.state.data as Record<string, unknown> | undefined)
         ? true
         : 'always',
     refetchInterval: (query) => {
@@ -500,12 +500,9 @@ export default function CallRecordingDetail() {
   }, [callRecording, navigate])
 
   const refreshMutation = useMutation({
-    mutationFn: () => apiClient.refreshCallRecording(callShortId!),
+    mutationFn: () => refreshCallRecordingQueries(queryClient, callShortId!),
     onSuccess: () => {
-      showToast('Call recording refresh initiated', 'success')
-      setTimeout(() => {
-        refetchCallDetails()
-      }, 2000)
+      showToast('Call recording refreshed', 'success')
     },
     onError: (error: any) => {
       showToast(`Failed to refresh: ${error.response?.data?.detail || error.message}`, 'error')

@@ -107,11 +107,12 @@ interface ElevenLabsCallDetailsProps {
   callData: ElevenLabsCallData
   callShortId?: string
   hideTranscript?: boolean
+  hideAudio?: boolean
 }
 
 const COLORS = ['#10b981', '#06b6d4', '#f59e0b', '#ef4444', '#8b5cf6']
 
-export default function ElevenLabsCallDetails({ callData, callShortId, hideTranscript = false }: ElevenLabsCallDetailsProps) {
+export default function ElevenLabsCallDetails({ callData, callShortId, hideTranscript = false, hideAudio = false }: ElevenLabsCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null)
   const [audioLoading, setAudioLoading] = useState(false)
@@ -122,7 +123,13 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
   const hasAudio = !!(callData.recording_urls?.conversation_audio)
 
   useEffect(() => {
-    if (!callShortId || !hasAudio || audioFetched.current) return
+    audioFetched.current = false
+    setAudioBlobUrl(null)
+    setAudioError(false)
+  }, [callShortId])
+
+  useEffect(() => {
+    if (hideAudio || !callShortId || !hasAudio || audioFetched.current) return
     audioFetched.current = true
     setAudioLoading(true)
     apiClient.getCallRecordingAudioUrl(callShortId)
@@ -134,9 +141,12 @@ export default function ElevenLabsCallDetails({ callData, callShortId, hideTrans
       .finally(() => setAudioLoading(false))
 
     return () => {
-      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
     }
-  }, [callShortId, hasAudio])
+  }, [callShortId, hasAudio, hideAudio])
 
   const formatDuration = (seconds?: number) => {
     if (!seconds) return 'N/A'

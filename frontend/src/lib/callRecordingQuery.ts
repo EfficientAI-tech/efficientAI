@@ -1,5 +1,12 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { apiClient } from './api'
+import {
+  hasCallRecordingDetails,
+  hasEnrichedCallRecordingDetails,
+} from './callRecordingDetails'
+import { clearCallRecordingAudioCache } from './waveformAudioCache'
+
+export { hasCallRecordingDetails, hasEnrichedCallRecordingDetails }
 
 function findCallRecordingRow(
   queryClient: QueryClient,
@@ -22,19 +29,12 @@ export function getCallRecordingPlaceholder(
   callShortId: string,
 ): Record<string, unknown> | undefined {
   const cached = queryClient.getQueryData<Record<string, unknown>>(['call-recording', callShortId])
-  if (cached && hasCallRecordingDetails(cached)) return cached
+  if (cached && hasEnrichedCallRecordingDetails(cached)) return cached
 
   const row = findCallRecordingRow(queryClient, callShortId)
   if (!row) return undefined
 
   return placeholderFromRow(row)
-}
-
-export function hasCallRecordingDetails(
-  recording: Record<string, unknown> | null | undefined,
-): boolean {
-  const callData = recording?.call_data
-  return Boolean(callData && typeof callData === 'object' && Object.keys(callData as object).length > 0)
 }
 
 function placeholderFromRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -59,8 +59,8 @@ export function warmCallRecordingQueryFromList(
     const callShortId = row.call_short_id
     if (typeof callShortId !== 'string' || !callShortId) continue
     const existing = queryClient.getQueryData<Record<string, unknown>>(['call-recording', callShortId])
-    if (existing && hasCallRecordingDetails(existing)) continue
-    if (hasCallRecordingDetails(placeholderFromRow(row))) {
+    if (existing && hasEnrichedCallRecordingDetails(existing)) continue
+    if (hasEnrichedCallRecordingDetails(placeholderFromRow(row))) {
       queryClient.setQueryData(['call-recording', callShortId], placeholderFromRow(row))
     }
   }
@@ -71,7 +71,7 @@ export function prefetchCallRecordingQuery(
   callShortId: string,
 ): Promise<void> {
   const existing = queryClient.getQueryData<Record<string, unknown>>(['call-recording', callShortId])
-  if (hasCallRecordingDetails(existing)) return Promise.resolve()
+  if (hasEnrichedCallRecordingDetails(existing)) return Promise.resolve()
 
   return queryClient
     .fetchQuery({
@@ -80,4 +80,15 @@ export function prefetchCallRecordingQuery(
       staleTime: 30_000,
     })
     .then(() => undefined)
+}
+
+export async function refreshCallRecordingQueries(
+  queryClient: QueryClient,
+  callShortId: string,
+): Promise<void> {
+  clearCallRecordingAudioCache(callShortId)
+  await apiClient.refreshCallRecording(callShortId)
+  await queryClient.invalidateQueries({ queryKey: ['call-recording', callShortId] })
+  await queryClient.invalidateQueries({ queryKey: ['call-recording-logs', callShortId] })
+  await queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
 }

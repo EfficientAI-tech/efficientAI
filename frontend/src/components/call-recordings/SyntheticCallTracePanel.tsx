@@ -449,20 +449,28 @@ export default function SyntheticCallTracePanel({
     return messages
   }, [turns, spansByTurn, pipelineModels, pipelineMode])
 
+  const timelineTurnInputs = useMemo(() => {
+    return turns.map((turn) => {
+      const spanMeta = turnMetaFromSpans(spansByTurn.get(turn.turn_number) ?? [])
+      const extra = mergeTurnMeta(turn, spanMeta, pipelineModels)
+      return {
+        turn_number: turn.turn_number,
+        stt_ttfb_ms: turn.stt_ttfb_ms,
+        llm_ttfb_ms: turn.llm_ttfb_ms,
+        tts_ttfb_ms: turn.tts_ttfb_ms,
+        sut_response_latency_ms: turn.sut_response_latency_ms,
+        transcript: turn.transcript,
+        extra: {
+          user_text: extra.user_text,
+          assistant_text: extra.assistant_text,
+        },
+      }
+    })
+  }, [turns, spansByTurn, pipelineModels])
+
   const timelineEvents = useMemo(() => {
-    const spanEvents = buildOtelCallTimeline(otelSpans)
-    const messageEvents = transcriptMessages.map((msg, idx) => ({
-      id: `turn-msg-${idx}`,
-      offsetMs: msg.offsetMs,
-      category: 'message' as const,
-      level: 'info' as const,
-      title: msg.role === 'user' ? `User spoke (turn ${msg.turn})` : `Agent spoke (turn ${msg.turn})`,
-      detail: msg.text,
-    }))
-    return [...spanEvents, ...messageEvents].sort(
-      (a, b) => a.offsetMs - b.offsetMs || a.title.localeCompare(b.title),
-    )
-  }, [otelSpans, transcriptMessages])
+    return buildOtelCallTimeline(otelSpans, timelineTurnInputs)
+  }, [otelSpans, timelineTurnInputs])
 
   if (isLoading && !data) {
     return (

@@ -445,11 +445,170 @@ export function buildRetellCallTimeline(callData: Record<string, unknown>): Call
 
 export interface OtelSpanLike {
   span_id: string
+  parent_span_id?: string | null
   name: string
   start_time_unix_nano?: number | null
   end_time_unix_nano?: number | null
   attributes?: Record<string, unknown>
   events?: Array<{ name?: string; attributes?: Record<string, unknown> }>
+}
+
+export interface OtelTurnTimelineInput {
+  turn_number: number
+  stt_ttfb_ms?: number | null
+  llm_ttfb_ms?: number | null
+  tts_ttfb_ms?: number | null
+  sut_response_latency_ms?: number | null
+  transcript?: string | null
+  extra?: {
+    user_text?: string
+    assistant_text?: string
+  }
+}
+
+const OTEL_SORT = {
+  globalPipeline: 10,
+  turnPipeline: 20,
+  userMessage: 30,
+  stt: 40,
+  llm: 50,
+  tts: 60,
+  agentMessage: 70,
+} as const
+
+function spanOffsetMs(span: OtelSpanLike, traceStart: number): number {
+  return span.start_time_unix_nano != null
+    ? Math.round((span.start_time_unix_nano - traceStart) / 1_000_000)
+    : 0
+}
+
+function spanEndOffsetMs(span: OtelSpanLike, traceStart: number): number {
+  if (span.end_time_unix_nano != null) {
+    return Math.round((span.end_time_unix_nano - traceStart) / 1_000_000)
+  }
+  return spanOffsetMs(span, traceStart)
+}
+
+function resolveOtelTurnNumber(span: OtelSpanLike, byId: Map<string, OtelSpanLike>): number | null {
+  const display = span.attributes?.['efficientai.display_turn_number']
+  if (display != null) {
+    const n = Number(display)
+    if (!Number.isNaN(n)) return n
+  }
+  const visited = new Set<string>()
+  let current: OtelSpanLike | undefined = span
+  while (current) {
+    const raw = current.attributes?.['turn.number']
+    if (raw != null) {
+      const n = Number(raw)
+      if (!Number.isNaN(n)) return n
+    }
+    const spanId = current.span_id
+    if (spanId) {
+      if (visited.has(spanId)) break
+      visited.add(spanId)
+    }
+    const parentId = current.parent_span_id
+    if (!parentId) break
+    current = byId.get(parentId)
+  }
+  return null
+}
+
+function isPipelineSpan(span: OtelSpanLike): boolean {
+  const kind = spanKindFromName(span)
+  return kind === 'pipeline' || kind === 's2s'
+}
+
+function parseOtelTurnTexts(turn?: OtelTurnTimelineInput): { user?: string; assistant?: string } {
+  if (!turn) return {}
+  const user = turn.extra?.user_text?.trim()
+  const assistant = turn.extra?.assistant_text?.trim()
+  if (user || assistant) return { user, assistant }
+  const transcript = turn.transcript
+  if (!transcript) return {}
+  const userMatch = transcript.match(/^User:\s*(.+)$/m)
+  const assistantMatch = transcript.match(/^Assistant:\s*(.+)$/m)
+  if (userMatch || assistantMatch) {
+    return { user: userMatch?.[1]?.trim(), assistant: assistantMatch?.[1]?.trim() }
+  }
+  return { assistant: transcript.trim() }
+}
+
+function spanEventDetail(span: OtelSpanLike, durationMs?: number): string | undefined {
+  const model =
+    span.attributes?.['gen_ai.request.model'] ||
+    span.attributes?.['settings.model'] ||
+    span.attributes?.['model']
+  return [
+    durationMs != null ? `${durationMs}ms` : null,
+    model ? String(model) : null,
+    span.attributes?.transcript ? truncate(String(span.attributes.transcript)) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function makeSpanTimelineEvent(
+  span: OtelSpanLike,
+  traceStart: number,
+  seq: number,
+  sortOrder: number,
+): CallTimelineEvent {
+  const offsetMs = spanOffsetMs(span, traceStart)
+  const durationMs =
+    span.start_time_unix_nano != null && span.end_time_unix_nano != null
+      ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
+      : undefined
+  const kind = spanKindFromName(span)
+  const hasError = span.attributes?.['error.type'] != null
+  return {
+    id: `otel-${seq}`,
+    offsetMs,
+    category: kind,
+    level: hasError ? 'error' : 'info',
+    title: span.name || kind,
+    detail: spanEventDetail(span, durationMs),
+    raw: span.attributes,
+    sortOrder,
+  }
+}
+
+function turnAnchorMs(turnSpans: OtelSpanLike[], traceStart: number): number {
+  const pipelineSpans = turnSpans.filter(isPipelineSpan)
+  const pool = pipelineSpans.length ? pipelineSpans : turnSpans
+  if (!pool.length) return 0
+  return Math.min(...pool.map((span) => spanOffsetMs(span, traceStart)))
+}
+
+function userMessageOffsetMs(
+  turnSpans: OtelSpanLike[],
+  turn: OtelTurnTimelineInput | undefined,
+  traceStart: number,
+  anchor: number,
+): number {
+  const sttSpans = turnSpans.filter((span) => spanKindFromName(span) === 'stt')
+  if (!sttSpans.length) return anchor
+  const sttStart = Math.min(...sttSpans.map((span) => spanOffsetMs(span, traceStart)))
+  const ttfb = turn?.stt_ttfb_ms ?? 0
+  if (ttfb && ttfb > 0) return Math.max(0, sttStart - ttfb)
+  return Math.min(anchor, sttStart)
+}
+
+function agentMessageOffsetMs(turnSpans: OtelSpanLike[], traceStart: number, anchor: number): number {
+  const ttsSpans = turnSpans.filter((span) => spanKindFromName(span) === 'tts')
+  const llmSpans = turnSpans.filter((span) => spanKindFromName(span) === 'llm')
+  const s2sSpans = turnSpans.filter((span) => spanKindFromName(span) === 's2s')
+  if (ttsSpans.length) {
+    return Math.max(...ttsSpans.map((span) => spanEndOffsetMs(span, traceStart)))
+  }
+  if (s2sSpans.length) {
+    return Math.max(...s2sSpans.map((span) => spanEndOffsetMs(span, traceStart)))
+  }
+  if (llmSpans.length) {
+    return Math.max(...llmSpans.map((span) => spanEndOffsetMs(span, traceStart)))
+  }
+  return anchor
 }
 
 function spanKindFromName(span: OtelSpanLike): TimelineCategory {
@@ -463,57 +622,116 @@ function spanKindFromName(span: OtelSpanLike): TimelineCategory {
   return 'pipeline'
 }
 
-export function buildOtelCallTimeline(spans: OtelSpanLike[]): CallTimelineEvent[] {
+export function buildOtelCallTimeline(
+  spans: OtelSpanLike[],
+  turns: OtelTurnTimelineInput[] = [],
+): CallTimelineEvent[] {
   if (!spans.length) return []
   const starts = spans
     .map((s) => s.start_time_unix_nano)
     .filter((v): v is number => v != null)
   const traceStart = starts.length ? Math.min(...starts) : 0
+  const byId = new Map(spans.map((span) => [span.span_id, span]))
   let seq = 0
 
+  const globalSpans: OtelSpanLike[] = []
+  const spansByTurn = new Map<number, OtelSpanLike[]>()
+  for (const span of spans) {
+    const turnNum = resolveOtelTurnNumber(span, byId)
+    if (turnNum == null) {
+      globalSpans.push(span)
+      continue
+    }
+    const list = spansByTurn.get(turnNum) ?? []
+    list.push(span)
+    spansByTurn.set(turnNum, list)
+  }
+
   const events: CallTimelineEvent[] = []
-  for (const span of [...spans].sort(
+  const push = (partial: Omit<CallTimelineEvent, 'id'>) => {
+    events.push({ ...partial, id: `otel-${seq++}` })
+  }
+
+  for (const span of [...globalSpans].sort(
     (a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0),
   )) {
-    const offsetMs =
-      span.start_time_unix_nano != null
-        ? Math.round((span.start_time_unix_nano - traceStart) / 1_000_000)
-        : 0
-    const durationMs =
-      span.start_time_unix_nano != null && span.end_time_unix_nano != null
-        ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
-        : undefined
-    const kind = spanKindFromName(span)
-    const model =
-      span.attributes?.['gen_ai.request.model'] ||
-      span.attributes?.['settings.model'] ||
-      span.attributes?.['model']
-    const hasError = span.attributes?.['error.type'] != null
-    events.push({
-      id: `otel-${seq++}`,
-      offsetMs,
-      category: kind,
-      level: hasError ? 'error' : 'info',
-      title: span.name || kind,
-      detail: [
-        durationMs != null ? `${durationMs}ms` : null,
-        model ? String(model) : null,
-        span.attributes?.transcript ? truncate(String(span.attributes.transcript)) : null,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-      raw: span.attributes,
-    })
+    events.push(makeSpanTimelineEvent(span, traceStart, seq++, OTEL_SORT.globalPipeline))
     for (const ev of span.events || []) {
-      events.push({
-        id: `otel-ev-${seq++}`,
-        offsetMs,
-        category: kind,
+      push({
+        offsetMs: spanOffsetMs(span, traceStart),
+        category: spanKindFromName(span),
         level: 'info',
         title: ev.name || 'span event',
         detail: ev.attributes ? truncate(JSON.stringify(ev.attributes)) : undefined,
+        sortOrder: OTEL_SORT.globalPipeline + 1,
       })
     }
   }
+
+  const turnNumbers = [
+    ...new Set([...turns.map((turn) => turn.turn_number), ...spansByTurn.keys()]),
+  ].sort((a, b) => a - b)
+
+  for (const turnNumber of turnNumbers) {
+    const turnSpans = spansByTurn.get(turnNumber) ?? []
+    const turnData = turns.find((turn) => turn.turn_number === turnNumber)
+    const { user, assistant } = parseOtelTurnTexts(turnData)
+    const anchor = turnAnchorMs(turnSpans, traceStart)
+
+    for (const span of turnSpans.filter(isPipelineSpan).sort(
+      (a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0),
+    )) {
+      events.push(makeSpanTimelineEvent(span, traceStart, seq++, OTEL_SORT.turnPipeline))
+    }
+
+    if (user) {
+      push({
+        offsetMs: userMessageOffsetMs(turnSpans, turnData, traceStart, anchor),
+        category: 'message',
+        level: 'info',
+        title: `User spoke (turn ${turnNumber})`,
+        detail: truncate(user),
+        sortOrder: OTEL_SORT.userMessage,
+      })
+    }
+
+    let ttsOrder = 0
+    for (const span of [...turnSpans]
+      .filter((item) => !isPipelineSpan(item))
+      .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))) {
+      const kind = spanKindFromName(span)
+      const sortOrder =
+        kind === 'stt'
+          ? OTEL_SORT.stt
+          : kind === 'llm'
+            ? OTEL_SORT.llm
+            : kind === 'tts' || kind === 's2s'
+              ? OTEL_SORT.tts + ttsOrder++
+              : OTEL_SORT.turnPipeline + 1
+      events.push(makeSpanTimelineEvent(span, traceStart, seq++, sortOrder))
+      for (const ev of span.events || []) {
+        push({
+          offsetMs: spanOffsetMs(span, traceStart),
+          category: kind,
+          level: 'info',
+          title: ev.name || 'span event',
+          detail: ev.attributes ? truncate(JSON.stringify(ev.attributes)) : undefined,
+          sortOrder: sortOrder + 1,
+        })
+      }
+    }
+
+    if (assistant) {
+      push({
+        offsetMs: agentMessageOffsetMs(turnSpans, traceStart, anchor),
+        category: 'message',
+        level: 'info',
+        title: `Agent spoke (turn ${turnNumber})`,
+        detail: truncate(assistant),
+        sortOrder: OTEL_SORT.agentMessage,
+      })
+    }
+  }
+
   return sortTimeline(events)
 }

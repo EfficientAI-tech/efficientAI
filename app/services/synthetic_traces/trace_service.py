@@ -445,6 +445,7 @@ def backfill_missing_traces_from_call_recordings(
     db: Session,
     *,
     organization_id: UUID,
+    workspace_id: UUID,
     limit: int = 50,
 ) -> int:
     """Create synthetic traces for phone evaluator recordings that never got one."""
@@ -453,6 +454,7 @@ def backfill_missing_traces_from_call_recordings(
         for row in db.query(SyntheticCallTrace.evaluator_result_id)
         .filter(
             SyntheticCallTrace.organization_id == organization_id,
+            SyntheticCallTrace.workspace_id == workspace_id,
             SyntheticCallTrace.evaluator_result_id.isnot(None),
         )
         .all()
@@ -462,6 +464,7 @@ def backfill_missing_traces_from_call_recordings(
         db.query(CallRecording)
         .filter(
             CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
             CallRecording.evaluator_result_id.isnot(None),
             CallRecording.provider_platform == "vobiz",
         )
@@ -563,7 +566,9 @@ def list_traces(
     limit: int = 50,
     status: Optional[str] = None,
 ) -> tuple[List[SyntheticCallTrace], int]:
-    backfill_missing_traces_from_call_recordings(db, organization_id=organization_id)
+    backfill_missing_traces_from_call_recordings(
+        db, organization_id=organization_id, workspace_id=workspace_id
+    )
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.workspace_id == workspace_id,

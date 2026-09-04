@@ -1087,15 +1087,21 @@ async def get_call_recording(
 @router.post("/call-recordings/{call_short_id}/refresh", response_model=Dict[str, Any])
 async def refresh_call_recording(
     call_short_id: str,
-    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Manually trigger a refresh of call metrics for a specific call recording in the active workspace.
+    Re-fetch provider call metrics and wait until enriched or timeout.
     """
+    import asyncio
+
+    from app.services.playground.post_call_processing import (
+        provider_metrics_enriched,
+        refresh_call_metrics_sync,
+    )
+
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
@@ -1115,7 +1121,6 @@ async def refresh_call_recording(
             detail="Call recording does not have provider information"
         )
     
-    # Get the integration to get the API key
     agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
     if not agent or not agent.voice_ai_integration_id:
         raise HTTPException(
@@ -1142,26 +1147,36 @@ async def refresh_call_recording(
             detail=f"Failed to decrypt API key: {str(e)}"
         )
 
-    if call_recording.evaluator_result_id:
-        background_tasks.add_task(
-            sync_provider_call_metrics,
-            call_recording.id,
-            call_recording.provider_call_id,
-            call_recording.provider_platform,
-            decrypted_api_key,
-        )
-        return {"message": "Provider metrics sync initiated"}
-    
-    # Start background task to poll for call metrics
-    background_tasks.add_task(
-        poll_call_metrics,
-        call_recording.id,
-        call_recording.provider_call_id,
-        call_recording.provider_platform,
-        decrypted_api_key
-    )
-    
-    return {"message": "Call recording refresh initiated"}
+    has_evaluator = bool(call_recording.evaluator_result_id)
+
+    def _blocking_refresh() -> None:
+        if has_evaluator:
+            sync_provider_call_metrics(
+                call_recording.id,
+                call_recording.provider_call_id,
+                call_recording.provider_platform,
+                decrypted_api_key,
+                max_attempts=12,
+                poll_interval=2,
+            )
+        else:
+            refresh_call_metrics_sync(
+                call_recording.id,
+                call_recording.provider_call_id,
+                call_recording.provider_platform,
+                decrypted_api_key,
+                max_attempts=12,
+                poll_interval=2,
+            )
+
+    await asyncio.to_thread(_blocking_refresh)
+    db.refresh(call_recording)
+    call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    enriched = provider_metrics_enriched(call_recording.provider_platform or "", call_data)
+    return {
+        "message": "Call recording refreshed",
+        "enriched": enriched,
+    }
 
 
 @router.delete("/call-recordings/{call_short_id}", response_model=Dict[str, Any])
@@ -1173,12 +1188,13 @@ async def delete_call_recording(
     db: Session = Depends(get_db)
 ):
     """
-    Delete a call recording within the active workspace.
+    Delete a playground call recording within the active workspace.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
         CallRecording.workspace_id == workspace_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
     
     if not call_recording:

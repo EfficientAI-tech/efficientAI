@@ -9,6 +9,7 @@ import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
+import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
@@ -663,9 +664,12 @@ export default function EvaluatorResultDetailPage({
   const statusConfig = getStatusConfig(displayStatus)
   const callShortId =
     typeof resultData.call_data?.call_short_id === 'string' ? resultData.call_data.call_short_id : null
-  const platform = (resultData.provider_platform || '').toLowerCase()
-  const useProviderDrawer =
-    Boolean(callShortId) && ['vapi', 'retell', 'elevenlabs', 'smallest'].includes(platform)
+  const drawerTargets = resolveTraceDrawerTargets({
+    callShortId,
+    providerPlatform: resultData.provider_platform,
+    callRecordingSource: (resultData as { call_recording_source?: string | null }).call_recording_source,
+    evaluatorResultId: resultData.id,
+  })
 
   return (
     <div
@@ -982,8 +986,9 @@ export default function EvaluatorResultDetailPage({
 
       <TraceDetailDrawer
         open={detailDrawerOpen}
-        callShortId={useProviderDrawer ? callShortId : null}
-        evaluatorResultId={useProviderDrawer ? null : resultData.id}
+        callShortId={drawerTargets.callShortId}
+        observabilityCallShortId={drawerTargets.observabilityCallShortId}
+        evaluatorResultId={drawerTargets.evaluatorResultId}
         onClose={() => setDetailDrawerOpen(false)}
       />
       <ToastContainer />

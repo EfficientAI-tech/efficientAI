@@ -2331,6 +2331,7 @@ class EvaluatorResultResponse(BaseModel):
     provider_call_id: Optional[str] = None
     provider_platform: Optional[str] = None
     call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
+    call_recording_source: Optional[str] = None  # playground | webhook when linked by call_short_id
     synthetic_call_trace_id: Optional[UUID] = None
     
     created_at: datetime

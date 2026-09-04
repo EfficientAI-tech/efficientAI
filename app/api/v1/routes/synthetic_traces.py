@@ -318,7 +318,10 @@ def get_trace_for_evaluator_result(
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
     backfill_missing_traces_from_call_recordings(
-        db, organization_id=organization_id, limit=5
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        limit=5,
     )
 
     trace = get_trace_for_result(

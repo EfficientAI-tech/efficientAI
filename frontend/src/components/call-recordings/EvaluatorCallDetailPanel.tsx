@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquare, Sparkles, Activity, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { isPlaygroundCallRecordingSource } from '../../lib/callDetailRouting'
 import { getEvaluatorResultPlaceholder } from '../../lib/evaluatorResultQuery'
 import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../lib/waveformAudioCache'
 import CallWaveformPlayer from './CallWaveformPlayer'
@@ -79,11 +80,15 @@ export default function EvaluatorCallDetailPanel({
 
   const callShortId =
     typeof result?.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : undefined
+  const playgroundCallShortId =
+    callShortId && isPlaygroundCallRecordingSource(result?.call_recording_source)
+      ? callShortId
+      : undefined
 
   useEffect(() => {
-    if (!callShortId) return
-    prefetchCallRecordingAudio(callShortId, false)
-  }, [callShortId])
+    if (!playgroundCallShortId) return
+    prefetchCallRecordingAudio(playgroundCallShortId, false)
+  }, [playgroundCallShortId])
 
   if (!result && !isFetching) {
     return <div className="p-8 text-sm text-gray-600">Call details not found.</div>
@@ -131,9 +136,8 @@ export default function EvaluatorCallDetailPanel({
             </div>
           ) : null}
           <CallWaveformPlayer
-            evaluatorResultId={callShortId ? undefined : evaluatorResultId}
-            callShortId={callShortId}
-            callRecordingId={callShortId}
+            evaluatorResultId={playgroundCallShortId ? undefined : evaluatorResultId}
+            callShortId={playgroundCallShortId}
             callData={result?.call_data}
             platform={result?.provider_platform}
           />
