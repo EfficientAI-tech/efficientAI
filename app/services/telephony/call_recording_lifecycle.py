@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
 
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -180,18 +181,27 @@ def _normalize_call_event(status: Optional[str]) -> str:
     return normalized
 
 
+def _dialect_name(db: Session) -> str:
+    bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
+    if bind is None:
+        return "postgresql"
+    return bind.dialect.name
+
+
+def _call_data_text(db: Session, key: str):
+    """Return JSON text for call_data[key] on Postgres and SQLite."""
+    if _dialect_name(db) == "sqlite":
+        return func.json_extract(CallRecording.call_data, f"$.{key}")
+    return func.json_extract_path_text(CallRecording.call_data, key)
+
+
 def _find_by_call_ref(db: Session, call_ref: str) -> Optional[CallRecording]:
-    rows = (
+    return (
         db.query(CallRecording)
+        .filter(_call_data_text(db, "call_ref") == call_ref)
         .order_by(CallRecording.created_at.desc())
-        .limit(200)
-        .all()
+        .first()
     )
-    for row in rows:
-        data = row.call_data if isinstance(row.call_data, dict) else {}
-        if data.get("call_ref") == call_ref:
-            return row
-    return None
 
 
 def find_call_recording(
@@ -208,18 +218,20 @@ def find_call_recording(
         )
         if row:
             return row
-        rows = (
-            db.query(CallRecording)
-            .filter(CallRecording.provider_platform == "vobiz")
-            .order_by(CallRecording.created_at.desc())
-            .limit(200)
-            .all()
+        json_id_match = or_(
+            *(
+                _call_data_text(db, key) == provider_call_id
+                for key in ("request_uuid", "message_uuid", "api_id", "call_uuid")
+            )
         )
-        for candidate in rows:
-            data = candidate.call_data if isinstance(candidate.call_data, dict) else {}
-            for key in ("request_uuid", "message_uuid", "api_id", "call_uuid"):
-                if data.get(key) == provider_call_id:
-                    return candidate
+        row = (
+            db.query(CallRecording)
+            .filter(json_id_match)
+            .order_by(CallRecording.created_at.desc())
+            .first()
+        )
+        if row:
+            return row
     if call_ref:
         return _find_by_call_ref(db, call_ref)
     return None
