@@ -61,8 +61,6 @@ def test_ingest_otlp_spans_correlates_by_call_short_id(
         workspace_id=default_workspace.id,
         evaluator_id=uuid4(),
         agent_id=uuid4(),
-        persona_id=uuid4(),
-        scenario_id=uuid4(),
         name="Phone test",
         status=EvaluatorResultStatus.QUEUED.value,
     )
@@ -121,8 +119,6 @@ def test_ingest_otlp_spans_merges_with_tier1_turns(
         workspace_id=default_workspace.id,
         evaluator_id=uuid4(),
         agent_id=uuid4(),
-        persona_id=uuid4(),
-        scenario_id=uuid4(),
         name="Phone test",
         status=EvaluatorResultStatus.QUEUED.value,
     )
@@ -192,8 +188,6 @@ def test_backfill_creates_trace_from_vobiz_call_recording(
         workspace_id=default_workspace.id,
         evaluator_id=uuid4(),
         agent_id=uuid4(),
-        persona_id=uuid4(),
-        scenario_id=uuid4(),
         name="Phone test",
         status=EvaluatorResultStatus.COMPLETED.value,
     )
@@ -249,8 +243,6 @@ def test_backfill_does_not_create_traces_for_other_workspaces(
         workspace_id=other_workspace_id,
         evaluator_id=uuid4(),
         agent_id=uuid4(),
-        persona_id=uuid4(),
-        scenario_id=uuid4(),
         name="Other workspace phone test",
         status=EvaluatorResultStatus.COMPLETED.value,
     )

@@ -636,7 +636,7 @@ export default function SyntheticCallTracePanel({
           ) : (
             <>
               No trace yet. Run a Pipecat session with tracing enabled, then see{' '}
-              <Link to="/calls" className="text-primary-600 hover:text-primary-800 font-medium">
+              <Link to="/observability/calls" className="text-primary-600 hover:text-primary-800 font-medium">
                 Connect Pipecat →
               </Link>
             </>

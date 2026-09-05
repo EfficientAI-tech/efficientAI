@@ -24,6 +24,7 @@ import { useWorkspaceStore } from '../../store/workspaceStore'
 
 type Tab = 'runs' | 'setup'
 type StatusFilter = 'all' | 'open' | 'closed'
+type EventFilter = 'all' | 'call_ended' | 'call_started' | 'other'
 
 const PAGE_SIZE = 25
 
@@ -94,9 +95,11 @@ export default function TestInsights() {
   const [tab, setTab] = useState<Tab>('runs')
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(traceFromUrl)
   const [selectedObsCallId, setSelectedObsCallId] = useState<string | null>(obsFromUrl)
+  const [selectedEvaluatorResultId, setSelectedEvaluatorResultId] = useState<string | null>(resultFromUrl)
   const [deleteObsCallId, setDeleteObsCallId] = useState<string | null>(null)
   const [page, setPage] = useState(0)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [eventFilter, setEventFilter] = useState<EventFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const prevWorkspaceRef = useRef<string | null>(null)
 
@@ -146,7 +149,8 @@ export default function TestInsights() {
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data || !Array.isArray(data)) return false
-      return data.some((call) => call.is_live) ? 3000 : false
+      const production = data.filter((call) => call.source !== 'playground')
+      return production.some((call) => call.is_live) ? 3000 : false
     },
   })
 
@@ -168,6 +172,11 @@ export default function TestInsights() {
   const totalCount = listData?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
 
+  const productionObsCalls = useMemo(
+    () => observabilityCalls.filter((call) => call.source !== 'playground'),
+    [observabilityCalls],
+  )
+
   const filteredTraces = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     if (!q) return traces
@@ -179,15 +188,33 @@ export default function TestInsights() {
   }, [traces, searchQuery])
 
   const filteredObsCalls = useMemo(() => {
+    let rows = productionObsCalls
+    if (eventFilter === 'call_ended') {
+      rows = rows.filter((c) => c.call_event === 'call_ended')
+    } else if (eventFilter === 'call_started') {
+      rows = rows.filter((c) => c.call_event === 'call_started')
+    } else if (eventFilter === 'other') {
+      rows = rows.filter(
+        (c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started',
+      )
+    }
     const q = searchQuery.trim().toLowerCase()
-    if (!q) return observabilityCalls
-    return observabilityCalls.filter((call) => {
+    if (!q) return rows
+    return rows.filter((call) => {
       const id = (call.call_short_id ?? '').toLowerCase()
       const providerId = (call.provider_call_id ?? '').toLowerCase()
       const agentName = (call.agent?.name ?? '').toLowerCase()
       return id.includes(q) || providerId.includes(q) || agentName.includes(q)
     })
-  }, [observabilityCalls, searchQuery])
+  }, [productionObsCalls, eventFilter, searchQuery])
+
+  const eventSummary = useMemo(() => {
+    const total = productionObsCalls.length
+    const ended = productionObsCalls.filter((c) => c.call_event === 'call_ended').length
+    const started = productionObsCalls.filter((c) => c.call_event === 'call_started').length
+    const other = total - ended - started
+    return { total, ended, started, other }
+  }, [productionObsCalls])
 
   const showPipelineRows = true
   const showProviderRows = true
@@ -207,10 +234,10 @@ export default function TestInsights() {
   }, [traces])
 
   const providerSummary = useMemo(() => {
-    const ended = observabilityCalls.filter((c) => c.call_event === 'call_ended').length
-    const live = observabilityCalls.filter((c) => c.is_live).length
-    return { total: observabilityCalls.length, ended, live }
-  }, [observabilityCalls])
+    const ended = productionObsCalls.filter((c) => c.call_event === 'call_ended').length
+    const live = productionObsCalls.filter((c) => c.is_live).length
+    return { total: productionObsCalls.length, ended, live }
+  }, [productionObsCalls])
 
   const listErrorMessage =
     listError && listErrorDetail instanceof Error
@@ -228,6 +255,7 @@ export default function TestInsights() {
   const openTrace = (traceId: string) => {
     setSelectedTraceId(traceId)
     setSelectedObsCallId(null)
+    setSelectedEvaluatorResultId(null)
     const next = new URLSearchParams(searchParams)
     next.set('trace', traceId)
     next.delete('result')
@@ -238,6 +266,7 @@ export default function TestInsights() {
   const openObsCall = (callShortId: string) => {
     setSelectedObsCallId(callShortId)
     setSelectedTraceId(null)
+    setSelectedEvaluatorResultId(null)
     const next = new URLSearchParams(searchParams)
     next.set('obs', callShortId)
     next.delete('trace')
@@ -249,7 +278,6 @@ export default function TestInsights() {
     setSelectedTraceId(null)
     const next = new URLSearchParams(searchParams)
     next.delete('trace')
-    next.delete('result')
     setSearchParams(next, { replace: true })
   }
 
@@ -257,6 +285,13 @@ export default function TestInsights() {
     setSelectedObsCallId(null)
     const next = new URLSearchParams(searchParams)
     next.delete('obs')
+    setSearchParams(next, { replace: true })
+  }
+
+  const closeEvaluatorResult = () => {
+    setSelectedEvaluatorResultId(null)
+    const next = new URLSearchParams(searchParams)
+    next.delete('result')
     setSearchParams(next, { replace: true })
   }
 
@@ -272,6 +307,7 @@ export default function TestInsights() {
       setPage(0)
       setSelectedTraceId(null)
       setSelectedObsCallId(null)
+      setSelectedEvaluatorResultId(null)
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev)
@@ -290,31 +326,25 @@ export default function TestInsights() {
     if (traceFromUrl) {
       setSelectedTraceId(traceFromUrl)
       setSelectedObsCallId(null)
+      setSelectedEvaluatorResultId(null)
       return
     }
     if (obsFromUrl) {
       setSelectedObsCallId(obsFromUrl)
       setSelectedTraceId(null)
+      setSelectedEvaluatorResultId(null)
       return
     }
-    if (!resultFromUrl) return
-    let cancelled = false
-    apiClient
-      .getSyntheticCallTraceForResult(resultFromUrl)
-      .then((trace) => {
-        if (!cancelled && trace?.id) {
-          openTrace(trace.id)
-        }
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
+    if (resultFromUrl) {
+      setSelectedEvaluatorResultId(resultFromUrl)
+      setSelectedTraceId(null)
+      setSelectedObsCallId(null)
     }
   }, [resultFromUrl, traceFromUrl, obsFromUrl])
 
   const isListLoading =
     (showPipelineRows && loadingList && !listData) ||
-    (showProviderRows && loadingObsCalls && observabilityCalls.length === 0)
+    (showProviderRows && loadingObsCalls && productionObsCalls.length === 0)
 
   const lastUpdatedLabel =
     dataUpdatedAt > 0 ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : null
@@ -440,7 +470,7 @@ export default function TestInsights() {
 
       {tab === 'runs' && activeWorkspaceId && (
         <>
-          {(traces.length > 0 || observabilityCalls.length > 0) && (
+          {(traces.length > 0 || productionObsCalls.length > 0) && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="rounded-lg border border-primary-400 bg-primary-50/40 px-4 py-3 shadow-sm">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-primary-800/70">Total</p>
@@ -497,6 +527,31 @@ export default function TestInsights() {
                     </button>
                   ))}
                 </div>
+                {productionObsCalls.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    {(
+                      [
+                        { key: 'all' as const, label: 'All', count: eventSummary.total },
+                        { key: 'call_ended' as const, label: 'Ended', count: eventSummary.ended },
+                        { key: 'call_started' as const, label: 'Started', count: eventSummary.started },
+                        { key: 'other' as const, label: 'Other', count: eventSummary.other },
+                      ] as const
+                    ).map(({ key, label, count }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setEventFilter(key)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                          eventFilter === key
+                            ? 'bg-primary-100 text-primary-800 border border-primary-300'
+                            : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                        }`}
+                      >
+                        {label} ({count})
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-3">
                 <input
@@ -752,10 +807,12 @@ export default function TestInsights() {
       <TraceDetailDrawer
         traceId={selectedTraceId}
         observabilityCallShortId={selectedObsCallId}
-        open={Boolean(selectedTraceId || selectedObsCallId)}
+        evaluatorResultId={selectedEvaluatorResultId}
+        open={Boolean(selectedTraceId || selectedObsCallId || selectedEvaluatorResultId)}
         onClose={() => {
           if (selectedTraceId) closeTrace()
           if (selectedObsCallId) closeObsCall()
+          if (selectedEvaluatorResultId) closeEvaluatorResult()
         }}
       />
     </div>

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Activity, Search, RotateCcw } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Activity, Search } from 'lucide-react'
 import Button from '../../../components/Button'
 import TableListPagination from '../../../components/TableListPagination'
 import { useToast } from '../../../hooks/useToast'
@@ -799,23 +799,6 @@ export default function AgentPlayground() {
     navigate(`/playground/test-agent-results/${resultId}`)
   }
 
-  const reEvaluateTestResultMutation = useMutation({
-    mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
-      showToast('Evaluation queued', 'success')
-    },
-    onError: (error: any) => {
-      const detail = error?.response?.data?.detail || error?.message || 'Failed to queue evaluation'
-      showToast(typeof detail === 'string' ? detail : 'Failed to queue evaluation', 'error')
-    },
-  })
-
-  const canRunEvaluation = (result: any) =>
-    Boolean(result.transcription) &&
-    result.status !== 'completed' &&
-    !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
-
   const toggleTestResultSelection = (resultId: string) => {
     setSelectedTestResultIds(prev => {
       const next = new Set(prev)
@@ -1252,9 +1235,6 @@ export default function AgentPlayground() {
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
                             Trace
                           </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
-                            Actions
-                          </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
@@ -1323,30 +1303,6 @@ export default function AgentPlayground() {
                                   <Activity className="h-3.5 w-3.5" />
                                   Trace
                                 </button>
-                              </td>
-                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                                {canRunEvaluation(result) ? (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => reEvaluateTestResultMutation.mutate(result.id)}
-                                    disabled={reEvaluateTestResultMutation.isPending}
-                                    isLoading={
-                                      reEvaluateTestResultMutation.isPending &&
-                                      reEvaluateTestResultMutation.variables === result.id
-                                    }
-                                    leftIcon={
-                                      !(
-                                        reEvaluateTestResultMutation.isPending &&
-                                        reEvaluateTestResultMutation.variables === result.id
-                                      ) ? (
-                                        <RotateCcw className="h-3.5 w-3.5" />
-                                      ) : undefined
-                                    }
-                                  >
-                                    Evaluate
-                                  </Button>
-                                ) : null}
                               </td>
                             </tr>
                           )
@@ -1467,7 +1423,7 @@ export default function AgentPlayground() {
                             <tr
                               key={recording.id}
                               className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
-                              onClick={() => handleOpenVoiceAiDrawer(recording.call_short_id)}
+                              onClick={() => handleViewCallRecording(recording.call_short_id)}
                               onMouseEnter={() => {
                                 prefetchCallRecordingAudio(recording.call_short_id, false)
                                 void prefetchCallRecordingQuery(queryClient, recording.call_short_id)

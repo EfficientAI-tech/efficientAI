@@ -304,6 +304,9 @@ def mark_call_in_progress(
     if not data.get("started_at"):
         data["started_at"] = _now_iso()
     _save_call_data(db, row, data)
+    from app.services.evaluators.evaluator_inbound_service import sync_linked_evaluator_result_call_state
+
+    sync_linked_evaluator_result_call_state(db, row)
     return row
 
 

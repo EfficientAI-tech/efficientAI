@@ -36,6 +36,27 @@ def test_list_and_get_evaluator_results(authenticated_client, make_evaluator_res
     assert get_response.json()["result_id"] == "778899"
 
 
+def test_playground_test_agents_only_excludes_voice_ai_provider_results(
+    authenticated_client, make_evaluator_result, make_call_recording
+):
+    internal = make_evaluator_result(result_id="111111", provider_platform=None)
+    voice_ai = make_evaluator_result(result_id="222222", provider_platform="elevenlabs")
+    make_call_recording(
+        call_short_id="999999",
+        source="playground",
+        provider_platform="elevenlabs",
+        evaluator_result_id=voice_ai.id,
+    )
+
+    response = authenticated_client.get(
+        "/api/v1/evaluator-results?playground=true&test_agents_only=true"
+    )
+    assert response.status_code == 200
+    result_ids = {item["result_id"] for item in response.json()["items"]}
+    assert internal.result_id in result_ids
+    assert voice_ai.result_id not in result_ids
+
+
 def test_list_evaluator_results_filter_by_agent_id(
     authenticated_client, make_agent, make_evaluator, make_evaluator_result
 ):
@@ -252,9 +273,11 @@ def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-aud
     )
     blob_module = importlib.import_module("app.services.storage.blob_storage_service")
     s3_module = importlib.import_module("app.services.storage.s3_service")
+    audio_delivery_module = importlib.import_module("app.services.storage.audio_delivery")
     # Patch the lazy s3_service alias first so undo restores the real singleton.
     monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
     monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    monkeypatch.setattr(audio_delivery_module, "blob_storage_service", fake)
     return fake
 
 
@@ -276,7 +299,7 @@ def test_stream_evaluator_result_audio_from_s3(
 
     assert response.status_code == 200
     assert response.content == b"fake-audio-bytes"
-    assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["content-type"] == "audio/mpeg"
 
 
 def test_stream_evaluator_result_audio_falls_back_to_provider_when_s3_missing(
@@ -286,6 +309,8 @@ def test_stream_evaluator_result_audio_falls_back_to_provider_when_s3_missing(
     make_evaluator_result,
     monkeypatch,
 ):
+    from types import SimpleNamespace
+
     from app.core.exceptions import StorageError
     from app.models.enums import IntegrationPlatform
 

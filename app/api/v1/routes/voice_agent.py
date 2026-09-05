@@ -18,6 +18,13 @@ from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from app.services.storage.s3_service import s3_service
 
+
+def _parse_bool_query(value: Optional[str], *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
 ws_router = APIRouter(prefix="/voice-agent", tags=["voice-agent-media"])
 

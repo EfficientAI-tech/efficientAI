@@ -200,13 +200,13 @@ function App() {
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
-          <Route path="observability/calls" element={<Navigate to="/calls" replace />} />
+          <Route path="observability/calls" element={<TestInsights />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
-          <Route path="calls" element={<TestInsights />} />
+          <Route path="calls" element={<PreserveSearchRedirect to="/observability/calls" />} />
           <Route path="calls/:traceId" element={<CallTraceDetail />} />
-          <Route path="call-traces" element={<Navigate to="/calls" replace />} />
+          <Route path="call-traces" element={<Navigate to="/observability/calls" replace />} />
           <Route path="call-traces/:traceId" element={<CallTraceDetail />} />
-          <Route path="test-insights" element={<PreserveSearchRedirect to="/calls" />} />
+          <Route path="test-insights" element={<PreserveSearchRedirect to="/observability/calls" />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<UsagePage />} />
           <Route path="usage/pricing" element={<UsagePricingRedirect />} />

@@ -446,10 +446,13 @@ def get_evaluator_result(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
+    from app.services.evaluators.evaluator_result_telephony import enrich_evaluator_result_live_telephony
     from app.services.live_entity_storage import hydrate_evaluator_results
 
     hydrate_evaluator_results([result])
     repair_evaluator_result_status_if_needed(db, result)
+
+    enriched_call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
 
     call_recording_source = None
     if isinstance(result.call_data, dict):
@@ -493,7 +496,7 @@ def get_evaluator_result(
         "call_event": result.call_event,
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
-        "call_data": result.call_data,
+        "call_data": enriched_call_data,
         "call_recording_source": call_recording_source,
         "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,

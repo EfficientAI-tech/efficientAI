@@ -98,7 +98,7 @@ const navigationSections: NavSection[] = [
     icon: BarChart3,
     items: [
       { name: 'Overview', href: '/observability', icon: Activity },
-      { name: 'Calls', href: '/calls', icon: Route },
+      { name: 'Calls', href: '/observability/calls', icon: Route },
     ],
   },
   {

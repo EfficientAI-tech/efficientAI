@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
 import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
-import { Activity, ArrowLeft } from 'lucide-react'
+import { Activity, ArrowLeft, RotateCcw } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import TestVoiceAgentResultDetails from '../../../components/call-recordings/TestVoiceAgentResultDetails'
@@ -14,7 +14,7 @@ import { prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { ToastContainer } = useToast()
+  const { showToast, ToastContainer } = useToast()
   const queryClient = useQueryClient()
   const [traceDrawerOpen, setTraceDrawerOpen] = useState(false)
 
@@ -34,7 +34,48 @@ export default function TestAgentResultDetail() {
     enabled: !!id,
     placeholderData: () => (id ? getEvaluatorResultPlaceholder(queryClient, id) : undefined),
     staleTime: 30_000,
+    refetchInterval: (query) => {
+      const status = (query.state.data as { status?: string } | undefined)?.status
+      if (status && ['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(status)) {
+        return 5000
+      }
+      return false
+    },
   })
+
+  const { data: presignedUrl } = useQuery({
+    queryKey: ['audio-presigned-url', result?.audio_s3_key],
+    queryFn: () => {
+      if (!result?.audio_s3_key) return null
+      return apiClient.getAudioPresignedUrl(result.audio_s3_key)
+    },
+    enabled: !!result?.audio_s3_key,
+  })
+
+  const reEvaluateMutation = useMutation({
+    mutationFn: () => apiClient.reEvaluateResult(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-result', id] })
+      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+      showToast('Evaluation queued', 'success')
+    },
+    onError: (error: any) => {
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to queue evaluation'
+      showToast(typeof detail === 'string' ? detail : 'Failed to queue evaluation', 'error')
+    },
+  })
+
+  const canRunEvaluation =
+    !!result?.transcription &&
+    result.status !== 'completed' &&
+    !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
+
+  const getStatusClass = (status: string) => {
+    if (status === 'completed') return 'bg-green-100 text-green-800'
+    if (status === 'failed') return 'bg-red-100 text-red-800'
+    if (status === 'call_ended') return 'bg-gray-100 text-gray-700'
+    return 'bg-yellow-100 text-yellow-800'
+  }
 
   if (isLoading && !result) {
     return (
@@ -61,6 +102,7 @@ export default function TestAgentResultDetail() {
   const resultData = {
     ...result,
     call_analysis: result.call_data?.call_analysis || undefined,
+    audioUrl: presignedUrl?.url || undefined,
   }
 
   const callShortId =
@@ -86,7 +128,7 @@ export default function TestAgentResultDetail() {
             Back to Playground
           </Button>
           <div className="bg-white shadow rounded-lg p-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-4">
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Test Agent Call Details</h1>
                 <p className="text-sm text-gray-500 mt-1">
@@ -94,6 +136,17 @@ export default function TestAgentResultDetail() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {canRunEvaluation && (
+                  <Button
+                    variant="outline"
+                    onClick={() => reEvaluateMutation.mutate()}
+                    disabled={reEvaluateMutation.isPending}
+                    isLoading={reEvaluateMutation.isPending}
+                    leftIcon={!reEvaluateMutation.isPending ? <RotateCcw className="h-4 w-4" /> : undefined}
+                  >
+                    Run evaluation
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   onClick={() => setTraceDrawerOpen(true)}
@@ -101,13 +154,7 @@ export default function TestAgentResultDetail() {
                 >
                   Call details
                 </Button>
-                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                  result.status === 'completed'
-                    ? 'bg-green-100 text-green-800'
-                    : result.status === 'failed'
-                    ? 'bg-red-100 text-red-800'
-                    : 'bg-yellow-100 text-yellow-800'
-                }`}>
+                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusClass(result.status)}`}>
                   {result.status}
                 </span>
               </div>
