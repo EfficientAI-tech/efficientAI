@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from loguru import logger
 
@@ -15,6 +15,7 @@ from app.models.database import Integration, IntegrationPlatform, Agent
 from app.models.schemas import (
     IntegrationCreate, IntegrationUpdate, IntegrationResponse,
     PreviewIntegrationAgentPromptRequest, PreviewIntegrationAgentPromptResponse,
+    ListIntegrationVoiceAgentsResponse, IntegrationVoiceAgentListItem,
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
 from app.services.credentials.resolver import clear_other_defaults
@@ -471,3 +472,63 @@ async def preview_integration_agent_prompt(
         )
 
     return PreviewIntegrationAgentPromptResponse(provider_prompt=prompt)
+
+
+@router.get(
+    "/{integration_id}/voice-agents",
+    response_model=ListIntegrationVoiceAgentsResponse,
+    operation_id="listIntegrationVoiceAgents",
+)
+async def list_integration_voice_agents_route(
+    integration_id: UUID,
+    refresh: bool = Query(False),
+    search: Optional[str] = Query(None),
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """List remote voice agents for an org integration (cached ~60s)."""
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.organization_id == organization_id,
+        Integration.is_active == True,
+    ).first()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found or inactive")
+
+    if integration.platform not in [
+        IntegrationPlatform.RETELL,
+        IntegrationPlatform.VAPI,
+        IntegrationPlatform.ELEVENLABS,
+        IntegrationPlatform.SMALLEST,
+    ]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Integration platform {integration.platform.value} is not supported for agent listing."
+            ),
+        )
+
+    try:
+        from app.services.voice_providers.voice_agent_catalog import list_integration_voice_agents
+
+        result = list_integration_voice_agents(
+            integration,
+            refresh=refresh,
+            search=search,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to list agents from provider: {str(e)}",
+        )
+
+    return ListIntegrationVoiceAgentsResponse(
+        agents=[IntegrationVoiceAgentListItem(**row) for row in result.agents],
+        platform=result.platform,
+        cached=result.cached,
+        truncated=result.truncated,
+        list_supported=result.list_supported,
+        message=result.message,
+    )

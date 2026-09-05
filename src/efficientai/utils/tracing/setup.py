@@ -88,3 +88,16 @@ def setup_tracing(
     except Exception as e:
         print(f"Error setting up tracing: {e}")
         return False
+
+
+def flush_tracing(timeout_millis: int = 30000) -> bool:
+    """Block until batched spans are exported (call before closing a trace session)."""
+    if not OPENTELEMETRY_AVAILABLE:
+        return False
+    try:
+        provider = trace.get_tracer_provider()
+        if isinstance(provider, TracerProvider):
+            return bool(provider.force_flush(timeout_millis))
+    except Exception:
+        return False
+    return False

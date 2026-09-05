@@ -79,11 +79,12 @@ def test_observability_webhook_does_not_reclassify_playground_call(
     assert list_response.json() == []
 
 
-def test_evaluator_linked_calls_excluded_from_observability(
+def test_evaluator_linked_calls_included_in_unified_observability_list(
     authenticated_client, make_evaluator_result, make_call_recording
 ):
+    """Unified /calls hub lists webhook calls even when linked to evaluator results."""
     result = make_evaluator_result(result_id="556677")
-    make_call_recording(
+    linked = make_call_recording(
         call_short_id="998877",
         evaluator_result_id=result.id,
         source="webhook",
@@ -98,8 +99,10 @@ def test_evaluator_linked_calls_excluded_from_observability(
     list_response = authenticated_client.get("/api/v1/observability/calls")
     assert list_response.status_code == 200
     payload = list_response.json()
-    assert len(payload) == 1
-    assert payload[0]["call_short_id"] == unlinked.call_short_id
+    call_short_ids = {row["call_short_id"] for row in payload}
+    assert linked.call_short_id in call_short_ids
+    assert unlinked.call_short_id in call_short_ids
 
     get_linked = authenticated_client.get("/api/v1/observability/calls/998877")
-    assert get_linked.status_code == 404
+    assert get_linked.status_code == 200
+    assert get_linked.json()["call_short_id"] == linked.call_short_id

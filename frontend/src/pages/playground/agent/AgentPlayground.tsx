@@ -1,19 +1,82 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, RotateCcw } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Activity, Search } from 'lucide-react'
 import Button from '../../../components/Button'
+import TableListPagination from '../../../components/TableListPagination'
 import { useToast } from '../../../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from '../../../components/VoiceAgent'
 import GenericVoiceWSClient from '../../../components/GenericVoiceWSClient'
+import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 import { getProtocolById } from '../../../lib/wsProtocols'
+import { prefetchCallRecordingQuery, refreshCallRecordingQueries, warmCallRecordingQueryFromList } from '../../../lib/callRecordingQuery'
+import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
+
+const PLAYGROUND_LIST_PAGE_SIZE = 10
+
+function paginateList<T>(items: T[], page: number, pageSize: number) {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize))
+  const safePage = Math.min(Math.max(1, page), pageCount)
+  const start = (safePage - 1) * pageSize
+  return {
+    items: items.slice(start, start + pageSize),
+    page: safePage,
+    pageCount,
+    total: items.length,
+  }
+}
+
+function PlaygroundListToolbar({
+  search,
+  onSearchChange,
+  statusOptions,
+  statusFilter,
+  onStatusChange,
+}: {
+  search: string
+  onSearchChange: (value: string) => void
+  statusOptions: Array<{ value: string; label: string }>
+  statusFilter: string
+  onStatusChange: (value: string) => void
+}) {
+  return (
+    <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center gap-1">
+        {statusOptions.map(({ value, label }) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onStatusChange(value)}
+            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+              statusFilter === value
+                ? 'border-gray-300 bg-gray-200 text-gray-800'
+                : 'border-transparent text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="relative w-full sm:w-auto">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+        <input
+          type="search"
+          placeholder="Search call ID…"
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm focus:border-primary-500 focus:ring-primary-500 sm:w-56"
+        />
+      </div>
+    </div>
+  )
+}
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -38,7 +101,7 @@ export default function AgentPlayground() {
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
   const [testPersonaId, setTestPersonaId] = useState('')
   const [testScenarioId, setTestScenarioId] = useState('')
-  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(false)
+  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(true)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false)
@@ -72,15 +135,6 @@ export default function AgentPlayground() {
     queryFn: async () => {
       return await apiClient.listEvaluatorResults(undefined, true, true)
     },
-    refetchInterval: (query) => {
-      const items = (query.state.data as { items?: any[] } | undefined)?.items
-      if (items?.some((result: any) =>
-        ['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
-      )) {
-        return 5000
-      }
-      return false
-    },
   })
   const testVoiceAgentResults = testVoiceAgentList?.items ?? []
 
@@ -110,6 +164,11 @@ export default function AgentPlayground() {
   })
 
   const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents' | 'custom_websocket'>('voice_ai_agents')
+  const [testAgentsPage, setTestAgentsPage] = useState(1)
+  const [voiceAiPage, setVoiceAiPage] = useState(1)
+  const [customWsPage, setCustomWsPage] = useState(1)
+  const [listSearchQuery, setListSearchQuery] = useState('')
+  const [listStatusFilter, setListStatusFilter] = useState('all')
   const [customWebsocketUrl, setCustomWebsocketUrl] = useState('')
 
   // Saved WebSocket URLs (persisted in localStorage)
@@ -142,6 +201,20 @@ export default function AgentPlayground() {
   const [selectedCallIds, setSelectedCallIds] = useState<Set<string>>(new Set())
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
+  const [otlpTraceResultId, setOtlpTraceResultId] = useState<string | null>(null)
+  const isVoiceAiProviderRecording = (recording: { provider_platform?: string | null }) => {
+    const platform = (recording.provider_platform || '').toLowerCase()
+    return (
+      platform === IntegrationPlatform.RETELL ||
+      platform === IntegrationPlatform.VAPI ||
+      platform === IntegrationPlatform.ELEVENLABS ||
+      platform === IntegrationPlatform.SMALLEST ||
+      platform === 'retell' ||
+      platform === 'vapi' ||
+      platform === 'elevenlabs' ||
+      platform === 'smallest'
+    )
+  }
   const [isDeletingSelectedTests, setIsDeletingSelectedTests] = useState(false)
 
 
@@ -316,9 +389,9 @@ export default function AgentPlayground() {
 
           // Trigger refresh of metrics
           if (currentCallShortIdRef.current) {
-            apiClient.refreshCallRecording(currentCallShortIdRef.current)
-              .then(() => refetchCallRecordings())
-              .catch(err => console.error('Failed to refresh metrics', err))
+            refreshCallRecordingQueries(queryClient, currentCallShortIdRef.current).catch((err) =>
+              console.error('Failed to refresh metrics', err),
+            )
           }
         })
 
@@ -426,9 +499,9 @@ export default function AgentPlayground() {
               }
             }
 
-            apiClient.refreshCallRecording(currentCallShortIdRef.current)
-              .then(() => refetchCallRecordings())
-              .catch(err => console.error('Failed to refresh metrics', err))
+            refreshCallRecordingQueries(queryClient, currentCallShortIdRef.current).catch((err) =>
+              console.error('Failed to refresh metrics', err),
+            )
           }
         })
 
@@ -520,9 +593,9 @@ export default function AgentPlayground() {
               // ElevenLabs transitions through "processing" before "done",
               // so wait a few seconds before requesting metrics
               setTimeout(() => {
-                apiClient.refreshCallRecording(callShortId)
-                  .then(() => refetchCallRecordings())
-                  .catch(err => console.error('Failed to refresh metrics', err))
+                refreshCallRecordingQueries(queryClient, callShortId).catch((err) =>
+                  console.error('Failed to refresh metrics', err),
+                )
               }, 5000)
             }
           },
@@ -622,9 +695,9 @@ export default function AgentPlayground() {
           if (currentCallShortIdRef.current) {
             const callShortId = currentCallShortIdRef.current
             setTimeout(() => {
-              apiClient.refreshCallRecording(callShortId)
-                .then(() => refetchCallRecordings())
-                .catch(err => console.error('Failed to refresh metrics', err))
+              refreshCallRecordingQueries(queryClient, callShortId).catch((err) =>
+                console.error('Failed to refresh metrics', err),
+              )
             }, 3000)
           }
         })
@@ -705,18 +778,12 @@ export default function AgentPlayground() {
     setShowModal(false)
     setShowTestModal(false)
     setSelectedTestType(null)
-    setTestPersonaId('')
-    setTestScenarioId('')
-    setRunPostCallEvaluation(false)
     setIsConnecting(false)
     setIsConnected(false)
   }
 
   const handleTestTypeSelection = (type: 'test_agent' | 'voice_ai_agent') => {
     setSelectedTestType(type)
-    setTestPersonaId('')
-    setTestScenarioId('')
-    setRunPostCallEvaluation(false)
     if (type === 'voice_ai_agent') {
       setShowModal(true)
       setShowTestModal(false)
@@ -728,30 +795,6 @@ export default function AgentPlayground() {
 
   const handleViewTestResult = (resultId: string) => {
     navigate(`/playground/test-agent-results/${resultId}`)
-  }
-
-  const reEvaluateTestResultMutation = useMutation({
-    mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
-      showToast('Evaluation queued', 'success')
-    },
-    onError: (error: any) => {
-      const detail = error?.response?.data?.detail || error?.message || 'Failed to queue evaluation'
-      showToast(typeof detail === 'string' ? detail : 'Failed to queue evaluation', 'error')
-    },
-  })
-
-  const canRunEvaluation = (result: any) =>
-    result.transcription &&
-    result.status !== 'completed' &&
-    !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
-
-  const getTestResultStatusClass = (status: string) => {
-    if (status === 'completed') return 'bg-green-100 text-green-800'
-    if (status === 'failed') return 'bg-red-100 text-red-800'
-    if (status === 'call_ended') return 'bg-gray-100 text-gray-700'
-    return 'bg-yellow-100 text-yellow-800'
   }
 
   const toggleTestResultSelection = (resultId: string) => {
@@ -802,6 +845,16 @@ export default function AgentPlayground() {
   }
 
 
+  const handleOpenTestAgentTrace = (resultId: string) => {
+    prefetchEvaluatorRecordingAudio(resultId)
+    void queryClient.prefetchQuery({
+      queryKey: ['evaluator-result', resultId],
+      queryFn: () => apiClient.getEvaluatorResult(resultId, true),
+      staleTime: 30_000,
+    })
+    setOtlpTraceResultId(resultId)
+  }
+
   const handleViewCallRecording = (callShortId: string) => {
     navigate(`/playground/call-recordings/${callShortId}`)
   }
@@ -818,8 +871,107 @@ export default function AgentPlayground() {
     }
   }
 
-  const voiceAICallRecordings = callRecordings.filter((recording: any) => recording.provider_platform !== 'custom_websocket')
+  const voiceAICallRecordings = callRecordings.filter(isVoiceAiProviderRecording)
   const customWebsocketSessions = callRecordings.filter((recording: any) => recording.provider_platform === 'custom_websocket')
+
+  useEffect(() => {
+    setListSearchQuery('')
+    setListStatusFilter('all')
+    setTestAgentsPage(1)
+    setVoiceAiPage(1)
+    setCustomWsPage(1)
+  }, [activeTab])
+
+  useEffect(() => {
+    setTestAgentsPage(1)
+    setVoiceAiPage(1)
+    setCustomWsPage(1)
+  }, [listSearchQuery, listStatusFilter])
+
+  const filteredTestResults = useMemo(() => {
+    let rows = testVoiceAgentResults
+    if (listStatusFilter !== 'all') {
+      rows = rows.filter((result: { status?: string }) => result.status === listStatusFilter)
+    }
+    const query = listSearchQuery.trim().toLowerCase()
+    if (!query) return rows
+    return rows.filter((result) => {
+      const callId = String(result.result_id || result.id || '').toLowerCase()
+      const agentName = String(result.agent?.name || '').toLowerCase()
+      return callId.includes(query) || agentName.includes(query)
+    })
+  }, [testVoiceAgentResults, listSearchQuery, listStatusFilter])
+
+  const filteredVoiceAiCalls = useMemo(() => {
+    let rows = voiceAICallRecordings
+    if (listStatusFilter !== 'all') {
+      rows = rows.filter((recording: { status?: string; evaluation_status?: string }) => {
+        if (listStatusFilter === 'pending_eval') {
+          return !recording.evaluation_status || recording.evaluation_status === 'pending'
+        }
+        return recording.evaluation_status === listStatusFilter || recording.status === listStatusFilter
+      })
+    }
+    const query = listSearchQuery.trim().toLowerCase()
+    if (!query) return rows
+    return rows.filter((recording: { call_short_id?: string; provider_platform?: string }) => {
+      const callId = String(recording.call_short_id || '').toLowerCase()
+      const platform = String(recording.provider_platform || '').toLowerCase()
+      return callId.includes(query) || platform.includes(query)
+    })
+  }, [voiceAICallRecordings, listSearchQuery, listStatusFilter])
+
+  const filteredCustomWsSessions = useMemo(() => {
+    let rows = customWebsocketSessions
+    if (listStatusFilter !== 'all') {
+      rows = rows.filter((session: any) => {
+        if (listStatusFilter === 'pending_eval') {
+          return !session.evaluator_result_id
+        }
+        return session.evaluation_status === listStatusFilter || session.status === listStatusFilter
+      })
+    }
+    const query = listSearchQuery.trim().toLowerCase()
+    if (!query) return rows
+    return rows.filter((session: { call_short_id?: string }) =>
+      String(session.call_short_id || '').toLowerCase().includes(query),
+    )
+  }, [customWebsocketSessions, listSearchQuery, listStatusFilter])
+
+  const paginatedTestResults = useMemo(
+    () => paginateList(filteredTestResults, testAgentsPage, PLAYGROUND_LIST_PAGE_SIZE),
+    [filteredTestResults, testAgentsPage],
+  )
+  const paginatedVoiceAiCalls = useMemo(
+    () => paginateList(filteredVoiceAiCalls, voiceAiPage, PLAYGROUND_LIST_PAGE_SIZE),
+    [filteredVoiceAiCalls, voiceAiPage],
+  )
+  const paginatedCustomWsSessions = useMemo(
+    () => paginateList(filteredCustomWsSessions, customWsPage, PLAYGROUND_LIST_PAGE_SIZE),
+    [filteredCustomWsSessions, customWsPage],
+  )
+
+  useEffect(() => {
+    if (paginatedTestResults.page !== testAgentsPage) {
+      setTestAgentsPage(paginatedTestResults.page)
+    }
+  }, [paginatedTestResults.page, testAgentsPage])
+
+  useEffect(() => {
+    if (paginatedVoiceAiCalls.page !== voiceAiPage) {
+      setVoiceAiPage(paginatedVoiceAiCalls.page)
+    }
+  }, [paginatedVoiceAiCalls.page, voiceAiPage])
+
+  useEffect(() => {
+    if (paginatedCustomWsSessions.page !== customWsPage) {
+      setCustomWsPage(paginatedCustomWsSessions.page)
+    }
+  }, [paginatedCustomWsSessions.page, customWsPage])
+
+  useEffect(() => {
+    warmCallRecordingQueryFromList(queryClient, callRecordings)
+  }, [callRecordings, queryClient])
 
 
   const toggleCallSelection = (callShortId: string) => {
@@ -1013,11 +1165,40 @@ export default function AgentPlayground() {
                     <p className="text-sm text-gray-600">No test agent results found</p>
                   </div>
                 ) : (
+                  <div className="space-y-3">
+                    <PlaygroundListToolbar
+                      search={listSearchQuery}
+                      onSearchChange={setListSearchQuery}
+                      statusFilter={listStatusFilter}
+                      onStatusChange={setListStatusFilter}
+                      statusOptions={[
+                        { value: 'all', label: 'Any status' },
+                        { value: 'completed', label: 'Completed' },
+                        { value: 'failed', label: 'Failed' },
+                        { value: 'in_progress', label: 'In progress' },
+                      ]}
+                    />
+                    {filteredTestResults.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+                        No calls match your search.{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setListSearchQuery('')
+                            setListStatusFilter('all')
+                          }}
+                          className="font-medium text-primary-600 hover:text-primary-800"
+                        >
+                          Clear filters
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                             <button
                               type="button"
                               onClick={toggleSelectAllTestResults}
@@ -1031,33 +1212,41 @@ export default function AgentPlayground() {
                               )}
                             </button>
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Call ID
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Status
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Agent
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-36">
-                            Actions
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
+                            Trace
                           </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {testVoiceAgentResults.map((result: any) => {
+                        {paginatedTestResults.items.map((result: any) => {
                           const isSelected = selectedTestResultIds.has(result.id)
                           return (
                             <tr
                               key={result.id}
                               className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
                               onClick={() => handleViewTestResult(result.id)}
+                              onMouseEnter={() => {
+                                prefetchEvaluatorRecordingAudio(result.id)
+                                void queryClient.prefetchQuery({
+                                  queryKey: ['evaluator-result', result.id],
+                                  queryFn: () => apiClient.getEvaluatorResult(result.id, true),
+                                  staleTime: 30_000,
+                                })
+                              }}
                             >
-                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <button
                                   type="button"
                                   onClick={() => toggleTestResultSelection(result.id)}
@@ -1070,45 +1259,61 @@ export default function AgentPlayground() {
                                   )}
                                 </button>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span className="font-mono text-sm font-semibold text-primary-600">
                                   {result.result_id || result.id.substring(0, 8)}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span
-                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getTestResultStatusClass(result.status)}`}
+                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                    result.status === 'completed'
+                                      ? 'bg-green-100 text-green-800'
+                                      : result.status === 'failed'
+                                      ? 'bg-red-100 text-red-800'
+                                      : 'bg-yellow-100 text-yellow-800'
+                                  }`}
                                 >
                                   {result.status}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-500">
                                 {result.agent?.name || 'N/A'}
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-500">
                                 {result.created_at
                                   ? new Date(result.created_at).toLocaleString()
                                   : 'N/A'}
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                                {canRunEvaluation(result) && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => reEvaluateTestResultMutation.mutate(result.id)}
-                                    disabled={reEvaluateTestResultMutation.isPending}
-                                    isLoading={reEvaluateTestResultMutation.isPending && reEvaluateTestResultMutation.variables === result.id}
-                                    leftIcon={!(reEvaluateTestResultMutation.isPending && reEvaluateTestResultMutation.variables === result.id) ? <RotateCcw className="h-3.5 w-3.5" /> : undefined}
-                                  >
-                                    Evaluate
-                                  </Button>
-                                )}
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenTestAgentTrace(result.id)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                                  title="View OTLP call trace"
+                                >
+                                  <Activity className="h-3.5 w-3.5" />
+                                  Trace
+                                </button>
                               </td>
                             </tr>
                           )
                         })}
                       </tbody>
                     </table>
+                  </div>
+                    <TableListPagination
+                      page={paginatedTestResults.page}
+                      pageCount={paginatedTestResults.pageCount}
+                      total={paginatedTestResults.total}
+                      pageSize={PLAYGROUND_LIST_PAGE_SIZE}
+                      onPrev={() => setTestAgentsPage((page) => Math.max(1, page - 1))}
+                      onNext={() =>
+                        setTestAgentsPage((page) => Math.min(paginatedTestResults.pageCount, page + 1))
+                      }
+                    />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1133,14 +1338,46 @@ export default function AgentPlayground() {
                 )}
                 {voiceAICallRecordings.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                    <p className="text-sm text-gray-600">No call recordings found</p>
+                    <p className="text-sm text-gray-600">
+                      No Retell, Vapi, ElevenLabs, or Smallest calls yet. Start a Voice AI Agent test from the agent sidebar.
+                    </p>
                   </div>
                 ) : (
+                  <div className="space-y-3">
+                    <PlaygroundListToolbar
+                      search={listSearchQuery}
+                      onSearchChange={setListSearchQuery}
+                      statusFilter={listStatusFilter}
+                      onStatusChange={setListStatusFilter}
+                      statusOptions={[
+                        { value: 'all', label: 'Any status' },
+                        { value: 'completed', label: 'Evaluated' },
+                        { value: 'evaluating', label: 'Evaluating' },
+                        { value: 'failed', label: 'Failed' },
+                        { value: 'pending_eval', label: 'Pending eval' },
+                      ]}
+                    />
+                    {filteredVoiceAiCalls.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+                        No calls match your search.{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setListSearchQuery('')
+                            setListStatusFilter('all')
+                          }}
+                          className="font-medium text-primary-600 hover:text-primary-800"
+                        >
+                          Clear filters
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                             <button
                               type="button"
                               onClick={toggleSelectAllCalls}
@@ -1154,33 +1391,37 @@ export default function AgentPlayground() {
                               )}
                             </button>
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Call ID
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Status
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Evaluation
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Platform
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
                           </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {voiceAICallRecordings.map((recording: any) => {
+                        {paginatedVoiceAiCalls.items.map((recording: any) => {
                           const isSelected = selectedCallIds.has(recording.call_short_id)
                           return (
                             <tr
                               key={recording.id}
                               className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
                               onClick={() => handleViewCallRecording(recording.call_short_id)}
+                              onMouseEnter={() => {
+                                prefetchCallRecordingAudio(recording.call_short_id, false)
+                                void prefetchCallRecordingQuery(queryClient, recording.call_short_id)
+                              }}
                             >
-                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <button
                                   type="button"
                                   onClick={() => toggleCallSelection(recording.call_short_id)}
@@ -1193,12 +1434,12 @@ export default function AgentPlayground() {
                                   )}
                                 </button>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span className="font-mono text-sm font-semibold text-primary-600">
                                   {recording.call_short_id}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span
                                   className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
                                     ? 'bg-green-100 text-green-800'
@@ -1208,7 +1449,7 @@ export default function AgentPlayground() {
                                   {recording.status}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 {recording.evaluator_result_id ? (
                                   <span
                                     className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
@@ -1231,7 +1472,7 @@ export default function AgentPlayground() {
                                   <span className="text-xs text-gray-400">—</span>
                                 )}
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <div className="flex items-center gap-2">
                                   {recording.provider_platform ? (() => {
                                     const logo = getIntegrationPlatformLogo(
@@ -1250,7 +1491,7 @@ export default function AgentPlayground() {
                                   </span>
                                 </div>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-500">
                                 {recording.created_at
                                   ? new Date(recording.created_at).toLocaleString()
                                   : 'N/A'}
@@ -1260,6 +1501,19 @@ export default function AgentPlayground() {
                         })}
                       </tbody>
                     </table>
+                  </div>
+                    <TableListPagination
+                      page={paginatedVoiceAiCalls.page}
+                      pageCount={paginatedVoiceAiCalls.pageCount}
+                      total={paginatedVoiceAiCalls.total}
+                      pageSize={PLAYGROUND_LIST_PAGE_SIZE}
+                      onPrev={() => setVoiceAiPage((page) => Math.max(1, page - 1))}
+                      onNext={() =>
+                        setVoiceAiPage((page) => Math.min(paginatedVoiceAiCalls.pageCount, page + 1))
+                      }
+                    />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1378,29 +1632,58 @@ export default function AgentPlayground() {
                     {customWebsocketSessions.length === 0 ? (
                       <p className="text-sm text-gray-600">No saved custom websocket sessions yet.</p>
                     ) : (
+                      <div className="space-y-3">
+                        <PlaygroundListToolbar
+                          search={listSearchQuery}
+                          onSearchChange={setListSearchQuery}
+                          statusFilter={listStatusFilter}
+                          onStatusChange={setListStatusFilter}
+                          statusOptions={[
+                            { value: 'all', label: 'Any status' },
+                            { value: 'UPDATED', label: 'Updated' },
+                            { value: 'completed', label: 'Evaluated' },
+                            { value: 'pending_eval', label: 'Pending eval' },
+                          ]}
+                        />
+                        {filteredCustomWsSessions.length === 0 ? (
+                          <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+                            No calls match your search.{' '}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setListSearchQuery('')
+                                setListStatusFilter('all')
+                              }}
+                              className="font-medium text-primary-600 hover:text-primary-800"
+                            >
+                              Clear filters
+                            </button>
+                          </div>
+                        ) : (
+                          <>
                       <div className="overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200">
                           <thead className="bg-gray-50">
                             <tr>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Call ID</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluation</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Call ID</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluation</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-200 bg-white">
-                            {customWebsocketSessions.map((session: any) => (
+                            {paginatedCustomWsSessions.items.map((session: any) => (
                               <tr
                                 key={session.id}
                                 className="hover:bg-gray-50 cursor-pointer transition-colors"
                                 onClick={() => handleViewCallRecording(session.call_short_id)}
                               >
-                                <td className="px-4 py-3 text-sm font-mono font-semibold text-primary-600">
+                                <td className="px-6 py-5 text-sm font-mono font-semibold text-primary-600">
                                   {session.call_short_id}
                                 </td>
-                                <td className="px-4 py-3 text-sm text-gray-600">{session.status}</td>
-                                <td className="px-4 py-3">
+                                <td className="px-6 py-5 text-sm text-gray-600">{session.status}</td>
+                                <td className="px-6 py-5">
                                   {session.evaluator_result_id ? (
                                     <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800">
                                       {session.evaluation_status || 'queued'}
@@ -1411,10 +1694,10 @@ export default function AgentPlayground() {
                                     </span>
                                   )}
                                 </td>
-                                <td className="px-4 py-3 text-sm text-gray-600">
+                                <td className="px-6 py-5 text-sm text-gray-600">
                                   {session.created_at ? new Date(session.created_at).toLocaleString() : 'N/A'}
                                 </td>
-                                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                                   <div className="flex flex-wrap gap-2">
                                     {!session.evaluator_result_id && (
                                       <Button
@@ -1438,6 +1721,19 @@ export default function AgentPlayground() {
                             ))}
                           </tbody>
                         </table>
+                      </div>
+                        <TableListPagination
+                          page={paginatedCustomWsSessions.page}
+                          pageCount={paginatedCustomWsSessions.pageCount}
+                          total={paginatedCustomWsSessions.total}
+                          pageSize={PLAYGROUND_LIST_PAGE_SIZE}
+                          onPrev={() => setCustomWsPage((page) => Math.max(1, page - 1))}
+                          onNext={() =>
+                            setCustomWsPage((page) => Math.min(paginatedCustomWsSessions.pageCount, page + 1))
+                          }
+                        />
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1732,7 +2028,7 @@ export default function AgentPlayground() {
                 <div>
                   <p className="text-sm font-medium text-gray-900">Run post-call evaluation</p>
                   <p className="text-xs text-gray-600 mt-0.5">
-                    Off by default. Enable to score this call automatically when it ends, or run evaluation later from the results table.
+                    On by default. Disable to skip automatic scoring when the call ends.
                   </p>
                 </div>
                 <label className="relative inline-flex shrink-0 cursor-pointer items-center">
@@ -1775,12 +2071,21 @@ export default function AgentPlayground() {
                 connectDisabledReason="Select a persona and scenario first"
                 userTranscriptLabel="You (production)"
                 botTranscriptLabel="Test caller"
-                onSessionSaved={() => refetchTestResults()}
+                onSessionSaved={() => {
+                  queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+                  refetchTestResults()
+                }}
               />
             </div>
           </div>
         </div>
       )}
+
+      <TraceDetailDrawer
+        open={Boolean(otlpTraceResultId)}
+        evaluatorResultId={otlpTraceResultId}
+        onClose={() => setOtlpTraceResultId(null)}
+      />
     </>
   )
 }

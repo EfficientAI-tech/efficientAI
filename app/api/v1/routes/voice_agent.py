@@ -13,16 +13,17 @@ from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
 from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
+from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
+from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
+from app.services.storage.s3_service import s3_service
 
 
 def _parse_bool_query(value: Optional[str], *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
-from app.services.voice_agent.bot_fast_api import run_bot
-from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
-from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
-from app.services.storage.s3_service import s3_service
+
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
 ws_router = APIRouter(prefix="/voice-agent", tags=["voice-agent-media"])
@@ -78,6 +79,10 @@ async def websocket_endpoint(
     await websocket.accept()
     print("[MEDIA-WS] WebSocket connection accepted", flush=True)
 
+    trace_call_short_id: Optional[str] = None
+    organization_id: Optional[UUID] = None
+    workspace_id: Optional[UUID] = None
+
     try:
         db = next(get_db())
 
@@ -111,6 +116,8 @@ async def websocket_endpoint(
         scenario_id = websocket.query_params.get("scenario_id")
         run_evaluation = _parse_bool_query(websocket.query_params.get("run_evaluation"), default=False)
         ui_surface = websocket.query_params.get("ui_surface")
+        trace_call_short_id = (websocket.query_params.get("call_short_id") or "").strip() or None
+        trace_api_key = api_key
         
         # Fetch agent and voice bundle once for routing and instructions
         agent = None
@@ -134,7 +141,7 @@ async def websocket_endpoint(
         # Resolve workspace_id: derive from agent when available, otherwise fall
         # back to the organization's default workspace so created records remain
         # workspace-scoped.
-        workspace_id: Optional[UUID] = None
+        workspace_id = None
         if agent and getattr(agent, "workspace_id", None):
             workspace_id = agent.workspace_id
         else:
@@ -300,23 +307,21 @@ async def websocket_endpoint(
                 return
         
         system_instruction = None
-        caller_speaks_first = True
-        caller_opening_text = None
-        persona_speaks_via_tts = False
+        instruction_parts = []
         
-        # Build system instruction from agent + persona + scenario
+        # Build system instruction as a bundle: Agent + Persona + Scenario
         from app.models.database import Agent, Persona, Scenario
-        
-        persona = None
-        scenario = None
         
         # 1. Add Agent description (base instruction) and get voice bundle for model
         model_name = None
         if agent:
+            if agent.description:
+                instruction_parts.append(agent.description)
             if voice_bundle and voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
                 model_name = voice_bundle.s2s_model
         
-        # 2. Load Persona
+        # 2. Add Persona information (characteristics)
+        persona = None
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
@@ -327,10 +332,23 @@ async def websocket_endpoint(
                 if workspace_id is not None:
                     persona_query = persona_query.filter(Persona.workspace_id == workspace_id)
                 persona = persona_query.first()
+                if persona:
+                    persona_parts = []
+                    persona_parts.append(f"\n\nPersona: {persona.name}")
+                    if persona.gender:
+                        gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
+                        persona_parts.append(f"Gender: {gender_val}")
+                    if getattr(persona, "tts_provider", None):
+                        persona_parts.append(f"Voice provider: {persona.tts_provider}")
+                    if getattr(persona, "tts_voice_name", None):
+                        persona_parts.append(f"Voice: {persona.tts_voice_name}")
+
+                    if persona_parts:
+                        instruction_parts.append("\n".join(persona_parts))
             except ValueError:
                 pass
         
-        # 3. Load Scenario
+        # 3. Add Scenario information (context and goals)
         if scenario_id:
             try:
                 scenario_uuid = UUID(scenario_id)
@@ -341,33 +359,24 @@ async def websocket_endpoint(
                 if workspace_id is not None:
                     scenario_query = scenario_query.filter(Scenario.workspace_id == workspace_id)
                 scenario = scenario_query.first()
+                if scenario:
+                    scenario_parts = []
+                    scenario_parts.append(f"\n\nScenario: {scenario.name}")
+                    if scenario.description:
+                        scenario_parts.append(f"Description: {scenario.description}")
+                    if scenario.required_info:
+                        required_info_str = ", ".join([f"{k}: {v}" for k, v in scenario.required_info.items()]) if isinstance(scenario.required_info, dict) else str(scenario.required_info)
+                        if required_info_str:
+                            scenario_parts.append(f"Required information to collect: {required_info_str}")
+                    
+                    if scenario_parts:
+                        instruction_parts.append("\n".join(scenario_parts))
             except ValueError:
                 pass
-
-        if agent and persona and scenario:
-            from app.services.testing.test_agent_simulation_prompt import (
-                build_live_test_agent_system_prompt,
-            )
-            from app.services.testing.test_agent_template import (
-                resolve_caller_opening_text,
-                resolve_first_message_from_agent,
-                should_caller_speak_first,
-            )
-
-            system_instruction = build_live_test_agent_system_prompt(agent, persona, scenario)
-            persona_speaks_via_tts = True
-            first_message_config = resolve_first_message_from_agent(agent)
-            scenario_first_message = None
-            if scenario.required_info and isinstance(scenario.required_info, dict):
-                scenario_first_message = scenario.required_info.get("first_message")
-            caller_opening_text = resolve_caller_opening_text(
-                first_message=first_message_config,
-                persona_name=persona.name or "Test Caller",
-                scenario_first_message=scenario_first_message,
-            )
-            caller_speaks_first = should_caller_speak_first(first_message_config)
-        elif agent and agent.description:
-            system_instruction = agent.description.strip()
+        
+        # Combine all parts into final system instruction
+        if instruction_parts:
+            system_instruction = "\n".join(instruction_parts)
         
         # Generate result_id BEFORE running bot (for meaningful S3 path)
         # Evaluator is only created if persona_id and scenario_id are provided
@@ -491,6 +500,23 @@ async def websocket_endpoint(
             session_uuid = uuid4()
 
         agent_silence_hangup_secs = resolve_agent_silence_hangup_secs(agent)
+        tracing_task_kwargs: Dict[str, Any] = {}
+        if trace_call_short_id and workspace_id and organization_id:
+            from app.services.voice_agent.playground_tracing import build_pipeline_tracing_kwargs
+
+            tracing_task_kwargs = build_pipeline_tracing_kwargs(
+                call_short_id=trace_call_short_id,
+                workspace_id=str(workspace_id),
+                organization_id=str(organization_id),
+                agent_id=agent_id,
+                api_key=trace_api_key,
+            )
+            if not tracing_task_kwargs:
+                logger.warning(
+                    "Playground OTLP tracing disabled for call_short_id={} "
+                    "(install efficientai[otel] on the media/API process)",
+                    trace_call_short_id,
+                )
         try:
             if use_voice_bundle_pipeline:
                 # Resolve per-provider keys for voice bundle
@@ -506,13 +532,6 @@ async def websocket_endpoint(
                     if llm_provider and (
                         llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
                     ).lower() == "azure"
-                    else None
-                )
-                from app.services.voice_agent.llm_voice_providers import resolve_voice_llm_base_url
-
-                llm_base_url = (
-                    resolve_voice_llm_base_url(db, organization_id, voice_bundle, llm_provider)
-                    if llm_provider
                     else None
                 )
 
@@ -546,11 +565,8 @@ async def websocket_endpoint(
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
-                    llm_base_url=llm_base_url,
                     silence_hangup_secs=agent_silence_hangup_secs,
-                    caller_speaks_first=caller_speaks_first,
-                    caller_opening_text=caller_opening_text,
-                    persona_speaks_via_tts=persona_speaks_via_tts,
+                    tracing_task_kwargs=tracing_task_kwargs,
                 )
             else:
                 call_metadata = await run_bot(
@@ -565,7 +581,8 @@ async def websocket_endpoint(
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
                     silence_hangup_secs=agent_silence_hangup_secs,
-                    persona=persona,
+                    workspace_id=str(workspace_id) if workspace_id else None,
+                    tracing_task_kwargs=tracing_task_kwargs,
                 )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
@@ -656,13 +673,14 @@ async def websocket_endpoint(
                         else EvaluatorResultStatus.CALL_ENDED.value
                     )
 
-                    call_short_id = generate_unique_call_short_id(db)
+                    call_short_id = trace_call_short_id or generate_unique_call_short_id(db)
                     speaker_segments = call_metadata.get("speaker_segments") or []
                     if not isinstance(speaker_segments, list):
                         speaker_segments = []
                     playground_call_data = {
                         "source": "voice_bundle",
                         "result_id": result_id,
+                        "call_short_id": call_short_id,
                         "transcript": call_metadata.get("transcription"),
                         "speaker_segments": speaker_segments,
                         "recording_s3_key": call_metadata.get("s3_key"),
@@ -670,6 +688,9 @@ async def websocket_endpoint(
                     }
                     if ui_surface:
                         playground_call_data["ui_surface"] = ui_surface
+
+                    # Create evaluator result with QUEUED status
+                    # persona_id and scenario_id can be None for test calls without persona/scenario
                     evaluator_result = EvaluatorResult(
                         result_id=result_id,
                         organization_id=organization_id,
@@ -701,6 +722,19 @@ async def websocket_endpoint(
                         evaluator_result_id=evaluator_result.id,
                     )
                     db.add(call_recording)
+                    db.flush()
+
+                    if trace_call_short_id:
+                        from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
+
+                        link_trace_to_evaluator_result(
+                            db,
+                            organization_id=organization_id,
+                            call_short_id=trace_call_short_id,
+                            evaluator_result_id=evaluator_result.id,
+                            call_recording_id=call_recording.id,
+                        )
+
                     db.commit()
                     db.refresh(evaluator_result)
 
@@ -756,6 +790,21 @@ async def websocket_endpoint(
         except:
             pass
     finally:
+        try:
+            if trace_call_short_id and organization_id:
+                from app.services.voice_agent.playground_tracing import flush_playground_tracing
+                from app.services.synthetic_traces.trace_service import close_trace_session
+
+                flush_playground_tracing()
+                if 'db' in locals():
+                    close_trace_session(
+                        db,
+                        organization_id=organization_id,
+                        call_short_id=trace_call_short_id,
+                        workspace_id=workspace_id,
+                    )
+        except Exception as trace_close_error:
+            logger.warning(f"Failed to close playground trace session: {trace_close_error}")
         try:
             if 'db' in locals():
                 db.close()
@@ -878,6 +927,7 @@ async def bot_connect(
     scenario_id = request.query_params.get("scenario_id")
     run_evaluation = _parse_bool_query(request.query_params.get("run_evaluation"), default=False)
     ui_surface = request.query_params.get("ui_surface")
+    call_short_id = request.query_params.get("call_short_id")
     
     # Determine which AI Provider to use based on agent configuration
     ai_provider = None
@@ -1025,6 +1075,7 @@ async def bot_connect(
         scenario_id=scenario_id,
         run_evaluation=run_evaluation,
         ui_surface=ui_surface,
+        call_short_id=call_short_id,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
         fallback_scheme=(
             request.headers.get("x-forwarded-proto")

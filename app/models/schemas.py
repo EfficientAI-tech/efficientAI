@@ -921,6 +921,20 @@ class IntegrationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class IntegrationVoiceAgentListItem(BaseModel):
+    id: str
+    name: str
+
+
+class ListIntegrationVoiceAgentsResponse(BaseModel):
+    agents: List[IntegrationVoiceAgentListItem]
+    platform: str
+    cached: bool
+    truncated: bool
+    list_supported: bool
+    message: Optional[str] = None
+
+
 # ============================================
 # DATA SOURCES SCHEMAS
 # ============================================
@@ -2411,6 +2425,8 @@ class EvaluatorResultResponse(BaseModel):
     provider_call_id: Optional[str] = None
     provider_platform: Optional[str] = None
     call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
+    call_recording_source: Optional[str] = None  # playground | webhook when linked by call_short_id
+    synthetic_call_trace_id: Optional[UUID] = None
     
     created_at: datetime
     updated_at: datetime

@@ -36,6 +36,7 @@ import {
   ScrollText,
   Github,
   Sparkles,
+  Route,
   Upload,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -97,7 +98,7 @@ const navigationSections: NavSection[] = [
     icon: BarChart3,
     items: [
       { name: 'Overview', href: '/observability', icon: Activity },
-      { name: 'Calls', href: '/observability/calls', icon: Phone },
+      { name: 'Calls', href: '/observability/calls', icon: Route },
     ],
   },
   {

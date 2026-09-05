@@ -182,6 +182,9 @@ class TurnTraceObserver(BaseObserver):
         if self._conversation_id:
             self._current_span.set_attribute("conversation.id", self._conversation_id)
 
+        for k, v in (self._additional_span_attributes or {}).items():
+            self._current_span.set_attribute(k, v)
+
         # Store the span context so services can become children of this span
         self._trace_context_map[turn_number] = self._current_span.get_span_context()
 

@@ -222,6 +222,29 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
 
+    def iter_file_chunks_by_key(self, key: str, chunk_size: int = 8192):
+        """Stream file content from S3 in chunks (lower time-to-first-byte than full download)."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
+            body = response["Body"]
+            while True:
+                chunk = body.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in {"NoSuchKey", "404"}:
+                raise StorageError(f"File not found in S3: {key}")
+            raise StorageError(f"Failed to stream file from S3: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error streaming file from S3: {str(e)}")
+
     def delete_file(self, file_id: uuid.UUID, file_format: str) -> bool:
         """Delete file from S3."""
         self._ensure_initialized()

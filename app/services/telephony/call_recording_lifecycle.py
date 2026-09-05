@@ -12,7 +12,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.database import Agent, CallRecording, CallRecordingSource
+from app.models.database import Agent, CallRecording, CallRecordingSource, EvaluatorResult
 from app.models.enums import CallRecordingStatus
 
 TERMINAL_VOBIZ_STATUSES = {
@@ -274,6 +274,18 @@ def create_inbound_call_recording(
     register_call_recording(db, row)
     db.commit()
     db.refresh(row)
+
+    if evaluator_result_id:
+        result = (
+            db.query(EvaluatorResult)
+            .filter(EvaluatorResult.id == evaluator_result_id)
+            .first()
+        )
+        if result:
+            from app.services.synthetic_traces.trace_service import open_trace_for_call_recording
+
+            open_trace_for_call_recording(db, recording=row, evaluator_result=result)
+
     return row
 
 
@@ -319,9 +331,6 @@ def update_call_from_vobiz_event(
     if event == "call_ended" or event == "failed":
         data["ended_at"] = _now_iso()
     _save_call_data(db, row, data)
-    from app.services.evaluators.evaluator_inbound_service import sync_linked_evaluator_result_call_state
-
-    sync_linked_evaluator_result_call_state(db, row)
     return row
 
 
@@ -394,9 +403,6 @@ def finalize_call_on_media_disconnect(
             "H3",
         )
         # endregion
-        from app.services.evaluators.evaluator_inbound_service import sync_linked_evaluator_result_call_state
-
-        sync_linked_evaluator_result_call_state(db, updated)
         # Evaluator dispatch runs after recording artifacts exist (Celery finalize or
         # carrier recording webhook). Enqueue here only when audio is already on the row.
         if updated.evaluator_result_id:
@@ -529,6 +535,7 @@ def persist_telephony_call_artifacts(
     transcript_text: Optional[str] = None,
     s3_key: Optional[str] = None,
     duration: Optional[float] = None,
+    trace_turns: Optional[list] = None,
 ) -> Optional[CallRecording]:
     """Persist transcript and recording metadata when a telephony call ends."""
     row = db.query(CallRecording).filter(CallRecording.call_short_id == call_short_id).first()
@@ -594,6 +601,15 @@ def persist_telephony_call_artifacts(
         "H3",
     )
     # endregion
+    try:
+        from app.services.synthetic_traces.trace_service import finalize_trace
+
+        finalize_trace(db, call_short_id=call_short_id, tier1_turns=trace_turns)
+    except Exception as trace_err:
+        from loguru import logger
+
+        logger.warning("Failed to finalize synthetic call trace: {}", trace_err)
+
     if row.evaluator_result_id:
         from app.services.evaluators.evaluator_inbound_service import (
             enqueue_linked_evaluator_result_if_ready,

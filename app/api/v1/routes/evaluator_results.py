@@ -1,6 +1,6 @@
 """Evaluator Results routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
@@ -60,23 +60,16 @@ def _lookup_evaluator_result(
         ).first()
 
 
-def _cleanup_call_recordings_for_deleted_evaluator_results(
+def _detach_call_recordings_from_evaluator_results(
     db: Session,
     evaluator_result_ids: List[UUID],
 ) -> None:
-    """Remove eval-telephony webhook recordings; detach playground recordings."""
+    """Clear FK references so observability call rows survive result deletion."""
     if not evaluator_result_ids:
         return
-    recordings = (
-        db.query(CallRecording)
-        .filter(CallRecording.evaluator_result_id.in_(evaluator_result_ids))
-        .all()
-    )
-    for recording in recordings:
-        if recording.source == CallRecordingSource.PLAYGROUND:
-            recording.evaluator_result_id = None
-        else:
-            db.delete(recording)
+    db.query(CallRecording).filter(
+        CallRecording.evaluator_result_id.in_(evaluator_result_ids)
+    ).update({CallRecording.evaluator_result_id: None}, synchronize_session=False)
 
 
 def _derive_speaker_segments_from_call_data(
@@ -254,23 +247,40 @@ def _derive_speaker_segments_from_call_data(
 
 
 def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str, Any]]]:
-    """
-    Prefer deriving speaker segments from provider call_data for provider-linked results.
-    Falls back to persisted speaker_segments for non-provider/manual results.
-    """
+    """Return speaker segments, preferring persisted values over slim call_data."""
+    if result.speaker_segments:
+        return result.speaker_segments
     if result.provider_platform and isinstance(result.call_data, dict):
+        from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
+
+        _, segments = extract_transcript_from_call_data(result.call_data, result.provider_platform)
+        if segments:
+            return segments
         derived = _derive_speaker_segments_from_call_data(result.call_data, result.provider_platform)
         if derived:
             return derived
     return result.speaker_segments
 
 
+def _resolve_transcription(result: EvaluatorResult, segments: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    if result.transcription and str(result.transcription).strip():
+        return result.transcription
+    if not segments:
+        return result.transcription
+    lines = []
+    for seg in segments:
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        speaker = str(seg.get("speaker", "Speaker")).strip() or "Speaker"
+        lines.append(f"{speaker}: {text}")
+    return "\n".join(lines) if lines else result.transcription
+
+
 @router.get("/overview", response_model=EvaluatorResultsOverviewResponse)
 def get_evaluator_results_overview(
     agent_id: Optional[str] = Query(None, description="When set, return suites for this agent"),
     suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
-    since: Optional[datetime] = Query(None),
-    until: Optional[datetime] = Query(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -295,8 +305,6 @@ def get_evaluator_results_overview(
         workspace_id=workspace_id,
         agent_id=agent_uuid,
         suite_id=suite_uuid,
-        since=since,
-        until=until,
     )
 
 
@@ -443,9 +451,28 @@ def get_evaluator_result(
 
     hydrate_evaluator_results([result])
     repair_evaluator_result_status_if_needed(db, result)
-    
+
     enriched_call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
+
+    call_recording_source = None
+    if isinstance(result.call_data, dict):
+        linked_call_short_id = result.call_data.get("call_short_id")
+        if isinstance(linked_call_short_id, str) and linked_call_short_id:
+            linked_recording = (
+                db.query(CallRecording)
+                .filter(
+                    CallRecording.call_short_id == linked_call_short_id,
+                    CallRecording.organization_id == organization_id,
+                    CallRecording.workspace_id == workspace_id,
+                )
+                .first()
+            )
+            if linked_recording and linked_recording.source:
+                call_recording_source = linked_recording.source.value
     
+    speaker_segments = _resolve_speaker_segments(result)
+    transcription = _resolve_transcription(result, speaker_segments)
+
     # Build response
     response_data = {
         "id": result.id,
@@ -460,8 +487,8 @@ def get_evaluator_result(
         "duration_seconds": result.duration_seconds,
         "status": effective_evaluator_result_status(result),
         "audio_s3_key": result.audio_s3_key,
-        "transcription": result.transcription,
-        "speaker_segments": _resolve_speaker_segments(result),
+        "transcription": transcription,
+        "speaker_segments": speaker_segments,
         "metric_scores": result.metric_scores,
         "celery_task_id": result.celery_task_id,
         "error_message": result.error_message,
@@ -470,6 +497,8 @@ def get_evaluator_result(
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
         "call_data": enriched_call_data,
+        "call_recording_source": call_recording_source,
+        "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,
@@ -523,6 +552,138 @@ def get_evaluator_result(
                 response_data["suite_id"] = evaluator.suite_id
     
     return EvaluatorResultResponse(**response_data)
+
+
+@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_evaluator_result(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Delete a specific evaluator result in the active workspace by UUID or result_id."""
+    try:
+        result_uuid = UUID(id)
+        result = db.query(EvaluatorResult).filter(
+            and_(
+                EvaluatorResult.id == result_uuid,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
+        ).first()
+    except ValueError:
+        result = db.query(EvaluatorResult).filter(
+            and_(
+                EvaluatorResult.result_id == id,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
+        ).first()
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    _detach_call_recordings_from_evaluator_results(db, [result.id])
+    db.delete(result)
+    db.commit()
+    return None
+
+
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+def delete_evaluator_results_bulk(
+    result_ids: List[str] = Query(...),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Delete multiple evaluator results in the active workspace by their IDs."""
+    to_delete: List[EvaluatorResult] = []
+
+    for result_id in result_ids:
+        try:
+            result_uuid = UUID(result_id)
+            result = db.query(EvaluatorResult).filter(
+                and_(
+                    EvaluatorResult.id == result_uuid,
+                    EvaluatorResult.organization_id == organization_id,
+                    EvaluatorResult.workspace_id == workspace_id,
+                )
+            ).first()
+        except ValueError:
+            result = db.query(EvaluatorResult).filter(
+                and_(
+                    EvaluatorResult.result_id == result_id,
+                    EvaluatorResult.organization_id == organization_id,
+                    EvaluatorResult.workspace_id == workspace_id,
+                )
+            ).first()
+
+        if result:
+            to_delete.append(result)
+
+    if to_delete:
+        _detach_call_recordings_from_evaluator_results(
+            db, [row.id for row in to_delete]
+        )
+        for result in to_delete:
+            db.delete(result)
+
+    db.commit()
+    return None
+
+
+@router.get("/{id}/metrics", response_model=dict)
+def get_evaluator_result_metrics(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Get metric scores for an evaluator result in the active workspace."""
+    try:
+        result_uuid = UUID(id)
+        result = db.query(EvaluatorResult).filter(
+            and_(
+                EvaluatorResult.id == result_uuid,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
+        ).first()
+    except ValueError:
+        result = db.query(EvaluatorResult).filter(
+            and_(
+                EvaluatorResult.result_id == id,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
+        ).first()
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+    
+    # Get all enabled metrics for the organization
+    enabled_metrics = db.query(Metric).filter(
+        Metric.organization_id == organization_id,
+        Metric.enabled == True
+    ).all()
+    
+    # Build response with metric details
+    metrics_response = {}
+    if result.metric_scores:
+        for metric_id, score_data in result.metric_scores.items():
+            metric = next((m for m in enabled_metrics if str(m.id) == metric_id), None)
+            if metric:
+                metrics_response[metric.name] = {
+                    "value": score_data.get("value"),
+                    "type": score_data.get("type"),
+                    "metric_id": metric_id,
+                    "description": metric.description
+                }
+    
+    return {
+        "result_id": result.result_id,
+        "metrics": metrics_response
+    }
 
 
 @router.get("/{id}/live-events")
@@ -588,136 +749,29 @@ async def stream_evaluator_result_live_events(
     )
 
 
-@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_evaluator_result(
+@router.get("/{id}/otel-correlation")
+def get_evaluator_result_otel_correlation(
     id: str,
+    request: Request,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
 ):
-    """Delete a specific evaluator result in the active workspace by UUID or result_id."""
-    try:
-        result_uuid = UUID(id)
-        result = db.query(EvaluatorResult).filter(
-            and_(
-                EvaluatorResult.id == result_uuid,
-                EvaluatorResult.organization_id == organization_id,
-                EvaluatorResult.workspace_id == workspace_id,
-            )
-        ).first()
-    except ValueError:
-        result = db.query(EvaluatorResult).filter(
-            and_(
-                EvaluatorResult.result_id == id,
-                EvaluatorResult.organization_id == organization_id,
-                EvaluatorResult.workspace_id == workspace_id,
-            )
-        ).first()
-    
+    """Return OTLP endpoint and correlation env vars for customer Pipecat setup."""
+    from app.models.synthetic_trace_schemas import OtelCorrelationInfo
+    from app.services.synthetic_traces.trace_service import build_otel_correlation
+
+    del api_key
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
-
-    _cleanup_call_recordings_for_deleted_evaluator_results(db, [result.id])
-    db.delete(result)
-    db.commit()
-    return None
-
-
-@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
-def delete_evaluator_results_bulk(
-    result_ids: List[str] = Query(...),
-    organization_id: UUID = Depends(get_organization_id),
-    workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db),
-):
-    """Delete multiple evaluator results in the active workspace by their IDs."""
-    to_delete: List[EvaluatorResult] = []
-
-    for result_id in result_ids:
-        try:
-            result_uuid = UUID(result_id)
-            result = db.query(EvaluatorResult).filter(
-                and_(
-                    EvaluatorResult.id == result_uuid,
-                    EvaluatorResult.organization_id == organization_id,
-                    EvaluatorResult.workspace_id == workspace_id,
-                )
-            ).first()
-        except ValueError:
-            result = db.query(EvaluatorResult).filter(
-                and_(
-                    EvaluatorResult.result_id == result_id,
-                    EvaluatorResult.organization_id == organization_id,
-                    EvaluatorResult.workspace_id == workspace_id,
-                )
-            ).first()
-
-        if result:
-            to_delete.append(result)
-
-    if to_delete:
-        _cleanup_call_recordings_for_deleted_evaluator_results(
-            db, [row.id for row in to_delete]
-        )
-        for result in to_delete:
-            db.delete(result)
-
-    db.commit()
-    return None
-
-
-@router.get("/{id}/metrics", response_model=dict)
-def get_evaluator_result_metrics(
-    id: str,
-    organization_id: UUID = Depends(get_organization_id),
-    workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db),
-):
-    """Get metric scores for an evaluator result in the active workspace."""
-    try:
-        result_uuid = UUID(id)
-        result = db.query(EvaluatorResult).filter(
-            and_(
-                EvaluatorResult.id == result_uuid,
-                EvaluatorResult.organization_id == organization_id,
-                EvaluatorResult.workspace_id == workspace_id,
-            )
-        ).first()
-    except ValueError:
-        result = db.query(EvaluatorResult).filter(
-            and_(
-                EvaluatorResult.result_id == id,
-                EvaluatorResult.organization_id == organization_id,
-                EvaluatorResult.workspace_id == workspace_id,
-            )
-        ).first()
-    
-    if not result:
-        raise HTTPException(status_code=404, detail="Evaluator result not found")
-    
-    # Get all enabled metrics for the organization
-    enabled_metrics = db.query(Metric).filter(
-        Metric.organization_id == organization_id,
-        Metric.enabled == True
-    ).all()
-    
-    # Build response with metric details
-    metrics_response = {}
-    if result.metric_scores:
-        for metric_id, score_data in result.metric_scores.items():
-            metric = next((m for m in enabled_metrics if str(m.id) == metric_id), None)
-            if metric:
-                metrics_response[metric.name] = {
-                    "value": score_data.get("value"),
-                    "type": score_data.get("type"),
-                    "metric_id": metric_id,
-                    "description": metric.description
-                }
-    
-    return {
-        "result_id": result.result_id,
-        "metrics": metrics_response
-    }
+    info = build_otel_correlation(
+        db,
+        result,
+        api_base_url=str(request.base_url).rstrip("/"),
+    )
+    return OtelCorrelationInfo(**info)
 
 
 @router.get("/{id}/audio")
@@ -729,13 +783,14 @@ async def stream_evaluator_result_audio(
     db: Session = Depends(get_db),
 ):
     """Stream evaluator result audio from S3 or proxy auth-gated provider URLs."""
-    from io import BytesIO
-
     import requests as http_requests
     from fastapi.responses import RedirectResponse, StreamingResponse
 
     from app.core.encryption import decrypt_api_key
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.audio_delivery import (
+        collect_evaluator_result_audio_keys,
+        stream_audio_from_keys,
+    )
     from app.services.voice_providers.vapi_recording import is_presigned_storage_url
     from app.workers.tasks.process_evaluator_result import _extract_audio_url
 
@@ -745,28 +800,12 @@ async def stream_evaluator_result_audio(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
-    s3_key = result.audio_s3_key
-    if not s3_key and isinstance(result.call_data, dict):
-        s3_key = result.call_data.get("recording_s3_key")
-
-    if s3_key:
-        if not s3_service.is_enabled():
-            raise HTTPException(status_code=400, detail="S3 storage is not configured")
-        try:
-            audio_bytes = s3_service.download_file_by_key(s3_key)
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="Audio file not found in storage") from exc
-
-        extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "wav"
-        content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
-        content_type = content_type_map.get(extension, "audio/wav")
-        return StreamingResponse(
-            BytesIO(audio_bytes),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="result_{result.result_id}.{extension}"',
-            },
-        )
+    storage_stream = stream_audio_from_keys(
+        collect_evaluator_result_audio_keys(result),
+        filename=f"result_{result.result_id}",
+    )
+    if storage_stream:
+        return storage_stream
 
     call_data = result.call_data if isinstance(result.call_data, dict) else {}
     platform = (result.provider_platform or "").lower()
