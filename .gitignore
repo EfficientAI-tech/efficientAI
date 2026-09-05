@@ -28,6 +28,9 @@ secrets/
 !package.json
 .cursorrules
 
+# Local scratch / MCP / Confluence publish artifacts
+.tmp-*
+
 # Virtual environments
 venv/
 newenv/
