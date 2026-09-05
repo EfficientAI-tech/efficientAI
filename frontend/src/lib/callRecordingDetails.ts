@@ -5,11 +5,14 @@ function readCallData(recording: Record<string, unknown> | null | undefined): Re
 }
 
 export function hasTranscriptInCallData(data: Record<string, unknown>): boolean {
+  const rawData = data.raw_data as Record<string, unknown> | undefined
+  const rawTranscript = rawData?.transcript
   return (
     (typeof data.transcript === 'string' && data.transcript.trim().length > 0) ||
     (typeof data.transcriptText === 'string' && data.transcriptText.trim().length > 0) ||
     (Array.isArray(data.transcript_object) && data.transcript_object.length > 0) ||
     (Array.isArray(data.messages) && data.messages.length > 0) ||
+    (Array.isArray(rawTranscript) && rawTranscript.length > 0) ||
     (Array.isArray((data.artifact as Record<string, unknown> | undefined)?.messages) &&
       ((data.artifact as { messages: unknown[] }).messages?.length ?? 0) > 0)
   )

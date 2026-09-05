@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { hasEvaluatorResultRecording } from '../../lib/recordingUrls'
@@ -15,7 +15,6 @@ export default function TraceRecordingBar({
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
-  const blobRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -26,20 +25,16 @@ export default function TraceRecordingBar({
       setFailed(false)
       try {
         if (callRecordingId && callShortId) {
-          const url = await apiClient.getCallRecordingAudioUrl(callShortId)
           if (!cancelled) {
-            blobRef.current = url
-            setAudioUrl(url)
+            setAudioUrl(apiClient.getCallRecordingAudioStreamUrl(callShortId))
           }
           return
         }
         if (evaluatorResultId) {
           const result = await apiClient.getEvaluatorResult(evaluatorResultId, false)
           if (!hasEvaluatorResultRecording(result)) return
-          const url = await apiClient.getEvaluatorResultAudioUrl(evaluatorResultId)
           if (!cancelled) {
-            blobRef.current = url
-            setAudioUrl(url)
+            setAudioUrl(apiClient.getEvaluatorResultAudioStreamUrl(evaluatorResultId))
           }
         }
       } catch {
@@ -52,7 +47,6 @@ export default function TraceRecordingBar({
     void load()
     return () => {
       cancelled = true
-      if (blobRef.current) URL.revokeObjectURL(blobRef.current)
     }
   }, [callRecordingId, callShortId, evaluatorResultId])
 
@@ -68,7 +62,7 @@ export default function TraceRecordingBar({
           Loading audio…
         </div>
       ) : audioUrl ? (
-        <audio controls src={audioUrl} className="h-9 w-full max-w-md" preload="metadata" />
+        <audio controls src={audioUrl} className="h-9 w-full max-w-md" preload="auto" />
       ) : null}
     </div>
   )

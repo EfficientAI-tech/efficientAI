@@ -464,29 +464,98 @@ def _find_turn_for_tts(
     return current if current is not None else _new_turn()
 
 
+def _turn_time_bounds(
+    turn: Dict[str, Any],
+    by_id: Dict[str, Dict[str, Any]],
+) -> tuple[Optional[int], Optional[int]]:
+    starts: List[int] = []
+    ends: List[int] = []
+    for span_id in (turn.get("extra") or {}).get("_span_ids") or []:
+        span = by_id.get(str(span_id))
+        if not span:
+            continue
+        start = _span_start_ns(span)
+        if start is not None:
+            starts.append(start)
+        end_raw = span.get("end_time_unix_nano")
+        if end_raw is not None:
+            try:
+                ends.append(int(end_raw))
+            except (TypeError, ValueError):
+                pass
+    if not starts:
+        return None, None
+    return min(starts), max(ends) if ends else max(starts)
+
+
+def _interval_overlap_ns(a0: int, a1: int, b0: int, b1: int) -> int:
+    return max(0, min(a1, b1) - max(a0, b0))
+
+
+def _turn_earliest_start_ns(
+    turn: Dict[str, Any],
+    by_id: Dict[str, Dict[str, Any]],
+) -> int:
+    bounds = _turn_time_bounds(turn, by_id)
+    return bounds[0] if bounds[0] is not None else 0
+
+
 def _apply_turn_span_metadata(
     turns: List[Dict[str, Any]],
     turn_spans: List[Dict[str, Any]],
+    all_spans: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    meta_spans = sorted(turn_spans, key=lambda s: _span_start_ns(s) or 0)
-    response_turns = [
-        t
-        for t in turns
-        if (t.get("extra") or {}).get("assistant_text") or t.get("s2s_ttfb_ms")
-    ]
-    for idx, span in enumerate(meta_spans):
-        if idx >= len(response_turns):
-            break
-        turn = response_turns[idx]
+    by_id = _span_index(all_spans) if all_spans else {}
+    for span in sorted(turn_spans, key=lambda s: _span_start_ns(s) or 0):
         attrs = span.get("attributes") or {}
         user_bot_s = _attr_float(attrs, "turn.user_bot_latency_seconds")
+        span_id = str(span.get("span_id") or "")
+        span_start = _span_start_ns(span) or 0
+        end_raw = span.get("end_time_unix_nano")
+        try:
+            span_end = int(end_raw) if end_raw is not None else span_start
+        except (TypeError, ValueError):
+            span_end = span_start
+
+        matched: Optional[Dict[str, Any]] = None
+        for turn in turns:
+            if span_id and span_id in ((turn.get("extra") or {}).get("_span_ids") or []):
+                matched = turn
+                break
+
+        if matched is None and by_id:
+            best_overlap = -1
+            for turn in turns:
+                t_start, t_end = _turn_time_bounds(turn, by_id)
+                if t_start is None:
+                    continue
+                overlap = _interval_overlap_ns(
+                    span_start,
+                    max(span_end, span_start),
+                    t_start,
+                    max(t_end or t_start, t_start),
+                )
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    matched = turn
+
+        if matched is None and turns:
+            matched = min(
+                turns,
+                key=lambda t: abs(_turn_earliest_start_ns(t, by_id) - span_start),
+            )
+
+        if matched is None:
+            continue
+
         if user_bot_s is not None:
-            _set_max_ms(turn, "sut_response_latency_ms", round(user_bot_s * 1000.0, 1))
+            _set_max_ms(matched, "sut_response_latency_ms", round(user_bot_s * 1000.0, 1))
+            matched.setdefault("extra", {})["sut_measured_e2e"] = True
         if attrs.get("turn.was_interrupted"):
-            turn.setdefault("extra", {})["was_interrupted"] = True
+            matched.setdefault("extra", {})["was_interrupted"] = True
         duration_s = _attr_float(attrs, "turn.duration_seconds")
         if duration_s is not None:
-            turn.setdefault("extra", {})["turn_duration_seconds"] = duration_s
+            matched.setdefault("extra", {})["turn_duration_seconds"] = duration_s
 
 
 def _detect_turn_pipeline_mode(turn: Dict[str, Any]) -> None:
@@ -525,10 +594,123 @@ def _merge_turn_fields(target: Dict[str, Any], source: Dict[str, Any]) -> None:
         tgt_extra["was_interrupted"] = True
 
 
-def _pair_user_response_turns(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _is_span_subset_turn(inner: Dict[str, Any], outer: Dict[str, Any]) -> bool:
+    inner_ids = set((inner.get("extra") or {}).get("_span_ids") or [])
+    outer_ids = set((outer.get("extra") or {}).get("_span_ids") or [])
+    if not inner_ids or not outer_ids:
+        return False
+    return inner_ids <= outer_ids
+
+
+def _same_sut(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    sut_a = a.get("sut_response_latency_ms")
+    sut_b = b.get("sut_response_latency_ms")
+    if sut_a is None or sut_b is None:
+        return False
+    return abs(float(sut_a) - float(sut_b)) <= 1.0
+
+
+def _turns_represent_same_exchange(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    if _is_span_subset_turn(a, b) or _is_span_subset_turn(b, a):
+        return True
+    extra_a = a.get("extra") or {}
+    extra_b = b.get("extra") or {}
+    user_a = extra_a.get("user_text")
+    user_b = extra_b.get("user_text")
+    asst_a = extra_a.get("assistant_text")
+    asst_b = extra_b.get("assistant_text")
+    if user_a and user_b and _text_similar(str(user_a), str(user_b)):
+        return True
+    if asst_a and asst_b and _text_similar(str(asst_a), str(asst_b)):
+        return True
+    return False
+
+
+def _should_consolidate_adjacent_turns(prev: Dict[str, Any], curr: Dict[str, Any]) -> bool:
+    if _turns_represent_same_exchange(prev, curr):
+        return True
+    if _same_sut(prev, curr):
+        extra_p = prev.get("extra") or {}
+        extra_c = curr.get("extra") or {}
+        user_p = extra_p.get("user_text")
+        user_c = extra_c.get("user_text")
+        if user_p and user_c and not _text_similar(str(user_p), str(user_c)):
+            return False
+        return True
+    extra_p = prev.get("extra") or {}
+    extra_c = curr.get("extra") or {}
+    has_user_p = bool(extra_p.get("user_text"))
+    has_asst_p = bool(extra_p.get("assistant_text"))
+    has_user_c = bool(extra_c.get("user_text"))
+    has_asst_c = bool(extra_c.get("assistant_text"))
+    if has_user_p and not has_asst_p and has_asst_c and not has_user_c:
+        return True
+    if has_user_p and has_asst_p and has_asst_c and not has_user_c:
+        return True
+    return False
+
+
+def _consolidate_turn_rows(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge split user/bot fragments and drop subset-duplicate rows."""
+    if len(turns) <= 1:
+        return turns
+
+    merged: List[Dict[str, Any]] = []
+    for turn in turns:
+        if merged and _should_consolidate_adjacent_turns(merged[-1], turn):
+            _merge_turn_fields(merged[-1], turn)
+            continue
+        absorbed = False
+        for existing in merged:
+            if _turns_represent_same_exchange(turn, existing):
+                _merge_turn_fields(existing, turn)
+                absorbed = True
+                break
+        if not absorbed:
+            merged.append(turn)
+
+    deduped: List[Dict[str, Any]] = []
+    for turn in merged:
+        if any(
+            turn is not other
+            and _is_span_subset_turn(turn, other)
+            for other in merged
+        ):
+            continue
+        deduped.append(turn)
+    return deduped
+
+
+def _match_bot_response_turn(
+    user_turn: Dict[str, Any],
+    response_pool: List[Dict[str, Any]],
+    by_id: Dict[str, Dict[str, Any]],
+) -> Optional[int]:
+    if not response_pool:
+        return None
+    user_start = _turn_earliest_start_ns(user_turn, by_id)
+    after_user = [
+        (idx, bot)
+        for idx, bot in enumerate(response_pool)
+        if _turn_earliest_start_ns(bot, by_id) >= user_start
+    ]
+    if after_user:
+        return min(after_user, key=lambda row: _turn_earliest_start_ns(row[1], by_id))[0]
+    return max(
+        range(len(response_pool)),
+        key=lambda idx: _turn_earliest_start_ns(response_pool[idx], by_id),
+    )
+
+
+def _pair_user_response_turns(
+    turns: List[Dict[str, Any]],
+    spans_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Order turns as opener → user+bot exchanges; merge split async components."""
     if len(turns) <= 1:
         return turns
+
+    by_id = spans_by_id or {}
 
     def _has_user(t: Dict[str, Any]) -> bool:
         return bool((t.get("extra") or {}).get("user_text"))
@@ -546,6 +728,7 @@ def _pair_user_response_turns(turns: List[Dict[str, Any]]) -> List[Dict[str, Any
 
     opener = openers[0] if openers else None
     response_pool = [t for t in bot_only if t is not opener]
+    response_pool.sort(key=lambda t: _turn_earliest_start_ns(t, by_id))
 
     ordered: List[Dict[str, Any]] = []
     if opener:
@@ -555,15 +738,25 @@ def _pair_user_response_turns(turns: List[Dict[str, Any]]) -> List[Dict[str, Any
         merged = dict(user_turn)
         merged_extra = dict(merged.get("extra") or {})
         merged["extra"] = merged_extra
-        if response_pool:
-            bot = response_pool.pop(0)
+        bot_idx = _match_bot_response_turn(merged, response_pool, by_id)
+        if bot_idx is not None:
+            bot = response_pool.pop(bot_idx)
             _merge_turn_fields(merged, bot)
         ordered.append(merged)
 
     for leftover in response_pool:
         ordered.append(leftover)
-    ordered.extend(combined)
-    return [t for t in ordered if _turn_has_content(t)]
+
+    for candidate in combined:
+        if any(_turns_represent_same_exchange(candidate, existing) for existing in ordered):
+            for existing in ordered:
+                if _turns_represent_same_exchange(candidate, existing):
+                    _merge_turn_fields(existing, candidate)
+                    break
+            continue
+        ordered.append(candidate)
+
+    return _consolidate_turn_rows([t for t in ordered if _turn_has_content(t)])
 
 
 def _rebuild_conversation_turns(spans: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
@@ -661,13 +854,24 @@ def _rebuild_conversation_turns(spans: List[Dict[str, Any]]) -> Optional[List[Di
     if not turns:
         return None
 
-    turns = _pair_user_response_turns(turns)
+    spans_by_id = _span_index(spans)
+    turns = _pair_user_response_turns(turns, spans_by_id)
 
-    _apply_turn_span_metadata(turns, turn_meta)
+    _apply_turn_span_metadata(turns, turn_meta, spans)
+    for turn in turns:
+        turn_extra = turn.setdefault("extra", {})
+        if not turn_extra.get("sut_measured_e2e"):
+            derived = _derive_sut_from_span_wall_clock(turn, spans_by_id)
+            if derived is not None:
+                _set_max_ms(turn, "sut_response_latency_ms", derived)
+                turn_extra["sut_derived_from_spans"] = True
     for idx, turn in enumerate(turns, start=1):
         turn["turn_number"] = idx
         _finalize_turn_metrics(turn)
         _detect_turn_pipeline_mode(turn)
+    turns = _consolidate_turn_rows(turns)
+    for idx, turn in enumerate(turns, start=1):
+        turn["turn_number"] = idx
     return turns
 
 
@@ -711,6 +915,66 @@ def _set_turn_text(turn: Dict[str, Any], role: str, text: str) -> None:
         extra[key] = cleaned
 
 
+def latency_percentile(values: List[float], pct: float) -> Optional[float]:
+    """Nearest-rank percentile (TDD §9.3), rounded to 0.1 ms."""
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    idx = min(
+        len(sorted_vals) - 1,
+        int(round((pct / 100.0) * (len(sorted_vals) - 1))),
+    )
+    return round(sorted_vals[idx], 1)
+
+
+def _derive_sut_from_span_wall_clock(
+    turn: Dict[str, Any],
+    by_id: Dict[str, Dict[str, Any]],
+) -> Optional[float]:
+    """Wall-clock user STT start → last response component end for this turn."""
+    span_ids = (turn.get("extra") or {}).get("_span_ids") or []
+    if not span_ids:
+        return None
+
+    user_starts: List[int] = []
+    response_ends: List[int] = []
+
+    for span_id in span_ids:
+        span = by_id.get(str(span_id))
+        if not span:
+            continue
+        name = (span.get("name") or "").lower()
+        attrs = span.get("attributes") or {}
+        op = (_attr_str(attrs, "gen_ai.operation.name") or "").lower()
+        start = _span_start_ns(span)
+        end_raw = span.get("end_time_unix_nano")
+        try:
+            end = int(end_raw) if end_raw is not None else start
+        except (TypeError, ValueError):
+            end = start
+
+        if op == "stt" or name == "stt":
+            if start is not None:
+                user_starts.append(start)
+            continue
+
+        is_response = (
+            op in _LLM_OPS
+            or name in _LLM_NAMES
+            or op == "tts"
+            or name == "tts"
+        )
+        if is_response and end is not None:
+            response_ends.append(max(end, start or end))
+
+    if not user_starts or not response_ends:
+        return None
+    delta_ns = max(response_ends) - min(user_starts)
+    if delta_ns <= 0:
+        return None
+    return round(delta_ns / 1_000_000.0, 1)
+
+
 def _build_transcript_display(turn: Dict[str, Any]) -> None:
     extra = turn.get("extra") or {}
     user = extra.get("user_text")
@@ -726,13 +990,23 @@ def _build_transcript_display(turn: Dict[str, Any]) -> None:
 
 def _finalize_turn_metrics(turn: Dict[str, Any]) -> None:
     """Derive composite fields after all spans for a turn are collected."""
+    extra = turn.setdefault("extra", {})
     s2s = turn.get("s2s_ttfb_ms")
     llm = turn.get("llm_ttfb_ms")
+    stt = turn.get("stt_ttfb_ms")
+    tts = turn.get("tts_ttfb_ms")
+
     if turn.get("sut_response_latency_ms") is None:
         if s2s is not None:
             turn["sut_response_latency_ms"] = s2s
+            extra["sut_measured_e2e"] = True
+        elif extra.get("user_text") and stt is not None and llm is not None and tts is not None:
+            turn["sut_response_latency_ms"] = round(float(stt) + float(llm) + float(tts), 1)
+            extra["sut_derived_from_components"] = True
         elif llm is not None:
             turn["sut_response_latency_ms"] = llm
+            if extra.get("user_text"):
+                extra["sut_is_partial_fallback"] = True
 
     if (turn.get("extra") or {}).get("pipeline_mode") == "s2s":
         _build_transcript_display(turn)
@@ -797,6 +1071,7 @@ def _derive_turns_by_pipecat_turn(spans: List[Dict[str, Any]]) -> List[Dict[str,
                     "sut_response_latency_ms",
                     round(user_bot_s * 1000.0, 1),
                 )
+                turn["extra"]["sut_measured_e2e"] = True
             duration_s = _attr_float(attrs, "turn.duration_seconds")
             if duration_s is not None:
                 turn["extra"]["turn_duration_seconds"] = duration_s
@@ -869,40 +1144,76 @@ def merge_tier1_and_otel_turns(
 
 
 def compute_component_aggregates(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
-    def _percentile(values: List[float], pct: float) -> Optional[float]:
-        if not values:
-            return None
-        sorted_vals = sorted(values)
-        idx = min(len(sorted_vals) - 1, int(round((pct / 100.0) * (len(sorted_vals) - 1))))
-        return round(sorted_vals[idx], 1)
-
     agg: Dict[str, Any] = {}
     for field in (
         "stt_ttfb_ms",
         "llm_ttfb_ms",
         "tts_ttfb_ms",
         "s2s_ttfb_ms",
-        "sut_response_latency_ms",
     ):
         values = [float(t[field]) for t in turns if t.get(field) is not None]
         if values:
             agg[field] = {
-                "p50": _percentile(values, 50),
-                "p90": _percentile(values, 90),
-                "p95": _percentile(values, 95),
+                "p50": latency_percentile(values, 50),
+                "p90": latency_percentile(values, 90),
+                "p95": latency_percentile(values, 95),
                 "count": len(values),
             }
+
+    sut_values = response_latency_samples(turns)
+    if sut_values:
+        agg["sut_response_latency_ms"] = {
+            "p50": latency_percentile(sut_values, 50),
+            "p90": latency_percentile(sut_values, 90),
+            "p95": latency_percentile(sut_values, 95),
+            "count": len(sut_values),
+        }
     return agg
+
+
+def _is_eligible_response_latency_sample(turn: Dict[str, Any]) -> bool:
+    sut = turn.get("sut_response_latency_ms")
+    if sut is None:
+        return False
+    extra = turn.get("extra") or {}
+    if extra.get("user_text"):
+        if extra.get("sut_is_partial_fallback"):
+            return False
+        return True
+    if extra.get("sut_measured_e2e"):
+        return True
+    if not extra.get("assistant_text"):
+        return False
+    if turn.get("s2s_ttfb_ms") is not None:
+        return True
+    llm = turn.get("llm_ttfb_ms")
+    if llm is None:
+        return True
+    return abs(float(sut) - float(llm)) > 1.0
+
+
+def response_latency_samples(turns: List[Dict[str, Any]]) -> List[float]:
+    """Collect per-turn SUT samples for header percentiles (TDD §9.3).
+
+    User turns always count. Agent-only turns count when Pipecat measured
+    end-to-end latency (turn.user_bot_latency_seconds or s2s), not LLM-TTFB fallback.
+    """
+    values: List[float] = []
+    for turn in turns:
+        if not _is_eligible_response_latency_sample(turn):
+            continue
+        values.append(float(turn["sut_response_latency_ms"]))
+    return values
+
+
+def _response_latency_samples(turns: List[Dict[str, Any]]) -> List[float]:
+    return response_latency_samples(turns)
 
 
 def compute_trace_latency_summary(turns: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Compute header percentiles and component aggregates from turn rows."""
     aggregates = compute_component_aggregates(turns)
-    sut_values = [
-        float(t["sut_response_latency_ms"])
-        for t in turns
-        if t.get("sut_response_latency_ms") is not None
-    ]
+    sut_values = response_latency_samples(turns)
     if not sut_values:
         sut_values = [
             float(t["s2s_ttfb_ms"]) for t in turns if t.get("s2s_ttfb_ms") is not None
@@ -912,18 +1223,12 @@ def compute_trace_latency_summary(turns: List[Dict[str, Any]]) -> Dict[str, Any]
             float(t["llm_ttfb_ms"]) for t in turns if t.get("llm_ttfb_ms") is not None
         ]
 
-    def _pct(values: List[float], pct: float) -> Optional[float]:
-        if not values:
-            return None
-        sorted_vals = sorted(values)
-        idx = min(len(sorted_vals) - 1, int(round((pct / 100.0) * (len(sorted_vals) - 1))))
-        return round(sorted_vals[idx], 1)
-
     return {
         "turn_count": len(turns),
-        "response_latency_p50_ms": _pct(sut_values, 50),
-        "response_latency_p90_ms": _pct(sut_values, 90),
-        "response_latency_p95_ms": _pct(sut_values, 95),
+        "response_latency_sample_count": len(sut_values),
+        "response_latency_p50_ms": latency_percentile(sut_values, 50),
+        "response_latency_p90_ms": latency_percentile(sut_values, 90),
+        "response_latency_p95_ms": latency_percentile(sut_values, 95),
         "component_aggregates": aggregates or None,
     }
 

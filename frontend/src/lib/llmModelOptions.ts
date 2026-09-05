@@ -198,6 +198,7 @@ const DEFAULT_LLM_MODELS: Record<string, string> = {
   anthropic: 'claude-sonnet-4.6',
   google: 'gemini-2.5-flash',
   sarvam: 'sarvam-30b',
+  fireworks: 'gpt-oss-20b',
 }
 
 function resolveCredentialForSelection(
@@ -270,7 +271,7 @@ export function resolveLLMModelForSubmit(
     const providerKey = (credential.provider || selection.provider || '')
       .toLowerCase()
       .trim()
-    return DEFAULT_LLM_MODELS[providerKey] ?? 'gpt-5-mini'
+    return DEFAULT_LLM_MODELS[providerKey] ?? null
   }
 
   return null

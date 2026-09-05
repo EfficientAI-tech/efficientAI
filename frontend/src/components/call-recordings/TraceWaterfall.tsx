@@ -1,4 +1,4 @@
-import { ArrowRight } from 'lucide-react'
+import { STAGE_COLORS } from '../../lib/callDetailTheme'
 import { TurnSignalBadges } from './TraceTurnBadges'
 import { formatMs } from './traceUtils'
 
@@ -16,115 +16,156 @@ export interface WaterfallRow {
   incomplete?: boolean
 }
 
-const STAGE_LABELS: Record<ComponentKind, string> = {
-  stt: 'STT',
-  llm: 'LLM',
-  tts: 'TTS',
-  s2s: 'S2S',
+const STAGE_META: Record<ComponentKind, { label: string; hint: string }> = {
+  stt: { label: 'Listen', hint: 'Speech-to-text' },
+  llm: { label: 'Think', hint: 'Language model' },
+  tts: { label: 'Speak', hint: 'Text-to-speech' },
+  s2s: { label: 'Realtime', hint: 'Speech-to-speech' },
 }
 
-function formatMsLocal(value?: number | null): string {
-  return formatMs(value)
+function stageValue(row: WaterfallRow, kind: ComponentKind): number | null {
+  const value =
+    kind === 'stt'
+      ? row.sttMs
+      : kind === 'llm'
+        ? row.llmMs
+        : kind === 'tts'
+          ? row.ttsMs
+          : row.s2sMs
+  if (value == null || value <= 0) return null
+  return value
 }
 
-function turnSegments(row: WaterfallRow): Array<{ kind: ComponentKind; ms: number }> {
-  const parts: Array<{ kind: ComponentKind; ms: number }> = []
-  if (row.s2sMs != null && row.s2sMs > 0) parts.push({ kind: 's2s', ms: row.s2sMs })
-  else {
-    if (row.sttMs != null && row.sttMs > 0) parts.push({ kind: 'stt', ms: row.sttMs })
-    if (row.llmMs != null && row.llmMs > 0) parts.push({ kind: 'llm', ms: row.llmMs })
-    if (row.ttsMs != null && row.ttsMs > 0) parts.push({ kind: 'tts', ms: row.ttsMs })
+function activeStages(rows: WaterfallRow[]): ComponentKind[] {
+  const kinds: ComponentKind[] = ['stt', 'llm', 'tts']
+  if (rows.some((row) => stageValue(row, 's2s') != null)) {
+    return ['s2s']
   }
-  return parts
+  return kinds.filter((kind) => rows.some((row) => stageValue(row, kind) != null))
 }
 
-function StageNode({ kind, ms }: { kind: ComponentKind; ms: number }) {
-  const highlight = kind === 'llm'
+function columnMaxes(rows: WaterfallRow[], stages: ComponentKind[]): Record<ComponentKind, number> {
+  const maxes = { stt: 0, llm: 0, tts: 0, s2s: 0 }
+  for (const row of rows) {
+    for (const kind of stages) {
+      const value = stageValue(row, kind)
+      if (value != null) maxes[kind] = Math.max(maxes[kind], value)
+    }
+  }
+  return maxes
+}
+
+function StageLegend({ stages }: { stages: ComponentKind[] }) {
   return (
-    <div
-      className={`flex min-w-[4.5rem] flex-col rounded-lg border px-2.5 py-2 ${
-        highlight
-          ? 'border-primary-300 bg-primary-50/50'
-          : 'border-gray-200 bg-white'
-      }`}
-      title={`${STAGE_LABELS[kind]} ${formatMsLocal(ms)}`}
-    >
-      <span className={`text-[10px] font-semibold uppercase tracking-wide ${highlight ? 'text-primary-800' : 'text-gray-400'}`}>
-        {STAGE_LABELS[kind]}
-      </span>
-      <span className={`mt-0.5 text-sm font-semibold tabular-nums ${highlight ? 'text-primary-900' : 'text-gray-800'}`}>
-        {formatMsLocal(ms)}
-      </span>
+    <div className="flex flex-wrap gap-3">
+      {stages.map((kind) => (
+        <span key={kind} className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+          <span className="h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: STAGE_COLORS[kind] }} />
+          <span className="font-medium text-gray-800">{STAGE_META[kind].label}</span>
+          <span className="text-gray-400">({STAGE_META[kind].hint})</span>
+        </span>
+      ))}
     </div>
+  )
+}
+
+function StageCell({
+  ms,
+  kind,
+  columnMax,
+}: {
+  ms: number | null
+  kind: ComponentKind
+  columnMax: number
+}) {
+  if (ms == null) {
+    return (
+      <td className="px-4 py-3.5 align-top">
+        <span className="text-sm text-gray-300">—</span>
+      </td>
+    )
+  }
+
+  const barWidth = columnMax > 0 ? Math.max(10, Math.round((ms / columnMax) * 100)) : 100
+
+  return (
+    <td className="px-4 py-3.5 align-top">
+      <div className="min-w-[5.5rem] space-y-2">
+        <span className="text-sm font-semibold tabular-nums text-gray-900">{formatMs(ms)}</span>
+        <div className="h-2 w-full max-w-[9rem] overflow-hidden rounded-full bg-gray-100">
+          <div
+            className="h-full rounded-full transition-all"
+            style={{ width: `${barWidth}%`, backgroundColor: STAGE_COLORS[kind] }}
+          />
+        </div>
+      </div>
+    </td>
   )
 }
 
 export default function TraceWaterfall({ rows }: { rows: WaterfallRow[] }) {
   if (rows.length === 0) return null
 
-  const turnTotal = (row: WaterfallRow) => {
-    const segments = turnSegments(row)
-    return row.totalMs ?? (segments.length > 0 ? segments.reduce((s, p) => s + p.ms, 0) : 0)
-  }
-
-  const maxTotal = Math.max(...rows.map(turnTotal), 1)
+  const stages = activeStages(rows)
+  const maxes = columnMaxes(rows, stages)
 
   return (
     <div className="overflow-hidden rounded-lg border border-primary-200 bg-white">
-      <div className="border-b border-gray-100 bg-gray-50/60 px-4 py-2.5">
-        <p className="text-xs text-gray-500">
-          Per-turn pipeline flow — stages run left to right in order
-        </p>
+      <div className="space-y-2 border-b border-gray-100 bg-gray-50/60 px-4 py-3">
+        <p className="text-sm font-medium text-gray-900">How long each stage took per turn</p>
+        <p className="text-xs text-gray-500">Bars compare turns within the same stage — slower turns have longer bars.</p>
+        <StageLegend stages={stages} />
       </div>
 
-      <div className="divide-y divide-gray-100">
-        {rows.map((row) => {
-          const segments = turnSegments(row)
-          const total = turnTotal(row)
-          const widthPct = total > 0 ? Math.max((total / maxTotal) * 100, 12) : 12
-
-          return (
-            <div key={row.turnNumber} className="px-4 py-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-                    Turn {row.turnNumber}
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 bg-white text-left text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+              <th className="px-4 py-3 w-28">Turn</th>
+              {stages.map((kind) => (
+                <th key={kind} className="px-4 py-3">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-sm" style={{ backgroundColor: STAGE_COLORS[kind] }} />
+                    {STAGE_META[kind].label}
                   </span>
-                  <TurnSignalBadges
-                    talkOver={row.talkOver}
-                    interrupted={row.interrupted}
-                    incomplete={row.incomplete}
-                  />
-                </div>
-                <span className="text-sm font-semibold tabular-nums text-gray-900">
-                  {formatMsLocal(total)}
-                  <span className="ml-1 text-xs font-normal text-gray-400">total</span>
-                </span>
-              </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {rows.map((row) => {
+              const segments = stages
+                .map((kind) => ({ kind, ms: stageValue(row, kind) }))
+                .filter((entry) => entry.ms != null)
+              if (segments.length === 0) return null
 
-              {segments.length === 0 ? (
-                <p className="text-xs text-gray-400">No stage timing</p>
-              ) : (
-                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                  {segments.map((seg, idx) => (
-                    <div key={seg.kind} className="flex items-center gap-1.5 sm:gap-2">
-                      {idx > 0 && <ArrowRight className="h-3.5 w-3.5 shrink-0 text-gray-300" aria-hidden />}
-                      <StageNode kind={seg.kind} ms={seg.ms} />
+              return (
+                <tr key={row.turnNumber} className="hover:bg-gray-50/60">
+                  <td className="px-4 py-3.5 align-top">
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        Turn {row.turnNumber}
+                      </span>
+                      <TurnSignalBadges
+                        talkOver={row.talkOver}
+                        interrupted={row.interrupted}
+                        incomplete={row.incomplete}
+                      />
                     </div>
+                  </td>
+                  {stages.map((kind) => (
+                    <StageCell
+                      key={kind}
+                      kind={kind}
+                      ms={stageValue(row, kind)}
+                      columnMax={maxes[kind]}
+                    />
                   ))}
-                </div>
-              )}
-
-              <div className="mt-3 h-1 overflow-hidden rounded-full bg-gray-100">
-                <div
-                  className="h-full rounded-full bg-gray-300"
-                  style={{ width: `${widthPct}%` }}
-                  title={`${formatMsLocal(total)} of ${formatMsLocal(maxTotal)} max`}
-                />
-              </div>
-            </div>
-          )
-        })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   )

@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquare, Sparkles, Activity, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import { isPlaygroundCallRecordingSource } from '../../lib/callDetailRouting'
+import { formatMessageTiming } from '../../lib/callTranscriptTiming'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
+import { isPlaygroundCallRecordingSource, isVoiceAiProviderPlatform } from '../../lib/callDetailRouting'
 import { getEvaluatorResultPlaceholder } from '../../lib/evaluatorResultQuery'
 import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../lib/waveformAudioCache'
 import CallWaveformPlayer from './CallWaveformPlayer'
@@ -16,10 +18,8 @@ const TABS: Array<{ id: DrawerTab; label: string; icon: typeof MessageSquare }> 
   { id: 'pipeline', label: 'Pipeline', icon: Activity },
 ]
 
-function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${mins}:${secs.toString().padStart(2, '0')}`
+function segmentTimingLabel(segment: { start: number; end?: number }): string | null {
+  return formatMessageTiming(segment.start, segment.end)
 }
 
 function getSpeakerLabel(speaker: string, agentName?: string): string {
@@ -81,7 +81,9 @@ export default function EvaluatorCallDetailPanel({
   const callShortId =
     typeof result?.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : undefined
   const playgroundCallShortId =
-    callShortId && isPlaygroundCallRecordingSource(result?.call_recording_source)
+    callShortId &&
+    isPlaygroundCallRecordingSource(result?.call_recording_source) &&
+    isVoiceAiProviderPlatform(result?.provider_platform)
       ? callShortId
       : undefined
 
@@ -128,8 +130,8 @@ export default function EvaluatorCallDetailPanel({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        <div className="space-y-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="shrink-0 space-y-2.5 border-b border-gray-200 bg-gray-50 px-5 pb-3 pt-4">
           {fetchError ? (
             <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               {fetchError}
@@ -142,13 +144,13 @@ export default function EvaluatorCallDetailPanel({
             platform={result?.provider_platform}
           />
 
-          <div className="flex flex-wrap gap-1 border-b border-gray-200 bg-white px-1">
+          <div className="flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {TABS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${
                   tab === id
                     ? 'border-primary-500 text-primary-800'
                     : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
@@ -159,7 +161,9 @@ export default function EvaluatorCallDetailPanel({
               </button>
             ))}
           </div>
+        </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
           {!detailsReady && tab !== 'pipeline' ? (
             <div className="space-y-3">
               <div className="h-48 animate-pulse rounded-xl bg-gray-100" />
@@ -168,33 +172,28 @@ export default function EvaluatorCallDetailPanel({
 
           {detailsReady && tab === 'transcript' ? (
             <div className="rounded-xl border border-gray-200 bg-white p-4">
-              <div className="max-h-[min(60vh,520px)] space-y-3 overflow-y-auto pr-1">
+              <div className="space-y-3 pr-1">
                 {result?.speaker_segments && result.speaker_segments.length > 0 ? (
                   result.speaker_segments.map(
-                    (segment: { speaker: string; text: string; start: number }, idx: number) => (
+                    (segment: { speaker: string; text: string; start: number; end?: number }, idx: number) => {
+                    const timing = segmentTimingLabel(segment)
+                    return (
                     <div
                       key={idx}
                       className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'}`}
                     >
-                      <div
-                        className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
-                          isUserSpeaker(segment.speaker)
-                            ? 'bg-indigo-600 text-white rounded-br-sm'
-                            : 'bg-gray-100 text-gray-800 rounded-bl-sm'
-                        }`}
-                      >
-                        <div
-                          className={`mb-0.5 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider ${
-                            isUserSpeaker(segment.speaker) ? 'text-indigo-200' : 'text-gray-400'
-                          }`}
-                        >
+                      <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker))}>
+                        <div className={transcriptMetaClass(isUserSpeaker(segment.speaker))}>
                           <span>{getSpeakerLabel(segment.speaker, result.agent?.name)}</span>
-                          <span className="tabular-nums">{formatTime(segment.start)}</span>
+                          {timing ? (
+                            <span className="font-normal normal-case tracking-normal tabular-nums">{timing}</span>
+                          ) : null}
                         </div>
                         <p className="text-sm leading-relaxed">{segment.text}</p>
                       </div>
                     </div>
-                  ),
+                    )
+                  },
                   )
                 ) : result?.transcription ? (
                   <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">

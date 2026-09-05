@@ -5,6 +5,8 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend
 } from 'recharts'
+import { formatMessageTiming } from '../../lib/callTranscriptTiming'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 interface SmallestTranscriptEntry {
   speaker: string
@@ -35,6 +37,7 @@ interface SmallestCallData {
 interface SmallestCallDetailsProps {
   callData: SmallestCallData
   hideTranscript?: boolean
+  embedded?: boolean
 }
 
 const COLORS = ['#10b981', '#06b6d4', '#f59e0b', '#8b5cf6']
@@ -51,7 +54,11 @@ const toNumber = (value: any): number | undefined => {
   return undefined
 }
 
-export default function SmallestCallDetails({ callData, hideTranscript = false }: SmallestCallDetailsProps) {
+export default function SmallestCallDetails({
+  callData,
+  hideTranscript = false,
+  embedded = false,
+}: SmallestCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
 
   const rawData = callData.raw_data || {}
@@ -101,11 +108,20 @@ export default function SmallestCallDetails({ callData, hideTranscript = false }
 
   const latencyData = useMemo(() => {
     const latencyStats = callData.analysis?.latency_stats || rawData.latencyStats || {}
-    return Object.entries(latencyStats)
+    const fromStats = Object.entries(latencyStats)
       .map(([key, value]) => ({ name: labelize(key), value: toNumber(value) }))
       .filter((entry): entry is { name: string; value: number } => entry.value !== undefined)
-      .slice(0, 8)
-  }, [callData.analysis?.latency_stats, rawData.latencyStats])
+
+    if (fromStats.length > 0) return fromStats.slice(0, 8)
+
+    const fallback = [
+      { name: 'ASR', value: toNumber(rawData.average_transcriber_latency) },
+      { name: 'LLM', value: toNumber(rawData.average_agent_latency) },
+      { name: 'TTS', value: toNumber(rawData.average_synthesizer_latency) },
+    ].filter((entry): entry is { name: string; value: number } => entry.value !== undefined)
+
+    return fallback
+  }, [callData.analysis?.latency_stats, rawData.latencyStats, rawData.average_transcriber_latency, rawData.average_agent_latency, rawData.average_synthesizer_latency])
 
   const formatDuration = (seconds?: number) => {
     if (!seconds || seconds <= 0) return 'N/A'
@@ -166,39 +182,38 @@ export default function SmallestCallDetails({ callData, hideTranscript = false }
   )
 
   const TranscriptCard = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[600px]">
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+    <div className={embedded ? 'space-y-3' : 'flex h-[600px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm'}>
+      {!embedded ? (
+      <div className="mb-4 flex flex-shrink-0 items-center justify-between">
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900">
           <MessageSquare className="h-5 w-5 text-emerald-600" />
           Transcript
         </h3>
         {recordingUrl && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+          <div className="flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1">
             <audio controls src={recordingUrl} className="h-8 w-64" />
-            <a href={recordingUrl} download className="text-gray-500 hover:text-emerald-600 p-1">
+            <a href={recordingUrl} download className="p-1 text-gray-500 hover:text-emerald-600">
               <Download className="h-4 w-4" />
             </a>
           </div>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+      ) : null}
+      <div className={embedded ? 'space-y-3' : 'custom-scrollbar flex-1 space-y-4 overflow-y-auto pr-2'}>
         {transcriptEntries.length > 0 ? (
           transcriptEntries.map((entry, idx) => {
             const speaker = String(entry.speaker || '').toLowerCase()
             const isUser = speaker === 'user' || speaker === 'customer' || speaker === 'caller' || speaker === 'human'
             return (
               <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${isUser
-                  ? 'bg-emerald-600 text-white rounded-br-none'
-                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
-                  }`}>
-                  <div className="flex items-center gap-2 mb-1 opacity-80">
-                    <span className="text-xs font-semibold uppercase tracking-wider">
-                      {isUser ? 'User' : 'Agent'}
-                    </span>
-                    {typeof entry.start === 'number' && entry.start > 0 && (
-                      <span className="text-[10px]">{entry.start.toFixed(1)}s</span>
-                    )}
+                <div className={transcriptBubbleClass(isUser, '80')}>
+                  <div className={`${transcriptMetaClass(isUser)} opacity-90`}>
+                    <span>{isUser ? 'User' : 'Agent'}</span>
+                    {typeof entry.start === 'number' ? (
+                      <span className="font-normal normal-case tracking-normal tabular-nums">
+                        {formatMessageTiming(entry.start, entry.end)}
+                      </span>
+                    ) : null}
                   </div>
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{entry.text}</p>
                 </div>
@@ -319,6 +334,17 @@ export default function SmallestCallDetails({ callData, hideTranscript = false }
       </div>
     </div>
   )
+
+  if (embedded) {
+    if (hideTranscript) {
+      return (
+        <div className="space-y-4">
+          <SummaryCard />
+        </div>
+      )
+    }
+    return <TranscriptCard />
+  }
 
   if (hideTranscript) {
     return (

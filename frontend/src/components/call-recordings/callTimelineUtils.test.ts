@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildOtelCallTimeline, buildVapiCallTimeline } from './callTimelineUtils'
+import { buildElevenLabsCallTimeline, buildOtelCallTimeline, buildVapiCallTimeline } from './callTimelineUtils'
 
 describe('buildVapiCallTimeline', () => {
   it('orders call ended after pipeline events and uses real timestamps', () => {
@@ -169,5 +169,56 @@ describe('buildOtelCallTimeline', () => {
     expect(llmIdx).toBeGreaterThan(sttIdx)
     expect(agentIdx).toBeGreaterThan(llmIdx)
     expect(events[userIdx].offsetMs).toBeLessThanOrEqual(events[sttIdx].offsetMs)
+  })
+})
+
+describe('buildElevenLabsCallTimeline', () => {
+  it('builds billing, messages, and latency events from raw transcript', () => {
+    const events = buildElevenLabsCallTimeline({
+      duration_seconds: 39,
+      ended_reason: 'Client disconnected: 1005',
+      cost: 523,
+      raw_data: {
+        metadata: {
+          cost_fiat: 0.062761,
+          call_duration_secs: 39,
+          termination_reason: 'Client disconnected: 1005',
+        },
+        analysis: {
+          transcript_summary: 'Test conversation summary',
+        },
+        transcript: [
+          {
+            role: 'user',
+            message: 'Hi, how are you?',
+            time_in_call_secs: 5,
+            conversation_turn_metrics: {
+              metrics: {
+                convai_asr_trailing_service_latency: { elapsed_time: 0.028 },
+              },
+            },
+          },
+          {
+            role: 'agent',
+            message: 'Doing well, thanks!',
+            time_in_call_secs: 8,
+            producing_llm: 'gpt-4o-mini',
+            conversation_turn_metrics: {
+              metrics: {
+                convai_llm_service_ttfb: { elapsed_time: 0.495 },
+                convai_tts_service_ttfb: { elapsed_time: 0.241 },
+              },
+            },
+          },
+        ],
+      },
+    })
+
+    expect(events.some((e) => e.title === 'Billing' && e.detail?.includes('$0.0628'))).toBe(true)
+    expect(events.some((e) => e.title === 'Billing' && e.detail?.includes('523 credits'))).toBe(true)
+    expect(events.some((e) => e.title === 'User spoke')).toBe(true)
+    expect(events.some((e) => e.title === 'LLM response' && e.detail?.includes('495ms'))).toBe(true)
+    expect(events.some((e) => e.title === 'TTS audio' && e.detail?.includes('241ms'))).toBe(true)
+    expect(events.some((e) => e.title === 'Call summary')).toBe(true)
   })
 })

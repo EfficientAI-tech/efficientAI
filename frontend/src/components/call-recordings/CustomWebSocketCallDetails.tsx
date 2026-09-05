@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import SyntheticCallTracePanel from './SyntheticCallTracePanel'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 interface SpeakerSegment {
   speaker: string
@@ -284,15 +285,9 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
         {segments.length > 0 ? (
           segments.map((seg, idx) => (
             <div key={idx} className={`flex ${isUserSpeaker(seg.speaker) ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                isUserSpeaker(seg.speaker)
-                  ? 'bg-indigo-600 text-white rounded-br-none'
-                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
-              }`}>
-                <div className="flex items-center gap-2 mb-1 opacity-80">
-                  <span className="text-xs font-semibold uppercase tracking-wider">
-                    {getSpeakerLabel(seg.speaker)}
-                  </span>
+              <div className={transcriptBubbleClass(isUserSpeaker(seg.speaker), '80')}>
+                <div className={`${transcriptMetaClass(isUserSpeaker(seg.speaker))} opacity-90`}>
+                  <span>{getSpeakerLabel(seg.speaker)}</span>
                 </div>
                 <p className="text-sm leading-relaxed whitespace-pre-wrap">{seg.text}</p>
               </div>

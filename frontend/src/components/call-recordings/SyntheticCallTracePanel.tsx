@@ -1,13 +1,25 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Clock, ChevronDown, ChevronRight, ExternalLink, Radio, X } from 'lucide-react'
+import {
+  Activity,
+  BarChart3,
+  Clock,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Layers,
+  MessageSquare,
+  Radio,
+  X,
+} from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import TraceTurnDetail from './TraceTurnDetail'
 import TraceWaterfall from './TraceWaterfall'
 import CallWaveformPlayer from './CallWaveformPlayer'
 import CallEventTimeline from './CallEventTimeline'
-import { buildOtelCallTimeline } from './callTimelineUtils'
+import { buildOtelCallTimeline, computeTurnMessageOffsets, resolveTraceStartNs } from './callTimelineUtils'
+import { computeResponseLatencySummary, responseLatencySampleLabel, RESPONSE_LATENCY_SAMPLE_HINT } from '../../lib/traceLatencySummary'
 import { TurnSignalBadges } from './TraceTurnBadges'
 import {
   FAILURE_FLAG_LABELS,
@@ -18,6 +30,7 @@ import {
   sessionPipelineMode,
   spanHasError,
 } from './traceUtils'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 interface SyntheticCallTracePanelProps {
   evaluatorResultId?: string
@@ -45,6 +58,7 @@ interface TraceTurnExtra {
   assistant_text?: string
   agent_id?: string
   agent_role?: string
+  turn_type?: string
   was_interrupted?: boolean
   pipeline_mode?: 'stt_llm_tts' | 's2s'
   stt_model?: string
@@ -90,13 +104,49 @@ const COMPONENT_LABELS: Record<ComponentKind, string> = {
   s2s: 'S2S',
 }
 
-const TABS: Array<{ id: DetailTab; label: string }> = [
-  { id: 'trace', label: 'Trace' },
-  { id: 'waterfall', label: 'Waterfall' },
-  { id: 'transcript', label: 'Transcript' },
-  { id: 'timeline', label: 'Timeline' },
-  { id: 'spans', label: 'Spans' },
+const TABS: Array<{ id: DetailTab; label: string; icon: typeof Activity }> = [
+  { id: 'trace', label: 'Trace', icon: Activity },
+  { id: 'waterfall', label: 'Waterfall', icon: BarChart3 },
+  { id: 'transcript', label: 'Transcript', icon: MessageSquare },
+  { id: 'timeline', label: 'Timeline', icon: Clock },
+  { id: 'spans', label: 'Spans', icon: Layers },
 ]
+
+function TraceTabBar({
+  tabs,
+  activeTab,
+  onSelect,
+  compact = false,
+}: {
+  tabs: typeof TABS
+  activeTab: DetailTab
+  onSelect: (tab: DetailTab) => void
+  compact?: boolean
+}) {
+  return (
+    <div
+      className={`flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+        compact ? '' : 'px-5'
+      }`}
+    >
+      {tabs.map(({ id, label, icon: Icon }) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => onSelect(id)}
+          className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${
+            activeTab === id
+              ? 'border-primary-500 text-primary-800'
+              : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+          }`}
+        >
+          <Icon className="h-4 w-4" />
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 function formatOffset(ms: number): string {
   const totalSec = ms / 1000
@@ -200,6 +250,11 @@ function buildSpansByTurn(spans: OtelSpan[]): Map<number, OtelSpan[]> {
 function turnMetaFromSpans(spans: OtelSpan[]): Partial<TraceTurnExtra> {
   const out: Partial<TraceTurnExtra> = {}
   for (const span of spans) {
+    const attrs = span.attributes ?? {}
+    const agentRole = attrStr(attrs, 'efficientai.agent_role')
+    if (agentRole && !out.agent_role) {
+      out.agent_role = agentRole
+    }
     const kind = spanKind(span)
     if (!kind) continue
     const meta = metaFromSpan(span)
@@ -238,24 +293,64 @@ function mergeTurnMeta(
   return extra
 }
 
-function turnOffsetMs(turns: TraceTurn[], turnNumber: number): number {
-  let ms = 0
-  for (const t of turns) {
-    if (t.turn_number >= turnNumber) break
-    ms += t.sut_response_latency_ms ?? 0
+function isSessionLevelSpan(span: OtelSpan, traceDurationMs: number): boolean {
+  const name = span.name.toLowerCase()
+  if (name !== 'conversation' && name !== 'turn') return false
+  if (span.start_time_unix_nano == null || span.end_time_unix_nano == null) {
+    return name === 'conversation'
   }
-  return ms
+  const durationMs = Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
+  return traceDurationMs > 0 && durationMs >= traceDurationMs * 0.85
+}
+
+function compareTranscriptMessages(
+  a: { offsetMs: number; turn: number; role: 'user' | 'agent' },
+  b: { offsetMs: number; turn: number; role: 'user' | 'agent' },
+): number {
+  if (a.offsetMs !== b.offsetMs) return a.offsetMs - b.offsetMs
+  if (a.turn !== b.turn) return a.turn - b.turn
+  if (a.role === 'user' && b.role === 'agent') return -1
+  if (a.role === 'agent' && b.role === 'user') return 1
+  return 0
+}
+
+function formatTraceRoleLabel(raw?: string | null): string | null {
+  if (!raw) return null
+  const normalized = raw.trim().toLowerCase()
+  if (!normalized || normalized === 'conversation') return null
+  return raw
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function resolveTranscriptSpeakerLabel(
+  role: 'user' | 'agent',
+  extra: TraceTurnExtra,
+  sessionAgentName?: string | null,
+): string {
+  if (role === 'user') return 'User'
+  return (
+    formatTraceRoleLabel(extra.agent_role) ||
+    formatTraceRoleLabel(extra.turn_type) ||
+    sessionAgentName?.trim() ||
+    'Bot'
+  )
 }
 
 function MetricTile({
   label,
   value,
   unit,
+  subtitle,
+  hint,
   highlight,
 }: {
   label: string
   value: string
   unit?: string
+  subtitle?: string
+  hint?: string
   highlight?: boolean
 }) {
   return (
@@ -263,6 +358,7 @@ function MetricTile({
       className={`rounded-lg border px-3 py-3 ${
         highlight ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200 bg-white'
       }`}
+      title={hint}
     >
       <p
         className={`text-[10px] font-semibold uppercase tracking-wider ${
@@ -275,6 +371,7 @@ function MetricTile({
         {value}
         {unit && <span className="ml-0.5 text-sm font-medium text-gray-500">{unit}</span>}
       </p>
+      {subtitle ? <p className="mt-1 text-[10px] text-gray-500">{subtitle}</p> : null}
     </div>
   )
 }
@@ -369,6 +466,15 @@ export default function SyntheticCallTracePanel({
     enabled: Boolean(data?.agent_id),
   })
 
+  const traceStartNs = useMemo(() => resolveTraceStartNs(otelSpans), [otelSpans])
+  const traceDurationMs = useMemo(() => {
+    if (!otelSpans.length) return 0
+    const traceEnd = Math.max(
+      ...otelSpans.map((span) => span.end_time_unix_nano ?? span.start_time_unix_nano ?? traceStartNs),
+    )
+    return Math.max(0, Math.round((traceEnd - traceStartNs) / 1_000_000))
+  }, [otelSpans, traceStartNs])
+
   const traceTurnRows = useMemo(() => {
     return turns.map((turn) => {
       const turnSpans = spansByTurn.get(turn.turn_number) ?? []
@@ -379,9 +485,25 @@ export default function SyntheticCallTracePanel({
         const model = extra[`${kind}_model` as keyof TraceTurnExtra] as string | undefined
         if (model) models[kind] = model
       }
+      const offsets = computeTurnMessageOffsets(
+        turnSpans,
+        {
+          turn_number: turn.turn_number,
+          stt_ttfb_ms: turn.stt_ttfb_ms,
+          llm_ttfb_ms: turn.llm_ttfb_ms,
+          tts_ttfb_ms: turn.tts_ttfb_ms,
+          sut_response_latency_ms: turn.sut_response_latency_ms,
+          transcript: turn.transcript,
+          extra: {
+            user_text: extra.user_text,
+            assistant_text: extra.assistant_text,
+          },
+        },
+        traceStartNs,
+      )
       return {
         turnNumber: turn.turn_number,
-        offsetMs: turnOffsetMs(turns, turn.turn_number),
+        offsetMs: offsets.userOffsetMs ?? offsets.agentOffsetMs ?? 0,
         sttMs: turn.stt_ttfb_ms,
         llmMs: turn.llm_ttfb_ms,
         ttsMs: turn.tts_ttfb_ms,
@@ -403,11 +525,13 @@ export default function SyntheticCallTracePanel({
         })),
       }
     })
-  }, [turns, spansByTurn, pipelineModels, pipelineMode])
+  }, [turns, spansByTurn, pipelineModels, pipelineMode, traceStartNs])
 
   const transcriptMessages = useMemo(() => {
+    const sessionAgentName = linkedAgent?.name ?? null
     const messages: Array<{
       role: 'user' | 'agent'
+      speakerLabel: string
       text: string
       turn: number
       offsetMs: number
@@ -417,19 +541,36 @@ export default function SyntheticCallTracePanel({
       incomplete?: boolean
     }> = []
     for (const turn of turns) {
-      const spanMeta = turnMetaFromSpans(spansByTurn.get(turn.turn_number) ?? [])
+      const turnSpans = spansByTurn.get(turn.turn_number) ?? []
+      const spanMeta = turnMetaFromSpans(turnSpans)
       const extra = mergeTurnMeta(turn, spanMeta, pipelineModels)
       const parsed = parseTranscript(turn.transcript)
-      const offset = turnOffsetMs(turns, turn.turn_number)
       const userText = extra.user_text ?? parsed.user
       const assistantText = extra.assistant_text ?? parsed.assistant
       const incomplete = isTurnIncomplete(turn, pipelineMode)
+      const offsets = computeTurnMessageOffsets(
+        turnSpans,
+        {
+          turn_number: turn.turn_number,
+          stt_ttfb_ms: turn.stt_ttfb_ms,
+          llm_ttfb_ms: turn.llm_ttfb_ms,
+          tts_ttfb_ms: turn.tts_ttfb_ms,
+          sut_response_latency_ms: turn.sut_response_latency_ms,
+          transcript: turn.transcript,
+          extra: {
+            user_text: extra.user_text,
+            assistant_text: extra.assistant_text,
+          },
+        },
+        traceStartNs,
+      )
       if (userText) {
         messages.push({
           role: 'user',
+          speakerLabel: resolveTranscriptSpeakerLabel('user', extra, sessionAgentName),
           text: userText,
           turn: turn.turn_number,
-          offsetMs: offset,
+          offsetMs: offsets.userOffsetMs ?? 0,
           talkOver: turn.talk_over,
           incomplete,
         })
@@ -437,17 +578,18 @@ export default function SyntheticCallTracePanel({
       if (assistantText) {
         messages.push({
           role: 'agent',
+          speakerLabel: resolveTranscriptSpeakerLabel('agent', extra, sessionAgentName),
           text: assistantText,
           turn: turn.turn_number,
-          offsetMs: offset + (turn.stt_ttfb_ms ?? 0),
+          offsetMs: offsets.agentOffsetMs ?? offsets.userOffsetMs ?? 0,
           latencyMs: turn.sut_response_latency_ms ?? undefined,
           interrupted: extra.was_interrupted,
           incomplete,
         })
       }
     }
-    return messages
-  }, [turns, spansByTurn, pipelineModels, pipelineMode])
+    return messages.sort(compareTranscriptMessages)
+  }, [turns, spansByTurn, pipelineModels, pipelineMode, linkedAgent?.name, traceStartNs])
 
   const timelineTurnInputs = useMemo(() => {
     return turns.map((turn) => {
@@ -467,6 +609,8 @@ export default function SyntheticCallTracePanel({
       }
     })
   }, [turns, spansByTurn, pipelineModels])
+
+  const responseLatencyStats = useMemo(() => computeResponseLatencySummary(turns), [turns])
 
   const timelineEvents = useMemo(() => {
     return buildOtelCallTimeline(otelSpans, timelineTurnInputs)
@@ -515,9 +659,21 @@ export default function SyntheticCallTracePanel({
   const isOpen = trace.status === 'open'
 
   const medianMs =
-    trace.response_latency_p50_ms != null ? Math.round(trace.response_latency_p50_ms) : null
-  const p90Ms = trace.response_latency_p90_ms != null ? Math.round(trace.response_latency_p90_ms) : null
-  const p95Ms = trace.response_latency_p95_ms != null ? Math.round(trace.response_latency_p95_ms) : null
+    responseLatencyStats?.p50 ??
+    (trace.response_latency_p50_ms != null ? Math.round(trace.response_latency_p50_ms) : null)
+  const p90Ms =
+    responseLatencyStats?.p90 ??
+    (trace.response_latency_p90_ms != null ? Math.round(trace.response_latency_p90_ms) : null)
+  const p95Ms =
+    responseLatencyStats?.p95 ??
+    (trace.response_latency_p95_ms != null ? Math.round(trace.response_latency_p95_ms) : null)
+  const latencySampleCount =
+    responseLatencyStats?.sampleCount ?? trace.response_latency_sample_count ?? null
+  const turnCountForLatency = turns.length || trace.turn_count || 0
+  const latencySampleLabel =
+    latencySampleCount != null && turnCountForLatency > 0
+      ? responseLatencySampleLabel(latencySampleCount, turnCountForLatency)
+      : undefined
 
   const startedLabel = trace.started_at
     ? new Date(trace.started_at).toLocaleString(undefined, {
@@ -569,32 +725,20 @@ export default function SyntheticCallTracePanel({
                 const isUser = msg.role === 'user'
                 return (
                   <div key={`${msg.turn}-${msg.role}-${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
-                    <div className="max-w-[85%]">
-                      <div
-                        className={`rounded-xl px-4 py-3 ${
-                          isUser
-                            ? 'bg-white border border-gray-200 text-gray-900'
-                            : 'bg-gray-100 border border-gray-200/80 text-gray-900'
-                        }`}
-                      >
-                        <div className="mb-1 flex flex-wrap items-center gap-2">
-                          <p className={`text-xs font-semibold ${isUser ? 'text-gray-700' : 'text-gray-600'}`}>
-                            {isUser ? 'User' : 'Agent'}
-                          </p>
-                          <TurnSignalBadges
-                            talkOver={isUser ? msg.talkOver : undefined}
-                            interrupted={!isUser ? msg.interrupted : undefined}
-                            incomplete={msg.incomplete}
-                          />
-                        </div>
-                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                    <div className={transcriptBubbleClass(isUser)}>
+                      <div className={transcriptMetaClass(isUser)}>
+                        <span>{msg.speakerLabel}</span>
+                        <span className="text-[10px] font-normal normal-case tracking-normal tabular-nums opacity-90">
+                          Turn {msg.turn} {formatOffset(msg.offsetMs)}
+                          {msg.latencyMs != null ? ` · ${formatMs(msg.latencyMs)}` : ''}
+                        </span>
+                        <TurnSignalBadges
+                          talkOver={isUser ? msg.talkOver : undefined}
+                          interrupted={!isUser ? msg.interrupted : undefined}
+                          incomplete={msg.incomplete}
+                        />
                       </div>
-                      <p className={`text-[11px] mt-1 tabular-nums text-gray-500 ${isUser ? 'text-right' : ''}`}>
-                        Turn {msg.turn} {formatOffset(msg.offsetMs)}
-                        {msg.latencyMs != null && (
-                          <span className="ml-2">· {formatMs(msg.latencyMs)}</span>
-                        )}
-                      </p>
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
                     </div>
                   </div>
                 )
@@ -626,6 +770,7 @@ export default function SyntheticCallTracePanel({
                 <span className="text-right">Duration</span>
               </div>
               {otelSpans
+                .filter((span) => !isSessionLevelSpan(span, traceDurationMs))
                 .slice()
                 .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
                 .map((span) => (
@@ -641,22 +786,7 @@ export default function SyntheticCallTracePanel({
   if (embedded) {
     return (
       <div className="rounded-xl border border-gray-200 bg-white">
-        <div className="flex flex-wrap gap-1 border-b border-gray-100 px-2">
-          {visibleTabs.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
-                tab === id
-                  ? 'border-primary-600 text-gray-900'
-                  : 'border-transparent text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} compact />
         <div className="p-4">{tabContent}</div>
       </div>
     )
@@ -749,7 +879,7 @@ export default function SyntheticCallTracePanel({
           )}
         </div>
 
-        <div className="space-y-3 px-5 py-4">
+        <div className={`space-y-2.5 bg-gray-50 ${isDrawer ? 'px-5 pb-3 pt-4' : 'space-y-3 px-5 py-4'}`}>
           {!hideRecording && (
             <CallWaveformPlayer
               callShortId={trace.call_short_id}
@@ -764,6 +894,13 @@ export default function SyntheticCallTracePanel({
               label="Response p50"
               value={medianMs != null ? String(medianMs) : '—'}
               unit={medianMs != null ? 'ms' : undefined}
+              subtitle={latencySampleLabel}
+              hint={
+                latencySampleCount != null &&
+                turnCountForLatency > latencySampleCount
+                  ? RESPONSE_LATENCY_SAMPLE_HINT
+                  : undefined
+              }
               highlight
             />
             <MetricTile
@@ -778,24 +915,10 @@ export default function SyntheticCallTracePanel({
             />
             <MetricTile label="Turns" value={String(trace.turn_count)} />
           </div>
+          {isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} compact /> : null}
         </div>
 
-        <div className="flex border-t border-gray-100 bg-white px-5">
-          {visibleTabs.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={`shrink-0 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
-                tab === id
-                  ? 'border-primary-600 text-gray-900'
-                  : 'border-transparent text-gray-500 hover:text-gray-800'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        {!isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} /> : null}
       </div>
 
       <div className={isDrawer ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : undefined}>

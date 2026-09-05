@@ -666,6 +666,7 @@ async def websocket_endpoint(
                     playground_call_data = {
                         "source": "voice_bundle",
                         "result_id": result_id,
+                        "call_short_id": call_short_id,
                         "transcript": call_metadata.get("transcription"),
                         "speaker_segments": speaker_segments,
                         "recording_s3_key": call_metadata.get("s3_key"),

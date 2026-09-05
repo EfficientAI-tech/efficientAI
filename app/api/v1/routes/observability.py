@@ -575,7 +575,6 @@ async def stream_observability_call_audio(
 ):
     """Stream call recording audio for observability calls (S3 or provider URL)."""
     import requests as http_requests
-    from io import BytesIO
 
     from fastapi.responses import RedirectResponse, StreamingResponse
 
@@ -614,47 +613,16 @@ async def stream_observability_call_audio(
             )
         return RedirectResponse(recording_url)
 
-    s3_key = call_data.get("recording_s3_key")
-    if not s3_key:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available")
+    from app.services.storage.audio_delivery import collect_call_data_audio_keys, stream_audio_from_keys
 
-    # region agent log
-    from app.utils.debug_agent_log import agent_debug_log
-
-    agent_debug_log(
-        "observability.py:stream_observability_call_audio",
-        "serving observability audio",
-        {
-            "call_short_id": call_short_id,
-            "has_recording_s3_key": True,
-            "has_recording_url": bool(recording_url),
-        },
-        "H6",
-        run_id="post-fix",
+    storage_stream = stream_audio_from_keys(
+        collect_call_data_audio_keys(call_data),
+        filename=f"call_{call_short_id}",
     )
-    # endregion
+    if storage_stream:
+        return storage_stream
 
-    from app.services.storage.s3_service import s3_service
-
-    if not s3_service.is_enabled():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 storage is not configured")
-
-    try:
-        audio_bytes = s3_service.download_file_by_key(s3_key)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage") from exc
-
-    extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "wav"
-    content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
-    content_type = content_type_map.get(extension, "audio/wav")
-
-    return StreamingResponse(
-        BytesIO(audio_bytes),
-        media_type=content_type,
-        headers={
-            "Content-Disposition": f'inline; filename="call_{call_short_id}.{extension}"',
-        },
-    )
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available")
 
 
 @router.delete("/calls/{call_short_id}", response_model=Dict[str, Any])

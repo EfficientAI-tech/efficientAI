@@ -3,7 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, X } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getCallRecordingPlaceholder, hasEnrichedCallRecordingDetails } from '../../lib/callRecordingQuery'
-import { clearCallRecordingAudioCache, preferStereoWaveform, prefetchCallRecordingAudio } from '../../lib/waveformAudioCache'
+import { getVoiceProviderCapabilities } from '../../lib/voiceProviderRegistry'
+import { clearCallRecordingAudioCache, prefetchCallRecordingAudio } from '../../lib/waveformAudioCache'
 import VoiceAiCallDetailPanel from './VoiceAiCallDetailPanel'
 
 interface ProviderCallTracePanelProps {
@@ -29,9 +30,7 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
 
   useEffect(() => {
     if (!callShortId) return
-    const stereo = preferStereoWaveform(recording?.call_data, recording?.provider_platform)
-    prefetchCallRecordingAudio(callShortId, stereo)
-    if (!stereo) prefetchCallRecordingAudio(callShortId, false)
+    prefetchCallRecordingAudio(callShortId, false)
   }, [callShortId, recording?.call_data, recording?.provider_platform])
 
   const handleRefresh = async () => {
@@ -55,20 +54,11 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
       : null
 
   const platform = recording?.provider_platform
-  const platformLabel =
-    platform === 'retell'
-      ? 'Retell'
-      : platform === 'vapi'
-        ? 'Vapi'
-        : platform === 'elevenlabs'
-          ? 'ElevenLabs'
-          : platform === 'smallest'
-            ? 'Smallest'
-            : platform || 'Provider'
+  const platformLabel = getVoiceProviderCapabilities(platform).label
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
-      <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
+      <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="font-mono text-xl font-bold tracking-tight text-primary-600">
@@ -102,7 +92,7 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 overflow-hidden px-5 pb-5">
         {errorMessage ? (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
             {errorMessage}
@@ -113,6 +103,9 @@ export default function ProviderCallTracePanel({ callShortId, onClose }: Provide
             recording={recording as Parameters<typeof VoiceAiCallDetailPanel>[0]['recording']}
             callShortId={callShortId}
             detailsLoading={isFetching && !hasEnrichedCallRecordingDetails(recording as Record<string, unknown>)}
+            onRefresh={handleRefresh}
+            refreshing={refreshing}
+            fillHeight
           />
         ) : null}
       </div>

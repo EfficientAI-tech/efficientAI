@@ -6,6 +6,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell
 } from 'recharts'
+import { formatMessageTiming } from '../../lib/callTranscriptTiming'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 interface RetellCallData {
   call_type?: string
@@ -63,6 +65,7 @@ interface RetellCallDetailsProps {
   hideTranscript?: boolean
   section?: RetellDetailSection
   compact?: boolean
+  embedded?: boolean
   evaluatorAnalysis?: {
     call_summary?: string
     user_sentiment?: string
@@ -77,6 +80,7 @@ export default function RetellCallDetails({
   hideTranscript = false,
   section = 'full',
   compact = false,
+  embedded = false,
   evaluatorAnalysis = null,
 }: RetellCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
@@ -112,7 +116,7 @@ export default function RetellCallDetails({
 
   const costData = callData.call_cost?.product_costs?.map(item => ({
     name: item.product,
-    value: item.cost
+    value: item.cost / 100,
   })) || []
 
   const mergedAnalysis = callData.call_analysis || (evaluatorAnalysis
@@ -202,47 +206,55 @@ export default function RetellCallDetails({
     </div>
   )
 
-  const TranscriptCard = () => (
-    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col ${compact ? 'max-h-[min(60vh,520px)]' : 'h-[600px]'}`}>
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+  const TranscriptCard = () => {
+    const flat = compact || embedded
+    return (
+    <div
+      className={
+        flat
+          ? 'space-y-3'
+          : 'flex h-[600px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm'
+      }
+    >
+      {!flat ? (
+      <div className="mb-4 flex flex-shrink-0 items-center justify-between">
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900">
           <MessageSquare className="h-5 w-5 text-indigo-600" />
           Transcript
         </h3>
-        {!compact && callData.recording_url && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+        {callData.recording_url && (
+          <div className="flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1">
             <audio controls src={callData.recording_url} className="h-8 w-64" />
-            <a href={callData.recording_url} download className="text-gray-500 hover:text-indigo-600 p-1">
+            <a href={callData.recording_url} download className="p-1 text-gray-500 hover:text-indigo-600">
               <Download className="h-4 w-4" />
             </a>
           </div>
         )}
       </div>
+      ) : null}
 
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-        {callData.transcript_object?.map((msg, idx) => (
-          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${msg.role === 'user'
-              ? 'bg-indigo-600 text-white rounded-br-none'
-              : 'bg-gray-100 text-gray-800 rounded-bl-none'
-              }`}>
-              <div className="flex items-center gap-2 mb-1 opacity-80">
-                <span className="text-xs font-semibold uppercase tracking-wider">
-                  {msg.role === 'user' ? 'User' : (callData.agent_name || 'Agent')}
-                </span>
-                {msg.words && msg.words.length > 0 && (
-                  <span className="text-[10px]">
-                    {msg.words[0].start.toFixed(1)}s
+      <div className={flat ? 'space-y-3' : 'custom-scrollbar flex-1 space-y-4 overflow-y-auto pr-2'}>
+        {callData.transcript_object?.map((msg, idx) => {
+          const isUser = msg.role === 'user'
+          return (
+          <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+            <div className={transcriptBubbleClass(isUser, '80')}>
+              <div className={`${transcriptMetaClass(isUser)} opacity-90`}>
+                <span>{isUser ? 'User' : (callData.agent_name || 'Agent')}</span>
+                {msg.words && msg.words.length > 0 ? (
+                  <span className="font-normal normal-case tracking-normal tabular-nums">
+                    {formatMessageTiming(msg.words[0].start, msg.words[msg.words.length - 1].end)}
                   </span>
-                )}
+                ) : null}
               </div>
               <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
             </div>
           </div>
-        ))}
+        )})}
       </div>
     </div>
-  )
+    )
+  }
 
   const CostSection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -255,7 +267,7 @@ export default function RetellCallDetails({
             <div className="mb-4">
               <p className="text-sm text-gray-500">Total Cost</p>
               <p className="text-3xl font-bold text-gray-900">
-                ${callData.call_cost?.combined_cost?.toFixed(3) || '0.000'}
+                ${((callData.call_cost?.combined_cost ?? 0) / 100).toFixed(4)}
               </p>
               <p className="text-xs text-gray-500 mt-1">
                 Duration: {callData.call_cost?.total_duration_seconds}s
@@ -265,7 +277,7 @@ export default function RetellCallDetails({
               {callData.call_cost?.product_costs?.map((prod, i) => (
                 <div key={i} className="flex justify-between items-center text-sm">
                   <span className="text-gray-600 capitalize">{prod.product.replace(/_/g, ' ')}</span>
-                  <span className="font-medium text-gray-900">${prod.cost.toFixed(3)}</span>
+                  <span className="font-medium text-gray-900">${(prod.cost / 100).toFixed(4)}</span>
                 </div>
               ))}
             </div>
@@ -286,7 +298,7 @@ export default function RetellCallDetails({
                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(value: number) => `$${value.toFixed(3)}`} />
+                  <Tooltip formatter={(value: number) => `$${value.toFixed(4)}`} />
               </PieChart>
             </ResponsiveContainer>
           </div>

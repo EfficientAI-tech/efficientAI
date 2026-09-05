@@ -5,6 +5,10 @@ import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import { apiClient } from '../../../lib/api'
+import {
+  captureElevenLabsConversationId,
+  scheduleCallRecordingRefresh,
+} from '../../../lib/voiceCallRecordingLifecycle'
 import { Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel } from '../../../config/providers'
 import VoiceAgent from '../../../components/VoiceAgent'
@@ -149,6 +153,7 @@ export default function AgentTalkSidebar({
     setTranscripts([])
     setActiveSpeaker(null)
     userInitiatedDisconnectRef.current = false
+    callShortIdRef.current = null
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -192,6 +197,9 @@ export default function AgentTalkSidebar({
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
+          if (callShortIdRef.current) {
+            scheduleCallRecordingRefresh(callShortIdRef.current)
+          }
         })
         client.on('error', () => {
           setIsConnecting(false)
@@ -199,6 +207,7 @@ export default function AgentTalkSidebar({
           setActiveSpeaker(null)
         })
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
+        callShortIdRef.current = webCall.call_short_id ?? null
         await client.startCall({
           accessToken: webCall.access_token!,
           callId: webCall.call_id,
@@ -255,6 +264,8 @@ export default function AgentTalkSidebar({
       } else if (isElevenLabs) {
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         if (!webCall.signed_url) throw new Error('No signed URL')
+        callShortIdRef.current = webCall.call_short_id ?? null
+        let elevenLabsConversationIdStored = false
         const conversation = await Conversation.startSession({
           signedUrl: webCall.signed_url,
           onConnect: () => {
@@ -266,6 +277,9 @@ export default function AgentTalkSidebar({
             setIsConnecting(false)
             setActiveSpeaker(null)
             elevenLabsConversationRef.current = null
+            if (callShortIdRef.current && elevenLabsConversationIdStored) {
+              scheduleCallRecordingRefresh(callShortIdRef.current, { delayMs: 5000 })
+            }
           },
           onModeChange: (mode: { mode?: string }) => {
             if (mode.mode === 'speaking') {
@@ -295,10 +309,15 @@ export default function AgentTalkSidebar({
           },
         })
         elevenLabsConversationRef.current = conversation
+        elevenLabsConversationIdStored = await captureElevenLabsConversationId(
+          conversation,
+          callShortIdRef.current,
+        )
       } else if (isSmallest) {
         const { AtomsClient } = await import('atoms-client-sdk')
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         if (!webCall.access_token || !webCall.host) throw new Error('Missing Smallest credentials')
+        callShortIdRef.current = webCall.call_short_id ?? null
         const client = new AtomsClient()
         smallestClientRef.current = client
         client.on('session_started', () => {
@@ -309,6 +328,9 @@ export default function AgentTalkSidebar({
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
+          if (callShortIdRef.current) {
+            scheduleCallRecordingRefresh(callShortIdRef.current, { delayMs: 3000 })
+          }
         })
         client.on('transcript', (data: any) => {
           if (data?.text) {

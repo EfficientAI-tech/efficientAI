@@ -4156,6 +4156,12 @@ class ApiClient {
     )
   }
 
+  getObservabilityCallAudioStreamUrl(callShortId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/observability/calls/${callShortId}/audio?proxy=true`,
+    )
+  }
+
   async getObservabilityCallAudioUrl(callShortId: string): Promise<string> {
     const response = await this.client.get(
       `/api/v1/observability/calls/${callShortId}/audio`,
@@ -4714,6 +4720,12 @@ class ApiClient {
   async getEvaluatorResultOtelCorrelation(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/otel-correlation`)
     return response.data
+  }
+
+  getEvaluatorResultAudioStreamUrl(resultId: string): string {
+    return this.buildAuthenticatedApiUrl(
+      `/api/v1/evaluator-results/${resultId}/audio`,
+    )
   }
 
   async getEvaluatorResultAudioUrl(resultId: string): Promise<string> {

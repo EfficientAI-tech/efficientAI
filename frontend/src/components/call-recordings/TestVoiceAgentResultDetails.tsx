@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import {
   Clock, MessageSquare, TrendingUp, Download, Server, BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
 } from 'lucide-react'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -638,16 +639,10 @@ export default function TestVoiceAgentResultDetails({
         {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
           resultData.speaker_segments.map((segment, idx) => (
             <div key={idx} className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                isUserSpeaker(segment.speaker)
-                  ? 'bg-indigo-600 text-white rounded-br-none'
-                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
-              }`}>
-                <div className="flex items-center gap-2 mb-1 opacity-80">
-                  <span className="text-xs font-semibold uppercase tracking-wider">
-                    {getSpeakerLabel(segment.speaker)}
-                  </span>
-                  <span className="text-[10px]">
+              <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker), '80')}>
+                <div className={`${transcriptMetaClass(isUserSpeaker(segment.speaker))} opacity-90`}>
+                  <span>{getSpeakerLabel(segment.speaker)}</span>
+                  <span className="font-normal normal-case tracking-normal tabular-nums">
                     {formatTime(segment.start)}
                   </span>
                 </div>

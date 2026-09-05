@@ -427,16 +427,272 @@ export function buildRetellCallTimeline(callData: Record<string, unknown>): Call
     })
   }
 
-  if (typeof raw.call_cost === 'number' || typeof raw.cost === 'number') {
+  const callCostObj = raw.call_cost
+  if (callCostObj && typeof callCostObj === 'object' && typeof callCostObj.combined_cost === 'number') {
     const durationMs = typeof raw.duration_ms === 'number' ? raw.duration_ms : 0
-    const cost = typeof raw.call_cost === 'number' ? raw.call_cost : raw.cost
     push({
       offsetMs: durationMs,
       category: 'call',
       level: 'info',
       title: 'Call cost',
-      detail: `$${Number(cost).toFixed(4)}`,
+      detail: `$${(callCostObj.combined_cost / 100).toFixed(4)}`,
       sortOrder: 1020,
+    })
+  }
+
+  return sortTimeline(events)
+}
+
+export function buildSmallestCallTimeline(callData: Record<string, unknown>): CallTimelineEvent[] {
+  const events: CallTimelineEvent[] = []
+  const raw = callData as Record<string, any>
+  const rawData = raw.raw_data || {}
+  let seq = 0
+  const push = (partial: Omit<CallTimelineEvent, 'id'>) => {
+    events.push({ ...partial, id: `sm-${seq++}` })
+  }
+
+  push({ offsetMs: 0, category: 'call', level: 'info', title: 'Call started', sortOrder: 10 })
+
+  const latencyStats = raw.analysis?.latency_stats || rawData.latencyStats || {}
+  const latencyParts = [
+    ['ASR', latencyStats.average_transcriber_latency ?? rawData.average_transcriber_latency],
+    ['LLM', latencyStats.average_agent_latency ?? rawData.average_agent_latency],
+    ['TTS', latencyStats.average_synthesizer_latency ?? rawData.average_synthesizer_latency],
+  ]
+    .filter(([, value]) => value != null && Number(value) > 0)
+    .map(([label, value]) => `${label} ${Math.round(Number(value))}ms`)
+  if (latencyParts.length) {
+    push({
+      offsetMs: 0,
+      category: 'pipeline',
+      level: 'info',
+      title: 'Latency overview',
+      detail: latencyParts.join(' · '),
+      sortOrder: 15,
+    })
+  }
+
+  const callCost = rawData.callCost
+  if (callCost && typeof callCost === 'object') {
+    const total =
+      Number(callCost.total ?? callCost.totalCredits ?? 0) ||
+      (Number(callCost.callCharge ?? 0) + Number(callCost.llmCharge ?? 0))
+    if (total > 0) {
+      push({
+        offsetMs: 0,
+        category: 'call',
+        level: 'info',
+        title: 'Billing',
+        detail: `${Math.round(total).toLocaleString()} credits`,
+        sortOrder: 12,
+      })
+    }
+  }
+
+  for (const event of Array.isArray(rawData.events) ? rawData.events : []) {
+    if (!event || typeof event !== 'object') continue
+    const eventType = String(event.eventType || event.type || 'event')
+    const offsetMs = Math.max(
+      0,
+      Math.round(Number(event.offsetMs ?? event.timestamp ?? event.time ?? 0)),
+    )
+    push({
+      offsetMs,
+      category: eventType.toLowerCase().includes('transcri')
+        ? 'stt'
+        : eventType.toLowerCase().includes('synth') || eventType.toLowerCase().includes('tts')
+          ? 'tts'
+          : eventType.toLowerCase().includes('llm') || eventType.toLowerCase().includes('agent')
+            ? 'llm'
+            : 'pipeline',
+      level: 'info',
+      title: eventType.replace(/_/g, ' '),
+      detail: event.message ? truncate(String(event.message)) : undefined,
+      sortOrder: 30,
+    })
+  }
+
+  const transcript = raw.transcript_object || []
+  for (const entry of transcript) {
+    if (!entry || typeof entry !== 'object') continue
+    const speaker = String(entry.speaker || '').toLowerCase()
+    const text = String(entry.text || '').trim()
+    if (!text) continue
+    const isUser = speaker === 'user' || speaker === 'customer' || speaker === 'caller'
+    const offsetMs = Math.max(0, Math.round(Number(entry.start ?? 0) * 1000))
+    push({
+      offsetMs,
+      category: 'message',
+      level: 'info',
+      title: isUser ? 'User spoke' : 'Agent spoke',
+      detail: truncate(text),
+      sortOrder: isUser ? 40 : 50,
+    })
+  }
+
+  const endedReason = rawData.callFailureReason || rawData.hangupCause || rawData.endReason
+  const durationMs = Math.round((raw.duration_seconds ?? rawData.duration ?? 0) * 1000)
+  if (endedReason || raw.call_status === 'ended' || rawData.status === 'completed') {
+    push({
+      offsetMs: durationMs,
+      category: 'call',
+      level: endedReason ? 'warn' : 'info',
+      title: 'Call ended',
+      detail: endedReason ? String(endedReason) : String(rawData.status || raw.call_status || 'ended'),
+      sortOrder: 1000,
+    })
+  }
+
+  const summary = raw.analysis?.summary || rawData.summary
+  if (summary) {
+    push({
+      offsetMs: durationMs,
+      category: 'analysis',
+      level: 'info',
+      title: 'Call summary',
+      detail: truncate(String(summary)),
+      sortOrder: 1010,
+    })
+  }
+
+  return sortTimeline(events)
+}
+
+export function buildElevenLabsCallTimeline(callData: Record<string, unknown>): CallTimelineEvent[] {
+  const events: CallTimelineEvent[] = []
+  const raw = callData as Record<string, any>
+  const rawData = raw.raw_data || {}
+  const metadata = rawData.metadata || {}
+  const transcript = Array.isArray(rawData.transcript) ? rawData.transcript : []
+  let seq = 0
+  const push = (partial: Omit<CallTimelineEvent, 'id'>) => {
+    events.push({ ...partial, id: `el-${seq++}` })
+  }
+
+  push({ offsetMs: 0, category: 'call', level: 'info', title: 'Call started', sortOrder: 10 })
+
+  if (metadata.cost_fiat != null) {
+    const credits = metadata.cost ?? raw.cost
+    push({
+      offsetMs: 0,
+      category: 'call',
+      level: 'info',
+      title: 'Billing',
+      detail: [
+        `$${Number(metadata.cost_fiat).toFixed(4)}`,
+        credits != null ? `${Number(credits).toLocaleString()} credits` : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      sortOrder: 12,
+    })
+  }
+
+  for (const entry of transcript) {
+    if (!entry || typeof entry !== 'object') continue
+    const role = String(entry.role || 'unknown')
+    const message = String(entry.message || '').trim()
+    if (!message) continue
+    const offsetMs = Math.max(0, Math.round((entry.time_in_call_secs ?? 0) * 1000))
+    const metrics = entry.conversation_turn_metrics?.metrics || {}
+
+    if (role === 'user') {
+      push({
+        offsetMs,
+        category: 'message',
+        level: 'info',
+        title: 'User spoke',
+        detail: truncate(message),
+        sortOrder: 40,
+      })
+      const asr =
+        metrics.convai_asr_trailing_service_latency?.elapsed_time ??
+        metrics.convai_turn_asr_latency?.elapsed_time
+      if (asr != null) {
+        push({
+          offsetMs,
+          category: 'stt',
+          level: 'info',
+          title: 'ASR transcription',
+          detail: `${Math.round(asr * 1000)}ms`,
+          sortOrder: 42,
+        })
+      }
+      continue
+    }
+
+    const llmTtfb = metrics.convai_llm_service_ttfb?.elapsed_time
+    if (llmTtfb != null) {
+      push({
+        offsetMs,
+        category: 'llm',
+        level: 'info',
+        title: 'LLM response',
+        detail: [
+          `TTFB ${Math.round(llmTtfb * 1000)}ms`,
+          entry.producing_llm ? String(entry.producing_llm) : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        sortOrder: 45,
+      })
+    }
+
+    const ttsTtfb = metrics.convai_tts_service_ttfb?.elapsed_time
+    if (ttsTtfb != null) {
+      push({
+        offsetMs,
+        category: 'tts',
+        level: 'info',
+        title: 'TTS audio',
+        detail: `TTFB ${Math.round(ttsTtfb * 1000)}ms`,
+        sortOrder: 48,
+      })
+    }
+
+    push({
+      offsetMs,
+      category: 'message',
+      level: 'info',
+      title: 'Agent spoke',
+      detail: truncate(message),
+      sortOrder: 50,
+    })
+
+    if (entry.interrupted) {
+      push({
+        offsetMs,
+        category: 'call',
+        level: 'warn',
+        title: 'Agent interrupted',
+        sortOrder: 55,
+      })
+    }
+  }
+
+  const termination = raw.ended_reason || metadata.termination_reason
+  const durationMs = Math.round((raw.duration_seconds ?? metadata.call_duration_secs ?? 0) * 1000)
+  if (termination) {
+    push({
+      offsetMs: durationMs,
+      category: 'call',
+      level: 'info',
+      title: 'Call ended',
+      detail: String(termination).replace(/:/g, ': '),
+      sortOrder: 1000,
+    })
+  }
+
+  const summary = rawData.analysis?.transcript_summary || raw.analysis?.summary
+  if (summary) {
+    push({
+      offsetMs: durationMs,
+      category: 'analysis',
+      level: 'info',
+      title: 'Call summary',
+      detail: truncate(String(summary)),
+      sortOrder: 1010,
     })
   }
 
@@ -583,16 +839,15 @@ function turnAnchorMs(turnSpans: OtelSpanLike[], traceStart: number): number {
 
 function userMessageOffsetMs(
   turnSpans: OtelSpanLike[],
-  turn: OtelTurnTimelineInput | undefined,
+  _turn: OtelTurnTimelineInput | undefined,
   traceStart: number,
   anchor: number,
 ): number {
   const sttSpans = turnSpans.filter((span) => spanKindFromName(span) === 'stt')
-  if (!sttSpans.length) return anchor
-  const sttStart = Math.min(...sttSpans.map((span) => spanOffsetMs(span, traceStart)))
-  const ttfb = turn?.stt_ttfb_ms ?? 0
-  if (ttfb && ttfb > 0) return Math.max(0, sttStart - ttfb)
-  return Math.min(anchor, sttStart)
+  if (sttSpans.length) {
+    return Math.min(...sttSpans.map((span) => spanOffsetMs(span, traceStart)))
+  }
+  return anchor
 }
 
 function agentMessageOffsetMs(turnSpans: OtelSpanLike[], traceStart: number, anchor: number): number {
@@ -622,15 +877,48 @@ function spanKindFromName(span: OtelSpanLike): TimelineCategory {
   return 'pipeline'
 }
 
+function isSessionLevelPipelineSpan(span: OtelSpanLike, traceDurationMs: number): boolean {
+  const name = span.name.toLowerCase()
+  if (name !== 'conversation' && name !== 'turn') return false
+  if (span.start_time_unix_nano == null || span.end_time_unix_nano == null) {
+    return name === 'conversation'
+  }
+  const durationMs = Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
+  return traceDurationMs > 0 && durationMs >= traceDurationMs * 0.85
+}
+
+export function resolveTraceStartNs(spans: OtelSpanLike[]): number {
+  const starts = spans
+    .map((span) => span.start_time_unix_nano)
+    .filter((value): value is number => value != null)
+  return starts.length ? Math.min(...starts) : 0
+}
+
+export function computeTurnMessageOffsets(
+  turnSpans: OtelSpanLike[],
+  turn: OtelTurnTimelineInput | undefined,
+  traceStart: number,
+): { userOffsetMs?: number; agentOffsetMs?: number } {
+  const anchor = turnAnchorMs(turnSpans, traceStart)
+  const { user, assistant } = parseOtelTurnTexts(turn)
+  return {
+    userOffsetMs: user ? userMessageOffsetMs(turnSpans, turn, traceStart, anchor) : undefined,
+    agentOffsetMs: assistant ? agentMessageOffsetMs(turnSpans, traceStart, anchor) : undefined,
+  }
+}
+
 export function buildOtelCallTimeline(
   spans: OtelSpanLike[],
   turns: OtelTurnTimelineInput[] = [],
 ): CallTimelineEvent[] {
   if (!spans.length) return []
-  const starts = spans
-    .map((s) => s.start_time_unix_nano)
-    .filter((v): v is number => v != null)
-  const traceStart = starts.length ? Math.min(...starts) : 0
+  const traceStart = resolveTraceStartNs(spans)
+  const traceEnd = Math.max(
+    ...spans
+      .map((span) => span.end_time_unix_nano ?? span.start_time_unix_nano ?? traceStart)
+      .filter((value): value is number => value != null),
+  )
+  const traceDurationMs = Math.max(0, Math.round((traceEnd - traceStart) / 1_000_000))
   const byId = new Map(spans.map((span) => [span.span_id, span]))
   let seq = 0
 
@@ -655,6 +943,7 @@ export function buildOtelCallTimeline(
   for (const span of [...globalSpans].sort(
     (a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0),
   )) {
+    if (isSessionLevelPipelineSpan(span, traceDurationMs)) continue
     events.push(makeSpanTimelineEvent(span, traceStart, seq++, OTEL_SORT.globalPipeline))
     for (const ev of span.events || []) {
       push({
@@ -670,7 +959,12 @@ export function buildOtelCallTimeline(
 
   const turnNumbers = [
     ...new Set([...turns.map((turn) => turn.turn_number), ...spansByTurn.keys()]),
-  ].sort((a, b) => a - b)
+  ].sort((a, b) => {
+    const anchorA = turnAnchorMs(spansByTurn.get(a) ?? [], traceStart)
+    const anchorB = turnAnchorMs(spansByTurn.get(b) ?? [], traceStart)
+    if (anchorA !== anchorB) return anchorA - anchorB
+    return a - b
+  })
 
   for (const turnNumber of turnNumbers) {
     const turnSpans = spansByTurn.get(turnNumber) ?? []
@@ -678,7 +972,9 @@ export function buildOtelCallTimeline(
     const { user, assistant } = parseOtelTurnTexts(turnData)
     const anchor = turnAnchorMs(turnSpans, traceStart)
 
-    for (const span of turnSpans.filter(isPipelineSpan).sort(
+    for (const span of turnSpans.filter(
+      (item) => isPipelineSpan(item) && !isSessionLevelPipelineSpan(item, traceDurationMs),
+    ).sort(
       (a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0),
     )) {
       events.push(makeSpanTimelineEvent(span, traceStart, seq++, OTEL_SORT.turnPipeline))

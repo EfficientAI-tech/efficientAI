@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
@@ -9,6 +9,7 @@ import { useToast } from '../../../hooks/useToast'
 import TestVoiceAgentResultDetails from '../../../components/call-recordings/TestVoiceAgentResultDetails'
 import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
+import { prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
 
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
@@ -16,6 +17,16 @@ export default function TestAgentResultDetail() {
   const { ToastContainer } = useToast()
   const queryClient = useQueryClient()
   const [traceDrawerOpen, setTraceDrawerOpen] = useState(false)
+
+  useEffect(() => {
+    if (!id) return
+    prefetchEvaluatorRecordingAudio(id)
+    void queryClient.prefetchQuery({
+      queryKey: ['evaluator-result', id],
+      queryFn: () => apiClient.getEvaluatorResult(id, true),
+      staleTime: 30_000,
+    })
+  }, [id, queryClient])
 
   const { data: result, isLoading } = useQuery({
     queryKey: ['evaluator-result', id],

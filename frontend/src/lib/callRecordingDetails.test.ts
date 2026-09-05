@@ -66,4 +66,12 @@ describe('call data helpers', () => {
     expect(hasTranscriptInCallData({ messages: [{ role: 'user', content: 'hi' }] })).toBe(true)
     expect(hasRecordingUrlInCallData({ recording_url: 'https://x.test/a.wav' })).toBe(true)
   })
+
+  it('detects ElevenLabs raw_data transcript array', () => {
+    expect(
+      hasTranscriptInCallData({
+        raw_data: { transcript: [{ role: 'user', message: 'hello' }] },
+      }),
+    ).toBe(true)
+  })
 })

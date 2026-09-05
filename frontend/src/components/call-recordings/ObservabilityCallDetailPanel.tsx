@@ -10,6 +10,7 @@ import {
   Trash2,
   Tag,
   Sparkles,
+  Server,
   X,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -17,6 +18,12 @@ import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../Button'
 import ConfirmModal from '../ConfirmModal'
 import { apiClient } from '../../lib/api'
+import {
+  formatMessageTiming,
+  normalizeEpochSeconds,
+  offsetSecondsFromCallStart,
+  sanitizeCallOffsetSeconds,
+} from '../../lib/callTranscriptTiming'
 import CallWaveformPlayer from './CallWaveformPlayer'
 import { getObservabilityCallPlaceholder } from '../../lib/observabilityCallQuery'
 import { prefetchObservabilityCallAudio } from '../../lib/waveformAudioCache'
@@ -26,6 +33,7 @@ import VobizCallDetails from './VobizCallDetails'
 import { ObservabilityCall } from '../../types/api'
 import { CallAgentLink } from '../../pages/observability/CallAgentLink'
 import { EndReasonBadge, EventBadge, PlatformBadge } from '../../pages/observability/observabilityCallUi'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 const LIVE_EVENTS = new Set([
   'outbound_initiated',
@@ -35,6 +43,23 @@ const LIVE_EVENTS = new Set([
   'in-progress',
   'answered',
 ])
+
+type DrawerTab = 'transcript' | 'summary' | 'provider'
+
+interface TranscriptMessage {
+  role: 'user' | 'agent'
+  content: string
+  timingLabel: string | null
+}
+
+interface RawTranscriptMessage {
+  role?: string
+  content?: string
+  start_time?: number
+  end_time?: number
+  seconds_from_start?: number
+  timestamp?: string
+}
 
 export default function ObservabilityCallDetailPanel({
   callShortId,
@@ -49,8 +74,9 @@ export default function ObservabilityCallDetailPanel({
   const [showEvalModal, setShowEvalModal] = useState(false)
   const [selectedEvaluator, setSelectedEvaluator] = useState('')
   const [liveTranscript, setLiveTranscript] = useState<
-    Array<{ role: string; content: string; timestamp?: string }>
+    Array<{ role: string; content: string; timestamp?: string; start_time?: number; end_time?: number }>
   >([])
+  const [tab, setTab] = useState<DrawerTab>('transcript')
 
   const { data: callRecording, isFetching, isError, error } = useQuery<ObservabilityCall>({
     queryKey: ['observability-call', callShortId],
@@ -170,12 +196,38 @@ export default function ObservabilityCallDetailPanel({
       : null
 
   const callData = callRecording.call_data
-  const liveTranscriptEntries: Array<{
-    role: string
-    content: string
-    timestamp?: string
-    start_time?: number
-  }> = Array.isArray(callData?.live_transcript) ? callData.live_transcript : []
+  const startedAt = callData?.startedAt || callData?.started_at
+  const callStartMs = startedAt ? new Date(startedAt).getTime() : undefined
+  const callStartSec = callStartMs && !Number.isNaN(callStartMs) ? callStartMs : undefined
+
+  const messageOffsetSec = (entry: RawTranscriptMessage): number | undefined => {
+    if (entry.seconds_from_start != null) return entry.seconds_from_start
+    const raw = entry.start_time
+    if (raw == null) return undefined
+    if (raw > 1e10) {
+      if (callStartSec == null) return undefined
+      return offsetSecondsFromCallStart(raw, callStartSec)
+    }
+    return normalizeEpochSeconds(raw)
+  }
+
+  const toTranscriptMessage = (entry: RawTranscriptMessage): TranscriptMessage => {
+    const offsetSec = sanitizeCallOffsetSeconds(messageOffsetSec(entry))
+    const startSec = sanitizeCallOffsetSeconds(
+      normalizeEpochSeconds(entry.start_time ?? entry.seconds_from_start),
+    )
+    const endSec = sanitizeCallOffsetSeconds(normalizeEpochSeconds(entry.end_time))
+    const timingLabel = formatMessageTiming(offsetSec ?? startSec, endSec)
+    return {
+      role: entry.role === 'user' ? 'user' : 'agent',
+      content: entry.content || '',
+      timingLabel,
+    }
+  }
+
+  const liveTranscriptEntries: RawTranscriptMessage[] = Array.isArray(callData?.live_transcript)
+    ? callData.live_transcript
+    : []
   const messagesFromLive = liveTranscriptEntries
     .filter((entry) => entry?.content)
     .map((entry) => ({
@@ -183,10 +235,12 @@ export default function ObservabilityCallDetailPanel({
       content: entry.content,
       start_time:
         entry.start_time ?? (entry.timestamp ? new Date(entry.timestamp).getTime() : undefined),
+      end_time: entry.end_time,
+      timestamp: entry.timestamp,
     }))
-  const messages: Array<{ role: string; content: string; start_time?: number }> | undefined =
+  const rawMessages: RawTranscriptMessage[] | undefined =
     Array.isArray(callData?.messages) && callData.messages.length > 0
-      ? callData.messages
+      ? (callData.messages as RawTranscriptMessage[])
       : messagesFromLive.length > 0
         ? messagesFromLive
         : undefined
@@ -194,25 +248,32 @@ export default function ObservabilityCallDetailPanel({
   const isLiveCall =
     callRecording.is_live || LIVE_EVENTS.has((callRecording.call_event || '').toLowerCase())
 
-  const toTranscriptTurn = (entry: { role: string; content: string; start_time?: number }) => ({
-    role: entry.role === 'user' ? ('user' as const) : ('agent' as const),
-    content: entry.content,
-    start_time: entry.start_time,
-  })
-
-  const persistedTurns = (messages || messagesFromLive).map(toTranscriptTurn)
+  const persistedTurns = (rawMessages || messagesFromLive).map(toTranscriptMessage)
   const liveTurns = liveTranscript
     .filter((entry) => entry?.content)
     .map((entry) =>
-      toTranscriptTurn({
+      toTranscriptMessage({
         role: entry.role,
         content: entry.content,
-        start_time: entry.timestamp ? new Date(entry.timestamp).getTime() : undefined,
+        start_time: entry.start_time ?? (entry.timestamp ? new Date(entry.timestamp).getTime() : undefined),
+        end_time: entry.end_time,
+        timestamp: entry.timestamp,
       }),
     )
 
   const transcriptTurns = isLiveCall && liveTurns.length > 0 ? liveTurns : persistedTurns
   const hasTranscript = transcriptTurns.length > 0
+  const hasProviderDetails = ['retell', 'vapi', 'vobiz'].includes(callRecording.provider_platform || '')
+
+  const tabs: Array<{ id: DrawerTab; label: string; icon: typeof MessageSquare }> = []
+  if (hasTranscript || isLiveCall) {
+    tabs.push({ id: 'transcript', label: 'Transcript', icon: MessageSquare })
+  }
+  tabs.push({ id: 'summary', label: 'Summary', icon: Phone })
+  if (hasProviderDetails) {
+    tabs.push({ id: 'provider', label: 'Provider', icon: Server })
+  }
+  const activeTab = tabs.some((item) => item.id === tab) ? tab : (tabs[0]?.id ?? 'summary')
 
   const computeDuration = (): string | null => {
     const started = callData?.startedAt || callData?.started_at
@@ -232,14 +293,87 @@ export default function ObservabilityCallDetailPanel({
     return null
   }
 
-  const formatMessageTime = (timestamp: number): string =>
-    new Date(timestamp).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-
   const duration = computeDuration()
+
+  const summarySection = (
+    <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5">
+      <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+        <div>
+          <p className="font-medium text-gray-500">Agent</p>
+          <div className="mt-1">
+            <CallAgentLink agent={callRecording.agent} callData={callData} />
+          </div>
+        </div>
+        <div>
+          <p className="font-medium text-gray-500">Provider call ID</p>
+          <p className="mt-1 truncate font-mono text-gray-900" title={callRecording.provider_call_id ?? undefined}>
+            {callRecording.provider_call_id || 'N/A'}
+          </p>
+        </div>
+        <div>
+          <p className="font-medium text-gray-500">Status</p>
+          <p className="mt-1 capitalize text-gray-900">{callRecording.status || '—'}</p>
+        </div>
+        <div>
+          <p className="font-medium text-gray-500">Created</p>
+          <p className="mt-1 text-gray-900">
+            {callRecording.created_at ? new Date(callRecording.created_at).toLocaleString() : 'N/A'}
+          </p>
+        </div>
+      </div>
+      {callData?.startedAt || callData?.started_at ? (
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Started</p>
+          <p className="text-sm text-gray-900">
+            {new Date(callData.startedAt || callData.started_at!).toLocaleString()}
+          </p>
+        </div>
+      ) : null}
+      {callData?.endedAt || callData?.ended_at ? (
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Ended</p>
+          <p className="text-sm text-gray-900">
+            {new Date(callData.endedAt || callData.ended_at!).toLocaleString()}
+          </p>
+        </div>
+      ) : null}
+      {callData?.from_phone_number || callData?.to_phone_number ? (
+        <div className="space-y-2">
+          {callData.from_phone_number ? (
+            <div className="flex items-center gap-2 text-sm text-gray-700">
+              <PhoneOutgoing className="h-3.5 w-3.5 text-gray-400" />
+              <span className="font-mono">{callData.from_phone_number}</span>
+            </div>
+          ) : null}
+          {callData.to_phone_number ? (
+            <div className="flex items-center gap-2 text-sm text-gray-700">
+              <PhoneIncoming className="h-3.5 w-3.5 text-gray-400" />
+              <span className="font-mono">{callData.to_phone_number}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {callData?.endedReason ? (
+        <div>
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">End reason</p>
+          <EndReasonBadge reason={callData.endedReason} />
+        </div>
+      ) : null}
+      {callData?.metadata && Object.keys(callData.metadata).length > 0 ? (
+        <div className="space-y-1.5">
+          {Object.entries(callData.metadata).map(([key, value]) => (
+            <div key={key} className="flex items-start gap-2">
+              <Tag className="mt-0.5 h-3 w-3 shrink-0 text-gray-300" />
+              <div className="min-w-0 text-xs">
+                <span className="text-gray-500">{key}:</span>{' '}
+                <span className="font-medium text-gray-800">{String(value)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
@@ -257,6 +391,11 @@ export default function ObservabilityCallDetailPanel({
                 <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs text-gray-600">
                   <Clock className="h-3 w-3 text-gray-400" />
                   {duration}
+                </span>
+              ) : null}
+              {isLiveCall ? (
+                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs text-sky-800 animate-pulse">
+                  Live
                 </span>
               ) : null}
             </div>
@@ -292,204 +431,99 @@ export default function ObservabilityCallDetailPanel({
             ) : null}
           </div>
         </div>
-
-        <div className="mt-4 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
-          <div>
-            <p className="font-medium text-gray-500">Agent</p>
-            <div className="mt-1">
-              <CallAgentLink agent={callRecording.agent} callData={callData} />
-            </div>
-          </div>
-          <div>
-            <p className="font-medium text-gray-500">Provider call ID</p>
-            <p className="mt-1 truncate font-mono text-gray-900" title={callRecording.provider_call_id ?? undefined}>
-              {callRecording.provider_call_id || 'N/A'}
-            </p>
-          </div>
-          <div>
-            <p className="font-medium text-gray-500">Status</p>
-            <p className="mt-1 capitalize text-gray-900">{callRecording.status || '—'}</p>
-          </div>
-          <div>
-            <p className="font-medium text-gray-500">Created</p>
-            <p className="mt-1 text-gray-900">
-              {callRecording.created_at
-                ? new Date(callRecording.created_at).toLocaleString()
-                : 'N/A'}
-            </p>
-          </div>
-        </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-5">
-        {fetchError ? (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-            {fetchError}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="shrink-0 space-y-2.5 border-b border-gray-200 bg-gray-50 px-5 pb-3 pt-4">
+          {fetchError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+              {fetchError}
+            </div>
+          ) : null}
+          {hasRecording && !isLiveCall ? <CallWaveformPlayer observabilityCallShortId={callShortId} /> : null}
+          <div className="flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {tabs.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${
+                  activeTab === id
+                    ? 'border-primary-500 text-primary-800'
+                    : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            ))}
           </div>
-        ) : null}
-        {!detailsReady ? (
-          <div className="space-y-3">
-            <div className="h-40 animate-pulse rounded-xl bg-gray-100" />
-            <div className="h-56 animate-pulse rounded-xl bg-gray-100" />
-          </div>
-        ) : (
-          <>
-        {callRecording.provider_platform === 'retell' && callData ? (
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <RetellCallDetails callData={callData} hideTranscript={hasTranscript} />
-          </section>
-        ) : null}
+        </div>
 
-        {callRecording.provider_platform === 'vapi' && callData ? (
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <VapiCallDetails callData={callData} hideTranscript={hasTranscript} />
-          </section>
-        ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
+          {!detailsReady ? (
+            <div className="space-y-3">
+              <div className="h-40 animate-pulse rounded-xl bg-gray-100" />
+              <div className="h-56 animate-pulse rounded-xl bg-gray-100" />
+            </div>
+          ) : null}
 
-        {callRecording.provider_platform === 'vobiz' && callData ? (
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <VobizCallDetails callData={callData} />
-          </section>
-        ) : null}
-
-        {(hasRecording) && !isLiveCall ? (
-          <section className="rounded-xl border border-gray-200 bg-white p-5">
-            <h3 className="mb-3 text-sm font-semibold text-gray-900">Call recording</h3>
-            <CallWaveformPlayer observabilityCallShortId={callShortId} />
-          </section>
-        ) : null}
-
-        {hasTranscript || isLiveCall ? (
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-            <div className="lg:col-span-2">
-              <div className="flex h-[480px] flex-col rounded-xl border border-gray-200 bg-white">
-                <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 text-primary-500" />
-                    <span className="text-sm font-medium text-gray-900">
-                      {isLiveCall ? 'Live transcript' : 'Transcript'}
-                    </span>
-                    {isLiveCall ? (
-                      <span className="rounded-full bg-sky-100 px-2 py-0.5 text-xs text-sky-800 animate-pulse">
-                        Live
-                      </span>
-                    ) : null}
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-                      {transcriptTurns.length} turns
-                    </span>
-                  </div>
-                </div>
-                <div className="flex-1 space-y-3 overflow-y-auto p-4">
-                  {transcriptTurns.length === 0 ? (
-                    <p className="py-8 text-center text-sm text-gray-500">Waiting for speech…</p>
-                  ) : (
-                    transcriptTurns.map((turn, index) => {
-                      const isUser = turn.role === 'user'
-                      return (
-                        <motion.div
-                          key={index}
-                          className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                        >
-                          <div
-                            className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${
-                              isUser
-                                ? 'rounded-br-sm bg-primary-600 text-white'
-                                : 'rounded-bl-sm border border-gray-200 bg-gray-50 text-gray-800'
-                            }`}
-                          >
-                            <div
-                              className={`mb-0.5 flex items-center gap-2 ${
-                                isUser ? 'text-primary-200' : 'text-gray-400'
-                              }`}
-                            >
-                              <span className="text-[10px] font-semibold uppercase tracking-wider">
-                                {isUser ? 'Caller' : 'Agent'}
+          {detailsReady && activeTab === 'transcript' ? (
+            <div className="rounded-xl border border-gray-200 bg-white p-4">
+              <div className="space-y-3">
+                {transcriptTurns.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-gray-500">Waiting for speech…</p>
+                ) : (
+                  transcriptTurns.map((turn, index) => {
+                    const isUser = turn.role === 'user'
+                    return (
+                      <motion.div
+                        key={index}
+                        className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                      >
+                        <div className={transcriptBubbleClass(isUser)}>
+                          <div className={transcriptMetaClass(isUser)}>
+                            <span>{isUser ? 'Caller' : 'Agent'}</span>
+                            {turn.timingLabel ? (
+                              <span className="font-normal normal-case tracking-normal tabular-nums">
+                                {turn.timingLabel}
                               </span>
-                              {turn.start_time ? (
-                                <span className="text-[10px] tabular-nums">
-                                  {formatMessageTime(turn.start_time)}
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="text-sm leading-relaxed">{turn.content}</p>
+                            ) : null}
                           </div>
-                        </motion.div>
-                      )
-                    })
-                  )}
-                </div>
+                          <p className="text-sm leading-relaxed">{turn.content}</p>
+                        </div>
+                      </motion.div>
+                    )
+                  })
+                )}
               </div>
             </div>
+          ) : null}
 
-            <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-5">
-              <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                <Phone className="h-4 w-4 text-primary-500" />
-                Call summary
-              </h3>
-              {callData?.startedAt || callData?.started_at ? (
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                    Started
-                  </p>
-                  <p className="text-sm text-gray-900">
-                    {new Date(callData.startedAt || callData.started_at!).toLocaleString()}
-                  </p>
+          {detailsReady && activeTab === 'summary' ? summarySection : null}
+
+          {detailsReady && activeTab === 'provider' ? (
+            <div className="space-y-4">
+              {callRecording.provider_platform === 'retell' && callData ? (
+                <div className="rounded-xl border border-gray-200 bg-white p-4">
+                  <RetellCallDetails callData={callData} hideTranscript embedded section="full" />
                 </div>
               ) : null}
-              {callData?.endedAt || callData?.ended_at ? (
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                    Ended
-                  </p>
-                  <p className="text-sm text-gray-900">
-                    {new Date(callData.endedAt || callData.ended_at!).toLocaleString()}
-                  </p>
+              {callRecording.provider_platform === 'vapi' && callData ? (
+                <div className="rounded-xl border border-gray-200 bg-white p-4">
+                  <VapiCallDetails callData={callData} hideTranscript embedded section="full" />
                 </div>
               ) : null}
-              {callData?.from_phone_number || callData?.to_phone_number ? (
-                <div className="space-y-2">
-                  {callData.from_phone_number ? (
-                    <div className="flex items-center gap-2 text-sm text-gray-700">
-                      <PhoneOutgoing className="h-3.5 w-3.5 text-gray-400" />
-                      <span className="font-mono">{callData.from_phone_number}</span>
-                    </div>
-                  ) : null}
-                  {callData.to_phone_number ? (
-                    <div className="flex items-center gap-2 text-sm text-gray-700">
-                      <PhoneIncoming className="h-3.5 w-3.5 text-gray-400" />
-                      <span className="font-mono">{callData.to_phone_number}</span>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {callData?.endedReason ? (
-                <div>
-                  <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                    End reason
-                  </p>
-                  <EndReasonBadge reason={callData.endedReason} />
-                </div>
-              ) : null}
-              {callData?.metadata && Object.keys(callData.metadata).length > 0 ? (
-                <div className="space-y-1.5">
-                  {Object.entries(callData.metadata).map(([key, value]) => (
-                    <div key={key} className="flex items-start gap-2">
-                      <Tag className="mt-0.5 h-3 w-3 shrink-0 text-gray-300" />
-                      <div className="min-w-0 text-xs">
-                        <span className="text-gray-500">{key}:</span>{' '}
-                        <span className="font-medium text-gray-800">{String(value)}</span>
-                      </div>
-                    </div>
-                  ))}
+              {callRecording.provider_platform === 'vobiz' && callData ? (
+                <div className="rounded-xl border border-gray-200 bg-white p-4">
+                  <VobizCallDetails callData={callData} />
                 </div>
               ) : null}
             </div>
-          </div>
-        ) : null}
-          </>
-        )}
+          ) : null}
+        </div>
       </div>
 
       <ConfirmModal

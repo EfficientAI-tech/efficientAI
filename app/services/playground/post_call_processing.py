@@ -36,7 +36,16 @@ def provider_metrics_enriched(provider_platform: str, metrics: dict[str, Any]) -
         return status in {"done", "completed"} or bool(metrics.get("conversation_turn_metrics"))
     if plat == "smallest":
         raw = metrics.get("raw_data") if isinstance(metrics.get("raw_data"), dict) else {}
-        return bool(raw.get("latencyStats")) or bool(metrics.get("transcript"))
+        latency_stats = raw.get("latencyStats") if isinstance(raw.get("latencyStats"), dict) else {}
+        has_latency = bool(latency_stats) or any(
+            raw.get(key) is not None
+            for key in (
+                "average_transcriber_latency",
+                "average_agent_latency",
+                "average_synthesizer_latency",
+            )
+        )
+        return has_latency or bool(metrics.get("transcript"))
     return call_metrics_indicate_ended(metrics)
 
 

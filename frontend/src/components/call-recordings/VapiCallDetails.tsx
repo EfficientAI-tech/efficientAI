@@ -6,6 +6,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell
 } from 'recharts'
+import { formatMessageTiming, sanitizeCallOffsetSeconds } from '../../lib/callTranscriptTiming'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 interface VapiTranscriptEntry {
   role: string
@@ -108,6 +110,7 @@ interface VapiCallDetailsProps {
   hideTranscript?: boolean
   section?: VapiDetailSection
   compact?: boolean
+  embedded?: boolean
   evaluatorAnalysis?: {
     call_summary?: string
     user_sentiment?: string
@@ -123,6 +126,7 @@ export default function VapiCallDetails({
   hideTranscript = false,
   section = 'full',
   compact = false,
+  embedded = false,
   evaluatorAnalysis = null,
 }: VapiCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
@@ -344,46 +348,70 @@ export default function VapiCallDetails({
     )
   }
 
-  const TranscriptCard = () => (
-    <div className={`bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col ${compact ? 'max-h-[min(60vh,520px)]' : 'h-[600px]'}`}>
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+  const TranscriptCard = () => {
+    const flat = compact || embedded
+
+    const messageTiming = (msg: VapiTranscriptEntry): string | null => {
+      let start = sanitizeCallOffsetSeconds(msg.seconds_from_start)
+      if (start == null && msg.words?.length) {
+        start = sanitizeCallOffsetSeconds(msg.words[0].start)
+      }
+
+      let end: number | undefined
+      if (msg.duration_ms != null && start != null) {
+        end = sanitizeCallOffsetSeconds(start + msg.duration_ms / 1000)
+      } else if (msg.words?.length) {
+        end = sanitizeCallOffsetSeconds(msg.words[msg.words.length - 1].end)
+      } else if (msg.end_time_ms != null || msg.time_ms != null) {
+        const rawEnd = (msg.end_time_ms ?? msg.time_ms)! / 1000
+        end = sanitizeCallOffsetSeconds(rawEnd)
+      }
+
+      return formatMessageTiming(start, end)
+    }
+
+    return (
+    <div
+      className={
+        flat
+          ? 'space-y-3'
+          : 'flex h-[600px] flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-sm'
+      }
+    >
+      {!flat ? (
+      <div className="mb-4 flex flex-shrink-0 items-center justify-between">
+        <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900">
           <MessageSquare className="h-5 w-5 text-violet-600" />
           Transcript
         </h3>
-        {!compact && recordingUrl && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+        {recordingUrl && (
+          <div className="flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1">
             <audio controls src={recordingUrl} className="h-8 w-64" />
-            <a href={recordingUrl} download className="text-gray-500 hover:text-violet-600 p-1">
+            <a href={recordingUrl} download className="p-1 text-gray-500 hover:text-violet-600">
               <Download className="h-4 w-4" />
             </a>
           </div>
         )}
       </div>
+      ) : null}
 
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+      <div className={flat ? 'space-y-3' : 'custom-scrollbar flex-1 space-y-4 overflow-y-auto pr-2'}>
         {transcriptEntries.length > 0 ? (
           transcriptEntries.map((msg, idx) => {
             const isUser = msg.role === 'user'
             const isAgent = msg.role === 'agent' || msg.role === 'bot' || msg.role === 'assistant'
+            const timing = messageTiming(msg)
             
             if (!isUser && !isAgent) return null
             
             return (
               <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${isUser
-                  ? 'bg-violet-600 text-white rounded-br-none'
-                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
-                  }`}>
-                  <div className="flex items-center gap-2 mb-1 opacity-80">
-                    <span className="text-xs font-semibold uppercase tracking-wider">
-                      {isUser ? 'User' : 'Agent'}
-                    </span>
-                    {msg.seconds_from_start !== undefined && (
-                      <span className="text-[10px]">
-                        {msg.seconds_from_start.toFixed(1)}s
-                      </span>
-                    )}
+                <div className={transcriptBubbleClass(isUser, '80')}>
+                  <div className={`${transcriptMetaClass(isUser)} opacity-90`}>
+                    <span>{isUser ? 'User' : 'Agent'}</span>
+                    {timing ? (
+                      <span className="font-normal normal-case tracking-normal tabular-nums">{timing}</span>
+                    ) : null}
                   </div>
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                 </div>
@@ -402,7 +430,8 @@ export default function VapiCallDetails({
         )}
       </div>
     </div>
-  )
+    )
+  }
 
   const CostSection = () => (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">

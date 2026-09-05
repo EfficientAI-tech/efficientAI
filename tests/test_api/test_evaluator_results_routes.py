@@ -241,9 +241,13 @@ def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-aud
     import importlib
     from types import SimpleNamespace
 
+    def _iter_chunks(_key, chunk_size=8192):
+        yield audio_bytes
+
     fake = SimpleNamespace(
         is_enabled=lambda: True,
         download_file_by_key=lambda _key: audio_bytes,
+        iter_file_chunks_by_key=_iter_chunks,
         upload_file_by_key=lambda *_args, **_kwargs: None,
     )
     blob_module = importlib.import_module("app.services.storage.blob_storage_service")
@@ -272,7 +276,66 @@ def test_stream_evaluator_result_audio_from_s3(
 
     assert response.status_code == 200
     assert response.content == b"fake-audio-bytes"
-    assert response.headers["content-type"] == "audio/mpeg"
+    assert response.headers["content-type"] == "audio/wav"
+
+
+def test_stream_evaluator_result_audio_falls_back_to_provider_when_s3_missing(
+    authenticated_client,
+    make_agent,
+    make_integration,
+    make_evaluator_result,
+    monkeypatch,
+):
+    from app.core.exceptions import StorageError
+    from app.models.enums import IntegrationPlatform
+
+    integration = make_integration(
+        platform=IntegrationPlatform.ELEVENLABS.value,
+        api_key="enc-key",
+    )
+    agent = make_agent(integration=integration)
+    make_evaluator_result(
+        result_id="991133",
+        agent_id=agent.id,
+        audio_s3_key="audio/organizations/test/evaluations/call-1/recording.mp3",
+        provider_platform="elevenlabs",
+        provider_call_id="conv-abc",
+        call_data={
+            "recording_urls": {
+                "conversation_audio": (
+                    "https://api.elevenlabs.io/v1/convai/conversations/conv-abc/audio"
+                ),
+            },
+        },
+    )
+
+    def _iter_chunks(_key, chunk_size=8192):
+        raise StorageError("File not found in S3: missing")
+
+    fake = SimpleNamespace(
+        is_enabled=lambda: True,
+        iter_file_chunks_by_key=_iter_chunks,
+        download_file_by_key=lambda _key: (_ for _ in ()).throw(StorageError("missing")),
+    )
+    import importlib
+
+    blob_module = importlib.import_module("app.services.storage.blob_storage_service")
+    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
+    monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "test-xi-key")
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "audio/mpeg"}
+
+        def iter_content(self, chunk_size=8192):
+            yield b"proxied-audio"
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: FakeResponse())
+
+    response = authenticated_client.get("/api/v1/evaluator-results/991133/audio")
+
+    assert response.status_code == 200
+    assert response.content == b"proxied-audio"
 
 
 def test_stream_evaluator_result_audio_proxies_elevenlabs(

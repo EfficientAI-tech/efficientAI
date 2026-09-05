@@ -30,6 +30,7 @@ from app.services.synthetic_traces.trace_service import (
     build_otlp_setup_info,
     build_session_otel_correlation,
     close_trace_session,
+    enrich_trace_summaries,
     get_trace_by_call_short_id,
     get_trace_by_id,
     get_trace_for_result,
@@ -82,6 +83,7 @@ def _build_trace_detail_response(db: Session, trace) -> SyntheticCallTraceDetail
     base = SyntheticCallTraceSummary.model_validate(trace).model_dump()
     if summary:
         base["turn_count"] = summary.get("turn_count", base.get("turn_count"))
+        base["response_latency_sample_count"] = summary.get("response_latency_sample_count")
         base["response_latency_p50_ms"] = summary.get("response_latency_p50_ms")
         base["response_latency_p90_ms"] = summary.get("response_latency_p90_ms")
         base["response_latency_p95_ms"] = summary.get("response_latency_p95_ms")
@@ -296,8 +298,9 @@ def list_observability_traces(
         limit=limit,
         status=status,
     )
+    items = enrich_trace_summaries(db, rows)
     return SyntheticCallTraceListResponse(
-        items=[SyntheticCallTraceSummary.model_validate(r) for r in rows],
+        items=[SyntheticCallTraceSummary.model_validate(item) for item in items],
         total=total,
     )
 

@@ -9,6 +9,11 @@ import {
 } from 'lucide-react'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { METRIC_COST_COLORS, STAGE_COLORS } from '../../lib/callDetailTheme'
+import {
+  extractProviderCostSummary,
+  formatProviderCostAmount,
+  type ProviderCostUnit,
+} from '../../lib/voiceProviderMetrics'
 
 export interface CostSlice {
   key: string
@@ -108,15 +113,202 @@ function parseVapiPipeline(callData: Record<string, unknown>): {
   return { stages, turns: turnRows, avgTurnMs }
 }
 
+function parseElevenLabsCostSlices(callData: Record<string, unknown>): CostSlice[] {
+  const raw = callData as Record<string, any>
+  const metadata = raw.raw_data?.metadata
+  const charging = metadata?.charging
+  if (charging && typeof charging === 'object') {
+    const slices: CostSlice[] = []
+    const llmPrice = Number(charging.llm_price)
+    const platformPrice = Number(charging.platform_price)
+    if (llmPrice > 0) {
+      slices.push({ key: 'llm', label: 'LLM', value: llmPrice, color: COST_COLORS.llm })
+    }
+    if (platformPrice > 0) {
+      slices.push({ key: 'call', label: 'Voice', value: platformPrice, color: COST_COLORS.tts })
+    }
+    if (slices.length) return slices
+  }
+  const fiat = metadata?.cost_fiat
+  if (typeof fiat === 'number' && fiat > 0) {
+    return [{ key: 'total', label: 'Total', value: fiat, color: COST_COLORS.other }]
+  }
+  return []
+}
+
+function parseElevenLabsPipeline(callData: Record<string, unknown>): {
+  stages: PipelineStage[]
+  turns: TurnLatencyRow[]
+  avgTurnMs: number | null
+} {
+  const raw = callData as Record<string, any>
+  const transcript = raw.raw_data?.transcript
+  if (!Array.isArray(transcript)) {
+    return { stages: [], turns: [], avgTurnMs: null }
+  }
+
+  const turnRows: TurnLatencyRow[] = transcript
+    .filter((entry: any) => entry?.role === 'agent' && entry?.conversation_turn_metrics?.metrics)
+    .map((entry: any, idx: number) => {
+      const metrics = entry.conversation_turn_metrics.metrics
+      const sttMs = metrics.convai_turn_asr_latency?.elapsed_time
+        ? Math.round(metrics.convai_turn_asr_latency.elapsed_time * 1000)
+        : undefined
+      const llmMs = metrics.convai_llm_service_ttfb?.elapsed_time
+        ? Math.round(metrics.convai_llm_service_ttfb.elapsed_time * 1000)
+        : undefined
+      const ttsMs = metrics.convai_tts_service_ttfb?.elapsed_time
+        ? Math.round(metrics.convai_tts_service_ttfb.elapsed_time * 1000)
+        : undefined
+      const parts = [sttMs, llmMs, ttsMs].filter((v): v is number => v !== undefined)
+      return {
+        turn: idx + 1,
+        stt: sttMs,
+        llm: llmMs,
+        tts: ttsMs,
+        total: parts.length ? parts.reduce((sum, value) => sum + value, 0) : undefined,
+      }
+    })
+    .filter((row: TurnLatencyRow) => row.llm !== undefined || row.tts !== undefined || row.stt !== undefined)
+
+  const average = (values: number[]) =>
+    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+
+  const stages: PipelineStage[] = [
+    {
+      key: 'stt',
+      label: 'ASR',
+      ms: average(turnRows.map((row) => row.stt).filter((v): v is number => v !== undefined)),
+      color: STAGE_COLORS.stt,
+      icon: Mic,
+    },
+    {
+      key: 'llm',
+      label: 'LLM',
+      ms: average(turnRows.map((row) => row.llm).filter((v): v is number => v !== undefined)),
+      color: STAGE_COLORS.llm,
+      icon: Brain,
+    },
+    {
+      key: 'tts',
+      label: 'TTS',
+      ms: average(turnRows.map((row) => row.tts).filter((v): v is number => v !== undefined)),
+      color: STAGE_COLORS.tts,
+      icon: Speaker,
+    },
+  ].filter((stage) => stage.ms > 0)
+
+  const avgTurnMs = turnRows.length
+    ? Math.round(turnRows.reduce((sum, row) => sum + (row.total ?? 0), 0) / turnRows.length)
+    : null
+
+  return { stages, turns: turnRows, avgTurnMs }
+}
+
 function parseRetellCostSlices(callData: Record<string, unknown>): CostSlice[] {
   const raw = callData as Record<string, any>
   const colors = [STAGE_COLORS.stt, STAGE_COLORS.tts, STAGE_COLORS.llm, STAGE_COLORS.transport, STAGE_COLORS.s2s]
   return (raw.call_cost?.product_costs || []).map((item: any, idx: number) => ({
     key: String(item.product || idx),
     label: String(item.product || 'Product').replace(/_/g, ' '),
-    value: Number(item.cost ?? 0),
+    value: Number(item.cost ?? 0) / 100,
     color: colors[idx % colors.length],
   })).filter((s: CostSlice) => s.value > 0)
+}
+
+function parseSmallestCostSlices(callData: Record<string, unknown>): CostSlice[] {
+  const raw = (callData as Record<string, any>).raw_data || {}
+  const rawCost = raw.callCost
+  if (rawCost && typeof rawCost === 'object') {
+    const slices: CostSlice[] = []
+    const callCharge = Number(rawCost.callCharge ?? rawCost.call ?? 0)
+    const llmCharge = Number(rawCost.llmCharge ?? rawCost.llm ?? 0)
+    if (callCharge > 0) {
+      slices.push({ key: 'call', label: 'Call', value: callCharge, color: COST_COLORS.transport })
+    }
+    if (llmCharge > 0) {
+      slices.push({ key: 'llm', label: 'LLM', value: llmCharge, color: COST_COLORS.llm })
+    }
+    if (slices.length) return slices
+    const total = Number(rawCost.total ?? rawCost.totalCredits ?? 0)
+    if (total > 0) {
+      return [{ key: 'total', label: 'Total', value: total, color: COST_COLORS.other }]
+    }
+  }
+  const analysisCost = (callData as Record<string, any>).analysis?.cost
+  if (typeof analysisCost === 'number' && analysisCost > 0) {
+    return [{ key: 'total', label: 'Total', value: analysisCost, color: COST_COLORS.other }]
+  }
+  const topCost = Number(raw.cost ?? (callData as Record<string, any>).cost ?? 0)
+  if (topCost > 0) {
+    return [{ key: 'total', label: 'Total', value: topCost, color: COST_COLORS.other }]
+  }
+  return []
+}
+
+function parseRetellPipeline(callData: Record<string, unknown>): {
+  stages: PipelineStage[]
+  turns: TurnLatencyRow[]
+  avgTurnMs: number | null
+} {
+  const raw = callData as Record<string, any>
+  const latency = raw.latency || {}
+  const stages: PipelineStage[] = [
+    { key: 'asr', label: 'ASR', ms: latency.asr?.p50 ?? 0, color: STAGE_COLORS.stt, icon: Mic },
+    { key: 'llm', label: 'LLM', ms: latency.llm?.p50 ?? 0, color: STAGE_COLORS.llm, icon: Brain },
+    { key: 'tts', label: 'TTS', ms: latency.tts?.p50 ?? 0, color: STAGE_COLORS.tts, icon: Speaker },
+    { key: 'e2e', label: 'E2E', ms: latency.e2e?.p50 ?? 0, color: STAGE_COLORS.endpointing, icon: Activity },
+  ].filter((stage) => stage.ms > 0)
+  return { stages, turns: [], avgTurnMs: latency.e2e?.p50 ?? null }
+}
+
+function parseSmallestPipeline(callData: Record<string, unknown>): {
+  stages: PipelineStage[]
+  turns: TurnLatencyRow[]
+  avgTurnMs: number | null
+} {
+  const raw = callData as Record<string, any>
+  const rawData = raw.raw_data || {}
+  const stats = raw.analysis?.latency_stats || rawData.latencyStats || {}
+
+  const readMs = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = stats[key] ?? rawData[key]
+      const parsed = Number(value)
+      if (Number.isFinite(parsed) && parsed > 0) return parsed
+    }
+    return 0
+  }
+
+  const stages: PipelineStage[] = [
+    {
+      key: 'stt',
+      label: 'ASR',
+      ms: readMs('average_transcriber_latency', 'transcriberLatency', 'asrLatency', 'stt'),
+      color: STAGE_COLORS.stt,
+      icon: Mic,
+    },
+    {
+      key: 'llm',
+      label: 'LLM',
+      ms: readMs('average_agent_latency', 'agentLatency', 'llmLatency', 'llm'),
+      color: STAGE_COLORS.llm,
+      icon: Brain,
+    },
+    {
+      key: 'tts',
+      label: 'TTS',
+      ms: readMs('average_synthesizer_latency', 'synthesizerLatency', 'ttsLatency', 'tts'),
+      color: STAGE_COLORS.tts,
+      icon: Speaker,
+    },
+  ].filter((stage) => stage.ms > 0)
+
+  const avgTurnMs = stages.length
+    ? Math.round(stages.reduce((sum, stage) => sum + stage.ms, 0) / stages.length)
+    : null
+
+  return { stages, turns: [], avgTurnMs }
 }
 
 export function ProviderCostPanel({
@@ -132,11 +324,19 @@ export function ProviderCostPanel({
 }) {
   const slices = useMemo(() => {
     if (platform === 'retell') return parseRetellCostSlices(callData)
+    if (platform === 'elevenlabs') return parseElevenLabsCostSlices(callData)
+    if (platform === 'smallest') return parseSmallestCostSlices(callData)
     return parseVapiCostSlices(callData)
   }, [callData, platform])
 
+  const costSummary = useMemo(
+    () => extractProviderCostSummary(platform, callData),
+    [callData, platform],
+  )
+  const costUnit: ProviderCostUnit = costSummary?.unit ?? 'usd'
   const total =
     totalCost ??
+    costSummary?.total ??
     (slices.reduce((sum, s) => sum + s.value, 0) ||
       Number((callData as any).cost ?? (callData as any).call_cost?.combined_cost ?? 0))
 
@@ -153,7 +353,12 @@ export function ProviderCostPanel({
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-medium text-gray-500">Total cost</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">${total.toFixed(4)}</p>
+          <p className="mt-1 text-2xl font-bold text-gray-900">{formatProviderCostAmount(total, costUnit)}</p>
+          {platform === 'elevenlabs' && costSummary?.creditNote != null ? (
+            <p className="mt-1 text-xs text-gray-500">
+              {Math.round(costSummary.creditNote).toLocaleString()} credits
+            </p>
+          ) : null}
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-medium text-gray-500">Duration</p>
@@ -186,12 +391,16 @@ export function ProviderCostPanel({
                   <Cell key={slice.key} fill={slice.color} />
                 ))}
               </Pie>
-              <Tooltip formatter={(v: number) => `$${v.toFixed(4)}`} />
+              <Tooltip formatter={(v: number) => formatProviderCostAmount(v, costUnit)} />
             </PieChart>
           </ResponsiveContainer>
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-            <p className="text-lg font-bold text-gray-900">${total.toFixed(2)}</p>
-            <p className="text-[10px] uppercase tracking-wider text-gray-400">Total</p>
+            <p className="text-lg font-bold text-gray-900">
+              {costUnit === 'credits' ? Math.round(total).toLocaleString() : `$${total.toFixed(2)}`}
+            </p>
+            <p className="text-[10px] uppercase tracking-wider text-gray-400">
+              {costUnit === 'credits' ? 'Credits' : 'Total'}
+            </p>
           </div>
         </div>
 
@@ -204,7 +413,9 @@ export function ProviderCostPanel({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2 text-sm">
                     <span className="truncate text-gray-700">{slice.label}</span>
-                    <span className="shrink-0 font-medium text-gray-900">${slice.value.toFixed(4)}</span>
+                    <span className="shrink-0 font-medium text-gray-900">
+                      {formatProviderCostAmount(slice.value, costUnit)}
+                    </span>
                   </div>
                   <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
                     <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: slice.color }} />
@@ -220,31 +431,39 @@ export function ProviderCostPanel({
       {topDriver ? (
         <div className="rounded-xl border border-violet-100 bg-violet-50/60 px-4 py-3 text-sm text-violet-900">
           <span className="font-medium">Top driver:</span> {topDriver.label} accounts for{' '}
-          {total > 0 ? ((topDriver.value / total) * 100).toFixed(1) : '0'}% (${topDriver.value.toFixed(4)})
+          {total > 0 ? ((topDriver.value / total) * 100).toFixed(1) : '0'}% ({formatProviderCostAmount(topDriver.value, costUnit)})
         </div>
       ) : null}
 
       <div className="grid gap-3 sm:grid-cols-3">
         {slices
-          .filter((s) => ['stt', 'llm', 'tts'].includes(s.key))
+          .filter((s) => ['stt', 'llm', 'tts', 'call'].includes(s.key))
           .map((slice) => {
             const breakdown = (callData as any).costBreakdown || (callData as any).cost_breakdown || {}
+            const charging = (callData as any).raw_data?.metadata?.charging
             const promptTokens = breakdown.llmPromptTokens ?? breakdown.llm_prompt_tokens
             const ttsChars = breakdown.ttsCharacters ?? breakdown.tts_characters
+            const ttsUsage = charging?.tts_usage
             const detail =
               slice.key === 'llm'
                 ? promptTokens != null
                   ? `Prompt ${Number(promptTokens).toLocaleString()} tokens`
                   : 'Language model usage'
-                : slice.key === 'tts'
+                : slice.key === 'tts' || slice.key === 'call'
                   ? ttsChars != null
                     ? `${Number(ttsChars).toLocaleString()} characters`
-                    : 'Text-to-speech synthesis'
+                    : ttsUsage?.total_characters != null
+                      ? `${Number(ttsUsage.total_characters).toLocaleString()} characters`
+                      : slice.key === 'call'
+                        ? 'Voice platform usage'
+                        : 'Text-to-speech synthesis'
                   : 'Speech-to-text processing'
             return (
               <div key={slice.key} className="rounded-xl border border-gray-200 bg-white p-4">
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">{slice.label}</p>
-                <p className="mt-1 text-xl font-bold text-gray-900">${slice.value.toFixed(4)}</p>
+                <p className="mt-1 text-xl font-bold text-gray-900">
+                  {formatProviderCostAmount(slice.value, costUnit)}
+                </p>
                 <p className="mt-2 text-xs text-gray-500">{detail}</p>
               </div>
             )
@@ -263,6 +482,9 @@ export function ProviderLatencyPanel({
 }) {
   const { stages, turns, avgTurnMs } = useMemo(() => {
     if (platform === 'vapi') return parseVapiPipeline(callData)
+    if (platform === 'elevenlabs') return parseElevenLabsPipeline(callData)
+    if (platform === 'retell') return parseRetellPipeline(callData)
+    if (platform === 'smallest') return parseSmallestPipeline(callData)
     const raw = callData as Record<string, any>
     const latency = raw.latency || {}
     const stages: PipelineStage[] = [

@@ -1617,34 +1617,20 @@ async def stream_call_audio(
             },
         )
 
-    # Custom WebSocket sessions store audio in S3
-    if platform == "custom_websocket":
-        s3_key = call_data.get("recording_s3_key")
-        if not s3_key:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available for this session")
+    # Custom WebSocket / internal test-agent sessions store audio in blob storage
+    if platform in {"custom_websocket", "voice_bundle"}:
+        from app.services.storage.audio_delivery import collect_call_data_audio_keys, stream_audio_from_keys
 
-        from app.services.storage.s3_service import s3_service
-        if not s3_service.is_enabled():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 storage is not configured")
-
-        try:
-            audio_bytes = s3_service.download_file_by_key(s3_key)
-        except Exception:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage")
-        if not audio_bytes:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage")
-
-        extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "webm"
-        content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
-        content_type = content_type_map.get(extension, "audio/webm")
-
-        from io import BytesIO
-        return StreamingResponse(
-            BytesIO(audio_bytes),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="call_{call_short_id}.{extension}"',
-            },
+        storage_stream = stream_audio_from_keys(
+            collect_call_data_audio_keys(call_data),
+            filename=f"call_{call_short_id}",
+            default_content_type="audio/webm" if platform == "custom_websocket" else "audio/wav",
+        )
+        if storage_stream:
+            return storage_stream
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No recording available for this session",
         )
 
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Audio not supported for platform: {platform}")

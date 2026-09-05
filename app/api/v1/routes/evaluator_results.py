@@ -695,13 +695,14 @@ async def stream_evaluator_result_audio(
     db: Session = Depends(get_db),
 ):
     """Stream evaluator result audio from S3 or proxy auth-gated provider URLs."""
-    from io import BytesIO
-
     import requests as http_requests
     from fastapi.responses import RedirectResponse, StreamingResponse
 
     from app.core.encryption import decrypt_api_key
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.audio_delivery import (
+        collect_evaluator_result_audio_keys,
+        stream_audio_from_keys,
+    )
     from app.services.voice_providers.vapi_recording import is_presigned_storage_url
     from app.workers.tasks.process_evaluator_result import _extract_audio_url
 
@@ -711,28 +712,12 @@ async def stream_evaluator_result_audio(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
-    s3_key = result.audio_s3_key
-    if not s3_key and isinstance(result.call_data, dict):
-        s3_key = result.call_data.get("recording_s3_key")
-
-    if s3_key:
-        if not s3_service.is_enabled():
-            raise HTTPException(status_code=400, detail="S3 storage is not configured")
-        try:
-            audio_bytes = s3_service.download_file_by_key(s3_key)
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="Audio file not found in storage") from exc
-
-        extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "wav"
-        content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
-        content_type = content_type_map.get(extension, "audio/wav")
-        return StreamingResponse(
-            BytesIO(audio_bytes),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="result_{result.result_id}.{extension}"',
-            },
-        )
+    storage_stream = stream_audio_from_keys(
+        collect_evaluator_result_audio_keys(result),
+        filename=f"result_{result.result_id}",
+    )
+    if storage_stream:
+        return storage_stream
 
     call_data = result.call_data if isinstance(result.call_data, dict) else {}
     platform = (result.provider_platform or "").lower()

@@ -49,12 +49,97 @@ def _normalize_turn_rows(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [_normalize_turn_row(t) for t in turns]
 
 
-def _percentile(values: List[float], pct: float) -> Optional[float]:
-    if not values:
-        return None
-    sorted_vals = sorted(values)
-    idx = min(len(sorted_vals) - 1, int(round((pct / 100.0) * (len(sorted_vals) - 1))))
-    return round(sorted_vals[idx], 1)
+def resolve_trace_turns(
+    trace: SyntheticCallTrace,
+    payload: Optional[SyntheticTracePayload],
+    otel_payload: Optional[SyntheticTraceOtelPayload],
+) -> List[Dict[str, Any]]:
+    """Rebuild per-turn metrics from stored payload + OTLP spans."""
+    raw_spans = list(otel_payload.spans or []) if otel_payload else []
+    scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
+    stored_turns = list(payload.turns or []) if payload else []
+
+    tier1_turns: List[Dict[str, Any]] = []
+    for turn in stored_turns:
+        num = turn.get("turn_number")
+        sut = turn.get("sut_response_latency_ms")
+        if num is not None and sut is not None:
+            tier1_turns.append(
+                {
+                    "turn_number": int(num),
+                    "sut_response_latency_ms": float(sut),
+                    "talk_over": bool(turn.get("talk_over") or False),
+                    "extra": dict(turn.get("extra") or {}),
+                }
+            )
+
+    otel_turns = derive_turns_from_spans(scoped_spans)
+    if scoped_spans:
+        turns = merge_tier1_and_otel_turns(tier1_turns, otel_turns)
+    else:
+        turns = stored_turns
+    return _normalize_turn_rows(turns)
+
+
+def enrich_trace_summaries(
+    db: Session,
+    traces: List[SyntheticCallTrace],
+) -> List[Dict[str, Any]]:
+    """Recompute latency percentiles from turn data for list views."""
+    if not traces:
+        return []
+
+    trace_ids = [t.id for t in traces]
+    payloads = (
+        db.query(SyntheticTracePayload)
+        .filter(SyntheticTracePayload.synthetic_call_trace_id.in_(trace_ids))
+        .all()
+    )
+    otel_payloads = (
+        db.query(SyntheticTraceOtelPayload)
+        .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id.in_(trace_ids))
+        .all()
+    )
+    payload_by_trace = {p.synthetic_call_trace_id: p for p in payloads}
+    otel_by_trace = {p.synthetic_call_trace_id: p for p in otel_payloads}
+
+    items: List[Dict[str, Any]] = []
+    for trace in traces:
+        base = {
+            "id": trace.id,
+            "evaluator_result_id": trace.evaluator_result_id,
+            "agent_id": trace.agent_id,
+            "call_short_id": trace.call_short_id,
+            "environment": trace.environment,
+            "transport": trace.transport,
+            "tier": trace.tier,
+            "status": trace.status,
+            "started_at": trace.started_at,
+            "ended_at": trace.ended_at,
+            "turn_count": trace.turn_count,
+            "response_latency_p50_ms": trace.response_latency_p50_ms,
+            "response_latency_p90_ms": trace.response_latency_p90_ms,
+            "response_latency_p95_ms": trace.response_latency_p95_ms,
+            "response_latency_sample_count": None,
+            "component_aggregates": trace.component_aggregates,
+            "failure_flags": trace.failure_flags,
+            "call_recording_id": trace.call_recording_id,
+        }
+        turns = resolve_trace_turns(
+            trace,
+            payload_by_trace.get(trace.id),
+            otel_by_trace.get(trace.id),
+        )
+        if turns:
+            summary = compute_trace_latency_summary(turns)
+            base["turn_count"] = summary.get("turn_count", base["turn_count"])
+            base["response_latency_sample_count"] = summary.get("response_latency_sample_count")
+            base["response_latency_p50_ms"] = summary.get("response_latency_p50_ms")
+            base["response_latency_p90_ms"] = summary.get("response_latency_p90_ms")
+            base["response_latency_p95_ms"] = summary.get("response_latency_p95_ms")
+            base["component_aggregates"] = summary.get("component_aggregates")
+        items.append(base)
+    return items
 
 
 def _utcnow() -> datetime:
@@ -1050,28 +1135,7 @@ def load_trace_detail(
     raw_spans = list(otel_payload.spans or []) if otel_payload else []
     scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
     otel_spans = annotate_spans_with_display_turn(scoped_spans)
-    stored_turns = list(payload.turns or []) if payload else []
-
-    tier1_turns: List[Dict[str, Any]] = []
-    for turn in stored_turns:
-        num = turn.get("turn_number")
-        sut = turn.get("sut_response_latency_ms")
-        if num is not None and sut is not None:
-            tier1_turns.append(
-                {
-                    "turn_number": int(num),
-                    "sut_response_latency_ms": float(sut),
-                    "talk_over": bool(turn.get("talk_over") or False),
-                    "extra": dict(turn.get("extra") or {}),
-                }
-            )
-
-    otel_turns = derive_turns_from_spans(otel_spans)
-    if otel_spans:
-        turns = merge_tier1_and_otel_turns(tier1_turns, otel_turns)
-    else:
-        turns = stored_turns
-    turns = _normalize_turn_rows(turns)
+    turns = resolve_trace_turns(trace, payload, otel_payload)
     latency_summary = compute_trace_latency_summary(turns) if turns else {}
 
     return {
@@ -1138,15 +1202,11 @@ def build_otel_correlation(
 
 
 def _update_latency_aggregates(trace: SyntheticCallTrace, turns: List[Dict[str, Any]]) -> None:
-    latencies = [
-        float(t["sut_response_latency_ms"])
-        for t in turns
-        if t.get("sut_response_latency_ms") is not None
-    ]
-    if latencies:
-        trace.response_latency_p50_ms = _percentile(latencies, 50)
-        trace.response_latency_p90_ms = _percentile(latencies, 90)
-        trace.response_latency_p95_ms = _percentile(latencies, 95)
+    summary = compute_trace_latency_summary(turns)
+    if summary.get("response_latency_p50_ms") is not None:
+        trace.response_latency_p50_ms = summary["response_latency_p50_ms"]
+        trace.response_latency_p90_ms = summary.get("response_latency_p90_ms")
+        trace.response_latency_p95_ms = summary.get("response_latency_p95_ms")
 
 
 def _compute_failure_flags(trace: SyntheticCallTrace) -> List[str]:

@@ -93,15 +93,242 @@ def test_derive_turns_from_pipecat_parent_child_spans():
 
 def test_compute_trace_latency_summary_uses_sut_then_llm_fallback():
     turns = [
-        {"turn_number": 1, "sut_response_latency_ms": 1000.0, "llm_ttfb_ms": 400.0},
-        {"turn_number": 2, "sut_response_latency_ms": 2000.0, "llm_ttfb_ms": 800.0},
-        {"turn_number": 3, "sut_response_latency_ms": 3000.0, "llm_ttfb_ms": 1200.0},
+        {
+            "turn_number": 1,
+            "sut_response_latency_ms": 1000.0,
+            "llm_ttfb_ms": 400.0,
+            "extra": {"user_text": "one"},
+        },
+        {
+            "turn_number": 2,
+            "sut_response_latency_ms": 2000.0,
+            "llm_ttfb_ms": 800.0,
+            "extra": {"user_text": "two"},
+        },
+        {
+            "turn_number": 3,
+            "sut_response_latency_ms": 3000.0,
+            "llm_ttfb_ms": 1200.0,
+            "extra": {"user_text": "three"},
+        },
     ]
     summary = compute_trace_latency_summary(turns)
     assert summary["turn_count"] == 3
     assert summary["response_latency_p50_ms"] == 2000.0
     assert summary["response_latency_p90_ms"] == 3000.0
     assert summary["component_aggregates"]["llm_ttfb_ms"]["p50"] == 800.0
+
+
+def test_compute_trace_latency_summary_ignores_agent_only_openers():
+    turns = [
+        {
+            "turn_number": 1,
+            "sut_response_latency_ms": 9000.0,
+            "llm_ttfb_ms": 9000.0,
+            "extra": {"assistant_text": "Welcome"},
+        },
+        {
+            "turn_number": 2,
+            "sut_response_latency_ms": 1200.0,
+            "extra": {"user_text": "hello"},
+        },
+        {
+            "turn_number": 3,
+            "sut_response_latency_ms": 2400.0,
+            "extra": {"user_text": "bye"},
+        },
+    ]
+    summary = compute_trace_latency_summary(turns)
+    assert summary["response_latency_p50_ms"] == 1200.0
+
+
+def test_finalize_turn_derives_sut_from_stt_llm_tts_for_user_turn():
+    spans = [
+        {
+            "name": "stt",
+            "span_id": "stt-1",
+            "start_time_unix_nano": 100,
+            "attributes": {
+                "gen_ai.operation.name": "stt",
+                "metrics.ttfb": 0.12,
+                "transcript": "hello",
+            },
+        },
+        {
+            "name": "llm_response",
+            "span_id": "llm-1",
+            "start_time_unix_nano": 200,
+            "attributes": {"metrics.ttfb": 0.45, "output": "Hi"},
+        },
+        {
+            "name": "tts",
+            "span_id": "tts-1",
+            "start_time_unix_nano": 300,
+            "attributes": {
+                "gen_ai.operation.name": "tts",
+                "metrics.ttfb": 0.08,
+                "text": "Hi",
+            },
+        },
+    ]
+    turns = derive_turns_from_spans(spans)
+    assert len(turns) == 1
+    assert turns[0]["sut_response_latency_ms"] == 650.0
+    assert turns[0]["extra"]["sut_derived_from_components"] is True
+
+
+def test_response_latency_excludes_partial_llm_only_user_turn():
+    turns = [
+        {
+            "turn_number": 1,
+            "sut_response_latency_ms": 400.0,
+            "llm_ttfb_ms": 400.0,
+            "extra": {"user_text": "hi", "sut_is_partial_fallback": True},
+        },
+        {
+            "turn_number": 2,
+            "sut_response_latency_ms": 1200.0,
+            "extra": {"user_text": "bye"},
+        },
+    ]
+    from app.services.synthetic_traces.otlp_mapper import response_latency_samples
+
+    assert response_latency_samples(turns) == [1200.0]
+
+
+def test_compute_trace_latency_summary_includes_measured_greeting_opener():
+    """TDD §9.3 worked example includes greeting turn when Pipecat measured e2e."""
+    turns = [
+        {
+            "turn_number": 1,
+            "sut_response_latency_ms": 800.0,
+            "extra": {"assistant_text": "Welcome", "sut_measured_e2e": True},
+        },
+        {
+            "turn_number": 2,
+            "sut_response_latency_ms": 920.0,
+            "extra": {"user_text": "hello"},
+        },
+        {
+            "turn_number": 3,
+            "sut_response_latency_ms": 1100.0,
+            "extra": {"user_text": "more"},
+        },
+        {
+            "turn_number": 4,
+            "sut_response_latency_ms": 1400.0,
+            "extra": {"user_text": "bye"},
+        },
+    ]
+    summary = compute_trace_latency_summary(turns)
+    assert summary["response_latency_sample_count"] == 4
+    assert summary["response_latency_p50_ms"] == 1100.0
+    assert summary["response_latency_p90_ms"] == 1400.0
+    assert summary["response_latency_p95_ms"] == 1400.0
+
+
+def test_consolidate_turn_rows_merges_adjacent_same_sut():
+    from app.services.synthetic_traces.otlp_mapper import _consolidate_turn_rows
+
+    turns = [
+        {
+            "stt_ttfb_ms": 580.0,
+            "llm_ttfb_ms": 3686.0,
+            "tts_ttfb_ms": 190.0,
+            "sut_response_latency_ms": 5306.0,
+            "extra": {"user_text": "help", "assistant_text": "Sure", "_span_ids": ["a", "b", "c"]},
+        },
+        {
+            "llm_ttfb_ms": 5306.0,
+            "tts_ttfb_ms": 190.0,
+            "sut_response_latency_ms": 5306.0,
+            "extra": {"assistant_text": "Sure", "_span_ids": ["b", "c"]},
+        },
+    ]
+    merged = _consolidate_turn_rows(turns)
+    assert len(merged) == 1
+
+
+def test_consolidate_turn_rows_merges_same_sut_bot_fragment():
+    """WebRTC multi-agent calls may emit user+bot rows plus orphan bot row with same e2e."""
+    from app.services.synthetic_traces.otlp_mapper import _consolidate_turn_rows
+
+    turns = [
+        {
+            "turn_number": 1,
+            "stt_ttfb_ms": 580.0,
+            "llm_ttfb_ms": 3686.0,
+            "tts_ttfb_ms": 190.0,
+            "sut_response_latency_ms": 5306.0,
+            "extra": {
+                "user_text": "Need help",
+                "assistant_text": "Sure.",
+                "_span_ids": ["stt-1", "llm-1", "tts-1"],
+            },
+        },
+        {
+            "turn_number": 2,
+            "llm_ttfb_ms": 5306.0,
+            "tts_ttfb_ms": 190.0,
+            "sut_response_latency_ms": 5306.0,
+            "extra": {
+                "assistant_text": "Sure.",
+                "_span_ids": ["llm-1", "tts-1"],
+            },
+        },
+    ]
+    merged = _consolidate_turn_rows(turns)
+    assert len(merged) == 1
+    assert merged[0]["stt_ttfb_ms"] == 580.0
+    assert merged[0]["llm_ttfb_ms"] == 5306.0
+    assert merged[0]["sut_response_latency_ms"] == 5306.0
+
+
+def test_apply_turn_span_metadata_matches_by_time_not_index():
+    spans = [
+        {
+            "name": "llm_response",
+            "span_id": "llm-greet",
+            "start_time_unix_nano": 100,
+            "attributes": {"metrics.ttfb": 1.5, "output": "Welcome!"},
+        },
+        {
+            "name": "stt",
+            "span_id": "stt-user",
+            "start_time_unix_nano": 5_000_000_000,
+            "attributes": {
+                "gen_ai.operation.name": "stt",
+                "metrics.ttfb": 0.4,
+                "transcript": "Need help",
+            },
+        },
+        {
+            "name": "llm_response",
+            "span_id": "llm-reply",
+            "start_time_unix_nano": 6_000_000_000,
+            "attributes": {"metrics.ttfb": 2.1, "output": "Sure thing."},
+        },
+        {
+            "name": "turn",
+            "span_id": "turn-user",
+            "start_time_unix_nano": 4_900_000_000,
+            "end_time_unix_nano": 8_000_000_000,
+            "attributes": {"turn.user_bot_latency_seconds": 3.2},
+        },
+        {
+            "name": "turn",
+            "span_id": "turn-greet",
+            "start_time_unix_nano": 50,
+            "end_time_unix_nano": 2_000_000_000,
+            "attributes": {"turn.user_bot_latency_seconds": 0.8},
+        },
+    ]
+    turns = derive_turns_from_spans(spans)
+    assert len(turns) == 2
+    assert turns[0]["sut_response_latency_ms"] == 800.0
+    assert turns[0]["extra"].get("sut_measured_e2e") is True
+    assert turns[1]["sut_response_latency_ms"] == 3200.0
+    assert "Need help" in turns[1]["extra"]["user_text"]
 
 
 def test_derive_turns_renumbers_duplicate_pipecat_turn_one_spans():

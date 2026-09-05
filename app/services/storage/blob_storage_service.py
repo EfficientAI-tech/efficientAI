@@ -89,6 +89,16 @@ class BlobStorageService:
     def download_file_by_key(self, key: str) -> bytes:
         return self._backend().download_file_by_key(key)
 
+    def iter_file_chunks_by_key(self, key: str, chunk_size: int = 8192):
+        """Stream file content in chunks from the active blob backend."""
+        backend = self._backend()
+        if hasattr(backend, "iter_file_chunks_by_key"):
+            yield from backend.iter_file_chunks_by_key(key, chunk_size)
+            return
+        data = self.download_file_by_key(key)
+        for offset in range(0, len(data), chunk_size):
+            yield data[offset : offset + chunk_size]
+
     def delete_file(self, file_id: uuid.UUID, file_format: str) -> bool:
         return self._backend().delete_file(file_id, file_format)
 

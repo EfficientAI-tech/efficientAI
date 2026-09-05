@@ -50,6 +50,7 @@ class SyntheticCallTraceSummary(BaseModel):
     response_latency_p50_ms: Optional[float] = None
     response_latency_p90_ms: Optional[float] = None
     response_latency_p95_ms: Optional[float] = None
+    response_latency_sample_count: Optional[int] = None
     component_aggregates: Optional[Dict[str, Any]] = None
     failure_flags: Optional[List[str]] = None
     call_recording_id: Optional[UUID] = None
