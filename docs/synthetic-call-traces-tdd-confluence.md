@@ -1,852 +1,496 @@
-> **Doc role:** Part **1 of 2** in [Voice Call Traces & Observability](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682) — OTLP ingest, turn mapping, and percentile math. For UI/drawer/audio/test-result pages, see [Part 2: Call Details (End-to-End)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074).
+> **Doc role:** Part **1 of 2** in [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682). For UI/drawer/audio, see [Part 2: Call Details](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074).
 
-# TDD: Call Traces — Pipecat OTLP Observability
+# TDD: Call Traces — Pipecat OTLP Observability (Architecture & Scaling)
 
-**Status:** Implemented (v1)  
-**Owner:** Platform / Voice Evals  
-**UI:** Call Traces (`/call-traces`)  
+**Version:** 1.0 (staging)  
+**Date:** March 2026  
+**Repo:** efficientAI  
+**Audience:** Platform engineers, SREs, sales/solutions architects, enterprise customers  
+**UI:** `/observability/calls` (traces tab)  
 **API prefix:** `/api/v1/observability/traces`
 
----
-
-## 1. One-sentence summary
-
-Customers run a **Pipecat voice agent** on their machine (or cloud). During each call, the agent exports **OpenTelemetry spans** (STT, LLM, TTS timing) to EfficientAI. We store them, group by **conversation turn**, and show a **latency waterfall** in the Call Traces UI.
+**Style reference:** [System Design — Call Import Concurrency](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/48103425) · [Usage & Cost Tracking — Architecture Guide](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/63045633)
 
 ---
 
-## 2. Deployed environments (today)
+## 0. Plain-English summary (read this first)
 
-We only run **two** environments right now:
+Customers run **Pipecat voice agents** (or connect Vapi/Retell webhooks). During each call they need to see **per-turn STT → LLM → TTS latency**, model names, and conversation text — without building Honeycomb/Datadog themselves.
 
-| Environment | API base | Who uses it |
-|-------------|----------|-------------|
-| **Local** | `http://localhost:8000` | Engineers running `eai start-all` + local `bot.py` |
-| **Staging** | `https://staging.efficientai.cloud` | Team demos, integration testing, customer pilots |
-| **Staging UI** | `https://staging.efficientai.cloud` | Same host — API and UI share staging domain |
+EfficientAI solves this by:
 
-There is **no production traces endpoint yet**. When prod ships, customers will only change `EFFICIENTAI_API_BASE` — same `bot.py`, same SDK hooks.
+1. Minting a **6-digit Call ID** (`call_short_id`) per session.
+2. Ingesting **OpenTelemetry spans** from the customer's bot (or in-process from our Test Agent playground).
+3. Grouping spans into **turn rows**, computing **p50/p90/p95**, and showing a **waterfall** in the Calls hub.
 
-**Best practice today:**
-- Use a **separate workspace** for local vs staging (traces never mix in the UI).
-- Never reuse API keys across environments.
+**What we do not do in v1:** Dollar cost from OTLP spans (cost comes from provider `call_data`). Async ingest at enterprise scale (planned Phase 2). Shard trace rows across data shards (catalog Postgres only).
 
-```bash
-# Local bot → local EfficientAI
-EFFICIENTAI_API_BASE=http://localhost:8000
-
-# Local bot → staging EfficientAI (common for team testing)
-EFFICIENTAI_API_BASE=https://staging.efficientai.cloud
-```
+Think of it like call import fair dispatch: **backlog and correctness live in Postgres**; the hot path today is **sync HTTP ingest** (simple for customers, caps throughput until Phase 2).
 
 ---
 
-## 3. How it works (end-to-end)
+## 1. Problem statement
 
-```
-┌─────────────────┐     POST /observability/traces      ┌──────────────────┐
-│  Pipecat bot    │ ──────────────────────────────────► │  EfficientAI API │
-│  (customer)     │     OTLP spans + correlation headers │  (ingest + store)│
-└────────┬────────┘                                     └────────┬─────────┘
-         │ POST /sessions (mint call ID)                          │
-         └──────────────────────────────────────────────────────►│
-                                                                   ▼
-                                                          ┌──────────────────┐
-                                                          │  Call Traces UI  │
-                                                          │  per-turn STT/   │
-                                                          │  LLM/TTS + models│
-                                                          └──────────────────┘
-```
+### 1.1 What teams need
 
-### Per-call lifecycle
+| Stakeholder | Need |
+| --- | --- |
+| **Customer engineering** | Drop-in OTLP export from Pipecat; see latency waterfall without running their own observability stack |
+| **Sales / solutions** | Honest answers on concurrent call capacity, how p50 is calculated, and what breaks at scale |
+| **Platform / SRE** | Clear boundaries: which service owns ingest, where rows live, playground vs production isolation |
+| **PM / frontend** | One Calls hub for OTLP traces and webhook production calls — without mixing playground test data |
 
-| Step | Who | What happens |
-|------|-----|--------------|
-| 1 | Customer bot | `ensure_trace_session()` → server mints **6-digit Call ID** (`call_short_id`) |
-| 2 | Customer bot | `setup_pipecat_worker_tracing(trace_ctx)` stamps **every span** with that call ID |
-| 3 | Pipecat | `PipelineWorker(enable_tracing=True)` emits `stt` / `llm` / `tts` spans during the call |
-| 4 | OTel exporter | Batches spans → `POST /api/v1/observability/traces` with call ID in **header + span attrs** |
-| 5 | EfficientAI ingest | Looks up trace row by `call_short_id` + `workspace_id`, appends spans, rebuilds turns |
-| 6 | Customer bot | `close_trace_session()` on disconnect → trace status **closed** |
-| 7 | User | Opens **Call Traces** in UI → sees conversation + waterfall for that Call ID |
+### 1.2 What went wrong without this design
 
-### 3.1 How other platforms compare (e.g. Cekura, Honeycomb)
+| Problem | Symptom |
+| --- | --- |
+| **No stable call correlation** | OTLP batches from 20 concurrent WebRTC calls hit one URL — spans could land on the wrong trace row |
+| **OTel `trace_id` alone is insufficient** | Tracer restarts mid-call change OTel trace ID; UI needs a stable business ID (`#482931`) |
+| **Mixed call sources** | Same 6-digit ID can exist in `call_recordings` (playground) and (webhook) — UI opened wrong drawer |
+| **Playground pollution** | Voice AI playground calls appeared in production observability list |
+| **Metrics confusion** | Sales asked "do you compute p50?" — answer differs for OTLP (yes) vs Vapi/Retell (provider fields) |
+| **Scaling opacity** | Sync ingest + full JSONB span rewrite per batch — fine for 10–20 calls, breaks at 500+ without Phase 2 |
 
-This is a **pattern comparison**, not a feature-by-feature vendor shootout. Many voice observability products follow a similar OTel model.
+### 1.3 Requirements (v1)
 
-| | **Other platforms** (e.g. Cekura, Honeycomb) | **EfficientAI (this feature)** |
-|--|------------|-------------------------------|
-| Customer install | Vendor SDK / Pipecat extra (e.g. `cekura[pipecat]`) | `pip install efficientai[otel]` (or raw OTLP) |
-| Bot integration | Often a single wrapper (e.g. `PipecatTracer.track_pipeline(...)`) | `ensure_trace_session()` + `setup_pipecat_worker_tracing()` + `close_trace_session()` |
-| Export protocol | OTLP gRPC/HTTP | OTLP HTTP JSON or Protobuf |
-| Auth headers | API key + often an agent/session ID in headers | `X-API-Key`, `X-Workspace-Id` |
-| Call correlation | `trace_id` + vendor call/session API | `call_short_id` (6-digit) on spans + headers |
-| Agent ID | Often required | **Optional** — workspace + call ID is enough for WebRTC |
-| Who runs the test call | Vendor-hosted or customer agent | Customer's own Pipecat bot (local WebRTC today) |
-| UI | Span timeline + waterfall | Conversation tab + latency waterfall + model names |
-
-We use the same OTel wire format; our v1 integration is more explicit (three SDK hooks) rather than a single wrapper class.
+* **Per-call isolation** via `call_short_id` + `workspace_id` + API key
+* **OTLP HTTP ingest** for customer Pipecat bots; **in-process** export for Test Agent playground
+* **Computed latency** from span `metrics.ttfb` and Pipecat turn attributes
+* **Production Calls hub** lists webhook calls (`source=webhook`) and OTLP traces — **not** playground recordings
+* **Pilot scale:** 10–20 concurrent OTLP calls per workspace on staging
+* **Honest enterprise path:** documented Phase 2 (async queue, S3 spans, rate limits)
 
 ---
 
-## 4. How each call stays unique (10–20 concurrent calls)
+## 2. Solution overview
 
-This is the most important section for understanding correctness at scale.
+Eight mechanisms work together:
 
-### 4.1 The problem
+| # | Mechanism | Purpose |
+| --- | --- | --- |
+| 1 | **`call_short_id` minting** | Server assigns 6-digit ID at session start; stamped on every span + OTLP header |
+| 2 | **Workspace + org scoping** | API key → org; header → workspace; ingest never crosses tenants |
+| 3 | **Three-table trace storage** | Header (list), turns JSON (waterfall), raw spans (debug) — avoid parsing OTLP on every page load |
+| 4 | **Sync OTLP ingest** | HTTP request parses, appends spans, rebuilds turns, commits — simple customer SDK |
+| 5 | **Turn mapper + percentiles** | `otlp_mapper.py` derives STT/LLM/TTS ms; `compute_trace_latency_summary()` for p50/p90/p95 |
+| 6 | **`source` column on `call_recordings`** | `playground` vs `webhook` — API filters + drawer routing |
+| 7 | **Idle auto-close (120s)** | Open traces close without SDK `close` if spans stop arriving |
+| 8 | **Poll-based live SSE** | Webhook calls stream `live_transcript` from Postgres (no Redis pub/sub v1) |
 
-Ten developers (or ten end-users) can be on **separate WebRTC calls at the same time**. Each call produces OTLP batches that hit the **same ingest URL**. How do we make sure Call A's STT span never lands on Call B's trace row?
-
-### 4.2 Our answer: per-call `call_short_id` (not shared across calls)
-
-Every call gets its **own** 6-digit ID, minted **once** when the call starts:
-
-```
-Call 1 → call_short_id = 482931  → trace row UUID = aaa-...
-Call 2 → call_short_id = 719044  → trace row UUID = bbb-...
-...
-Call 20 → call_short_id = 305812 → trace row UUID = ...
-```
-
-**Minting** happens in `POST /observability/traces/sessions` (or via SDK `ensure_trace_session()`). The server:
-1. Generates a random 6-digit ID
-2. Checks it is not already used in `call_recordings` or `synthetic_call_traces`
-3. Creates an **open** `synthetic_call_traces` row bound to that ID + workspace
-
-No two active calls should share the same `call_short_id` within our DB.
-
-### 4.3 How Pipecat / our SDK tags every export
-
-When a call connects, the SDK does **two** things so ingest can route correctly:
-
-**A) HTTP headers on every OTLP batch** (mutable per call):
-```
-X-API-Key: <key>
-X-Workspace-Id: <workspace-uuid>
-X-EfficientAI-Call-Short-Id: 482931
-```
-
-**B) Span attributes on every span** (stamped at span start):
-```
- efficientai.call_short_id = "482931"
- efficientai.workspace_id    = "<workspace-uuid>"
-```
-
-`setup_pipecat_worker_tracing(trace_ctx)` configures both. Even if headers were missing, span attributes alone are enough — **span attrs win over headers** when they disagree.
-
-### 4.4 How ingest routes a batch to the correct trace
-
-```
-Incoming OTLP POST
-    │
-    ├─► Auth: X-API-Key + X-Workspace-Id  → org + workspace scope
-    │
-    ├─► group_spans_by_call_short_id()      → split batch if mixed (rare)
-    │
-    ├─► Resolve call_short_id from:
-    │       span.efficientai.call_short_id  (preferred)
-    │       OR header X-EfficientAI-Call-Short-Id
-    │
-    ├─► Lookup: synthetic_call_traces WHERE
-    │       call_short_id = '482931'
-    │       AND workspace_id = <header workspace>
-    │       AND organization_id = <from API key>
-    │
-    ├─► Dedupe spans by (otel trace_id, span_id) — replays are safe
-    │
-    ├─► filter_spans_for_trace(..., call_short_id) — drop stray spans
-    │
-    └─► Recompute turns + latency on THAT trace row only
-```
-
-**Workspace is the second isolation layer.** Even if two workspaces somehow got the same 6-digit ID (extremely unlikely), they still would not see each other's data because list/get/ingest all filter by `workspace_id`.
-
-### 4.5 Worked example: 3 concurrent calls
-
-| Time | Call | Event | Ingest sees |
-|------|------|-------|-------------|
-| T+0s | Alice | session → `482931` | Row created: `#482931` open |
-| T+1s | Bob | session → `719044` | Row created: `#719044` open |
-| T+2s | Carol | session → `305812` | Row created: `#305812` open |
-| T+5s | Alice | OTLP batch, header `482931` | Appended to `#482931` only |
-| T+5s | Bob | OTLP batch, header `719044` | Appended to `#719044` only |
-| T+6s | Carol | OTLP batch, attrs `305812` | Appended to `#305812` only |
-| T+30s | Alice | disconnect + close | `#482931` → closed |
-
-Each bot process holds its own `trace_ctx` in memory with a different `call_short_id`. They all POST to the same URL — correlation is in the payload, not the URL path.
-
-### 4.6 How other observability platforms do it (e.g. Cekura, Honeycomb, Datadog)
-
-We follow the same **OpenTelemetry correlation** pattern used across the industry:
-
-| Pattern | What it is | How we use it |
-|---------|------------|---------------|
-| **Service-level auth** | API key identifies the tenant | `X-API-Key` → organization |
-| **Resource / span attributes** | Custom attrs on every span | `efficientai.call_short_id`, `efficientai.workspace_id` |
-| **Exporter headers** | Per-export metadata | `X-EfficientAI-Call-Short-Id` on OTLP HTTP |
-| **OTel trace_id** | Standard 128-bit trace identifier inside OTLP | Stored per span; we may have multiple OTel `trace_id`s per call after reconnects |
-| **Session / agent scoping** | Vendor-specific ID in headers | Optional `X-EfficientAI-Run-Id` for evaluator phone runs |
-
-Other platforms (e.g. Cekura, Honeycomb) often require an **agent ID** in headers plus a **trace_id** linked to a call log API. We intentionally simplified v1 to **workspace + call_short_id** for local Pipecat WebRTC — fewer keys for customers, same OTel wire format underneath.
-
-**Key difference in mental model:**
-- **OTel `trace_id`** = internal OpenTelemetry trace (can change mid-call if the tracer restarts)
-- **`call_short_id`** = **our** stable business ID for the voice session (what the UI shows as `#482931`)
-
-We always correlate on `call_short_id`, not on OTel `trace_id` alone.
-
-### 4.7 Will this work at scale?
-
-| Concern | Today (v1) | At higher scale |
-|---------|------------|-----------------|
-| 10–20 concurrent calls | ✅ Works — unique IDs + workspace scope | Same model |
-| 100+ concurrent calls | ✅ Correlation model still valid | Monitor DB row lock contention on span append |
-| ID collision (6 digits) | ✅ DB checks on mint; ~900k space | May need longer IDs or UUID display at very high volume |
-| One bot process, many parallel calls | ⚠️ SDK uses a shared mutable OTLP exporter — **configure per call**; safest pattern is **one active call per worker process** or ensure `setup_pipecat_worker_tracing` runs at call start before any spans export | Per-call exporter instance in SDK (future hardening) |
-| Mixed spans in one HTTP batch | ✅ `group_spans_by_call_short_id` splits them | Same |
-| Duplicate span replay | ✅ Dedupe on `(trace_id, span_id)` | Same |
-
-**Bottom line:** The correlation design is sound for concurrent calls. Scale limits today are **storage** (JSONB span rewrite) and **sync ingest**, not call routing — see §13.
+**Key design principle:** We correlate on **`call_short_id`**, not OTel `trace_id` alone. Playground and production observability are **separate surfaces** even when the Call ID format looks the same.
 
 ---
 
-## 5. Architecture (our side)
+## 3. System design — key decisions and why
 
-### 5.1 Backend modules
-
-| Module | Path | Role |
-|--------|------|------|
-| API routes | `app/api/v1/routes/synthetic_traces.py` | Ingest, sessions, list, detail |
-| Trace service | `app/services/synthetic_traces/trace_service.py` | Open/close traces, merge turns, aggregates |
-| OTLP parser | `app/services/synthetic_traces/otlp_ingest.py` | JSON + Protobuf → normalized spans |
-| Turn mapper | `app/services/synthetic_traces/otlp_mapper.py` | Spans → turns, models, grouping, dedupe |
-| Correlation | `src/efficientai/integrations/efficientai_traces/correlation.py` | Header + span attr constants |
-| Customer SDK | `src/efficientai/integrations/efficientai_traces/` | Pipecat session + OTLP setup |
-| Examples | `docs/examples/pipecat_*.py` | Copy-paste bot templates |
-
-### 5.2 Database tables
-
-| Table | Contents | Example row |
-|-------|----------|-------------|
-| `synthetic_call_traces` | Catalog: call ID, status, p50, workspace | `call_short_id=482931, status=closed, turn_count=4` |
-| `synthetic_trace_payloads` | Derived **turns** JSON | `[{turn_number:1, stt_ttfb_ms:120, llm_ttfb_ms:520, ...}]` |
-| `synthetic_trace_otel_payloads` | Raw **OTLP spans** array | `[{name:"stt", span_id:"...", attributes:{...}}]` |
-
-**Why three tables?** The catalog row powers fast list queries. Turns power the UI waterfall without parsing raw OTel. Raw spans power the "Raw spans" tab and future debugging.
-
-### 5.3 Frontend
-
-| Component | Path |
-|-----------|------|
-| List + setup | `frontend/src/pages/test-insights/TestInsights.tsx` |
-| Trace detail panel | `frontend/src/components/call-recordings/SyntheticCallTracePanel.tsx` |
-
-### 5.4 Playground test agent (in-process export)
-
-When users run **Test Agent** in the Voice Playground (our hosted Pipecat pipeline), spans do **not** go over HTTP OTLP. Instead:
-
-| Piece | Path | Role |
-|-------|------|------|
-| Tracing setup | `app/services/voice_agent/playground_tracing.py` | Stamps `efficientai.call_short_id` on every span |
-| In-process exporter | `app/services/synthetic_traces/internal_otlp_exporter.py` | Writes spans directly into `trace_service` |
-| UI | `EvaluatorCallDetailPanel` → Pipeline tab | Same waterfall as Call Traces |
-
-This reuses the same turn mapper and DB tables as customer OTLP ingest. See [Call Details TDD](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074) §10 for the full playground + evaluator flow.
+| Decision | What we chose | Why |
+| --- | --- | --- |
+| **Call correlation ID** | 6-digit `call_short_id` (100000–999999) | Human-readable in UI; uniqueness check on mint |
+| **OTLP transport (customer)** | Sync HTTP POST to API | Lowest integration friction; no collector required for pilots |
+| **OTLP transport (Test Agent)** | In-process `InternalOtlpSpanExporter` | No HTTP hop; same turn mapper as customer OTLP |
+| **Span storage** | Full JSON array in Postgres JSONB | Simple v1; rewrite entire array each batch (scaling tradeoff) |
+| **Trace sharding** | Catalog Postgres only | Unlike call imports — no hash routing to data shards |
+| **Percentile method** | Nearest-rank on sorted per-turn SUT values | Deterministic, matches `trace_service.py` — not linear interpolation |
+| **Production calls list** | `source == webhook` filter | Playground Voice AI never in observability hub |
+| **Live transcript** | 1s Postgres poll SSE | Works for staging volume; DB load grows with concurrent live calls |
+| **Rate limiting** | Not enforced on trace routes (v1) | Config may define limits; wired in Phase 2 |
+| **Cost from OTLP** | Not computed | Dollar cost from provider `call_data` (see Call Details doc) |
 
 ---
 
-## 6. Authentication & correlation reference
+## 4. High-level architecture
 
-### Required headers (every API call)
+```
+┌─────────────────────────────── Customer ───────────────────────────────┐
+│  Pipecat bot (OTLP HTTP)          Vapi / Retell / ElevenLabs webhooks   │
+└───────────────┬───────────────────────────────┬────────────────────────┘
+                │                               │
+                ▼                               ▼
+┌────────────────────────── EfficientAI ─────────────────────────────────┐
+│  FastAPI (observability routes)    Voice Playground (in-process OTLP)     │
+│  Celery workers (eval, finalize)   SSE live-events (poll-based)          │
+└───────┬──────────────────┬──────────────────┬────────────────────────────┘
+        │                  │                  │
+        ▼                  ▼                  ▼
+┌────────────── Postgres catalog ──────────┐   ┌──── S3 / blob storage ────┐
+│ synthetic_call_traces + payloads           │   │ evaluator audio, imports  │
+│ call_recordings (playground | webhook)   │   └───────────────────────────┘
+│ evaluator_results                        │
+└──────────────────────────────────────────┘
+```
 
-| Header | Required | Why |
-|--------|----------|-----|
-| `X-API-Key` | Yes | Organization authentication |
-| `X-Workspace-Id` | Yes | Multi-tenant isolation |
+### 4.1 Data flow summary
 
-### OTLP ingest headers (per export batch)
+| From | Transport | Lands in |
+| --- | --- | --- |
+| Customer Pipecat bot | `POST /observability/traces` (OTLP) | `synthetic_call_traces` |
+| Playground Test Agent | In-process `InternalOtlpSpanExporter` | `synthetic_call_traces` |
+| Provider webhooks | `POST /observability/calls/webhook/...` | `call_recordings` (`source=webhook`) |
+| Playground Voice AI | Playground APIs + provider poll | `call_recordings` (`source=playground`) |
+| Evaluate / telephony | Celery tasks | `evaluator_results` + S3 audio |
 
-| Header | Required | Why |
-|--------|----------|-----|
-| `X-EfficientAI-Call-Short-Id` | Yes* | Routes batch to the correct call row |
-| `X-EfficientAI-Run-Id` | No | Links to evaluator phone run |
-| `X-EfficientAI-Agent-Id` | No | Optional link to Agents record |
+### 4.2 Services & responsibilities
 
-*Or set `efficientai.call_short_id` on every span.
+| Component | Role | Async? |
+| --- | --- | --- |
+| **FastAPI** | OTLP ingest, sessions, observability CRUD, webhooks, SSE | Sync HTTP for OTLP |
+| **Voice Playground** | Test-agent in-process span export | In-process during call |
+| **Celery `worker`** | Telephony finalize, evaluator runs | Yes |
+| **Postgres (catalog)** | All trace + call metadata | Durable SoT — **not sharded** |
+| **Redis** | Celery broker (imports/evals) | **Not** used for OTLP ingest v1 |
+| **S3** | Evaluator audio, recordings | Durable |
 
-### Span attributes (Pipecat native tracing)
+---
+
+## 5. Scaling — today vs future
+
+### 5.1 Observed baseline (staging pilots)
+
+| Metric | v1 design point |
+| --- | --- |
+| Concurrent OTLP calls per workspace | **10–20** |
+| Concurrent webhook live calls (SSE) | **5–10** |
+| Typical call duration | 2–8 minutes |
+| Spans per call | ~40–120 |
+| OTLP batches per call | ~24–96 (~5s exporter interval) |
+| Ingest p95 @ low concurrency | < 200 ms per batch |
+| Traces retained | Indefinite (no TTL v1) |
+
+### 5.2 Throughput model
+
+| Scenario | Concurrent OTLP calls | Ingest req/s | v1 (1 API pod) | Bottleneck |
+| --- | --- | --- | --- | --- |
+| Team dev | 5 | ~1 | ✅ Comfortable | — |
+| Pilot customer | 20 | ~4 | ✅ Comfortable | — |
+| Single tenant | 100 | ~20 | ⚠️ Monitor CPU + DB | Sync ingest + JSONB rewrite |
+| Multi-tenant | 500 | ~100 | ❌ Phase 2 | API saturation, row locks |
+| Enterprise | 2000+ | 400+ | ❌ Phase 3 | OTel collector + async queue |
+
+### 5.3 Storage growth
+
+| Volume | Est. span JSONB | Action |
+| --- | --- | --- |
+| 1,000 calls | ~150 MB | Fine |
+| 10,000 calls | ~1.5 GB | Vacuum planning |
+| 100,000 calls | ~15 GB | Retention policy |
+| 1M calls | ~150 GB | S3 offload mandatory |
+
+### 5.4 Phase roadmap
+
+| Phase | Changes | Unlocks |
+| --- | --- | --- |
+| **Phase 1 (now)** | Sync ingest, catalog JSONB, 6-digit IDs | Pilots, 10–20 concurrent |
+| **Phase 2** | Celery `traces` queue, S3 span blobs, rate limits | 100–500 concurrent |
+| **Phase 3** | OTel Collector gRPC, daily rollups, retention | Enterprise dashboards, 2k+ |
+| **Phase 4** | Trace shard table or Timescale | 1M+ traces |
+
+### 5.5 Ingest write pattern (why sync ingest caps scale)
+
+Every OTLP batch for one call:
+
+1. `SELECT` full `spans` JSON array
+2. Append + dedupe `(trace_id, span_id)`
+3. `derive_turns_from_spans()` — re-derive from **all** spans
+4. Recompute p50/p90/p95
+5. `UPDATE` — single transaction
+
+**Cost:** O(spans × batches), not O(new spans alone).
+
+### 5.6 Configuration: v1 vs Phase 2 target
+
+| Setting | Today (v1) | Phase 2 recommended |
+| --- | --- | --- |
+| Ingest path | Sync in API request | Celery `traces` queue |
+| Span storage | Postgres JSONB array | S3 per trace; PG pointer |
+| Rate limit | None on `/observability/traces` | 60–120 req/min per API key |
+| List pagination | UI 25, API max 200 | Cursor + 90-day window |
+| Idle auto-close | 120s | Configurable per workspace |
+| Live SSE | 1s Postgres poll | Redis pub/sub or LISTEN/NOTIFY |
+
+### 5.7 Before vs after (capacity)
+
+| Scenario | Without observability | v1 (now) | Phase 2 (target) |
+| --- | --- | --- | --- |
+| Pilot: 20 concurrent OTLP calls | Customer runs own Datadog | ✅ Sync ingest OK | ✅ Async, <50ms ack |
+| Single tenant: 100 concurrent | N/A | ⚠️ Degraded | ✅ 500–1000 with workers |
+| 10k traces / workspace storage | N/A | ✅ ~1.5 GB catalog | ✅ S3 offload |
+| Sales: "how is p50 computed?" | Vendor black box | ✅ Documented formula | Same |
+| Playground in prod Calls hub | Mixed test + prod data | ✅ Filtered `source=webhook` | Same |
+
+---
+
+## 6. API limits & environments
+
+| Setting | Value | Location |
+| --- | --- | --- |
+| Trace list default / max `limit` | 50 / 200 | `synthetic_traces.py` |
+| Calls hub UI page size | 25 | `TestInsights.tsx` |
+| Observability calls list `limit` | 100 | `observability.py` |
+| Open trace idle auto-close | **120 seconds** | `OPEN_TRACE_IDLE_CLOSE_SECONDS` |
+| `call_short_id` range | 100000–999999 | `generate_unique_call_short_id()` |
+
+| Environment | API base |
+| --- | --- |
+| Local | `http://localhost:8000` |
+| Staging | `https://staging.efficientai.cloud` |
+| Production | Not GA for traces yet — same SDK, change `EFFICIENTAI_API_BASE` |
+
+---
+
+## 7. Database schema
+
+### 7.1 Trace tables (catalog Postgres)
+
+| Table | Purpose | Size per call |
+| --- | --- | --- |
+| `synthetic_call_traces` | Header: status, p50/p90/p95, turn_count | ~1 KB |
+| `synthetic_trace_payloads` | Derived turns JSON (waterfall) | ~2–8 KB |
+| `synthetic_trace_otel_payloads` | Raw spans JSON array | ~50–300 KB |
+
+### 7.2 `call_recordings` (shared)
+
+| Column | Values | Used for |
+| --- | --- | --- |
+| `call_short_id` | 6-digit | All surfaces |
+| `source` | `playground` \| `webhook` | API scoping + drawer routing |
+| `provider_platform` | vapi, retell, … | Provider panels |
+| `call_data` | Provider JSON | Transcript, cost, latency |
+
+### 7.3 Why three trace tables?
+
+| Table | Query | Reason |
+| --- | --- | --- |
+| Header | `ORDER BY started_at DESC LIMIT 50` | Fast list without spans |
+| Turns | Detail waterfall | No OTLP parse on page load |
+| Raw spans | Debug tab | Full fidelity for support |
+
+---
+
+## 8. Unified Calls hub
+
+**Route:** `/observability/calls` (`TestInsights.tsx`) — legacy `/calls`, `/call-traces` redirect here.
+
+### 8.1 List tabs and APIs
+
+| Tab | List API | Table | Rows |
+| --- | --- | --- | --- |
+| **Traces** | `GET /observability/traces` | `synthetic_call_traces` | OTLP / Pipecat |
+| **Calls** | `GET /observability/calls` | `call_recordings` | Webhook only (`source=webhook`) |
+
+### 8.2 Detail drawer routing
+
+| User action | Query / entry | Panel | Detail API |
+| --- | --- | --- | --- |
+| OTLP trace row | `?trace={uuid}` | `SyntheticCallTracePanel` | `GET /observability/traces/{id}` |
+| Webhook call row | `?obs={call_short_id}` | `ObservabilityCallDetailPanel` | `GET /observability/calls/{id}` |
+| Evaluator deep link | `?result={evaluator_result_id}` | `EvaluatorCallDetailPanel` | `GET /evaluator-results/{id}` |
+| Playground Voice AI | `/playground` | `ProviderCallTracePanel` | `GET /playground/call-recordings/{id}` |
+
+**Drawer priority:** `callShortId` → `observabilityCallShortId` → `evaluatorResultId` → `traceId`.
+
+### 8.3 Surface map
+
+| Surface | In Calls hub? | Table / source |
+| --- | --- | --- |
+| OTLP traces | Yes (traces tab) | `synthetic_call_traces` |
+| Webhook production calls | Yes (calls tab) | `call_recordings`, `source=webhook` |
+| Playground Test Agent | No | `evaluator_results` + trace |
+| Playground Voice AI | No | `call_recordings`, `source=playground` |
+
+---
+
+## 9. End-to-end flows
+
+### 9.1 OTLP ingest (customer Pipecat)
+
+| Step | Who | Action |
+| --- | --- | --- |
+| 1 | Customer bot | `ensure_trace_session()` → mint `call_short_id` |
+| 2 | SDK | `setup_pipecat_worker_tracing()` → stamp spans + headers |
+| 3 | Pipecat | `PipelineWorker(enable_tracing=True)` → `stt`/`llm`/`tts` spans |
+| 4 | OTel exporter | `POST /observability/traces` (~every 5s) |
+| 5 | Ingest | Dedupe, rebuild turns, update p50/p90/p95 |
+| 6 | Bot disconnect | `close_trace_session()` or 120s idle auto-close |
+| 7 | User | `/observability/calls` → waterfall |
+
+### 9.2 Test Agent (in-process — no HTTP OTLP)
+
+| Piece | Module |
+| --- | --- |
+| Span stamping | `playground_tracing.py` |
+| Export | `internal_otlp_exporter.py` → `ingest_otlp_spans()` |
+| UI | `EvaluatorCallDetailPanel` → Pipeline tab |
+
+Same turn rows as customer OTLP — only transport differs.
+
+### 9.3 Webhook observability calls
+
+| Step | Action |
+| --- | --- |
+| Ingest | `POST /observability/calls/webhook/{api_key}` → `call_recordings`, `source=webhook` |
+| Live transcript | `GET /observability/calls/{id}/live-events` — 1s poll SSE |
+| Evaluate | `POST /observability/calls/{id}/evaluate` → `evaluator_result` |
+
+Webhook upsert scoped to `workspace_id`. Playground rows skipped (`skipped_playground`).
+
+---
+
+## 10. Correlation & multi-tenancy
+
+### 10.1 Three-key routing (every OTLP batch)
+
+| Order | Key | Source |
+| --- | --- | --- |
+| 1 | Organization | `X-API-Key` |
+| 2 | Workspace | `X-Workspace-Id` or span attr |
+| 3 | Call | `efficientai.call_short_id` (preferred) or header |
+
+**Lookup:** `synthetic_call_traces` WHERE org + workspace + `call_short_id`. Failure → `correlated: false`.
+
+| Layer | Failure if wrong |
+| --- | --- |
+| Organization | 401 |
+| Workspace | Empty list / `correlated: false` |
+| Call | Spans on wrong row if env var shared |
+
+**Mental model:** OTel `trace_id` = internal; `call_short_id` = UI `#482931`.
+
+### 10.2 Concurrent calls
+
+| Concern | v1 | At scale |
+| --- | --- | --- |
+| 10–20 concurrent WebRTC | ✅ Unique IDs + workspace | Same |
+| 100+ concurrent | ✅ Correlation valid | Watch row lock contention |
+| Mixed spans in one batch | ✅ `group_spans_by_call_short_id()` | Same |
+| Duplicate replay | ✅ Dedupe `(trace_id, span_id)` | Same |
+
+---
+
+## 11. Metrics — how numbers are calculated
+
+### 11.1 Computation pipeline
+
+| Stage | Module | Output |
+| --- | --- | --- |
+| Parse spans | `otlp_ingest.py` | Normalized span dicts |
+| Group by turn | `otlp_mapper.py` | `stt/llm/tts_ttfb_ms`, `sut_response_latency_ms` |
+| Call percentiles | `compute_trace_latency_summary()` | `response_latency_p50/p90/p95_ms` |
+| Component percentiles | `compute_component_aggregates()` | Per-stage p50 on trace header |
+
+Runs on **every ingest batch** (sync).
+
+### 11.2 Per-turn field mapping
+
+| Turn field | OTLP source | Conversion |
+| --- | --- | --- |
+| `stt_ttfb_ms` | `metrics.ttfb` on `stt` span | seconds × 1000 |
+| `llm_ttfb_ms` | `metrics.ttfb` on `llm` span | same |
+| `tts_ttfb_ms` | `metrics.ttfb` on `tts` span | same |
+| `sut_response_latency_ms` | `turn.user_bot_latency_seconds` on `turn` span | end-to-end user→bot |
+
+### 11.3 Percentile formula (p50, p90, p95)
+
+1. Collect `sut_response_latency_ms` per turn (fallback: `s2s_ttfb_ms`, then `llm_ttfb_ms`)
+2. Sort ascending
+3. Index: `idx = min(n − 1, round((pct / 100) × (n − 1)))`
+4. **Nearest-rank** — not linear interpolation
+
+**Example — 4 turns:** `[800, 920, 1100, 1400]` → p50 = **1100 ms**, p90 = **1400 ms**.
+
+### 11.4 What we compute vs providers
+
+| Source | p50 in UI | Computed by us? |
+| --- | --- | --- |
+| OTLP / Pipecat | `response_latency_p50_ms` | **Yes** |
+| Vapi playground | `turnLatency`, averages | **No** — provider JSON |
+| Retell playground | `latency.*.p50` | **No** — provider histogram |
+| Test Agent | Pipeline = OTLP; Analysis = evaluator | **Mixed** |
+
+---
+
+## 12. Authentication & integration reference
+
+### Required headers
+
+| Header | Purpose |
+| --- | --- |
+| `X-API-Key` | Organization auth |
+| `X-Workspace-Id` | Tenant isolation |
+| `X-EfficientAI-Call-Short-Id` | Route OTLP batch (*or span attr*) |
+
+### Key span attributes
 
 | Attribute | Purpose |
-|-----------|--------|
-| `efficientai.call_short_id` | **Primary call correlation ID** |
-| `efficientai.workspace_id` | Workspace scope |
+| --- | --- |
+| `efficientai.call_short_id` | Primary correlation |
 | `gen_ai.operation.name` | `stt` / `llm` / `tts` / `s2s` |
-| `gen_ai.request.model` | Model name in UI |
-| `metrics.ttfb` | Time to first byte (**seconds**) |
+| `metrics.ttfb` | TTFB in **seconds** (OTLP) |
 | `turn.number` | Pipecat turn index |
-| `efficientai.agent_role` | Multi-agent role (greeter, support) |
-| `efficientai.evaluator_result_id` | Evaluator phone run link |
-| `gen_ai.provider.name` | Provider (elevenlabs, fireworks, etc.) |
-| `transcript` / `output` | User / assistant text in UI bubbles |
 
----
-
-## 7. API contracts
-
-**Base URL (local):** `http://localhost:8000`  
-**Base URL (staging):** `https://staging.efficientai.cloud`
-
-All paths relative to `/api/v1`.
-
-### 7.1 Create session — mint Call ID
-
-```http
-POST /observability/traces/sessions
-X-API-Key: <api-key>
-X-Workspace-Id: <workspace-uuid>
-Content-Type: application/json
-
-{"transport": "webrtc"}
-```
-
-`transport` values: `webrtc` | `websocket` | `phone` | `custom`
-
-> `ensure_trace_session()` in the SDK calls this automatically. Customers rarely call it manually.
-
-**Response:**
-```json
-{
-  "trace_id": "550e8400-e29b-41d4-a716-446655440000",
-  "call_short_id": "482931",
-  "workspace_id": "...",
-  "transport": "webrtc",
-  "status": "open",
-  "otel_correlation": {
-    "otlp_endpoint": "https://staging.efficientai.cloud/api/v1/observability/traces",
-    "suggested_otlp_headers": {
-      "X-API-Key": "...",
-      "X-Workspace-Id": "...",
-      "X-EfficientAI-Call-Short-Id": "482931"
-    }
-  }
-}
-```
-
-### 7.2 Ingest OTLP spans (primary export endpoint)
-
-```http
-POST /observability/traces
-X-API-Key: <api-key>
-X-Workspace-Id: <workspace-uuid>
-X-EfficientAI-Call-Short-Id: 482931
-Content-Type: application/json
-```
-
-**Request body (OTLP JSON) — minimal one-turn example:**
-```json
-{
-  "resourceSpans": [{
-    "scopeSpans": [{
-      "spans": [
-        {
-          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
-          "spanId": "00f067aa0ba902b7",
-          "name": "stt",
-          "attributes": [
-            {"key": "gen_ai.operation.name", "value": {"stringValue": "stt"}},
-            {"key": "metrics.ttfb", "value": {"doubleValue": 0.12}},
-            {"key": "turn.number", "value": {"intValue": "1"}},
-            {"key": "efficientai.call_short_id", "value": {"stringValue": "482931"}},
-            {"key": "efficientai.workspace_id", "value": {"stringValue": "<workspace-uuid>"}},
-            {"key": "transcript", "value": {"stringValue": "Hello"}}
-          ]
-        },
-        {
-          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
-          "spanId": "a1b2c3d4e5f60718",
-          "name": "llm",
-          "attributes": [
-            {"key": "gen_ai.operation.name", "value": {"stringValue": "llm"}},
-            {"key": "gen_ai.request.model", "value": {"stringValue": "accounts/fireworks/models/deepseek-v4-flash-0731"}},
-            {"key": "metrics.ttfb", "value": {"doubleValue": 0.52}},
-            {"key": "turn.number", "value": {"intValue": "1"}},
-            {"key": "efficientai.call_short_id", "value": {"stringValue": "482931"}}
-          ]
-        },
-        {
-          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
-          "spanId": "b2c3d4e5f6071819",
-          "name": "tts",
-          "attributes": [
-            {"key": "gen_ai.operation.name", "value": {"stringValue": "tts"}},
-            {"key": "metrics.ttfb", "value": {"doubleValue": 0.18}},
-            {"key": "turn.number", "value": {"intValue": "1"}},
-            {"key": "efficientai.call_short_id", "value": {"stringValue": "482931"}}
-          ]
-        }
-      ]
-    }]
-  }]
-}
-```
-
-**Response:**
-```json
-{
-  "accepted_spans": 3,
-  "synthetic_call_trace_id": "550e8400-e29b-41d4-a716-446655440000",
-  "correlated": true
-}
-```
-
-If `correlated: false`, the batch could not be matched to a trace row — check `call_short_id` and workspace.
-
-Also accepts **Protobuf** (`Content-Type: application/x-protobuf`).
-
-### 7.3 Close session
-
-```http
-POST /observability/traces/sessions/482931/close
-X-API-Key: <api-key>
-X-Workspace-Id: <workspace-uuid>
-```
-
-**Response:**
-```json
-{
-  "trace_id": "550e8400-e29b-41d4-a716-446655440000",
-  "call_short_id": "482931",
-  "status": "closed"
-}
-```
-
-### 7.4 List traces
-
-```http
-GET /observability/traces?skip=0&limit=50&status=open
-X-API-Key: <api-key>
-X-Workspace-Id: <workspace-uuid>
-```
-
-**Response:**
-```json
-{
-  "items": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "call_short_id": "482931",
-      "transport": "webrtc",
-      "status": "open",
-      "turn_count": 4,
-      "response_latency_p50_ms": 890.0,
-      "response_latency_p90_ms": 1200.0,
-      "component_aggregates": {
-        "stt_ttfb_ms": { "p50": 120 },
-        "llm_ttfb_ms": { "p50": 520 },
-        "tts_ttfb_ms": { "p50": 180 }
-      },
-      "started_at": "2026-09-02T10:00:00Z"
-    }
-  ],
-  "total": 42
-}
-```
-
-### 7.5 Get trace detail
-
-```http
-GET /observability/traces/{trace_id}
-GET /observability/traces/by-call-short-id/482931
-GET /observability/traces/results/{evaluator_result_id}
-```
-
-**Response (detail adds turns + spans + models):**
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "call_short_id": "482931",
-  "status": "closed",
-  "turn_count": 2,
-  "response_latency_p50_ms": 890,
-  "pipeline_models": {
-    "stt": { "provider": "elevenlabs", "model": "scribe_v1" },
-    "llm": { "provider": "fireworks", "model": "deepseek-v4-flash-0731" },
-    "tts": { "provider": "elevenlabs", "model": "eleven_flash_v2_5" }
-  },
-  "turns": [
-    {
-      "turn_number": 1,
-      "sut_response_latency_ms": 920,
-      "stt_ttfb_ms": 120,
-      "llm_ttfb_ms": 520,
-      "tts_ttfb_ms": 180,
-      "extra": {
-        "user_text": "Hello, I need help",
-        "assistant_text": "Sure, how can I help?",
-        "stt_model": "scribe_v1",
-        "llm_model": "deepseek-v4-flash-0731",
-        "tts_model": "eleven_flash_v2_5",
-        "pipeline_mode": "stt_llm_tts"
-      }
-    }
-  ],
-  "otel_spans": [],
-  "otel_trace_ids": ["4bf92f3577b34da6a3ce929d0e0e4736"]
-}
-```
-
-### 7.6 Setup info (UI "Connect Pipecat" tab)
-
-```http
-GET /observability/traces/setup
-X-API-Key: <api-key>
-X-Workspace-Id: <workspace-uuid>
-```
-
-Returns OTLP endpoint URL, env var template, suggested OTLP headers, and a Python snippet for the active host.
-
----
-
-## 8. Customer onboarding
-
-### 8.1 Prerequisites
-
-1. EfficientAI account + **workspace**
-2. **API key** (Settings → API Keys)
-3. **Workspace UUID** (Call Traces → Connect Pipecat tab)
-4. Pipecat project + voice provider keys
-
-### 8.2 Install
+### Customer onboarding (condensed)
 
 ```bash
-uv pip install "pipecat-ai[silero,elevenlabs,fireworks,runner,webrtc]>=1.4.0"
+uv pip install "pipecat-ai[...]>=1.4.0"
 uv pip install -e '/path/to/efficientAI[otel]'
 ```
 
-### 8.3 Environment variables
-
 ```bash
-# Required — set once per deployment (local .env or staging secret)
-EFFICIENTAI_API_KEY=<api-key>
+EFFICIENTAI_API_KEY=<key>
 EFFICIENTAI_WORKSPACE_ID=<workspace-uuid>
-
-# Point at local OR staging
-EFFICIENTAI_API_BASE=http://localhost:8000
-# EFFICIENTAI_API_BASE=https://staging.efficientai.cloud
-
-# Voice stack
-FIREWORKS_API_KEY=...
-ELEVENLABS_API_KEY=...
-```
-
-| Variable | Required? | Why |
-|----------|-----------|-----|
-| `EFFICIENTAI_API_KEY` | **Yes** | Authenticates ingest |
-| `EFFICIENTAI_WORKSPACE_ID` | **Yes** | Routes traces to correct workspace in UI |
-| `EFFICIENTAI_API_BASE` | No | Defaults to localhost; set for staging |
-| `EFFICIENTAI_CALL_SHORT_ID` | **No** | Auto-minted per call — never set manually |
-| `EFFICIENTAI_AGENT_ID` | No | Optional; not required in v1 |
-
-### 8.4 Pipecat integration (3 hooks — v1)
-
-We do **not** ship a single `PipecatTracer` wrapper class today. Integration is three SDK functions plus Pipecat's built-in tracing (`enable_tracing=True`).
-
-> **v2 (optional later):** We may add a thin one-import wrapper (session + OTLP + cleanup). v1 stays explicit on purpose. The OTLP wire format will not change.
-
-**Alternative patterns:**
-- **Phone / SIP:** `PipelineTask(..., **configure_pipecat_tracing(call_short_id=...))` — see `pipecat_inbound_phone_tracing.py`
-- **Playground WebSocket:** `configure_pipecat_tracing(handshake=message)` — Call ID comes from EfficientAI handshake
-
-### 8.5 WebRTC code (recommended)
-
-```python
-from efficientai.integrations.efficientai_traces import (
-    close_trace_session,
-    ensure_trace_session,
-    require_deployment_trace_env,
-    resolve_trace_transport,
-    setup_pipecat_worker_tracing,
-)
-
-require_deployment_trace_env()
-
-async def run_bot(transport, runner_args):
-    trace_transport = resolve_trace_transport(runner_args, transport)
-    trace_ctx = await ensure_trace_session(transport=trace_transport)  # mints call ID
-    tracing = setup_pipecat_worker_tracing(trace_ctx)                   # stamps spans + headers
-
-    worker = PipelineWorker(
-        pipeline,
-        enable_tracing=True,
-        additional_span_attributes=tracing["additional_span_attributes"],
-    )
-
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        await worker.cancel()
-        await close_trace_session(trace_ctx)
-```
-
-Full working example: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`
-
-### 8.6 Verify (local end-to-end)
-
-```bash
-eai start-all          # local API
-uv run bot.py          # Pipecat
-# Browser → localhost:7860/client → WebRTC → talk → disconnect
-# Call Traces UI → Refresh → open Call ID
-```
-
-### 8.7 Local bot → staging UI (team testing)
-
-Same `bot.py`, only change the base URL:
-
-```bash
-# In Pipecat .env
 EFFICIENTAI_API_BASE=https://staging.efficientai.cloud
-EFFICIENTAI_API_KEY=<staging-api-key>
-EFFICIENTAI_WORKSPACE_ID=<staging-workspace-uuid>
 ```
 
-Then open **https://staging.efficientai.cloud** → Call Traces → Refresh. Traces from your local Pipecat bot appear in staging UI.
+**Three SDK hooks:** `ensure_trace_session()` → `setup_pipecat_worker_tracing()` → `close_trace_session()`.
+
+Example: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`
 
 ---
 
-## 9. Latency metrics & percentiles (how p50 / p90 / p95 are measured)
+## 13. Troubleshooting
 
-This section explains **exactly** how we turn OTLP spans into the numbers shown in Call Traces list headers and the per-turn waterfall.
-
-### 9.1 Per-span → per-turn fields (`otlp_mapper.py`)
-
-Each OTLP span may carry Pipecat timing attributes. We map them into **one turn row** (`synthetic_trace_payloads.turns` JSON).
-
-| Turn field | Source | Unit | Notes |
-|------------|--------|------|-------|
-| `stt_ttfb_ms` | `metrics.ttfb` on `stt` span | ms | `ttfb` is **seconds** in OTLP → multiply × 1000, round 0.1 ms |
-| `llm_ttfb_ms` | `metrics.ttfb` on `llm` span | ms | Same conversion |
-| `tts_ttfb_ms` | `metrics.ttfb` on `tts` span | ms | Same; if missing, may derive `sut − llm` |
-| `s2s_ttfb_ms` | `metrics.ttfb` on `s2s` span | ms | Realtime / speech-to-speech models |
-| `sut_response_latency_ms` | `turn.user_bot_latency_seconds` on Pipecat `turn` span | ms | **End-to-end** user→bot response time for that exchange |
-
-**Fallbacks when `metrics.ttfb` is absent:**
-
-- LLM/TTS: use span wall duration `(end_time − start_time)` in ms
-- `sut_response_latency_ms`: if no turn span, use `s2s_ttfb_ms`, else `llm_ttfb_ms`
-
-**Multiple spans per stage:** `_set_max_ms()` keeps the **maximum** non-zero value when several STT/LLM/TTS spans land on the same turn (e.g. partial TTS chunks).
-
-**Code:** `app/services/synthetic_traces/otlp_mapper.py` — `_ms_from_ttfb()`, `_component_latency_ms()`, `_finalize_turn_metrics()`.
-
-### 9.2 Worked example — one user turn (STT → LLM → TTS)
-
-Pipecat exports three spans for turn 2:
-
-| Span | `metrics.ttfb` (s) | Stored field |
-|------|-------------------|--------------|
-| `stt` | 0.12 | `stt_ttfb_ms = 120` |
-| `llm` | 0.52 | `llm_ttfb_ms = 520` |
-| `tts` | 0.18 | `tts_ttfb_ms = 180` |
-
-Pipecat `turn` span also has `turn.user_bot_latency_seconds = 0.92` → `sut_response_latency_ms = 920`.
-
-The UI waterfall shows STT → LLM → TTS bars **per turn**; the header chip **Median latency** uses `sut_response_latency_ms` across turns (see §9.3).
-
-### 9.3 Percentile formula (p50, p90, p95)
-
-After every ingest batch we recompute trace-level summaries in `compute_trace_latency_summary()`:
-
-1. Collect one value per turn: `sut_response_latency_ms` (skip turns where it is null)
-2. If no SUT values, fall back to `s2s_ttfb_ms`, then `llm_ttfb_ms`
-3. Sort values ascending
-4. Pick index: `idx = min(n − 1, round((pct / 100) × (n − 1)))`
-5. Return `round(sorted[idx], 1)` milliseconds
-
-**This is nearest-rank on a sorted sample**, not interpolation. Same function in `trace_service.py` and `otlp_mapper.py`.
-
-**Worked example — 4 turns in one call:**
-
-| Turn | `sut_response_latency_ms` |
-|------|---------------------------|
-| 1 (greeting) | 800 |
-| 2 | 920 |
-| 3 | 1100 |
-| 4 | 1400 |
-
-Sorted: `[800, 920, 1100, 1400]`, n = 4
-
-| Metric | Index calculation | Result |
-|--------|-------------------|--------|
-| **p50** | `round(0.5 × 3) = 2` → index 2 | **1100 ms** |
-| **p90** | `round(0.9 × 3) = 3` → index 3 | **1400 ms** |
-| **p95** | `round(0.95 × 3) = 3` → index 3 | **1400 ms** |
-
-Stored on `synthetic_call_traces.response_latency_p50_ms` (and p90/p95). Shown in list + detail header chips.
-
-### 9.4 Component aggregates (STT / LLM / TTS p50 per call)
-
-`component_aggregates` runs the **same percentile function** independently on each field across turns:
-
-```json
-{
-  "stt_ttfb_ms": { "p50": 120, "p90": 180, "p95": 200, "count": 4 },
-  "llm_ttfb_ms": { "p50": 520, "p90": 890, "p95": 920, "count": 4 },
-  "tts_ttfb_ms": { "p50": 180, "p90": 220, "p95": 240, "count": 4 }
-}
-```
-
-Use these when asking *"Was STT or LLM the bottleneck across the whole call?"* — not for cross-call dashboards (yet).
-
-### 9.5 What we do **not** compute from OTLP
-
-| Metric | Source |
-|--------|--------|
-| Dollar cost | Not in OTLP v1 — see provider `call_data` in [Call Details TDD §9](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074) |
-| Vapi `endpointingLatency` | Provider-only field |
-| Retell `latency.e2e.p50` | Provider API histogram — we display as-is, not re-derived from spans |
-
-### 9.6 When ingest runs the math
-
-```
-OTLP POST → append spans → derive_turns_from_spans()
-         → compute_trace_latency_summary(turns)
-         → UPDATE synthetic_call_traces SET response_latency_p50_ms = …
-         → REPLACE synthetic_trace_payloads.turns JSON
-```
-
-Every new span batch **rebuilds** turns and percentiles for that trace row (sync today — see §13 scaling).
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| No traces in UI | Wrong workspace / API key | Verify headers; refresh |
+| `correlated: false` | Missing `call_short_id` | `ensure_trace_session()` before export |
+| Spans on wrong call | Shared `EFFICIENTAI_CALL_SHORT_ID` in env | Mint per call only |
+| Trace stays `open` | No close + idle < 120s | `close_trace_session()` on disconnect |
+| Empty turns | Tracing disabled | `enable_tracing=True` on PipelineWorker |
+| Playground in Calls hub | Should not appear | Only `source=webhook` in observability list |
 
 ---
 
-## 10. Span naming conventions
+## 14. Deployment checklist (pilots)
 
-| Span name | UI shows |
-|-----------|----------|
-| `stt` | STT latency + model |
-| `llm` | LLM latency + model |
-| `tts` | TTS latency + model |
-| `s2s` | Speech-to-speech (realtime models) |
-| `conversation` | Session end detection |
-| `turn` | Turn grouping |
-
----
-
-## 11. UI overview
-
-Route: `/call-traces` (redirects from legacy `/test-insights`)
-
-### List view
-
-| Column / control | What it shows |
-|------------------|---------------|
-| Call ID | 6-digit `#482931` |
-| Status | `open` (live call) or `closed` |
-| Turns | Count of conversation turns |
-| Median latency | p50 end-to-end response time |
-| Refresh | Re-fetch list (auto-refreshes when open traces exist) |
-| Connect Pipecat tab | OTLP URL, env block, copy-paste Python snippet from `/setup` |
-
-List is **workspace-scoped** — switch workspace in the header to see other traces.
-
-### Trace detail panel
-
-| Section | Content |
-|---------|--------|
-| Header | Call ID, status (open/closed), p50/p90/p95 latency chips |
-| Pipeline models bar | Session-level STT / LLM / TTS model + provider |
-| Conversation tab | Chat bubbles (user + assistant) + per-turn latency waterfall (STT→LLM→TTS) |
-| Waterfall tab | All turns as horizontal latency bars |
-| Raw spans tab | Full OTLP span tree for debugging |
-| S2S mode | When realtime model detected, shows `s2s` chip instead of STT/LLM/TTS split |
-
-Embedded mode: detail panel also renders inside evaluator call recordings (`CustomWebSocketCallDetails`).
+1. Customer sets `EFFICIENTAI_API_KEY`, `EFFICIENTAI_WORKSPACE_ID`, `EFFICIENTAI_API_BASE`
+2. Bot calls `ensure_trace_session()` at call start — never hardcode Call ID in env
+3. `PipelineWorker(enable_tracing=True)` + `setup_pipecat_worker_tracing()`
+4. `close_trace_session()` on disconnect (or rely on 120s idle close)
+5. Verify in staging UI: `/observability/calls` → traces tab
+6. For sales demos: use **separate workspace** for local vs staging
+7. Before enterprise pitch: read §5 throughput table — quote **10–20 concurrent** for v1
 
 ---
 
-## 12. What we removed vs early designs
+## 15. Code module map
 
-| Removed | Why |
-|---------|-----|
-| `agent_id` on session create | Workspace + call ID is enough for WebRTC v1 |
-| Legacy `/synthetic-traces` path | Renamed to `/observability/traces` |
-| JSON `/ingest` shim | Deprecated — use OTLP POST at root |
-
----
-
-## 13. Scaling roadmap
-
-### v1 today (local + staging)
-- Sync OTLP ingest
-- Spans in Postgres JSONB
-- 6-digit call IDs with DB uniqueness check
-- Correlation via `call_short_id` + `workspace_id` — **proven for concurrent calls**
-
-### Phase 2 — customer scale
-
-| Change | Why |
-|--------|-----|
-| Async ingest (Celery queue) | Don't block HTTP on turn mapping |
-| Span blobs in S3 | Stop rewriting giant JSON arrays in Postgres |
-| UI pagination | Handle 1000+ traces per workspace (list capped at 100 in UI today; API supports `skip`/`limit` up to 200) |
-| Retention policy | Archive spans after 30/90 days |
-
-### Phase 3 — platform scale
-
-| Change | Why |
-|--------|-----|
-| Dedicated OTel collector (gRPC) | Lower overhead at high volume |
-| Workspace daily rollups | Fast dashboards without scanning all calls |
-| Rate limits per API key | Protect shared infra |
+| Module | Responsibility |
+| --- | --- |
+| `app/api/v1/routes/synthetic_traces.py` | OTLP ingest, sessions, list, detail |
+| `app/api/v1/routes/observability.py` | Webhook calls, SSE, evaluate |
+| `app/services/synthetic_traces/trace_service.py` | Open/close traces, ingest, percentiles |
+| `app/services/synthetic_traces/otlp_mapper.py` | Spans → turns |
+| `app/services/synthetic_traces/otlp_ingest.py` | OTLP JSON + Protobuf parse |
+| `app/services/voice_agent/playground_tracing.py` | Test Agent span stamping |
+| `app/services/synthetic_traces/internal_otlp_exporter.py` | In-process export |
+| `app/services/telephony/live_transcript_sse.py` | Poll-based SSE |
+| `src/efficientai/integrations/efficientai_traces/` | Customer SDK |
+| `frontend/src/pages/test-insights/TestInsights.tsx` | Calls hub UI |
 
 ---
 
-## 14. Troubleshooting
+## 16. Related documentation
 
-| Symptom | Fix |
-|---------|-----|
-| No traces in UI | Check API key + workspace ID; Refresh |
-| `correlated: false` | Missing `call_short_id` on spans/headers |
-| Spans on wrong call | Never share `EFFICIENTAI_CALL_SHORT_ID` in env; mint per call |
-| Trace stays open | Call `close_trace_session()` on disconnect |
-| Empty turns | `enable_tracing=True` on PipelineWorker |
-| Local bot, staging UI empty | Set `EFFICIENTAI_API_BASE` to staging URL |
-
----
-
-## 15. Example bots (repo)
-
-| Scenario | File |
-|----------|------|
-| Multi-agent WebRTC (Fireworks + ElevenLabs) | `docs/examples/pipecat_multi_agent_webrtc_tracing.py` |
-| Single agent, swappable providers | `docs/examples/pipecat_multi_provider_webrtc_tracing.py` |
-| Gemini Live / S2S | `docs/examples/pipecat_upstream_webrtc_tracing.py` |
-| Custom WebSocket playground | `docs/examples/pipecat_upstream_websocket_tracing.py` |
-| Inbound phone + SIP headers | `docs/examples/pipecat_inbound_phone_tracing.py` |
-| Env template | `docs/examples/pipecat.env.example` |
-| Dev bot script | `scripts/pipecat_trace_dev_bot.py` |
-
----
-
-## 16. Repo references
-
-| Doc / module | Path |
-|--------------|------|
-| Quick start guide | `docs/synthetic-call-traces-pipecat.md` |
-| Correlation constants | `src/efficientai/integrations/efficientai_traces/correlation.py` |
-| Customer SDK | `src/efficientai/integrations/efficientai_traces/` |
-| API routes | `app/api/v1/routes/synthetic_traces.py` |
-| Ingest + turn mapping | `app/services/synthetic_traces/trace_service.py` |
-| OTLP parser | `app/services/synthetic_traces/otlp_ingest.py` |
-| Turn mapper | `app/services/synthetic_traces/otlp_mapper.py` |
-| List UI | `frontend/src/pages/test-insights/TestInsights.tsx` |
-| Detail panel | `frontend/src/components/call-recordings/SyntheticCallTracePanel.tsx` |
-
----
-
-## 17. Related links
-
-- [TDD index: Voice Call Traces & Observability](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682)
-- [TDD: Call Details & Unified Traces (End-to-End) — Part 2](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074)
-
-- Other platform OTel examples (e.g. [Cekura — OpenTelemetry Traces](https://docs.cekura.ai/documentation/guides/observability/tracing), [Cekura — Pipecat Tracing](https://docs.cekura.ai/documentation/integrations/pipecat/tracing))
-- Pipecat docs: [pipecat.ai](https://docs.pipecat.ai)
+* [TDD: Call Details & Unified Traces (UI)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074)
+* [Call Import Architecture & Scaling Guide](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/59899905)
+* [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682)
+* Repo: `docs/synthetic-call-traces-pipecat.md` (quick start)

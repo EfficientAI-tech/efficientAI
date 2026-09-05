@@ -1,10 +1,10 @@
 # TDD: Call Details & Unified Traces (End-to-End)
 
-> **Doc role:** Part **2 of 2** in [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682) — UI, drawer routing, audio/waveform, provider cost/latency, and **where Test Agent vs Voice AI results open**. For OTLP ingest and p50/p90 math, see [Part 1: Pipecat OTLP Observability](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193).
+> **Doc role:** Part **2 of 2** in [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682) — UI, drawer routing, audio/waveform, provider cost/latency, and **where Test Agent vs Voice AI results open**. For architecture, scaling tables, OTLP ingest, and p50/p90 math, see [Part 1: Pipecat OTLP Observability](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193).
 
 **Status:** Implemented (v1, Mar 2026)  
 **Owner:** Platform / Voice Evals  
-**UI routes:** `/calls`, `/call-traces`, `/playground`, evaluator results
+**Canonical calls route:** `/observability/calls` (redirects from `/calls`, `/call-traces`, `/test-insights`)
 
 ---
 
@@ -22,8 +22,8 @@ Agent Playground (`/playground`) has **two tabs** that look similar but use **di
 
 | Tab | What user tests | Row click opens | Full-page route | Drawer panel | Metrics |
 | --- | --- | --- | --- | --- | --- |
-| **Test Agents** | Our Pipecat voice bundle (web eval) | Full page **or** in-tab drawer | `/playground/test-agent-results/:id` | `EvaluatorCallDetailPanel` | Evaluator scores + **Pipeline** tab (OTLP STT/LLM/TTS) |
-| **Voice AI Agents** | External provider (Vapi/Retell/ElevenLabs/Smallest) | Drawer only | `/playground/call-recordings/:id` (legacy) | `ProviderCallTracePanel` | Provider `call_data` cost/latency |
+| **Test Agents** | Our Pipecat voice bundle (web eval) | Full page (row click) | `/playground/test-agent-results/:id` | `EvaluatorCallDetailPanel` (optional) | Evaluator scores + **Pipeline** tab (OTLP STT/LLM/TTS); re-evaluate + polling on full page |
+| **Voice AI Agents** | External provider (Vapi/Retell/ElevenLabs/Smallest) | Full page (row click) | `/playground/call-recordings/:id` | `ProviderCallTracePanel` (legacy drawer) | Provider `call_data` cost/latency |
 
 `AgentPlayground.tsx` mounts **two** `TraceDetailDrawer` instances — `evaluatorResultId` for Test Agent, `callShortId` for Voice AI. Only one opens at a time.
 
@@ -33,8 +33,8 @@ Agent Playground (`/playground`) has **two tabs** that look similar but use **di
 
 | Surface | Route / entry | What opens | Primary data |
 | --- | --- | --- | --- |
-| **Calls** (unified) | `/calls` | `TraceDetailDrawer` | Observability webhook calls + OTLP traces |
-| **Call Traces** | `/call-traces` | `TraceDetailDrawer` (`traceId`) | `synthetic_call_traces` (Pipecat OTLP) |
+| **Calls hub** (unified) | `/observability/calls` | `TraceDetailDrawer` | Webhook calls (`source=webhook`) + OTLP traces; playground excluded |
+| **Legacy redirects** | `/calls`, `/call-traces`, `/test-insights` | → `/observability/calls` | Preserves query params (`?trace=`, `?obs=`, `?result=`) |
 | **Agent Playground → Voice AI** | `/playground` Voice AI tab | `ProviderCallTracePanel` drawer | Playground `call_recordings` (`source=playground`) |
 | **Agent Playground → Test Agent** | `/playground` Test Agents tab | Full page + optional drawer | `evaluator_results` + OTLP trace |
 | **Evaluator results** | `/evaluators/results/:id` → Call details | Routed drawer (see §5) | Depends on `call_recording_source` |
@@ -99,7 +99,7 @@ Stores test-agent and evaluation runs. May include:
 
 ### 4.3 `synthetic_call_traces` tables
 
-See [OTLP TDD](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193). Stores Pipecat span batches, derived turns, and waterfall metrics.
+See [Part 1: Pipecat OTLP Observability](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193). Stores Pipecat span batches, derived turns, and waterfall metrics.
 
 ---
 
@@ -306,7 +306,9 @@ Charts: `ProviderCostPanel` + `ProviderLatencyPanel` in `ProviderMetricsPanels.t
 Ingested via telephony webhooks → `call_recordings` with `source=webhook`.
 
 - List/detail: `/api/v1/observability/calls`
-- Live transcript: SSE `/calls/{id}/live-events` (Redis pub/sub during active calls)
+- Live transcript: SSE `GET /observability/calls/{id}/live-events` — **poll-based** (1s interval, reads `call_data.live_transcript` from Postgres; shared `stream_live_transcript_events()`)
+- Deep link: `?result={evaluator_result_id}` opens `EvaluatorCallDetailPanel` drawer from Calls hub
+- Event filters: All / Ended / Started / Other on webhook calls list
 - Evaluate: creates `evaluator_result` with copied `call_data` + `call_short_id`
 - UI: `ObservabilityCallDetailPanel` (provider-specific detail components)
 
@@ -314,9 +316,9 @@ Ingested via telephony webhooks → `call_recordings` with `source=webhook`.
 
 ---
 
-## 12. Pipecat OTLP traces (Call Traces page)
+## 12. Pipecat OTLP traces (Calls hub — traces tab)
 
-Route: `/call-traces` (legacy `/test-insights` redirects here).
+Route: `/observability/calls` (traces tab; legacy `/call-traces` redirects here).
 
 - List: `TestInsights.tsx` → `GET /observability/traces`
 - Detail drawer: `SyntheticCallTracePanel` by `traceId`
@@ -374,7 +376,7 @@ Turn latency is computed server-side in `otlp_mapper.py` from span `metrics.ttfb
 
 ### OTLP traces
 
-See [OTLP TDD](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193).
+See [Part 1: Pipecat OTLP Observability](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193).
 
 ---
 
@@ -383,6 +385,9 @@ See [OTLP TDD](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193)
 | Priority | Issue | Status |
 | --- | --- | --- |
 | P0 | Evaluator drawer routing by `call_recording_source` | **Fixed** Mar 2026 |
+| P0 | Playground calls excluded from observability Calls hub | **Fixed** Mar 2026 |
+| P0 | `?result=` deep link on Calls hub | **Fixed** Mar 2026 |
+| P0 | Test Agent full page: re-evaluate + live polling restored | **Fixed** Mar 2026 |
 | P1 | Observability audio → shared waveform player | Open |
 | P1 | Playground DELETE scoped to `source=playground` | **Fixed** Mar 2026 |
 | P1 | Refresh button should wait for post-call poll | Open |
