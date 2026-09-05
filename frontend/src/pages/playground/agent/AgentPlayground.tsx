@@ -101,7 +101,7 @@ export default function AgentPlayground() {
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
   const [testPersonaId, setTestPersonaId] = useState('')
   const [testScenarioId, setTestScenarioId] = useState('')
-  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(false)
+  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(true)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false)
@@ -2028,7 +2028,7 @@ export default function AgentPlayground() {
                 <div>
                   <p className="text-sm font-medium text-gray-900">Run post-call evaluation</p>
                   <p className="text-xs text-gray-600 mt-0.5">
-                    Off by default. Enable to score this call automatically when it ends, or run evaluation later from the results table.
+                    On by default. Disable to skip automatic scoring when the call ends.
                   </p>
                 </div>
                 <label className="relative inline-flex shrink-0 cursor-pointer items-center">

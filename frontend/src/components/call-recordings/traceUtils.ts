@@ -15,6 +15,9 @@ export interface TraceTurnLike {
   extra?: {
     was_interrupted?: boolean
     pipeline_mode?: PipelineMode
+    user_text?: string
+    assistant_text?: string
+    is_opener?: boolean
   }
 }
 
@@ -64,6 +67,11 @@ export function sessionPipelineMode(turns: TraceTurnLike[]): PipelineMode | null
 }
 
 export function isTurnIncomplete(turn: TraceTurnLike, mode: PipelineMode | null): boolean {
+  const extra = turn.extra ?? {}
+  if (extra.is_opener || (extra.assistant_text && !extra.user_text)) {
+    return false
+  }
+
   const hasData =
     turn.sut_response_latency_ms != null ||
     turn.stt_ttfb_ms != null ||

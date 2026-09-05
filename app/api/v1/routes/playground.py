@@ -115,6 +115,58 @@ def _refresh_call_recording_from_provider_sync(
         return False
 
 
+def _download_playground_recording_audio(
+    call_data: Dict[str, Any],
+    platform: str,
+    decrypted_key: Optional[str],
+    *,
+    stereo: bool = False,
+):
+    """Download provider recording bytes using the same URL/auth rules as the audio proxy."""
+    import requests as http_requests
+    from app.services.voice_providers.vapi_recording import is_presigned_storage_url
+
+    plat = (platform or "").lower()
+    url = _resolve_playground_audio_url(call_data, plat, stereo=stereo)
+    if not url:
+        return None, None
+
+    headers = None
+    if plat == "elevenlabs" and decrypted_key:
+        headers = {"xi-api-key": decrypted_key}
+    elif plat == "vapi" and decrypted_key and not is_presigned_storage_url(url):
+        headers = {"Authorization": f"Bearer {decrypted_key}"}
+
+    response = http_requests.get(url, headers=headers, timeout=120)
+    if response.status_code == 200:
+        return response.content, response
+    return None, response
+
+
+def _download_playground_recording_audio_with_refresh(
+    db: Session,
+    call_recording: CallRecording,
+    organization_id: UUID,
+    call_data: Dict[str, Any],
+    decrypted_key: Optional[str],
+):
+    """Download recording audio, refreshing provider call_data once on failure."""
+    platform = (call_recording.provider_platform or "").lower()
+    audio_bytes, resp = _download_playground_recording_audio(call_data, platform, decrypted_key)
+    if audio_bytes:
+        return audio_bytes, resp, call_data
+
+    status_code = getattr(resp, "status_code", None)
+    if status_code in (401, 403, 404) or audio_bytes is None:
+        if _refresh_call_recording_from_provider_sync(db, call_recording, organization_id):
+            call_data = call_recording.call_data or {}
+            audio_bytes, resp = _download_playground_recording_audio(
+                call_data, platform, decrypted_key
+            )
+
+    return audio_bytes, resp, call_data
+
+
 def generate_unique_result_id(db: Session) -> str:
     """Generate a unique 6-digit result ID for EvaluatorResult."""
     max_attempts = 100
@@ -1087,6 +1139,7 @@ async def get_call_recording(
 @router.post("/call-recordings/{call_short_id}/refresh", response_model=Dict[str, Any])
 async def refresh_call_recording(
     call_short_id: str,
+    background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1094,6 +1147,10 @@ async def refresh_call_recording(
 ):
     """
     Re-fetch provider call metrics and wait until enriched or timeout.
+
+    When no evaluator result exists yet, also queues post-call metric evaluation
+    (same path as Retell/ElevenLabs background poll). Required for Vapi, which
+    only gets a provider_call_id after the browser call ends.
     """
     import asyncio
 
@@ -1148,6 +1205,17 @@ async def refresh_call_recording(
         )
 
     has_evaluator = bool(call_recording.evaluator_result_id)
+    evaluation_queued = False
+
+    if not has_evaluator:
+        background_tasks.add_task(
+            poll_call_metrics,
+            call_recording.id,
+            call_recording.provider_call_id,
+            call_recording.provider_platform,
+            decrypted_api_key,
+        )
+        evaluation_queued = True
 
     def _blocking_refresh() -> None:
         if has_evaluator:
@@ -1176,6 +1244,7 @@ async def refresh_call_recording(
     return {
         "message": "Call recording refreshed",
         "enriched": enriched,
+        "evaluation_queued": evaluation_queued,
     }
 
 
@@ -1225,7 +1294,6 @@ async def re_evaluate_call_recording(
     uploads, then triggers the worker for both conversation quality (LLM)
     and audio quality (acoustic / AI voice) metrics.
     """
-    import requests as http_requests
     import uuid as _uuid
     from app.services.storage.s3_service import s3_service
 
@@ -1269,67 +1337,13 @@ async def re_evaluate_call_recording(
 
         decrypted_key = decrypt_api_key(integration.api_key)
 
-        def _download_audio_from_payload(payload: Dict[str, Any]):
-            payload_urls = payload.get("recording_urls", {}) if isinstance(payload, dict) else {}
-            artifact = payload.get("artifact", {}) if isinstance(payload, dict) else {}
-            recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
-            mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
-            url = None
-            headers = None
-            if platform == "elevenlabs":
-                url = payload_urls.get("conversation_audio")
-                headers = {"xi-api-key": decrypted_key}
-            elif platform == "retell":
-                url = payload.get("recording_url")
-            elif platform == "vapi":
-                url = (
-                    payload.get("recordingUrl")
-                    or payload.get("stereoRecordingUrl")
-                    or artifact.get("recordingUrl")
-                    or artifact.get("stereoRecordingUrl")
-                    or mono_recording.get("combinedUrl")
-                    or payload_urls.get("combined_url")
-                    or payload_urls.get("stereo_url")
-                )
-            elif platform == "smallest":
-                url = (
-                    payload.get("recording_url")
-                    or payload.get("recordingUrl")
-                    or payload_urls.get("combined_url")
-                    or payload_urls.get("conversation_audio")
-                )
-            if not url:
-                return None, None
-            response = http_requests.get(url, headers=headers, timeout=120)
-            if response.status_code != 200:
-                return None, response
-            return response.content, response
-
-        audio_bytes, resp = _download_audio_from_payload(call_data)
-
-        # Retry once with fresh provider payload (new signed URL) using provider_call_id
-        if not audio_bytes and call_recording.provider_call_id:
-            try:
-                provider_class = get_voice_provider(platform)
-                provider_kwargs: Dict[str, Any] = {"api_key": decrypted_key}
-                if platform == "vapi" and integration.public_key:
-                    provider_kwargs["public_key"] = integration.public_key
-                provider = provider_class(**provider_kwargs)
-                if hasattr(provider, "retrieve_call_metrics"):
-                    refreshed_call_data = provider.retrieve_call_metrics(call_recording.provider_call_id)
-                    if isinstance(refreshed_call_data, dict) and refreshed_call_data:
-                        prev_data = (
-                            call_recording.call_data
-                            if isinstance(call_recording.call_data, dict)
-                            else {}
-                        )
-                        call_data = merge_playground_call_data(prev_data, refreshed_call_data)
-                        call_recording.call_data = call_data
-                        db.commit()
-                        logger.info(f"[Re-evaluate] Refreshed provider call data for call {call_recording.provider_call_id}")
-                        audio_bytes, resp = _download_audio_from_payload(call_data)
-            except Exception as refresh_err:
-                logger.warning(f"[Re-evaluate] Provider audio URL refresh failed: {refresh_err}")
+        audio_bytes, resp, call_data = _download_playground_recording_audio_with_refresh(
+            db,
+            call_recording,
+            organization_id,
+            call_data,
+            decrypted_key,
+        )
 
         if not audio_bytes:
             raise HTTPException(

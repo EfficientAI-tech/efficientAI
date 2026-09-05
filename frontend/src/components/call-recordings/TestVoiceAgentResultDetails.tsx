@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react'
+import { useState, useMemo, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
-  Clock, MessageSquare, TrendingUp, Download, Server, BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
+  BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
 } from 'lucide-react'
-import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
+import { apiClient } from '../../lib/api'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -217,7 +218,6 @@ interface TestVoiceAgentResultData {
     call_successful?: boolean
   }
   audio_s3_key?: string | null
-  audioUrl?: string
   agent?: {
     id?: string
     name?: string
@@ -240,136 +240,38 @@ export default function TestVoiceAgentResultDetails({
   resultData,
   metricsOnly = false,
 }: TestVoiceAgentResultDetailsProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'transcript' | 'debug'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'debug'>('overview')
 
-  const formatDuration = (seconds?: number | null) => {
-    if (!seconds) return 'N/A'
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}m ${secs}s`
-  }
+  const { data: metrics = [] } = useQuery({
+    queryKey: ['metrics'],
+    queryFn: () => apiClient.listMetrics(),
+  })
 
-  const formatTimestamp = (timestamp?: string) => {
-    if (!timestamp) return 'N/A'
-    return new Date(timestamp).toLocaleString()
-  }
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-
-  const getSentimentColor = (sentiment?: string) => {
-    if (!sentiment) return 'text-gray-500 bg-gray-100'
-    const s = sentiment.toLowerCase()
-    if (s.includes('positive') || s.includes('happy')) return 'text-green-700 bg-green-100'
-    if (s.includes('negative') || s.includes('angry')) return 'text-red-700 bg-red-100'
-    return 'text-blue-700 bg-blue-100'
-  }
-
-  // Extract summary, sentiment, and successful from metric_scores or call_analysis
-  const summary = resultData.call_analysis?.call_summary || 
-    (resultData.metric_scores?.summary?.value) || 
-    null
-  
-  const sentiment = resultData.call_analysis?.user_sentiment || 
-    (resultData.metric_scores?.sentiment?.value) || 
-    'Neutral'
-  
-  const successful = resultData.call_analysis?.call_successful !== undefined 
-    ? resultData.call_analysis.call_successful 
-    : (resultData.metric_scores?.successful?.value !== undefined 
-        ? resultData.metric_scores.successful.value 
-        : null)
-
-  const getSpeakerLabel = (speaker: string) => {
-    if (isUserSpeaker(speaker)) {
-      return 'You'
+  const childMetricIds = useMemo(() => {
+    const ids = new Set<string>()
+    const visit = (metric: { id?: string; parent_metric_id?: string | null; children?: any[] }) => {
+      if (metric.parent_metric_id && metric.id) ids.add(metric.id)
+      for (const child of metric.children || []) {
+        if (child?.id) ids.add(child.id)
+        visit(child)
+      }
     }
-    if (['assistant', 'speaker 2', 'bot', 'agent'].includes(speaker.trim().toLowerCase())) {
-      return resultData.agent?.name || 'Agent'
+    for (const metric of metrics as Array<{ id?: string; parent_metric_id?: string | null; children?: any[] }>) {
+      visit(metric)
     }
-    return resultData.agent?.name || 'Agent'
-  }
+    return ids
+  }, [metrics])
 
-  const isUserSpeaker = (speaker: string) => {
-    const normalized = speaker.trim().toLowerCase()
-    return (
-      normalized === 'speaker 1' ||
-      normalized === 'user' ||
-      normalized === 'caller' ||
-      normalized === 'customer'
+  const shouldHideMetricScore = (
+    metricId: string,
+    metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
+  ) => {
+    return Boolean(
+      metric.parent_metric_id ||
+        childMetricIds.has(metricId) ||
+        isLegacyCategoryLabelMetric(metric),
     )
   }
-
-  const SummaryCard = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-        <TrendingUp className="h-5 w-5 text-indigo-600" />
-        Call Analysis
-      </h3>
-
-      {summary || resultData.call_analysis ? (
-        <div className="space-y-6">
-          {summary && (
-            <div className="p-4 bg-indigo-50 rounded-lg border border-indigo-100">
-              <p className="text-sm font-medium text-indigo-900 mb-2">Summary</p>
-              <p className="text-sm text-indigo-800 leading-relaxed">{summary}</p>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Sentiment</p>
-              <div className="flex items-center gap-2">
-                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getSentimentColor(sentiment)}`}>
-                  {sentiment}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Success Status</p>
-              <div className="flex items-center gap-2">
-                <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                  successful === true
-                    ? 'text-green-700 bg-green-100'
-                    : successful === false
-                    ? 'text-red-700 bg-red-100'
-                    : 'text-gray-500 bg-gray-100'
-                }`}>
-                  {successful === true ? 'Successful' : successful === false ? 'Unsuccessful' : 'N/A'}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Status</p>
-              <span className={`px-2 py-1 rounded-full text-xs font-semibold capitalize ${
-                resultData.status === 'completed'
-                  ? 'text-green-700 bg-green-100'
-                  : resultData.status === 'failed'
-                  ? 'text-red-700 bg-red-100'
-                  : 'text-yellow-700 bg-yellow-100'
-              }`}>
-                {resultData.status || 'Unknown'}
-              </span>
-            </div>
-
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Duration</p>
-              <span className="text-sm font-medium text-gray-900">
-                {formatDuration(resultData.duration_seconds)}
-              </span>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="text-center py-8 text-gray-500">Analysis not available</div>
-      )}
-    </div>
-  )
 
   // Helper function to format metric values
   const formatMetricValue = (value: any, type: string, metricName: string): ReactNode => {
@@ -499,25 +401,26 @@ export default function TestVoiceAgentResultDetails({
 
     // Categorize metrics
     const metrics = Object.entries(resultData.metric_scores)
-    const llmMetrics = metrics.filter(([, m]) => {
+    const llmMetrics = metrics.filter(([id, m]) => {
+      if (shouldHideMetricScore(id, m)) return false
       if (!hasValidValue(m)) return false
-      if (m.parent_metric_id || isLegacyCategoryLabelMetric(m)) return false
       const info = getMetricInfo(m.metric_name)
       return !info || info.category === 'llm'
     })
-    const acousticMetrics = metrics.filter(([, m]) => {
+    const acousticMetrics = metrics.filter(([id, m]) => {
+      if (shouldHideMetricScore(id, m)) return false
       if (!hasValidValue(m)) return false
-      if (m.parent_metric_id || isLegacyCategoryLabelMetric(m)) return false
       const info = getMetricInfo(m.metric_name)
       return info?.category === 'acoustic'
     })
-    const aiVoiceMetrics = metrics.filter(([, m]) => {
+    const aiVoiceMetrics = metrics.filter(([id, m]) => {
+      if (shouldHideMetricScore(id, m)) return false
       if (!hasValidValue(m)) return false
-      if (m.parent_metric_id || isLegacyCategoryLabelMetric(m)) return false
       const info = getMetricInfo(m.metric_name)
       return info?.category === 'ai_voice'
     })
-    const unavailableAudioMetrics = metrics.filter(([, m]) => {
+    const unavailableAudioMetrics = metrics.filter(([id, m]) => {
+      if (shouldHideMetricScore(id, m)) return false
       if (!isAudioCategoryMetric(m?.metric_name)) return false
       if (m?.skipped === 'audio_required') return true
       if (typeof m?.error === 'string' && m.error.trim().length > 0) return true
@@ -624,134 +527,6 @@ export default function TestVoiceAgentResultDetails({
     )
   }
 
-  const TranscriptCard = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[600px]">
-      <div className="flex items-center justify-between mb-4 flex-shrink-0">
-        <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-          <MessageSquare className="h-5 w-5 text-indigo-600" />
-          Transcript
-        </h3>
-        {resultData.audioUrl && (
-          <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
-            <audio controls src={resultData.audioUrl} className="h-8 w-64" />
-            <a href={resultData.audioUrl} download className="text-gray-500 hover:text-indigo-600 p-1">
-              <Download className="h-4 w-4" />
-            </a>
-          </div>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-        {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
-          resultData.speaker_segments.map((segment, idx) => (
-            <div key={idx} className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'}`}>
-              <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker), '80')}>
-                <div className={`${transcriptMetaClass(isUserSpeaker(segment.speaker))} opacity-90`}>
-                  <span>{getSpeakerLabel(segment.speaker)}</span>
-                  <span className="font-normal normal-case tracking-normal tabular-nums">
-                    {formatTime(segment.start)}
-                  </span>
-                </div>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">{segment.text}</p>
-              </div>
-            </div>
-          ))
-        ) : resultData.transcription ? (
-          <div className="prose max-w-none">
-            <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
-          </div>
-        ) : (
-          <div className="text-center py-8 text-gray-500">
-            {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcript available'}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-
-  const StatsParams = () => (
-    <div className="space-y-6">
-      {/* Call Info Card */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <Clock className="h-5 w-5 text-indigo-600" />
-          Call Information
-        </h3>
-        <div className="space-y-4">
-          <div className="p-4 bg-gray-50 rounded-lg">
-            <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Duration</p>
-            <p className="text-2xl font-bold text-gray-900">
-              {formatDuration(resultData.duration_seconds)}
-            </p>
-          </div>
-          
-          <div className="p-4 bg-gray-50 rounded-lg">
-            <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Timestamp</p>
-            <p className="text-sm font-medium text-gray-900">
-              {formatTimestamp(resultData.timestamp)}
-            </p>
-          </div>
-
-          {resultData.agent && (
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Agent</p>
-              <p className="text-sm font-medium text-gray-900">{resultData.agent.name}</p>
-              {resultData.agent.description && (
-                <p className="text-xs text-gray-500 mt-1 line-clamp-2">{resultData.agent.description}</p>
-              )}
-            </div>
-          )}
-
-          {resultData.persona && (
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Persona</p>
-              <p className="text-sm font-medium text-gray-900">{resultData.persona.name}</p>
-            </div>
-          )}
-
-          {resultData.scenario && (
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Scenario</p>
-              <p className="text-sm font-medium text-gray-900">{resultData.scenario.name}</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* System Info */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-          <Server className="h-5 w-5 text-indigo-600" />
-          System Details
-        </h3>
-        <div className="grid grid-cols-1 gap-4 text-sm">
-          <div>
-            <p className="text-gray-500 mb-1">Result ID</p>
-            <p className="font-mono bg-gray-50 p-2 rounded text-gray-700 truncate">{resultData.result_id || resultData.id}</p>
-          </div>
-          <div>
-            <p className="text-gray-500 mb-1">Status</p>
-            <p className={`inline-flex px-2 py-1 rounded-full text-xs font-semibold capitalize ${
-              resultData.status === 'completed'
-                ? 'text-green-700 bg-green-100'
-                : resultData.status === 'failed'
-                ? 'text-red-700 bg-red-100'
-                : 'text-yellow-700 bg-yellow-100'
-            }`}>
-              {resultData.status || 'Unknown'}
-            </p>
-          </div>
-          {resultData.audio_s3_key && (
-            <div>
-              <p className="text-gray-500 mb-1">Audio Storage</p>
-              <p className="font-mono bg-gray-50 p-2 rounded text-gray-700 text-xs truncate">{resultData.audio_s3_key}</p>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-
   const DebugView = () => (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -798,15 +573,6 @@ export default function TestVoiceAgentResultDetails({
           Overview
         </button>
         <button
-          onClick={() => setActiveTab('transcript')}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'transcript'
-            ? 'border-indigo-600 text-indigo-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-          }`}
-        >
-          Transcript
-        </button>
-        <button
           onClick={() => setActiveTab('debug')}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'debug'
             ? 'border-indigo-600 text-indigo-600'
@@ -817,29 +583,7 @@ export default function TestVoiceAgentResultDetails({
         </button>
       </div>
 
-      {activeTab === 'overview' && (
-        <div className="space-y-6">
-          {/* Evaluation Metrics - Full Width at Top */}
-          <MetricsCard />
-          
-          {/* Main Content Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-6">
-              <SummaryCard />
-              <TranscriptCard />
-            </div>
-            <div className="lg:col-span-1">
-              <StatsParams />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'transcript' && (
-        <div className="space-y-6">
-          <TranscriptCard />
-        </div>
-      )}
+      {activeTab === 'overview' && <MetricsCard />}
 
       {activeTab === 'debug' && <DebugView />}
         </>

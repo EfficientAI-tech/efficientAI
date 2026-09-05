@@ -144,6 +144,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 force-include = { "src/efficientai" = "efficientai" }
+# Prefer src/ over site-packages copies during editable installs (app stays at repo root).
+dev-mode-dirs = ["src", "."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app", "efficientai"]

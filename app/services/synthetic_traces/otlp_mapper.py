@@ -370,13 +370,16 @@ def _collect_component_events(spans: List[Dict[str, Any]]) -> List[Dict[str, Any
 
         if op == "stt" or name == "stt":
             meta = _component_meta_from_attrs(attrs, "stt")
+            transcript = str(attrs["transcript"]) if attrs.get("transcript") else None
+            if transcript and _is_low_signal_transcript(transcript):
+                transcript = None
             events.append(
                 {
                     "type": "stt",
                     "span_id": span_id,
                     "start": start,
                     "latency_ms": _component_latency_ms(span, attrs, "stt_ttfb_ms"),
-                    "user_text": str(attrs["transcript"]) if attrs.get("transcript") else None,
+                    "user_text": transcript,
                     "agent_id": attrs.get("efficientai.agent_id"),
                     "model": meta.get("model"),
                     "provider": meta.get("provider"),
@@ -732,6 +735,7 @@ def _pair_user_response_turns(
 
     ordered: List[Dict[str, Any]] = []
     if opener:
+        opener.setdefault("extra", {})["is_opener"] = True
         ordered.append(opener)
 
     for user_turn in user_turns:
@@ -904,11 +908,30 @@ def _looks_like_chat_json(text: str) -> bool:
     return stripped.startswith("[{") or stripped.startswith('{"role"')
 
 
+_LOW_SIGNAL_TRANSCRIPTS = frozenset(
+    {"ah", "uh", "um", "hmm", "oh", "eh", "ha", "hm", "er", "mm"}
+)
+
+
+def _is_low_signal_transcript(text: str) -> bool:
+    cleaned = re.sub(r"[^\w\s'+]", "", text.strip().lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return True
+    if cleaned in _LOW_SIGNAL_TRANSCRIPTS:
+        return True
+    if len(cleaned) < 3 and " " not in cleaned:
+        return True
+    return False
+
+
 def _set_turn_text(turn: Dict[str, Any], role: str, text: str) -> None:
     extra = turn.setdefault("extra", {})
     key = "user_text" if role == "user" else "assistant_text"
     cleaned = text.strip()
     if not cleaned or _looks_like_chat_json(cleaned):
+        return
+    if role == "user" and _is_low_signal_transcript(cleaned):
         return
     existing = extra.get(key)
     if existing is None or len(cleaned) > len(str(existing)):
@@ -1088,7 +1111,9 @@ def _derive_turns_by_pipecat_turn(spans: List[Dict[str, Any]]) -> List[Dict[str,
             kind = "s2s" if field == "s2s_ttfb_ms" else field.removesuffix("_ttfb_ms")
             _set_component_meta(turn, kind, attrs)
             if field == "stt_ttfb_ms" and attrs.get("transcript"):
-                _set_turn_text(turn, "user", str(attrs["transcript"]))
+                transcript = str(attrs["transcript"])
+                if not _is_low_signal_transcript(transcript):
+                    _set_turn_text(turn, "user", transcript)
             if field == "llm_ttfb_ms":
                 output = attrs.get("output")
                 if output:

@@ -668,3 +668,52 @@ def test_spans_indicate_session_end():
     assert not spans_indicate_session_end(
         [{"name": "turn", "attributes": {"turn.number": 1}}]
     )
+
+
+def test_derive_turns_ignores_low_signal_stt_fragments():
+    spans = [
+        {
+            "name": "stt",
+            "span_id": "stt-noise",
+            "start_time_unix_nano": 17_000_000_000,
+            "attributes": {
+                "gen_ai.operation.name": "stt",
+                "metrics.ttfb": 0.763,
+                "transcript": "Ah",
+            },
+        },
+        {
+            "name": "stt",
+            "span_id": "stt-real",
+            "start_time_unix_nano": 10_000_000_000,
+            "attributes": {
+                "gen_ai.operation.name": "stt",
+                "metrics.ttfb": 0.162,
+                "transcript": "Hi Raj, how are you?",
+            },
+        },
+        {
+            "name": "llm",
+            "span_id": "llm-1",
+            "start_time_unix_nano": 11_000_000_000,
+            "attributes": {
+                "gen_ai.operation.name": "chat",
+                "metrics.ttfb": 0.834,
+                "output": "Hi! I'm doing well.",
+            },
+        },
+        {
+            "name": "tts",
+            "span_id": "tts-1",
+            "start_time_unix_nano": 12_000_000_000,
+            "attributes": {
+                "gen_ai.operation.name": "tts",
+                "metrics.ttfb": 0.259,
+                "text": "Hi! I'm doing well.",
+            },
+        },
+    ]
+    turns = derive_turns_from_spans(spans)
+    user_texts = [(t.get("extra") or {}).get("user_text") for t in turns]
+    assert "Ah" not in user_texts
+    assert any("Hi Raj" in str(text) for text in user_texts if text)

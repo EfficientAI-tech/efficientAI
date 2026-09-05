@@ -397,7 +397,7 @@ export default function AgentTalkSidebar({
           {mode === 'test_agent' ? (
             canTalkTest ? (
               <div className="flex-1 min-h-0 flex flex-col p-4">
-                <VoiceAgent agentId={agent.id} compact sidebarLayout agentDisplayName={agent.name} billingSurface="agents_talk" />
+                <VoiceAgent agentId={agent.id} compact sidebarLayout agentDisplayName={agent.name} billingSurface="agents_talk" runEvaluation />
               </div>
             ) : (
               <div className="flex-1 flex items-center justify-center p-8 text-center text-sm text-gray-500">

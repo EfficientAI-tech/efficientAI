@@ -58,6 +58,14 @@ def build_pipeline_tracing_kwargs(
         organization_id=organization_id,
         transport="websocket",
     )
+    try:
+        from efficientai.utils.tracing.correlation_context_provider import (
+            set_correlation_attributes,
+        )
+
+        set_correlation_attributes(attrs)
+    except ImportError:
+        pass
 
     global _mutable_internal_exporter
 
@@ -91,6 +99,23 @@ def flush_playground_tracing() -> None:
 
             flush_tracing()
         except ImportError:
-            return
+            pass
     except Exception as exc:
         logger.warning("Failed to flush playground OTLP spans: {}", exc)
+    finally:
+        try:
+            from efficientai.utils.tracing.correlation_context_provider import (
+                clear_correlation_attributes,
+            )
+
+            clear_correlation_attributes()
+        except ImportError:
+            pass
+        try:
+            from app.services.synthetic_traces.internal_otlp_exporter import (
+                clear_trace_correlation_cache,
+            )
+
+            clear_trace_correlation_cache()
+        except ImportError:
+            pass

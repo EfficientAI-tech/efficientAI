@@ -43,15 +43,6 @@ export default function TestAgentResultDetail() {
     },
   })
 
-  const { data: presignedUrl } = useQuery({
-    queryKey: ['audio-presigned-url', result?.audio_s3_key],
-    queryFn: () => {
-      if (!result?.audio_s3_key) return null
-      return apiClient.getAudioPresignedUrl(result.audio_s3_key)
-    },
-    enabled: !!result?.audio_s3_key,
-  })
-
   const reEvaluateMutation = useMutation({
     mutationFn: () => apiClient.reEvaluateResult(id!),
     onSuccess: () => {
@@ -69,6 +60,13 @@ export default function TestAgentResultDetail() {
     !!result?.transcription &&
     result.status !== 'completed' &&
     !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
+
+  const formatDuration = (seconds?: number | null) => {
+    if (!seconds) return 'N/A'
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}m ${secs}s`
+  }
 
   const getStatusClass = (status: string) => {
     if (status === 'completed') return 'bg-green-100 text-green-800'
@@ -102,8 +100,19 @@ export default function TestAgentResultDetail() {
   const resultData = {
     ...result,
     call_analysis: result.call_data?.call_analysis || undefined,
-    audioUrl: presignedUrl?.url || undefined,
   }
+
+  const sentiment =
+    result.call_data?.call_analysis?.user_sentiment ||
+    (result.metric_scores?.sentiment?.value as string | undefined) ||
+    'Neutral'
+
+  const callSuccessful =
+    result.call_data?.call_analysis?.call_successful !== undefined
+      ? result.call_data.call_analysis.call_successful
+      : result.metric_scores?.successful?.value !== undefined
+        ? Boolean(result.metric_scores.successful.value)
+        : null
 
   const callShortId =
     typeof result.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : null
@@ -154,10 +163,58 @@ export default function TestAgentResultDetail() {
                 >
                   Call details
                 </Button>
-                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusClass(result.status)}`}>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
+                <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full capitalize ${getStatusClass(result.status)}`}>
                   {result.status}
                 </span>
               </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Agent</p>
+                <p className="text-sm text-gray-900">{result.agent?.name || 'N/A'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Duration</p>
+                <p className="text-sm text-gray-900">{formatDuration(result.duration_seconds)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Sentiment</p>
+                <p className="text-sm text-gray-900">{sentiment}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Created</p>
+                <p className="text-sm text-gray-900">
+                  {result.timestamp ? new Date(result.timestamp).toLocaleString() : 'N/A'}
+                </p>
+              </div>
+              {result.persona?.name && (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
+                  <p className="text-sm text-gray-900">{result.persona.name}</p>
+                </div>
+              )}
+              {result.scenario?.name && (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Scenario</p>
+                  <p className="text-sm text-gray-900">{result.scenario.name}</p>
+                </div>
+              )}
+              {callSuccessful !== null && (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Outcome</p>
+                  <span
+                    className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                      callSuccessful ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    }`}
+                  >
+                    {callSuccessful ? 'Successful' : 'Unsuccessful'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>

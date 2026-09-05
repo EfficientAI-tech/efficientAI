@@ -1,4 +1,4 @@
-> **Doc role:** Part **1 of 2** in [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682). For UI/drawer/audio, see [Part 2: Call Details](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074).
+> **Doc role:** Canonical TDD in [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682).
 
 # TDD: Call Traces — Pipecat OTLP Observability (Architecture & Scaling)
 
@@ -94,7 +94,7 @@ Eight mechanisms work together:
 | **Production calls list** | `source == webhook` filter | Playground Voice AI never in observability hub |
 | **Live transcript** | 1s Postgres poll SSE | Works for staging volume; DB load grows with concurrent live calls |
 | **Rate limiting** | Not enforced on trace routes (v1) | Config may define limits; wired in Phase 2 |
-| **Cost from OTLP** | Not computed | Dollar cost from provider `call_data` (see Call Details doc) |
+| **Cost from OTLP** | Not computed | Dollar cost from provider `call_data` (§11.5) |
 
 ---
 
@@ -279,14 +279,19 @@ Every OTLP batch for one call:
 
 ### 8.2 Detail drawer routing
 
+Frontend helper: `frontend/src/lib/callDetailRouting.ts` → `resolveTraceDrawerTargets()`.
+
+**Drawer priority inside `TraceDetailDrawer`:** `callShortId` → `observabilityCallShortId` → `evaluatorResultId` → `traceId`.
+
 | User action | Query / entry | Panel | Detail API |
 | --- | --- | --- | --- |
 | OTLP trace row | `?trace={uuid}` | `SyntheticCallTracePanel` | `GET /observability/traces/{id}` |
 | Webhook call row | `?obs={call_short_id}` | `ObservabilityCallDetailPanel` | `GET /observability/calls/{id}` |
 | Evaluator deep link | `?result={evaluator_result_id}` | `EvaluatorCallDetailPanel` | `GET /evaluator-results/{id}` |
-| Playground Voice AI | `/playground` | `ProviderCallTracePanel` | `GET /playground/call-recordings/{id}` |
+| Playground Voice AI | `/playground` Voice AI tab | `ProviderCallTracePanel` | `GET /playground/call-recordings/{id}` |
+| Playground Test Agent | `/playground` Test Agents tab | Full page + optional drawer | `GET /evaluator-results/{id}` + OTLP trace |
 
-**Drawer priority:** `callShortId` → `observabilityCallShortId` → `evaluatorResultId` → `traceId`.
+**Routing rule:** The same 6-digit `call_short_id` can exist in `call_recordings` with different `source` values (`playground` vs `webhook`). Drawer routing must use `call_recording_source` (resolved from linked `call_recordings.source`), not `provider_platform` alone. Voice AI platforms in the routing set: `vapi`, `retell`, `elevenlabs`, `smallest`.
 
 ### 8.3 Surface map
 
@@ -406,6 +411,33 @@ Runs on **every ingest batch** (sync).
 | Retell playground | `latency.*.p50` | **No** — provider histogram |
 | Test Agent | Pipeline = OTLP; Analysis = evaluator | **Mixed** |
 
+### 11.5 Provider-native metrics (playground Voice AI)
+
+For Vapi/Retell/ElevenLabs/Smallest playground calls we **display provider fields** from `call_recordings.call_data` after `post_call_processing.py` polls the provider API. We do not recompute p50/p90 in our backend for these.
+
+**Vapi** — source: `call_data.artifact.performanceMetrics`
+
+| UI label | JSON field | Meaning |
+| --- | --- | --- |
+| Transcriber | `turnLatencies[].transcriberLatency` or `transcriberLatencyAverage` | STT time (ms) |
+| Endpointing | `endpointingLatency` | Silence detection after user stops |
+| LLM | `modelLatency` | Model response time |
+| Voice (TTS) | `voiceLatency` | TTS generation time |
+| Turn total | `turnLatency` | Provider-reported full turn time |
+
+**Retell** — source: `call_data.latency` (provider histogram percentiles)
+
+| UI label | JSON field |
+| --- | --- |
+| E2E p50 | `latency.e2e.p50` |
+| ASR p50 | `latency.asr.p50` |
+| LLM p50 | `latency.llm.p50` |
+| TTS p50 | `latency.tts.p50` |
+
+**Cost** — Vapi: `cost` or `costBreakdown.total` (stt/llm/tts/transport/vapi). Retell: `call_cost.combined_cost` + `call_cost.product_costs[]`.
+
+**OTLP / Test Agent Pipeline tab** uses §11.1–11.3 only (`otlp_mapper.py`, `compute_trace_latency_summary()`).
+
 ---
 
 ## 12. Authentication & integration reference
@@ -490,7 +522,6 @@ Example: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`
 
 ## 16. Related documentation
 
-* [TDD: Call Details & Unified Traces (UI)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69763074)
-* [Call Import Architecture & Scaling Guide](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/59899905)
 * [Voice Call Traces & Observability (Index)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/69959682)
+* [Call Import Architecture & Scaling Guide](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/59899905)
 * Repo: `docs/synthetic-call-traces-pipecat.md` (quick start)

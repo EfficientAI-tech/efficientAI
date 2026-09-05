@@ -49,7 +49,7 @@ export default function VoiceAgent({
   agentDisplayName,
   connectDisabled = false,
   connectDisabledReason,
-  runEvaluation = false,
+  runEvaluation = true,
   userTranscriptLabel = 'You',
   botTranscriptLabel = 'Agent',
 }: VoiceAgentProps) {
