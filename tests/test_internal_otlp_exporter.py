@@ -329,3 +329,88 @@ def test_internal_exporter_inherits_correlation_from_parent_turn_span():
     payload = ingest_mock.call_args.kwargs["spans"]
     llm_attrs = next(row["attributes"] for row in payload if row["name"] == "llm")
     assert llm_attrs[ATTR_CALL_SHORT_ID] == "530430"
+
+
+def test_trace_correlation_cache_not_cleared_on_per_call_flush():
+    """Late spans for an active call must keep cached trace correlation after another call ends."""
+    from efficientai.integrations.efficientai_traces.correlation import (
+        ATTR_CALL_SHORT_ID,
+        ATTR_ORGANIZATION_ID,
+        ATTR_WORKSPACE_ID,
+    )
+
+    clear_trace_correlation_cache()
+    org_a = uuid4()
+    org_b = uuid4()
+    ws_a = uuid4()
+    ws_b = uuid4()
+    trace_a = 101
+    trace_b = 202
+    exporter = InternalOtlpSpanExporter()
+
+    call_a_conversation = SimpleNamespace(
+        attributes={
+            ATTR_CALL_SHORT_ID: "111111",
+            ATTR_WORKSPACE_ID: str(ws_a),
+            ATTR_ORGANIZATION_ID: str(org_a),
+        },
+        events=[],
+        name="conversation",
+        parent=None,
+        start_time=1,
+        end_time=2,
+        get_span_context=lambda: SimpleNamespace(trace_id=trace_a, span_id=1),
+    )
+    call_b_conversation = SimpleNamespace(
+        attributes={
+            ATTR_CALL_SHORT_ID: "222222",
+            ATTR_WORKSPACE_ID: str(ws_b),
+            ATTR_ORGANIZATION_ID: str(org_b),
+        },
+        events=[],
+        name="conversation",
+        parent=None,
+        start_time=3,
+        end_time=4,
+        get_span_context=lambda: SimpleNamespace(trace_id=trace_b, span_id=3),
+    )
+    call_a_stt = SimpleNamespace(
+        attributes={"gen_ai.operation.name": "stt"},
+        events=[],
+        name="stt",
+        parent=None,
+        start_time=5,
+        end_time=6,
+        get_span_context=lambda: SimpleNamespace(trace_id=trace_a, span_id=4),
+    )
+    call_b_stt = SimpleNamespace(
+        attributes={"gen_ai.operation.name": "stt"},
+        events=[],
+        name="stt",
+        parent=None,
+        start_time=7,
+        end_time=8,
+        get_span_context=lambda: SimpleNamespace(trace_id=trace_b, span_id=5),
+    )
+
+    with patch(
+        "app.services.synthetic_traces.trace_service.ingest_otlp_spans"
+    ) as ingest_mock, patch(
+        "app.database.SessionLocal"
+    ) as session_local:
+        session_local.return_value = MagicMock()
+        ingest_mock.return_value = (None, 1, True)
+
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        assert exporter.export([call_a_conversation]) == SpanExportResult.SUCCESS
+        assert exporter.export([call_b_conversation]) == SpanExportResult.SUCCESS
+        # Call B ends; per-call flush no longer wipes the process-wide cache.
+        assert exporter.export([call_a_stt]) == SpanExportResult.SUCCESS
+        assert exporter.export([call_b_stt]) == SpanExportResult.SUCCESS
+
+    assert ingest_mock.call_count == 4
+    call_a_stt_attrs = ingest_mock.call_args_list[2].kwargs["spans"][0]["attributes"]
+    call_b_stt_attrs = ingest_mock.call_args_list[3].kwargs["spans"][0]["attributes"]
+    assert call_a_stt_attrs[ATTR_CALL_SHORT_ID] == "111111"
+    assert call_b_stt_attrs[ATTR_CALL_SHORT_ID] == "222222"

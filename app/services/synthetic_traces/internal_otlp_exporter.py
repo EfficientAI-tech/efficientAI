@@ -6,14 +6,15 @@ from collections import defaultdict
 from typing import Any, Dict, Optional, Sequence, Tuple
 from uuid import UUID
 
+from loguru import logger
+
 _MAX_TRACE_CORRELATION_CACHE = 256
 _TRACE_CORRELATION_CACHE: Dict[int, Tuple[str, str, str, Optional[str]]] = {}
 
 
 def clear_trace_correlation_cache() -> None:
+    """Test-only reset. Do not call on per-call flush — cache is process-wide."""
     _TRACE_CORRELATION_CACHE.clear()
-
-from loguru import logger
 
 try:
     from opentelemetry.sdk.trace import ReadableSpan

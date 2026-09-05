@@ -108,14 +108,7 @@ def flush_playground_tracing() -> None:
                 clear_correlation_attributes,
             )
 
+            # ContextVar is task-local; safe when concurrent playground calls overlap.
             clear_correlation_attributes()
-        except ImportError:
-            pass
-        try:
-            from app.services.synthetic_traces.internal_otlp_exporter import (
-                clear_trace_correlation_cache,
-            )
-
-            clear_trace_correlation_cache()
         except ImportError:
             pass
