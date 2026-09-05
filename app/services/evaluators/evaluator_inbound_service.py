@@ -18,6 +18,75 @@ from app.services.evaluators.evaluator_suite_service import (
 from app.services.evaluators.evaluator_result_call_data import slim_call_data_for_evaluator_result
 from app.services.evaluators.evaluator_result_status import has_meaningful_metric_scores
 
+_PRE_EVAL_TELEPHONY_STATUSES = frozenset(
+    {
+        EvaluatorResultStatus.QUEUED.value,
+        EvaluatorResultStatus.CALL_INITIATING.value,
+        EvaluatorResultStatus.CALL_CONNECTING.value,
+        EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+        EvaluatorResultStatus.CALL_ENDED.value,
+    }
+)
+
+_CALL_EVENT_TO_RESULT_STATUS: Dict[str, str] = {
+    "outbound_initiated": EvaluatorResultStatus.CALL_INITIATING.value,
+    "ringing": EvaluatorResultStatus.CALL_CONNECTING.value,
+    "call_started": EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+    "call_in_progress": EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+    "in-progress": EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+    "answered": EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+    "call_ended": EvaluatorResultStatus.CALL_ENDED.value,
+    "failed": EvaluatorResultStatus.CALL_ENDED.value,
+}
+
+
+def sync_linked_evaluator_result_call_state(
+    db: Session,
+    call_recording: CallRecording,
+) -> None:
+    """Mirror live telephony call_event onto the linked EvaluatorResult."""
+    if not call_recording.evaluator_result_id:
+        return
+
+    result = (
+        db.query(EvaluatorResult)
+        .filter(EvaluatorResult.id == call_recording.evaluator_result_id)
+        .first()
+    )
+    if not result:
+        return
+
+    current = (result.status or EvaluatorResultStatus.QUEUED.value).lower()
+    if current in {
+        EvaluatorResultStatus.TRANSCRIBING.value,
+        EvaluatorResultStatus.EVALUATING.value,
+        EvaluatorResultStatus.COMPLETED.value,
+        EvaluatorResultStatus.FETCHING_DETAILS.value,
+    }:
+        return
+    if current == EvaluatorResultStatus.FAILED.value and has_meaningful_metric_scores(result.metric_scores):
+        return
+
+    call_event = (call_recording.call_event or "").lower()
+    mapped_status = _CALL_EVENT_TO_RESULT_STATUS.get(call_event)
+    if not mapped_status:
+        return
+
+    if current not in _PRE_EVAL_TELEPHONY_STATUSES and current != mapped_status:
+        return
+
+    result.status = mapped_status
+    result.call_event = call_recording.call_event
+    if call_recording.provider_call_id:
+        result.provider_call_id = call_recording.provider_call_id
+    if call_recording.provider_platform:
+        result.provider_platform = call_recording.provider_platform
+
+    from app.services.live_entity_storage import sync_evaluator_result
+
+    sync_evaluator_result(db, result)
+    db.commit()
+
 
 def find_inbound_suite_for_agent(
     db: Session,
@@ -93,7 +162,7 @@ def create_inbound_evaluator_result(
         persona_id=evaluator.persona_id,
         scenario_id=evaluator.scenario_id,
         name=scenario_name,
-        status=EvaluatorResultStatus.QUEUED.value,
+        status=EvaluatorResultStatus.CALL_CONNECTING.value,
         audio_s3_key=None,
     )
     db.add(evaluator_result)
@@ -196,7 +265,7 @@ def enqueue_linked_evaluator_result_if_ready(
     )
     if not result:
         return False
-    if result.status != EvaluatorResultStatus.QUEUED.value:
+    if result.status not in _PRE_EVAL_TELEPHONY_STATUSES:
         return False
     if result.celery_task_id:
         # Allow retry when a prior dispatch never produced scores (worker crash / lost task).

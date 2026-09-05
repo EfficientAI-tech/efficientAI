@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Volume2 } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
+import RecordingAudioPlayer from '../../../components/audio/RecordingAudioPlayer'
 
 type MetricsStudioAudioPlayerProps = {
   sourceKind: string
@@ -109,7 +110,7 @@ export default function MetricsStudioAudioPlayer({
         <Volume2 className="h-4 w-4 text-gray-500" />
         <h4 className="text-sm font-semibold text-gray-900">Call recording</h4>
       </div>
-      <audio controls src={audioUrl} className="w-full" preload="metadata" />
+      <RecordingAudioPlayer src={audioUrl} downloadUrl={audioUrl} />
     </div>
   )
 }

@@ -28,7 +28,7 @@ interface Props {
   onSubmit: (payload: {
     name?: string
     agent_id: string
-    persona_id: string
+    persona_ids: string[]
     scenario_ids: string[]
     metric_ids?: string[]
     llm_provider?: string
@@ -42,7 +42,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   const { selectedAgent } = useAgentStore()
   const [step, setStep] = useState(0)
   const [modalAgentId, setModalAgentId] = useState('')
-  const [selectedPersonaId, setSelectedPersonaId] = useState('')
+  const [selectedPersonaIds, setSelectedPersonaIds] = useState<string[]>([])
   const [selectedScenarioIds, setSelectedScenarioIds] = useState<string[]>([])
   const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
   const [llmProvider, setLlmProvider] = useState<ModelProvider | null>(null)
@@ -54,7 +54,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
     if (open) {
       setStep(0)
       setModalAgentId(selectedAgent?.id || '')
-      setSelectedPersonaId('')
+      setSelectedPersonaIds([])
       setSelectedScenarioIds([])
       setSelectedMetricIds([])
       setLlmProvider(null)
@@ -96,7 +96,14 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   const isInbound = selectedAgentObj?.call_type === 'inbound'
   const isOutboundPhone =
     selectedAgentObj?.call_medium === 'phone_call' && selectedAgentObj?.call_type !== 'inbound'
-  const totalRuns = selectedScenarioIds.length * defaultRuns
+  const totalCombinations = selectedPersonaIds.length * selectedScenarioIds.length
+  const totalRuns = totalCombinations * defaultRuns
+
+  const togglePersona = (id: string) => {
+    setSelectedPersonaIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    )
+  }
 
   const toggleScenario = (id: string) => {
     setSelectedScenarioIds((prev) =>
@@ -105,7 +112,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
   }
 
   const canNext = () => {
-    if (step === 0) return !!modalAgentId && !!selectedPersonaId
+    if (step === 0) return !!modalAgentId && selectedPersonaIds.length > 0
     if (step === 1) return selectedScenarioIds.length > 0
     return true
   }
@@ -118,7 +125,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
     onSubmit({
       name: suiteName.trim() || undefined,
       agent_id: modalAgentId,
-      persona_id: selectedPersonaId,
+      persona_ids: selectedPersonaIds,
       scenario_ids: selectedScenarioIds,
       metric_ids: normalizedMetrics.length > 0 ? normalizedMetrics : undefined,
       llm_provider: llmProvider || undefined,
@@ -174,7 +181,7 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   value={modalAgentId}
                   onChange={(e) => {
                     setModalAgentId(e.target.value)
-                    setSelectedPersonaId('')
+                    setSelectedPersonaIds([])
                     setSelectedScenarioIds([])
                   }}
                   className={MODERN_SELECT_CLASS}
@@ -186,7 +193,9 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Persona *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Personas * ({selectedPersonaIds.length} selected)
+                </label>
                 {voiceBundleTtsProvider && (
                   <div className="mb-2 flex items-start gap-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
                     <Info className="h-4 w-4 shrink-0 mt-0.5" />
@@ -196,13 +205,12 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                 <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-xl p-3 bg-gray-50/30">
                   {filteredPersonas.map((p: any) => (
                     <label key={p.id} className={`flex items-start gap-3 cursor-pointer p-2.5 rounded-lg border transition-colors ${
-                      selectedPersonaId === p.id ? 'bg-primary-50 border-primary-200' : 'border-transparent hover:bg-white hover:border-gray-200'
+                      selectedPersonaIds.includes(p.id) ? 'bg-primary-50 border-primary-200' : 'border-transparent hover:bg-white hover:border-gray-200'
                     }`}>
                       <input
-                        type="radio"
-                        name="persona"
-                        checked={selectedPersonaId === p.id}
-                        onChange={() => setSelectedPersonaId(p.id)}
+                        type="checkbox"
+                        checked={selectedPersonaIds.includes(p.id)}
+                        onChange={() => togglePersona(p.id)}
                         className="mt-1"
                       />
                       <div className="min-w-0">
@@ -267,13 +275,18 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
             <div className="space-y-4">
               <div className="p-5 bg-gray-50 rounded-xl border border-gray-100 text-sm space-y-3">
                 <p><span className="font-medium">Agent:</span> {selectedAgentObj?.name || '—'}</p>
-                <p><span className="font-medium">Persona:</span> {personas.find((p: any) => p.id === selectedPersonaId)?.name || '—'}</p>
-                {personas.find((p: any) => p.id === selectedPersonaId)?.description?.trim() ? (
-                  <p className="text-gray-600 text-xs pl-4 border-l-2 border-gray-200">
-                    {personas.find((p: any) => p.id === selectedPersonaId)?.description}
-                  </p>
-                ) : null}
-                <p><span className="font-medium">Scenarios:</span> {selectedScenarioIds.length} combination{selectedScenarioIds.length !== 1 ? 's' : ''}</p>
+                <p><span className="font-medium">Personas:</span> {selectedPersonaIds.length} selected</p>
+                <ul className="list-disc list-inside text-gray-600 ml-2">
+                  {selectedPersonaIds.map((id) => (
+                    <li key={id}>{personas.find((p: any) => p.id === id)?.name || id}</li>
+                  ))}
+                </ul>
+                <p>
+                  <span className="font-medium">Combinations:</span>{' '}
+                  {selectedPersonaIds.length} persona{selectedPersonaIds.length !== 1 ? 's' : ''} ×{' '}
+                  {selectedScenarioIds.length} scenario{selectedScenarioIds.length !== 1 ? 's' : ''} ={' '}
+                  {totalCombinations}
+                </p>
                 <ul className="list-disc list-inside text-gray-600 ml-2">
                   {selectedScenarioIds.map((id) => (
                     <li key={id}>{filteredScenarios.find((s: any) => s.id === id)?.name || id}</li>
@@ -306,7 +319,10 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                     className={`${MODERN_INPUT_CLASS} w-28`}
                   />
                   <div className="mt-3 rounded-lg bg-indigo-50 border border-indigo-100 px-4 py-3 text-sm text-indigo-800">
-                    Total batch runs: <strong>{selectedScenarioIds.length} × {defaultRuns} = {totalRuns}</strong>
+                    Total batch runs:{' '}
+                    <strong>
+                      {totalCombinations} × {defaultRuns} = {totalRuns}
+                    </strong>
                   </div>
                 </div>
               ) : isInbound ? (

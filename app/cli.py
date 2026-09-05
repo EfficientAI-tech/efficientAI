@@ -57,35 +57,23 @@ class FrontendWatcher:
         return False
     
     def build_frontend(self):
-        """Rebuild the frontend atomically to avoid serving half-written dist."""
-        import shutil
-
+        """Rebuild the frontend."""
         with self.build_lock:
             try:
                 click.echo("\n🔄 Frontend files changed, rebuilding...")
-                staging_dir = self.frontend_dir / "dist.staging"
-                dist_dir = self.frontend_dir / "dist"
-                shutil.rmtree(staging_dir, ignore_errors=True)
                 result = subprocess.run(
-                    ["npm", "run", "build", "--", "--outDir", "dist.staging"],
+                    ["npm", "run", "build"],
                     cwd=self.frontend_dir,
                     check=False,
                     capture_output=True,
                     text=True,
                 )
                 if result.returncode == 0:
-                    backup_dir = self.frontend_dir / "dist.prev"
-                    shutil.rmtree(backup_dir, ignore_errors=True)
-                    if dist_dir.exists():
-                        dist_dir.rename(backup_dir)
-                    staging_dir.rename(dist_dir)
-                    shutil.rmtree(backup_dir, ignore_errors=True)
                     click.echo("✅ Frontend rebuilt successfully")
                 else:
-                    shutil.rmtree(staging_dir, ignore_errors=True)
-                    click.echo("⚠️  Frontend build had warnings (check logs)", err=True)
+                    click.echo(f"⚠️  Frontend build had warnings (check logs)", err=True)
                     if result.stderr:
-                        click.echo(result.stderr[:500], err=True)
+                        click.echo(result.stderr[:500], err=True)  # Show first 500 chars
             except Exception as e:
                 click.echo(f"❌ Frontend build error: {e}", err=True)
     
@@ -1612,7 +1600,17 @@ def usage_recompute(
     help="Merge generated pricing into app/config/models.json",
 )
 @click.option("--stdout", is_flag=True, help="Print pricing_catalog.json to stdout")
-def usage_sync_litellm(local: bool, write_models: bool, stdout: bool):
+@click.option(
+    "--import-missing-fireworks",
+    is_flag=True,
+    help="Add current Fireworks serverless chat models missing from models.json",
+)
+def usage_sync_litellm(
+    local: bool,
+    write_models: bool,
+    stdout: bool,
+    import_missing_fireworks: bool,
+):
     """Fetch LiteLLM prices and regenerate pricing_catalog.json."""
     import subprocess
     import sys as sys_module
@@ -1625,6 +1623,8 @@ def usage_sync_litellm(local: bool, write_models: bool, stdout: bool):
         cmd.append("--write-models")
     if stdout:
         cmd.append("--stdout")
+    if import_missing_fireworks:
+        cmd.append("--import-missing-fireworks")
     subprocess.run(cmd, check=True)
 
 

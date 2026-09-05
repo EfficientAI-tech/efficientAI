@@ -261,6 +261,15 @@ def is_metric_failure(
     return score_matches_failure_policy(scores, metric, policy)
 
 
+def is_metric_failure_from_scores(
+    metric_scores: Dict[str, Any],
+    metric: Metric,
+    policy: MetricFailurePolicy,
+) -> bool:
+    scores = metric_scores if isinstance(metric_scores, dict) else {}
+    return score_matches_failure_policy(scores, metric, policy)
+
+
 def policies_from_evaluation_raw(raw: Any) -> Tuple[Dict[str, MetricFailurePolicy], str]:
     if not isinstance(raw, dict):
         return {}, "inferred"
@@ -310,6 +319,26 @@ def build_inferred_policies(
             raw, metric, row_counts
         )
     return policies
+
+
+def effective_policies_from_raw(
+    metric_clusters_raw: Any,
+    metrics: Sequence[Metric],
+    aggregates: Sequence[CallImportMetricAggregate],
+    *,
+    child_names_by_parent: Optional[Dict[str, List[str]]] = None,
+) -> Tuple[Dict[str, MetricFailurePolicy], Literal["inferred", "user"]]:
+    stored, source = policies_from_evaluation_raw(metric_clusters_raw)
+    if source == "user" and stored:
+        return stored, "user"
+    inferred = build_inferred_policies(
+        metrics,
+        aggregates,
+        child_names_by_parent=child_names_by_parent,
+    )
+    if stored and source == "inferred":
+        return stored, "inferred"
+    return inferred, "inferred"
 
 
 def effective_policies(
@@ -602,6 +631,43 @@ def merge_clustering_policies(
     return merged
 
 
+def merge_clustering_policies_from_raw(
+    submitted: Optional[Dict[str, MetricFailurePolicy]],
+    metric_clusters_raw: Any,
+    metrics: Sequence[Metric],
+    aggregates: Sequence[CallImportMetricAggregate],
+    *,
+    child_names_by_parent: Optional[Dict[str, List[str]]] = None,
+) -> Dict[str, MetricFailurePolicy]:
+    """Like ``merge_clustering_policies`` but reads policies from arbitrary JSON raw."""
+    effective, _source = effective_policies_from_raw(
+        metric_clusters_raw,
+        metrics,
+        aggregates,
+        child_names_by_parent=child_names_by_parent,
+    )
+    agg_by_id = {str(a.metric_id): a for a in aggregates}
+    merged: Dict[str, MetricFailurePolicy] = {}
+    for metric in metrics:
+        mid = str(metric.id)
+        agg = agg_by_id.get(mid)
+        row_counts: Dict[str, int] = {}
+        if agg:
+            for vc in agg.value_counts or []:
+                row_counts[vc.label] = vc.count
+        if submitted is not None and mid in submitted:
+            merged[mid] = submitted[mid]
+            continue
+        base = effective.get(mid) or suggest_failure_policy(
+            metric,
+            observed_labels=list(row_counts.keys()),
+            child_names=(child_names_by_parent or {}).get(mid),
+            numeric_mean=agg.mean if agg else None,
+        )
+        merged[mid] = prune_policy_to_observed_rows(base, metric, row_counts)
+    return merged
+
+
 def has_clusterable_metrics(
     metrics: Sequence[Metric],
     policies: Dict[str, MetricFailurePolicy],
@@ -616,6 +682,31 @@ def has_clusterable_metrics(
             if policy is None or not policy_has_failure_criteria(policy, metric):
                 continue
             if is_metric_failure(eval_row, metric, policy):
+                return True
+    return False
+
+
+def has_clusterable_metrics_from_scores(
+    metrics: Sequence[Metric],
+    policies: Dict[str, MetricFailurePolicy],
+    rows: Sequence[Any],
+    *,
+    status_attr: str = "status",
+    scores_attr: str = "metric_scores",
+) -> bool:
+    """True when at least one completed row matches a metric failure policy."""
+    for row in rows:
+        status = getattr(row, status_attr, None)
+        if status != "completed":
+            continue
+        scores = getattr(row, scores_attr, None)
+        if not isinstance(scores, dict):
+            scores = {}
+        for metric in metrics:
+            policy = policies.get(str(metric.id))
+            if policy is None or not policy_has_failure_criteria(policy, metric):
+                continue
+            if is_metric_failure_from_scores(scores, metric, policy):
                 return True
     return False
 

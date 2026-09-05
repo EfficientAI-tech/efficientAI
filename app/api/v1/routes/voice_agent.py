@@ -107,6 +107,7 @@ async def websocket_endpoint(
         agent_id = websocket.query_params.get("agent_id")
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
+        run_evaluation = _parse_bool_query(websocket.query_params.get("run_evaluation"), default=False)
         ui_surface = websocket.query_params.get("ui_surface")
         trace_call_short_id = (websocket.query_params.get("call_short_id") or "").strip() or None
         trace_api_key = api_key
@@ -657,7 +658,13 @@ async def websocket_endpoint(
                     else:
                         result_name = "Test Call"
 
-                    logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}")
+                    logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}, run_evaluation={run_evaluation}")
+
+                    initial_status = (
+                        EvaluatorResultStatus.QUEUED.value
+                        if run_evaluation
+                        else EvaluatorResultStatus.CALL_ENDED.value
+                    )
 
                     call_short_id = trace_call_short_id or generate_unique_call_short_id(db)
                     speaker_segments = call_metadata.get("speaker_segments") or []
@@ -687,7 +694,7 @@ async def websocket_endpoint(
                         scenario_id=UUID(scenario_id) if scenario_id else None,  # Optional
                         name=result_name,
                         duration_seconds=call_metadata.get("duration"),
-                        status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
+                        status=initial_status,
                         audio_s3_key=call_metadata.get("s3_key"),
                         transcription=call_metadata.get("transcription"),
                         speaker_segments=speaker_segments or None,
@@ -726,44 +733,42 @@ async def websocket_endpoint(
 
                     # Playground scoring bills via playground.evaluation_completed.
                     
-                    logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}")
+                    logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}, status={initial_status}")
                     
-                    # Trigger Celery task
-                    try:
-                        logger.info(f"Triggering Celery task for evaluator result: {evaluator_result.id}")
-                        
-                        # Check if Celery app is properly configured
-                        from app.workers.celery_app import celery_app
-                        logger.info(f"Celery broker URL: {celery_app.conf.broker_url}")
-                        logger.info(f"Celery result backend: {celery_app.conf.result_backend}")
-                        
-                        # Verify task is registered
-                        if 'process_evaluator_result' not in celery_app.tasks:
-                            logger.error("❌ Task 'process_evaluator_result' is not registered in Celery app!")
-                            logger.error(f"Available tasks: {list(celery_app.tasks.keys())}")
-                        else:
-                            logger.info("✅ Task 'process_evaluator_result' is registered")
-                        
-                        task = process_evaluator_result_task.delay(str(evaluator_result.id))
-                        logger.info(f"✅ Celery task triggered: task_id={task.id}, task_state={task.state}")
-                        
-                        # Try to get task info to verify it was queued
+                    if run_evaluation:
                         try:
-                            task_info = task.info
-                            logger.info(f"Task info: {task_info}")
-                        except Exception as info_error:
-                            logger.warning(f"Could not get task info (this is normal for async tasks): {info_error}")
-                        
-                        evaluator_result.celery_task_id = task.id
-                        db.commit()
-                        logger.info(f"✅ Updated evaluator result with celery_task_id: {task.id}")
-                    except Exception as task_error:
-                        logger.error(f"❌ Failed to trigger Celery task: {task_error}", exc_info=True)
-                        # Still log that we created the result even if task trigger failed
-                        logger.warning(f"Evaluator result {result_id} created but Celery task was not triggered. Task may need to be triggered manually.")
-                        logger.warning(f"Please ensure Celery worker is running: celery -A app.workers.celery_app worker --loglevel=info")
-                    
-                    logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
+                            logger.info(f"Triggering Celery task for evaluator result: {evaluator_result.id}")
+
+                            from app.workers.celery_app import celery_app
+                            logger.info(f"Celery broker URL: {celery_app.conf.broker_url}")
+                            logger.info(f"Celery result backend: {celery_app.conf.result_backend}")
+
+                            if 'process_evaluator_result' not in celery_app.tasks:
+                                logger.error("❌ Task 'process_evaluator_result' is not registered in Celery app!")
+                                logger.error(f"Available tasks: {list(celery_app.tasks.keys())}")
+                            else:
+                                logger.info("✅ Task 'process_evaluator_result' is registered")
+
+                            task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                            logger.info(f"✅ Celery task triggered: task_id={task.id}, task_state={task.state}")
+
+                            try:
+                                task_info = task.info
+                                logger.info(f"Task info: {task_info}")
+                            except Exception as info_error:
+                                logger.warning(f"Could not get task info (this is normal for async tasks): {info_error}")
+
+                            evaluator_result.celery_task_id = task.id
+                            db.commit()
+                            logger.info(f"✅ Updated evaluator result with celery_task_id: {task.id}")
+                        except Exception as task_error:
+                            logger.error(f"❌ Failed to trigger Celery task: {task_error}", exc_info=True)
+                            logger.warning(f"Evaluator result {result_id} created but Celery task was not triggered. Task may need to be triggered manually.")
+                            logger.warning("Please ensure Celery worker is running: celery -A app.workers.celery_app worker --loglevel=info")
+                    else:
+                        logger.info(f"Skipping post-call evaluation for result {result_id} (run_evaluation=false)")
+
+                    logger.info(f"✅ Created evaluator result {result_id}" + (" and triggered processing task" if run_evaluation else ""))
                 except Exception as e:
                     logger.error(f"❌ Error creating evaluator result: {e}", exc_info=True)
         
@@ -913,6 +918,7 @@ async def bot_connect(
     agent_id = request.query_params.get("agent_id")
     persona_id = request.query_params.get("persona_id")
     scenario_id = request.query_params.get("scenario_id")
+    run_evaluation = _parse_bool_query(request.query_params.get("run_evaluation"), default=False)
     ui_surface = request.query_params.get("ui_surface")
     call_short_id = request.query_params.get("call_short_id")
     
@@ -1060,6 +1066,7 @@ async def bot_connect(
         agent_id=agent_id,
         persona_id=persona_id,
         scenario_id=scenario_id,
+        run_evaluation=run_evaluation,
         ui_surface=ui_surface,
         call_short_id=call_short_id,
         fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),

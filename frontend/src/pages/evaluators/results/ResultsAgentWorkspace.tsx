@@ -190,6 +190,7 @@ export default function ResultsAgentWorkspace() {
                 scenarioId: selectedScenarioId,
               }}
               counts={selectedScenario.counts}
+              showPersonaColumn
               onResultClick={openResult}
             />
           ) : selectedSuiteId && selectedSuiteFromAgent ? (

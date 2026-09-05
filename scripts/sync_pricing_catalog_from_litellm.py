@@ -68,6 +68,28 @@ EXPLICIT_LITELLM_KEYS: Dict[str, str] = {
 
 MICRO_USD_PER_USD = 1_000_000
 
+# Current Fireworks serverless long-form models (not covered by short aliases).
+FIREWORKS_EXPLICIT_LONG_FORM = frozenset(
+    {
+        "gpt-oss-120b",
+        "gpt-oss-20b",
+        "llama4-maverick-instruct-basic",
+        "llama4-scout-instruct-basic",
+        "qwen3-coder-480b-a35b-instruct",
+    }
+)
+
+FIREWORKS_SKIP_MODES = frozenset(
+    {
+        "embedding",
+        "image_generation",
+        "audio_transcription",
+        "moderation",
+    }
+)
+
+FIREWORKS_LONG_FORM_PREFIX = "fireworks_ai/accounts/fireworks/models/"
+
 
 def _azure_deployment_name(catalog_model: str) -> str:
     if catalog_model == "azure-openai-gpt4":
@@ -252,6 +274,143 @@ def _convert_litellm_pricing(
     return entry
 
 
+def _usd_per_million(micro: int) -> float:
+    return round(micro / MICRO_USD_PER_USD, 8)
+
+
+def _micro_pricing_to_plan(micro: Dict[str, int], *, usage_kind: str = "llm") -> Dict[str, Any]:
+    pricing: Dict[str, Any] = {"source": "litellm_import", "usage_kind": usage_kind}
+    if micro.get("input_micro_usd_per_million"):
+        pricing["input_per_1m"] = _usd_per_million(micro["input_micro_usd_per_million"])
+    if micro.get("output_micro_usd_per_million"):
+        pricing["output_per_1m"] = _usd_per_million(micro["output_micro_usd_per_million"])
+    if micro.get("cache_read_micro_usd_per_million"):
+        pricing["cache_read_per_1m"] = _usd_per_million(
+            micro["cache_read_micro_usd_per_million"]
+        )
+    if micro.get("cache_creation_micro_usd_per_million"):
+        pricing["cache_write_per_1m"] = _usd_per_million(
+            micro["cache_creation_micro_usd_per_million"]
+        )
+    if micro.get("reasoning_micro_usd_per_million"):
+        pricing["reasoning_per_1m"] = _usd_per_million(
+            micro["reasoning_micro_usd_per_million"]
+        )
+    return pricing
+
+
+def _fireworks_catalog_name(litellm_key: str, info: Dict[str, Any]) -> Optional[str]:
+    """Return models.json key for an importable Fireworks chat model, else None."""
+    mode = str(info.get("mode") or "").lower()
+    if mode in FIREWORKS_SKIP_MODES:
+        return None
+
+    if litellm_key.startswith(FIREWORKS_LONG_FORM_PREFIX):
+        slug = litellm_key[len(FIREWORKS_LONG_FORM_PREFIX) :]
+        if slug in FIREWORKS_EXPLICIT_LONG_FORM:
+            return slug
+        return None
+
+    if not litellm_key.startswith("fireworks_ai/"):
+        return None
+
+    slug = litellm_key[len("fireworks_ai/") :]
+    if "/" in slug or slug.startswith("fireworks-ai-"):
+        return None
+
+    if mode and mode not in {"chat", "completion"}:
+        return None
+
+    has_llm_cost = _first_cost(info, "input_cost_per_token") or _first_cost(
+        info, "output_cost_per_token"
+    )
+    if not has_llm_cost:
+        return None
+
+    return slug
+
+
+def _fireworks_description(catalog_name: str) -> str:
+    return f"{catalog_name.replace('-', ' ')} via Fireworks"
+
+
+def discover_missing_fireworks_models(
+    model_cost: Dict[str, Dict[str, Any]],
+    existing_models: Dict[str, Any],
+) -> Dict[str, Tuple[str, Dict[str, Any]]]:
+    """Map catalog_name -> (litellm_key, info) for Fireworks models to import."""
+    discovered: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    for litellm_key, info in model_cost.items():
+        if litellm_key == "sample_spec" or not isinstance(info, dict):
+            continue
+        catalog_name = _fireworks_catalog_name(litellm_key, info)
+        if not catalog_name or catalog_name in existing_models:
+            continue
+        discovered[catalog_name] = (litellm_key, info)
+    return discovered
+
+
+def _insert_after_fireworks_block(
+    models: Dict[str, Any], new_entries: Dict[str, Any]
+) -> Dict[str, Any]:
+    if not new_entries:
+        return models
+
+    keys = [key for key in models if not key.startswith("_")]
+    insert_at = 0
+    for index, key in enumerate(keys):
+        cfg = models[key]
+        if isinstance(cfg, dict) and cfg.get("provider") == "fireworks":
+            insert_at = index + 1
+
+    ordered_keys = (
+        keys[:insert_at] + sorted(new_entries.keys()) + keys[insert_at:]
+    )
+    ordered: Dict[str, Any] = {}
+    for key in ordered_keys:
+        if key in new_entries:
+            ordered[key] = new_entries[key]
+        else:
+            ordered[key] = models[key]
+    for key, value in models.items():
+        if key.startswith("_"):
+            ordered[key] = value
+    return ordered
+
+
+def import_missing_fireworks(*, remote: bool = True) -> Tuple[int, List[str]]:
+    """Add current Fireworks serverless chat models missing from models.json."""
+    models = json.loads(MODELS_JSON.read_text(encoding="utf-8"))
+    model_cost = _load_model_cost(remote=remote)
+    missing = discover_missing_fireworks_models(model_cost, models)
+    if not missing:
+        return 0, []
+
+    new_entries: Dict[str, Any] = {}
+    for catalog_name in sorted(missing):
+        _litellm_key, info = missing[catalog_name]
+        micro = _convert_litellm_pricing(info, usage_kind="llm")
+        pricing = _micro_pricing_to_plan(micro, usage_kind="llm")
+        if not pricing.get("input_per_1m") and not pricing.get("output_per_1m"):
+            continue
+        new_entries[catalog_name] = {
+            "provider": "fireworks",
+            "model_type": "llm",
+            "description": _fireworks_description(catalog_name),
+            "pricing": pricing,
+        }
+
+    if not new_entries:
+        return 0, []
+
+    updated_models = _insert_after_fireworks_block(models, new_entries)
+    MODELS_JSON.write_text(
+        json.dumps(updated_models, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return len(new_entries), sorted(new_entries.keys())
+
+
 def _load_model_cost(*, remote: bool) -> Dict[str, Dict[str, Any]]:
     if remote:
         from litellm.litellm_core_utils.get_model_cost_map import get_model_cost_map
@@ -389,7 +548,21 @@ def main() -> int:
         action="store_true",
         help="Also merge plan-format pricing blocks into app/config/models.json",
     )
+    parser.add_argument(
+        "--import-missing-fireworks",
+        action="store_true",
+        help="Add current Fireworks serverless chat models missing from models.json",
+    )
     args = parser.parse_args()
+
+    if args.import_missing_fireworks:
+        imported, names = import_missing_fireworks(remote=not args.local)
+        print(
+            f"fireworks import: {imported} model(s) added to models.json",
+            file=sys.stderr,
+        )
+        for name in names:
+            print(f"  added: {name}", file=sys.stderr)
 
     catalog, meta = build_catalog(remote=not args.local)
     payload = json.dumps(catalog, indent=2, sort_keys=True) + "\n"

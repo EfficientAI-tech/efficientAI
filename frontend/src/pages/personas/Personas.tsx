@@ -1,4 +1,5 @@
 import { useState, useMemo, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
 import {
@@ -13,6 +14,8 @@ import {
   AlertCircle,
   Mic,
   PlusCircle,
+  Upload,
+  Volume2,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { useToast } from '../../hooks/useToast'
@@ -22,6 +25,8 @@ import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughTog
 import PersonaTile from './PersonaTile'
 import PersonaEditModal from './PersonaEditModal'
 import PersonaTabContent from './PersonaTabContent'
+import AmbientNoiseLibraryPanel from './AmbientNoiseLibraryPanel'
+import UploadAmbientNoiseModal from './UploadAmbientNoiseModal'
 import {
   emptyPersonaFormData,
   personaPayload,
@@ -38,7 +43,7 @@ export default function Personas() {
   const { showToast, ToastContainer } = useToast()
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'personas' | 'custom-voices'>('personas')
+  const [activeTab, setActiveTab] = useState<'personas' | 'custom-voices' | 'ambient-noises'>('personas')
 
   // Modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -52,6 +57,7 @@ export default function Personas() {
   const [editingPersona, setEditingPersona] = useState<Persona | null>(null)
   const [savingPersonaId, setSavingPersonaId] = useState<string | null>(null)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
+  const [showAmbientUpload, setShowAmbientUpload] = useState(false)
 
   // Persona form (create modal only)
   const [formData, setFormData] = useState<PersonaFormData>(emptyPersonaFormData())
@@ -88,6 +94,12 @@ export default function Personas() {
   const { data: customVoices = [] } = useQuery({
     queryKey: ['persona-custom-voices'],
     queryFn: () => apiClient.listPersonaCustomVoices(),
+    retry: 1,
+  })
+
+  const { data: ambientLibrary = [] } = useQuery({
+    queryKey: ['ambient-library'],
+    queryFn: () => apiClient.listAmbientLibrary(),
     retry: 1,
   })
 
@@ -324,7 +336,7 @@ export default function Personas() {
           <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
             <p className="text-gray-600 mt-1">
-              Configure test caller personas — click a card to edit prompt, voice, TTS, and behavior
+              Configure test caller personas — prompt, voice, TTS, behavior, and environment
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
@@ -336,13 +348,21 @@ export default function Personas() {
               >
                 Create Persona
               </Button>
-            ) : (
+            ) : activeTab === 'custom-voices' ? (
               <Button
                 variant="primary"
                 onClick={() => setShowCustomVoiceModal(true)}
                 leftIcon={<PlusCircle className="h-5 w-5" />}
               >
                 Add Custom Voice
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={() => setShowAmbientUpload(true)}
+                leftIcon={<Upload className="h-5 w-5" />}
+              >
+                Upload Audio
               </Button>
             )}
             <WalkthroughToggleButton />
@@ -385,6 +405,24 @@ export default function Personas() {
                   activeTab === 'custom-voices' ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
                 }`}>
                   {customVoices.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('ambient-noises')}
+              className={`flex items-center gap-2 whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium transition-colors ${
+                activeTab === 'ambient-noises'
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+              }`}
+            >
+              <Volume2 className="h-4 w-4" />
+              Background Noise
+              {ambientLibrary.length > 0 && (
+                <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                  activeTab === 'ambient-noises' ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
+                }`}>
+                  {ambientLibrary.length}
                 </span>
               )}
             </button>
@@ -504,6 +542,9 @@ export default function Personas() {
             )}
           </>
         )}
+
+        {/* ===================== BACKGROUND NOISE TAB ===================== */}
+        {activeTab === 'ambient-noises' && <AmbientNoiseLibraryPanel />}
 
         {/* ===================== EDIT PERSONA MODAL ===================== */}
         {editingPersona && renderModal(
@@ -647,6 +688,18 @@ export default function Personas() {
                 </p>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Provider *</label>
+                  {providers.length === 0 ? (
+                    <p className="text-sm text-gray-600">
+                      No TTS providers are connected yet.{' '}
+                      <Link
+                        to="/integrations"
+                        className="text-primary-600 hover:text-primary-700 underline font-medium"
+                      >
+                        Connect a provider in Integrations
+                      </Link>{' '}
+                      before registering custom voices.
+                    </p>
+                  ) : (
                   <div className="grid grid-cols-2 gap-2">
                     {providers.map((p) => {
                       const isSelected = customVoiceForm.provider === p.id
@@ -669,6 +722,7 @@ export default function Personas() {
                       )
                     })}
                   </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID *</label>
@@ -859,6 +913,11 @@ export default function Personas() {
           </div>,
         )}
       </div>
+
+      <UploadAmbientNoiseModal
+        open={showAmbientUpload}
+        onClose={() => setShowAmbientUpload(false)}
+      />
     </>
   )
 }

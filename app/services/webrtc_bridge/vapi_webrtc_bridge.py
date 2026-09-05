@@ -82,9 +82,9 @@ class VapiWebRTCBridge:
         self._mic_device = None
         self._speaker_device = None
         
-        # Audio queues for async bridging
+        # Audio queue for async bridging (test agent -> Vapi mic)
         self._outgoing_audio_queue = queue.Queue()
-        self._incoming_audio_queue = asyncio.Queue()
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         
         # Recording
         self.recording_enabled = False
@@ -112,6 +112,8 @@ class VapiWebRTCBridge:
         self._agent_is_talking = False
         self._current_model_output = ""       # accumulate model-output tokens
         self._current_assistant_transcript = ""  # accumulate role=assistant transcripts
+        self._buffered_transcript = ""
+        self._buffered_provider_stop = False
         
         # Background threads
         self._send_audio_thread: Optional[threading.Thread] = None
@@ -163,6 +165,7 @@ class VapiWebRTCBridge:
             # Create event handler with reference to the current event loop
             # This allows async callbacks to be executed thread-safely
             loop = asyncio.get_event_loop()
+            self._event_loop = loop
             event_handler = VapiDailyEventHandler(self, loop)
             
             # Create call client
@@ -260,6 +263,30 @@ class VapiWebRTCBridge:
         self._receive_audio_thread.start()
         
         logger.info("[VapiWebRTC] Audio processing threads started")
+
+    def _forward_incoming_audio(self, buffer: bytes) -> None:
+        """Forward Daily speaker PCM to the asyncio turn-gate callback."""
+        if not buffer or not self.on_audio_received:
+            return
+        loop = self._event_loop
+        if loop is None or not loop.is_running():
+            return
+        asyncio.run_coroutine_threadsafe(self.on_audio_received(buffer), loop)
+
+    async def replay_buffered_turn_events(self) -> None:
+        """Deliver turn events that arrived before callbacks were wired."""
+        if self._buffered_transcript.strip() and self.on_transcript_received:
+            text = self._buffered_transcript.strip()
+            self._buffered_transcript = ""
+            logger.info(
+                f"[VapiWebRTC] Replaying buffered transcript ({len(text)} chars): {text[:100]}..."
+            )
+            await self.on_transcript_received(text)
+
+        if self._buffered_provider_stop and self.on_agent_stop_talking:
+            self._buffered_provider_stop = False
+            logger.info("[VapiWebRTC] Replaying buffered provider stop signal")
+            await self.on_agent_stop_talking()
     
     def _send_audio_loop(self):
         """Background thread to send audio to Vapi."""
@@ -311,11 +338,7 @@ class VapiWebRTCBridge:
                         if self.recording_enabled:
                             self._recording_buffer.append(buffer)
                         
-                        # Queue for async processing
-                        try:
-                            self._incoming_audio_queue.put_nowait(buffer)
-                        except asyncio.QueueFull:
-                            pass
+                        self._forward_incoming_audio(buffer)
             except Exception as e:
                 if not self._quit_event.is_set():
                     logger.error(f"[VapiWebRTC] Error receiving audio: {e}")
@@ -543,11 +566,27 @@ class VapiDailyEventHandler(daily.EventHandler):
         self.bridge._current_assistant_transcript = ""
         self.bridge._current_model_output = ""
         
-        if transcript and self.bridge.on_transcript_received:
-            logger.info(f"[VapiWebRTC] Delivering accumulated assistant transcript ({len(transcript)} chars): {transcript[:100]}...")
-            self._run_async(self.bridge.on_transcript_received(transcript))
-        elif not transcript:
+        if not transcript:
             logger.debug("[VapiWebRTC] No accumulated transcript to deliver on agent stop")
+            return
+
+        if self.bridge.on_transcript_received:
+            logger.info(
+                f"[VapiWebRTC] Delivering accumulated assistant transcript "
+                f"({len(transcript)} chars): {transcript[:100]}..."
+            )
+            self._run_async(self.bridge.on_transcript_received(transcript))
+        else:
+            if self.bridge._buffered_transcript:
+                self.bridge._buffered_transcript = (
+                    f"{self.bridge._buffered_transcript} {transcript}".strip()
+                )
+            else:
+                self.bridge._buffered_transcript = transcript
+            logger.info(
+                f"[VapiWebRTC] Buffered transcript until callback wired "
+                f"({len(transcript)} chars)"
+            )
 
     def on_app_message(self, message, sender):
         """
@@ -616,11 +655,11 @@ class VapiDailyEventHandler(daily.EventHandler):
                     elif status == "stopped":
                         logger.info(f"[VapiWebRTC] Vapi agent stopped speaking (turn {turn})")
                         self.bridge._agent_is_talking = False
-                        # Signal stop BEFORE delivering transcript, so
-                        # test_agent.agent_is_talking is False when transcript arrives
                         if self.bridge.on_agent_stop_talking:
                             self._run_async(self.bridge.on_agent_stop_talking())
-                        # Deliver accumulated transcript now that the agent finished speaking
+                        else:
+                            self.bridge._buffered_provider_stop = True
+                            logger.debug("[VapiWebRTC] Buffered provider stop until callback wired")
                         self._deliver_accumulated_transcript()
                     else:
                         logger.debug(f"[VapiWebRTC] speech-update role=assistant status={status}")
@@ -650,6 +689,8 @@ class VapiDailyEventHandler(daily.EventHandler):
                 self.bridge._agent_is_talking = False
                 if self.bridge.on_agent_stop_talking:
                     self._run_async(self.bridge.on_agent_stop_talking())
+                else:
+                    self.bridge._buffered_provider_stop = True
                 self._deliver_accumulated_transcript()
             
             elif event_type in ["call_ended", "call-ended", "ended"]:

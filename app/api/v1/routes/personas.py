@@ -3,8 +3,8 @@ Personas API Routes
 CRUD for TTS provider-tied voice personas, voice-options catalog,
 and custom voice management (ungated).
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, Query, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Query, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional, Dict, Any
@@ -12,19 +12,22 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
+from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key, require_enterprise_entitlement
 from app.models.database import (
     Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
-    PromptOptimizationRun, CallRecording, Agent,
+    PromptOptimizationRun, CallRecording, Agent, AmbientNoiseAsset,
 )
-from app.models.enums import LanguageEnum, AccentEnum, GenderEnum, BackgroundNoiseEnum
+from app.models.enums import LanguageEnum, AccentEnum, GenderEnum, BackgroundNoiseEnum, BackgroundNoiseSourceEnum
 from app.models.schemas import (
     PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest,
     AgentPromptSourcesResponse, GeneratePersonaPromptRequest, GeneratePersonaPromptResponse,
+    AmbientNoiseAssetResponse,
+    AmbientNoiseAssetUpdateRequest,
 )
 from app.models.enums import ModelProvider
 from app.services.ai.model_config_service import model_config_service
 from app.services.ai.llm_resolver import get_llm_provider_and_model as _get_llm_provider_and_model
+from app.services.personas.configured_tts_providers import get_configured_tts_provider_keys
 from app.services.personas.persona_tts_config import (
     normalize_persona_tts_config,
     validate_persona_tts_config,
@@ -33,12 +36,107 @@ from app.services.personas.persona_prompt_generation import (
     generate_persona_prompt_from_agent,
     resolve_agent_prompt_sources,
 )
+from app.services.personas.persona_ambient_noise import (
+    ALLOWED_AMBIENT_EXTENSIONS,
+    MAX_AMBIENT_UPLOAD_BYTES,
+    ambient_upload_size_error_message,
+    persona_ambient_s3_key,
+    validate_persona_ambient_fields,
+)
+from app.services.personas.ambient_library import (
+    ambient_library_s3_key,
+    new_ambient_asset_id,
+    sanitize_ambient_name,
+    validate_ambient_upload_bytes,
+)
+from app.services.audio.ambient_catalog import get_ambient_asset_provider, list_ambient_presets, normalize_ambient_preset
+from app.services.storage.s3_service import s3_service, StorageError
+from app.utils.upload_limits import UploadTooLargeError, read_upload_with_limit
 
 router = APIRouter(prefix="/personas", tags=["personas"])
 
 
 def _normalized_persona_tts_config(provider: Optional[str], tts_config: Optional[Dict[str, Any]]):
     return normalize_persona_tts_config(provider, tts_config)
+
+
+def _ambient_fields_from_create(
+    persona: PersonaCreate,
+    *,
+    db: Session,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> Dict[str, Any]:
+    return validate_persona_ambient_fields(
+        source=persona.background_noise_source.value,
+        preset=persona.background_noise_preset,
+        volume=persona.background_noise_volume,
+        s3_key=None,
+        asset_id=persona.background_noise_asset_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        db=db,
+        require_custom_file=(
+            persona.background_noise_source == BackgroundNoiseSourceEnum.CUSTOM
+            and not persona.background_noise_asset_id
+        ),
+    )
+
+
+def _apply_ambient_update(
+    db_persona: Persona,
+    update_data: Dict[str, Any],
+    organization_id: UUID,
+    workspace_id: UUID,
+    db: Session,
+) -> Dict[str, Any]:
+    if not any(
+        key in update_data
+        for key in (
+            "background_noise_source",
+            "background_noise_preset",
+            "background_noise_volume",
+            "background_noise_asset_id",
+        )
+    ):
+        return update_data
+
+    source = update_data.get(
+        "background_noise_source",
+        db_persona.background_noise_source or BackgroundNoiseSourceEnum.NONE.value,
+    )
+    if hasattr(source, "value"):
+        source = source.value
+    preset = update_data.get("background_noise_preset", db_persona.background_noise_preset)
+    volume = update_data.get("background_noise_volume", db_persona.background_noise_volume)
+    asset_id = update_data.get("background_noise_asset_id", db_persona.background_noise_asset_id)
+    s3_key = db_persona.background_noise_s3_key
+
+    validated = validate_persona_ambient_fields(
+        source=source,
+        preset=preset,
+        volume=volume,
+        s3_key=s3_key,
+        asset_id=asset_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        db=db,
+        require_custom_file=(
+            str(source).lower() == BackgroundNoiseSourceEnum.CUSTOM.value
+            and not asset_id
+            and not s3_key
+        ),
+    )
+    update_data["background_noise_source"] = validated["background_noise_source"]
+    update_data["background_noise_preset"] = validated["background_noise_preset"]
+    update_data["background_noise_volume"] = validated["background_noise_volume"]
+    update_data["background_noise_asset_id"] = validated["background_noise_asset_id"]
+    if validated["background_noise_source"] != BackgroundNoiseSourceEnum.CUSTOM.value:
+        update_data["background_noise_s3_key"] = None
+        update_data["background_noise_asset_id"] = None
+    else:
+        update_data["background_noise_s3_key"] = validated["background_noise_s3_key"]
+    return update_data
 
 
 def _get_agent_for_workspace(
@@ -188,10 +286,12 @@ def _is_valid_persona_row(persona: Persona) -> bool:
         accent_value = str(getattr(persona, "accent", "neutral") or "neutral").lower()
         gender_value = str(getattr(persona, "gender", "neutral") or "neutral").lower()
         noise_value = str(getattr(persona, "background_noise", "none") or "none").lower()
+        source_value = str(getattr(persona, "background_noise_source", "none") or "none").lower()
         LanguageEnum(language_value)
         AccentEnum(accent_value)
         GenderEnum(gender_value)
         BackgroundNoiseEnum(noise_value)
+        BackgroundNoiseSourceEnum(source_value)
         return True
     except Exception:
         return False
@@ -206,6 +306,12 @@ async def create_persona(
 ):
     """Create a new persona stamped with the active workspace."""
     try:
+        ambient_fields = _ambient_fields_from_create(
+            persona,
+            db=db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
         db_persona = Persona(
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -222,6 +328,10 @@ async def create_persona(
             response_delay_ms=persona.response_delay_ms,
             max_turns=persona.max_turns,
             allow_interruptions=persona.allow_interruptions,
+            background_noise_source=ambient_fields["background_noise_source"],
+            background_noise_preset=ambient_fields["background_noise_preset"],
+            background_noise_volume=ambient_fields["background_noise_volume"],
+            background_noise_asset_id=ambient_fields["background_noise_asset_id"],
         )
         db.add(db_persona)
         db.commit()
@@ -363,7 +473,10 @@ async def get_voice_options(
             "description": cv.description,
         })
 
-    all_keys: set = set(TTS_VOICES.keys()) | set(model_voices_by_provider.keys()) | set(custom_by_provider.keys())
+    configured_keys = get_configured_tts_provider_keys(organization_id, db)
+    all_keys: set = (
+        set(TTS_VOICES.keys()) | set(model_voices_by_provider.keys()) | set(custom_by_provider.keys())
+    ) & configured_keys
     if provider:
         all_keys = {k for k in all_keys if k == provider.lower()}
 
@@ -605,6 +718,258 @@ async def delete_custom_voice(
 
 
 # ============================================
+# AMBIENT NOISE (static paths before /{persona_id})
+# ============================================
+
+def _guess_audio_media_type(filename: Optional[str], fallback: str = "audio/wav") -> str:
+    if not filename:
+        return fallback
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return {
+        "wav": "audio/wav",
+        "mp3": "audio/mpeg",
+        "ogg": "audio/ogg",
+        "m4a": "audio/mp4",
+        "flac": "audio/flac",
+    }.get(ext, fallback)
+
+
+@router.get("/ambient-presets", operation_id="listAmbientPresets")
+async def list_platform_ambient_presets(
+    api_key: str = Depends(get_api_key),
+):
+    """List platform ambient presets available from installed asset packs."""
+    return {"presets": list_ambient_presets()}
+
+
+@router.get(
+    "/ambient-presets/{preset_id}/preview",
+    operation_id="previewAmbientPreset",
+)
+async def preview_ambient_preset(
+    preset_id: str,
+    api_key: str = Depends(get_api_key),
+):
+    """Stream a platform preset for in-browser preview."""
+    normalized = normalize_ambient_preset(preset_id) or preset_id
+    provider = get_ambient_asset_provider()
+    try:
+        file_bytes = provider.load_wav(normalized)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Preset '{preset_id}' is not available") from exc
+    return Response(content=file_bytes, media_type=_guess_audio_media_type(f"{normalized}.wav"))
+
+
+@router.get(
+    "/ambient-library",
+    response_model=List[AmbientNoiseAssetResponse],
+    operation_id="listAmbientLibrary",
+)
+async def list_ambient_library(
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    rows = (
+        db.query(AmbientNoiseAsset)
+        .filter(
+            AmbientNoiseAsset.organization_id == organization_id,
+            AmbientNoiseAsset.workspace_id == workspace_id,
+        )
+        .order_by(AmbientNoiseAsset.created_at.desc())
+        .all()
+    )
+    return rows
+
+
+@router.post(
+    "/ambient-library",
+    response_model=AmbientNoiseAssetResponse,
+    dependencies=[Depends(require_enterprise_entitlement())],
+    operation_id="uploadAmbientLibraryAsset",
+)
+async def upload_ambient_library_asset(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Upload a reusable ambient bed to the workspace library."""
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=s3_service.get_status_message(),
+        )
+
+    filename = file.filename or ""
+    try:
+        file_bytes = await read_upload_with_limit(file, MAX_AMBIENT_UPLOAD_BYTES)
+        extension = validate_ambient_upload_bytes(file_bytes, filename=filename)
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ambient_upload_size_error_message(exc.max_bytes),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    asset_id = new_ambient_asset_id()
+    display_name = sanitize_ambient_name(name, filename.rsplit(".", 1)[0] if "." in filename else filename)
+    s3_key = ambient_library_s3_key(organization_id, asset_id, extension)
+    content_type = file.content_type or _guess_audio_media_type(filename)
+    try:
+        s3_service.upload_file_by_key(file_bytes, s3_key, content_type=content_type)
+    except StorageError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    row = AmbientNoiseAsset(
+        id=asset_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name=display_name,
+        s3_key=s3_key,
+        original_filename=filename or None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.patch(
+    "/ambient-library/{asset_id}",
+    response_model=AmbientNoiseAssetResponse,
+    dependencies=[Depends(require_enterprise_entitlement())],
+    operation_id="updateAmbientLibraryAsset",
+)
+async def update_ambient_library_asset(
+    asset_id: UUID,
+    data: AmbientNoiseAssetUpdateRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Rename a library ambient bed."""
+    row = db.query(AmbientNoiseAsset).filter(
+        AmbientNoiseAsset.id == asset_id,
+        AmbientNoiseAsset.organization_id == organization_id,
+        AmbientNoiseAsset.workspace_id == workspace_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ambient library asset not found")
+
+    row.name = sanitize_ambient_name(data.name, row.name)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete(
+    "/ambient-library/{asset_id}",
+    dependencies=[Depends(require_enterprise_entitlement())],
+    operation_id="deleteAmbientLibraryAsset",
+)
+async def delete_ambient_library_asset(
+    asset_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    row = db.query(AmbientNoiseAsset).filter(
+        AmbientNoiseAsset.id == asset_id,
+        AmbientNoiseAsset.organization_id == organization_id,
+        AmbientNoiseAsset.workspace_id == workspace_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ambient library asset not found")
+
+    in_use = db.query(Persona).filter(Persona.background_noise_asset_id == asset_id).count()
+    if in_use:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ambient bed is used by {in_use} persona(s). Reassign them before deleting.",
+        )
+
+    if s3_service.is_enabled():
+        try:
+            s3_service.delete_file_by_key(row.s3_key)
+        except Exception as exc:
+            logger.warning("Failed to delete ambient library object {}: {}", row.s3_key, exc)
+
+    db.delete(row)
+    db.commit()
+    return JSONResponse(status_code=204, content=None)
+
+
+@router.get(
+    "/ambient-library/{asset_id}/preview",
+    operation_id="previewAmbientLibraryAsset",
+)
+async def preview_ambient_library_asset(
+    asset_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    """Stream a library ambient bed for in-browser preview."""
+    row = db.query(AmbientNoiseAsset).filter(
+        AmbientNoiseAsset.id == asset_id,
+        AmbientNoiseAsset.organization_id == organization_id,
+        AmbientNoiseAsset.workspace_id == workspace_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ambient library asset not found")
+    if not s3_service.is_enabled():
+        raise HTTPException(status_code=503, detail=s3_service.get_status_message())
+    try:
+        file_bytes = s3_service.download_file_by_key(row.s3_key)
+    except StorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return Response(
+        content=file_bytes,
+        media_type=_guess_audio_media_type(row.original_filename or row.s3_key),
+    )
+
+
+class AmbientLibraryPreviewUrlResponse(BaseModel):
+    url: str
+    expires_in: int
+
+
+@router.get(
+    "/ambient-library/{asset_id}/preview-url",
+    response_model=AmbientLibraryPreviewUrlResponse,
+    operation_id="getAmbientLibraryPreviewUrl",
+)
+async def get_ambient_library_preview_url(
+    asset_id: UUID,
+    expiration: int = Query(default=3600, ge=60, le=86400),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    """Return a presigned URL for streaming ambient library preview in the browser."""
+    row = db.query(AmbientNoiseAsset).filter(
+        AmbientNoiseAsset.id == asset_id,
+        AmbientNoiseAsset.organization_id == organization_id,
+        AmbientNoiseAsset.workspace_id == workspace_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Ambient library asset not found")
+    if not s3_service.is_enabled():
+        raise HTTPException(status_code=503, detail=s3_service.get_status_message())
+    try:
+        url = s3_service.generate_presigned_url_by_key(row.s3_key, expiration=expiration)
+    except StorageError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return AmbientLibraryPreviewUrlResponse(url=url, expires_in=expiration)
+
+
+# ============================================
 # PERSONA BY ID (parameterized routes last)
 # ============================================
 
@@ -675,6 +1040,12 @@ async def update_persona(
             except ValueError as exc:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
             update_data["tts_config"] = _normalized_persona_tts_config(provider, update_data["tts_config"])
+        try:
+            update_data = _apply_ambient_update(
+                db_persona, update_data, organization_id, workspace_id, db
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
         for field, value in update_data.items():
             setattr(db_persona, field, value)
         
@@ -863,6 +1234,11 @@ async def clone_persona(
             response_delay_ms=source_persona.response_delay_ms,
             max_turns=source_persona.max_turns,
             allow_interruptions=source_persona.allow_interruptions,
+            background_noise_source=source_persona.background_noise_source,
+            background_noise_preset=source_persona.background_noise_preset,
+            background_noise_volume=source_persona.background_noise_volume,
+            background_noise_s3_key=source_persona.background_noise_s3_key,
+            background_noise_asset_id=source_persona.background_noise_asset_id,
         )
         db.add(new_persona)
         db.commit()
@@ -898,6 +1274,107 @@ async def clone_persona(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error cloning persona: {str(e)}"
         )
+
+
+@router.post(
+    "/{persona_id}/ambient-audio",
+    response_model=PersonaResponse,
+    dependencies=[Depends(require_enterprise_entitlement())],
+    operation_id="uploadPersonaAmbientAudio",
+)
+async def upload_persona_ambient_audio(
+    persona_id: UUID,
+    file: UploadFile = File(...),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Upload or replace custom ambient audio for a persona (enterprise)."""
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=s3_service.get_status_message(),
+        )
+
+    db_persona = db.query(Persona).filter(
+        Persona.id == persona_id,
+        Persona.organization_id == organization_id,
+        Persona.workspace_id == workspace_id,
+    ).first()
+    if not db_persona:
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+
+    filename = file.filename or ""
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in ALLOWED_AMBIENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported ambient audio format. Allowed: {', '.join(sorted(ALLOWED_AMBIENT_EXTENSIONS))}",
+        )
+
+    try:
+        file_bytes = await read_upload_with_limit(file, MAX_AMBIENT_UPLOAD_BYTES)
+        validate_ambient_upload_bytes(file_bytes, filename=filename)
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ambient_upload_size_error_message(exc.max_bytes),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    s3_key = persona_ambient_s3_key(organization_id, persona_id, extension)
+    content_type = file.content_type or f"audio/{extension}"
+    try:
+        if db_persona.background_noise_s3_key and db_persona.background_noise_s3_key != s3_key:
+            try:
+                s3_service.delete_file_by_key(db_persona.background_noise_s3_key)
+            except Exception:
+                logger.warning("Could not delete previous ambient audio key {}", db_persona.background_noise_s3_key)
+        s3_service.upload_file_by_key(file_bytes, s3_key, content_type=content_type)
+    except StorageError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    db_persona.background_noise_s3_key = s3_key
+    db_persona.background_noise_source = BackgroundNoiseSourceEnum.CUSTOM.value
+    db.commit()
+    db.refresh(db_persona)
+    return db_persona
+
+
+@router.delete(
+    "/{persona_id}/ambient-audio",
+    response_model=PersonaResponse,
+    dependencies=[Depends(require_enterprise_entitlement())],
+    operation_id="deletePersonaAmbientAudio",
+)
+async def delete_persona_ambient_audio(
+    persona_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Delete custom ambient audio for a persona (enterprise)."""
+    db_persona = db.query(Persona).filter(
+        Persona.id == persona_id,
+        Persona.organization_id == organization_id,
+        Persona.workspace_id == workspace_id,
+    ).first()
+    if not db_persona:
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+
+    if db_persona.background_noise_s3_key and s3_service.is_enabled():
+        try:
+            s3_service.delete_file_by_key(db_persona.background_noise_s3_key)
+        except Exception as exc:
+            logger.warning("Failed to delete ambient audio {}: {}", db_persona.background_noise_s3_key, exc)
+
+    db_persona.background_noise_s3_key = None
+    if db_persona.background_noise_source == BackgroundNoiseSourceEnum.CUSTOM.value:
+        db_persona.background_noise_source = BackgroundNoiseSourceEnum.NONE.value
+    db.commit()
+    db.refresh(db_persona)
+    return db_persona
 
 
 # ============================================

@@ -39,10 +39,9 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
         from_number: fromNumber || undefined,
       }),
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
       queryClient.invalidateQueries({ queryKey: ['evaluator-suites'] })
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
-      showToast(`Queued ${data.total_runs} run${data.total_runs !== 1 ? 's' : ''}. Phone calls appear in Calls after each call — use Refresh.`, 'success')
+      showToast(`Queued ${data.total_runs} run${data.total_runs !== 1 ? 's' : ''}`, 'success')
       onClose()
     },
     onError: (err: any) => {
@@ -57,7 +56,10 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
   const nextIdx = singleSuite
     ? singleSuite.round_robin_index % Math.max(singleSuite.combination_count, 1)
     : 0
-  const nextScenario = singleSuite?.combinations[nextIdx]?.scenario_name
+  const nextCombo = singleSuite?.combinations[nextIdx]
+  const nextRotationLabel = nextCombo
+    ? [nextCombo.persona_name, nextCombo.scenario_name].filter(Boolean).join(' · ')
+    : undefined
 
   const modal = (
     <div className="fixed inset-0 z-[9999] overflow-y-auto">
@@ -94,7 +96,7 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
                   Scenarios rotate automatically when callers reach the agent.
                 </p>
                 <p className="text-amber-800">
-                  Next in rotation: <strong>{nextScenario || '—'}</strong> ({nextIdx + 1} of {singleSuite.combination_count})
+                  Next in rotation: <strong>{nextRotationLabel || '—'}</strong> ({nextIdx + 1} of {singleSuite.combination_count})
                 </p>
               </div>
             )}

@@ -99,6 +99,9 @@ export default function AgentPlayground() {
   const [showModal, setShowModal] = useState(false)
   const [showTestModal, setShowTestModal] = useState(false)
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
+  const [testPersonaId, setTestPersonaId] = useState('')
+  const [testScenarioId, setTestScenarioId] = useState('')
+  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false)
@@ -239,6 +242,36 @@ export default function AgentPlayground() {
   // Check if agent has Test Agent capabilities (voice bundle with STT/TTS/LLM)
   const hasTestAgent = fullAgent?.voice_bundle_id != null
   const hasVoiceAIAgent = hasVoiceAIIntegration
+
+  const { data: testPersonas = [] } = useQuery({
+    queryKey: ['personas'],
+    queryFn: () => apiClient.listPersonas(),
+    enabled: selectedTestType === 'test_agent',
+  })
+
+  const { data: testScenarios = [] } = useQuery({
+    queryKey: ['scenarios', selectedAgent?.id],
+    queryFn: () => apiClient.listScenarios(0, 100, selectedAgent?.id),
+    enabled: selectedTestType === 'test_agent' && !!selectedAgent?.id,
+  })
+
+  const { data: testAgentVoiceBundle } = useQuery({
+    queryKey: ['voicebundle', fullAgent?.voice_bundle_id],
+    queryFn: () => apiClient.getVoiceBundle(fullAgent!.voice_bundle_id!),
+    enabled: selectedTestType === 'test_agent' && !!fullAgent?.voice_bundle_id,
+  })
+
+  const testVoiceBundleTtsProvider = testAgentVoiceBundle?.tts_provider
+    ? String(testAgentVoiceBundle.tts_provider).toLowerCase()
+    : null
+
+  const eligibleTestPersonas = testVoiceBundleTtsProvider
+    ? testPersonas.filter((p: any) => p.tts_provider?.toLowerCase() === testVoiceBundleTtsProvider)
+    : testPersonas
+
+  const selectedTestPersona = eligibleTestPersonas.find((p: any) => p.id === testPersonaId)
+  const selectedTestScenario = testScenarios.find((s: any) => s.id === testScenarioId)
+  const testSetupComplete = Boolean(testPersonaId && testScenarioId)
 
   // Initialize Clients when modal opens
   useEffect(() => {
@@ -1922,7 +1955,12 @@ export default function AgentPlayground() {
         <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Test Agent - {selectedAgent?.name}</h3>
+              <div>
+                <h3 className="text-lg font-semibold">Test Agent — {selectedAgent?.name}</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  You play the production agent. The simulated caller uses your voice bundle + persona + scenario.
+                </p>
+              </div>
               <button
                 onClick={handleCloseModal}
                 className="text-gray-400 hover:text-gray-600"
@@ -1931,12 +1969,119 @@ export default function AgentPlayground() {
               </button>
             </div>
 
-            <div className="p-6">
+            <div className="p-6 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="test-persona" className="block text-sm font-medium text-gray-700 mb-1">
+                    Persona
+                  </label>
+                  <select
+                    id="test-persona"
+                    value={testPersonaId}
+                    onChange={(e) => setTestPersonaId(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                  >
+                    <option value="">Select persona…</option>
+                    {eligibleTestPersonas.map((persona: any) => (
+                      <option key={persona.id} value={persona.id}>
+                        {persona.name}
+                        {persona.tts_voice_name ? ` · ${persona.tts_voice_name}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {testVoiceBundleTtsProvider && eligibleTestPersonas.length === 0 && (
+                    <p className="text-xs text-amber-700 mt-1">
+                      No personas match this agent&apos;s TTS provider ({testVoiceBundleTtsProvider}).
+                      Create one under Personas with a matching voice.
+                    </p>
+                  )}
+                  {selectedTestPersona && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Voice: {selectedTestPersona.tts_voice_name || selectedTestPersona.tts_voice_id || 'default'}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label htmlFor="test-scenario" className="block text-sm font-medium text-gray-700 mb-1">
+                    Scenario
+                  </label>
+                  <select
+                    id="test-scenario"
+                    value={testScenarioId}
+                    onChange={(e) => setTestScenarioId(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-blue-500"
+                  >
+                    <option value="">Select scenario…</option>
+                    {testScenarios.map((scenario: any) => (
+                      <option key={scenario.id} value={scenario.id}>
+                        {scenario.name}
+                      </option>
+                    ))}
+                  </select>
+                  {testScenarios.length === 0 && (
+                    <p className="text-xs text-amber-700 mt-1">
+                      No scenarios linked to this agent. Generate scenarios from the agent workspace first.
+                    </p>
+                  )}
+                  {selectedTestScenario?.description && (
+                    <p className="text-xs text-gray-500 mt-1 line-clamp-2">
+                      {selectedTestScenario.description}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Run post-call evaluation</p>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    Off by default. Enable to score this call automatically when it ends, or run evaluation later from the results table.
+                  </p>
+                </div>
+                <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    className="peer sr-only"
+                    checked={runPostCallEvaluation}
+                    onChange={(e) => setRunPostCallEvaluation(e.target.checked)}
+                  />
+                  <span className="h-6 w-11 rounded-full bg-gray-300 transition peer-checked:bg-blue-600 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300" />
+                  <span className="absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition peer-checked:translate-x-5" />
+                </label>
+              </div>
+
+              {testSetupComplete && (
+                <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  <p className="font-medium mb-1">Ready to simulate</p>
+                  <p className="text-xs text-blue-800">
+                    Caller: <strong>{selectedTestPersona?.name}</strong> · Scenario:{' '}
+                    <strong>{selectedTestScenario?.name}</strong> · Agent template + production prompt drive the caller LLM.
+                  </p>
+                </div>
+              )}
+
+              {!testSetupComplete && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600">
+                  Select a persona and scenario to build the test agent system prompt before starting the call.
+                </div>
+              )}
+
               <VoiceAgent
                 agentId={selectedAgent?.id}
+                personaId={testPersonaId || undefined}
+                scenarioId={testScenarioId || undefined}
                 billingSurface="agent_playground"
+                runEvaluation={runPostCallEvaluation}
+                compact
+                sidebarLayout
+                connectDisabled={!testSetupComplete}
+                connectDisabledReason="Select a persona and scenario first"
+                userTranscriptLabel="You (production)"
+                botTranscriptLabel="Test caller"
                 onSessionSaved={() => {
                   queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+                  refetchTestResults()
                 }}
               />
             </div>

@@ -273,17 +273,17 @@ function getEvaluatorsWalkthrough(state?: EvaluatorsWalkthroughState): Walkthrou
     return {
       id: 'evaluators',
       title: 'Evaluators Walkthrough',
-      subtitle: 'Create an evaluator suite: agent + persona + multiple scenarios.',
+      subtitle: 'Create an evaluator suite: agent + personas + multiple scenarios.',
       steps: [
         {
-          title: 'Step 1: Agent & persona',
-          description: 'Pick one agent and one compatible persona.',
-          bullets: ['Personas are filtered by TTS provider match', 'One persona per suite'],
+          title: 'Step 1: Agent & personas',
+          description: 'Pick one agent and one or more compatible personas.',
+          bullets: ['Personas are filtered by TTS provider match', 'Multiple personas expand the combination grid'],
         },
         {
           title: 'Step 2: Scenarios',
-          description: 'Select multiple scenarios — each becomes one combination.',
-          bullets: ['N scenarios = N combinations', 'All share the same agent and persona'],
+          description: 'Select multiple scenarios — each persona × scenario becomes one combination.',
+          bullets: ['M personas × N scenarios = M×N combinations', 'All share the same agent and suite metrics'],
         },
         {
           title: 'Step 3: Metrics',

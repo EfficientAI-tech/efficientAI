@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import { useLicenseStore } from './store/licenseStore'
 import Layout from './components/Layout'
@@ -48,11 +48,11 @@ import EvaluateTestAgents from './pages/evaluators/evaluators/EvaluateTestAgents
 import EvaluatorDetail from './pages/evaluators/evaluators/EvaluatorDetail'
 
 // Evaluator Results
-import ResultsOverview from './pages/evaluators/results/ResultsOverview'
-import ResultsAgentWorkspace from './pages/evaluators/results/ResultsAgentWorkspace'
+import ResultsHub from './pages/evaluators/results/ResultsHub'
 import {
   RedirectAgentScenarioToWorkspace,
   RedirectAgentSuiteToWorkspace,
+  RedirectAgentWorkspaceToHub,
 } from './pages/evaluators/results/ResultsAgentWorkspaceRedirects'
 import ResultsUnassigned from './pages/evaluators/results/ResultsUnassigned'
 import EvaluatorResultDetail from './pages/evaluators/results/EvaluatorResultDetail'
@@ -61,9 +61,8 @@ import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 
 // Observability
 import Observability from './pages/observability/Observability'
+import ObservabilityCalls from './pages/observability/ObservabilityCalls'
 import ObservabilityCallDetail from './pages/observability/ObservabilityCallDetail'
-import TestInsights from './pages/test-insights/TestInsights'
-import CallTraceDetail from './pages/test-insights/CallTraceDetail'
 
 // Alerting
 import Alerts from './pages/alerting/Alerts'
@@ -105,11 +104,6 @@ import CallImportEvaluationDetail from './pages/callImports/CallImportEvaluation
 import CallImportTagsPage from './pages/callImports/Tags'
 import CallImportSchemasPage from './pages/callImports/Schemas'
 
-
-function PreserveSearchRedirect({ to }: { to: string }) {
-  const location = useLocation()
-  return <Navigate to={`${to}${location.search}`} replace />
-}
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   // Either credential type counts as "signed in". The backend enforces the
@@ -187,9 +181,9 @@ function App() {
             <Route path="studio" element={<MetricsStudio />} />
             <Route path="studio/runs/:runId" element={<MetricsStudioRunDetail />} />
           </Route>
-          <Route path="results" element={<ResultsOverview />} />
+          <Route path="results" element={<ResultsHub />} />
           <Route path="results/unassigned" element={<ResultsUnassigned />} />
-          <Route path="results/agents/:agentId" element={<ResultsAgentWorkspace />} />
+          <Route path="results/agents/:agentId" element={<RedirectAgentWorkspaceToHub />} />
           <Route
             path="results/agents/:agentId/suites/:suiteId"
             element={<RedirectAgentSuiteToWorkspace />}
@@ -200,13 +194,8 @@ function App() {
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
-          <Route path="observability/calls" element={<Navigate to="/calls" replace />} />
+          <Route path="observability/calls" element={<ObservabilityCalls />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
-          <Route path="calls" element={<TestInsights />} />
-          <Route path="calls/:traceId" element={<CallTraceDetail />} />
-          <Route path="call-traces" element={<Navigate to="/calls" replace />} />
-          <Route path="call-traces/:traceId" element={<CallTraceDetail />} />
-          <Route path="test-insights" element={<PreserveSearchRedirect to="/calls" />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<UsagePage />} />
           <Route path="usage/pricing" element={<UsagePricingRedirect />} />

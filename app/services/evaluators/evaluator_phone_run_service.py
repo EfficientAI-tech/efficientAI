@@ -25,13 +25,15 @@ def initiate_phone_evaluator_call(
 
     Returns (call_ref, call_short_id, evaluator_result_response).
     """
+    import random
+    import string
+
     from app.models.database import CallRecording, CallRecordingSource, EvaluatorResult, EvaluatorResultStatus
     from app.models.enums import CallRecordingStatus
     from app.config import settings
     from app.services.telephony.vobiz_outbound_pool import release_pool_slot, resolve_outbound_from_number
     from app.services.telephony.vobiz_session import create_call_session
     from app.services.telephony.vobiz_agent_context import vobiz_webhook_base_url
-    from app.utils.call_recordings import generate_unique_call_short_id
     from app.workers.tasks.initiate_vobiz_outbound import initiate_vobiz_outbound_call_task
 
     scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
@@ -47,7 +49,7 @@ def initiate_phone_evaluator_call(
         persona_id=evaluator.persona_id,
         scenario_id=evaluator.scenario_id,
         name=scenario_name,
-        status=EvaluatorResultStatus.QUEUED.value,
+        status=EvaluatorResultStatus.CALL_INITIATING.value,
         audio_s3_key=None,
     )
     db.add(evaluator_result)
@@ -102,10 +104,10 @@ def initiate_phone_evaluator_call(
     )
     recording_url = f"{base}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
 
-    call_short_id = generate_unique_call_short_id(db)
+    call_short_id = "".join(random.choices(string.digits, k=6))
     recording = CallRecording(
         organization_id=organization_id,
-        workspace_id=workspace_id,  # active workspace from evaluator run
+        workspace_id=agent.workspace_id,
         call_short_id=call_short_id,
         status=CallRecordingStatus.PENDING,
         source=CallRecordingSource.WEBHOOK,
@@ -130,10 +132,6 @@ def initiate_phone_evaluator_call(
     db.add(recording)
     db.commit()
     db.refresh(recording)
-
-    from app.services.synthetic_traces.trace_service import open_trace_for_call_recording
-
-    open_trace_for_call_recording(db, recording=recording, evaluator_result=evaluator_result)
 
     initiate_vobiz_outbound_call_task.delay(
         organization_id=str(organization_id),

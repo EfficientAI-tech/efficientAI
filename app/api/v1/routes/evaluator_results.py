@@ -892,11 +892,38 @@ def re_evaluate_result(
             detail="Cannot re-evaluate: this result has no transcription. It must be transcribed first."
         )
 
-    if not result.evaluator_id and not result.agent_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot re-evaluate: this result is not linked to an agent or evaluator."
-        )
+    if not result.evaluator_id:
+        if result.agent_id and result.persona_id and result.scenario_id:
+            from app.api.v1.routes.evaluators import generate_unique_evaluator_id
+
+            evaluator = db.query(Evaluator).filter(
+                Evaluator.agent_id == result.agent_id,
+                Evaluator.persona_id == result.persona_id,
+                Evaluator.scenario_id == result.scenario_id,
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
+            ).first()
+            if not evaluator:
+                new_evaluator_id = generate_unique_evaluator_id(db)
+                evaluator = Evaluator(
+                    evaluator_id=new_evaluator_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agent_id=result.agent_id,
+                    persona_id=result.persona_id,
+                    scenario_id=result.scenario_id,
+                    tags=["auto-created", "test-voice-agent"],
+                )
+                db.add(evaluator)
+                db.commit()
+                db.refresh(evaluator)
+            result.evaluator_id = evaluator.id
+            db.commit()
+        elif not result.agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot re-evaluate: this result is not linked to an agent or evaluator."
+            )
 
     evaluator = None
     if result.evaluator_id:

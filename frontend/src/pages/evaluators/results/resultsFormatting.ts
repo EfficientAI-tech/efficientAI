@@ -53,9 +53,17 @@ export function getStatusConfig(status: string): {
         border: 'border-slate-200',
         label: 'Queued',
       }
+    case 'call_in_progress':
+      return {
+        dot: 'bg-blue-500',
+        bg: 'bg-blue-50',
+        text: 'text-blue-700',
+        border: 'border-blue-200',
+        label: 'Live call',
+        animate: true,
+      }
     case 'call_initiating':
     case 'call_connecting':
-    case 'call_in_progress':
     case 'call_ended':
     case 'transcribing':
     case 'evaluating':

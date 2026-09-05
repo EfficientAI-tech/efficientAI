@@ -9,10 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id
-from app.models.database import Agent, EvaluatorSuite, Scenario
+from app.models.database import Agent, EvaluatorSuite, Persona, Scenario
 from app.models.schemas import (
+    EvaluatorSuiteAddPersonasRequest,
     EvaluatorSuiteAddScenariosRequest,
     EvaluatorSuiteCreate,
+    EvaluatorSuiteReplacePersonasRequest,
     EvaluatorSuiteResponse,
     EvaluatorSuiteUpdate,
     RunEvaluatorSuiteRequest,
@@ -30,12 +32,15 @@ from app.services.evaluators.evaluator_phone_run_service import (
 from app.services.evaluators.evaluator_run_service import queue_evaluator_runs
 from app.services.evaluators.evaluator_suite_service import (
     activate_evaluator_suite,
+    add_personas_to_suite,
     add_scenarios_to_suite,
     create_evaluator_suite,
     delete_evaluator_suite,
     get_suite_or_404,
     pick_round_robin_combination,
+    remove_persona_from_suite,
     remove_scenario_from_suite,
+    replace_personas_in_suite,
     update_evaluator_suite,
     _build_suite_response,
 )
@@ -128,6 +133,42 @@ def remove_scenario(
 ):
     suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
     return remove_scenario_from_suite(db, suite, scenario_id)
+
+
+@router.post("/{suite_id}/personas", response_model=EvaluatorSuiteResponse)
+def add_personas(
+    suite_id: UUID,
+    data: EvaluatorSuiteAddPersonasRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
+    return add_personas_to_suite(db, suite, data.persona_ids)
+
+
+@router.put("/{suite_id}/personas", response_model=EvaluatorSuiteResponse)
+def replace_personas(
+    suite_id: UUID,
+    data: EvaluatorSuiteReplacePersonasRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
+    return replace_personas_in_suite(db, suite, data.persona_ids)
+
+
+@router.delete("/{suite_id}/personas/{persona_id}", response_model=EvaluatorSuiteResponse)
+def remove_persona(
+    suite_id: UUID,
+    persona_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    suite = get_suite_or_404(db, suite_id, organization_id, workspace_id)
+    return remove_persona_from_suite(db, suite, persona_id)
 
 
 @router.post("/{suite_id}/activate", response_model=EvaluatorSuiteResponse)
@@ -252,9 +293,16 @@ def choose_next_combination(
     selected, idx, next_index = pick_round_robin_combination(db, suite)
     scenario = db.query(Scenario).filter(Scenario.id == selected.scenario_id).first()
     scenario_name = scenario.name if scenario else "Unknown Scenario"
+    persona = (
+        db.query(Persona).filter(Persona.id == selected.persona_id).first()
+        if selected.persona_id
+        else None
+    )
 
     return ChooseNextCombinationResponse(
         evaluator_id=selected.id,
+        persona_id=selected.persona_id,
+        persona_name=persona.name if persona else None,
         scenario_id=selected.scenario_id,
         scenario_name=scenario_name,
         combination_index=idx,
@@ -287,6 +335,11 @@ def run_next_combination(
     selected, idx, next_index = pick_round_robin_combination(db, suite)
     scenario = db.query(Scenario).filter(Scenario.id == selected.scenario_id).first()
     scenario_name = scenario.name if scenario else "Unknown Scenario"
+    persona = (
+        db.query(Persona).filter(Persona.id == selected.persona_id).first()
+        if selected.persona_id
+        else None
+    )
 
     strategy = _resolve_run_strategy(agent)
     task_id = None
@@ -316,6 +369,8 @@ def run_next_combination(
 
     return RunNextCombinationResponse(
         evaluator_id=selected.id,
+        persona_id=selected.persona_id,
+        persona_name=persona.name if persona else None,
         scenario_id=selected.scenario_id,
         scenario_name=scenario_name,
         combination_index=idx,
