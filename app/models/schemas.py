@@ -921,6 +921,20 @@ class IntegrationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class IntegrationVoiceAgentListItem(BaseModel):
+    id: str
+    name: str
+
+
+class ListIntegrationVoiceAgentsResponse(BaseModel):
+    agents: List[IntegrationVoiceAgentListItem]
+    platform: str
+    cached: bool
+    truncated: bool
+    list_supported: bool
+    message: Optional[str] = None
+
+
 # ============================================
 # DATA SOURCES SCHEMAS
 # ============================================
