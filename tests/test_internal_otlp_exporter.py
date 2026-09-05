@@ -9,9 +9,16 @@ from uuid import uuid4
 from app.services.synthetic_traces.internal_otlp_exporter import InternalOtlpSpanExporter
 
 
-def _readable_span(*, call_short_id: str, workspace_id: str, name: str = "span"):
+def _readable_span(
+    *,
+    call_short_id: str,
+    workspace_id: str,
+    organization_id: str,
+    name: str = "span",
+):
     from efficientai.integrations.efficientai_traces.correlation import (
         ATTR_CALL_SHORT_ID,
+        ATTR_ORGANIZATION_ID,
         ATTR_WORKSPACE_ID,
     )
 
@@ -19,6 +26,7 @@ def _readable_span(*, call_short_id: str, workspace_id: str, name: str = "span")
         attributes={
             ATTR_CALL_SHORT_ID: call_short_id,
             ATTR_WORKSPACE_ID: str(workspace_id),
+            ATTR_ORGANIZATION_ID: str(organization_id),
         },
         events=[],
         name=name,
@@ -34,12 +42,11 @@ def test_internal_exporter_groups_spans_by_correlation_attributes():
     ws_a = uuid4()
     ws_b = uuid4()
     exporter = InternalOtlpSpanExporter()
-    exporter.configure(organization_id=org_id)
 
     spans = [
-        _readable_span(call_short_id="111111", workspace_id=ws_a, name="a1"),
-        _readable_span(call_short_id="222222", workspace_id=ws_b, name="b1"),
-        _readable_span(call_short_id="111111", workspace_id=ws_a, name="a2"),
+        _readable_span(call_short_id="111111", workspace_id=ws_a, organization_id=org_id, name="a1"),
+        _readable_span(call_short_id="222222", workspace_id=ws_b, organization_id=org_id, name="b1"),
+        _readable_span(call_short_id="111111", workspace_id=ws_a, organization_id=org_id, name="a2"),
     ]
 
     with patch(
@@ -71,10 +78,44 @@ def test_internal_exporter_groups_spans_by_correlation_attributes():
         assert call.kwargs["organization_id"] == org_id
 
 
+def test_internal_exporter_uses_organization_id_from_span_not_shared_config():
+    """Concurrent calls must not misattribute spans via a shared exporter config."""
+    org_a = uuid4()
+    org_b = uuid4()
+    ws = uuid4()
+    exporter = InternalOtlpSpanExporter()
+
+    spans = [
+        _readable_span(call_short_id="111111", workspace_id=ws, organization_id=org_a, name="tenant-a"),
+        _readable_span(call_short_id="222222", workspace_id=ws, organization_id=org_b, name="tenant-b"),
+    ]
+
+    with patch(
+        "app.services.synthetic_traces.trace_service.ingest_otlp_spans"
+    ) as ingest_mock, patch(
+        "app.database.SessionLocal"
+    ) as session_local:
+        session_local.return_value = MagicMock()
+        ingest_mock.return_value = (None, 1, True)
+
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        result = exporter.export(spans)
+
+    assert result == SpanExportResult.SUCCESS
+    assert ingest_mock.call_count == 2
+
+    org_by_call = {
+        call.kwargs["header_call_short_id"]: call.kwargs["organization_id"]
+        for call in ingest_mock.call_args_list
+    }
+    assert org_by_call["111111"] == org_a
+    assert org_by_call["222222"] == org_b
+
+
 def test_internal_exporter_skips_spans_without_correlation_attributes():
     org_id = uuid4()
     exporter = InternalOtlpSpanExporter()
-    exporter.configure(organization_id=org_id)
 
     span = SimpleNamespace(
         attributes={},

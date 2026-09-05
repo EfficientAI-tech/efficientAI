@@ -36,8 +36,6 @@ def build_pipeline_tracing_kwargs(
         return {}
 
     try:
-        from uuid import UUID
-
         from efficientai.integrations.efficientai_traces.correlation import (
             span_correlation_attributes,
         )
@@ -53,11 +51,11 @@ def build_pipeline_tracing_kwargs(
         logger.warning("OpenTelemetry SDK not installed; playground pipeline tracing disabled")
         return {}
 
-    org_uuid = UUID(organization_id)
     attrs = span_correlation_attributes(
         call_short_id=call_short_id,
         agent_id=agent_id,
         workspace_id=workspace_id,
+        organization_id=organization_id,
         transport="websocket",
     )
 
@@ -70,7 +68,6 @@ def build_pipeline_tracing_kwargs(
                 logger.warning("Failed to initialize playground tracing exporter")
                 _mutable_internal_exporter = None
                 return {}
-        _mutable_internal_exporter.configure(organization_id=org_uuid)
 
     logger.info(
         "Playground pipeline tracing enabled for call_short_id={} workspace_id={}",

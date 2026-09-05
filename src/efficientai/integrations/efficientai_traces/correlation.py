@@ -22,6 +22,7 @@ ATTR_CALL_SHORT_ID = "efficientai.call_short_id"
 ATTR_RUN_ID = "efficientai.evaluator_result_id"
 ATTR_AGENT_ID = "efficientai.agent_id"
 ATTR_WORKSPACE_ID = "efficientai.workspace_id"
+ATTR_ORGANIZATION_ID = "efficientai.organization_id"
 ATTR_ENVIRONMENT = "efficientai.environment"
 ATTR_TRANSPORT = "efficientai.transport"
 
@@ -131,6 +132,7 @@ def span_correlation_attributes(
     evaluator_result_id: Optional[str] = None,
     agent_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
     transport: Optional[str] = None,
     environment: str = "pre_prod",
 ) -> Dict[str, str]:
@@ -144,6 +146,8 @@ def span_correlation_attributes(
         attrs[ATTR_AGENT_ID] = str(agent_id)
     if workspace_id:
         attrs[ATTR_WORKSPACE_ID] = str(workspace_id)
+    if organization_id:
+        attrs[ATTR_ORGANIZATION_ID] = str(organization_id)
     if transport:
         attrs[ATTR_TRANSPORT] = str(transport)
     return attrs
