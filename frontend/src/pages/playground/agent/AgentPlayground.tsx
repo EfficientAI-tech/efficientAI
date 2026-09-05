@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
 import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Activity, Search } from 'lucide-react'
 import Button from '../../../components/Button'
@@ -202,8 +202,6 @@ export default function AgentPlayground() {
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
   const [otlpTraceResultId, setOtlpTraceResultId] = useState<string | null>(null)
-  const [voiceAiCallShortId, setVoiceAiCallShortId] = useState<string | null>(null)
-
   const isVoiceAiProviderRecording = (recording: { provider_platform?: string | null }) => {
     const platform = (recording.provider_platform || '').toLowerCase()
     return (
@@ -855,12 +853,6 @@ export default function AgentPlayground() {
       staleTime: 30_000,
     })
     setOtlpTraceResultId(resultId)
-  }
-
-  const handleOpenVoiceAiDrawer = (callShortId: string) => {
-    prefetchCallRecordingAudio(callShortId, false)
-    void prefetchCallRecordingQuery(queryClient, callShortId)
-    setVoiceAiCallShortId(callShortId)
   }
 
   const handleViewCallRecording = (callShortId: string) => {
@@ -2093,11 +2085,6 @@ export default function AgentPlayground() {
         open={Boolean(otlpTraceResultId)}
         evaluatorResultId={otlpTraceResultId}
         onClose={() => setOtlpTraceResultId(null)}
-      />
-      <TraceDetailDrawer
-        open={Boolean(voiceAiCallShortId)}
-        callShortId={voiceAiCallShortId}
-        onClose={() => setVoiceAiCallShortId(null)}
       />
     </>
   )
