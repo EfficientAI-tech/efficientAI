@@ -8,6 +8,7 @@ from app.models.database import (
     EvaluatorResult,
     EvaluatorResultStatus,
     SyntheticCallTrace,
+    Workspace,
 )
 from app.models.enums import CallRecordingStatus
 from app.services.synthetic_traces.otlp_mapper import (
@@ -25,6 +26,25 @@ from app.services.synthetic_traces.trace_service import (
     open_trace,
     open_trace_session,
 )
+
+
+def _make_evaluator_result_for_trace(
+    *,
+    result_id: str,
+    organization_id,
+    workspace_id,
+    name: str = "Phone test",
+    status: str = EvaluatorResultStatus.QUEUED.value,
+) -> EvaluatorResult:
+    """Playground-style result row: no evaluator/agent FKs required."""
+    return EvaluatorResult(
+        id=uuid4(),
+        result_id=result_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name=name,
+        status=status,
+    )
 
 
 def _stt_span(call_short_id: str, turn: int = 1) -> dict:
@@ -54,15 +74,10 @@ def test_ingest_otlp_spans_correlates_by_call_short_id(
     default_workspace,
 ):
     call_short_id = "482931"
-    result = EvaluatorResult(
-        id=uuid4(),
+    result = _make_evaluator_result_for_trace(
         result_id="900001",
         organization_id=org_id,
         workspace_id=default_workspace.id,
-        evaluator_id=uuid4(),
-        agent_id=uuid4(),
-        name="Phone test",
-        status=EvaluatorResultStatus.QUEUED.value,
     )
     db_session.add(result)
     db_session.commit()
@@ -72,7 +87,6 @@ def test_ingest_otlp_spans_correlates_by_call_short_id(
         organization_id=org_id,
         workspace_id=default_workspace.id,
         evaluator_result_id=result.id,
-        agent_id=result.agent_id,
         call_short_id=call_short_id,
         transport="phone",
     )
@@ -112,15 +126,10 @@ def test_ingest_otlp_spans_merges_with_tier1_turns(
     default_workspace,
 ):
     call_short_id = "123456"
-    result = EvaluatorResult(
-        id=uuid4(),
+    result = _make_evaluator_result_for_trace(
         result_id="900002",
         organization_id=org_id,
         workspace_id=default_workspace.id,
-        evaluator_id=uuid4(),
-        agent_id=uuid4(),
-        name="Phone test",
-        status=EvaluatorResultStatus.QUEUED.value,
     )
     db_session.add(result)
     db_session.commit()
@@ -130,7 +139,6 @@ def test_ingest_otlp_spans_merges_with_tier1_turns(
         organization_id=org_id,
         workspace_id=default_workspace.id,
         evaluator_result_id=result.id,
-        agent_id=result.agent_id,
         call_short_id=call_short_id,
         transport="phone",
         tier="black_box",
@@ -181,14 +189,10 @@ def test_backfill_creates_trace_from_vobiz_call_recording(
     org_id,
     default_workspace,
 ):
-    result = EvaluatorResult(
-        id=uuid4(),
+    result = _make_evaluator_result_for_trace(
         result_id="900003",
         organization_id=org_id,
         workspace_id=default_workspace.id,
-        evaluator_id=uuid4(),
-        agent_id=uuid4(),
-        name="Phone test",
         status=EvaluatorResultStatus.COMPLETED.value,
     )
     db_session.add(result)
@@ -235,14 +239,21 @@ def test_backfill_does_not_create_traces_for_other_workspaces(
     org_id,
     default_workspace,
 ):
-    other_workspace_id = uuid4()
-    result_other = EvaluatorResult(
+    other_workspace = Workspace(
         id=uuid4(),
+        organization_id=org_id,
+        name="Other workspace",
+        slug="other-workspace",
+        is_default=False,
+    )
+    db_session.add(other_workspace)
+    db_session.commit()
+    db_session.refresh(other_workspace)
+
+    result_other = _make_evaluator_result_for_trace(
         result_id="900099",
         organization_id=org_id,
-        workspace_id=other_workspace_id,
-        evaluator_id=uuid4(),
-        agent_id=uuid4(),
+        workspace_id=other_workspace.id,
         name="Other workspace phone test",
         status=EvaluatorResultStatus.COMPLETED.value,
     )
@@ -251,7 +262,7 @@ def test_backfill_does_not_create_traces_for_other_workspaces(
 
     recording_other = CallRecording(
         organization_id=org_id,
-        workspace_id=other_workspace_id,
+        workspace_id=other_workspace.id,
         call_short_id="666666",
         status=CallRecordingStatus.UPDATED,
         source=CallRecordingSource.WEBHOOK,
