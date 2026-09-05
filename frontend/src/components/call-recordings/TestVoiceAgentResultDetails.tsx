@@ -284,17 +284,23 @@ export default function TestVoiceAgentResultDetails({
         : null)
 
   const getSpeakerLabel = (speaker: string) => {
-    if (speaker === 'Speaker 1' || speaker === 'user' || speaker === 'caller') {
+    if (isUserSpeaker(speaker)) {
       return 'You'
     }
-    if (speaker === 'assistant' || speaker === 'Speaker 2' || speaker === 'bot') {
+    if (['assistant', 'speaker 2', 'bot', 'agent'].includes(speaker.trim().toLowerCase())) {
       return resultData.agent?.name || 'Agent'
     }
     return resultData.agent?.name || 'Agent'
   }
 
   const isUserSpeaker = (speaker: string) => {
-    return speaker === 'Speaker 1' || speaker === 'user' || speaker === 'caller'
+    const normalized = speaker.trim().toLowerCase()
+    return (
+      normalized === 'speaker 1' ||
+      normalized === 'user' ||
+      normalized === 'caller' ||
+      normalized === 'customer'
+    )
   }
 
   const SummaryCard = () => (

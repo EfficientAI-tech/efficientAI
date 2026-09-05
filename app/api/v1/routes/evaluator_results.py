@@ -8,7 +8,7 @@ from typing import List, Optional, Dict, Any
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
-from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording, Agent, Integration
+from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario, CallRecording, CallRecordingSource, Agent, Integration
 import random
 from datetime import datetime
 from app.models.schemas import (
@@ -247,15 +247,34 @@ def _derive_speaker_segments_from_call_data(
 
 
 def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str, Any]]]:
-    """
-    Prefer deriving speaker segments from provider call_data for provider-linked results.
-    Falls back to persisted speaker_segments for non-provider/manual results.
-    """
+    """Return speaker segments, preferring persisted values over slim call_data."""
+    if result.speaker_segments:
+        return result.speaker_segments
     if result.provider_platform and isinstance(result.call_data, dict):
+        from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
+
+        _, segments = extract_transcript_from_call_data(result.call_data, result.provider_platform)
+        if segments:
+            return segments
         derived = _derive_speaker_segments_from_call_data(result.call_data, result.provider_platform)
         if derived:
             return derived
     return result.speaker_segments
+
+
+def _resolve_transcription(result: EvaluatorResult, segments: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    if result.transcription and str(result.transcription).strip():
+        return result.transcription
+    if not segments:
+        return result.transcription
+    lines = []
+    for seg in segments:
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        speaker = str(seg.get("speaker", "Speaker")).strip() or "Speaker"
+        lines.append(f"{speaker}: {text}")
+    return "\n".join(lines) if lines else result.transcription
 
 
 @router.get("/overview", response_model=EvaluatorResultsOverviewResponse)
@@ -448,6 +467,9 @@ def get_evaluator_result(
             if linked_recording and linked_recording.source:
                 call_recording_source = linked_recording.source.value
     
+    speaker_segments = _resolve_speaker_segments(result)
+    transcription = _resolve_transcription(result, speaker_segments)
+
     # Build response
     response_data = {
         "id": result.id,
@@ -462,8 +484,8 @@ def get_evaluator_result(
         "duration_seconds": result.duration_seconds,
         "status": effective_evaluator_result_status(result),
         "audio_s3_key": result.audio_s3_key,
-        "transcription": result.transcription,
-        "speaker_segments": _resolve_speaker_segments(result),
+        "transcription": transcription,
+        "speaker_segments": speaker_segments,
         "metric_scores": result.metric_scores,
         "celery_task_id": result.celery_task_id,
         "error_message": result.error_message,
@@ -659,6 +681,69 @@ def get_evaluator_result_metrics(
         "result_id": result.result_id,
         "metrics": metrics_response
     }
+
+
+@router.get("/{id}/live-events")
+async def stream_evaluator_result_live_events(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """SSE stream of live transcript turns for an in-progress eval telephony call."""
+    from fastapi.responses import StreamingResponse
+
+    from app.services.evaluators.evaluator_result_telephony import find_evaluator_telephony_recording
+    from app.services.telephony.live_transcript_sse import stream_live_transcript_events
+
+    del api_key
+
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    call_recording = find_evaluator_telephony_recording(db, result)
+    if not call_recording:
+        raise HTTPException(status_code=404, detail="No live telephony call linked to this result")
+
+    bound_recording_id = call_recording.id
+    call_short_id = call_recording.call_short_id
+    bound_result_id = result.id
+
+    def _fetch_recording(session):
+        row = (
+            session.query(CallRecording)
+            .filter(
+                CallRecording.id == bound_recording_id,
+                CallRecording.evaluator_result_id == bound_result_id,
+                CallRecording.source == CallRecordingSource.WEBHOOK,
+            )
+            .first()
+        )
+        if row:
+            from app.services.live_entity_storage import hydrate_call_recordings
+
+            hydrate_call_recordings([row])
+        return row
+
+    async def event_generator():
+        async for chunk in stream_live_transcript_events(
+            call_short_id=call_short_id,
+            bound_recording_id=bound_recording_id,
+            fetch_recording=_fetch_recording,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/{id}/otel-correlation")

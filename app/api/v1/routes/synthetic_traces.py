@@ -340,6 +340,24 @@ def get_trace_for_evaluator_result(
             trace_id=result.synthetic_call_trace_id,
             workspace_id=workspace_id,
         )
+    if not trace and isinstance(result.call_data, dict):
+        linked_call_short_id = result.call_data.get("call_short_id")
+        if isinstance(linked_call_short_id, str) and linked_call_short_id.strip():
+            trace = get_trace_by_call_short_id(
+                db,
+                organization_id=organization_id,
+                call_short_id=linked_call_short_id.strip(),
+                workspace_id=workspace_id,
+            )
+            if trace and trace.evaluator_result_id is None:
+                from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
+
+                link_trace_to_evaluator_result(
+                    db,
+                    organization_id=organization_id,
+                    call_short_id=linked_call_short_id.strip(),
+                    evaluator_result_id=result.id,
+                )
     if not trace:
         raise HTTPException(status_code=404, detail="Call trace not found")
 

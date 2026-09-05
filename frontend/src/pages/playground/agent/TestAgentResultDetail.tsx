@@ -116,7 +116,7 @@ export default function TestAgentResultDetail() {
         </div>
 
         <div className="bg-white shadow rounded-lg p-6">
-          <TestVoiceAgentResultDetails resultData={resultData} metricsOnly />
+          <TestVoiceAgentResultDetails resultData={resultData} />
         </div>
       </div>
 

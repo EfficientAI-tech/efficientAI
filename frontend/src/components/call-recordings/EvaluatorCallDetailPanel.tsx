@@ -9,6 +9,7 @@ import { getEvaluatorResultPlaceholder } from '../../lib/evaluatorResultQuery'
 import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../lib/waveformAudioCache'
 import CallWaveformPlayer from './CallWaveformPlayer'
 import SyntheticCallTracePanel from './SyntheticCallTracePanel'
+import LiveTranscriptPanel, { type LiveTranscriptTurn } from './LiveTranscriptPanel'
 
 type DrawerTab = 'transcript' | 'analysis' | 'pipeline'
 
@@ -18,18 +19,77 @@ const TABS: Array<{ id: DrawerTab; label: string; icon: typeof MessageSquare }> 
   { id: 'pipeline', label: 'Pipeline', icon: Activity },
 ]
 
+const IN_PROGRESS_STATUSES = new Set([
+  'queued',
+  'transcribing',
+  'evaluating',
+  'fetching_details',
+  'call_started',
+  'call_in_progress',
+  'in_progress',
+])
+
+type SpeakerSegment = { speaker: string; text: string; start: number; end?: number }
+
 function segmentTimingLabel(segment: { start: number; end?: number }): string | null {
   return formatMessageTiming(segment.start, segment.end)
 }
 
+function isUserSpeaker(speaker: string): boolean {
+  const normalized = speaker.trim().toLowerCase()
+  return (
+    normalized === 'speaker 1' ||
+    normalized === 'user' ||
+    normalized === 'caller' ||
+    normalized === 'customer'
+  )
+}
+
 function getSpeakerLabel(speaker: string, agentName?: string): string {
-  if (speaker === 'Speaker 1' || speaker === 'user' || speaker === 'caller') return 'Caller'
-  if (speaker === 'assistant' || speaker === 'Speaker 2' || speaker === 'bot') return agentName || 'Agent'
+  if (isUserSpeaker(speaker)) return 'Caller'
+  if (['assistant', 'speaker 2', 'bot', 'agent'].includes(speaker.trim().toLowerCase())) {
+    return agentName || 'Agent'
+  }
   return agentName || 'Agent'
 }
 
-function isUserSpeaker(speaker: string): boolean {
-  return speaker === 'Speaker 1' || speaker === 'user' || speaker === 'caller'
+function segmentsFromTraceTurns(turns: Array<Record<string, unknown>>): SpeakerSegment[] {
+  const segments: SpeakerSegment[] = []
+  for (const turn of turns) {
+    const turnNumber = Number(turn.turn_number ?? segments.length + 1)
+    const extra =
+      turn.extra && typeof turn.extra === 'object'
+        ? (turn.extra as Record<string, unknown>)
+        : {}
+    const userText = String(extra.user_text ?? '').trim()
+    const assistantText = String(extra.assistant_text ?? '').trim()
+    const transcript = String(turn.transcript ?? '').trim()
+    if (userText) {
+      segments.push({ speaker: 'user', text: userText, start: turnNumber, end: turnNumber })
+    }
+    if (assistantText) {
+      segments.push({ speaker: 'assistant', text: assistantText, start: turnNumber, end: turnNumber })
+    }
+    if (!userText && !assistantText && transcript) {
+      const userMatch = transcript.match(/^User:\s*(.+)$/m)
+      const assistantMatch = transcript.match(/^Assistant:\s*(.+)$/m)
+      if (userMatch) {
+        segments.push({ speaker: 'user', text: userMatch[1].trim(), start: turnNumber, end: turnNumber })
+      }
+      if (assistantMatch) {
+        segments.push({
+          speaker: 'assistant',
+          text: assistantMatch[1].trim(),
+          start: turnNumber,
+          end: turnNumber,
+        })
+      }
+      if (!userMatch && !assistantMatch) {
+        segments.push({ speaker: 'assistant', text: transcript, start: turnNumber, end: turnNumber })
+      }
+    }
+  }
+  return segments
 }
 
 export default function EvaluatorCallDetailPanel({
@@ -40,6 +100,7 @@ export default function EvaluatorCallDetailPanel({
   onClose?: () => void
 }) {
   const [tab, setTab] = useState<DrawerTab>('transcript')
+  const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
   const queryClient = useQueryClient()
 
   useEffect(() => {
@@ -55,7 +116,85 @@ export default function EvaluatorCallDetailPanel({
     staleTime: 30_000,
   })
 
-  const detailsReady = Boolean(result?.speaker_segments || result?.transcription || result?.call_data)
+  const persistedSegments = (result?.speaker_segments ?? []) as SpeakerSegment[]
+  const hasPersistedTranscript = Boolean(
+    persistedSegments.length > 0 || String(result?.transcription ?? '').trim(),
+  )
+
+  const { data: traceFallback } = useQuery({
+    queryKey: ['synthetic-call-trace', evaluatorResultId, 'transcript-fallback'],
+    queryFn: () => apiClient.getSyntheticCallTraceForResult(evaluatorResultId),
+    enabled: Boolean(evaluatorResultId) && !isFetching && !hasPersistedTranscript,
+    retry: false,
+  })
+
+  const traceSegments = useMemo(
+    () => segmentsFromTraceTurns((traceFallback?.turns ?? []) as Array<Record<string, unknown>>),
+    [traceFallback?.turns],
+  )
+
+  const speakerSegments = persistedSegments.length > 0 ? persistedSegments : traceSegments
+  const transcription =
+    String(result?.transcription ?? '').trim() ||
+    (speakerSegments.length > 0
+      ? speakerSegments.map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name)}: ${seg.text}`).join('\n')
+      : '')
+
+  const isLiveCall = Boolean(
+    result &&
+      IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()) &&
+      (result.call_event === 'call_started' ||
+        result.call_event === 'call_in_progress' ||
+        !result.call_event),
+  )
+
+  useEffect(() => {
+    setLiveTranscript([])
+  }, [evaluatorResultId])
+
+  useEffect(() => {
+    const existing = result?.call_data?.live_transcript
+    if (!Array.isArray(existing) || existing.length === 0) return
+    setLiveTranscript(
+      existing.map((entry: Record<string, unknown>) => ({
+        role: String(entry.role ?? 'user'),
+        content: String(entry.content ?? entry.message ?? entry.text ?? ''),
+        timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
+        start_time: typeof entry.start_time === 'number' ? entry.start_time : undefined,
+      })),
+    )
+  }, [result?.call_data?.live_transcript, evaluatorResultId])
+
+  useEffect(() => {
+    if (!evaluatorResultId || !result || !isLiveCall) return
+
+    let eventSource: EventSource | null = null
+    try {
+      eventSource = new EventSource(apiClient.getEvaluatorResultLiveEventsUrl(evaluatorResultId))
+      eventSource.onmessage = (event) => {
+        try {
+          const entry = JSON.parse(event.data)
+          setLiveTranscript((prev) => [
+            ...prev,
+            {
+              role: String(entry.role ?? 'user'),
+              content: String(entry.content ?? entry.message ?? entry.text ?? ''),
+              timestamp: typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
+              start_time: typeof entry.start_time === 'number' ? entry.start_time : undefined,
+            },
+          ])
+        } catch {
+          // ignore malformed events
+        }
+      }
+    } catch {
+      // polling still updates live_transcript from call_data
+    }
+
+    return () => {
+      eventSource?.close()
+    }
+  }, [evaluatorResultId, isLiveCall, result?.status, result?.call_event])
 
   const callAnalysis = useMemo(() => {
     const fromCallData = (result?.call_data?.call_analysis || {}) as Record<string, unknown>
@@ -92,6 +231,14 @@ export default function EvaluatorCallDetailPanel({
     prefetchCallRecordingAudio(playgroundCallShortId, false)
   }, [playgroundCallShortId])
 
+  if (!result && isFetching) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+      </div>
+    )
+  }
+
   if (!result && !isFetching) {
     return <div className="p-8 text-sm text-gray-600">Call details not found.</div>
   }
@@ -103,6 +250,10 @@ export default function EvaluatorCallDetailPanel({
         (error as { message?: string }).message ||
         'Failed to load call details'
       : null
+
+  const showLiveTranscript = isLiveCall && liveTranscript.length > 0
+  const hasTranscript = Boolean(speakerSegments.length > 0 || transcription || showLiveTranscript)
+  const transcriptLoading = isFetching && !hasTranscript
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
@@ -164,49 +315,64 @@ export default function EvaluatorCallDetailPanel({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
-          {!detailsReady && tab !== 'pipeline' ? (
-            <div className="space-y-3">
-              <div className="h-48 animate-pulse rounded-xl bg-gray-100" />
-            </div>
-          ) : null}
-
-          {detailsReady && tab === 'transcript' ? (
-            <div className="rounded-xl border border-gray-200 bg-white p-4">
-              <div className="space-y-3 pr-1">
-                {result?.speaker_segments && result.speaker_segments.length > 0 ? (
-                  result.speaker_segments.map(
-                    (segment: { speaker: string; text: string; start: number; end?: number }, idx: number) => {
-                    const timing = segmentTimingLabel(segment)
-                    return (
-                    <div
-                      key={idx}
-                      className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'}`}
-                    >
-                      <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker))}>
-                        <div className={transcriptMetaClass(isUserSpeaker(segment.speaker))}>
-                          <span>{getSpeakerLabel(segment.speaker, result.agent?.name)}</span>
-                          {timing ? (
-                            <span className="font-normal normal-case tracking-normal tabular-nums">{timing}</span>
-                          ) : null}
-                        </div>
-                        <p className="text-sm leading-relaxed">{segment.text}</p>
-                      </div>
-                    </div>
-                    )
-                  },
-                  )
-                ) : result?.transcription ? (
-                  <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
-                    {result.transcription}
-                  </p>
-                ) : (
-                  <p className="py-8 text-center text-sm text-gray-500">No transcript available.</p>
-                )}
+          {tab === 'transcript' ? (
+            transcriptLoading ? (
+              <div className="space-y-3">
+                <div className="h-48 animate-pulse rounded-xl bg-gray-100" />
               </div>
-            </div>
+            ) : showLiveTranscript ? (
+              <LiveTranscriptPanel
+                turns={liveTranscript}
+                isLive={isLiveCall}
+                agentName={result?.agent?.name || 'Agent'}
+                heightClass="min-h-[320px]"
+                emptyMessage="Waiting for speech…"
+              />
+            ) : (
+              <div className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="space-y-3 pr-1">
+                  {speakerSegments.length > 0 ? (
+                    speakerSegments.map((segment, idx) => {
+                      const timing = segmentTimingLabel(segment)
+                      return (
+                        <div
+                          key={idx}
+                          className={`flex ${isUserSpeaker(segment.speaker) ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker))}>
+                            <div className={transcriptMetaClass(isUserSpeaker(segment.speaker))}>
+                              <span>{getSpeakerLabel(segment.speaker, result?.agent?.name)}</span>
+                              {timing ? (
+                                <span className="font-normal normal-case tracking-normal tabular-nums">
+                                  {timing}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="text-sm leading-relaxed">{segment.text}</p>
+                          </div>
+                        </div>
+                      )
+                    })
+                  ) : transcription ? (
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-gray-700">
+                      {transcription}
+                    </p>
+                  ) : isLiveCall ? (
+                    <LiveTranscriptPanel
+                      turns={liveTranscript}
+                      isLive
+                      agentName={result?.agent?.name || 'Agent'}
+                      heightClass="min-h-[240px]"
+                    />
+                  ) : (
+                    <p className="py-8 text-center text-sm text-gray-500">No transcript available.</p>
+                  )}
+                </div>
+              </div>
+            )
           ) : null}
 
-          {detailsReady && tab === 'analysis' ? (
+          {tab === 'analysis' ? (
             <div className="rounded-xl border border-gray-200 bg-white p-5">
               {callAnalysis.call_summary ? (
                 <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
@@ -245,7 +411,11 @@ export default function EvaluatorCallDetailPanel({
           ) : null}
 
           {tab === 'pipeline' ? (
-            <SyntheticCallTracePanel evaluatorResultId={evaluatorResultId} embedded />
+            <SyntheticCallTracePanel
+              evaluatorResultId={evaluatorResultId}
+              callShortId={callShortId}
+              embedded
+            />
           ) : null}
         </div>
       </div>
