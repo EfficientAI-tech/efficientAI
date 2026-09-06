@@ -18,7 +18,8 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 
 | Document | Who should read it | What it covers |
 | --- | --- | --- |
-| [TDD: Call Traces (Pipecat OTLP Observability)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) | Backend, SRE, frontend, sales/solutions | Architecture, scaling, OTLP ingest, drawer routing, **p50/p90/p95 math**, provider vs OTLP metrics |
+| [TDD: Call Traces (Pipecat OTLP Observability)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) | Backend, SRE, frontend, sales/solutions | Architecture, scaling, OTLP ingest, drawer routing, provider vs OTLP metrics |
+| [Call Traces: Latency Metrics Explained](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/71434241) | Everyone — support, sales, customers | **Plain-language p50/p90/p95**, Listen/Think/Speak, formulas, examples, customer FAQ |
 | [Pipecat quick start](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) (repo) | Customer engineers | SDK hooks, env vars, local WebRTC — `docs/synthetic-call-traces-pipecat.md` |
 
 **Style reference:** Same narrative as [Call Import Concurrency](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/48103425) and [Usage & Cost Tracking](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/63045633) — problem first, then solution, then deep sections.
@@ -53,7 +54,7 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 
 | Source | Median / p50 in UI | Computed by us? |
 | --- | --- | --- |
-| **OTLP / Pipecat** | `response_latency_p50_ms` | **Yes** — main TDD §11 |
+| **OTLP / Pipecat** | `response_latency_p50_ms` | **Yes** — [Latency Metrics Explained](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/71434241) |
 | **Vapi playground** | `turnLatency`, `*LatencyAverage` | **No** — provider fields |
 | **Retell playground** | `latency.*.p50` | **No** — provider histogram |
 | **Test Agent** | Pipeline = OTLP; Analysis = evaluator | **Mixed** |
@@ -78,6 +79,7 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 | --- | --- |
 | This index | `docs/call-traces-tdd-index-confluence.md` |
 | Call Traces TDD (architecture) | `docs/synthetic-call-traces-tdd-confluence.md` |
+| Latency metrics (p50/p90/p95) | `docs/call-traces-latency-metrics-confluence.md` |
 | Pipecat quick start | `docs/synthetic-call-traces-pipecat.md` |
 
 ---
