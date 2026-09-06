@@ -75,12 +75,12 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 
 ## Repo doc mirrors (for PRs)
 
-| Confluence | Local markdown |
-| --- | --- |
-| This index | `docs/call-traces-tdd-index-confluence.md` |
-| Call Traces TDD (architecture) | `docs/synthetic-call-traces-tdd-confluence.md` |
-| Latency metrics (p50/p90/p95) | `docs/call-traces-latency-metrics-confluence.md` |
-| Pipecat quick start | `docs/synthetic-call-traces-pipecat.md` |
+| Confluence | Local markdown | Fumadocs |
+| --- | --- | --- |
+| This index | `docs/call-traces-tdd-index-confluence.md` | `/docs/monitoring/call-traces/` |
+| Call Traces TDD (architecture) | `docs/synthetic-call-traces-tdd-confluence.md` | `/docs/monitoring/call-traces/architecture/` |
+| Latency metrics (p50/p90/p95) | `docs/call-traces-latency-metrics-confluence.md` | `/docs/monitoring/call-traces/latency-metrics/` |
+| Pipecat quick start | `docs/synthetic-call-traces-pipecat.md` | `/docs/monitoring/call-traces/pipecat-integration/` |
 
 ---
 
