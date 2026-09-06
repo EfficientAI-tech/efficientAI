@@ -26,6 +26,7 @@ MANIFEST
 secrets/
 *.json
 !package.json
+!docs-fumadocs/content/docs/**/meta.json
 .cursorrules
 
 # Local scratch / MCP / Confluence publish artifacts
