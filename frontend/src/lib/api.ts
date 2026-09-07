@@ -427,6 +427,8 @@ export interface VobizOutboundCallResponse {
   call_ref: string
   call_short_id?: string
   message: string
+  evaluator_result_id?: string
+  result_id?: string
 }
 
 export interface EvaluatorSuiteCombination {
@@ -443,6 +445,7 @@ export interface EvaluatorSuiteCombination {
 export interface EvaluatorSuitePersonaSummary {
   id: string
   name?: string | null
+  tts_provider?: string | null
 }
 
 export interface EvaluatorSuite {
@@ -457,6 +460,7 @@ export interface EvaluatorSuite {
   persona_name?: string | null
   agent_call_type?: string | null
   agent_call_medium?: string | null
+  voice_bundle_tts_provider?: string | null
   metric_ids?: string[] | null
   llm_provider?: string | null
   llm_model?: string | null

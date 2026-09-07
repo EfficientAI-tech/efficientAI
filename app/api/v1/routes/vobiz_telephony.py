@@ -22,6 +22,7 @@ from app.services.telephony.vobiz_agent_context import (
     build_carrier_ws_url,
     extract_webhook_params,
     resolve_vobiz_agent_context,
+    resolve_vobiz_telephony_run_params,
     vobiz_webhook_base_url,
 )
 from app.services.telephony.call_recording_lifecycle import (
@@ -42,6 +43,7 @@ from app.services.telephony.vobiz_number_service import (
 from app.services.telephony.webhook_auth import verify_vobiz_webhook
 from app.services.telephony.vobiz_outbound_pool import (
     outbound_pool_api_payload,
+    outbound_telephony_integration_id,
     release_pool_slot,
     resolve_outbound_from_number,
 )
@@ -81,6 +83,8 @@ class VobizOutboundCallResponse(BaseModel):
     call_ref: str
     call_short_id: str = ""
     message: str = "Outbound call initiated"
+    evaluator_result_id: Optional[UUID] = None
+    result_id: Optional[str] = None
 
 
 class VobizAvailableNumberResponse(BaseModel):
@@ -249,11 +253,6 @@ async def create_vobiz_outbound_call(
     db: Session = Depends(get_db),
 ):
     del api_key
-    try:
-        build_vobiz_client_for_org(db, organization_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
     agent = db.query(Agent).filter(
         Agent.id == payload.agent_id,
         Agent.organization_id == organization_id,
@@ -280,31 +279,60 @@ async def create_vobiz_outbound_call(
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found for evaluator")
             payload = payload.model_copy(update={"agent_id": agent.id})
-        persona_id = persona_id or evaluator.persona_id
-        scenario_id = scenario_id or evaluator.scenario_id
+        if not agent.workspace_id:
+            raise HTTPException(status_code=400, detail="Agent workspace is required for evaluator calls")
+        from app.services.evaluators.evaluator_phone_run_service import initiate_phone_evaluator_call
+
+        to_number = normalize_e164(payload.to_number)
+        call_ref, call_short_id, result_response = initiate_phone_evaluator_call(
+            db,
+            organization_id,
+            agent.workspace_id,
+            evaluator,
+            agent,
+            to_number,
+            from_number=payload.from_number,
+        )
+        session = get_call_session(call_ref)
+        resolved_from = session.from_number if session and session.from_number else (payload.from_number or agent.phone_number or "")
+        return VobizOutboundCallResponse(
+            provider_request_uuid="",
+            call_status="queued",
+            from_number=resolved_from,
+            to_number=to_number,
+            call_ref=call_ref,
+            call_short_id=call_short_id,
+            evaluator_result_id=result_response.id if result_response else None,
+            result_id=result_response.result_id if result_response else None,
+        )
 
     try:
         from_number, used_pool, provider = resolve_outbound_from_number(
             db,
             organization_id,
             explicit_from_number=payload.from_number,
+            preferred_from_number=agent.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    if provider != "vobiz":
+    if provider == "vobiz":
+        try:
+            build_vobiz_client_for_org(db, organization_id)
+        except ValueError as e:
+            if used_pool:
+                release_pool_slot(organization_id)
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    elif provider != "plivo":
         if used_pool:
             release_pool_slot(organization_id)
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Outbound via the Vobiz API requires a Vobiz caller ID; "
-                f"resolved provider is {provider}. Use org-owned numbers or "
-                f"configure Vobiz entries in telephony.outbound_pool."
-            ),
+            detail=f"Outbound caller ID provider {provider} is not supported for live agent calls.",
         )
 
     to_number = normalize_e164(payload.to_number)
+    telephony_integration_id = outbound_telephony_integration_id(db, organization_id, from_number)
 
     session = create_call_session(
         agent_id=str(agent.id),
@@ -347,9 +375,12 @@ async def create_vobiz_outbound_call(
             "from_number": from_number,
             "to_number": to_number,
             "live_transcript": [],
+            "telephony_integration_id": (
+                str(telephony_integration_id) if telephony_integration_id else None
+            ),
         },
         provider_call_id=None,
-        provider_platform="vobiz",
+        provider_platform=provider,
         agent_id=agent.id,
     )
     db.add(recording)
@@ -371,6 +402,10 @@ async def create_vobiz_outbound_call(
         events_url=events_url,
         used_pool=used_pool,
         call_recording_id=str(recording.id),
+        provider=provider,
+        telephony_integration_id=(
+            str(telephony_integration_id) if telephony_integration_id else None
+        ),
     )
 
     return VobizOutboundCallResponse(
@@ -684,6 +719,14 @@ async def carrier_media_websocket(websocket: WebSocket):
                 organization_id=UUID(session.organization_id),
                 persona_id=persona_id,
                 scenario_id=scenario_id,
+            )
+            run_params = resolve_vobiz_telephony_run_params(
+                db,
+                context=context,
+                call_direction=session.direction,
+                persona_id=persona_id,
+                scenario_id=scenario_id,
+                evaluator_id=session.evaluator_id,
             )
             serializer = build_carrier_frame_serializer(
                 provider_platform=getattr(call_row, "provider_platform", None),

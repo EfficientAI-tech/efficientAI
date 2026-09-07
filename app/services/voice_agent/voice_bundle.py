@@ -638,13 +638,20 @@ async def run_voice_bundle_fastapi(
         # Instantiate TTS service from the provider registry
         from app.services.voice_agent.resolve_tts_voice import (
             log_effective_tts_voice,
+            persona_bundle_tts_providers_mismatch,
             resolve_effective_tts_voice_id,
         )
+
+        allow_persona_voice = True
+        if (call_direction or "outbound").strip().lower() == "inbound":
+            if persona_bundle_tts_providers_mismatch(persona, voice_bundle):
+                allow_persona_voice = False
 
         tts_voice_id = resolve_effective_tts_voice_id(
             persona=persona,
             voice_bundle=voice_bundle,
             default_voice=tts_cfg["default_voice"],
+            allow_persona_voice=allow_persona_voice,
         )
         log_effective_tts_voice(
             logger,
@@ -652,6 +659,7 @@ async def run_voice_bundle_fastapi(
             persona=persona,
             voice_bundle=voice_bundle,
             resolved_voice_id=tts_voice_id,
+            allow_persona_voice=allow_persona_voice,
         )
         tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
         tts = _instantiate_tts_service(

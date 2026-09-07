@@ -2011,6 +2011,30 @@
       "tts_per_1m_characters": 50.0
     }
   },
+  "voicemaker-pro2": {
+    "provider": "voicemaker",
+    "model_type": "tts",
+    "description": "VoiceMaker Pro2 next-gen multilingual neural speech",
+    "languages": "30+ languages with enhanced Indian language support",
+    "voices_source_file": "voicemaker_voices.json",
+    "pricing": {
+      "source": "developer.voicemaker.in $25/1M chars × 2× (Pro2)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 50.0
+    }
+  },
+  "voicemaker-pro1": {
+    "provider": "voicemaker",
+    "model_type": "tts",
+    "description": "VoiceMaker Pro1 standard neural multilingual voices",
+    "languages": "90+ languages with accent customization",
+    "voices_source_file": "voicemaker_voices.json",
+    "pricing": {
+      "source": "developer.voicemaker.in $25/1M chars × 1× (Pro1)",
+      "usage_kind": "tts",
+      "tts_per_1m_characters": 25.0
+    }
+  },
   "lightning-v3.1": {
     "provider": "smallest",
     "model_type": "tts",

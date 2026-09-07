@@ -1732,6 +1732,7 @@ class EvaluatorSuitePersonaSummary(BaseModel):
     """Persona referenced by a suite combination grid."""
     id: UUID
     name: Optional[str] = None
+    tts_provider: Optional[str] = None
 
 
 
@@ -1779,6 +1780,7 @@ class EvaluatorSuiteResponse(BaseModel):
     persona_name: Optional[str] = None
     agent_call_type: Optional[str] = None
     agent_call_medium: Optional[str] = None
+    voice_bundle_tts_provider: Optional[str] = None
     metric_ids: Optional[List[str]] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None

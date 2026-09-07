@@ -1,5 +1,8 @@
 import EvaluatorPhoneOutboundForm from './EvaluatorPhoneOutboundForm'
+import EvaluatorTtsMismatchBanner from './EvaluatorTtsMismatchBanner'
+import { EvaluatorSuite } from '../../../lib/api'
 import { PhoneOutgoing } from 'lucide-react'
+import { suiteHasTtsProviderMismatch } from '../utils/evaluatorTtsMismatch'
 
 interface Props {
   evaluatorId: string
@@ -10,6 +13,8 @@ interface Props {
   scenarioName?: string
   callMedium: string
   callType: string
+  suite: EvaluatorSuite
+  onEditPersonas?: () => void
   showToast: (message: string, type: 'success' | 'error') => void
 }
 
@@ -22,9 +27,13 @@ export default function EvaluatorOutboundCallPanel({
   scenarioName,
   callMedium,
   callType,
+  suite,
+  onEditPersonas,
   showToast,
 }: Props) {
   if (callMedium !== 'phone_call' || callType === 'inbound') return null
+
+  const callBlocked = suiteHasTtsProviderMismatch(suite)
 
   return (
     <div className="bg-white shadow rounded-lg overflow-hidden">
@@ -39,7 +48,14 @@ export default function EvaluatorOutboundCallPanel({
           </div>
         </div>
       </div>
-      <div className="p-6">
+      <div className="p-6 space-y-4">
+        {callBlocked && (
+          <EvaluatorTtsMismatchBanner
+            suite={suite}
+            variant="block"
+            onEditPersonas={onEditPersonas}
+          />
+        )}
         <EvaluatorPhoneOutboundForm
           agentId={agentId}
           evaluatorId={evaluatorId}
@@ -47,6 +63,7 @@ export default function EvaluatorOutboundCallPanel({
           scenarioId={scenarioId}
           personaName={personaName}
           scenarioName={scenarioName}
+          disabled={callBlocked}
           showToast={showToast}
         />
       </div>

@@ -6,8 +6,9 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.database import Agent, Evaluator, Scenario
+from app.models.database import Agent, Evaluator, Persona, Scenario
 from app.models.schemas import EvaluatorResultResponse
+from app.services.evaluators.evaluator_helpers import require_matching_agent_persona_tts
 from app.services.evaluators.evaluator_suite_service import generate_unique_result_id
 from app.services.telephony.plivo_client import normalize_e164
 
@@ -31,10 +32,19 @@ def initiate_phone_evaluator_call(
     from app.models.database import CallRecording, CallRecordingSource, EvaluatorResult, EvaluatorResultStatus
     from app.models.enums import CallRecordingStatus
     from app.config import settings
-    from app.services.telephony.vobiz_outbound_pool import release_pool_slot, resolve_outbound_from_number
+    from app.services.telephony.vobiz_outbound_pool import (
+        outbound_telephony_integration_id,
+        release_pool_slot,
+        resolve_outbound_from_number,
+    )
     from app.services.telephony.vobiz_session import create_call_session
     from app.services.telephony.vobiz_agent_context import vobiz_webhook_base_url
     from app.workers.tasks.initiate_vobiz_outbound import initiate_vobiz_outbound_call_task
+
+    if evaluator.persona_id:
+        persona = db.query(Persona).filter(Persona.id == evaluator.persona_id).first()
+        if persona:
+            require_matching_agent_persona_tts(db, agent, persona)
 
     scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
     scenario_name = scenario.name if scenario else "Unknown Scenario"
@@ -61,19 +71,17 @@ def initiate_phone_evaluator_call(
             db,
             organization_id,
             explicit_from_number=from_number,
+            preferred_from_number=agent.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    if provider != "vobiz":
+    if provider not in {"vobiz", "plivo"}:
         if used_pool:
             release_pool_slot(organization_id)
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Phone evaluator outbound requires a Vobiz caller ID; "
-                f"resolved provider is {provider}."
-            ),
+            detail=f"Phone evaluator outbound does not support caller ID provider {provider}.",
         )
 
     to_number_norm = normalize_e164(to_number)
@@ -103,6 +111,9 @@ def initiate_phone_evaluator_call(
         f"?call_ref={session.call_ref}"
     )
     recording_url = f"{base}{settings.API_V1_PREFIX}/telephony/vobiz/webhooks/recording-ready"
+    telephony_integration_id = outbound_telephony_integration_id(
+        db, organization_id, from_number_resolved
+    )
 
     call_short_id = "".join(random.choices(string.digits, k=6))
     recording = CallRecording(
@@ -123,9 +134,12 @@ def initiate_phone_evaluator_call(
             "from_number": from_number_resolved,
             "to_number": to_number_norm,
             "live_transcript": [],
+            "telephony_integration_id": (
+                str(telephony_integration_id) if telephony_integration_id else None
+            ),
         },
         provider_call_id=None,
-        provider_platform="vobiz",
+        provider_platform=provider,
         agent_id=agent.id,
         evaluator_result_id=evaluator_result.id,
     )
@@ -142,6 +156,10 @@ def initiate_phone_evaluator_call(
         events_url=events_url,
         used_pool=used_pool,
         call_recording_id=str(recording.id),
+        provider=provider,
+        telephony_integration_id=(
+            str(telephony_integration_id) if telephony_integration_id else None
+        ),
     )
 
     return session.call_ref, call_short_id, EvaluatorResultResponse.model_validate(evaluator_result)
