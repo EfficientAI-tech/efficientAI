@@ -64,3 +64,41 @@ def test_no_persona_uses_bundle():
         )
         == "bundle-voice"
     )
+
+
+def test_persona_bundle_mismatch_skips_persona_voice_when_disabled():
+    from app.services.voice_agent.resolve_tts_voice import (
+        persona_bundle_tts_providers_mismatch,
+        resolve_effective_tts_voice_id,
+    )
+
+    persona = SimpleNamespace(tts_provider="openai", tts_voice_id="persona-voice")
+    bundle = SimpleNamespace(tts_provider="voicemaker", tts_voice="bundle-voice")
+
+    assert persona_bundle_tts_providers_mismatch(persona, bundle) is True
+    assert (
+        resolve_effective_tts_voice_id(
+            persona=persona,
+            voice_bundle=bundle,
+            default_voice="default-voice",
+            allow_persona_voice=False,
+        )
+        == "bundle-voice"
+    )
+
+
+def test_persona_bundle_mismatch_falls_back_to_default_when_bundle_voice_missing():
+    from app.services.voice_agent.resolve_tts_voice import resolve_effective_tts_voice_id
+
+    persona = SimpleNamespace(tts_provider="openai", tts_voice_id="persona-voice")
+    bundle = SimpleNamespace(tts_provider="voicemaker", tts_voice=None)
+
+    assert (
+        resolve_effective_tts_voice_id(
+            persona=persona,
+            voice_bundle=bundle,
+            default_voice="ai3-Jony",
+            allow_persona_voice=False,
+        )
+        == "ai3-Jony"
+    )

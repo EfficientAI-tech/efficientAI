@@ -2,6 +2,8 @@ import { useMutation } from '@tanstack/react-query'
 import { apiClient, EvaluatorSuite } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { RotateCcw, PhoneIncoming, SkipForward, AlertTriangle } from 'lucide-react'
+import EvaluatorTtsMismatchBanner from './EvaluatorTtsMismatchBanner'
+import { suiteHasTtsProviderMismatch } from '../utils/evaluatorTtsMismatch'
 
 interface Props {
   suite: EvaluatorSuite
@@ -66,6 +68,9 @@ export default function EvaluatorInboundCallPanel({
         </div>
       </div>
       <div className="p-6 space-y-4">
+        {suiteHasTtsProviderMismatch(suite) && (
+          <EvaluatorTtsMismatchBanner suite={suite} variant="inform" />
+        )}
         {!isActive && (
           <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-900">
             <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />

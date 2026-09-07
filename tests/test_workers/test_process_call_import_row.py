@@ -989,10 +989,10 @@ def test_process_call_import_row_fails_when_csv_url_download_fails(
     assert fake_s3.uploads == []
 
 
-def test_process_call_import_row_uses_csv_url_when_provider_lacks_lookup(
+def test_process_call_import_row_plivo_csv_url_uses_credentialed_download(
     db_session, monkeypatch
 ):
-    """Plivo credentialed imports download the CSV URL without provider auth."""
+    """Plivo credentialed import downloads the CSV URL with provider auth."""
 
     _, call_import, rows = _seed(db_session, row_count=1)
     row = rows[0]
@@ -1002,7 +1002,7 @@ def test_process_call_import_row_uses_csv_url_when_provider_lacks_lookup(
     call_import.provider = TelephonyProvider.PLIVO.value
     db_session.commit()
 
-    class _NoLookupClient:
+    class _CredentialedDownloader:
         def __init__(self):
             self.calls = []
 
@@ -1010,11 +1010,11 @@ def test_process_call_import_row_uses_csv_url_when_provider_lacks_lookup(
             self.calls.append(recording_url)
             return b"plivo-audio", "audio/mpeg"
 
-    fake_client = _NoLookupClient()
+    fake_client = _CredentialedDownloader()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
     public_calls = _patch_public_download(
-        monkeypatch, return_value=(b"plivo-audio", "audio/mpeg")
+        monkeypatch, return_value=(b"should-not-be-used", "audio/mpeg")
     )
 
     result = task_module.process_call_import_row_task.run(str(row.id))
@@ -1023,8 +1023,8 @@ def test_process_call_import_row_uses_csv_url_when_provider_lacks_lookup(
     db_session.refresh(row)
     db_session.refresh(call_import)
 
-    assert fake_client.calls == []
-    assert public_calls == [csv_url]
+    assert fake_client.calls == [csv_url]
+    assert public_calls == []
     assert row.status == CallImportRowStatus.COMPLETED
     assert call_import.status == CallImportStatus.COMPLETED
 

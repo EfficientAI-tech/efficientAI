@@ -512,7 +512,7 @@ async def websocket_endpoint(
 
                 llm_base_url = (
                     resolve_voice_llm_base_url(db, organization_id, voice_bundle, llm_provider)
-                    if llm_provider
+                    if llm_provider and voice_bundle
                     else None
                 )
 

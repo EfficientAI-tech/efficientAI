@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
-import { Phone, Plus, Trash2, Users, X } from 'lucide-react'
+import { Phone, Plus, Trash2, Users, X, Pencil } from 'lucide-react'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { useOrgTelephony } from '../../hooks/useOrgTelephony'
@@ -53,7 +53,8 @@ export default function TelephonyNumbers() {
   const [importResults, setImportResults] = useState<TelephonyImportNumbersResponse | null>(null)
   const [newContactPhone, setNewContactPhone] = useState('')
   const [newContactLabel, setNewContactLabel] = useState('')
-  const [showAddContactModal, setShowAddContactModal] = useState(false)
+  const [showContactModal, setShowContactModal] = useState(false)
+  const [editingContact, setEditingContact] = useState<TelephonyDialTargetResponse | null>(null)
   const [numberToDelete, setNumberToDelete] = useState<TelephonyPhoneNumberResponse | null>(null)
 
   const { data: contacts = [], isLoading: contactsLoading } = useQuery<TelephonyDialTargetResponse[]>({
@@ -151,13 +152,29 @@ export default function TelephonyNumbers() {
     mutationFn: (data: { phone_number: string; label?: string }) => apiClient.createDialTarget(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['telephony-dial-targets'] })
-      setNewContactPhone('')
-      setNewContactLabel('')
-      setShowAddContactModal(false)
+      closeContactModal()
       showToast('Contact saved', 'success')
     },
     onError: (error: any) => {
       showToast(error?.response?.data?.detail || error?.message || 'Failed to save contact', 'error')
+    },
+  })
+
+  const updateContactMutation = useMutation({
+    mutationFn: ({
+      targetId,
+      data,
+    }: {
+      targetId: string
+      data: { phone_number?: string; label?: string }
+    }) => apiClient.updateDialTarget(targetId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['telephony-dial-targets'] })
+      closeContactModal()
+      showToast('Contact updated', 'success')
+    },
+    onError: (error: any) => {
+      showToast(error?.response?.data?.detail || error?.message || 'Failed to update contact', 'error')
     },
   })
 
@@ -199,26 +216,42 @@ export default function TelephonyNumbers() {
   }
 
   const openAddContactModal = () => {
+    setEditingContact(null)
     setNewContactPhone('')
     setNewContactLabel('')
-    setShowAddContactModal(true)
+    setShowContactModal(true)
   }
 
-  const closeAddContactModal = () => {
-    if (createContactMutation.isPending) return
-    setShowAddContactModal(false)
+  const openEditContactModal = (contact: TelephonyDialTargetResponse) => {
+    setEditingContact(contact)
+    setNewContactPhone(contact.phone_number)
+    setNewContactLabel(contact.label || '')
+    setShowContactModal(true)
+  }
+
+  const closeContactModal = () => {
+    if (createContactMutation.isPending || updateContactMutation.isPending) return
+    setShowContactModal(false)
+    setEditingContact(null)
     setNewContactPhone('')
     setNewContactLabel('')
   }
 
-  const submitNewContact = () => {
+  const submitContact = () => {
     const phone = newContactPhone.trim()
     if (!phone) return
-    createContactMutation.mutate({
-      phone_number: phone,
-      label: newContactLabel.trim() || undefined,
-    })
+    const label = newContactLabel.trim() || undefined
+    if (editingContact) {
+      updateContactMutation.mutate({
+        targetId: editingContact.id,
+        data: { phone_number: phone, label },
+      })
+      return
+    }
+    createContactMutation.mutate({ phone_number: phone, label })
   }
+
+  const isContactModalPending = createContactMutation.isPending || updateContactMutation.isPending
 
   const renderModal = (content: ReactNode) => {
     if (typeof document === 'undefined') return null
@@ -514,20 +547,32 @@ export default function TelephonyNumbers() {
                       <p className="text-sm text-gray-500 truncate">{contact.phone_number}</p>
                     )}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-red-600 hover:text-red-700 hover:bg-red-50 flex-shrink-0"
-                    leftIcon={<Trash2 className="h-4 w-4" />}
-                    isLoading={
-                      deleteContactMutation.isPending &&
-                      deleteContactMutation.variables === contact.id
-                    }
-                    onClick={() => deleteContactMutation.mutate(contact.id)}
-                    aria-label={`Remove ${contact.label || contact.phone_number}`}
-                  >
-                    Remove
-                  </Button>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+                      leftIcon={<Pencil className="h-4 w-4" />}
+                      onClick={() => openEditContactModal(contact)}
+                      aria-label={`Edit ${contact.label || contact.phone_number}`}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      leftIcon={<Trash2 className="h-4 w-4" />}
+                      isLoading={
+                        deleteContactMutation.isPending &&
+                        deleteContactMutation.variables === contact.id
+                      }
+                      onClick={() => deleteContactMutation.mutate(contact.id)}
+                      aria-label={`Remove ${contact.label || contact.phone_number}`}
+                    >
+                      Remove
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -535,23 +580,25 @@ export default function TelephonyNumbers() {
         </div>
       )}
 
-      {showAddContactModal &&
+      {showContactModal &&
         renderModal(
           <div
             className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]"
-            onClick={closeAddContactModal}
+            onClick={closeContactModal}
           >
             <div
               className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <h3 className="text-lg font-semibold text-gray-900">New contact</h3>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {editingContact ? 'Edit contact' : 'New contact'}
+                </h3>
                 <button
                   type="button"
-                  onClick={closeAddContactModal}
+                  onClick={closeContactModal}
                   className="text-gray-400 hover:text-gray-600"
-                  disabled={createContactMutation.isPending}
+                  disabled={isContactModalPending}
                 >
                   <X className="h-5 w-5" />
                 </button>
@@ -584,7 +631,7 @@ export default function TelephonyNumbers() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && newContactPhone.trim()) {
-                        submitNewContact()
+                        submitContact()
                       }
                     }}
                   />
@@ -593,18 +640,18 @@ export default function TelephonyNumbers() {
                   <Button
                     variant="outline"
                     className="flex-1"
-                    disabled={createContactMutation.isPending}
-                    onClick={closeAddContactModal}
+                    disabled={isContactModalPending}
+                    onClick={closeContactModal}
                   >
                     Cancel
                   </Button>
                   <Button
                     className="flex-1"
                     disabled={!newContactPhone.trim()}
-                    isLoading={createContactMutation.isPending}
-                    onClick={submitNewContact}
+                    isLoading={isContactModalPending}
+                    onClick={submitContact}
                   >
-                    Save contact
+                    {editingContact ? 'Save changes' : 'Save contact'}
                   </Button>
                 </div>
               </div>

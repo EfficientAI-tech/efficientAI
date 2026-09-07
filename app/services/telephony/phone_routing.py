@@ -195,11 +195,11 @@ def _resolve_agent_for_org(
 def resolve_inbound_agent_for_number(
     db: Session,
     to_number_raw: Optional[str],
-) -> Tuple[Optional[UUID], Optional[UUID]]:
-    """Resolve (agent_id, organization_id) for an inbound called number."""
+) -> Tuple[Optional[UUID], Optional[UUID], Optional[UUID]]:
+    """Resolve (agent_id, organization_id, telephony_integration_id) for inbound To."""
     candidates = expand_phone_candidates(to_number_raw)
     if not candidates:
-        return None, None
+        return None, None, None
 
     number_row = _find_inbound_number_row(db, candidates)
     if not number_row:
@@ -208,7 +208,7 @@ def resolve_inbound_agent_for_number(
             to_number_raw,
             candidates,
         )
-        return None, None
+        return None, None, None
 
     agent_id, organization_id = _resolve_agent_for_org(
         db,
@@ -217,7 +217,7 @@ def resolve_inbound_agent_for_number(
         number_row,
     )
     if agent_id and organization_id:
-        return agent_id, organization_id
+        return agent_id, organization_id, number_row.telephony_integration_id
 
     logger.warning(
         "Inbound number {} owned by org {} but no agent linked (candidates={})",
@@ -225,7 +225,7 @@ def resolve_inbound_agent_for_number(
         number_row.organization_id,
         candidates,
     )
-    return None, None
+    return None, None, None
 
 
 def sync_agent_telephony_number_link(db: Session, agent: Agent) -> None:

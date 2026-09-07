@@ -8,9 +8,9 @@ from fastapi import HTTPException
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.models.database import Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario
+from app.models.database import Agent, Evaluator, EvaluatorResult, EvaluatorResultStatus, Persona, Scenario
 from app.models.schemas import EvaluatorResultResponse
-from app.services.evaluators.evaluator_helpers import is_custom_evaluator
+from app.services.evaluators.evaluator_helpers import is_custom_evaluator, require_matching_agent_persona_tts
 
 
 def generate_unique_result_id(db: Session) -> str:
@@ -71,6 +71,14 @@ def queue_evaluator_runs(
                 )
             if not evaluator.agent_id:
                 raise HTTPException(status_code=400, detail="Evaluator has no agent configured")
+
+            agent = db.query(Agent).filter(Agent.id == evaluator.agent_id).first()
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found for evaluator")
+            if evaluator.persona_id:
+                persona = db.query(Persona).filter(Persona.id == evaluator.persona_id).first()
+                if persona:
+                    require_matching_agent_persona_tts(db, agent, persona)
 
             scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
             scenario_name = scenario.name if scenario else "Unknown Scenario"

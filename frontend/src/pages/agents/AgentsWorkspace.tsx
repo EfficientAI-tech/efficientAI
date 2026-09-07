@@ -116,6 +116,7 @@ export default function AgentsWorkspace() {
 
   const handleCreateSuccess = () => {
     queryClient.invalidateQueries({ queryKey: ['agents'] })
+    queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
     setShowCreateModal(false)
   }
 

@@ -259,3 +259,66 @@ def test_create_custom_evaluator_blocked(authenticated_client, make_metric):
         },
     )
     assert response.status_code == 400
+
+
+def test_evaluator_suite_response_includes_tts_providers(
+    authenticated_client, make_agent, make_persona, make_scenario, make_voice_bundle
+):
+    bundle = make_voice_bundle(tts_provider="openai")
+    agent = make_agent(voice_bundle_id=bundle.id)
+    persona = make_persona(tts_provider="openai")
+    scenario = make_scenario(agent_id=agent.id)
+
+    create = authenticated_client.post(
+        "/api/v1/evaluator-suites",
+        json={
+            "agent_id": str(agent.id),
+            "persona_id": str(persona.id),
+            "scenario_ids": [str(scenario.id)],
+        },
+    )
+    assert create.status_code == 201
+    body = create.json()
+    assert body["voice_bundle_tts_provider"] == "openai"
+    assert body["personas"][0]["tts_provider"] == "openai"
+
+
+def test_run_evaluator_suite_rejects_stale_persona_tts_provider(
+    authenticated_client,
+    db_session,
+    monkeypatch,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_voice_bundle,
+):
+    from app.models.database import VoiceBundle
+
+    bundle = make_voice_bundle(tts_provider="openai")
+    agent = make_agent(voice_bundle_id=bundle.id, call_medium="web_call")
+    persona = make_persona(tts_provider="openai")
+    scenario = make_scenario(agent_id=agent.id)
+
+    create = authenticated_client.post(
+        "/api/v1/evaluator-suites",
+        json={
+            "agent_id": str(agent.id),
+            "persona_id": str(persona.id),
+            "scenario_ids": [str(scenario.id)],
+        },
+    )
+    suite_id = create.json()["id"]
+
+    stored_bundle = db_session.query(VoiceBundle).filter(VoiceBundle.id == bundle.id).one()
+    stored_bundle.tts_provider = "voicemaker"
+    db_session.commit()
+
+    _patch_run_evaluator_task_delay(monkeypatch, lambda *_a, **_k: _FakeTaskResult("task-1"))
+
+    run_response = authenticated_client.post(
+        f"/api/v1/evaluator-suites/{suite_id}/run",
+        json={"runs_per_combination": 1},
+    )
+    assert run_response.status_code == 400
+    assert "Edit the evaluator" in run_response.json()["detail"]
+

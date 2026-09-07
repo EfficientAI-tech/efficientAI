@@ -215,7 +215,7 @@ def create_app() -> FastAPI:
         )
         if _service_mode() == "media":
             logger.info(
-                "Vobiz telephony edge: /telephony/vobiz/webhooks/* and /telephony/vobiz/ws"
+                "Carrier telephony edge: /telephony/vobiz/webhooks/* and /telephony/carrier/ws"
             )
         if settings.SERVICE_MODE == "api":
             logger.info(

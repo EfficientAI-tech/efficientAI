@@ -14,6 +14,8 @@ interface Props {
   isSaving: boolean
   isActivating?: boolean
   isDeleting?: boolean
+  runDisabled?: boolean
+  runDisabledReason?: string
   onEdit: () => void
   onCancelEdit: () => void
   onSave: () => void
@@ -32,6 +34,8 @@ export default function EvaluatorDetailHeader({
   isActive,
   isSaving,
   isActivating,
+  runDisabled,
+  runDisabledReason,
   onEdit,
   onCancelEdit,
   onSave,
@@ -81,7 +85,13 @@ export default function EvaluatorDetailHeader({
           </Button>
         )}
         {!isEditing && !isInbound && onRun && (
-          <Button variant="primary" onClick={onRun} leftIcon={<Play className="w-4 h-4" />}>
+          <Button
+            variant="primary"
+            onClick={onRun}
+            disabled={runDisabled}
+            title={runDisabled ? runDisabledReason : undefined}
+            leftIcon={<Play className="w-4 h-4" />}
+          >
             Run Suite
           </Button>
         )}

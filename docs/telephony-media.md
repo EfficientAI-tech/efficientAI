@@ -15,7 +15,7 @@ Vobiz sees **one public host** (the telephony edge):
 - `POST/GET /api/v1/telephony/vobiz/webhooks/answer`
 - `POST /api/v1/telephony/vobiz/webhooks/events`
 - `POST /api/v1/telephony/vobiz/webhooks/recording-ready`
-- `WSS /api/v1/telephony/vobiz/ws`
+- `WSS /api/v1/telephony/carrier/ws` (shared live-audio socket for Plivo, Vobiz, and other Stream-compatible carriers)
 
 Configure **`vobiz.webhook_base_url`** to that public URL (e.g. `https://telephony.staging.example.com`). When `media_ws_base_url` / `MEDIA_WS_BASE_URL` is unset, carrier answer XML reuses the same host (`https` → `wss`) via `carrier_media_ws_base_url()`.
 

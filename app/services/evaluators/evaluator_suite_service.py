@@ -22,6 +22,7 @@ from app.models.database import (
     EvaluatorSuite,
     Persona,
     Scenario,
+    VoiceBundle,
 )
 from app.models.schemas import (
     EvaluatorSuiteCombinationResponse,
@@ -151,9 +152,20 @@ def _build_suite_response(
         EvaluatorSuitePersonaSummary(
             id=pid,
             name=personas_by_id[pid].name if pid in personas_by_id else None,
+            tts_provider=personas_by_id[pid].tts_provider if pid in personas_by_id else None,
         )
         for pid in persona_ids
     ]
+
+    voice_bundle_tts_provider = None
+    if agent and agent.voice_bundle_id:
+        voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+        if voice_bundle and voice_bundle.tts_provider:
+            voice_bundle_tts_provider = (
+                voice_bundle.tts_provider.value
+                if hasattr(voice_bundle.tts_provider, "value")
+                else str(voice_bundle.tts_provider)
+            )
 
     return EvaluatorSuiteResponse(
         id=suite.id,
@@ -167,6 +179,7 @@ def _build_suite_response(
         persona_name=primary_persona.name if primary_persona else None,
         agent_call_type=getattr(agent, "call_type", None) if agent else None,
         agent_call_medium=getattr(agent, "call_medium", None) if agent else None,
+        voice_bundle_tts_provider=voice_bundle_tts_provider,
         metric_ids=suite.metric_ids,
         llm_provider=suite.llm_provider,
         llm_model=suite.llm_model,

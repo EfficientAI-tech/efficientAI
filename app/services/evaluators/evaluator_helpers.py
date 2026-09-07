@@ -1,6 +1,7 @@
 """Shared evaluator helpers."""
 
 import random
+from dataclasses import dataclass
 from typing import List, Optional
 from uuid import UUID
 
@@ -9,6 +10,68 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
 from app.models.database import Agent, Evaluator, Metric, Persona, Scenario, VoiceBundle
+
+
+@dataclass(frozen=True)
+class AgentPersonaTtsMismatch:
+    """Persona TTS provider does not match the agent voice bundle."""
+
+    persona_name: str
+    persona_provider: str
+    bundle_provider: str
+    agent_name: str
+
+
+def _normalize_tts_provider(value) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "value"):
+        return str(value.value).lower()
+    return str(value).lower()
+
+
+def agent_persona_tts_mismatch(
+    db: Session,
+    agent: Agent,
+    persona: Persona,
+) -> Optional[AgentPersonaTtsMismatch]:
+    """Return mismatch details when persona and bundle TTS providers differ."""
+    if not agent.voice_bundle_id or not persona.tts_provider:
+        return None
+    voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+    if not voice_bundle or not voice_bundle.tts_provider:
+        return None
+    vb_provider = _normalize_tts_provider(voice_bundle.tts_provider)
+    persona_provider = _normalize_tts_provider(persona.tts_provider)
+    if vb_provider == persona_provider:
+        return None
+    return AgentPersonaTtsMismatch(
+        persona_name=persona.name or "Unknown",
+        persona_provider=persona.tts_provider,
+        bundle_provider=(
+            voice_bundle.tts_provider.value
+            if hasattr(voice_bundle.tts_provider, "value")
+            else str(voice_bundle.tts_provider)
+        ),
+        agent_name=agent.name or "Unknown",
+    )
+
+
+def _mismatch_create_message(mismatch: AgentPersonaTtsMismatch) -> str:
+    return (
+        f"Persona '{mismatch.persona_name}' uses TTS provider '{mismatch.persona_provider}' "
+        f"but agent '{mismatch.agent_name}' voice bundle uses '{mismatch.bundle_provider}'. "
+        f"The persona's TTS provider must match the agent's voice bundle TTS provider."
+    )
+
+
+def _mismatch_run_message(mismatch: AgentPersonaTtsMismatch) -> str:
+    return (
+        f"The TTS provider on this agent's voice bundle changed to "
+        f"'{mismatch.bundle_provider}'. Persona '{mismatch.persona_name}' still uses "
+        f"'{mismatch.persona_provider}'. Edit the evaluator and choose a persona that "
+        f"matches the new TTS provider."
+    )
 
 
 def generate_unique_evaluator_id(db: Session) -> str:
@@ -172,24 +235,20 @@ def validate_agent_persona_tts(
     agent: Agent,
     persona: Persona,
 ) -> None:
-    if agent.voice_bundle_id and persona.tts_provider:
-        voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
-        if voice_bundle and voice_bundle.tts_provider:
-            vb_provider = (
-                voice_bundle.tts_provider.value
-                if hasattr(voice_bundle.tts_provider, "value")
-                else str(voice_bundle.tts_provider)
-            ).lower()
-            persona_provider = persona.tts_provider.lower()
-            if vb_provider != persona_provider:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Persona '{persona.name}' uses TTS provider '{persona.tts_provider}' "
-                        f"but agent '{agent.name}' voice bundle uses '{voice_bundle.tts_provider}'. "
-                        f"The persona's TTS provider must match the agent's voice bundle TTS provider."
-                    ),
-                )
+    mismatch = agent_persona_tts_mismatch(db, agent, persona)
+    if mismatch:
+        raise HTTPException(status_code=400, detail=_mismatch_create_message(mismatch))
+
+
+def require_matching_agent_persona_tts(
+    db: Session,
+    agent: Agent,
+    persona: Persona,
+) -> None:
+    """Reject evaluator runs when persona TTS provider no longer matches the bundle."""
+    mismatch = agent_persona_tts_mismatch(db, agent, persona)
+    if mismatch:
+        raise HTTPException(status_code=400, detail=_mismatch_run_message(mismatch))
 
 
 def load_suite_combinations(

@@ -12,7 +12,12 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
-from app.services.evaluators.evaluator_helpers import generate_unique_evaluator_id, is_custom_evaluator, validate_metric_ids
+from app.services.evaluators.evaluator_helpers import (
+    generate_unique_evaluator_id,
+    is_custom_evaluator,
+    validate_agent_persona_tts,
+    validate_metric_ids,
+)
 from app.services.evaluators.evaluator_run_service import queue_evaluator_runs
 from app.services.billing.flexprice_service import record_evaluator_run_requested
 from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle, Metric
@@ -431,6 +436,24 @@ def update_evaluator(
 
     if evaluator_data.llm_config is not None:
         evaluator.llm_config = evaluator_data.llm_config
+
+    if evaluator.agent_id and evaluator.persona_id:
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.id == evaluator.agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
+        ).first()
+        persona = db.query(Persona).filter(
+            and_(
+                Persona.id == evaluator.persona_id,
+                Persona.organization_id == organization_id,
+                Persona.workspace_id == workspace_id,
+            )
+        ).first()
+        if agent and persona:
+            validate_agent_persona_tts(db, agent, persona)
 
     db.commit()
     db.refresh(evaluator)

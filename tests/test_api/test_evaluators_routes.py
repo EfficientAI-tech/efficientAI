@@ -103,3 +103,26 @@ def test_run_evaluators_bills_only_successfully_queued_tasks(
     assert response.json()["task_ids"] == ["task-1"]
     assert len(billed) == 1
     assert billed[0]["quantity"] == 1
+
+
+def test_update_evaluator_rejects_mismatched_persona(
+    authenticated_client, make_agent, make_persona, make_scenario, make_evaluator, make_voice_bundle
+):
+    bundle = make_voice_bundle(tts_provider="openai")
+    agent = make_agent(voice_bundle_id=bundle.id)
+    persona = make_persona(tts_provider="openai")
+    mismatch_persona = make_persona(tts_provider="elevenlabs", name="Eleven Persona")
+    scenario = make_scenario(agent_id=agent.id)
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+    )
+
+    response = authenticated_client.put(
+        f"/api/v1/evaluators/{evaluator.evaluator_id}",
+        json={"persona_id": str(mismatch_persona.id)},
+    )
+    assert response.status_code == 400
+    assert "must match the agent's voice bundle" in response.json()["detail"]
+

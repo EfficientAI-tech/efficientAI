@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { Phone } from 'lucide-react'
@@ -12,6 +13,7 @@ interface Props {
   scenarioId: string
   personaName?: string
   scenarioName?: string
+  disabled?: boolean
   showToast: (message: string, type: 'success' | 'error') => void
 }
 
@@ -22,8 +24,11 @@ export default function EvaluatorPhoneOutboundForm({
   scenarioId,
   personaName,
   scenarioName,
+  disabled = false,
   showToast,
 }: Props) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [toNumber, setToNumber] = useState('')
   const [fromNumber, setFromNumber] = useState('')
 
@@ -42,7 +47,13 @@ export default function EvaluatorPhoneOutboundForm({
         to_number: toNumber,
         from_number: fromNumber || undefined,
       }),
-    onSuccess: () => showToast('Outbound call initiated', 'success'),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+      showToast('Outbound call initiated', 'success')
+      if (data.result_id) {
+        navigate(`/results/${data.result_id}`)
+      }
+    },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail
       showToast(typeof detail === 'string' ? detail : 'Call failed', 'error')
@@ -100,7 +111,7 @@ export default function EvaluatorPhoneOutboundForm({
         variant="primary"
         onClick={() => callMutation.mutate()}
         isLoading={callMutation.isPending}
-        disabled={!toNumber.trim()}
+        disabled={disabled || !toNumber.trim()}
         leftIcon={<Phone className="h-4 w-4" />}
       >
         Place call
