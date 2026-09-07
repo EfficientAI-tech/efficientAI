@@ -273,10 +273,16 @@ def ingest_json_traces(
 def get_otlp_setup(
     request: Request,
     api_key: str = Depends(get_api_key),
+    workspace_id: UUID = Depends(get_workspace_id),
 ):
     """One-time OTLP endpoint + Pipecat config."""
     _ = api_key
-    return OtlpSetupInfo(**build_otlp_setup_info(api_base_url=_api_base_url(request)))
+    return OtlpSetupInfo(
+        **build_otlp_setup_info(
+            api_base_url=_api_base_url(request),
+            workspace_id=workspace_id,
+        )
+    )
 
 
 @router.get("", response_model=SyntheticCallTraceListResponse)

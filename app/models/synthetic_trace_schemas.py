@@ -93,8 +93,20 @@ class OtlpSetupInfo(BaseModel):
     sessions_endpoint: str = ""
     api_key_header: str = "X-API-Key"
     workspace_header: str = "X-Workspace-Id"
+    setup_intro: str = ""
+    install_command: str = ""
+    env_block: str = ""
+    docs_url: str = ""
+    bot_imports_snippet: str = ""
+    run_command: str = "uv run bot.py"
+    test_client_url: str = "http://localhost:7860/client"
+    example_bot_path: str = "docs/examples/pipecat_multi_provider_webrtc_tracing.py"
     one_time_env_vars: Dict[str, str] = Field(default_factory=dict)
     setup_steps: List[Dict[str, str]] = Field(default_factory=list)
+    setup_sections: List[Dict[str, Any]] = Field(default_factory=list)
+    setup_checklist: List[str] = Field(default_factory=list)
+    integration_pieces: List[Dict[str, str]] = Field(default_factory=list)
+    troubleshooting: List[Dict[str, str]] = Field(default_factory=list)
     transport_options: Dict[str, str] = Field(default_factory=dict)
     per_call_correlation: Dict[str, str] = Field(default_factory=dict)
     suggested_span_resource_attributes: Dict[str, str] = Field(default_factory=dict)

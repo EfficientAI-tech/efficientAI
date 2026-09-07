@@ -4,8 +4,6 @@ import { useSearchParams } from 'react-router-dom'
 import {
   Activity,
   BookOpen,
-  Check,
-  Copy,
   Eye,
   Loader,
   PhoneCall,
@@ -21,6 +19,7 @@ import { CallAgentLink } from '../observability/CallAgentLink'
 import { EventBadge, PlatformBadge } from '../observability/observabilityCallUi'
 import { ObservabilityCall } from '../../types/api'
 import { useWorkspaceStore } from '../../store/workspaceStore'
+import PipecatConnectSetup from './PipecatConnectSetup'
 
 type Tab = 'runs' | 'setup'
 type StatusFilter = 'all' | 'open' | 'closed'
@@ -49,29 +48,6 @@ function formatRelative(iso: string): string {
   if (hours < 24) return `${hours}h ago`
   if (days < 7) return `${days}d ago`
   return date.toLocaleDateString()
-}
-
-function CopyButton({ text, label }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        void navigator.clipboard.writeText(text).then(
-          () => {
-            setCopied(true)
-            setTimeout(() => setCopied(false), 2000)
-          },
-          () => {},
-        )
-      }}
-      className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-800"
-      title={label ?? 'Copy'}
-    >
-      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-      {copied ? 'Copied' : 'Copy'}
-    </button>
-  )
 }
 
 function StatusLabel({ status }: { status: string }) {
@@ -130,9 +106,9 @@ export default function TestInsights() {
   })
 
   const { data: setup, isLoading: loadingSetup } = useQuery({
-    queryKey: ['synthetic-call-trace-setup'],
+    queryKey: ['synthetic-call-trace-setup', activeWorkspaceId],
     queryFn: () => apiClient.getSyntheticCallTraceSetup(),
-    enabled: tab === 'setup',
+    enabled: tab === 'setup' && Boolean(activeWorkspaceId),
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
@@ -246,11 +222,13 @@ export default function TestInsights() {
         ? 'Could not load traces'
         : null
 
-  const envBlock = setup?.one_time_env_vars
-    ? Object.entries(setup.one_time_env_vars)
-        .map(([k, v]) => `${k}=${v}`)
-        .join('\n')
-    : ''
+  const envBlock =
+    (typeof setup?.env_block === 'string' && setup.env_block.trim()) ||
+    (setup?.one_time_env_vars
+      ? Object.entries(setup.one_time_env_vars)
+          .map(([k, v]) => `${k}=${v}`)
+          .join('\n')
+      : '')
 
   const openTrace = (traceId: string) => {
     setSelectedTraceId(traceId)
@@ -401,63 +379,20 @@ export default function TestInsights() {
 
       {tab === 'setup' && (
         <div className="bg-white shadow rounded-lg border border-gray-200 overflow-hidden">
-          {loadingSetup && <p className="p-6 text-sm text-gray-500">Loading setup…</p>}
-          {setup && (
-            <div className="divide-y divide-gray-200">
-              <div className="px-6 py-5">
-                <h2 className="text-lg font-semibold text-gray-900">Pipecat WebRTC integration</h2>
-                <p className="text-sm text-gray-600 mt-1 max-w-2xl">
-                  Run your Pipecat agent locally, connect via WebRTC, and traces appear here automatically.
-                </p>
-              </div>
-
-              {(setup.setup_steps ?? []).length > 0 && (
-                <div className="px-6 py-5 space-y-3">
-                  <h3 className="text-sm font-semibold text-gray-900">Quick start</h3>
-                  <ol className="list-decimal list-inside space-y-2 text-sm text-gray-700">
-                    {(setup.setup_steps as Array<{ title: string; detail: string }>).map((step) => (
-                      <li key={step.title}>
-                        <span className="font-medium text-gray-900">{step.title}</span>
-                        {' — '}
-                        {step.detail}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-
-              <div className="px-6 py-5 bg-gray-50 space-y-3">
-                <h3 className="text-sm font-semibold text-gray-900">Workspace settings</h3>
-                <div className="rounded-lg border border-gray-200 bg-white p-4">
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <p className="text-xs font-medium text-gray-500">OTLP export URL</p>
-                    <CopyButton text={setup.otlp_endpoint} label="Copy export URL" />
-                  </div>
-                  <p className="font-mono text-xs text-gray-800 break-all">{setup.otlp_endpoint}</p>
-                </div>
-                {envBlock && (
-                  <div className="rounded-lg border border-gray-200 bg-white p-4">
-                    <div className="flex items-center justify-between gap-2 mb-2">
-                      <p className="text-xs font-medium text-gray-500">Environment variables</p>
-                      <CopyButton text={envBlock} label="Copy env block" />
-                    </div>
-                    <pre className="text-xs font-mono text-gray-800 whitespace-pre-wrap">{envBlock}</pre>
-                  </div>
-                )}
-              </div>
-
-              {setup.pipecat_python_example && (
-                <div className="px-6 py-5 space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-gray-900">Tracing snippet</h3>
-                    <CopyButton text={setup.pipecat_python_example} label="Copy code" />
-                  </div>
-                  <pre className="text-xs font-mono bg-slate-900 text-slate-100 p-4 rounded-lg overflow-x-auto max-h-80">
-                    {setup.pipecat_python_example}
-                  </pre>
-                </div>
-              )}
-            </div>
+          {!activeWorkspaceId && (
+            <p className="p-6 text-sm text-amber-900 bg-amber-50">
+              Select a workspace to load Pipecat setup instructions for that workspace.
+            </p>
+          )}
+          {activeWorkspaceId && loadingSetup && (
+            <p className="p-6 text-sm text-gray-500">Loading setup…</p>
+          )}
+          {activeWorkspaceId && setup && (
+            <PipecatConnectSetup
+              setup={setup}
+              envBlock={envBlock}
+              onGoToCalls={() => setTab('runs')}
+            />
           )}
         </div>
       )}
