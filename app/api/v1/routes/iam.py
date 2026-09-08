@@ -4,6 +4,7 @@ Manage users, invitations, and roles within organizations
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -276,13 +277,13 @@ async def invite_user(
     
     if existing_invitation:
         # Check if expired
-        if _to_aware_utc(existing_invitation.expires_at) < datetime.now(timezone.utc):
-            existing_invitation.status = InvitationStatus.EXPIRED
+        if to_aware_utc(existing_invitation.expires_at) < datetime.now(timezone.utc):
+            existing_invitation.status = InvitationStatus.EXPIRED.value
             db.commit()
         else:
             raise HTTPException(
-                status_code=400,
-                detail="An invitation is already pending for this email"
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An invitation is already pending for this email",
             )
     
     # Create invitation
@@ -295,14 +296,21 @@ async def invite_user(
         invited_by_id=current_user.id,
         email=invitation_data.email,
         role=invitation_data.role,
-        status=InvitationStatus.PENDING,
+        status=InvitationStatus.PENDING.value,
         token=invitation_token,
         expires_at=expires_at
     )
     
-    db.add(invitation)
-    db.commit()
-    db.refresh(invitation)
+    try:
+        db.add(invitation)
+        db.commit()
+        db.refresh(invitation)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An invitation is already pending for this email",
+        ) from None
     
     org = db.query(Organization).filter(Organization.id == organization_id).first()
 

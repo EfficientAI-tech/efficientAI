@@ -71,6 +71,16 @@ def test_list_invitations_excludes_accepted(
     assert "accepted@example.com" not in emails
 
 
+def test_invite_duplicate_pending_returns_conflict(iam_admin_override, authenticated_client):
+    payload = {"email": "dup@example.com", "role": "reader"}
+    first = authenticated_client.post("/api/v1/iam/invitations", json=payload)
+    assert first.status_code == 201
+
+    second = authenticated_client.post("/api/v1/iam/invitations", json=payload)
+    assert second.status_code == 409
+    assert second.json()["detail"] == "An invitation is already pending for this email"
+
+
 def test_update_user_role(iam_admin_override, authenticated_client, db_session, org_id, make_user):
     user_to_update = make_user(email="reader@example.com", name="Reader User")
     membership = OrganizationMember(
