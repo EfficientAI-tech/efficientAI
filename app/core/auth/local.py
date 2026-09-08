@@ -67,6 +67,11 @@ class LocalPasswordProvider(AuthProvider):
         if not user:
             raise AuthError("User no longer active")
 
+        token_epoch = int(claims.get("session_epoch", 0) or 0)
+        user_epoch = int(getattr(user, "session_epoch", 0) or 0)
+        if token_epoch != user_epoch:
+            raise AuthError("Session expired — please sign in again")
+
         member = (
             db.query(OrganizationMember)
             .filter(

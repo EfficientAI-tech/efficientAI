@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import { useLicenseStore } from './store/licenseStore'
 import Layout from './components/Layout'
@@ -61,8 +62,9 @@ import EvaluationsList from './pages/evaluators/results/EvaluationsList'
 
 // Observability
 import Observability from './pages/observability/Observability'
-import ObservabilityCalls from './pages/observability/ObservabilityCalls'
 import ObservabilityCallDetail from './pages/observability/ObservabilityCallDetail'
+import TestInsights from './pages/test-insights/TestInsights'
+import CallTraceDetail from './pages/test-insights/CallTraceDetail'
 
 // Alerting
 import Alerts from './pages/alerting/Alerts'
@@ -105,13 +107,34 @@ import CallImportTagsPage from './pages/callImports/Tags'
 import CallImportSchemasPage from './pages/callImports/Schemas'
 
 
-function PrivateRoute({ children }: { children: React.ReactNode }) {
-  // Either credential type counts as "signed in". The backend enforces the
-  // actual authentication on every request; this guard just keeps the SPA
-  // from flashing protected pages when the user clearly has no session.
-  const { apiKey, accessToken } = useAuthStore()
+function PreserveSearchRedirect({ to }: { to: string }) {
+  const location = useLocation()
+  return <Navigate to={`${to}${location.search}`} replace />
+}
 
-  if (!apiKey && !accessToken) {
+function PrivateRoute({ children }: { children: React.ReactNode }) {
+  const { apiKey, user, sessionReady, bootstrapSession } = useAuthStore()
+  const [bootstrapping, setBootstrapping] = useState(!sessionReady)
+
+  useEffect(() => {
+    let active = true
+    bootstrapSession().finally(() => {
+      if (active) setBootstrapping(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [bootstrapSession, sessionReady])
+
+  if (bootstrapping || !sessionReady) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+      </div>
+    )
+  }
+
+  if (!apiKey && !user) {
     return <Navigate to="/login" replace />
   }
 
@@ -194,8 +217,13 @@ function App() {
           />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
-          <Route path="observability/calls" element={<ObservabilityCalls />} />
+          <Route path="observability/calls" element={<TestInsights />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
+          <Route path="calls" element={<PreserveSearchRedirect to="/observability/calls" />} />
+          <Route path="calls/:traceId" element={<CallTraceDetail />} />
+          <Route path="call-traces" element={<Navigate to="/observability/calls" replace />} />
+          <Route path="call-traces/:traceId" element={<CallTraceDetail />} />
+          <Route path="test-insights" element={<PreserveSearchRedirect to="/observability/calls" />} />
           <Route path="iam" element={<IAM />} />
           <Route path="usage" element={<UsagePage />} />
           <Route path="usage/pricing" element={<UsagePricingRedirect />} />

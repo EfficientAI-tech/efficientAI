@@ -25,6 +25,19 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false
+  # public_base_url: "https://sandbox.efficientai.cloud"
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "efficientai.local"
+  # hsts_enabled: true
+
+rate_limits:
+  enforce: true
+  auth_per_ip_per_minute: 15
+  resource_create_burst: 100
+  resource_create_burst_window_minutes: 10
+  resource_create_sustained_per_minute: 30
+  resource_create_org_per_hour: 2000
 
 # Database Configuration (Docker service name)
 database:

@@ -584,6 +584,14 @@ async def stream_observability_call_audio(
     call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
     recording_url = call_data.get("recording_url")
     if recording_url:
+        from app.services.telephony.exotel_client import ExotelInvalidContentError
+        from app.services.telephony.recording_download import assert_recording_url_safe
+
+        try:
+            assert_recording_url_safe(str(recording_url), user_supplied=True)
+        except ExotelInvalidContentError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
         return RedirectResponse(recording_url)
 
     s3_key = call_data.get("recording_s3_key")

@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios'
 import {
   clearAuthSession,
+  csrfHeaders,
   getApiErrorDetail,
   hasRevocableUserCredentials,
   isOrganizationAccessDenied,
@@ -154,6 +155,7 @@ export interface AuthConfigResponse {
   providers: AuthProviderConfig[]
   tier: 'oss' | 'enterprise'
   gated_signup?: boolean
+  cookie_session_enabled?: boolean
 }
 
 export interface AuthUserSummary {
@@ -544,24 +546,24 @@ let refreshPromise: Promise<string | null> | null = null
 
 class ApiClient {
   private client: AxiosInstance
+  private inMemoryAccessToken: string | null = null
+  private inMemoryRefreshToken: string | null = null
+  private cookieSessionEnabled = true
 
   constructor() {
     this.client = axios.create({
       baseURL: API_BASE_URL,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
     })
 
-    // Add request interceptor to add API key + active workspace to headers.
-    // Workspace selection is read directly from localStorage to avoid a
-    // circular import between this module and the workspace store.
     this.client.interceptors.request.use((config) => {
-      const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
       const workspaceId = localStorage.getItem('activeWorkspaceId')
-      if (accessToken) {
-        config.headers.Authorization = `Bearer ${accessToken}`
+      if (this.inMemoryAccessToken) {
+        config.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
       } else if (config.headers.Authorization) {
         delete config.headers.Authorization
       }
@@ -570,14 +572,14 @@ class ApiClient {
       } else if (config.headers['X-API-Key']) {
         delete config.headers['X-API-Key']
       }
-      // Send X-Workspace-Id so the backend's get_workspace_id dep scopes
-      // listings to the active workspace. When absent (e.g. a brand-new
-      // session that hasn't called listWorkspaces yet) the backend
-      // falls back to the org's Default workspace.
       if (workspaceId) {
         config.headers['X-Workspace-Id'] = workspaceId
       } else if (config.headers['X-Workspace-Id']) {
         delete config.headers['X-Workspace-Id']
+      }
+      const method = (config.method || 'get').toLowerCase()
+      if (method !== 'get' && method !== 'head' && method !== 'options') {
+        Object.assign(config.headers, csrfHeaders())
       }
       return config
     })
@@ -641,8 +643,7 @@ class ApiClient {
   }
 
   private async tryRefreshAccessToken(): Promise<string | null> {
-    const refreshToken = localStorage.getItem('refreshToken')
-    if (!refreshToken) {
+    if (!this.cookieSessionEnabled && !this.inMemoryRefreshToken) {
       return null
     }
 
@@ -650,16 +651,23 @@ class ApiClient {
       refreshPromise = axios
         .post(
           `${API_BASE_URL}/api/v1/auth/refresh`,
-          { refresh_token: refreshToken },
-          { headers: { 'Content-Type': 'application/json' } },
+          this.cookieSessionEnabled
+            ? {}
+            : { refresh_token: this.inMemoryRefreshToken },
+          {
+            withCredentials: true,
+            headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+          },
         )
         .then((res) => {
           const { access_token, refresh_token: rotatedRefresh } = res.data as TokenResponse
-          this.setAccessToken(access_token)
+          if (access_token) {
+            this.setAccessToken(access_token)
+          }
           if (rotatedRefresh) {
             this.setRefreshToken(rotatedRefresh)
           }
-          return access_token as string
+          return (access_token || this.inMemoryAccessToken) as string | null
         })
         .catch((err) => {
           const refreshDetail = getApiErrorDetail(err)
@@ -689,20 +697,37 @@ class ApiClient {
     localStorage.removeItem('apiKey')
   }
 
+  setCookieSessionEnabled(enabled: boolean) {
+    this.cookieSessionEnabled = enabled
+  }
+
+  isCookieSessionEnabled(): boolean {
+    return this.cookieSessionEnabled
+  }
+
   setAccessToken(accessToken: string) {
-    localStorage.setItem('accessToken', accessToken)
+    this.inMemoryAccessToken = accessToken
   }
 
   clearAccessToken() {
-    localStorage.removeItem('accessToken')
+    this.inMemoryAccessToken = null
   }
 
   setRefreshToken(refreshToken: string) {
-    localStorage.setItem('refreshToken', refreshToken)
+    this.inMemoryRefreshToken = refreshToken
   }
 
   clearRefreshToken() {
-    localStorage.removeItem('refreshToken')
+    this.inMemoryRefreshToken = null
+  }
+
+  clearInMemoryTokens() {
+    this.inMemoryAccessToken = null
+    this.inMemoryRefreshToken = null
+  }
+
+  getAccessToken(): string | null {
+    return this.inMemoryAccessToken
   }
 
   // Workspace endpoints (in-org isolation boundary for call imports + metrics).
@@ -810,6 +835,7 @@ class ApiClient {
   // Auth endpoints
   async getAuthConfig(): Promise<AuthConfigResponse> {
     const response = await this.client.get('/api/v1/auth/config')
+    this.setCookieSessionEnabled(Boolean(response.data.cookie_session_enabled))
     return response.data
   }
 
@@ -1008,8 +1034,11 @@ class ApiClient {
     refreshToken?: string | null,
     credentials?: { accessToken?: string | null; apiKey?: string | null },
   ): Promise<{ success: boolean; auth_method: string }> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    const accessToken = credentials?.accessToken ?? localStorage.getItem('accessToken')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...csrfHeaders(),
+    }
+    const accessToken = credentials?.accessToken ?? this.inMemoryAccessToken
     const apiKey = credentials?.apiKey ?? localStorage.getItem('apiKey')
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`
@@ -1018,19 +1047,25 @@ class ApiClient {
     }
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/auth/logout`,
-      {
-        refresh_token: refreshToken ?? localStorage.getItem('refreshToken') ?? undefined,
-      },
-      { headers },
+      this.cookieSessionEnabled
+        ? {}
+        : {
+            refresh_token:
+              refreshToken ?? this.inMemoryRefreshToken ?? undefined,
+          },
+      { headers, withCredentials: true },
     )
     return response.data
   }
 
-  async refreshSession(refreshToken: string): Promise<TokenResponse> {
+  async refreshSession(refreshToken?: string): Promise<TokenResponse> {
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/auth/refresh`,
-      { refresh_token: refreshToken },
-      { headers: { 'Content-Type': 'application/json' } },
+      this.cookieSessionEnabled ? {} : { refresh_token: refreshToken },
+      {
+        withCredentials: true,
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+      },
     )
     return response.data
   }
@@ -1043,7 +1078,9 @@ class ApiClient {
   async switchOrganization(organizationId: string): Promise<TokenResponse> {
     const response = await this.client.post('/api/v1/auth/switch-org', {
       organization_id: organizationId,
-      refresh_token: localStorage.getItem('refreshToken') || undefined,
+      ...(this.cookieSessionEnabled
+        ? {}
+        : { refresh_token: this.inMemoryRefreshToken || undefined }),
     })
     return response.data
   }
@@ -4158,7 +4195,7 @@ class ApiClient {
       ? new URL(`${configuredBase}${normalizedPath}`)
       : new URL(normalizedPath, window.location.origin)
 
-    const accessToken = localStorage.getItem('accessToken')
+    const accessToken = this.inMemoryAccessToken
     const apiKey = localStorage.getItem('apiKey')
     const workspaceId = localStorage.getItem('activeWorkspaceId')
     if (accessToken) {

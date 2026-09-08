@@ -27,6 +27,12 @@ _DEFAULT_ALLOWED_HOST_SUFFIXES = (
     "plivo.com",
     "amazonaws.com",
     "cloudfront.net",
+    "googleapis.com",
+    "vapi.ai",
+    "retell.ai",
+    "elevenlabs.io",
+    "daily.co",
+    "livekit.cloud",
 )
 
 # Credentialed telephony fetches must not send Basic auth to shared storage hosts.
@@ -158,6 +164,35 @@ def assert_recording_url_safe(
             raise ExotelInvalidContentError(
                 "Recording URL resolves to a blocked network address"
             )
+
+
+def assert_safe_provider_recording_url(recording_url: str) -> None:
+    """Validate provider-stored recording URLs before server-side HTTP fetch."""
+    assert_recording_url_safe(recording_url, user_supplied=False)
+
+
+def assert_outbound_http_url_safe(url: str, *, allow_loopback: bool = False) -> None:
+    """Block SSRF to private/metadata networks for operator-configured URLs."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise ExotelInvalidContentError(
+            f"URL must use http or https, got {parsed.scheme or 'none'}"
+        )
+    if not parsed.hostname:
+        raise ExotelInvalidContentError("URL is missing a hostname")
+
+    hostname = parsed.hostname
+    try:
+        literal_ip = ipaddress.ip_address(hostname)
+        if _ip_is_blocked(literal_ip) and not (allow_loopback and literal_ip.is_loopback):
+            raise ExotelInvalidContentError("URL targets a blocked network address")
+        return
+    except ValueError:
+        pass
+
+    for resolved_ip in _resolve_host_ips(hostname):
+        if _ip_is_blocked(resolved_ip) and not (allow_loopback and resolved_ip.is_loopback):
+            raise ExotelInvalidContentError("URL resolves to a blocked network address")
 
 
 def download_recording_url(

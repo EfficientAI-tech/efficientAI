@@ -41,6 +41,18 @@ from app.utils.call_recordings import generate_unique_call_short_id
 from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
 
 router = APIRouter(prefix="/playground", tags=["playground"])
+
+
+def _validate_playground_audio_url(url: str) -> None:
+    from app.services.telephony.exotel_client import ExotelInvalidContentError
+    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+    try:
+        assert_safe_provider_recording_url(str(url))
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 def generate_unique_result_id(db: Session) -> str:
     """Generate a unique 6-digit result ID for EvaluatorResult."""
     max_attempts = 100
@@ -1311,6 +1323,7 @@ async def stream_call_audio(
         )
         if not url:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
+        _validate_playground_audio_url(url)
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url)
 
@@ -1319,6 +1332,7 @@ async def stream_call_audio(
         audio_url = recording_urls.get("conversation_audio")
         if not audio_url:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
+        _validate_playground_audio_url(audio_url)
 
         agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
         if not agent or not agent.voice_ai_integration_id:

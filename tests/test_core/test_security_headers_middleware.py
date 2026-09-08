@@ -119,6 +119,19 @@ def test_asset_routes_use_long_cache(security_client):
     assert "Pragma" not in response.headers
 
 
+def test_hsts_header_when_enabled(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "SECURITY_HSTS_ENABLED", True)
+    monkeypatch.setattr(settings, "SECURITY_HSTS_MAX_AGE", 31536000)
+    monkeypatch.setattr(settings, "SECURITY_HSTS_INCLUDE_SUBDOMAINS", True)
+
+    response = security_client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["Strict-Transport-Security"] == (
+        "max-age=31536000; includeSubDomains"
+    )
+
+
 @pytest.mark.skipif(
     not (Path(settings.FRONTEND_DIR) / "assets").is_dir(),
     reason="frontend dist assets not built in test environment",

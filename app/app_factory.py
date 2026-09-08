@@ -98,8 +98,17 @@ async def _api_lifespan(app: FastAPI):
 def _add_common_middleware(app: FastAPI) -> None:
     if _includes_http_routes():
         app.add_middleware(MigrationCheckMiddleware)
+        from app.core.csrf_middleware import CsrfMiddleware
+
+        app.add_middleware(CsrfMiddleware)
         app.add_middleware(ReaderReadOnlyMiddleware)
         app.add_middleware(LLMUsageContextMiddleware)
+
+    trusted_hosts = [h.strip() for h in (settings.TRUSTED_HOSTS or []) if h and h.strip()]
+    if trusted_hosts:
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
     if settings.OBSERVABILITY_ENABLED and settings.LOKI_ENABLED and settings.LOKI_MULTI_TENANT:
         from app.core.observability_middleware import OrgLoggingMiddleware

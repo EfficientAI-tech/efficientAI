@@ -76,6 +76,16 @@ def build_voice_agent_ws_url(
     ws_base = media_ws_base_url()
     if ws_base:
         base = ws_base
+    elif (settings.PUBLIC_BASE_URL or "").strip():
+        public = settings.PUBLIC_BASE_URL.strip().rstrip("/")
+        if public.startswith("https://"):
+            base = "wss://" + public[len("https://") :]
+        elif public.startswith("http://"):
+            base = "ws://" + public[len("http://") :]
+        elif public.startswith("wss://") or public.startswith("ws://"):
+            base = public
+        else:
+            base = f"wss://{public}"
     elif fallback_host:
         base = ws_base_from_http_host(fallback_host, scheme=fallback_scheme)
     else:

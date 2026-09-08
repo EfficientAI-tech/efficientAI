@@ -18,7 +18,7 @@ import type { Profile } from '../types/api'
  * all react-query caches so every view refetches against the new tenant.
  */
 export default function OrgSwitcher() {
-  const { accessToken, user, switchOrg } = useAuthStore()
+  const { apiKey, user, switchOrg } = useAuthStore()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [switchingTo, setSwitchingTo] = useState<string | null>(null)
@@ -27,12 +27,12 @@ export default function OrgSwitcher() {
   const { data: profile } = useQuery<Profile>({
     queryKey: ['profile'],
     queryFn: () => apiClient.getProfile(),
-    enabled: !!accessToken,
+    enabled: !!user && !apiKey,
   })
 
   // Hide entirely for API-key sessions or single-org users - no switching
   // makes sense there, and the clutter isn't worth it.
-  if (!accessToken) return null
+  if (!user || apiKey) return null
   const orgs = profile?.organizations ?? []
   if (orgs.length <= 1) return null
 

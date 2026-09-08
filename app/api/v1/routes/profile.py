@@ -190,20 +190,7 @@ async def update_profile(
     
     if profile_update.last_name is not None:
         current_user.last_name = profile_update.last_name
-    
-    if profile_update.email is not None:
-        # Check if email is already taken
-        existing_user = db.query(User).filter(
-            User.email == profile_update.email,
-            User.id != current_user.id
-        ).first()
-        if existing_user:
-            raise HTTPException(
-                status_code=400,
-                detail="Email is already in use"
-            )
-        current_user.email = profile_update.email
-    
+
     db.commit()
     db.refresh(current_user)
     

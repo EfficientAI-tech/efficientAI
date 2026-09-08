@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Union
 import secrets
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
@@ -37,6 +37,15 @@ from app.core.auth.refresh_tokens import (
     revoke_refresh_token,
     validate_refresh_token,
 )
+from app.core.api_rate_limit import enforce_auth_rate_limit
+from app.core.auth.cookies import (
+    clear_session_cookies,
+    cookie_session_enabled,
+    read_access_cookie,
+    read_refresh_cookie,
+    set_session_cookies,
+)
+from app.core.auth.session_epoch import bump_user_session_epoch
 from app.core.auth.token_revocation import revoke_access_jti
 from app.core.auth.tokens import create_access_token, decode_access_token
 from app.core.license import get_enabled_features, has_auth_feature
@@ -93,6 +102,7 @@ class AuthConfigResponse(BaseModel):
     providers: List[AuthProviderConfig]
     tier: str  # "oss" | "enterprise"
     gated_signup: bool = False
+    cookie_session_enabled: bool = False
 
 
 class SignupRequest(BaseModel):
@@ -175,7 +185,7 @@ class LogoutRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 
 LoginResponse = Union[TokenResponse, LoginOrgSelectionResponse]
@@ -237,6 +247,7 @@ def get_auth_config() -> AuthConfigResponse:
             and settings.AUTH_LOCAL_ALLOW_SIGNUP
             and "local_password" in enabled
         ),
+        cookie_session_enabled=cookie_session_enabled(),
     )
 
 
@@ -299,6 +310,10 @@ def _revoke_local_password_access_token(bearer: str) -> None:
         pass
 
 
+def _refresh_ttl_seconds() -> int:
+    return settings.AUTH_REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60
+
+
 def _issue_session_tokens(
     db: Session,
     *,
@@ -306,10 +321,11 @@ def _issue_session_tokens(
     organization_id,
     role_value: Optional[str],
 ) -> TokenResponse:
-    access_token, _jti, _ttl = create_access_token(
+    access_token, _jti, ttl = create_access_token(
         user_id=user.id,
         organization_id=organization_id,
         email=user.email,
+        session_epoch=int(getattr(user, "session_epoch", 0) or 0),
     )
     refresh_token = issue_refresh_token(
         db,
@@ -320,9 +336,41 @@ def _issue_session_tokens(
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
+        expires_in=ttl,
         user=_user_to_summary(user, organization_id, role_value),
     )
+
+
+def _respond_with_session(
+    response: Response,
+    db: Session,
+    *,
+    user: User,
+    organization_id,
+    role_value: Optional[str],
+) -> TokenResponse:
+    tokens = _issue_session_tokens(
+        db,
+        user=user,
+        organization_id=organization_id,
+        role_value=role_value,
+    )
+    if cookie_session_enabled():
+        set_session_cookies(
+            response,
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            access_ttl_seconds=tokens.expires_in,
+            refresh_ttl_seconds=_refresh_ttl_seconds(),
+        )
+        return TokenResponse(
+            access_token="",
+            refresh_token=None,
+            token_type="Bearer",
+            expires_in=tokens.expires_in,
+            user=tokens.user,
+        )
+    return tokens
 
 
 @router.get("/invitations/preview/{token}", response_model=InvitationPreviewResponse)
@@ -338,6 +386,7 @@ def preview_invitation(token: str, db: Session = Depends(get_db)) -> InvitationP
 @router.post("/invitations/accept-by-token", response_model=TokenResponse)
 def accept_invitation_by_token(
     payload: AcceptInviteByTokenRequest,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
@@ -349,7 +398,8 @@ def accept_invitation_by_token(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     role_value = member.role.value if hasattr(member.role, "value") else member.role
-    return _issue_session_tokens(
+    return _respond_with_session(
+        response,
         db,
         user=current_user,
         organization_id=invitation.organization_id,
@@ -358,14 +408,20 @@ def accept_invitation_by_token(
 
 
 @router.post("/signup", response_model=TokenResponse)
-def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def signup(
+    payload: SignupRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
     """
     Create a new User + Organization pair and return a login token.
 
     Only available in OSS/self-hosted deployments where
-    `auth.local_password.allow_signup = true` (the default). Cloud SaaS
+    `auth.local_password.allow_signup = true` (the default).     Cloud SaaS
     turns this off and routes signup through the billing flow.
     """
+    enforce_auth_rate_limit(request)
     _local_password_enabled()
     if not settings.AUTH_LOCAL_ALLOW_SIGNUP:
         raise HTTPException(
@@ -439,7 +495,8 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
         db.refresh(user)
 
         role_value = member.role.value if hasattr(member.role, "value") else member.role
-        return _issue_session_tokens(
+        return _respond_with_session(
+            response,
             db,
             user=user,
             organization_id=pending_invitation.organization_id,
@@ -475,7 +532,8 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
     db.refresh(organization)
 
     role_value = RoleEnum.ADMIN.value
-    return _issue_session_tokens(
+    return _respond_with_session(
+        response,
         db,
         user=user,
         organization_id=organization.id,
@@ -484,8 +542,14 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
+def login(
+    payload: LoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> LoginResponse:
     """Verify email/password and return a short-lived Bearer token."""
+    enforce_auth_rate_limit(request)
     _local_password_enabled()
 
     user = db.query(User).filter(User.email == payload.email).first()
@@ -580,7 +644,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
     db.commit()
 
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
-    return _issue_session_tokens(
+    return _respond_with_session(
+        response,
         db,
         user=user,
         organization_id=target_organization_id,
@@ -615,29 +680,54 @@ def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_
 
 @router.post("/logout")
 def logout(
+    request: Request,
+    response: Response,
     payload: Optional[LogoutRequest] = None,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> dict:
     """Revoke the current session's refresh token and blacklist the access token."""
-    bearer = _extract_bearer(authorization)
+    bearer = _extract_bearer(authorization) or read_access_cookie(request)
     if bearer and principal.auth_method == AuthMethod.LOCAL_PASSWORD:
         _revoke_local_password_access_token(bearer)
 
+    refresh_token = None
     if payload and payload.refresh_token:
-        revoke_refresh_token(db, payload.refresh_token)
+        refresh_token = payload.refresh_token
+    else:
+        refresh_token = read_refresh_cookie(request)
+    if refresh_token:
+        revoke_refresh_token(db, refresh_token)
         db.commit()
+
+    if cookie_session_enabled():
+        clear_session_cookies(response)
 
     return {"success": True, "auth_method": principal.auth_method.value}
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)) -> TokenResponse:
+def refresh_session(
+    request: Request,
+    response: Response,
+    payload: Optional[RefreshRequest] = None,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
     """Rotate a refresh token and issue a new short-lived access token."""
     _local_password_enabled()
+    refresh_token = None
+    if payload and payload.refresh_token:
+        refresh_token = payload.refresh_token
+    else:
+        refresh_token = read_refresh_cookie(request)
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token is required.",
+        )
     try:
-        row = validate_refresh_token(db, payload.refresh_token)
+        row = validate_refresh_token(db, refresh_token)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -672,9 +762,10 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)) -> T
             detail="Organization disabled.",
         )
 
-    revoke_refresh_token(db, payload.refresh_token)
+    revoke_refresh_token(db, refresh_token)
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
-    return _issue_session_tokens(
+    return _respond_with_session(
+        response,
         db,
         user=user,
         organization_id=row.organization_id,
@@ -707,6 +798,8 @@ class SwitchOrgRequest(BaseModel):
 @router.post("/switch-org", response_model=TokenResponse)
 def switch_organization(
     payload: SwitchOrgRequest,
+    response: Response,
+    request: Request,
     principal: Principal = Depends(get_principal),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
@@ -773,11 +866,12 @@ def switch_organization(
         )
 
     if principal.auth_method == AuthMethod.LOCAL_PASSWORD:
-        bearer = _extract_bearer(authorization)
+        bearer = _extract_bearer(authorization) or read_access_cookie(request)
         if bearer:
             _revoke_local_password_access_token(bearer)
-        if payload.refresh_token:
-            revoke_refresh_token(db, payload.refresh_token)
+        old_refresh = payload.refresh_token or read_refresh_cookie(request)
+        if old_refresh:
+            revoke_refresh_token(db, old_refresh)
 
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
@@ -786,7 +880,8 @@ def switch_organization(
     role_value = (
         membership.role.value if hasattr(membership.role, "value") else membership.role
     )
-    return _issue_session_tokens(
+    return _respond_with_session(
+        response,
         db,
         user=user,
         organization_id=membership.organization_id,
@@ -820,6 +915,7 @@ class SetPasswordRequest(BaseModel):
 @router.post("/password", response_model=UserSummary)
 def set_password(
     payload: SetPasswordRequest,
+    response: Response,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> UserSummary:
@@ -871,8 +967,8 @@ def set_password(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "Email can only be changed via this endpoint for accounts "
-                    "created from an API key. Use profile update otherwise."
+                    "Email can only be changed for accounts created from an API key "
+                    "with a placeholder address."
                 ),
             )
         conflict = (
@@ -891,9 +987,13 @@ def set_password(
     user.password_hash = hash_password(payload.new_password)
     if not user.auth_provider:
         user.auth_provider = "local"
+    bump_user_session_epoch(user)
     revoke_all_user_refresh_tokens(db, user.id)
     db.commit()
     db.refresh(user)
+
+    if cookie_session_enabled():
+        clear_session_cookies(response)
 
     # Return the updated summary so the SPA can refresh its local session.
     membership = (

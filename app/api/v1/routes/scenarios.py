@@ -9,6 +9,8 @@ from typing import List, Optional
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id
+from app.core.api_rate_limit import enforce_resource_create_rate_limit
+from app.core.auth import Principal
 from app.models.database import Scenario, Agent, Evaluator, EvaluatorResult, TestAgentConversation
 from app.models.schemas import (
     ScenarioCreate, ScenarioUpdate, ScenarioResponse
@@ -22,7 +24,8 @@ async def create_scenario(
     scenario: ScenarioCreate,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _principal: Principal = Depends(enforce_resource_create_rate_limit),
 ):
     """Create a new scenario stamped with the active workspace."""
     if scenario.agent_id is not None:

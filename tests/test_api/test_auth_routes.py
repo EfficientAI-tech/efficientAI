@@ -583,6 +583,48 @@ def test_rotating_password_requires_current_password(
     assert verify_password("Original1!", user.password_hash) is False
 
 
+def test_password_change_invalidates_existing_access_token(
+    db_session, org_id, seed_org, enable_local_password,
+):
+    from app.core.auth.local import LocalPasswordProvider
+    from app.core.auth.providers import AuthError, RawCredential, reset_provider_registry
+    from app.core.auth.session_epoch import bump_user_session_epoch
+    from app.core.auth.tokens import create_access_token
+
+    reset_provider_registry()
+    user = User(
+        id=uuid4(),
+        email="epoch@example.com",
+        password_hash=hash_password("Original1!"),
+        is_active=True,
+        session_epoch=0,
+    )
+    db_session.add(user)
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=user.id,
+            role=RoleEnum.ADMIN.value,
+        )
+    )
+    db_session.commit()
+
+    token, _, _ = create_access_token(
+        user_id=user.id,
+        organization_id=org_id,
+        email=user.email,
+        session_epoch=user.session_epoch,
+    )
+    provider = LocalPasswordProvider()
+    provider.authenticate(RawCredential(bearer_token=token), db_session)
+
+    bump_user_session_epoch(user)
+    db_session.commit()
+
+    with pytest.raises(AuthError, match="Session expired"):
+        provider.authenticate(RawCredential(bearer_token=token), db_session)
+
+
 # ---------------------------------------------------------------------------
 # POST /auth/switch-org - scoped token re-issuance
 # ---------------------------------------------------------------------------

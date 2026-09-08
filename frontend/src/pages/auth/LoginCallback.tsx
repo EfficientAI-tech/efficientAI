@@ -56,19 +56,24 @@ export default function LoginCallback() {
           try {
             const accepted = await apiClient.acceptInvitationByToken(pendingInvite)
             consumePendingInviteToken()
-            setSession(accepted.access_token, accepted.user, accepted.refresh_token)
+            setSession(
+              accepted.user,
+              accepted.access_token
+                ? { access: accepted.access_token, refresh: accepted.refresh_token }
+                : undefined,
+            )
             navigate('/', { replace: true })
             return
           } catch (inviteErr: any) {
             if (!active) return
             setError(inviteErr?.response?.data?.detail || 'Signed in, but could not accept the invitation')
-            setSession(accessToken, user)
+            setSession(user, { access: accessToken })
             navigate('/', { replace: true })
             return
           }
         }
 
-        setSession(accessToken, user)
+        setSession(user, { access: accessToken })
 
         const profile = await apiClient.getProfile()
         if (!active) return

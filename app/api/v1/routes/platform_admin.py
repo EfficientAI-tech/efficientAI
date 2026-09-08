@@ -20,6 +20,7 @@ from app.core.auth.platform_admin import (
     revoke_platform_access_token,
 )
 from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
+from app.core.auth.session_epoch import bump_user_session_epoch
 from app.core.password import hash_password, validate_password_strength, verify_password
 from app.database import get_db
 from app.models.database import (
@@ -353,6 +354,7 @@ def platform_reset_user_password(
 
     _validate_password_or_400(payload.new_password)
     user.password_hash = hash_password(payload.new_password)
+    bump_user_session_epoch(user)
     revoke_all_user_refresh_tokens(db, user_id=user.id)
     db.commit()
 

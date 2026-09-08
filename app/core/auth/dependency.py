@@ -54,6 +54,7 @@ def _resolve(
         bearer_token = (
             bearer_token
             or query_bearer
+            or request.cookies.get("eai_access")
             or request.cookies.get("access_token")
         )
         query_api_key = (

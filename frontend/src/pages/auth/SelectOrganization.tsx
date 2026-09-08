@@ -10,17 +10,17 @@ import { useAuthStore } from '../../store/authStore'
 
 export default function SelectOrganization() {
   const navigate = useNavigate()
-  const { accessToken, switchOrg } = useAuthStore()
+  const { apiKey, user, switchOrg } = useAuthStore()
   const [switchingTo, setSwitchingTo] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   const { data: profile, isLoading } = useQuery({
     queryKey: ['profile'],
     queryFn: () => apiClient.getProfile(),
-    enabled: !!accessToken,
+    enabled: !!user && !apiKey,
   })
 
-  if (!accessToken) {
+  if (!user || apiKey) {
     navigate('/login', { replace: true })
     return null
   }

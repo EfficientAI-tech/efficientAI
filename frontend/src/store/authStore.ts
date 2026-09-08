@@ -3,17 +3,6 @@ import { apiClient } from '../lib/api'
 import { clearAuthSession } from '../lib/authSession'
 import { useWorkspaceStore } from './workspaceStore'
 
-/**
- * Auth store for the EfficientAI frontend.
- *
- * Supports two credential types in parallel:
- *   - Bearer access token (local password login or SSO). Preferred for humans.
- *   - API key (machine / legacy access). Kept for backward compatibility.
- *
- * Having either one populated makes the SPA treat the user as authenticated.
- * The API client prefers the Bearer token when both are set.
- */
-
 type AuthUser = {
   id: string
   email: string
@@ -24,92 +13,88 @@ type AuthUser = {
   role?: string | null
 }
 
+type SessionTokens = {
+  access?: string
+  refresh?: string
+}
+
 interface AuthState {
   apiKey: string | null
   accessToken: string | null
   refreshToken: string | null
+  cookieSession: boolean
   user: AuthUser | null
   isLoading: boolean
+  sessionReady: boolean
 
   setApiKey: (key: string) => void
-  setSession: (token: string, user: AuthUser, refreshToken?: string | null) => void
+  setSession: (user: AuthUser, tokens?: SessionTokens) => void
   switchOrg: (organizationId: string) => Promise<AuthUser>
   logout: () => void
   validate: () => Promise<boolean>
+  bootstrapSession: () => Promise<void>
 }
 
 const STORAGE_API_KEY = 'apiKey'
-const STORAGE_ACCESS_TOKEN = 'accessToken'
-const STORAGE_REFRESH_TOKEN = 'refreshToken'
-const STORAGE_USER = 'authUser'
 
 function readStoredUser(): AuthUser | null {
   try {
-    const raw = localStorage.getItem(STORAGE_USER)
+    const raw = localStorage.getItem('authUser')
     return raw ? (JSON.parse(raw) as AuthUser) : null
   } catch {
     return null
   }
 }
 
+localStorage.removeItem('accessToken')
+localStorage.removeItem('refreshToken')
+
 export const useAuthStore = create<AuthState>((set, get) => {
   const storedKey = localStorage.getItem(STORAGE_API_KEY)
-  const storedToken = localStorage.getItem(STORAGE_ACCESS_TOKEN)
-  const storedRefreshToken = localStorage.getItem(STORAGE_REFRESH_TOKEN)
-
   if (storedKey) {
     apiClient.setApiKey(storedKey)
-  }
-  if (storedToken) {
-    apiClient.setAccessToken(storedToken)
-  }
-  if (storedRefreshToken) {
-    apiClient.setRefreshToken(storedRefreshToken)
   }
 
   return {
     apiKey: storedKey,
-    accessToken: storedToken,
-    refreshToken: storedRefreshToken,
+    accessToken: null,
+    refreshToken: null,
+    cookieSession: false,
     user: readStoredUser(),
     isLoading: false,
+    sessionReady: false,
 
     setApiKey: (key: string) => {
       apiClient.setApiKey(key)
       localStorage.setItem(STORAGE_API_KEY, key)
-      set({ apiKey: key })
+      set({ apiKey: key, cookieSession: false })
     },
 
-    setSession: (token: string, user: AuthUser, refreshToken?: string | null) => {
-      apiClient.setAccessToken(token)
-      localStorage.setItem(STORAGE_ACCESS_TOKEN, token)
-      localStorage.setItem(STORAGE_USER, JSON.stringify(user))
-      if (refreshToken) {
-        apiClient.setRefreshToken(refreshToken)
-        localStorage.setItem(STORAGE_REFRESH_TOKEN, refreshToken)
+    setSession: (user: AuthUser, tokens?: SessionTokens) => {
+      apiClient.clearInMemoryTokens()
+      if (tokens?.access) {
+        apiClient.setAccessToken(tokens.access)
       }
+      if (tokens?.refresh) {
+        apiClient.setRefreshToken(tokens.refresh)
+      }
+      localStorage.setItem('authUser', JSON.stringify(user))
       set({
-        accessToken: token,
-        refreshToken: refreshToken ?? get().refreshToken,
+        accessToken: tokens?.access ?? null,
+        refreshToken: tokens?.refresh ?? null,
+        cookieSession: !tokens?.access && apiClient.isCookieSessionEnabled(),
         user,
+        sessionReady: true,
       })
     },
 
     switchOrg: async (organizationId: string) => {
       const { access_token, refresh_token, user } = await apiClient.switchOrganization(organizationId)
-      apiClient.setAccessToken(access_token)
-      localStorage.setItem(STORAGE_ACCESS_TOKEN, access_token)
-      localStorage.setItem(STORAGE_USER, JSON.stringify(user))
-      if (refresh_token) {
-        apiClient.setRefreshToken(refresh_token)
-        localStorage.setItem(STORAGE_REFRESH_TOKEN, refresh_token)
-      }
-      useWorkspaceStore.getState().clearActiveWorkspaceId()
-      set({
-        accessToken: access_token,
-        refreshToken: refresh_token ?? get().refreshToken,
-        user,
+      get().setSession(user, {
+        access: access_token || undefined,
+        refresh: refresh_token,
       })
+      useWorkspaceStore.getState().clearActiveWorkspaceId()
       return user
     },
 
@@ -120,8 +105,16 @@ export const useAuthStore = create<AuthState>((set, get) => {
         apiKey: get().apiKey,
       }
       clearAuthSession()
+      apiClient.clearInMemoryTokens()
       useWorkspaceStore.getState().clearActiveWorkspaceId()
-      set({ apiKey: null, accessToken: null, refreshToken: null, user: null })
+      set({
+        apiKey: null,
+        accessToken: null,
+        refreshToken: null,
+        cookieSession: false,
+        user: null,
+        sessionReady: true,
+      })
       apiClient.revokeUserSessionBestEffort(credentials)
     },
 
@@ -134,6 +127,31 @@ export const useAuthStore = create<AuthState>((set, get) => {
         return false
       } finally {
         set({ isLoading: false })
+      }
+    },
+
+    bootstrapSession: async () => {
+      if (get().sessionReady) {
+        return
+      }
+      if (get().apiKey) {
+        set({ sessionReady: true, cookieSession: false })
+        return
+      }
+      try {
+        const config = await apiClient.getAuthConfig()
+        apiClient.setCookieSessionEnabled(Boolean(config.cookie_session_enabled))
+        const user = await apiClient.getMe()
+        localStorage.setItem('authUser', JSON.stringify(user))
+        set({
+          user,
+          cookieSession: Boolean(config.cookie_session_enabled),
+          accessToken: null,
+          refreshToken: null,
+          sessionReady: true,
+        })
+      } catch {
+        set({ sessionReady: true, user: null, cookieSession: false })
       }
     },
   }

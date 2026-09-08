@@ -132,21 +132,31 @@ export default function Login() {
   const localPwd = providerByName('local_password')
   const oidc = providerByName('external_oidc')
 
-  const completeInviteIfNeeded = async (accessToken: string, authUser: Parameters<typeof setSession>[1], refreshToken?: string | null) => {
+  const completeInviteIfNeeded = async (
+    authUser: Parameters<typeof setSession>[0],
+    tokens?: { access?: string; refresh?: string },
+  ) => {
     const token = inviteToken || getPendingInviteToken()
     if (!token) {
-      setSession(accessToken, authUser, refreshToken)
+      setSession(authUser, tokens)
       navigate('/')
       return
     }
     try {
-      apiClient.setAccessToken(accessToken)
+      if (tokens?.access) {
+        apiClient.setAccessToken(tokens.access)
+      }
       const accepted = await apiClient.acceptInvitationByToken(token)
       consumePendingInviteToken()
-      setSession(accepted.access_token, accepted.user, accepted.refresh_token)
+      setSession(
+        accepted.user,
+        accepted.access_token
+          ? { access: accepted.access_token, refresh: accepted.refresh_token }
+          : undefined,
+      )
       navigate('/')
     } catch (err: any) {
-      setSession(accessToken, authUser, refreshToken)
+      setSession(authUser, tokens)
       setError(err?.response?.data?.detail || 'Signed in, but could not accept the invitation')
       navigate('/')
     }
@@ -168,7 +178,10 @@ export default function Login() {
         setLoginStep('org-select')
         return
       }
-      await completeInviteIfNeeded(res.access_token, res.user, res.refresh_token)
+      await completeInviteIfNeeded(
+        res.user,
+        res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
+      )
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Invalid email or password')
     } finally {
@@ -190,7 +203,10 @@ export default function Login() {
         setError('Organization selection failed — try again')
         return
       }
-      await completeInviteIfNeeded(res.access_token, res.user, res.refresh_token)
+      await completeInviteIfNeeded(
+        res.user,
+        res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
+      )
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Could not sign in to the selected organization')
     } finally {
@@ -218,7 +234,10 @@ export default function Login() {
         invite_token: inviteToken || undefined,
       })
       consumePendingInviteToken()
-      setSession(res.access_token, res.user, res.refresh_token)
+      setSession(
+        res.user,
+        res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
+      )
       navigate('/')
     } catch (err: unknown) {
       setError(getApiErrorMessage(err, 'Sign up failed'))

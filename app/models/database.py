@@ -252,6 +252,7 @@ class User(Base):
     external_id = Column(String(255), unique=True, nullable=True, index=True)
     auth_provider = Column(String(50), nullable=True)
     mfa_enabled = Column(Boolean, default=False, nullable=False)
+    session_epoch = Column(Integer, default=0, nullable=False, server_default="0")
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

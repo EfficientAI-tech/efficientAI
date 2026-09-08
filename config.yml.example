@@ -29,7 +29,23 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
+  # public_base_url: "https://sandbox.efficientai.cloud"
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "127.0.0.1"
+  #   - "sandbox.efficientai.cloud"
+  # hsts_enabled: true
+  # hsts_max_age: 31536000
+  # hsts_include_subdomains: true
   # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
+
+rate_limits:
+  enforce: true
+  auth_per_ip_per_minute: 15
+  resource_create_burst: 100
+  resource_create_burst_window_minutes: 10
+  resource_create_sustained_per_minute: 30
+  resource_create_org_per_hour: 2000
 
 # Database Configuration
 database:
@@ -174,6 +190,11 @@ auth:
     # Keep this short; clients refresh silently via refresh tokens.
     token_ttl_minutes: 15
     refresh_token_ttl_days: 7
+    cookie_session:
+      enabled: true
+      secure: true
+      samesite: lax
+      # domain: ".efficientai.cloud"
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
     # When enabled, signup requires a valid reference code from the platform admin API.

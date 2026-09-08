@@ -23,6 +23,7 @@ from app.models.schemas import (
 )
 from app.core.password import hash_password, validate_password_strength
 from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
+from app.core.auth.session_epoch import bump_user_session_epoch
 from app.services.invitation_service import invitation_to_response_dict, to_aware_utc
 
 router = APIRouter(prefix="/iam", tags=["IAM"])
@@ -573,6 +574,7 @@ async def admin_reset_user_password(
     target.password_hash = hash_password(payload.new_password)
     if not target.auth_provider:
         target.auth_provider = "local"
+    bump_user_session_epoch(target)
     revoke_all_user_refresh_tokens(db, target.id)
     db.commit()
     db.refresh(target)

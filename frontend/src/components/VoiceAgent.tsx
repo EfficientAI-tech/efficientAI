@@ -330,21 +330,14 @@ export default function VoiceAgent({
       // Resolve credentials. The backend `/connect` and websocket endpoints
       // accept either a Bearer access token (email/password / SSO login) or
       // an API key (legacy / machine access). We pass whichever the user has.
-      const accessToken = localStorage.getItem('accessToken')
+      const accessToken = apiClient.getAccessToken()
       const apiKey = localStorage.getItem('apiKey')
-      if (!accessToken && !apiKey) {
+      if (!accessToken && !apiKey && !apiClient.isCookieSessionEnabled()) {
         throw new Error('Not authenticated. Please log in first.')
       }
 
-      if (!customEndpoint) {
-        // Cookies are set as a fallback - we also pass the credential as a
-        // header below, which is more reliable in cross-origin dev setups.
-        if (accessToken) {
-          document.cookie = `access_token=${accessToken}; path=/; SameSite=Lax`
-        }
-        if (apiKey) {
-          document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
-        }
+      if (!customEndpoint && apiKey) {
+        document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
         log('Auth credentials set for /connect', 'system')
       } else {
         log('Using custom endpoint, skipping backend API cookie flow', 'system')

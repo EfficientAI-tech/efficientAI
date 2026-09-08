@@ -94,6 +94,15 @@ def disable_db_sharding_for_tests(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def disable_cookie_sessions_in_tests(monkeypatch):
+    """Keep legacy Bearer-token API tests stable; cookie auth has dedicated tests."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SESSION_ENABLED", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def ensure_workers_tasks_package():
     """Keep ``app.workers.tasks`` importable without eager Celery imports."""
     import importlib
@@ -880,6 +889,11 @@ def _build_session_api_app():
     )
 
     app = FastAPI()
+    from app.core.rbac_middleware import ReaderReadOnlyMiddleware
+    from app.core.csrf_middleware import CsrfMiddleware
+
+    app.add_middleware(CsrfMiddleware)
+    app.add_middleware(ReaderReadOnlyMiddleware)
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(evaluations.router, prefix="/api/v1")
     app.include_router(results.router, prefix="/api/v1")

@@ -13,7 +13,6 @@ export default function Profile() {
   const [name, setName] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
-  const [email, setEmail] = useState('')
 
   const { data: profile, isLoading: profileLoading } = useQuery<ProfileType>({
     queryKey: ['profile'],
@@ -111,7 +110,6 @@ export default function Profile() {
       setName(profile.name || '')
       setFirstName(profile.first_name || '')
       setLastName(profile.last_name || '')
-      setEmail(profile.email)
     }
   }, [profile])
 
@@ -131,7 +129,7 @@ export default function Profile() {
   // After a successful accept we remember what org the user just joined so
   // we can offer a one-click "Switch to <Org>" button. They can also switch
   // from the Organizations section below.
-  const { accessToken, user, switchOrg } = useAuthStore()
+  const { apiKey, user, switchOrg } = useAuthStore()
   const [switchingOrgId, setSwitchingOrgId] = useState<string | null>(null)
   const [orgSwitchError, setOrgSwitchError] = useState('')
   const [justJoined, setJustJoined] = useState<
@@ -192,11 +190,10 @@ export default function Profile() {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault()
-    updateMutation.mutate({ 
-      name: name || undefined, 
+    updateMutation.mutate({
+      name: name || undefined,
       first_name: firstName || undefined,
       last_name: lastName || undefined,
-      email 
     })
   }
 
@@ -206,7 +203,6 @@ export default function Profile() {
       setName(profile.name || '')
       setFirstName(profile.first_name || '')
       setLastName(profile.last_name || '')
-      setEmail(profile.email)
     }
   }
 
@@ -307,20 +303,6 @@ export default function Profile() {
                   onChange={(e) => setName(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                   placeholder="Your full name"
-                />
-              </div>
-              <div>
-                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-                  Email
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="your@email.com"
                 />
               </div>
               <div className="flex gap-3 pt-4">
@@ -515,7 +497,7 @@ export default function Profile() {
             <Building2 className="h-5 w-5" />
             Organizations
           </h2>
-          {accessToken && (profile?.organizations?.length ?? 0) > 1 && (
+          {!apiKey && user && (profile?.organizations?.length ?? 0) > 1 && (
             <p className="mt-1 text-sm text-gray-500">
               Switch between organizations you belong to.
             </p>
@@ -532,7 +514,7 @@ export default function Profile() {
               {profile.organizations.map((org) => {
                 const isCurrent = org.id === user?.organization_id
                 const isSwitching = switchingOrgId === org.id
-                const canSwitch = !!accessToken && profile.organizations.length > 1
+                const canSwitch = !apiKey && !!user && profile.organizations.length > 1
 
                 return (
                   <div
@@ -585,7 +567,7 @@ export default function Profile() {
       </div>
 
       {/* Post-accept switch prompt */}
-      {justJoined && accessToken && (
+      {justJoined && user && !apiKey && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-start gap-3">
           <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
