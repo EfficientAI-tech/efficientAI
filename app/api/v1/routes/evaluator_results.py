@@ -774,6 +774,14 @@ async def stream_evaluator_result_audio(
     if not audio_url:
         raise HTTPException(status_code=404, detail="No recording available")
 
+    from app.services.telephony.exotel_client import ExotelInvalidContentError
+    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+    try:
+        assert_safe_provider_recording_url(str(audio_url))
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     if platform in {"retell", "smallest"}:
         return RedirectResponse(audio_url)
 

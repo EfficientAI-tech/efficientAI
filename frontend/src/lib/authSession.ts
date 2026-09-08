@@ -4,6 +4,7 @@ export type UserSessionCredentials = {
   accessToken?: string | null
   refreshToken?: string | null
   apiKey?: string | null
+  cookieSession?: boolean
 }
 
 export function getApiErrorDetail(error: unknown): string | undefined {
@@ -46,7 +47,12 @@ export function csrfHeaders(): Record<string, string> {
 
 /** True when a voluntary logout can still revoke something server-side. */
 export function hasRevocableUserCredentials(credentials: UserSessionCredentials): boolean {
-  return Boolean(credentials.accessToken || credentials.apiKey || credentials.refreshToken)
+  return Boolean(
+    credentials.accessToken ||
+      credentials.apiKey ||
+      credentials.refreshToken ||
+      credentials.cookieSession,
+  )
 }
 
 export function clearPlatformAdminSession(): void {

@@ -103,6 +103,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
         accessToken: get().accessToken,
         refreshToken: get().refreshToken,
         apiKey: get().apiKey,
+        cookieSession: get().cookieSession,
       }
       clearAuthSession()
       apiClient.clearInMemoryTokens()
