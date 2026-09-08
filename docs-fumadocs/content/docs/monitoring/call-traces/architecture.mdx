@@ -21,7 +21,7 @@ EfficientAI:
 2. Ingests **OpenTelemetry spans** from the customer's bot (or in-process from Test Agent playground).
 3. Groups spans into **turn rows**, computes **p50 / p90 / p95**, and shows a **waterfall** in the Calls hub.
 
-**v1 does not:** compute dollar cost from OTLP spans; async ingest at enterprise scale; shard trace rows across data shards.
+**Phase 2 (current):** Layout 3 thin API ingest (`defer_parse_to_worker: true`) stages raw OTLP in Postgres, `worker-traces` parses/correlates/persists batches, Celery derives turns, S3 offload on close. Set `defer_parse_to_worker: false` to parse in API (legacy Phase 2 path). Legacy sync JSONB ingest remains via `traces.async_ingest_enabled: false`.
 
 ---
 

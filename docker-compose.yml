@@ -258,5 +258,32 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info --queues usage --pool threads --concurrency 4
 
+  worker-traces:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: ""
+    container_name: efficientai_worker_traces
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info --queues traces --pool threads --concurrency 8
+
 volumes:
   postgres_data:

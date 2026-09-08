@@ -77,6 +77,7 @@ IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
+TRACES_WORKER_QUEUE = "traces"
 
 
 def _usage_flush_beat_seconds() -> float:
@@ -117,6 +118,14 @@ def _platform_beat_schedule() -> dict:
         "prune-oss-usage-history": {
             "task": "prune_oss_usage_history",
             "schedule": crontab(hour=3, minute=0),
+        },
+        "sweep-idle-traces": {
+            "task": "sweep_idle_traces",
+            "schedule": 30.0,
+        },
+        "sweep-staging-ingest": {
+            "task": "sweep_staging_ingest",
+            "schedule": 3600.0,
         },
     }
 
@@ -193,4 +202,9 @@ celery_app.conf.task_routes = {
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},
+    "derive_trace_turns": {"queue": TRACES_WORKER_QUEUE},
+    "sweep_idle_traces": {"queue": TRACES_WORKER_QUEUE},
+    "process_staged_otlp": {"queue": TRACES_WORKER_QUEUE},
+    "sweep_staging_ingest": {"queue": TRACES_WORKER_QUEUE},
+    "close_and_offload_trace": {"queue": TRACES_WORKER_QUEUE},
 }

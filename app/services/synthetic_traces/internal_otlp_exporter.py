@@ -8,8 +8,11 @@ from uuid import UUID
 
 from loguru import logger
 
+import threading
+
 _MAX_TRACE_CORRELATION_CACHE = 256
 _TRACE_CORRELATION_CACHE: Dict[int, Tuple[str, str, str, Optional[str]]] = {}
+_TRACE_CORRELATION_CACHE_LOCK = threading.Lock()
 
 
 def clear_trace_correlation_cache() -> None:
@@ -71,9 +74,10 @@ def _resolve_span_attributes(
     spans: Sequence[ReadableSpan],
 ) -> list[tuple[ReadableSpan, Dict[str, Any]]]:
     """Inherit EfficientAI correlation attrs across spans, batches, and parent chains."""
-    trace_correlation: Dict[int, Tuple[str, str, str, Optional[str]]] = dict(
-        _TRACE_CORRELATION_CACHE
-    )
+    with _TRACE_CORRELATION_CACHE_LOCK:
+        trace_correlation: Dict[int, Tuple[str, str, str, Optional[str]]] = dict(
+            _TRACE_CORRELATION_CACHE
+        )
     attrs_by_span_id: Dict[str, Dict[str, Any]] = {}
     spans_by_id: Dict[str, ReadableSpan] = {}
     span_entries: list[tuple[ReadableSpan, str, Dict[str, Any]]] = []
@@ -118,10 +122,11 @@ def _resolve_span_attributes(
             trace_correlation[span.get_span_context().trace_id] = correlation
         resolved.append((span, attrs))
 
-    for trace_id, correlation in trace_correlation.items():
-        _TRACE_CORRELATION_CACHE[trace_id] = correlation
-    while len(_TRACE_CORRELATION_CACHE) > _MAX_TRACE_CORRELATION_CACHE:
-        _TRACE_CORRELATION_CACHE.pop(next(iter(_TRACE_CORRELATION_CACHE)))
+    with _TRACE_CORRELATION_CACHE_LOCK:
+        for trace_id, correlation in trace_correlation.items():
+            _TRACE_CORRELATION_CACHE[trace_id] = correlation
+        while len(_TRACE_CORRELATION_CACHE) > _MAX_TRACE_CORRELATION_CACHE:
+            _TRACE_CORRELATION_CACHE.pop(next(iter(_TRACE_CORRELATION_CACHE)))
 
     return resolved
 
@@ -206,6 +211,8 @@ class InternalOtlpSpanExporter(SpanExporter):  # type: ignore[misc]
             return SpanExportResult.SUCCESS
 
         from app.database import SessionLocal
+        from app.config import settings
+        from app.services.synthetic_traces.ingest_pipeline import ingest_otlp_batch_async
         from app.services.synthetic_traces.trace_service import ingest_otlp_spans
 
         db = SessionLocal()
@@ -219,14 +226,24 @@ class InternalOtlpSpanExporter(SpanExporter):  # type: ignore[misc]
                     else None
                 )
                 agent_id = correlation[3] if correlation else None
-                ingest_otlp_spans(
-                    db,
-                    organization_id=UUID(organization_id),
-                    spans=payload,
-                    header_call_short_id=call_short_id,
-                    header_agent_id=agent_id,
-                    workspace_id=UUID(workspace_id),
-                )
+                if settings.TRACES_ASYNC_INGEST_ENABLED:
+                    ingest_otlp_batch_async(
+                        db,
+                        organization_id=UUID(organization_id),
+                        spans=payload,
+                        header_call_short_id=call_short_id,
+                        header_agent_id=agent_id,
+                        workspace_id=UUID(workspace_id),
+                    )
+                else:
+                    ingest_otlp_spans(
+                        db,
+                        organization_id=UUID(organization_id),
+                        spans=payload,
+                        header_call_short_id=call_short_id,
+                        header_agent_id=agent_id,
+                        workspace_id=UUID(workspace_id),
+                    )
         except Exception as exc:
             logger.warning("Internal OTLP ingest failed: {}", exc)
             return SpanExportResult.FAILURE

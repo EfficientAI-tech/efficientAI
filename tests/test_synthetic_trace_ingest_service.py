@@ -217,14 +217,14 @@ def test_backfill_creates_trace_from_vobiz_call_recording(
     )
     assert created == 1
 
-    rows, total = list_traces(
+    rows, total, _, _ = list_traces(
         db_session,
         organization_id=org_id,
         workspace_id=uuid4(),
     )
     assert total == 0
 
-    rows, total = list_traces(
+    rows, total, _, _ = list_traces(
         db_session,
         organization_id=org_id,
         workspace_id=default_workspace.id,
@@ -326,7 +326,9 @@ def test_open_trace_session_mint_ingest_and_close(
     db_session,
     org_id,
     default_workspace,
+    monkeypatch,
 ):
+    monkeypatch.setattr("app.config.settings.TRACES_ASYNC_INGEST_ENABLED", False)
     trace = open_trace_session(
         db_session,
         organization_id=org_id,

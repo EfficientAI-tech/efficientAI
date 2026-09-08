@@ -54,8 +54,15 @@ class SyntheticCallTraceSummary(BaseModel):
     component_aggregates: Optional[Dict[str, Any]] = None
     failure_flags: Optional[List[str]] = None
     call_recording_id: Optional[UUID] = None
+    spans_storage: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SyntheticTraceSpansResponse(BaseModel):
+    otel_spans: List[OtelSpanRecord] = Field(default_factory=list)
+    otel_trace_ids: List[str] = Field(default_factory=list)
+    spans_storage: Optional[str] = None
 
 
 class SyntheticCallTraceDetail(SyntheticCallTraceSummary):
@@ -76,14 +83,33 @@ class OtelCorrelationInfo(BaseModel):
 
 
 class OtlpIngestResponse(BaseModel):
-    accepted_spans: int
+    accepted_spans: int = 0
+    accepted_bytes: Optional[int] = None
+    staging_id: Optional[UUID] = None
     synthetic_call_trace_id: Optional[UUID] = None
     correlated: bool = False
+    deferred: bool = False
+
+
+class TraceIngestStagingStatus(BaseModel):
+    id: UUID
+    status: str
+    error_message: Optional[str] = None
+    accepted_spans: Optional[int] = None
+    accepted_bytes: int = 0
+    synthetic_call_trace_id: Optional[UUID] = None
+    correlated: Optional[bool] = None
+    received_at: datetime
+    processed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SyntheticCallTraceListResponse(BaseModel):
     items: List[SyntheticCallTraceSummary]
-    total: int
+    total: Optional[int] = None
+    next_cursor: Optional[str] = None
+    has_more: bool = False
 
 
 class OtlpSetupInfo(BaseModel):

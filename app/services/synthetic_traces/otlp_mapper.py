@@ -187,11 +187,15 @@ def _resolve_turn_number(
     return None
 
 
-def annotate_spans_with_display_turn(spans: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def annotate_spans_with_display_turn(
+    spans: List[Dict[str, Any]],
+    *,
+    precomputed_turns: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Attach efficientai.display_turn_number for UI grouping."""
     if not spans:
         return []
-    turns = derive_turns_from_spans(spans)
+    turns = precomputed_turns if precomputed_turns is not None else derive_turns_from_spans(spans)
     span_map = _span_display_map_from_turns(turns)
     turn_display = _build_turn_span_display_map(spans)
     turn_windows = _build_turn_windows(spans, turn_display)

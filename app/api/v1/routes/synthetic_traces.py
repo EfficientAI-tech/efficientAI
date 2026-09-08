@@ -5,9 +5,17 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.core.auth import Principal
+from app.core.rate_limit import (
+    check_trace_rate_limit,
+    enforce_trace_ingest_rate_limit,
+    enforce_trace_session_rate_limit,
+)
 from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id
 from app.models.database import EvaluatorResult
 from app.models.synthetic_trace_schemas import (
@@ -18,11 +26,19 @@ from app.models.synthetic_trace_schemas import (
     SyntheticCallTraceDetail,
     SyntheticCallTraceListResponse,
     SyntheticCallTraceSummary,
+    SyntheticTraceSpansResponse,
+    TraceIngestStagingStatus,
     TraceSessionCloseResponse,
     TraceSessionCreateRequest,
     TraceSessionOtelCorrelation,
     TraceSessionResponse,
     VALID_TRACE_TRANSPORTS,
+)
+from app.services.synthetic_traces.ingest_pipeline import (
+    get_staging_status,
+    header_correlation_hint,
+    ingest_otlp_batch_async,
+    stage_otlp_ingest,
 )
 from app.services.synthetic_traces.otlp_ingest import parse_otlp_body
 from app.services.synthetic_traces.trace_service import (
@@ -30,6 +46,7 @@ from app.services.synthetic_traces.trace_service import (
     build_otlp_setup_info,
     build_session_otel_correlation,
     close_trace_session,
+    default_trace_list_since,
     enrich_trace_summaries,
     get_trace_by_call_short_id,
     get_trace_by_id,
@@ -38,6 +55,7 @@ from app.services.synthetic_traces.trace_service import (
     ingest_otlp_spans,
     list_traces,
     load_trace_detail,
+    load_trace_spans_only,
     open_trace_session,
 )
 
@@ -77,8 +95,13 @@ def _api_base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _build_trace_detail_response(db: Session, trace) -> SyntheticCallTraceDetail:
-    detail = load_trace_detail(db, trace)
+def _build_trace_detail_response(
+    db: Session,
+    trace,
+    *,
+    include_spans: bool = True,
+) -> SyntheticCallTraceDetail:
+    detail = load_trace_detail(db, trace, include_spans=include_spans)
     summary = detail.get("latency_summary") or {}
     base = SyntheticCallTraceSummary.model_validate(trace).model_dump()
     if summary:
@@ -109,25 +132,63 @@ async def _ingest_otlp_traces_handler(
     body = await request.body()
     if not body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty OTLP body")
+    if len(body) > settings.TRACES_MAX_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="OTLP body exceeds maximum size",
+        )
 
     content_type = request.headers.get("content-type", "")
+
+    if settings.TRACES_DEFER_PARSE_TO_WORKER and settings.TRACES_ASYNC_INGEST_ENABLED:
+        staging = stage_otlp_ingest(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            body=body,
+            content_type=content_type,
+            header_evaluator_result_id=x_efficientai_run_id,
+            header_agent_id=x_efficientai_agent_id,
+            header_call_short_id=x_efficientai_call_short_id,
+        )
+        return OtlpIngestResponse(
+            accepted_bytes=staging.body_bytes,
+            staging_id=staging.id,
+            deferred=True,
+            correlated=header_correlation_hint(
+                header_evaluator_result_id=x_efficientai_run_id,
+                header_call_short_id=x_efficientai_call_short_id,
+            ),
+        )
+
     try:
-        spans, _fmt = parse_otlp_body(body, content_type)
+        spans, _fmt = await run_in_threadpool(parse_otlp_body, body, content_type)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to parse OTLP payload: {exc}",
         ) from exc
 
-    trace, accepted, correlated = ingest_otlp_spans(
-        db,
-        organization_id=organization_id,
-        spans=spans,
-        header_evaluator_result_id=x_efficientai_run_id,
-        header_agent_id=x_efficientai_agent_id,
-        header_call_short_id=x_efficientai_call_short_id,
-        workspace_id=workspace_id,
-    )
+    if settings.TRACES_ASYNC_INGEST_ENABLED:
+        trace, accepted, correlated = ingest_otlp_batch_async(
+            db,
+            organization_id=organization_id,
+            spans=spans,
+            header_evaluator_result_id=x_efficientai_run_id,
+            header_agent_id=x_efficientai_agent_id,
+            header_call_short_id=x_efficientai_call_short_id,
+            workspace_id=workspace_id,
+        )
+    else:
+        trace, accepted, correlated = ingest_otlp_spans(
+            db,
+            organization_id=organization_id,
+            spans=spans,
+            header_evaluator_result_id=x_efficientai_run_id,
+            header_agent_id=x_efficientai_agent_id,
+            header_call_short_id=x_efficientai_call_short_id,
+            workspace_id=workspace_id,
+        )
     return OtlpIngestResponse(
         accepted_spans=accepted,
         synthetic_call_trace_id=trace.id if trace else None,
@@ -135,19 +196,24 @@ async def _ingest_otlp_traces_handler(
     )
 
 
-@router.post("", response_model=OtlpIngestResponse)
+@router.post("", response_model=OtlpIngestResponse, status_code=status.HTTP_202_ACCEPTED)
 async def ingest_observability_traces(
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
-    api_key: str = Depends(get_api_key),
+    principal: Principal = Depends(enforce_trace_ingest_rate_limit),
     x_efficientai_run_id: Optional[str] = Header(None, alias="X-EfficientAI-Run-Id"),
     x_efficientai_agent_id: Optional[str] = Header(None, alias="X-EfficientAI-Agent-Id"),
     x_efficientai_call_short_id: Optional[str] = Header(None, alias="X-EfficientAI-Call-Short-Id"),
 ):
     """Ingest OTLP spans for a live call (primary export endpoint)."""
-    _ = api_key
+    _ = principal
+    if settings.TRACES_ASYNC_INGEST_ENABLED:
+        response.status_code = status.HTTP_202_ACCEPTED
+    else:
+        response.status_code = status.HTTP_200_OK
     return await _ingest_otlp_traces_handler(
         request,
         db,
@@ -159,6 +225,26 @@ async def ingest_observability_traces(
     )
 
 
+@router.get("/ingest/{staging_id}", response_model=TraceIngestStagingStatus)
+def get_trace_ingest_staging_status(
+    staging_id: UUID,
+    db: Session = Depends(get_db),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    principal: Principal = Depends(get_api_key),
+):
+    _ = principal
+    row = get_staging_status(
+        db,
+        staging_id=staging_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Staging ingest not found")
+    return TraceIngestStagingStatus.model_validate(row)
+
+
 @router.post("/sessions", response_model=TraceSessionResponse)
 def create_trace_session(
     payload: TraceSessionCreateRequest,
@@ -166,10 +252,9 @@ def create_trace_session(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    api_key: str = Depends(get_api_key),
+    principal: Principal = Depends(enforce_trace_session_rate_limit),
 ):
-    """Mint call_short_id and open a trace before live audio / OTLP export."""
-    _ = api_key
+    _ = principal
     if payload.transport not in VALID_TRACE_TRANSPORTS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -223,9 +308,8 @@ def close_trace_session_route(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-    api_key: str = Depends(get_api_key),
+    principal: Principal = Depends(enforce_trace_session_rate_limit),
 ):
-    _ = api_key
     trace = close_trace_session(
         db,
         organization_id=organization_id,
@@ -239,6 +323,24 @@ def close_trace_session_route(
         call_short_id=call_short_id,
         status=trace.status,
     )
+
+
+@router.post("/backfill")
+def backfill_traces(
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+    limit: int = Query(50, ge=1, le=200),
+):
+    _ = api_key
+    created = backfill_missing_traces_from_call_recordings(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        limit=limit,
+    )
+    return {"created": created}
 
 
 @router.post("/ingest", response_model=JsonTraceIngestResponse, deprecated=True)
@@ -290,30 +392,37 @@ def list_observability_traces(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     status: Optional[str] = Query(None, description="open or closed"),
+    cursor: Optional[str] = Query(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
     api_key: str = Depends(get_api_key),
 ):
     _ = api_key
-    rows, total = list_traces(
+    since = default_trace_list_since()
+    rows, total, next_cursor, has_more = list_traces(
         db,
         organization_id=organization_id,
         workspace_id=workspace_id,
         skip=skip,
         limit=limit,
         status=status,
+        cursor=cursor,
+        since=since,
     )
     items = enrich_trace_summaries(db, rows)
     return SyntheticCallTraceListResponse(
         items=[SyntheticCallTraceSummary.model_validate(item) for item in items],
-        total=total,
+        total=total if total is not None else len(items),
+        next_cursor=next_cursor,
+        has_more=has_more,
     )
 
 
 @router.get("/results/{evaluator_result_id}", response_model=SyntheticCallTraceDetail)
 def get_trace_for_evaluator_result(
     evaluator_result_id: str,
+    include_spans: bool = Query(True),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -367,12 +476,13 @@ def get_trace_for_evaluator_result(
     if not trace:
         raise HTTPException(status_code=404, detail="Call trace not found")
 
-    return _build_trace_detail_response(db, trace)
+    return _build_trace_detail_response(db, trace, include_spans=include_spans)
 
 
 @router.get("/by-call-short-id/{call_short_id}", response_model=SyntheticCallTraceDetail)
 def get_trace_by_call_short_id_route(
     call_short_id: str,
+    include_spans: bool = Query(True),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -387,11 +497,11 @@ def get_trace_by_call_short_id_route(
     )
     if not trace:
         raise HTTPException(status_code=404, detail="Call trace not found")
-    return _build_trace_detail_response(db, trace)
+    return _build_trace_detail_response(db, trace, include_spans=include_spans)
 
 
-@router.get("/{trace_id}", response_model=SyntheticCallTraceDetail)
-def get_observability_trace(
+@router.get("/{trace_id}/spans", response_model=SyntheticTraceSpansResponse)
+def get_trace_spans(
     trace_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -407,4 +517,26 @@ def get_observability_trace(
     )
     if not trace:
         raise HTTPException(status_code=404, detail="Call trace not found")
-    return _build_trace_detail_response(db, trace)
+    payload = load_trace_spans_only(db, trace)
+    return SyntheticTraceSpansResponse(**payload)
+
+
+@router.get("/{trace_id}", response_model=SyntheticCallTraceDetail)
+def get_observability_trace(
+    trace_id: UUID,
+    include_spans: bool = Query(True),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    _ = api_key
+    trace = get_trace_by_id(
+        db,
+        organization_id=organization_id,
+        trace_id=trace_id,
+        workspace_id=workspace_id,
+    )
+    if not trace:
+        raise HTTPException(status_code=404, detail="Call trace not found")
+    return _build_trace_detail_response(db, trace, include_spans=include_spans)

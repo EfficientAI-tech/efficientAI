@@ -40,7 +40,20 @@ class ApiKeyProvider(AuthProvider):
 
         ensure_organization_active(db, db_key.organization_id)
 
-        db_key.last_used = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        last = db_key.last_used
+        if last is not None:
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            if (now - last).total_seconds() <= 60:
+                return Principal(
+                    organization_id=db_key.organization_id,
+                    auth_method=AuthMethod.API_KEY,
+                    user_id=db_key.user_id,
+                    api_key_id=db_key.id,
+                )
+
+        db_key.last_used = now
         db.commit()
 
         return Principal(

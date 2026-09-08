@@ -232,6 +232,10 @@ def _upsert_call_recording(
         call_recording.source = source
         if call_event:
             call_recording.call_event = call_event
+            from app.services.telephony.live_transcript import publish_call_event
+
+            if call_recording.call_short_id:
+                publish_call_event(call_recording.call_short_id, call_event)
         if agent_id:
             call_recording.agent_id = agent_id
         db.commit()
@@ -253,6 +257,10 @@ def _upsert_call_recording(
         db.add(call_recording)
         db.commit()
         db.refresh(call_recording)
+        if call_event and call_recording.call_short_id:
+            from app.services.telephony.live_transcript import publish_call_event
+
+            publish_call_event(call_recording.call_short_id, call_event)
         action = "created"
 
     agent_obj = None

@@ -108,6 +108,18 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = "X-API-Key"
     RATE_LIMIT_PER_MINUTE: int = 60
 
+    # Call traces / OTLP observability (Phase 2 scaling)
+    TRACES_ASYNC_INGEST_ENABLED: bool = True
+    TRACES_RATE_LIMIT_PER_MINUTE: int = 120
+    TRACES_RATE_LIMIT_ENFORCE: bool = True
+    TRACES_MAX_BODY_BYTES: int = 4 * 1024 * 1024
+    TRACES_DERIVE_DEBOUNCE_SECONDS: int = 3
+    TRACES_IDLE_CLOSE_SECONDS: int = 120
+    TRACES_S3_PREFIX: str = "audio/"
+    TRACES_LIST_DEFAULT_DAYS: int = 90
+    TRACES_DEFER_PARSE_TO_WORKER: bool = True
+    TRACES_STAGING_RETENTION_HOURS: int = 48
+
     # Authentication
     AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
@@ -724,6 +736,29 @@ def load_config_from_file(config_path: str) -> None:
             settings.API_KEY_HEADER = api_config["key_header"]
         if "rate_limit_per_minute" in api_config:
             settings.RATE_LIMIT_PER_MINUTE = api_config["rate_limit_per_minute"]
+
+    if "traces" in config_data:
+        traces_config = config_data["traces"]
+        if "async_ingest_enabled" in traces_config:
+            settings.TRACES_ASYNC_INGEST_ENABLED = bool(traces_config["async_ingest_enabled"])
+        if "rate_limit_per_minute" in traces_config:
+            settings.TRACES_RATE_LIMIT_PER_MINUTE = int(traces_config["rate_limit_per_minute"])
+        if "rate_limit_enforce" in traces_config:
+            settings.TRACES_RATE_LIMIT_ENFORCE = bool(traces_config["rate_limit_enforce"])
+        if "max_body_bytes" in traces_config:
+            settings.TRACES_MAX_BODY_BYTES = int(traces_config["max_body_bytes"])
+        if "derive_debounce_seconds" in traces_config:
+            settings.TRACES_DERIVE_DEBOUNCE_SECONDS = int(traces_config["derive_debounce_seconds"])
+        if "idle_close_seconds" in traces_config:
+            settings.TRACES_IDLE_CLOSE_SECONDS = int(traces_config["idle_close_seconds"])
+        if "s3_prefix" in traces_config:
+            settings.TRACES_S3_PREFIX = traces_config["s3_prefix"]
+        if "list_default_days" in traces_config:
+            settings.TRACES_LIST_DEFAULT_DAYS = int(traces_config["list_default_days"])
+        if "defer_parse_to_worker" in traces_config:
+            settings.TRACES_DEFER_PARSE_TO_WORKER = bool(traces_config["defer_parse_to_worker"])
+        if "staging_retention_hours" in traces_config:
+            settings.TRACES_STAGING_RETENTION_HOURS = int(traces_config["staging_retention_hours"])
 
     if "auth" in config_data:
         auth_config = config_data["auth"]

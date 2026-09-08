@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -10,6 +11,11 @@ from app.services.synthetic_traces.internal_otlp_exporter import (
     InternalOtlpSpanExporter,
     clear_trace_correlation_cache,
 )
+
+
+@pytest.fixture(autouse=True)
+def _sync_trace_ingest(monkeypatch):
+    monkeypatch.setattr("app.config.settings.TRACES_ASYNC_INGEST_ENABLED", False)
 
 
 def _readable_span(

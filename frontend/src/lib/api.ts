@@ -4893,9 +4893,13 @@ class ApiClient {
     return response.data
   }
 
-  async getSyntheticCallTraceForResult(evaluatorResultId: string): Promise<any> {
+  async getSyntheticCallTraceForResult(
+    evaluatorResultId: string,
+    includeSpans = true,
+  ): Promise<any> {
     const response = await this.client.get(
       `/api/v1/observability/traces/results/${evaluatorResultId}`,
+      { params: { include_spans: includeSpans } },
     )
     return response.data
   }
@@ -4904,19 +4908,28 @@ class ApiClient {
     skip?: number
     limit?: number
     status?: string
-  }): Promise<{ items: any[]; total: number }> {
+    cursor?: string
+  }): Promise<{ items: any[]; total: number; next_cursor?: string; has_more?: boolean }> {
     const response = await this.client.get('/api/v1/observability/traces', { params })
     return response.data
   }
 
-  async getSyntheticCallTrace(traceId: string): Promise<any> {
-    const response = await this.client.get(`/api/v1/observability/traces/${traceId}`)
+  async getSyntheticCallTraceSpans(traceId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/observability/traces/${traceId}/spans`)
     return response.data
   }
 
-  async getSyntheticCallTraceByCallShortId(callShortId: string): Promise<any> {
+  async getSyntheticCallTrace(traceId: string, includeSpans = true): Promise<any> {
+    const response = await this.client.get(`/api/v1/observability/traces/${traceId}`, {
+      params: { include_spans: includeSpans },
+    })
+    return response.data
+  }
+
+  async getSyntheticCallTraceByCallShortId(callShortId: string, includeSpans = true): Promise<any> {
     const response = await this.client.get(
       `/api/v1/observability/traces/by-call-short-id/${callShortId}`,
+      { params: { include_spans: includeSpans } },
     )
     return response.data
   }

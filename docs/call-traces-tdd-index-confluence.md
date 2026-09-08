@@ -18,7 +18,8 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 
 | Document | Who should read it | What it covers |
 | --- | --- | --- |
-| [TDD: Call Traces (Pipecat OTLP Observability)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) | Backend, SRE, frontend, sales/solutions | Architecture, scaling, OTLP ingest, drawer routing, provider vs OTLP metrics |
+| [TDD: Call Traces (Pipecat OTLP Observability)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) | Backend, SRE, frontend, sales/solutions | Architecture, OTLP ingest, drawer routing, provider vs OTLP metrics |
+| [TDD: Call Traces — Scaling & Bottlenecks](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/72417282) | Platform, SRE, architects | **SaaS-scale capacity**, bottleneck map, gRPC/collector path, Prometheus/Tempo comparison, Phase 3–4 options |
 | [Call Traces: Latency Metrics Explained](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/71434241) | Everyone — support, sales, customers | **Plain-language p50/p90/p95**, Listen/Think/Speak, formulas, examples, customer FAQ |
 | [Pipecat quick start](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) (repo) | Customer engineers | SDK hooks, env vars, local WebRTC — `docs/synthetic-call-traces-pipecat.md` |
 
@@ -65,10 +66,11 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 
 | Question | Short answer | Details |
 | --- | --- | --- |
-| How many concurrent OTLP calls today? | **10–20** comfortably on staging | Main TDD §5.1 |
-| What limits us? | Sync ingest + JSONB span rewrite | Main TDD §5.5 |
-| What unlocks 500+ concurrent? | Async Celery ingest + S3 spans | Main TDD §5.4 Phase 2 |
-| Are traces sharded? | **No** — catalog Postgres only | Main TDD §3 |
+| How many concurrent OTLP calls today? | **100–500** with worker scale (Phase 2) | [Scaling TDD](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/72417282) §3 |
+| What limits us at SaaS scale? | Postgres writes + derive CPU (not API) | Scaling TDD §4 |
+| What unlocks 2,000+ concurrent? | OTel Collector gRPC + PG tune (Phase 3) | Scaling TDD §6 |
+| What unlocks 10,000+ concurrent? | Shard PG or Kafka + columnar (Phase 4) | Scaling TDD §6 |
+| Are traces sharded? | **No** — catalog Postgres only today | Scaling TDD §6.1 |
 | Auto-close idle traces? | **120 seconds** after last span | Main TDD §6 |
 
 ---
@@ -79,6 +81,7 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 | --- | --- | --- |
 | This index | `docs/call-traces-tdd-index-confluence.md` | `/docs/monitoring/call-traces/` |
 | Call Traces TDD (architecture) | `docs/synthetic-call-traces-tdd-confluence.md` | `/docs/monitoring/call-traces/architecture/` |
+| Call Traces Scaling TDD | `docs/call-traces-scaling-tdd-confluence.md` | — |
 | Latency metrics (p50/p90/p95) | `docs/call-traces-latency-metrics-confluence.md` | `/docs/monitoring/call-traces/latency-metrics/` |
 | Pipecat quick start | `docs/synthetic-call-traces-pipecat.md` | `/docs/monitoring/call-traces/pipecat-integration/` |
 

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+import base64
+import json
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.database import (
     Agent,
     CallRecording,
@@ -19,6 +23,14 @@ from app.models.database import (
 )
 from app.models.synthetic_trace_schemas import VALID_TRACE_TRANSPORTS
 from app.utils.call_recordings import generate_unique_call_short_id
+from app.services.synthetic_traces.span_storage import (
+    SPANS_STORAGE_BATCHES,
+    SPANS_STORAGE_S3,
+    collect_trace_ids,
+    delete_trace_batches,
+    load_trace_spans,
+    upload_trace_spans_to_s3,
+)
 from app.services.synthetic_traces.otlp_mapper import (
     annotate_spans_with_display_turn,
     compute_component_aggregates,
@@ -33,7 +45,7 @@ from app.services.synthetic_traces.otlp_mapper import (
 )
 
 
-OPEN_TRACE_IDLE_CLOSE_SECONDS = 120
+OPEN_TRACE_IDLE_CLOSE_SECONDS = settings.TRACES_IDLE_CLOSE_SECONDS
 
 
 def _normalize_turn_row(turn: Dict[str, Any]) -> Dict[str, Any]:
@@ -53,9 +65,14 @@ def resolve_trace_turns(
     trace: SyntheticCallTrace,
     payload: Optional[SyntheticTracePayload],
     otel_payload: Optional[SyntheticTraceOtelPayload],
+    *,
+    preloaded_spans: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Rebuild per-turn metrics from stored payload + OTLP spans."""
-    raw_spans = list(otel_payload.spans or []) if otel_payload else []
+    if preloaded_spans is not None:
+        raw_spans = preloaded_spans
+    else:
+        raw_spans = list(otel_payload.spans or []) if otel_payload else []
     scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
     stored_turns = list(payload.turns or []) if payload else []
 
@@ -85,23 +102,29 @@ def enrich_trace_summaries(
     db: Session,
     traces: List[SyntheticCallTrace],
 ) -> List[Dict[str, Any]]:
-    """Recompute latency percentiles from turn data for list views."""
+    """Build list rows from header aggregates (Phase 2) with legacy fallback."""
     if not traces:
         return []
 
     trace_ids = [t.id for t in traces]
-    payloads = (
-        db.query(SyntheticTracePayload)
-        .filter(SyntheticTracePayload.synthetic_call_trace_id.in_(trace_ids))
-        .all()
-    )
-    otel_payloads = (
-        db.query(SyntheticTraceOtelPayload)
-        .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id.in_(trace_ids))
-        .all()
-    )
-    payload_by_trace = {p.synthetic_call_trace_id: p for p in payloads}
-    otel_by_trace = {p.synthetic_call_trace_id: p for p in otel_payloads}
+    legacy_ids = [
+        t.id for t in traces if (t.spans_storage or "legacy_jsonb") == "legacy_jsonb"
+    ]
+    payload_by_trace: Dict[UUID, SyntheticTracePayload] = {}
+    otel_by_trace: Dict[UUID, SyntheticTraceOtelPayload] = {}
+    if legacy_ids:
+        payloads = (
+            db.query(SyntheticTracePayload)
+            .filter(SyntheticTracePayload.synthetic_call_trace_id.in_(legacy_ids))
+            .all()
+        )
+        otel_payloads = (
+            db.query(SyntheticTraceOtelPayload)
+            .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id.in_(legacy_ids))
+            .all()
+        )
+        payload_by_trace = {p.synthetic_call_trace_id: p for p in payloads}
+        otel_by_trace = {p.synthetic_call_trace_id: p for p in otel_payloads}
 
     items: List[Dict[str, Any]] = []
     for trace in traces:
@@ -124,20 +147,30 @@ def enrich_trace_summaries(
             "component_aggregates": trace.component_aggregates,
             "failure_flags": trace.failure_flags,
             "call_recording_id": trace.call_recording_id,
+            "spans_storage": trace.spans_storage,
         }
-        turns = resolve_trace_turns(
-            trace,
-            payload_by_trace.get(trace.id),
-            otel_by_trace.get(trace.id),
+        storage = trace.spans_storage or "legacy_jsonb"
+        needs_fallback = (
+            storage == "legacy_jsonb"
+            and trace.response_latency_p50_ms is None
+            and trace.turn_count > 0
         )
-        if turns:
-            summary = compute_trace_latency_summary(turns)
-            base["turn_count"] = summary.get("turn_count", base["turn_count"])
-            base["response_latency_sample_count"] = summary.get("response_latency_sample_count")
-            base["response_latency_p50_ms"] = summary.get("response_latency_p50_ms")
-            base["response_latency_p90_ms"] = summary.get("response_latency_p90_ms")
-            base["response_latency_p95_ms"] = summary.get("response_latency_p95_ms")
-            base["component_aggregates"] = summary.get("component_aggregates")
+        if needs_fallback:
+            turns = resolve_trace_turns(
+                trace,
+                payload_by_trace.get(trace.id),
+                otel_by_trace.get(trace.id),
+            )
+            if turns:
+                summary = compute_trace_latency_summary(turns)
+                base["turn_count"] = summary.get("turn_count", base["turn_count"])
+                base["response_latency_sample_count"] = summary.get(
+                    "response_latency_sample_count"
+                )
+                base["response_latency_p50_ms"] = summary.get("response_latency_p50_ms")
+                base["response_latency_p90_ms"] = summary.get("response_latency_p90_ms")
+                base["response_latency_p95_ms"] = summary.get("response_latency_p95_ms")
+                base["component_aggregates"] = summary.get("component_aggregates")
         items.append(base)
     return items
 
@@ -190,6 +223,7 @@ def open_trace(
         tier=tier,
         status="open",
         started_at=_utcnow(),
+        spans_storage=SPANS_STORAGE_BATCHES,
     )
     db.add(trace)
     db.flush()
@@ -376,6 +410,20 @@ def close_trace_session(
     trace = query.order_by(SyntheticCallTrace.created_at.desc()).first()
     if not trace:
         return None
+    if settings.TRACES_ASYNC_INGEST_ENABLED:
+        from app.workers.tasks.trace_tasks import close_and_offload_trace_task
+
+        try:
+            close_and_offload_trace_task.delay(str(trace.id))
+        except Exception as exc:
+            logger.debug("Celery unavailable for close; running inline: {}", exc)
+            close_and_offload_trace(db, trace_id=trace.id)
+            db.refresh(trace)
+            return trace
+        trace.status = "closing"
+        db.commit()
+        db.refresh(trace)
+        return trace
     return _close_open_trace(db, trace)
 
 
@@ -412,7 +460,7 @@ def maybe_auto_close_open_trace(
     if trace.turn_count < 1:
         return trace
 
-    updated_at = trace.updated_at or trace.started_at
+    updated_at = trace.last_span_at or trace.updated_at or trace.started_at
     if not updated_at:
         return trace
     if updated_at.tzinfo is None:
@@ -629,6 +677,7 @@ def get_trace_by_call_short_id(
     organization_id: UUID,
     call_short_id: str,
     workspace_id: Optional[UUID] = None,
+    auto_close: bool = True,
 ) -> Optional[SyntheticCallTrace]:
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
@@ -637,7 +686,7 @@ def get_trace_by_call_short_id(
     if workspace_id is not None:
         query = query.filter(SyntheticCallTrace.workspace_id == workspace_id)
     trace = query.order_by(SyntheticCallTrace.created_at.desc()).first()
-    if trace:
+    if trace and auto_close:
         trace = maybe_auto_close_open_trace(db, trace)
     return trace
 
@@ -650,19 +699,47 @@ def list_traces(
     skip: int = 0,
     limit: int = 50,
     status: Optional[str] = None,
-) -> tuple[List[SyntheticCallTrace], int]:
-    backfill_missing_traces_from_call_recordings(
-        db, organization_id=organization_id, workspace_id=workspace_id
-    )
+    cursor: Optional[str] = None,
+    since: Optional[datetime] = None,
+) -> tuple[List[SyntheticCallTrace], Optional[int], Optional[str], bool]:
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.workspace_id == workspace_id,
     )
+    if since is not None:
+        query = query.filter(SyntheticCallTrace.started_at >= since)
     if status:
         if status == "closed":
-            query = query.filter(SyntheticCallTrace.status.in_(("closed", "finalized")))
+            query = query.filter(SyntheticCallTrace.status.in_(("closed", "finalized", "closing")))
         else:
             query = query.filter(SyntheticCallTrace.status == status)
+
+    total: Optional[int] = None
+    if cursor:
+        started_at, trace_id = _decode_trace_cursor(cursor)
+        query = query.filter(
+            or_(
+                SyntheticCallTrace.started_at < started_at,
+                and_(
+                    SyntheticCallTrace.started_at == started_at,
+                    SyntheticCallTrace.id < trace_id,
+                ),
+            )
+        )
+        rows = (
+            query.order_by(
+                SyntheticCallTrace.started_at.desc(),
+                SyntheticCallTrace.id.desc(),
+            )
+            .limit(limit + 1)
+            .all()
+        )
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        next_cursor = _encode_trace_cursor(rows[-1]) if has_more and rows else None
+        return rows, None, next_cursor, has_more
+
     total = query.count()
     rows = (
         query.order_by(SyntheticCallTrace.started_at.desc())
@@ -670,7 +747,29 @@ def list_traces(
         .limit(limit)
         .all()
     )
-    return rows, total
+    return rows, total, None, False
+
+
+def _encode_trace_cursor(trace: SyntheticCallTrace) -> str:
+    started = trace.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    payload = {"started_at": started.isoformat(), "id": str(trace.id)}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
+def _decode_trace_cursor(cursor: str) -> Tuple[datetime, UUID]:
+    raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+    payload = json.loads(raw.decode("utf-8"))
+    started_at = datetime.fromisoformat(payload["started_at"])
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return started_at, UUID(payload["id"])
+
+
+def default_trace_list_since() -> datetime:
+    days = max(1, int(settings.TRACES_LIST_DEFAULT_DAYS))
+    return _utcnow() - timedelta(days=days)
 
 
 def build_otlp_setup_info(
@@ -1271,6 +1370,8 @@ def finalize_trace(
 def load_trace_detail(
     db: Session,
     trace: SyntheticCallTrace,
+    *,
+    include_spans: bool = True,
 ) -> Dict[str, Any]:
     payload = (
         db.query(SyntheticTracePayload)
@@ -1282,20 +1383,205 @@ def load_trace_detail(
         .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id == trace.id)
         .first()
     )
-    raw_spans = list(otel_payload.spans or []) if otel_payload else []
+    raw_spans = load_trace_spans(db, trace)
     scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
-    otel_spans = annotate_spans_with_display_turn(scoped_spans)
-    turns = resolve_trace_turns(trace, payload, otel_payload)
+    turns = resolve_trace_turns(
+        trace,
+        payload,
+        otel_payload,
+        preloaded_spans=scoped_spans,
+    )
+    otel_spans = (
+        annotate_spans_with_display_turn(scoped_spans, precomputed_turns=turns)
+        if include_spans
+        else []
+    )
     latency_summary = compute_trace_latency_summary(turns) if turns else {}
+    trace_ids = collect_trace_ids(scoped_spans) if scoped_spans else []
+    if not trace_ids and otel_payload:
+        trace_ids = list(otel_payload.trace_ids or [])
 
     return {
         "trace": trace,
         "turns": turns,
         "otel_spans": otel_spans,
-        "otel_trace_ids": list(otel_payload.trace_ids or []) if otel_payload else [],
+        "otel_trace_ids": trace_ids,
         "latency_summary": latency_summary,
         "pipeline_models": extract_pipeline_models(otel_spans),
     }
+
+
+def load_trace_spans_only(db: Session, trace: SyntheticCallTrace) -> Dict[str, Any]:
+    raw_spans = load_trace_spans(db, trace)
+    scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
+    payload = (
+        db.query(SyntheticTracePayload)
+        .filter(SyntheticTracePayload.synthetic_call_trace_id == trace.id)
+        .first()
+    )
+    otel_payload = (
+        db.query(SyntheticTraceOtelPayload)
+        .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id == trace.id)
+        .first()
+    )
+    turns = resolve_trace_turns(
+        trace,
+        payload,
+        otel_payload,
+        preloaded_spans=scoped_spans,
+    )
+    otel_spans = annotate_spans_with_display_turn(scoped_spans, precomputed_turns=turns)
+    return {
+        "otel_spans": otel_spans,
+        "otel_trace_ids": collect_trace_ids(scoped_spans),
+        "spans_storage": trace.spans_storage,
+    }
+
+
+def _apply_derived_turns(
+    db: Session,
+    trace: SyntheticCallTrace,
+    scoped_spans: List[Dict[str, Any]],
+) -> SyntheticCallTrace:
+    payload = (
+        db.query(SyntheticTracePayload)
+        .filter(SyntheticTracePayload.synthetic_call_trace_id == trace.id)
+        .first()
+    )
+    tier1_turns = list(payload.turns or []) if payload else []
+    otel_turns = derive_turns_from_spans(scoped_spans)
+    merged = merge_tier1_and_otel_turns(tier1_turns, otel_turns)
+
+    if payload:
+        payload.turns = merged
+    else:
+        db.add(
+            SyntheticTracePayload(
+                synthetic_call_trace_id=trace.id,
+                workspace_id=trace.workspace_id,
+                turns=merged,
+            )
+        )
+
+    trace.turn_count = len(merged)
+    trace.component_aggregates = compute_component_aggregates(merged)
+    if otel_turns:
+        trace.tier = "mixed" if tier1_turns else "component"
+    _update_latency_aggregates(trace, merged)
+    trace.derive_pending = False
+    return trace
+
+
+def derive_trace_turns(db: Session, *, trace_id: UUID) -> Optional[SyntheticCallTrace]:
+    from sqlalchemy import func
+
+    from app.models.database import SyntheticTraceSpanBatch
+    from app.workers.tasks.trace_tasks import close_and_offload_trace_task
+
+    trace = (
+        db.query(SyntheticCallTrace)
+        .filter(SyntheticCallTrace.id == trace_id)
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+    if not trace:
+        return None
+
+    max_seq_before = (
+        db.query(func.max(SyntheticTraceSpanBatch.seq))
+        .filter(SyntheticTraceSpanBatch.synthetic_call_trace_id == trace.id)
+        .scalar()
+    ) or 0
+
+    raw_spans = load_trace_spans(db, trace)
+    scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
+    trace = _apply_derived_turns(db, trace, scoped_spans)
+    db.commit()
+    db.refresh(trace)
+
+    max_seq_after = (
+        db.query(func.max(SyntheticTraceSpanBatch.seq))
+        .filter(SyntheticTraceSpanBatch.synthetic_call_trace_id == trace.id)
+        .scalar()
+    ) or 0
+    if max_seq_after > max_seq_before:
+        trace.derive_pending = True
+        db.commit()
+        from app.services.synthetic_traces.ingest_pipeline import schedule_derive
+
+        schedule_derive(trace.id)
+    elif scoped_spans and spans_indicate_session_end(scoped_spans):
+        close_and_offload_trace_task.delay(str(trace.id))
+
+    return trace
+
+
+def sweep_idle_traces(db: Session) -> int:
+    idle_seconds = max(1, int(settings.TRACES_IDLE_CLOSE_SECONDS))
+    cutoff = _utcnow() - timedelta(seconds=idle_seconds)
+    rows = (
+        db.query(SyntheticCallTrace)
+        .filter(
+            SyntheticCallTrace.status == "open",
+            SyntheticCallTrace.last_span_at.isnot(None),
+            SyntheticCallTrace.last_span_at < cutoff,
+        )
+        .limit(200)
+        .all()
+    )
+    from app.workers.tasks.trace_tasks import close_and_offload_trace_task
+
+    count = 0
+    for trace in rows:
+        close_and_offload_trace_task.delay(str(trace.id))
+        count += 1
+    if count:
+        backfill_missing_traces_from_call_recordings(
+            db,
+            organization_id=rows[0].organization_id,
+            workspace_id=rows[0].workspace_id,
+            limit=10,
+        )
+    return count
+
+
+def close_and_offload_trace(db: Session, *, trace_id: UUID) -> Optional[SyntheticCallTrace]:
+    trace = (
+        db.query(SyntheticCallTrace)
+        .filter(SyntheticCallTrace.id == trace_id)
+        .with_for_update()
+        .first()
+    )
+    if not trace:
+        return None
+
+    raw_spans = load_trace_spans(db, trace)
+    scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
+    trace = _apply_derived_turns(db, trace, scoped_spans)
+
+    s3_key = upload_trace_spans_to_s3(db, trace, scoped_spans)
+    if s3_key:
+        trace.spans_s3_key = s3_key
+        trace.spans_storage = SPANS_STORAGE_S3
+        delete_trace_batches(db, trace.id)
+        otel_payload = (
+            db.query(SyntheticTraceOtelPayload)
+            .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id == trace.id)
+            .first()
+        )
+        if otel_payload:
+            otel_payload.spans = []
+            otel_payload.trace_ids = collect_trace_ids(scoped_spans)
+    elif trace.spans_storage != SPANS_STORAGE_S3:
+        trace.spans_storage = SPANS_STORAGE_BATCHES
+
+    trace.status = "closed"
+    trace.ended_at = _utcnow()
+    trace.failure_flags = _compute_failure_flags(trace)
+    trace.derive_pending = False
+    db.commit()
+    db.refresh(trace)
+    return trace
 
 
 def build_otel_correlation(

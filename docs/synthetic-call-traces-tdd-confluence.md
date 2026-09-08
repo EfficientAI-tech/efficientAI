@@ -88,12 +88,12 @@ Eight mechanisms work together:
 | **Call correlation ID** | 6-digit `call_short_id` (100000–999999) | Human-readable in UI; uniqueness check on mint |
 | **OTLP transport (customer)** | Sync HTTP POST to API | Lowest integration friction; no collector required for pilots |
 | **OTLP transport (Test Agent)** | In-process `InternalOtlpSpanExporter` | No HTTP hop; same turn mapper as customer OTLP |
-| **Span storage** | Full JSON array in Postgres JSONB | Simple v1; rewrite entire array each batch (scaling tradeoff) |
-| **Trace sharding** | Catalog Postgres only | Unlike call imports — no hash routing to data shards |
-| **Percentile method** | Nearest-rank on sorted per-turn SUT values | Deterministic, matches `trace_service.py` — not linear interpolation |
-| **Production calls list** | `source == webhook` filter | Playground Voice AI never in observability hub |
-| **Live transcript** | 1s Postgres poll SSE | Works for staging volume; DB load grows with concurrent live calls |
-| **Rate limiting** | Not enforced on trace routes (v1) | Config may define limits; wired in Phase 2 |
+| **Span storage** | Full JSON array in Postgres JSONB | Append-only `synthetic_trace_span_batches`; S3 on close |
+| **Trace sharding** | Catalog Postgres only | Catalog Postgres only |
+| **Percentile method** | Nearest-rank on sorted per-turn SUT values | Same |
+| **Production calls list** | `source == webhook` filter | Same |
+| **Live transcript** | Redis pub/sub + 5s PG reconcile SSE | Same |
+| **Rate limiting** | Redis sliding window on trace routes | Same |
 | **Cost from OTLP** | Not computed | Dollar cost from provider `call_data` (§11.5) |
 
 ---
@@ -179,8 +179,9 @@ Eight mechanisms work together:
 
 | Phase | Changes | Unlocks |
 | --- | --- | --- |
-| **Phase 1 (now)** | Sync ingest, catalog JSONB, 6-digit IDs | Pilots, 10–20 concurrent |
-| **Phase 2** | Celery `traces` queue, S3 span blobs, rate limits | 100–500 concurrent |
+| **Phase 1** | Sync ingest, catalog JSONB, 6-digit IDs | Pilots, 10–20 concurrent |
+| **Phase 2 (now)** | Celery `traces` queue, append-only batches, S3 on close, rate limits | 100–500 concurrent |
+| **Layout 3 (now)** | Thin API: stage raw OTLP → worker parse/correlate/persist | Protects API CPU at same scale |
 | **Phase 3** | OTel Collector gRPC, daily rollups, retention | Enterprise dashboards, 2k+ |
 | **Phase 4** | Trace shard table or Timescale | 1M+ traces |
 
@@ -198,14 +199,15 @@ Every OTLP batch for one call:
 
 ### 5.6 Configuration: v1 vs Phase 2 target
 
-| Setting | Today (v1) | Phase 2 recommended |
+| Setting | Phase 1 | Phase 2 (implemented) |
 | --- | --- | --- |
-| Ingest path | Sync in API request | Celery `traces` queue |
-| Span storage | Postgres JSONB array | S3 per trace; PG pointer |
-| Rate limit | None on `/observability/traces` | 60–120 req/min per API key |
-| List pagination | UI 25, API max 200 | Cursor + 90-day window |
-| Idle auto-close | 120s | Configurable per workspace |
-| Live SSE | 1s Postgres poll | Redis pub/sub or LISTEN/NOTIFY |
+| Ingest path | Sync in API request | Stage raw OTLP (`defer_parse_to_worker`) or parse in API → batch row → 202 → Celery `derive_trace_turns` |
+| Staging | — | `synthetic_trace_ingest_staging` (short-lived); `GET /observability/traces/ingest/{id}` |
+| Span storage | Postgres JSONB array | `synthetic_trace_span_batches`; S3 pointer on close |
+| Rate limit | None on `/observability/traces` | `traces.rate_limit_per_minute` (default 120) |
+| List pagination | UI 25, API max 200 offset | Keyset cursor + 90-day window |
+| Idle auto-close | 120s on read/ingest | Beat `sweep_idle_traces` every 30s |
+| Live SSE | 1s Postgres poll | Redis pub/sub + 5s PG reconcile |
 
 ### 5.7 Before vs after (capacity)
 
@@ -514,7 +516,11 @@ Example: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`
 | `app/services/synthetic_traces/otlp_ingest.py` | OTLP JSON + Protobuf parse |
 | `app/services/voice_agent/playground_tracing.py` | Test Agent span stamping |
 | `app/services/synthetic_traces/internal_otlp_exporter.py` | In-process export |
-| `app/services/telephony/live_transcript_sse.py` | Poll-based SSE |
+| `app/services/telephony/live_transcript_sse.py` | Redis pub/sub SSE + PG reconcile |
+| `app/services/synthetic_traces/ingest_pipeline.py` | Async batch persist + derive scheduling |
+| `app/services/synthetic_traces/span_storage.py` | Batch/S3 span load + offload |
+| `app/workers/tasks/trace_tasks.py` | Celery derive, idle sweep, close/offload |
+| `app/core/rate_limit.py` | Redis sliding-window trace rate limits |
 | `src/efficientai/integrations/efficientai_traces/` | Customer SDK |
 | `frontend/src/pages/test-insights/TestInsights.tsx` | Calls hub UI |
 

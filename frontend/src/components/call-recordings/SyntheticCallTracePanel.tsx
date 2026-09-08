@@ -446,15 +446,25 @@ export default function SyntheticCallTracePanel({
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['synthetic-call-trace', lookupKey, lookupMode],
     queryFn: () => {
-      if (traceId) return apiClient.getSyntheticCallTrace(traceId)
-      if (callShortId) return apiClient.getSyntheticCallTraceByCallShortId(callShortId)
-      return apiClient.getSyntheticCallTraceForResult(evaluatorResultId!)
+      if (traceId) return apiClient.getSyntheticCallTrace(traceId, false)
+      if (callShortId) return apiClient.getSyntheticCallTraceByCallShortId(callShortId, false)
+      return apiClient.getSyntheticCallTraceForResult(evaluatorResultId!, false)
     },
     enabled: Boolean(traceId || callShortId || evaluatorResultId),
     retry: false,
   })
 
-  const otelSpans = (data?.otel_spans ?? []) as OtelSpan[]
+  const needsSpans = tab === 'spans' || tab === 'waterfall' || tab === 'trace' || tab === 'timeline'
+  const resolvedTraceId = traceId ?? data?.id
+
+  const { data: spansData, isLoading: spansLoading } = useQuery({
+    queryKey: ['synthetic-call-trace-spans', resolvedTraceId],
+    queryFn: () => apiClient.getSyntheticCallTraceSpans(resolvedTraceId!),
+    enabled: needsSpans && Boolean(resolvedTraceId),
+    retry: false,
+  })
+
+  const otelSpans = ((needsSpans ? spansData?.otel_spans : data?.otel_spans) ?? []) as OtelSpan[]
   const spansByTurn = useMemo(() => buildSpansByTurn(otelSpans), [otelSpans])
   const turns = (data?.turns ?? []) as TraceTurn[]
   const pipelineModels = (data?.pipeline_models ?? {}) as PipelineModels
@@ -616,7 +626,7 @@ export default function SyntheticCallTracePanel({
     return buildOtelCallTimeline(otelSpans, timelineTurnInputs)
   }, [otelSpans, timelineTurnInputs])
 
-  if (isLoading && !data) {
+  if ((isLoading && !data) || (needsSpans && spansLoading && !spansData && resolvedTraceId)) {
     return (
       <div className={`space-y-3 ${embedded ? 'p-1' : 'p-5'}`}>
         <div className="h-8 w-48 animate-pulse rounded-lg bg-gray-100" />
@@ -759,7 +769,9 @@ export default function SyntheticCallTracePanel({
 
       {tab === 'spans' && (
         <div className={embedded ? 'overflow-hidden rounded-xl border border-gray-200 bg-white pb-4' : 'bg-white pb-16'}>
-          {otelSpans.length === 0 ? (
+          {spansLoading ? (
+            <p className="py-16 text-center text-sm text-gray-500">Loading spans…</p>
+          ) : otelSpans.length === 0 ? (
             <p className="py-16 text-center text-sm text-gray-500">No spans</p>
           ) : (
             <>
@@ -821,6 +833,11 @@ export default function SyntheticCallTracePanel({
                 <Radio className="h-3 w-3 text-gray-400" />
                 {trace.transport ?? 'webrtc'}
               </span>
+              {data?.spans_storage && (
+                <span className="inline-flex items-center rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs font-medium text-gray-600">
+                  {data.spans_storage === 's3' ? 'Archived' : data.spans_storage === 'batches' ? 'Live' : 'Legacy'}
+                </span>
+              )}
               {startedLabel && (
                 <span className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-xs text-gray-600">
                   <Clock className="h-3 w-3 text-gray-400" />
