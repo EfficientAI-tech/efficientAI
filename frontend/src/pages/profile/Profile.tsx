@@ -23,7 +23,7 @@ export default function Profile() {
   // Separately call /auth/me to find out whether this user already has a
   // password set and whether their email is still the synthetic placeholder
   // we create for raw API-key users.
-  const { data: authMe, refetch: refetchMe } = useQuery({
+  const { data: authMe } = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: () => apiClient.getMe(),
   })
