@@ -244,14 +244,9 @@ class Settings(BaseSettings):
     PLIVO_OUTBOUND_POOL: List[str] = []
     EXOTEL_OUTBOUND_POOL: List[str] = []
 
-    # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
-    RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
-        "exotel.com",
-        "plivo.com",
-        "vobiz.ai",
-        "amazonaws.com",
-        "cloudfront.net",
-    ]
+    # Extra recording URL host suffixes merged onto built-in provider allowlist.
+    # Leave empty to use defaults only (see recording_download.py).
+    RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = []
 
     # Live telephony pipeline recording merge (dual-track → natural mono)
     # Residual one-way carrier latency trim applied to the bot track at merge time.
@@ -892,6 +887,10 @@ def load_config_from_file(config_path: str) -> None:
         if telephony_cfg.get("outbound_pool_max_concurrent_per_org") is not None:
             settings.TELEPHONY_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG = int(
                 telephony_cfg["outbound_pool_max_concurrent_per_org"]
+            )
+        if telephony_cfg.get("recording_url_allowed_host_suffixes"):
+            settings.RECORDING_URL_ALLOWED_HOST_SUFFIXES = list(
+                telephony_cfg["recording_url_allowed_host_suffixes"]
             )
 
     if "judge_alignment" in config_data:

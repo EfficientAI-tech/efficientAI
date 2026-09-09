@@ -945,13 +945,17 @@ def set_password(
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    # Rotating an existing password - require the current one.
+    # Rotating an existing password - require the current one (400, not 401, so
+    # the SPA does not treat a validation error as an expired session).
     if user.password_hash:
-        if not payload.current_password or not verify_password(
-            payload.current_password, user.password_hash
-        ):
+        if not payload.current_password:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required.",
+            )
+        if not verify_password(payload.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is incorrect.",
             )
 

@@ -549,14 +549,14 @@ def test_rotating_password_requires_current_password(
     db_session.flush()
     _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
 
-    # Missing current_password -> 401.
+    # Missing current_password -> 400 (validation, not session expiry).
     missing_current = authenticated_client.post(
         "/api/v1/auth/password",
         json={"new_password": "BrandNew1!"},
     )
-    assert missing_current.status_code == 401
+    assert missing_current.status_code == 400
 
-    # Wrong current_password -> 401.
+    # Wrong current_password -> 400 (validation, not session expiry).
     wrong_current = authenticated_client.post(
         "/api/v1/auth/password",
         json={
@@ -564,7 +564,7 @@ def test_rotating_password_requires_current_password(
             "current_password": "not-the-real-one",
         },
     )
-    assert wrong_current.status_code == 401
+    assert wrong_current.status_code == 400
 
     # Correct current_password -> 200 and password actually changes.
     correct = authenticated_client.post(

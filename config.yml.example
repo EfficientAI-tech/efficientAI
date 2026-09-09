@@ -244,6 +244,14 @@ judge_alignment:
 # license:
 #   key: "eyJhbGciOi..."
 
+# Telephony / recording URL safety (SSRF allowlist for provider recording fetches).
+# Built-in suffixes cover Exotel, Plivo, Vobiz, AWS S3/CloudFront, GCS, Azure Blob,
+# DigitalOcean Spaces, Backblaze B2, Cloudflare R2, Vapi, Retell, ElevenLabs,
+# Daily, LiveKit, and Smallest. Add custom CDN host suffixes below if needed.
+# telephony:
+#   recording_url_allowed_host_suffixes:
+#     - "recordings.mycompany.com"
+
 # Vobiz Telephony (platform-level). Shared account credentials used for
 # inbound/outbound PSTN calls bridged into agent Pipecat pipelines.
 # vobiz:

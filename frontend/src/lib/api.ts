@@ -542,7 +542,7 @@ export const apiBaseUrl =
 
 const API_BASE_URL = apiBaseUrl
 
-let refreshPromise: Promise<string | null> | null = null
+let refreshPromise: Promise<boolean> | null = null
 
 class ApiClient {
   private client: AxiosInstance
@@ -608,7 +608,8 @@ class ApiClient {
           requestUrl.includes('/auth/signup') ||
           requestUrl.includes('/auth/refresh') ||
           requestUrl.includes('/auth/logout') ||
-          requestUrl.includes('/auth/config')
+          requestUrl.includes('/auth/config') ||
+          requestUrl.includes('/auth/password')
 
         const detail = getApiErrorDetail(error)
         if (
@@ -627,9 +628,13 @@ class ApiClient {
         ) {
           if (!isAuthEndpoint) {
             originalRequest._retry = true
-            const newToken = await this.tryRefreshAccessToken()
-            if (newToken) {
-              originalRequest.headers.Authorization = `Bearer ${newToken}`
+            const refreshed = await this.tryRefreshAccessToken()
+            if (refreshed) {
+              if (this.cookieSessionEnabled) {
+                delete originalRequest.headers.Authorization
+              } else if (this.inMemoryAccessToken) {
+                originalRequest.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
+              }
               return this.client(originalRequest)
             }
           }
@@ -642,9 +647,9 @@ class ApiClient {
     )
   }
 
-  private async tryRefreshAccessToken(): Promise<string | null> {
+  private async tryRefreshAccessToken(): Promise<boolean> {
     if (!this.cookieSessionEnabled && !this.inMemoryRefreshToken) {
-      return null
+      return false
     }
 
     if (!refreshPromise) {
@@ -667,7 +672,10 @@ class ApiClient {
           if (rotatedRefresh) {
             this.setRefreshToken(rotatedRefresh)
           }
-          return (access_token || this.inMemoryAccessToken) as string | null
+          // Cookie sessions return empty tokens in JSON; new credentials are Set-Cookie only.
+          return Boolean(
+            this.cookieSessionEnabled || access_token || this.inMemoryAccessToken,
+          )
         })
         .catch((err) => {
           const refreshDetail = getApiErrorDetail(err)
@@ -679,7 +687,7 @@ class ApiClient {
               organizationAccessDeniedMessage(refreshDetail),
             )
           }
-          return null
+          return false
         })
         .finally(() => {
           refreshPromise = null

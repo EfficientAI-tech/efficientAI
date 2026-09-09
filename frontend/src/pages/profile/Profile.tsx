@@ -5,6 +5,7 @@ import { Profile as ProfileType, Invitation, UserUpdate, InvitationStatus } from
 import { User, Mail, Building2, CheckCircle, XCircle, KeyRound, AlertTriangle, ArrowRightLeft, Loader2 } from 'lucide-react'
 import Button from '../../components/Button'
 import { useAuthStore } from '../../store/authStore'
+import { redirectToLoginWithMessage } from '../../lib/authSession'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 
 export default function Profile() {
@@ -52,16 +53,16 @@ export default function Profile() {
       apiClient.setPassword(data),
     onSuccess: (data) => {
       const hadPasswordBefore = !!authMe?.has_password
-      setPwError('')
-      setPwSuccess(
-        hadPasswordBefore
-          ? 'Password updated successfully.'
-          : `Password set. You can now sign in with ${data.email} and your new password.`
-      )
       resetPasswordForm()
       setIsEditingPassword(false)
-      refetchMe()
-      queryClient.invalidateQueries({ queryKey: ['profile'] })
+      queryClient.clear()
+      const { logout } = useAuthStore.getState()
+      logout()
+      redirectToLoginWithMessage(
+        hadPasswordBefore
+          ? 'Password updated. Sign in again with your new password.'
+          : `Password set for ${data.email}. Sign in with your new password.`,
+      )
     },
     onError: (err: any) => {
       setPwSuccess('')

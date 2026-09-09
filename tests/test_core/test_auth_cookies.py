@@ -74,6 +74,33 @@ def test_login_sets_http_only_session_cookies(cookie_auth_client):
     assert COOKIE_CSRF in response.cookies
 
 
+def test_refresh_rotates_http_only_session_cookies(cookie_auth_client):
+    client, _user = cookie_auth_client
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "cookie@example.com", "password": "CookiePass1!"},
+    )
+    assert login.status_code == 200
+    original_access = login.cookies.get(COOKIE_ACCESS)
+    original_refresh = login.cookies.get(COOKIE_REFRESH)
+    assert original_access
+    assert original_refresh
+
+    refreshed = client.post("/api/v1/auth/refresh")
+    assert refreshed.status_code == 200
+    body = refreshed.json()
+    assert body["access_token"] == ""
+    assert body["refresh_token"] is None
+    assert refreshed.cookies.get(COOKIE_ACCESS)
+    assert refreshed.cookies.get(COOKIE_REFRESH)
+    assert refreshed.cookies.get(COOKIE_ACCESS) != original_access
+    assert refreshed.cookies.get(COOKIE_REFRESH) != original_refresh
+
+    me = client.get("/api/v1/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "cookie@example.com"
+
+
 def test_csrf_required_for_cookie_authenticated_mutations(cookie_auth_client):
     client, _user = cookie_auth_client
     login = client.post(

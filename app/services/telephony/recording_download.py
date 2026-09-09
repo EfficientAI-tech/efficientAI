@@ -23,16 +23,25 @@ from app.services.telephony.exotel_client import (
 )
 
 _DEFAULT_ALLOWED_HOST_SUFFIXES = (
+    # Telephony carriers
     "exotel.com",
     "plivo.com",
+    "vobiz.ai",
+    # Object storage / CDN (provider recording artifacts)
     "amazonaws.com",
     "cloudfront.net",
     "googleapis.com",
+    "blob.core.windows.net",
+    "digitaloceanspaces.com",
+    "backblazeb2.com",
+    "r2.cloudflarestorage.com",
+    # Voice AI platforms
     "vapi.ai",
     "retell.ai",
     "elevenlabs.io",
     "daily.co",
     "livekit.cloud",
+    "smallest.ai",
 )
 
 # Credentialed telephony fetches must not send Basic auth to shared storage hosts.
@@ -57,10 +66,16 @@ _BLOCKED_NETWORKS = (
 
 
 def _allowed_host_suffixes() -> List[str]:
-    configured = getattr(settings, "RECORDING_URL_ALLOWED_HOST_SUFFIXES", None)
-    if configured:
-        return list(configured)
-    return list(_DEFAULT_ALLOWED_HOST_SUFFIXES)
+    """Built-in provider suffixes plus any extra entries from config/env."""
+    merged = list(_DEFAULT_ALLOWED_HOST_SUFFIXES)
+    configured = getattr(settings, "RECORDING_URL_ALLOWED_HOST_SUFFIXES", None) or []
+    seen = {suffix.lower() for suffix in merged}
+    for suffix in configured:
+        normalized = str(suffix).strip().lstrip(".").lower()
+        if normalized and normalized not in seen:
+            merged.append(normalized)
+            seen.add(normalized)
+    return merged
 
 
 def _hostname_allowed(hostname: str, allowed_suffixes: List[str]) -> bool:
