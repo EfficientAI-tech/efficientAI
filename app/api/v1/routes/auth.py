@@ -653,6 +653,55 @@ def login(
     )
 
 
+@router.post("/oidc/session", response_model=TokenResponse)
+def establish_oidc_session(
+    response: Response,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    """Exchange a validated external OIDC access token for an app session."""
+    if principal.auth_method != AuthMethod.EXTERNAL_OIDC:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A valid external OIDC access token is required.",
+        )
+    if not principal.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No user is attached to this credential.",
+        )
+
+    user = db.query(User).filter(User.id == principal.user_id).first()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is not active.",
+        )
+
+    membership = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.user_id == user.id,
+            OrganizationMember.organization_id == principal.organization_id,
+        )
+        .first()
+    )
+    role_value = None
+    if membership:
+        role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
+
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return _respond_with_session(
+        response,
+        db,
+        user=user,
+        organization_id=principal.organization_id,
+        role_value=role_value,
+    )
+
+
 @router.get("/me", response_model=UserSummary)
 def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)) -> UserSummary:
     """Return the current authenticated user (Bearer or API key)."""

@@ -25,6 +25,7 @@ _CSRF_EXEMPT_SUFFIXES = (
     "auth/login",
     "auth/signup",
     "auth/refresh",
+    "auth/oidc/session",
     "auth/config",
     "auth/invitations/preview/",
     "telephony/",

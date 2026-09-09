@@ -490,7 +490,11 @@ def _install_static_stubs():
         sys.modules["app.services.testing.test_agent_service"] = fake_test_agent_service_module
 
     if "app.services.voice_providers" not in sys.modules:
-        fake_voice_providers_module = types.ModuleType("app.services.voice_providers")
+        voice_providers_dir = str(
+            Path(__file__).resolve().parents[1] / "app" / "services" / "voice_providers"
+        )
+        fake_voice_providers_pkg = types.ModuleType("app.services.voice_providers")
+        fake_voice_providers_pkg.__path__ = [voice_providers_dir]
 
         class _FakeVoiceProvider:
             def __init__(self, *args, **kwargs):
@@ -502,9 +506,9 @@ def _install_static_stubs():
             def update_agent_prompt(self, **_kwargs):
                 return {"ok": True}
 
-        fake_voice_providers_module.get_voice_provider = lambda *_args, **_kwargs: _FakeVoiceProvider
-        fake_voice_providers_module.sync_provider_prompt = lambda *_args, **_kwargs: {"synced": False}
-        sys.modules["app.services.voice_providers"] = fake_voice_providers_module
+        fake_voice_providers_pkg.get_voice_provider = lambda *_args, **_kwargs: _FakeVoiceProvider
+        fake_voice_providers_pkg.sync_provider_prompt = lambda *_args, **_kwargs: {"synced": False}
+        sys.modules["app.services.voice_providers"] = fake_voice_providers_pkg
 
     if "app.services.voice_agent.bot_fast_api" not in sys.modules:
         voice_agent_dir = str(

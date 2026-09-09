@@ -1016,6 +1016,29 @@ class ApiClient {
     return response.data
   }
 
+  async establishOidcSession(oidcAccessToken: string): Promise<TokenResponse> {
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/auth/oidc/session`,
+      {},
+      {
+        withCredentials: true,
+        headers: {
+          Authorization: `Bearer ${oidcAccessToken}`,
+          'Content-Type': 'application/json',
+          ...csrfHeaders(),
+        },
+      },
+    )
+    const data = response.data as TokenResponse
+    if (data.access_token) {
+      this.setAccessToken(data.access_token)
+    }
+    if (data.refresh_token) {
+      this.setRefreshToken(data.refresh_token)
+    }
+    return data
+  }
+
   async loginWithPassword(
     email: string,
     password: string,

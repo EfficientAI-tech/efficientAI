@@ -6,7 +6,7 @@ app:
   name: "EfficientAI Voice AI Evaluation Platform"
   version: "0.1.0"
   debug: false
-  secret_key: "your-secret-key-here-change-in-production"
+  secret_key: "${SECRET_KEY}"
   frontend_base_url: "http://localhost:8000"
 
 # Server Settings

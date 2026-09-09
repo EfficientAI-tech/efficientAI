@@ -428,16 +428,18 @@ class Settings(BaseSettings):
             self.CELERY_RESULT_BACKEND = self.REDIS_URL
 
 
+_PLACEHOLDER_SECRETS = frozenset({
+    "your-secret-key-here-change-in-production",
+    "changeme",
+    "change-me",
+    "secret",
+})
+
+
 def validate_auth_configuration() -> None:
     """Fail fast when auth or session signing is misconfigured."""
     from app.core.license import has_auth_feature
 
-    _PLACEHOLDER_SECRETS = {
-        "your-secret-key-here-change-in-production",
-        "changeme",
-        "change-me",
-        "secret",
-    }
     secret = (settings.SECRET_KEY or "").strip()
     if not settings.DEBUG and (
         not secret
@@ -510,7 +512,16 @@ def load_config_from_file(config_path: str) -> None:
         if "debug" in app_config:
             settings.DEBUG = app_config["debug"]
         if "secret_key" in app_config:
-            settings.SECRET_KEY = app_config["secret_key"]
+            yaml_secret = str(_expand_env_ref(app_config["secret_key"]) or "").strip()
+            env_secret = (os.environ.get("SECRET_KEY") or "").strip()
+            if (
+                not yaml_secret
+                or len(yaml_secret) < 32
+                or yaml_secret.lower() in _PLACEHOLDER_SECRETS
+            ) and env_secret:
+                settings.SECRET_KEY = env_secret
+            elif yaml_secret:
+                settings.SECRET_KEY = yaml_secret
         if "frontend_base_url" in app_config:
             settings.FRONTEND_BASE_URL = app_config["frontend_base_url"]
         server_config = config_data["server"]

@@ -11,6 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from app.config import settings
 from app.core.auth import Principal, get_principal
+from app.core.operational_access_middleware import _resolved_trusted_ip
 
 _redis_client: Optional[redis.Redis] = None
 _KEY_PREFIX = "api:rate"
@@ -24,9 +25,9 @@ def _get_redis() -> redis.Redis:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    resolved = _resolved_trusted_ip(request)
+    if resolved:
+        return resolved
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

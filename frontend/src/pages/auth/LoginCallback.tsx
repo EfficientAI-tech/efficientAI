@@ -45,10 +45,9 @@ export default function LoginCallback() {
         }
 
         const redirectUri = `${window.location.origin}/login/callback`
-        const accessToken = await exchangeAuthorizationCode(provider, code, redirectUri)
+        const oidcAccessToken = await exchangeAuthorizationCode(provider, code, redirectUri)
 
-        apiClient.setAccessToken(accessToken)
-        const user = await apiClient.getMe()
+        const session = await apiClient.establishOidcSession(oidcAccessToken)
         if (!active) return
 
         const pendingInvite = getPendingInviteToken()
@@ -67,13 +66,23 @@ export default function LoginCallback() {
           } catch (inviteErr: any) {
             if (!active) return
             setError(inviteErr?.response?.data?.detail || 'Signed in, but could not accept the invitation')
-            setSession(user, { access: accessToken })
+            setSession(
+              session.user,
+              session.access_token
+                ? { access: session.access_token, refresh: session.refresh_token }
+                : undefined,
+            )
             navigate('/', { replace: true })
             return
           }
         }
 
-        setSession(user, { access: accessToken })
+        setSession(
+          session.user,
+          session.access_token
+            ? { access: session.access_token, refresh: session.refresh_token }
+            : undefined,
+        )
 
         const profile = await apiClient.getProfile()
         if (!active) return
