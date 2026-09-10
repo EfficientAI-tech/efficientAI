@@ -1,5 +1,6 @@
 """API tests for playground routes."""
 
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 from app.models.database import CallRecordingSource, Integration, IntegrationPlatform
@@ -31,6 +32,33 @@ def test_list_playground_call_recordings(authenticated_client, make_call_recordi
     assert response.status_code == 200
     assert len(response.json()) == 1
     assert response.json()[0]["call_short_id"] == "111111"
+
+
+def test_validate_provider_call_id_instantiates_voice_provider(monkeypatch):
+    from app.api.v1.routes import playground as playground_routes
+
+    mock_provider = MagicMock()
+    mock_provider.retrieve_call_metrics.return_value = {"assistantId": "assistant-1"}
+    mock_class = MagicMock(return_value=mock_provider)
+    monkeypatch.setattr(playground_routes, "get_voice_provider", lambda _platform: mock_class)
+
+    recording = MagicMock()
+    recording.provider_call_id = None
+    recording.call_data = {}
+    recording.provider_platform = "vapi"
+
+    agent = MagicMock()
+    agent.voice_ai_agent_id = "assistant-1"
+
+    playground_routes._validate_provider_call_id_for_recording(
+        recording,
+        "vapi-call-abc",
+        agent,
+        "plain-key",
+    )
+
+    mock_class.assert_called_once_with(api_key="plain-key")
+    mock_provider.retrieve_call_metrics.assert_called_once_with("vapi-call-abc")
 
 
 def test_refresh_call_recording_accepts_inline_provider_call_id(

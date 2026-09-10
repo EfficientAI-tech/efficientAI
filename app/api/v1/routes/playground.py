@@ -112,7 +112,8 @@ def _validate_provider_call_id_for_recording(
         )
 
     try:
-        provider = get_voice_provider(platform, decrypted_api_key)
+        provider_class = get_voice_provider(platform)
+        provider = provider_class(api_key=decrypted_api_key)
         metrics = provider.retrieve_call_metrics(proposed_id)
     except Exception as exc:
         raise HTTPException(
