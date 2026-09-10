@@ -145,19 +145,25 @@ export default function Profile() {
     user: authUser,
   } = useOrgSwitch()
   const [justJoined, setJustJoined] = useState<
-    | { organizationId: string; organizationName: string; role: string }
+    | {
+        organizationId: string
+        organizationName: string
+        role: string
+        joinNotice?: string | null
+      }
     | null
   >(null)
 
   const acceptInvitationMutation = useMutation({
     mutationFn: (invitation: Invitation) => apiClient.acceptInvitation(invitation.id),
-    onSuccess: (_data, invitation) => {
+    onSuccess: (data, invitation) => {
       queryClient.invalidateQueries({ queryKey: ['profile'] })
       queryClient.invalidateQueries({ queryKey: ['iam'] })
       setJustJoined({
         organizationId: invitation.organization_id,
         organizationName: invitation.organization_name || 'the organization',
         role: invitation.role,
+        joinNotice: data.join_notice,
       })
     },
   })
@@ -580,6 +586,9 @@ export default function Profile() {
               You&apos;ve joined <span className="font-semibold">{justJoined.organizationName}</span>{' '}
               as {justJoined.role}.
             </div>
+            {justJoined.joinNotice && (
+              <div className="text-xs text-green-800 mt-0.5 leading-relaxed">{justJoined.joinNotice}</div>
+            )}
             <div className="text-xs text-green-800 mt-0.5">
               Your current session is still in your previous organization. Switch now to start working there.
             </div>

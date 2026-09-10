@@ -23,10 +23,16 @@ from app.core.password import hash_password
 from app.services.invitation_service import (
     InvitationError,
     accept_invitation as accept_invitation_record,
+    build_invite_join_notice,
     to_aware_utc,
 )
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
+
+
+class InvitationAcceptResponse(BaseModel):
+    message: str
+    join_notice: Optional[str] = None
 
 
 # Preferences schemas
@@ -265,7 +271,11 @@ async def get_my_invitations(
     return result
 
 
-@router.post("/invitations/{invitation_id}/accept", response_model=MessageResponse, operation_id="acceptInvitation")
+@router.post(
+    "/invitations/{invitation_id}/accept",
+    response_model=InvitationAcceptResponse,
+    operation_id="acceptInvitation",
+)
 async def accept_invitation(
     invitation_id: UUID,
     principal: Principal = Depends(get_principal),
@@ -293,7 +303,27 @@ async def accept_invitation(
     except InvitationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    return {"message": "Invitation accepted successfully"}
+    org = (
+        db.query(Organization)
+        .filter(Organization.id == invitation.organization_id)
+        .first()
+    )
+    org_name = org.name if org else "the organization"
+    source_org_id = principal.organization_id
+    if source_org_id == invitation.organization_id:
+        source_org_id = None
+    join_notice = build_invite_join_notice(
+        db,
+        user=current_user,
+        organization_id=invitation.organization_id,
+        organization_name=org_name,
+        source_organization_id=source_org_id,
+    )
+
+    return InvitationAcceptResponse(
+        message="Invitation accepted successfully",
+        join_notice=join_notice,
+    )
 
 
 @router.post("/invitations/{invitation_id}/decline", response_model=MessageResponse, operation_id="declineInvitation")

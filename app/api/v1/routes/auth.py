@@ -347,6 +347,29 @@ def _revoke_local_password_access_token(bearer: str) -> None:
         pass
 
 
+def _parse_authenticated_org_ids(
+    request: Request,
+    authorization: Optional[str] = None,
+) -> Optional[List]:
+    bearer = _extract_bearer(authorization) or read_access_cookie(request)
+    if not bearer:
+        return None
+    try:
+        claims = decode_access_token(bearer)
+        raw_ids = claims.get("authenticated_org_ids") or []
+        org_ids: List = []
+        for raw in raw_ids:
+            try:
+                from uuid import UUID as _UUID
+
+                org_ids.append(_UUID(str(raw)))
+            except (TypeError, ValueError):
+                continue
+        return org_ids
+    except JWTError:
+        return None
+
+
 def _refresh_ttl_seconds() -> int:
     return settings.AUTH_REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60
 
@@ -865,6 +888,7 @@ def refresh_session(
     request: Request,
     response: Response,
     payload: Optional[RefreshRequest] = None,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ) -> TokenResponse:
     """Rotate a refresh token and issue a new short-lived access token."""
@@ -917,12 +941,17 @@ def refresh_session(
 
     revoke_refresh_token(db, refresh_token)
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
+    authenticated_org_ids = _parse_authenticated_org_ids(request, authorization)
+    if authenticated_org_ids is not None:
+        if row.organization_id not in authenticated_org_ids:
+            authenticated_org_ids = [*authenticated_org_ids, row.organization_id]
     return _respond_with_session(
         response,
         db,
         user=user,
         organization_id=row.organization_id,
         role_value=role_value,
+        authenticated_org_ids=authenticated_org_ids,
     )
 
 
@@ -1022,19 +1051,7 @@ def switch_organization(
     if principal.auth_method == AuthMethod.LOCAL_PASSWORD:
         bearer = _extract_bearer(authorization) or read_access_cookie(request)
         if bearer:
-            try:
-                claims = decode_access_token(bearer)
-                raw_ids = claims.get("authenticated_org_ids") or []
-                authenticated_org_ids = []
-                for raw in raw_ids:
-                    try:
-                        from uuid import UUID as _UUID
-
-                        authenticated_org_ids.append(_UUID(str(raw)))
-                    except (TypeError, ValueError):
-                        continue
-            except JWTError:
-                authenticated_org_ids = None
+            authenticated_org_ids = _parse_authenticated_org_ids(request, authorization)
             _revoke_local_password_access_token(bearer)
         old_refresh = payload.refresh_token or read_refresh_cookie(request)
         if old_refresh:

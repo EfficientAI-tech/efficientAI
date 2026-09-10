@@ -808,6 +808,7 @@ def test_refresh_rotates_tokens(client, db_session, enable_local_password):
     refreshed = client.post(
         "/api/v1/auth/refresh",
         json={"refresh_token": old_refresh},
+        headers={"Authorization": f"Bearer {login['access_token']}"},
     )
     assert refreshed.status_code == 200
     body = refreshed.json()
@@ -820,6 +821,35 @@ def test_refresh_rotates_tokens(client, db_session, enable_local_password):
         json={"refresh_token": old_refresh},
     )
     assert stale.status_code == 401
+
+
+def test_refresh_preserves_authenticated_org_ids(client, db_session, enable_local_password):
+    from app.core.auth.tokens import decode_access_token
+
+    user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "TestPass1!"
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "TestPass1!",
+            "organization_id": str(org_a.id),
+        },
+    )
+    assert login.status_code == 200
+    login_body = login.json()
+    login_claims = decode_access_token(login_body["access_token"])
+    assert set(login_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login_body["refresh_token"]},
+        headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert set(refresh_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
 
 
 def test_logout_revokes_access_and_refresh_tokens(

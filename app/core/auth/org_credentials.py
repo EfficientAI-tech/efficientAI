@@ -172,7 +172,7 @@ def resolve_current_password_hash(
     user: User,
 ) -> Optional[str]:
     """Verify password rotations only — never used for login matching."""
-    if credential is not None and credential.password_hash:
+    if credential is not None:
         return credential.password_hash
     return user.password_hash
 

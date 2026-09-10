@@ -511,3 +511,38 @@ def test_accept_invitation_skips_inheritance_when_org_passwords_differ(db_sessio
     )
     assert invited_cred is not None
     assert invited_cred.password_hash is None
+
+
+def test_resolve_current_password_hash_ignores_legacy_when_credential_row_exists(db_session):
+    from app.models.database import OrganizationMemberCredential
+
+    from app.core.auth.org_credentials import (
+        resolve_current_password_hash,
+        set_org_password_hash,
+    )
+
+    user = User(
+        id=uuid4(),
+        email="legacy-rotation@example.com",
+        password_hash=hash_password("LegacyPass1!"),
+        is_active=True,
+        auth_provider="local",
+    )
+    org = Organization(id=uuid4(), name="Org")
+    db_session.add_all([user, org])
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(organization_id=org.id, user_id=user.id, role=RoleEnum.ADMIN.value)
+    )
+    db_session.flush()
+    credential = OrganizationMemberCredential(
+        organization_id=org.id,
+        user_id=user.id,
+        password_hash=None,
+        session_epoch=0,
+    )
+    db_session.add(credential)
+    db_session.flush()
+    assert resolve_current_password_hash(credential, user) is None
+    set_org_password_hash(credential, hash_password("OrgOnlyPass1!"))
+    assert resolve_current_password_hash(credential, user) == credential.password_hash

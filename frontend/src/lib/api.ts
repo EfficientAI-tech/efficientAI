@@ -26,6 +26,7 @@ import type {
   EvaluationStatus,
   OrganizationMember,
   Invitation,
+  InvitationAcceptResponse,
   InvitationCreate,
   InvitationPreview,
   Profile,
@@ -1830,7 +1831,7 @@ class ApiClient {
     return response.data
   }
 
-  async acceptInvitation(invitationId: string): Promise<MessageResponse> {
+  async acceptInvitation(invitationId: string): Promise<InvitationAcceptResponse> {
     const response = await this.client.post(`/api/v1/profile/invitations/${invitationId}/accept`)
     return response.data
   }
