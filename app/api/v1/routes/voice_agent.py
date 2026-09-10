@@ -982,16 +982,52 @@ async def bot_connect(
     # Determine WebSocket URL — prefer dedicated media server when configured.
     from urllib.parse import quote
 
-    from app.services.media_urls import build_voice_agent_ws_url
+    from jose import JWTError
 
-    # Only embed secrets in the URL when the client supplied them explicitly
-    # (header/query). Cookie sessions authenticate the WebSocket via httpOnly cookies.
+    from app.core.auth.tokens import create_access_token, decode_access_token
+    from app.services.media_urls import (
+        build_voice_agent_ws_url,
+        cross_host_voice_ws,
+        resolve_voice_agent_ws_base,
+    )
+
+    fallback_host = request.headers.get("host", f"localhost:{settings.PORT}")
+    fallback_scheme = (
+        request.headers.get("x-forwarded-proto")
+        or getattr(request.url, "scheme", "http")
+        or "http"
+    )
+    ws_base = resolve_voice_agent_ws_base(
+        fallback_host=fallback_host,
+        fallback_scheme=fallback_scheme,
+    )
+    ws_cross_host = cross_host_voice_ws(ws_base, request)
+
+    # Same-host cookie sessions: WebSocket auth via httpOnly cookies (no URL secret).
+    # Cross-host media: cookies are not sent; use explicit creds or a 2-minute handshake token.
+    ws_auth_query: Optional[str] = None
     if bearer_token and resolved.bearer_source in ("header", "query"):
         ws_auth_query = f"token={quote(bearer_token, safe='')}"
     elif api_key and resolved.api_key_source in ("header", "query"):
         ws_auth_query = f"X-API-Key={quote(api_key, safe='')}"
-    else:
-        ws_auth_query = None
+    elif ws_cross_host:
+        if bearer_token and resolved.bearer_source == "cookie" and principal.user_id:
+            try:
+                claims = decode_access_token(bearer_token)
+            except JWTError:
+                claims = {}
+            handshake_token, _, _ = create_access_token(
+                user_id=principal.user_id,
+                organization_id=principal.organization_id,
+                email=principal.email or claims.get("email") or "",
+                session_epoch=int(claims.get("session_epoch", 0) or 0),
+                authenticated_org_ids=claims.get("authenticated_org_ids"),
+                authenticated_org_epochs=claims.get("authenticated_org_epochs"),
+                expires_in_minutes=2,
+            )
+            ws_auth_query = f"token={quote(handshake_token, safe='')}"
+        elif api_key and resolved.api_key_source == "cookie":
+            ws_auth_query = f"X-API-Key={quote(api_key, safe='')}"
 
     ws_url = build_voice_agent_ws_url(
         auth_query=ws_auth_query,
@@ -1000,12 +1036,8 @@ async def bot_connect(
         scenario_id=scenario_id,
         run_evaluation=run_evaluation,
         ui_surface=ui_surface,
-        fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
-        fallback_scheme=(
-            request.headers.get("x-forwarded-proto")
-            or getattr(request.url, "scheme", "http")
-            or "http"
-        ),
+        fallback_host=fallback_host,
+        fallback_scheme=fallback_scheme,
     )
     
     # Return the response in the format Pipecat expects
