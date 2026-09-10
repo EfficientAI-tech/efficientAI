@@ -150,7 +150,8 @@ def test_voice_agent_connect_accepts_eai_access_cookie(
     assert response.status_code == 200, response.text
     ws_url = response.json()["ws_url"]
     assert "/api/v1/voice-agent/ws" in ws_url
-    assert f"token={access_token}" in ws_url
+    assert "token=" not in ws_url
+    assert "X-API-Key=" not in ws_url
 
 
 def test_voice_agent_audio_lists_files(authenticated_client, monkeypatch):

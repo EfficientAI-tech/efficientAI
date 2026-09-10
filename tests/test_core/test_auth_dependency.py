@@ -5,7 +5,11 @@ from uuid import uuid4
 
 from app.config import settings
 from app.core.auth.cookies import COOKIE_ACCESS
-from app.core.auth.dependency import _resolve, resolve_websocket_credentials
+from app.core.auth.dependency import (
+    _resolve,
+    resolve_request_credentials_with_sources,
+    resolve_websocket_credentials,
+)
 from app.core.auth.providers import reset_provider_registry
 from app.core.auth.tokens import create_access_token, decode_access_token
 from app.models.database import Organization, OrganizationMember, RoleEnum, User
@@ -118,3 +122,30 @@ def test_resolve_websocket_credentials_reads_eai_access_cookie(db_session, org_i
     cred = resolve_websocket_credentials(websocket)
     assert cred.bearer_token == access_token
     assert cred.api_key is None
+
+
+def test_resolve_credentials_with_sources_prefers_header_over_cookie():
+    request = MagicMock()
+    request.headers = {}
+    request.cookies = {COOKIE_ACCESS: "cookie-token"}
+    request.query_params = {}
+
+    resolved = resolve_request_credentials_with_sources(
+        authorization="Bearer header-token",
+        request=request,
+    )
+
+    assert resolved.credential.bearer_token == "header-token"
+    assert resolved.bearer_source == "header"
+
+
+def test_resolve_credentials_with_sources_marks_cookie_bearer():
+    request = MagicMock()
+    request.headers = {}
+    request.cookies = {COOKIE_ACCESS: "cookie-token"}
+    request.query_params = {}
+
+    resolved = resolve_request_credentials_with_sources(request=request)
+
+    assert resolved.credential.bearer_token == "cookie-token"
+    assert resolved.bearer_source == "cookie"

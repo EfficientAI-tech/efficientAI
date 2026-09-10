@@ -787,7 +787,7 @@ async def bot_connect(
     this endpoint; the WebSocket URL returned here embeds the same credential
     so the subsequent /ws connection can authenticate without re-prompting.
     """
-    from app.core.auth.dependency import resolve_request_credentials
+    from app.core.auth.dependency import resolve_request_credentials_with_sources
     from app.core.auth.providers import AuthError, get_provider_registry
 
     print("=" * 80)
@@ -797,12 +797,13 @@ async def bot_connect(
     print(f"[BACKEND] Request cookies present: {list(request.cookies.keys())}")
     print(f"[BACKEND] Query params: {dict(request.query_params)}")
 
-    cred = resolve_request_credentials(
+    resolved = resolve_request_credentials_with_sources(
         authorization=request.headers.get("Authorization"),
         x_api_key=request.headers.get("X-API-Key"),
         x_eai_api_key=request.headers.get("X-EFFICIENTAI-API-KEY"),
         request=request,
     )
+    cred = resolved.credential
     bearer_token = cred.bearer_token
     api_key = cred.api_key
 
@@ -983,10 +984,14 @@ async def bot_connect(
 
     from app.services.media_urls import build_voice_agent_ws_url
 
-    if bearer_token:
+    # Only embed secrets in the URL when the client supplied them explicitly
+    # (header/query). Cookie sessions authenticate the WebSocket via httpOnly cookies.
+    if bearer_token and resolved.bearer_source in ("header", "query"):
         ws_auth_query = f"token={quote(bearer_token, safe='')}"
+    elif api_key and resolved.api_key_source in ("header", "query"):
+        ws_auth_query = f"X-API-Key={quote(api_key, safe='')}"
     else:
-        ws_auth_query = f"X-API-Key={quote(api_key or '', safe='')}"
+        ws_auth_query = None
 
     ws_url = build_voice_agent_ws_url(
         auth_query=ws_auth_query,
@@ -1010,7 +1015,7 @@ async def bot_connect(
     response_data = {
         "ws_url": ws_url
     }
-    print(f"[BACKEND] ✅ Returning WebSocket URL: {ws_url}")
+    print(f"[BACKEND] ✅ Returning WebSocket URL (auth_in_url={ws_auth_query is not None})")
     print(f"[BACKEND] Response data: {response_data}")
     print("=" * 80)
     

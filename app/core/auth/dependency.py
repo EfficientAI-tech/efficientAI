@@ -16,6 +16,7 @@ Credential resolution order (first match wins):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -35,6 +36,15 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
     if scheme.lower() != "bearer" or not token.strip():
         return None
     return token.strip()
+
+
+@dataclass(frozen=True)
+class ResolvedCredentials:
+    """Credentials plus where each value was read from (for URL vs cookie WS auth)."""
+
+    credential: RawCredential
+    bearer_source: Optional[str] = None  # header | query | cookie
+    api_key_source: Optional[str] = None  # header | query | cookie
 
 
 def resolve_request_credentials(
@@ -63,6 +73,60 @@ def resolve_request_credentials(
         )
 
     return RawCredential(bearer_token=bearer_token, api_key=api_key)
+
+
+def resolve_request_credentials_with_sources(
+    *,
+    authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
+    x_eai_api_key: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> ResolvedCredentials:
+    """Resolve credentials and record whether each value came from header, query, or cookie."""
+    bearer_source: Optional[str] = None
+    api_key_source: Optional[str] = None
+
+    bearer_token = _extract_bearer(authorization)
+    if bearer_token:
+        bearer_source = "header"
+    api_key = x_api_key or x_eai_api_key or None
+    if api_key:
+        api_key_source = "header"
+
+    if request is not None:
+        if not bearer_token:
+            query_bearer = (
+                request.query_params.get("token")
+                or request.query_params.get("access_token")
+            )
+            if query_bearer:
+                bearer_token = query_bearer
+                bearer_source = "query"
+            else:
+                cookie_bearer = read_access_cookie(request)
+                if cookie_bearer:
+                    bearer_token = cookie_bearer
+                    bearer_source = "cookie"
+
+        if not api_key:
+            query_api_key = (
+                request.query_params.get("api_key")
+                or request.query_params.get("X-API-Key")
+            )
+            if query_api_key:
+                api_key = query_api_key
+                api_key_source = "query"
+            else:
+                cookie_api_key = request.cookies.get("api_key")
+                if cookie_api_key:
+                    api_key = cookie_api_key
+                    api_key_source = "cookie"
+
+    return ResolvedCredentials(
+        credential=RawCredential(bearer_token=bearer_token, api_key=api_key),
+        bearer_source=bearer_source,
+        api_key_source=api_key_source,
+    )
 
 
 def resolve_websocket_credentials(websocket: WebSocket) -> RawCredential:

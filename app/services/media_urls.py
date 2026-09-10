@@ -63,7 +63,7 @@ def ws_base_from_http_host(host: str, *, scheme: str = "http") -> str:
 
 def build_voice_agent_ws_url(
     *,
-    auth_query: str,
+    auth_query: Optional[str] = None,
     agent_id: Optional[str] = None,
     persona_id: Optional[str] = None,
     scenario_id: Optional[str] = None,
@@ -91,16 +91,21 @@ def build_voice_agent_ws_url(
     else:
         base = f"ws://localhost:{settings.PORT}"
 
-    query = auth_query
+    query_parts: list[str] = []
+    if auth_query:
+        query_parts.append(auth_query)
     if agent_id:
-        query += f"&agent_id={quote(agent_id)}"
+        query_parts.append(f"agent_id={quote(agent_id)}")
     if persona_id:
-        query += f"&persona_id={quote(persona_id)}"
+        query_parts.append(f"persona_id={quote(persona_id)}")
     if scenario_id:
-        query += f"&scenario_id={quote(scenario_id)}"
+        query_parts.append(f"scenario_id={quote(scenario_id)}")
     if run_evaluation:
-        query += "&run_evaluation=true"
+        query_parts.append("run_evaluation=true")
     if ui_surface:
-        query += f"&ui_surface={quote(ui_surface, safe='')}"
+        query_parts.append(f"ui_surface={quote(ui_surface, safe='')}")
 
-    return f"{base}{settings.API_V1_PREFIX}/voice-agent/ws?{query}"
+    path = f"{base}{settings.API_V1_PREFIX}/voice-agent/ws"
+    if not query_parts:
+        return path
+    return f"{path}?{'&'.join(query_parts)}"
