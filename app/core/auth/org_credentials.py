@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.core.password import verify_password
@@ -82,9 +82,12 @@ def _upsert_session_revocation_floor(
     stmt = stmt.on_conflict_do_update(
         index_elements=["organization_id", "user_id"],
         set_={
-            "min_session_epoch": func.max(
-                table.c.min_session_epoch,
-                stmt.excluded.min_session_epoch,
+            "min_session_epoch": case(
+                (
+                    table.c.min_session_epoch > stmt.excluded.min_session_epoch,
+                    table.c.min_session_epoch,
+                ),
+                else_=stmt.excluded.min_session_epoch,
             )
         },
     )
