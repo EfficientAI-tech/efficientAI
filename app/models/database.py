@@ -373,6 +373,21 @@ class OrganizationMemberCredential(Base):
     )
 
 
+class OrganizationMemberSessionRevocation(Base):
+    """Minimum valid session epoch after membership removal for a user/org pair."""
+
+    __tablename__ = "organization_member_session_revocations"
+
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    min_session_epoch = Column(Integer, nullable=False, server_default="1")
+    revoked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class Invitation(Base):
     """Invitation model for inviting users to organizations."""
 

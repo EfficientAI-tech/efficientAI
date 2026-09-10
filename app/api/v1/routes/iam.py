@@ -29,7 +29,7 @@ from app.core.auth.refresh_tokens import (
 )
 from app.core.auth.org_credentials import (
     bump_org_session_epoch,
-    delete_org_credential,
+    revoke_org_membership_credential,
     get_credential,
     get_or_create_credential,
     provision_membership_credential,
@@ -493,7 +493,7 @@ async def remove_user(
         user_id=user_id,
         organization_id=organization_id,
     )
-    delete_org_credential(
+    revoke_org_membership_credential(
         db,
         user_id=user_id,
         organization_id=organization_id,

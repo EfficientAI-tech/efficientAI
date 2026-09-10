@@ -8,19 +8,88 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.core.password import verify_password
-from app.models.database import Organization, OrganizationMember, OrganizationMemberCredential, User
+from app.models.database import (
+    Organization,
+    OrganizationMember,
+    OrganizationMemberCredential,
+    OrganizationMemberSessionRevocation,
+    User,
+)
 
 
-def delete_org_credential(
+def get_session_revocation_floor(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+) -> int:
+    row = (
+        db.query(OrganizationMemberSessionRevocation)
+        .filter(
+            OrganizationMemberSessionRevocation.user_id == user_id,
+            OrganizationMemberSessionRevocation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if row is None:
+        return 0
+    return int(row.min_session_epoch or 0)
+
+
+def record_org_membership_session_revocation(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+    credential: Optional[OrganizationMemberCredential] = None,
+) -> int:
+    """Remember the next required session epoch after membership removal."""
+    prior_floor = get_session_revocation_floor(
+        db, user_id=user_id, organization_id=organization_id
+    )
+    if credential is not None:
+        next_floor = max(prior_floor, int(credential.session_epoch or 0) + 1)
+    else:
+        next_floor = max(prior_floor + 1, 1) if prior_floor else 1
+
+    row = (
+        db.query(OrganizationMemberSessionRevocation)
+        .filter(
+            OrganizationMemberSessionRevocation.user_id == user_id,
+            OrganizationMemberSessionRevocation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if row is None:
+        db.add(
+            OrganizationMemberSessionRevocation(
+                organization_id=organization_id,
+                user_id=user_id,
+                min_session_epoch=next_floor,
+            )
+        )
+    else:
+        row.min_session_epoch = max(int(row.min_session_epoch or 0), next_floor)
+    db.flush()
+    return next_floor
+
+
+def revoke_org_membership_credential(
     db: Session,
     *,
     user_id: UUID,
     organization_id: UUID,
 ) -> bool:
-    row = get_credential(db, user_id=user_id, organization_id=organization_id)
-    if row is None:
+    credential = get_credential(db, user_id=user_id, organization_id=organization_id)
+    record_org_membership_session_revocation(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        credential=credential,
+    )
+    if credential is None:
         return False
-    db.delete(row)
+    db.delete(credential)
     db.flush()
     return True
 
@@ -139,12 +208,15 @@ def provision_membership_credential(
         if auth_provider is None and inherited_provider:
             auth_provider = inherited_provider
 
+    session_epoch = get_session_revocation_floor(
+        db, user_id=user_id, organization_id=organization_id
+    )
     row = OrganizationMemberCredential(
         organization_id=organization_id,
         user_id=user_id,
         password_hash=password_hash,
         auth_provider=auth_provider,
-        session_epoch=0,
+        session_epoch=session_epoch,
     )
     db.add(row)
     db.flush()

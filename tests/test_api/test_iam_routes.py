@@ -5,8 +5,17 @@ from uuid import uuid4
 
 import pytest
 
+from app.config import settings
 from app.models.database import Invitation, OrganizationMember
 from app.models.enums import InvitationStatus, RoleEnum
+
+
+@pytest.fixture
+def enable_local_password(monkeypatch):
+    monkeypatch.setattr(settings, "AUTH_PROVIDERS", ["api_key", "local_password"])
+    monkeypatch.setattr(settings, "AUTH_LOCAL_ALLOW_SIGNUP", True)
+    monkeypatch.setattr(settings, "AUTH_GATED_SIGNUP_ENABLED", False)
+    return settings
 
 
 @pytest.fixture
@@ -206,7 +215,12 @@ def test_remove_user_deletes_org_credential(
     org_id,
     make_user,
 ):
-    from app.core.auth.org_credentials import get_credential, provision_membership_credential, set_org_password_hash
+    from app.core.auth.org_credentials import (
+        get_credential,
+        get_session_revocation_floor,
+        provision_membership_credential,
+        set_org_password_hash,
+    )
     from app.core.password import hash_password
     from app.models.database import OrganizationMemberCredential
 
@@ -240,3 +254,88 @@ def test_remove_user_deletes_org_credential(
         .first()
         is None
     )
+    assert get_session_revocation_floor(
+        db_session, user_id=member_user.id, organization_id=org_id
+    ) >= 1
+
+
+def test_removed_member_reinvite_does_not_reactivate_old_access_token(
+    iam_admin_override,
+    authenticated_client,
+    client,
+    db_session,
+    org_id,
+    make_user,
+    user_context,
+    enable_local_password,
+):
+    from datetime import datetime, timedelta, timezone
+
+    import pytest
+
+    from app.core.auth.local import LocalPasswordProvider
+    from app.core.auth.org_credentials import get_credential, set_org_password_hash
+    from app.core.auth.providers import AuthError, RawCredential, reset_provider_registry
+    from app.models.database import Invitation, InvitationStatus
+    from app.services.invitation_service import accept_invitation
+    from app.services.organization_provisioning import provision_default_workspace
+    from app.core.auth.org_credentials import provision_membership_credential
+    from app.core.password import hash_password
+
+    password = "ReturnPass1!"
+    member_user = make_user(email="returning@example.com", name="Returning User")
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=member_user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.flush()
+    credential = provision_membership_credential(
+        db_session, user_id=member_user.id, organization_id=org_id
+    )
+    set_org_password_hash(credential, hash_password(password))
+    db_session.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": member_user.email,
+            "password": password,
+            "organization_id": str(org_id),
+        },
+    )
+    assert login.status_code == 200
+    old_access_token = login.json()["access_token"]
+
+    removed = authenticated_client.delete(f"/api/v1/iam/users/{member_user.id}")
+    assert removed.status_code == 204
+
+    provision_default_workspace(
+        db_session,
+        organization_id=org_id,
+        created_by_user_id=user_context["user"].id,
+    )
+    invitation = Invitation(
+        organization_id=org_id,
+        invited_by_id=user_context["user"].id,
+        email=member_user.email,
+        role=RoleEnum.READER.value,
+        status=InvitationStatus.PENDING.value,
+        token="returning-member",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(invitation)
+    db_session.commit()
+
+    accept_invitation(db_session, invitation, member_user)
+
+    restored = get_credential(db_session, user_id=member_user.id, organization_id=org_id)
+    assert restored is not None
+    assert restored.session_epoch >= 1
+
+    provider = LocalPasswordProvider()
+    reset_provider_registry()
+    with pytest.raises(AuthError):
+        provider.authenticate(RawCredential(bearer_token=old_access_token), db_session)
