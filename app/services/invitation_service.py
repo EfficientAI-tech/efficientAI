@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -88,6 +89,7 @@ def accept_invitation(
     user: User,
     *,
     require_email_match: bool = True,
+    source_organization_id: Optional[UUID] = None,
 ) -> OrganizationMember:
     """
     Accept an invitation and add the user to the organization.
@@ -141,6 +143,7 @@ def accept_invitation(
         user_id=user.id,
         organization_id=invitation.organization_id,
         user=user,
+        source_organization_id=source_organization_id,
     )
 
     invitation.status = InvitationStatus.ACCEPTED

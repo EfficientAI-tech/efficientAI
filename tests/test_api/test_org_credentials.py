@@ -365,3 +365,149 @@ def test_accept_invitation_inherits_existing_org_password(db_session):
 
     matched = match_password_memberships(db_session, user=user, password=password)
     assert {org.id for _, org in matched} == {home_org.id, invited_org.id}
+
+
+def test_accept_invitation_uses_source_org_password_not_oldest(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.core.auth.org_credentials import (
+        get_credential,
+        match_password_memberships,
+        provision_membership_credential,
+        set_org_password_hash,
+    )
+    from app.models.database import Invitation, InvitationStatus
+    from app.services.invitation_service import accept_invitation
+    from app.services.organization_provisioning import provision_default_workspace
+
+    password_a = "OrgAPass1!"
+    password_b = "OrgBPass1!"
+    org_a = Organization(id=uuid4(), name="Org A")
+    org_b = Organization(id=uuid4(), name="Org B")
+    invited_org = Organization(id=uuid4(), name="Invited Org")
+    inviter = User(id=uuid4(), email="inviter@example.com", is_active=True)
+    user = User(
+        id=uuid4(),
+        email="invitee@example.com",
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org_a, org_b, invited_org, inviter, user])
+    db_session.flush()
+    db_session.add_all(
+        [
+            OrganizationMember(organization_id=org_a.id, user_id=user.id, role=RoleEnum.ADMIN.value),
+            OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
+        ]
+    )
+    db_session.flush()
+    cred_a = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org_a.id, user=user
+    )
+    cred_b = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org_b.id, user=user
+    )
+    set_org_password_hash(cred_a, hash_password(password_a))
+    set_org_password_hash(cred_b, hash_password(password_b))
+    provision_default_workspace(
+        db_session,
+        organization_id=invited_org.id,
+        created_by_user_id=inviter.id,
+    )
+    invitation = Invitation(
+        organization_id=invited_org.id,
+        invited_by_id=inviter.id,
+        email=user.email,
+        role=RoleEnum.WRITER.value,
+        status=InvitationStatus.PENDING.value,
+        token="invite-source-org",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(invitation)
+    db_session.commit()
+
+    accept_invitation(
+        db_session,
+        invitation,
+        user,
+        source_organization_id=org_b.id,
+    )
+
+    invited_cred = get_credential(
+        db_session, user_id=user.id, organization_id=invited_org.id
+    )
+    assert invited_cred is not None
+    assert invited_cred.password_hash == cred_b.password_hash
+    assert invited_cred.password_hash != cred_a.password_hash
+    assert verify_password(password_b, invited_cred.password_hash)
+    assert not verify_password(password_a, invited_cred.password_hash)
+
+    matched_b = match_password_memberships(db_session, user=user, password=password_b)
+    assert {org.id for _, org in matched_b} == {org_b.id, invited_org.id}
+    matched_a = match_password_memberships(db_session, user=user, password=password_a)
+    assert {org.id for _, org in matched_a} == {org_a.id}
+
+
+def test_accept_invitation_skips_inheritance_when_org_passwords_differ(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.core.auth.org_credentials import (
+        get_credential,
+        provision_membership_credential,
+        set_org_password_hash,
+    )
+    from app.models.database import Invitation, InvitationStatus
+    from app.services.invitation_service import accept_invitation
+    from app.services.organization_provisioning import provision_default_workspace
+
+    org_a = Organization(id=uuid4(), name="Org A")
+    org_b = Organization(id=uuid4(), name="Org B")
+    invited_org = Organization(id=uuid4(), name="Invited Org")
+    inviter = User(id=uuid4(), email="inviter@example.com", is_active=True)
+    user = User(
+        id=uuid4(),
+        email="invitee@example.com",
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org_a, org_b, invited_org, inviter, user])
+    db_session.flush()
+    db_session.add_all(
+        [
+            OrganizationMember(organization_id=org_a.id, user_id=user.id, role=RoleEnum.ADMIN.value),
+            OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
+        ]
+    )
+    db_session.flush()
+    cred_a = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org_a.id, user=user
+    )
+    cred_b = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org_b.id, user=user
+    )
+    set_org_password_hash(cred_a, hash_password("OrgAPass1!"))
+    set_org_password_hash(cred_b, hash_password("OrgBPass1!"))
+    provision_default_workspace(
+        db_session,
+        organization_id=invited_org.id,
+        created_by_user_id=inviter.id,
+    )
+    invitation = Invitation(
+        organization_id=invited_org.id,
+        invited_by_id=inviter.id,
+        email=user.email,
+        role=RoleEnum.WRITER.value,
+        status=InvitationStatus.PENDING.value,
+        token="invite-no-inherit",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(invitation)
+    db_session.commit()
+
+    accept_invitation(db_session, invitation, user)
+
+    invited_cred = get_credential(
+        db_session, user_id=user.id, organization_id=invited_org.id
+    )
+    assert invited_cred is not None
+    assert invited_cred.password_hash is None

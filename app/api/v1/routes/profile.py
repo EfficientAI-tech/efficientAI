@@ -268,6 +268,7 @@ async def get_my_invitations(
 @router.post("/invitations/{invitation_id}/accept", response_model=MessageResponse, operation_id="acceptInvitation")
 async def accept_invitation(
     invitation_id: UUID,
+    principal: Principal = Depends(get_principal),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -283,7 +284,12 @@ async def accept_invitation(
         raise HTTPException(status_code=404, detail="Invitation not found")
 
     try:
-        accept_invitation_record(db, invitation, current_user)
+        accept_invitation_record(
+            db,
+            invitation,
+            current_user,
+            source_organization_id=principal.organization_id,
+        )
     except InvitationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

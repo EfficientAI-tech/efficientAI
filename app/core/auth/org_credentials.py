@@ -59,22 +59,43 @@ def find_source_password_for_new_membership(
     user_id: UUID,
     *,
     user: Optional[User] = None,
+    source_organization_id: Optional[UUID] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
-    existing = (
+    """Pick a password hash to seed a new membership credential.
+
+    When ``source_organization_id`` is provided (e.g. the org the user
+    authenticated into before accepting an invite), only that org's credential
+    is used. Otherwise inheritance happens only when every existing org
+    credential shares the same hash, or when no org credentials exist yet
+    (legacy ``users.password_hash`` backfill).
+    """
+    if source_organization_id is not None:
+        source = get_credential(
+            db, user_id=user_id, organization_id=source_organization_id
+        )
+        if source is not None and source.password_hash:
+            return source.password_hash, source.auth_provider
+        return None, None
+
+    creds_with_password = (
         db.query(OrganizationMemberCredential)
         .filter(
             OrganizationMemberCredential.user_id == user_id,
             OrganizationMemberCredential.password_hash.isnot(None),
         )
-        .order_by(OrganizationMemberCredential.created_at.asc())
-        .first()
+        .all()
     )
-    if existing is not None:
-        return existing.password_hash, existing.auth_provider
-    if user is None:
-        user = db.query(User).filter(User.id == user_id).first()
-    if user is not None and user.password_hash:
-        return user.password_hash, user.auth_provider or "local"
+    if not creds_with_password:
+        if user is None:
+            user = db.query(User).filter(User.id == user_id).first()
+        if user is not None and user.password_hash:
+            return user.password_hash, user.auth_provider or "local"
+        return None, None
+
+    distinct_hashes = {cred.password_hash for cred in creds_with_password}
+    if len(distinct_hashes) == 1:
+        first = creds_with_password[0]
+        return first.password_hash, first.auth_provider
     return None, None
 
 
@@ -86,6 +107,7 @@ def provision_membership_credential(
     password_hash: Optional[str] = None,
     auth_provider: Optional[str] = None,
     user: Optional[User] = None,
+    source_organization_id: Optional[UUID] = None,
 ) -> OrganizationMemberCredential:
     row = get_credential(db, user_id=user_id, organization_id=organization_id)
     if row is not None:
@@ -93,7 +115,10 @@ def provision_membership_credential(
 
     if password_hash is None:
         inherited_hash, inherited_provider = find_source_password_for_new_membership(
-            db, user_id, user=user
+            db,
+            user_id,
+            user=user,
+            source_organization_id=source_organization_id,
         )
         if inherited_hash:
             password_hash = inherited_hash
