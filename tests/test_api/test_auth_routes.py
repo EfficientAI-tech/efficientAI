@@ -661,7 +661,10 @@ def test_password_change_invalidates_existing_access_token(
 def test_switch_org_mints_token_for_target_org(
     client, db_session, enable_local_password
 ):
-    """Happy path: user is a member of two orgs and switches into the second."""
+    """Happy path: user authenticated for both orgs can switch into the second."""
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+    from app.core.auth.tokens import decode_access_token
+
     user, source_org = _seed_user_with_org(
         db_session, "multi@example.com", "ThePass1!"
     )
@@ -676,29 +679,88 @@ def test_switch_org_mints_token_for_target_org(
             role=RoleEnum.READER.value,
         )
     )
+    db_session.flush()
+    target_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=target_org.id
+    )
+    set_org_password_hash(target_cred, hash_password("ThePass1!"))
     db_session.commit()
 
-    principal = Principal(
-        organization_id=source_org.id,
-        auth_method=AuthMethod.LOCAL_PASSWORD,
-        user_id=user.id,
-        email=user.email,
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "ThePass1!",
+            "organization_id": str(source_org.id),
+        },
     )
-    _override_principal(client, principal)
-    try:
-        response = client.post(
-            "/api/v1/auth/switch-org",
-            json={"organization_id": str(target_org.id)},
-        )
-    finally:
-        _clear_principal_override(client)
+    assert login.status_code == 200
+    login_body = login.json()
+    claims = decode_access_token(login_body["access_token"])
+    assert str(target_org.id) in claims["authenticated_org_ids"]
+
+    response = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(target_org.id),
+            "refresh_token": login_body["refresh_token"],
+        },
+        headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
 
     assert response.status_code == 200
     body = response.json()
     assert body["access_token"]
     assert body["user"]["organization_id"] == str(target_org.id)
-    # Role reflects the target-org membership, not the source-org role.
     assert body["user"]["role"] == RoleEnum.READER.value
+
+
+def test_switch_org_requires_reauth_when_target_not_authenticated(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    user, source_org = _seed_user_with_org(
+        db_session, "multi@example.com", "ThePass1!"
+    )
+
+    target_org = Organization(id=uuid4(), name="Target Org")
+    db_session.add(target_org)
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(
+            organization_id=target_org.id,
+            user_id=user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.flush()
+    target_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=target_org.id
+    )
+    set_org_password_hash(target_cred, hash_password("OtherPass2!"))
+    db_session.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "ThePass1!",
+            "organization_id": str(source_org.id),
+        },
+    ).json()
+
+    response = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(target_org.id),
+            "refresh_token": login["refresh_token"],
+        },
+        headers={"Authorization": f"Bearer {login['access_token']}"},
+    )
+
+    assert response.status_code == 403
+    assert "password" in response.json()["detail"].lower()
 
 
 def test_switch_org_rejects_api_key_caller_with_403(client, db_session, seed_org):
@@ -846,6 +908,67 @@ def test_refresh_preserves_authenticated_org_ids(client, db_session, enable_loca
         "/api/v1/auth/refresh",
         json={"refresh_token": login_body["refresh_token"]},
         headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert set(refresh_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+
+
+def test_refresh_preserves_authenticated_org_ids_without_access_token(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.tokens import decode_access_token
+
+    _user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "TestPass1!"
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "TestPass1!",
+            "organization_id": str(org_a.id),
+        },
+    ).json()
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login["refresh_token"]},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert set(refresh_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+
+
+def test_refresh_preserves_authenticated_org_ids_with_expired_access_token(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.tokens import create_access_token, decode_access_token
+
+    user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "TestPass1!"
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "TestPass1!",
+            "organization_id": str(org_a.id),
+        },
+    ).json()
+
+    expired_token, _jti, _ttl = create_access_token(
+        user_id=user.id,
+        organization_id=org_a.id,
+        email=user.email,
+        authenticated_org_ids=[str(org_a.id), str(org_b.id)],
+        expires_in_minutes=-1,
+    )
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login["refresh_token"]},
+        headers={"Authorization": f"Bearer {expired_token}"},
     )
     assert refreshed.status_code == 200
     refresh_claims = decode_access_token(refreshed.json()["access_token"])

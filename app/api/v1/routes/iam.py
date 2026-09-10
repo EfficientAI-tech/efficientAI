@@ -26,11 +26,13 @@ from app.core.password import hash_password, validate_password_strength
 from app.core.auth.refresh_tokens import revoke_refresh_tokens_for_user_org
 from app.core.auth.org_credentials import (
     bump_org_session_epoch,
+    get_credential,
     get_or_create_credential,
     provision_membership_credential,
     set_org_password_hash,
 )
 from app.services.invitation_service import invitation_to_response_dict, to_aware_utc
+from app.services.workspace_rbac import remove_user_org_workspace_memberships
 
 router = APIRouter(prefix="/iam", tags=["IAM"])
 
@@ -476,7 +478,22 @@ async def remove_user(
                 status_code=400,
                 detail="Cannot remove the last admin from the organization"
             )
-    
+
+    remove_user_org_workspace_memberships(
+        db,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    credential = get_credential(
+        db, user_id=user_id, organization_id=organization_id
+    )
+    if credential is not None:
+        bump_org_session_epoch(credential)
+    revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     db.delete(member)
     db.commit()
     return None

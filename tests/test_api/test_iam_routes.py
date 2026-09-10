@@ -140,3 +140,60 @@ def test_update_organization_rejects_empty_name(iam_admin_override, authenticate
     )
 
     assert response.status_code == 422
+
+
+def test_remove_user_clears_workspace_memberships(
+    iam_admin_override,
+    authenticated_client,
+    db_session,
+    org_id,
+    make_user,
+    default_workspace,
+):
+    from app.models.database import Workspace, WorkspaceMember
+    from app.services.workspace_rbac import backfill_org_workspace_memberships
+
+    member_user = make_user(email="remove-me@example.com", name="Remove Me")
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=member_user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.commit()
+    backfill_org_workspace_memberships(db_session, organization_id=org_id)
+
+    assert (
+        db_session.query(WorkspaceMember)
+        .join(Workspace, Workspace.id == WorkspaceMember.workspace_id)
+        .filter(
+            Workspace.organization_id == org_id,
+            WorkspaceMember.user_id == member_user.id,
+        )
+        .count()
+        == 1
+    )
+
+    response = authenticated_client.delete(f"/api/v1/iam/users/{member_user.id}")
+    assert response.status_code == 204
+
+    assert (
+        db_session.query(WorkspaceMember)
+        .join(Workspace, Workspace.id == WorkspaceMember.workspace_id)
+        .filter(
+            Workspace.organization_id == org_id,
+            WorkspaceMember.user_id == member_user.id,
+        )
+        .count()
+        == 0
+    )
+    assert (
+        db_session.query(OrganizationMember)
+        .filter(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == member_user.id,
+        )
+        .first()
+        is None
+    )

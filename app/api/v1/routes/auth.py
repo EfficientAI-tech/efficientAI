@@ -44,6 +44,7 @@ from app.core.auth.org_credentials import (
     user_has_any_local_password,
 )
 from app.core.auth.refresh_tokens import (
+    authenticated_org_ids_from_refresh_row,
     issue_refresh_token,
     revoke_refresh_token,
     revoke_refresh_tokens_for_user_org,
@@ -58,7 +59,11 @@ from app.core.auth.cookies import (
     set_session_cookies,
 )
 from app.core.auth.token_revocation import revoke_access_jti
-from app.core.auth.tokens import create_access_token, decode_access_token
+from app.core.auth.tokens import (
+    create_access_token,
+    decode_access_token,
+    decode_access_token_allow_expired,
+)
 from app.core.license import get_enabled_features, has_auth_feature
 from app.core.password import hash_password, validate_password_strength, verify_password
 from app.database import get_db
@@ -347,6 +352,19 @@ def _revoke_local_password_access_token(bearer: str) -> None:
         pass
 
 
+def _org_ids_from_token_claims(claims: dict) -> Optional[List]:
+    raw_ids = claims.get("authenticated_org_ids") or []
+    org_ids: List = []
+    for raw in raw_ids:
+        try:
+            from uuid import UUID as _UUID
+
+            org_ids.append(_UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    return org_ids or None
+
+
 def _parse_authenticated_org_ids(
     request: Request,
     authorization: Optional[str] = None,
@@ -354,20 +372,13 @@ def _parse_authenticated_org_ids(
     bearer = _extract_bearer(authorization) or read_access_cookie(request)
     if not bearer:
         return None
-    try:
-        claims = decode_access_token(bearer)
-        raw_ids = claims.get("authenticated_org_ids") or []
-        org_ids: List = []
-        for raw in raw_ids:
-            try:
-                from uuid import UUID as _UUID
-
-                org_ids.append(_UUID(str(raw)))
-            except (TypeError, ValueError):
-                continue
-        return org_ids
-    except JWTError:
-        return None
+    for decoder in (decode_access_token, decode_access_token_allow_expired):
+        try:
+            claims = decoder(bearer)
+            return _org_ids_from_token_claims(claims)
+        except JWTError:
+            continue
+    return None
 
 
 def _refresh_ttl_seconds() -> int:
@@ -401,6 +412,7 @@ def _issue_session_tokens(
         db,
         user_id=user.id,
         organization_id=organization_id,
+        authenticated_org_ids=authenticated_org_id_strings(org_ids),
     )
     db.commit()
     return TokenResponse(
@@ -942,6 +954,8 @@ def refresh_session(
     revoke_refresh_token(db, refresh_token)
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
     authenticated_org_ids = _parse_authenticated_org_ids(request, authorization)
+    if authenticated_org_ids is None:
+        authenticated_org_ids = authenticated_org_ids_from_refresh_row(row)
     if authenticated_org_ids is not None:
         if row.organization_id not in authenticated_org_ids:
             authenticated_org_ids = [*authenticated_org_ids, row.organization_id]
@@ -1057,7 +1071,10 @@ def switch_organization(
         if old_refresh:
             revoke_refresh_token(db, old_refresh)
 
-        if authenticated_org_ids is not None and target_org_id not in authenticated_org_ids:
+        if authenticated_org_ids is None:
+            authenticated_org_ids = [principal.organization_id]
+
+        if target_org_id not in authenticated_org_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Sign in again with the password for that organization.",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -28,20 +29,41 @@ def generate_refresh_token_value() -> str:
     return secrets.token_urlsafe(32)
 
 
-def issue_refresh_token(db: Session, *, user_id: UUID, organization_id: UUID) -> str:
+def issue_refresh_token(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+    authenticated_org_ids: Optional[Sequence[str]] = None,
+) -> str:
     """Create a new refresh token row and return the raw token value."""
     raw = generate_refresh_token_value()
     expires_at = datetime.now(timezone.utc) + timedelta(days=settings.AUTH_REFRESH_TOKEN_TTL_DAYS)
+    org_ids = list(authenticated_org_ids) if authenticated_org_ids else None
     db.add(
         RefreshToken(
             user_id=user_id,
             organization_id=organization_id,
             token_hash=_hash_token(raw),
             expires_at=expires_at,
+            authenticated_org_ids=org_ids,
         )
     )
     db.flush()
     return raw
+
+
+def authenticated_org_ids_from_refresh_row(row: RefreshToken) -> Optional[List[UUID]]:
+    raw_ids = row.authenticated_org_ids
+    if not raw_ids:
+        return None
+    org_ids: List[UUID] = []
+    for raw in raw_ids:
+        try:
+            org_ids.append(UUID(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    return org_ids or None
 
 
 def validate_refresh_token(db: Session, raw: str) -> RefreshToken:

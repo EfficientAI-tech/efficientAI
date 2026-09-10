@@ -448,6 +448,89 @@ def test_accept_invitation_uses_source_org_password_not_oldest(db_session):
     assert {org.id for _, org in matched_a} == {org_a.id}
 
 
+def test_build_invite_join_notice_mentions_source_when_passwords_match(db_session):
+    from app.core.auth.org_credentials import (
+        provision_membership_credential,
+        set_org_password_hash,
+    )
+    from app.services.invitation_service import build_invite_join_notice
+
+    password_hash = hash_password("SharedPass1!")
+    org_a = Organization(id=uuid4(), name="Org A")
+    invited_org = Organization(id=uuid4(), name="Invited Org")
+    user = User(
+        id=uuid4(),
+        email="invitee@example.com",
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org_a, invited_org, user])
+    db_session.flush()
+    cred_a = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org_a.id, user=user
+    )
+    invited_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=invited_org.id, user=user
+    )
+    set_org_password_hash(cred_a, password_hash)
+    set_org_password_hash(invited_cred, password_hash)
+    db_session.commit()
+
+    notice = build_invite_join_notice(
+        db_session,
+        user=user,
+        organization_id=invited_org.id,
+        organization_name=invited_org.name,
+        source_organization_id=org_a.id,
+    )
+
+    assert notice is not None
+    assert "Org A" in notice
+    assert "same password" in notice.lower()
+
+
+def test_build_invite_join_notice_does_not_claim_source_password_when_hashes_differ(
+    db_session,
+):
+    from app.core.auth.org_credentials import (
+        provision_membership_credential,
+        set_org_password_hash,
+    )
+    from app.services.invitation_service import build_invite_join_notice
+
+    org_a = Organization(id=uuid4(), name="Org A")
+    invited_org = Organization(id=uuid4(), name="Invited Org")
+    user = User(
+        id=uuid4(),
+        email="invitee@example.com",
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org_a, invited_org, user])
+    db_session.flush()
+    cred_a = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org_a.id, user=user
+    )
+    invited_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=invited_org.id, user=user
+    )
+    set_org_password_hash(cred_a, hash_password("OrgAPass1!"))
+    set_org_password_hash(invited_cred, hash_password("InvitedPass1!"))
+    db_session.commit()
+
+    notice = build_invite_join_notice(
+        db_session,
+        user=user,
+        organization_id=invited_org.id,
+        organization_name=invited_org.name,
+        source_organization_id=org_a.id,
+    )
+
+    assert notice is not None
+    assert "Org A" not in notice
+    assert "this organization" in notice.lower()
+
+
 def test_accept_invitation_skips_inheritance_when_org_passwords_differ(db_session):
     from datetime import datetime, timedelta, timezone
 

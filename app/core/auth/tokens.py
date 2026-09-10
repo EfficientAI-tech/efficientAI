@@ -68,3 +68,14 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     except JWTError:
         # Re-raise so caller can distinguish from other errors.
         raise
+
+
+def decode_access_token_allow_expired(token: str) -> Dict[str, Any]:
+    """Verify signature/issuer but allow expired tokens (e.g. refresh org list)."""
+    return jwt.decode(
+        token,
+        settings.SECRET_KEY,
+        algorithms=[ALGORITHM],
+        issuer=ISSUER,
+        options={"verify_exp": False, "verify_aud": False},
+    )

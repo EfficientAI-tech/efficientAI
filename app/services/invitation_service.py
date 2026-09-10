@@ -214,21 +214,30 @@ def build_invite_join_notice(
         source_organization_id is not None
         and source_organization_id != organization_id
     ):
-        source_org = (
-            db.query(Organization)
-            .filter(Organization.id == source_organization_id)
-            .first()
+        source_cred = get_credential(
+            db, user_id=user.id, organization_id=source_organization_id
         )
-        if source_org is not None:
-            return (
-                f"You've joined {organization_name}. "
-                f"You can sign in with the same password you use for {source_org.name}. "
-                "Each organization has its own password."
+        if (
+            source_cred is not None
+            and source_cred.password_hash
+            and credential.password_hash == source_cred.password_hash
+        ):
+            source_org = (
+                db.query(Organization)
+                .filter(Organization.id == source_organization_id)
+                .first()
             )
+            if source_org is not None:
+                return (
+                    f"You've joined {organization_name}. "
+                    f"You can sign in with the same password you use for {source_org.name}. "
+                    "Each organization has its own password."
+                )
 
     return (
         f"You've joined {organization_name}. "
-        "You can sign in with your existing password. Each organization has its own password."
+        "Sign in with the password for this organization. "
+        "Each organization has its own password."
     )
 
 

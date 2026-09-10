@@ -626,19 +626,18 @@ class ApiClient {
         if (
           response?.status === 401 &&
           originalRequest &&
-          !originalRequest._retry
+          !originalRequest._retry &&
+          !isAuthEndpoint
         ) {
-          if (!isAuthEndpoint) {
-            originalRequest._retry = true
-            const refreshed = await this.tryRefreshAccessToken()
-            if (refreshed) {
-              if (this.cookieSessionEnabled) {
-                delete originalRequest.headers.Authorization
-              } else if (this.inMemoryAccessToken) {
-                originalRequest.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
-              }
-              return this.client(originalRequest)
+          originalRequest._retry = true
+          const refreshed = await this.tryRefreshAccessToken()
+          if (refreshed) {
+            if (this.cookieSessionEnabled) {
+              delete originalRequest.headers.Authorization
+            } else if (this.inMemoryAccessToken) {
+              originalRequest.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
             }
+            return this.client(originalRequest)
           }
 
           clearAuthSession()
