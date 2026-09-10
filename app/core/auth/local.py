@@ -67,10 +67,7 @@ class LocalPasswordProvider(AuthProvider):
         if not user:
             raise AuthError("User no longer active")
 
-        token_epoch = int(claims.get("session_epoch", 0) or 0)
-        user_epoch = int(getattr(user, "session_epoch", 0) or 0)
-        if token_epoch != user_epoch:
-            raise AuthError("Session expired — please sign in again")
+        from app.core.auth.org_credentials import get_credential, resolve_session_epoch
 
         member = (
             db.query(OrganizationMember)
@@ -82,6 +79,12 @@ class LocalPasswordProvider(AuthProvider):
         )
         if not member:
             raise AuthError("User is not a member of this organization")
+
+        credential = get_credential(db, user_id=user_id, organization_id=org_id)
+        token_epoch = int(claims.get("session_epoch", 0) or 0)
+        user_epoch = resolve_session_epoch(credential, user)
+        if token_epoch != user_epoch:
+            raise AuthError("Session expired — please sign in again")
 
         ensure_organization_active(db, org_id)
 

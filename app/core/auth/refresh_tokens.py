@@ -77,3 +77,21 @@ def revoke_all_user_refresh_tokens(db: Session, user_id: UUID) -> None:
         )
         .update({RefreshToken.revoked_at: now}, synchronize_session=False)
     )
+
+
+def revoke_refresh_tokens_for_user_org(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+) -> None:
+    now = datetime.now(timezone.utc)
+    (
+        db.query(RefreshToken)
+        .filter(
+            RefreshToken.user_id == user_id,
+            RefreshToken.organization_id == organization_id,
+            RefreshToken.revoked_at.is_(None),
+        )
+        .update({RefreshToken.revoked_at: now}, synchronize_session=False)
+    )

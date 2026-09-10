@@ -348,6 +348,29 @@ class OrganizationMember(Base):
     default_agent = relationship("Agent", foreign_keys=[default_agent_id])
 
 
+class OrganizationMemberCredential(Base):
+    """Per-organization password and session state for a membership."""
+
+    __tablename__ = "organization_member_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    password_hash = Column(String(255), nullable=True)
+    auth_provider = Column(String(50), nullable=True)
+    session_epoch = Column(Integer, default=0, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_org_member_credentials_org_user"),
+    )
+
+
 class Invitation(Base):
     """Invitation model for inviting users to organizations."""
 

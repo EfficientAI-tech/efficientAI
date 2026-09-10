@@ -29,6 +29,7 @@ def create_access_token(
     organization_id: UUID,
     email: str,
     session_epoch: int = 0,
+    authenticated_org_ids: Optional[list[str]] = None,
     expires_in_minutes: Optional[int] = None,
 ) -> Tuple[str, str, int]:
     """Issue a short-lived Bearer token for the given user/org.
@@ -46,6 +47,7 @@ def create_access_token(
         "org_id": str(organization_id),
         "email": email,
         "session_epoch": int(session_epoch or 0),
+        "authenticated_org_ids": authenticated_org_ids or [str(organization_id)],
         "jti": jti,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ttl_minutes)).timestamp()),

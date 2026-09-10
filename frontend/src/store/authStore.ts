@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { apiClient } from '../lib/api'
+import { apiClient, isLoginOrgSelectionResponse } from '../lib/api'
 import { clearAuthSession } from '../lib/authSession'
 import { useWorkspaceStore } from './workspaceStore'
 
@@ -30,6 +30,7 @@ interface AuthState {
   setApiKey: (key: string) => void
   setSession: (user: AuthUser, tokens?: SessionTokens) => void
   switchOrg: (organizationId: string) => Promise<AuthUser>
+  reauthForOrg: (organizationId: string, password: string) => Promise<AuthUser>
   logout: () => void
   validate: () => Promise<boolean>
   bootstrapSession: () => Promise<void>
@@ -96,6 +97,27 @@ export const useAuthStore = create<AuthState>((set, get) => {
       })
       useWorkspaceStore.getState().clearActiveWorkspaceId()
       return user
+    },
+
+    reauthForOrg: async (organizationId: string, password: string) => {
+      const currentUser = get().user
+      if (!currentUser?.email) {
+        throw new Error('No signed-in user')
+      }
+      const res = await apiClient.loginWithPassword(
+        currentUser.email,
+        password,
+        organizationId,
+      )
+      if (isLoginOrgSelectionResponse(res)) {
+        throw new Error('Password did not unlock the selected organization')
+      }
+      get().setSession(res.user, {
+        access: res.access_token || undefined,
+        refresh: res.refresh_token,
+      })
+      useWorkspaceStore.getState().clearActiveWorkspaceId()
+      return res.user
     },
 
     logout: () => {

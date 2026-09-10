@@ -7,6 +7,8 @@ import Button from '../../components/Button'
 import { useAuthStore } from '../../store/authStore'
 import { redirectToLoginWithMessage } from '../../lib/authSession'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
+import { useOrgSwitch } from '../../hooks/useOrgSwitch'
+import OrgReauthModal from '../../components/OrgReauthModal'
 
 export default function Profile() {
   const queryClient = useQueryClient()
@@ -130,15 +132,22 @@ export default function Profile() {
   // After a successful accept we remember what org the user just joined so
   // we can offer a one-click "Switch to <Org>" button. They can also switch
   // from the Organizations section below.
-  const { apiKey, user, switchOrg } = useAuthStore()
-  const [switchingOrgId, setSwitchingOrgId] = useState<string | null>(null)
-  const [orgSwitchError, setOrgSwitchError] = useState('')
+  const { apiKey, user } = useAuthStore()
+  const {
+    switchingTo,
+    error: orgSwitchError,
+    reauthTarget,
+    reauthError,
+    reauthLoading,
+    switchToOrg,
+    closeReauth,
+    submitReauth,
+    user: authUser,
+  } = useOrgSwitch()
   const [justJoined, setJustJoined] = useState<
     | { organizationId: string; organizationName: string; role: string }
     | null
   >(null)
-  const [isSwitchingToJoined, setIsSwitchingToJoined] = useState(false)
-  const [switchError, setSwitchError] = useState('')
 
   const acceptInvitationMutation = useMutation({
     mutationFn: (invitation: Invitation) => apiClient.acceptInvitation(invitation.id),
@@ -153,32 +162,26 @@ export default function Profile() {
     },
   })
 
-  const handleSwitchOrganization = async (orgId: string) => {
+  const handleSwitchOrganization = async (orgId: string, orgName: string) => {
     if (orgId === user?.organization_id) return
-    setOrgSwitchError('')
-    setSwitchingOrgId(orgId)
-    try {
-      await switchOrg(orgId)
-      await queryClient.invalidateQueries()
-    } catch (err: any) {
-      setOrgSwitchError(err?.response?.data?.detail || 'Could not switch organization')
-    } finally {
-      setSwitchingOrgId(null)
+    const switched = await switchToOrg(orgId, orgName)
+    if (switched && justJoined?.organizationId === orgId) {
+      setJustJoined(null)
     }
   }
 
   const handleJumpToJoinedOrg = async () => {
     if (!justJoined) return
-    setSwitchError('')
-    setIsSwitchingToJoined(true)
-    try {
-      await switchOrg(justJoined.organizationId)
-      await queryClient.invalidateQueries()
+    const switched = await switchToOrg(justJoined.organizationId, justJoined.organizationName)
+    if (switched) {
       setJustJoined(null)
-    } catch (err: any) {
-      setSwitchError(err?.response?.data?.detail || 'Could not switch organization')
-    } finally {
-      setIsSwitchingToJoined(false)
+    }
+  }
+
+  const handleReauth = async (password: string) => {
+    const ok = await submitReauth(password)
+    if (ok && justJoined && reauthTarget?.id === justJoined.organizationId) {
+      setJustJoined(null)
     }
   }
 
@@ -239,6 +242,7 @@ export default function Profile() {
   }
 
   return (
+    <>
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Profile</h1>
@@ -514,7 +518,7 @@ export default function Profile() {
               )}
               {profile.organizations.map((org) => {
                 const isCurrent = org.id === user?.organization_id
-                const isSwitching = switchingOrgId === org.id
+                const isSwitching = switchingTo === org.id
                 const canSwitch = !apiKey && !!user && profile.organizations.length > 1
 
                 return (
@@ -543,8 +547,8 @@ export default function Profile() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => handleSwitchOrganization(org.id)}
-                          disabled={!!switchingOrgId}
+                          onClick={() => handleSwitchOrganization(org.id, org.name)}
+                          disabled={!!switchingTo}
                           leftIcon={
                             isSwitching ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -579,33 +583,32 @@ export default function Profile() {
             <div className="text-xs text-green-800 mt-0.5">
               Your current session is still in your previous organization. Switch now to start working there.
             </div>
-            {switchError && (
-              <div className="text-xs text-red-700 mt-2">{switchError}</div>
+            {orgSwitchError && !reauthTarget && (
+              <div className="text-xs text-red-700 mt-2">{orgSwitchError}</div>
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <Button
               size="sm"
               onClick={handleJumpToJoinedOrg}
-              disabled={isSwitchingToJoined}
+              disabled={switchingTo === justJoined.organizationId}
               leftIcon={
-                isSwitchingToJoined ? (
+                switchingTo === justJoined.organizationId ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <ArrowRightLeft className="h-4 w-4" />
                 )
               }
             >
-              {isSwitchingToJoined ? 'Switching…' : `Switch to ${justJoined.organizationName}`}
+              {switchingTo === justJoined.organizationId
+                ? 'Switching…'
+                : `Switch to ${justJoined.organizationName}`}
             </Button>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
-                setJustJoined(null)
-                setSwitchError('')
-              }}
-              disabled={isSwitchingToJoined}
+              onClick={() => setJustJoined(null)}
+              disabled={!!switchingTo}
             >
               Dismiss
             </Button>
@@ -682,6 +685,17 @@ export default function Profile() {
         </div>
       </div>
     </div>
+
+    <OrgReauthModal
+      open={!!reauthTarget}
+      organizationName={reauthTarget?.name ?? ''}
+      email={authUser?.email}
+      isLoading={reauthLoading}
+      error={reauthError}
+      onClose={closeReauth}
+      onSubmit={handleReauth}
+    />
+    </>
   )
 }
 

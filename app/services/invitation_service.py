@@ -159,7 +159,15 @@ def get_invitation_preview(db: Session, token: str) -> dict:
     )
     existing_user = db.query(User).filter(User.email == invitation.email).first()
     user_exists = existing_user is not None
-    has_password = bool(existing_user and existing_user.password_hash)
+    has_password = False
+    if existing_user is not None:
+        from app.core.auth.org_credentials import org_has_password
+
+        has_password = org_has_password(
+            db,
+            user=existing_user,
+            organization_id=invitation.organization_id,
+        )
 
     status_value = getattr(invitation.status, "value", invitation.status)
     return {

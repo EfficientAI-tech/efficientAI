@@ -434,7 +434,7 @@ def test_login_with_organization_id_returns_scoped_token(
     assert body["user"]["role"] == RoleEnum.READER.value
 
 
-def test_login_rejects_invalid_organization_id_with_403(
+def test_login_rejects_invalid_organization_id_with_401(
     client, db_session, enable_local_password
 ):
     _seed_user_with_multiple_orgs(db_session, "multi@example.com", "TestPass1!")
@@ -448,8 +448,8 @@ def test_login_rejects_invalid_organization_id_with_403(
         },
     )
 
-    assert response.status_code == 403
-    assert "not a member" in response.json()["detail"].lower()
+    assert response.status_code == 401
+    assert "invalid email or password" in response.json()["detail"].lower()
 
 
 def test_provision_default_workspace_is_idempotent(db_session, org_id, seed_org):
@@ -587,8 +587,8 @@ def test_password_change_invalidates_existing_access_token(
     db_session, org_id, seed_org, enable_local_password,
 ):
     from app.core.auth.local import LocalPasswordProvider
+    from app.core.auth.org_credentials import bump_org_session_epoch, get_or_create_credential
     from app.core.auth.providers import AuthError, RawCredential, reset_provider_registry
-    from app.core.auth.session_epoch import bump_user_session_epoch
     from app.core.auth.tokens import create_access_token
 
     reset_provider_registry()
@@ -607,18 +607,23 @@ def test_password_change_invalidates_existing_access_token(
             role=RoleEnum.ADMIN.value,
         )
     )
+    db_session.flush()
+    credential = get_or_create_credential(
+        db_session, user_id=user.id, organization_id=org_id, user=user
+    )
+    credential.password_hash = user.password_hash
     db_session.commit()
 
     token, _, _ = create_access_token(
         user_id=user.id,
         organization_id=org_id,
         email=user.email,
-        session_epoch=user.session_epoch,
+        session_epoch=credential.session_epoch,
     )
     provider = LocalPasswordProvider()
     provider.authenticate(RawCredential(bearer_token=token), db_session)
 
-    bump_user_session_epoch(user)
+    bump_org_session_epoch(credential)
     db_session.commit()
 
     with pytest.raises(AuthError, match="Session expired"):

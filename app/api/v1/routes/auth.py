@@ -31,10 +31,21 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.auth import Principal, get_principal
 from app.core.auth.principal import AuthMethod
+from app.core.auth.org_credentials import (
+    authenticated_org_id_strings,
+    bump_org_session_epoch,
+    get_credential,
+    get_or_create_credential,
+    match_password_memberships,
+    org_has_password,
+    resolve_password_hash,
+    resolve_session_epoch,
+    set_org_password_hash,
+)
 from app.core.auth.refresh_tokens import (
     issue_refresh_token,
-    revoke_all_user_refresh_tokens,
     revoke_refresh_token,
+    revoke_refresh_tokens_for_user_org,
     validate_refresh_token,
 )
 from app.core.api_rate_limit import enforce_auth_rate_limit
@@ -45,7 +56,6 @@ from app.core.auth.cookies import (
     read_refresh_cookie,
     set_session_cookies,
 )
-from app.core.auth.session_epoch import bump_user_session_epoch
 from app.core.auth.token_revocation import revoke_access_jti
 from app.core.auth.tokens import create_access_token, decode_access_token
 from app.core.license import get_enabled_features, has_auth_feature
@@ -263,12 +273,20 @@ def _local_password_enabled() -> None:
         )
 
 
-def _user_to_summary(user: User, organization_id, role: Optional[str]) -> UserSummary:
+def _user_to_summary(
+    user: User,
+    organization_id,
+    role: Optional[str],
+    db: Optional[Session] = None,
+) -> UserSummary:
     email_is_placeholder = bool(
         user.email
         and user.email.startswith("api_user_")
         and user.email.endswith("@efficientai.local")
     )
+    has_password = bool(user.password_hash)
+    if db is not None:
+        has_password = org_has_password(db, user=user, organization_id=organization_id)
     return UserSummary(
         id=str(user.id),
         email=user.email,
@@ -277,7 +295,7 @@ def _user_to_summary(user: User, organization_id, role: Optional[str]) -> UserSu
         last_name=user.last_name,
         organization_id=str(organization_id),
         role=role,
-        has_password=bool(user.password_hash),
+        has_password=has_password,
         email_is_placeholder=email_is_placeholder,
     )
 
@@ -287,6 +305,22 @@ def _validate_password_or_400(password: str) -> None:
         validate_password_strength(password)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+def _set_org_credential_password(
+    db: Session,
+    *,
+    user: User,
+    organization_id,
+    password_hash: str,
+) -> None:
+    credential = get_or_create_credential(
+        db,
+        user_id=user.id,
+        organization_id=organization_id,
+        user=user,
+    )
+    set_org_password_hash(credential, password_hash)
 
 
 def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
@@ -320,12 +354,21 @@ def _issue_session_tokens(
     user: User,
     organization_id,
     role_value: Optional[str],
+    authenticated_org_ids: Optional[List] = None,
 ) -> TokenResponse:
+    credential = get_or_create_credential(
+        db,
+        user_id=user.id,
+        organization_id=organization_id,
+        user=user,
+    )
+    org_ids = authenticated_org_ids or [organization_id]
     access_token, _jti, ttl = create_access_token(
         user_id=user.id,
         organization_id=organization_id,
         email=user.email,
-        session_epoch=int(getattr(user, "session_epoch", 0) or 0),
+        session_epoch=resolve_session_epoch(credential, user),
+        authenticated_org_ids=authenticated_org_id_strings(org_ids),
     )
     refresh_token = issue_refresh_token(
         db,
@@ -337,7 +380,7 @@ def _issue_session_tokens(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=ttl,
-        user=_user_to_summary(user, organization_id, role_value),
+        user=_user_to_summary(user, organization_id, role_value, db=db),
     )
 
 
@@ -348,12 +391,14 @@ def _respond_with_session(
     user: User,
     organization_id,
     role_value: Optional[str],
+    authenticated_org_ids: Optional[List] = None,
 ) -> TokenResponse:
     tokens = _issue_session_tokens(
         db,
         user=user,
         organization_id=organization_id,
         role_value=role_value,
+        authenticated_org_ids=authenticated_org_ids,
     )
     if cookie_session_enabled():
         set_session_cookies(
@@ -490,6 +535,12 @@ def signup(
         )
         if reference_row is not None:
             consume_reference_code(db, reference_row)
+        _set_org_credential_password(
+            db,
+            user=user,
+            organization_id=pending_invitation.organization_id,
+            password_hash=user.password_hash,
+        )
         user.last_login_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user)
@@ -501,6 +552,7 @@ def signup(
             user=user,
             organization_id=pending_invitation.organization_id,
             role_value=role_value,
+            authenticated_org_ids=[pending_invitation.organization_id],
         )
 
     org_name = (payload.organization_name or payload.email.split("@")[0] + "'s Org").strip()
@@ -514,6 +566,13 @@ def signup(
         role=RoleEnum.ADMIN.value,
     )
     db.add(membership)
+    db.flush()
+    _set_org_credential_password(
+        db,
+        user=user,
+        organization_id=organization.id,
+        password_hash=user.password_hash,
+    )
     provision_default_workspace(
         db,
         organization_id=organization.id,
@@ -553,29 +612,35 @@ def login(
     _local_password_enabled()
 
     user = db.query(User).filter(User.email == payload.email).first()
-    if (
-        user is None
-        or not user.is_active
-        or not user.password_hash
-        or not verify_password(payload.password, user.password_hash)
-    ):
-        # Same error regardless of whether the email exists - don't leak
-        # whether an email is registered.
+    if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
 
-    memberships = (
-        db.query(OrganizationMember, Organization)
-        .join(Organization, Organization.id == OrganizationMember.organization_id)
-        .filter(
-            OrganizationMember.user_id == user.id,
-            Organization.is_active == True,  # noqa: E712
+    matched_memberships = match_password_memberships(db, user=user, password=payload.password)
+    if not matched_memberships:
+        if user.password_hash and verify_password(payload.password, user.password_hash):
+            has_any_membership = (
+                db.query(OrganizationMember)
+                .join(Organization, Organization.id == OrganizationMember.organization_id)
+                .filter(
+                    OrganizationMember.user_id == user.id,
+                    Organization.is_active == True,  # noqa: E712
+                )
+                .first()
+            )
+            if has_any_membership is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account is not a member of any active organization. Contact your administrator.",
+                )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
         )
-        .order_by(OrganizationMember.joined_at.asc())
-        .all()
-    )
+
+    memberships = matched_memberships
 
     invite_token = (payload.invite_token or "").strip() or None
     if not memberships and invite_token:
@@ -602,6 +667,8 @@ def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account is not a member of any active organization. Contact your administrator.",
         )
+
+    authenticated_org_ids = [member.organization_id for member, _org in memberships]
 
     if len(memberships) > 1 and not payload.organization_id:
         org_options: List[LoginOrgOption] = []
@@ -632,8 +699,8 @@ def login(
         )
         if membership is None:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not a member of the selected organization.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password.",
             )
         target_organization_id = membership.organization_id
     else:
@@ -650,6 +717,7 @@ def login(
         user=user,
         organization_id=target_organization_id,
         role_value=role_value,
+        authenticated_org_ids=authenticated_org_ids,
     )
 
 
@@ -724,7 +792,7 @@ def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_
     role_value = None
     if membership:
         role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
-    return _user_to_summary(user, principal.organization_id, role_value)
+    return _user_to_summary(user, principal.organization_id, role_value, db=db)
 
 
 @router.post("/logout")
@@ -914,13 +982,33 @@ def switch_organization(
             detail="User is no longer active.",
         )
 
+    authenticated_org_ids: Optional[List] = None
     if principal.auth_method == AuthMethod.LOCAL_PASSWORD:
         bearer = _extract_bearer(authorization) or read_access_cookie(request)
         if bearer:
+            try:
+                claims = decode_access_token(bearer)
+                raw_ids = claims.get("authenticated_org_ids") or []
+                authenticated_org_ids = []
+                for raw in raw_ids:
+                    try:
+                        from uuid import UUID as _UUID
+
+                        authenticated_org_ids.append(_UUID(str(raw)))
+                    except (TypeError, ValueError):
+                        continue
+            except JWTError:
+                authenticated_org_ids = None
             _revoke_local_password_access_token(bearer)
         old_refresh = payload.refresh_token or read_refresh_cookie(request)
         if old_refresh:
             revoke_refresh_token(db, old_refresh)
+
+        if authenticated_org_ids is not None and target_org_id not in authenticated_org_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Sign in again with the password for that organization.",
+            )
 
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
@@ -935,6 +1023,7 @@ def switch_organization(
         user=user,
         organization_id=membership.organization_id,
         role_value=role_value,
+        authenticated_org_ids=authenticated_org_ids or [membership.organization_id],
     )
 
 
@@ -994,15 +1083,21 @@ def set_password(
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    # Rotating an existing password - require the current one (400, not 401, so
-    # the SPA does not treat a validation error as an expired session).
-    if user.password_hash:
+    credential = get_or_create_credential(
+        db,
+        user_id=user.id,
+        organization_id=principal.organization_id,
+        user=user,
+    )
+    current_password_hash = resolve_password_hash(credential, user)
+
+    if current_password_hash:
         if not payload.current_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is required.",
             )
-        if not verify_password(payload.current_password, user.password_hash):
+        if not verify_password(payload.current_password, current_password_hash):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is incorrect.",
@@ -1037,11 +1132,17 @@ def set_password(
         user.email = payload.email
 
     _validate_password_or_400(payload.new_password)
-    user.password_hash = hash_password(payload.new_password)
+    new_hash = hash_password(payload.new_password)
+    user.password_hash = new_hash
     if not user.auth_provider:
         user.auth_provider = "local"
-    bump_user_session_epoch(user)
-    revoke_all_user_refresh_tokens(db, user.id)
+    set_org_password_hash(credential, new_hash)
+    bump_org_session_epoch(credential)
+    revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=user.id,
+        organization_id=principal.organization_id,
+    )
     db.commit()
     db.refresh(user)
 
@@ -1062,7 +1163,7 @@ def set_password(
         role_value = (
             membership.role.value if hasattr(membership.role, "value") else membership.role
         )
-    return _user_to_summary(user, principal.organization_id, role_value)
+    return _user_to_summary(user, principal.organization_id, role_value, db=db)
 
 
 # ---------------------------------------------------------------------------

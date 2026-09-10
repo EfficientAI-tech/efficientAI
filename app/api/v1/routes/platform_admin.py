@@ -19,8 +19,12 @@ from app.core.auth.platform_admin import (
     platform_admin_feature_enabled,
     revoke_platform_access_token,
 )
-from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
-from app.core.auth.session_epoch import bump_user_session_epoch
+from app.core.auth.refresh_tokens import revoke_refresh_tokens_for_user_org
+from app.core.auth.org_credentials import (
+    bump_org_session_epoch,
+    get_or_create_credential,
+    set_org_password_hash,
+)
 from app.core.password import hash_password, validate_password_strength, verify_password
 from app.database import get_db
 from app.models.database import (
@@ -353,9 +357,19 @@ def platform_reset_user_password(
         )
 
     _validate_password_or_400(payload.new_password)
-    user.password_hash = hash_password(payload.new_password)
-    bump_user_session_epoch(user)
-    revoke_all_user_refresh_tokens(db, user_id=user.id)
+    credential = get_or_create_credential(
+        db,
+        user_id=user.id,
+        organization_id=org_id,
+        user=user,
+    )
+    set_org_password_hash(credential, hash_password(payload.new_password))
+    bump_org_session_epoch(credential)
+    revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=user.id,
+        organization_id=org_id,
+    )
     db.commit()
 
     return PlatformPasswordResetResponse(user_id=str(user.id), email=user.email)
