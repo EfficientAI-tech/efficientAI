@@ -132,6 +132,15 @@ def accept_invitation(
         role=invitation.role,
     )
     db.add(member)
+    db.flush()
+
+    from app.core.auth.org_credentials import provision_membership_credential
+
+    provision_membership_credential(
+        db,
+        user_id=user.id,
+        organization_id=invitation.organization_id,
+    )
 
     invitation.status = InvitationStatus.ACCEPTED
     invitation.accepted_at = datetime.now(timezone.utc)

@@ -38,9 +38,11 @@ from app.core.auth.org_credentials import (
     get_or_create_credential,
     match_password_memberships,
     org_has_password,
+    resolve_current_password_hash,
     resolve_password_hash,
     resolve_session_epoch,
     set_org_password_hash,
+    user_has_any_local_password,
 )
 from app.core.auth.refresh_tokens import (
     issue_refresh_token,
@@ -492,17 +494,17 @@ def signup(
         reference_row = validate_reference_code_for_signup(db, payload.reference_code)
 
     existing = db.query(User).filter(User.email == payload.email).first()
-    if existing and existing.password_hash:
+    if existing and user_has_any_local_password(db, existing):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists. Try signing in instead.",
         )
 
     _validate_password_or_400(payload.password)
+    password_hash = hash_password(payload.password)
 
-    if existing and not existing.password_hash:
+    if existing and not user_has_any_local_password(db, existing):
         user = existing
-        user.password_hash = hash_password(payload.password)
         if payload.first_name:
             user.first_name = payload.first_name
         if payload.last_name:
@@ -516,7 +518,7 @@ def signup(
     else:
         user = User(
             email=payload.email,
-            password_hash=hash_password(payload.password),
+            password_hash=None,
             first_name=payload.first_name,
             last_name=payload.last_name,
             name=((payload.first_name or "") + " " + (payload.last_name or "")).strip() or None,
@@ -539,7 +541,7 @@ def signup(
             db,
             user=user,
             organization_id=pending_invitation.organization_id,
-            password_hash=user.password_hash,
+            password_hash=password_hash,
         )
         user.last_login_at = datetime.now(timezone.utc)
         db.commit()
@@ -571,7 +573,7 @@ def signup(
         db,
         user=user,
         organization_id=organization.id,
-        password_hash=user.password_hash,
+        password_hash=password_hash,
     )
     provision_default_workspace(
         db,
@@ -620,21 +622,25 @@ def login(
 
     matched_memberships = match_password_memberships(db, user=user, password=payload.password)
     if not matched_memberships:
-        if user.password_hash and verify_password(payload.password, user.password_hash):
-            has_any_membership = (
-                db.query(OrganizationMember)
-                .join(Organization, Organization.id == OrganizationMember.organization_id)
-                .filter(
-                    OrganizationMember.user_id == user.id,
-                    Organization.is_active == True,  # noqa: E712
-                )
-                .first()
+        has_any_membership = (
+            db.query(OrganizationMember)
+            .join(Organization, Organization.id == OrganizationMember.organization_id)
+            .filter(
+                OrganizationMember.user_id == user.id,
+                Organization.is_active == True,  # noqa: E712
             )
-            if has_any_membership is None:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Your account is not a member of any active organization. Contact your administrator.",
-                )
+            .first()
+        )
+        if has_any_membership is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password.",
+            )
+        if user.password_hash and verify_password(payload.password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is not a member of any active organization. Contact your administrator.",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
@@ -1089,7 +1095,7 @@ def set_password(
         organization_id=principal.organization_id,
         user=user,
     )
-    current_password_hash = resolve_password_hash(credential, user)
+    current_password_hash = resolve_current_password_hash(credential, user)
 
     if current_password_hash:
         if not payload.current_password:
@@ -1133,9 +1139,6 @@ def set_password(
 
     _validate_password_or_400(payload.new_password)
     new_hash = hash_password(payload.new_password)
-    user.password_hash = new_hash
-    if not user.auth_provider:
-        user.auth_provider = "local"
     set_org_password_hash(credential, new_hash)
     bump_org_session_epoch(credential)
     revoke_refresh_tokens_for_user_org(

@@ -27,6 +27,7 @@ from app.core.auth.refresh_tokens import revoke_refresh_tokens_for_user_org
 from app.core.auth.org_credentials import (
     bump_org_session_epoch,
     get_or_create_credential,
+    provision_membership_credential,
     set_org_password_hash,
 )
 from app.services.invitation_service import invitation_to_response_dict, to_aware_utc
@@ -63,6 +64,12 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
                     role=RoleEnum.ADMIN
                 )
                 db.add(member)
+                db.flush()
+                provision_membership_credential(
+                    db,
+                    user_id=user.id,
+                    organization_id=db_key.organization_id,
+                )
                 db.commit()
             
             return user
@@ -90,6 +97,12 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
             role=RoleEnum.ADMIN
         )
         db.add(member)
+        db.flush()
+        provision_membership_credential(
+            db,
+            user_id=user.id,
+            organization_id=db_key.organization_id,
+        )
         db.commit()
     else:
         # User exists but might not be in organization
@@ -110,6 +123,12 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
                 role=RoleEnum.ADMIN
             )
             db.add(member)
+            db.flush()
+            provision_membership_credential(
+                db,
+                user_id=user.id,
+                organization_id=db_key.organization_id,
+            )
             db.commit()
     
     return user

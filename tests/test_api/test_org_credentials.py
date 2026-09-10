@@ -100,6 +100,13 @@ def test_admin_reset_password_only_invalidates_target_org_session(
             role=RoleEnum.ADMIN.value,
         )
     )
+    db_session.flush()
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    admin_cred = provision_membership_credential(
+        db_session, user_id=admin.id, organization_id=org_a_id
+    )
+    set_org_password_hash(admin_cred, hash_password("AdminPass1!"))
     db_session.commit()
 
     login_admin = client.post(
@@ -168,6 +175,70 @@ def test_login_only_unlocks_orgs_with_matching_password(
         json={"email": user.email, "password": "SharedPass1!", "organization_id": str(org_b.id)},
     )
     assert login_b.status_code == 401
+
+
+def test_password_change_does_not_unlock_other_org(
+    client, db_session, org_id, seed_org, enable_local_password
+):
+    org_b = Organization(id=uuid4(), name="Org B")
+    user = User(
+        id=uuid4(),
+        email="leak-check@example.com",
+        password_hash=hash_password("SharedPass1!"),
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org_b, user])
+    db_session.flush()
+    db_session.add_all(
+        [
+            OrganizationMember(organization_id=org_id, user_id=user.id, role=RoleEnum.ADMIN.value),
+            OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
+        ]
+    )
+    db_session.flush()
+    cred_a = get_or_create_credential(
+        db_session, user_id=user.id, organization_id=org_id, user=user
+    )
+    cred_b = get_or_create_credential(
+        db_session, user_id=user.id, organization_id=org_b.id, user=user
+    )
+    cred_a.password_hash = user.password_hash
+    cred_b.password_hash = hash_password("Different2!")
+    db_session.commit()
+
+    login_a = client.post(
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": "SharedPass1!", "organization_id": str(org_id)},
+    )
+    assert login_a.status_code == 200
+    token_a = login_a.json()["access_token"]
+
+    change = client.post(
+        "/api/v1/auth/password",
+        headers={"Authorization": f"Bearer {token_a}"},
+        json={"current_password": "SharedPass1!", "new_password": "ChangedA1!"},
+    )
+    assert change.status_code == 200
+
+    db_session.refresh(user)
+    db_session.refresh(cred_a)
+    db_session.refresh(cred_b)
+    assert verify_password("ChangedA1!", cred_a.password_hash)
+    assert verify_password("Different2!", cred_b.password_hash)
+    assert user.password_hash and verify_password("SharedPass1!", user.password_hash)
+
+    login_b_new = client.post(
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": "ChangedA1!", "organization_id": str(org_b.id)},
+    )
+    assert login_b_new.status_code == 401
+
+    login_b_old = client.post(
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": "Different2!", "organization_id": str(org_b.id)},
+    )
+    assert login_b_old.status_code == 200
 
 
 def test_password_change_invalidates_only_current_org_session(

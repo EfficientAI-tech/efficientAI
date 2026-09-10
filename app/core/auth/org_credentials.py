@@ -37,26 +37,65 @@ def get_or_create_credential(
     row = get_credential(db, user_id=user_id, organization_id=organization_id)
     if row is not None:
         return row
+    return provision_membership_credential(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
 
-    if user is None:
-        user = db.query(User).filter(User.id == user_id).first()
+
+def provision_membership_credential(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+    password_hash: Optional[str] = None,
+    auth_provider: Optional[str] = None,
+) -> OrganizationMemberCredential:
+    row = get_credential(db, user_id=user_id, organization_id=organization_id)
+    if row is not None:
+        return row
 
     row = OrganizationMemberCredential(
         organization_id=organization_id,
         user_id=user_id,
-        password_hash=user.password_hash if user is not None else None,
-        auth_provider=user.auth_provider if user is not None else None,
-        session_epoch=int(getattr(user, "session_epoch", 0) or 0) if user is not None else 0,
+        password_hash=password_hash,
+        auth_provider=auth_provider,
+        session_epoch=0,
     )
     db.add(row)
     db.flush()
     return row
 
 
+def user_has_any_local_password(db: Session, user: User) -> bool:
+    if user.password_hash:
+        return True
+    return (
+        db.query(OrganizationMemberCredential.id)
+        .filter(
+            OrganizationMemberCredential.user_id == user.id,
+            OrganizationMemberCredential.password_hash.isnot(None),
+        )
+        .first()
+        is not None
+    )
+
+
 def resolve_password_hash(
     credential: Optional[OrganizationMemberCredential],
     user: User,
 ) -> Optional[str]:
+    if credential is not None and credential.password_hash:
+        return credential.password_hash
+    return None
+
+
+def resolve_current_password_hash(
+    credential: Optional[OrganizationMemberCredential],
+    user: User,
+) -> Optional[str]:
+    """Verify password rotations only — never used for login matching."""
     if credential is not None and credential.password_hash:
         return credential.password_hash
     return user.password_hash

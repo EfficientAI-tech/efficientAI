@@ -288,6 +288,8 @@ def test_signup_returns_404_when_local_password_disabled(client, monkeypatch):
 
 def _seed_user_with_org(db_session, email, password, *, role=RoleEnum.ADMIN.value):
     """Create a user + org + membership + return (user, org)."""
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
     org = Organization(id=uuid4(), name="Login Test Org")
     user = User(
         id=uuid4(),
@@ -301,6 +303,11 @@ def _seed_user_with_org(db_session, email, password, *, role=RoleEnum.ADMIN.valu
     db_session.add(
         OrganizationMember(organization_id=org.id, user_id=user.id, role=role)
     )
+    db_session.flush()
+    credential = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org.id
+    )
+    set_org_password_hash(credential, hash_password(password))
     db_session.commit()
     return user, org
 
@@ -371,10 +378,13 @@ def test_login_rejects_user_without_membership_with_403(
 
 
 def _seed_user_with_multiple_orgs(db_session, email, password):
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    password_hash = hash_password(password)
     user = User(
         id=uuid4(),
         email=email,
-        password_hash=hash_password(password),
+        password_hash=password_hash,
         is_active=True,
         auth_provider="local",
     )
@@ -388,6 +398,12 @@ def _seed_user_with_multiple_orgs(db_session, email, password):
             OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
         ]
     )
+    db_session.flush()
+    for org in (org_a, org_b):
+        credential = provision_membership_credential(
+            db_session, user_id=user.id, organization_id=org.id
+        )
+        set_org_password_hash(credential, password_hash)
     db_session.commit()
     return user, org_a, org_b
 
@@ -505,8 +521,13 @@ def test_api_key_user_can_attach_password_and_real_email(
     assert body["email_is_placeholder"] is False
 
     db_session.refresh(user)
+    from app.core.auth.org_credentials import get_credential
+    from app.core.password import verify_password
+
     assert user.email == "alice@example.com"
-    assert user.password_hash is not None
+    credential = get_credential(db_session, user_id=user.id, organization_id=org_id)
+    assert credential is not None
+    assert verify_password("FreshPass1!", credential.password_hash)
 
 
 def test_set_password_rejects_email_change_for_non_placeholder_user(
@@ -577,10 +598,13 @@ def test_rotating_password_requires_current_password(
     assert correct.status_code == 200
 
     db_session.refresh(user)
+    from app.core.auth.org_credentials import get_credential
     from app.core.password import verify_password
 
-    assert verify_password("BrandNew1!", user.password_hash) is True
-    assert verify_password("Original1!", user.password_hash) is False
+    credential = get_credential(db_session, user_id=user.id, organization_id=org_id)
+    assert credential is not None
+    assert verify_password("BrandNew1!", credential.password_hash) is True
+    assert verify_password("Original1!", credential.password_hash) is False
 
 
 def test_password_change_invalidates_existing_access_token(
@@ -986,6 +1010,13 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
             role=RoleEnum.ADMIN.value,
         )
     )
+    db_session.flush()
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    home_cred = provision_membership_credential(
+        db_session, user_id=existing_user.id, organization_id=home_org.id
+    )
+    set_org_password_hash(home_cred, existing_user.password_hash)
     provision_default_workspace(
         db_session,
         organization_id=invited_org.id,
