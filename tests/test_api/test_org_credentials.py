@@ -728,9 +728,8 @@ def test_resolve_current_password_hash_ignores_legacy_when_credential_row_exists
     assert resolve_current_password_hash(credential, user) == credential.password_hash
 
 
-def test_concurrent_session_revocation_insert_is_idempotent(test_engine):
-    from sqlalchemy.orm import sessionmaker
-
+def test_session_revocation_upsert_is_idempotent(db_session):
+    """Repeat revocation upserts must not deadlock or raise on PostgreSQL."""
     from app.core.auth.org_credentials import (
         get_session_revocation_floor,
         record_org_membership_session_revocation,
@@ -739,26 +738,16 @@ def test_concurrent_session_revocation_insert_is_idempotent(test_engine):
 
     org_id = uuid4()
     user_id = uuid4()
-    org = Organization(id=org_id, name="Concurrent Org")
+    org = Organization(id=org_id, name="Revocation Upsert Org")
     user = User(
         id=user_id,
-        email="concurrent-revoke@example.com",
+        email=f"revocation-upsert-{uuid4()}@example.com",
         password_hash=hash_password("Concurrent1!"),
         is_active=True,
         auth_provider="local",
     )
-
-    setup = sessionmaker(bind=test_engine)()
-    setup.add_all([org, user])
-    setup.commit()
-    setup.close()
-
-    conn1 = test_engine.connect()
-    conn2 = test_engine.connect()
-    trans1 = conn1.begin()
-    trans2 = conn2.begin()
-    session1 = sessionmaker(bind=conn1)()
-    session2 = sessionmaker(bind=conn2)()
+    db_session.add_all([org, user])
+    db_session.flush()
 
     credential = OrganizationMemberCredential(
         organization_id=org_id,
@@ -766,17 +755,17 @@ def test_concurrent_session_revocation_insert_is_idempotent(test_engine):
         password_hash=None,
         session_epoch=0,
     )
-    session1.add(credential)
-    session1.flush()
+    db_session.add(credential)
+    db_session.flush()
 
     floor1 = record_org_membership_session_revocation(
-        session1,
+        db_session,
         user_id=user_id,
         organization_id=org_id,
         credential=credential,
     )
     floor2 = record_org_membership_session_revocation(
-        session2,
+        db_session,
         user_id=user_id,
         organization_id=org_id,
         credential=credential,
@@ -784,13 +773,9 @@ def test_concurrent_session_revocation_insert_is_idempotent(test_engine):
 
     assert floor1 == 1
     assert floor2 == 1
-    trans1.commit()
-    trans2.commit()
-    conn1.close()
-    conn2.close()
-
-    verify = sessionmaker(bind=test_engine)()
     assert (
-        get_session_revocation_floor(verify, user_id=user_id, organization_id=org_id) == 1
+        get_session_revocation_floor(
+            db_session, user_id=user_id, organization_id=org_id
+        )
+        == 1
     )
-    verify.close()

@@ -314,6 +314,11 @@ class CallRecordingUpdate(BaseModel):
     provider_call_id: str
 
 
+class CallRecordingRefresh(BaseModel):
+    """Optional provider call id when refreshing right after a web SDK call ends."""
+    provider_call_id: Optional[str] = None
+
+
 @router.put("/call-recordings/{call_short_id}", response_model=Dict[str, Any])
 async def update_call_recording(
     call_short_id: str,
@@ -957,6 +962,7 @@ async def get_call_recording(
 async def refresh_call_recording(
     call_short_id: str,
     background_tasks: BackgroundTasks,
+    refresh_data: Optional[CallRecordingRefresh] = Body(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -977,6 +983,11 @@ async def refresh_call_recording(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Call recording not found"
         )
+
+    if refresh_data and refresh_data.provider_call_id:
+        call_recording.provider_call_id = refresh_data.provider_call_id
+        db.commit()
+        db.refresh(call_recording)
     
     if not call_recording.provider_call_id or not call_recording.provider_platform:
         raise HTTPException(

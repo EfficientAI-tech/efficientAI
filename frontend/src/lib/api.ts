@@ -4081,9 +4081,40 @@ class ApiClient {
     return response.data
   }
 
-  async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
-    const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
+  async refreshCallRecording(
+    callShortId: string,
+    providerCallId?: string | null,
+  ): Promise<{ message: string }> {
+    const response = await this.client.post(
+      `/api/v1/playground/call-recordings/${callShortId}/refresh`,
+      providerCallId ? { provider_call_id: providerCallId } : undefined,
+    )
     return response.data
+  }
+
+  async finalizePlaygroundCallRecording(
+    callShortId: string,
+    providerCallId?: string | null,
+  ): Promise<void> {
+    const maxAttempts = 6
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        await this.refreshCallRecording(callShortId, providerCallId)
+        return
+      } catch (error: unknown) {
+        const axiosError = error as {
+          response?: { status?: number; data?: { detail?: string } }
+        }
+        const status = axiosError.response?.status
+        const detail = String(axiosError.response?.data?.detail || '')
+        const missingProvider =
+          status === 400 && detail.toLowerCase().includes('provider')
+        if (!missingProvider || attempt === maxAttempts - 1) {
+          throw error
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)))
+      }
+    }
   }
 
   async updateCallRecording(callShortId: string, providerCallId: string): Promise<{ message: string; provider_call_id: string }> {

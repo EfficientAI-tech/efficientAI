@@ -49,6 +49,7 @@ export default function AgentPlayground() {
   const elevenLabsConversationRef = useRef<any>(null)
   const smallestClientRef = useRef<any>(null)
   const currentCallShortIdRef = useRef<string | null>(null)
+  const currentVapiCallIdRef = useRef<string | null>(null)
 
   const userInitiatedDisconnectRef = useRef(false)
 
@@ -388,7 +389,9 @@ export default function AgentPlayground() {
           setIsConnecting(false)
           showToast('Connected to agent', 'success')
 
-          // Update backend with Vapi Call ID
+          if (call?.id) {
+            currentVapiCallIdRef.current = call.id
+          }
           if (currentCallShortIdRef.current && call?.id) {
             try {
               await apiClient.updateCallRecording(currentCallShortIdRef.current, call.id)
@@ -416,20 +419,14 @@ export default function AgentPlayground() {
           }
           userInitiatedDisconnectRef.current = false
 
-          // Ensure we have provider ID before refreshing
           if (currentCallShortIdRef.current) {
-            if (call?.id) {
-              try {
-                await apiClient.updateCallRecording(currentCallShortIdRef.current, call.id)
-              } catch (e) {
-                console.error('Failed to update call recording on end', e)
-              }
-            }
-
-            apiClient.refreshCallRecording(currentCallShortIdRef.current)
+            const providerCallId = call?.id ?? currentVapiCallIdRef.current
+            apiClient
+              .finalizePlaygroundCallRecording(currentCallShortIdRef.current, providerCallId)
               .then(() => refetchCallRecordings())
-              .catch(err => console.error('Failed to refresh metrics', err))
+              .catch((err) => console.error('Failed to refresh metrics', err))
           }
+          currentVapiCallIdRef.current = null
         })
 
         client.on('error', (error: any) => {
@@ -445,7 +442,9 @@ export default function AgentPlayground() {
         const vapiCall = await client.start(fullAgent.voice_ai_agent_id)
         console.log('Vapi start returned:', vapiCall)
 
-        // Try to get ID from return value immediately
+        if (vapiCall?.id) {
+          currentVapiCallIdRef.current = vapiCall.id
+        }
         if (currentCallShortIdRef.current && vapiCall?.id) {
           try {
             await apiClient.updateCallRecording(currentCallShortIdRef.current, vapiCall.id)
