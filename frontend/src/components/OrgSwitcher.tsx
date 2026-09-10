@@ -115,7 +115,9 @@ export default function OrgSwitcher() {
         isLoading={reauthLoading}
         error={reauthError}
         onClose={closeReauth}
-        onSubmit={submitReauth}
+        onSubmit={async (password) => {
+          await submitReauth(password)
+        }}
       />
     </>
   )

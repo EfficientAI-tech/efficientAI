@@ -9,7 +9,7 @@ type OrgReauthModalProps = {
   isLoading?: boolean
   error?: string
   onClose: () => void
-  onSubmit: (password: string) => Promise<void>
+  onSubmit: (password: string) => Promise<unknown>
 }
 
 export default function OrgReauthModal({
