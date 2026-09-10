@@ -932,6 +932,7 @@ def test_signup_with_invite_token_joins_invited_org(
 
     assert response.status_code == 200
     body = response.json()
+    assert body.get("join_notice") in (None, "")
     assert body["user"]["organization_id"] == str(org_id)
     assert body["user"]["role"] == RoleEnum.READER.value
 
@@ -1041,6 +1042,9 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
     body = response.json()
     assert body["user"]["organization_id"] == str(invited_org.id)
     assert body["user"]["role"] == RoleEnum.WRITER.value
+    assert body.get("join_notice")
+    assert "Target Org" in body["join_notice"]
+    assert "password" in body["join_notice"].lower()
 
     workspace_membership = (
         db_session.query(WorkspaceMember)

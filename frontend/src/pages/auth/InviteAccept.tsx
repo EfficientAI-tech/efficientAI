@@ -11,6 +11,7 @@ import { useAuthStore } from '../../store/authStore'
 import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { storePendingInviteToken } from '../../lib/inviteToken'
+import { storeJoinNotice } from '../../lib/joinNotice'
 
 type Mode = 'signup' | 'password' | 'sso'
 
@@ -123,6 +124,7 @@ export default function InviteAccept() {
       .acceptInvitationByToken(token)
       .then((res) => {
         if (!active) return
+        storeJoinNotice(res.join_notice)
         setSession(
           res.user,
           res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
@@ -211,6 +213,7 @@ export default function InviteAccept() {
         return
       }
       const accepted = await apiClient.acceptInvitationByToken(token)
+      storeJoinNotice(accepted.join_notice)
       setSession(
         accepted.user,
         accepted.access_token
@@ -273,7 +276,7 @@ export default function InviteAccept() {
 
       <Card className="shadow-xl">
         <CardBody className="p-6">
-          {preview && !previewError && preview.has_password && showAuthForms && (
+          {preview && !previewError && preview.user_exists && showAuthForms && (
             <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
               An account already exists for <span className="font-medium">{preview.email}</span>.
               Sign in below to join {orgName} — you don&apos;t need to create a new account.

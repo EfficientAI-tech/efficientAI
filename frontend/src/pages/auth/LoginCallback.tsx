@@ -6,6 +6,7 @@ import { apiClient } from '../../lib/api'
 import { useAuthStore } from '../../store/authStore'
 import { exchangeAuthorizationCode, readPkceState } from '../../lib/oidc'
 import { consumePendingInviteToken, getPendingInviteToken } from '../../lib/inviteToken'
+import { storeJoinNotice } from '../../lib/joinNotice'
 
 export default function LoginCallback() {
   const navigate = useNavigate()
@@ -55,6 +56,7 @@ export default function LoginCallback() {
           try {
             const accepted = await apiClient.acceptInvitationByToken(pendingInvite)
             consumePendingInviteToken()
+            storeJoinNotice(accepted.join_notice)
             setSession(
               accepted.user,
               accepted.access_token

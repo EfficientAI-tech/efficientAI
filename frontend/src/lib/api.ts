@@ -176,6 +176,7 @@ export interface TokenResponse {
   token_type: string
   expires_in: number
   user: AuthUserSummary
+  join_notice?: string | null
 }
 
 export interface LoginOrgOption {

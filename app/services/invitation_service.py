@@ -174,13 +174,9 @@ def get_invitation_preview(db: Session, token: str) -> dict:
     user_exists = existing_user is not None
     has_password = False
     if existing_user is not None:
-        from app.core.auth.org_credentials import org_has_password
+        from app.core.auth.org_credentials import user_has_any_local_password
 
-        has_password = org_has_password(
-            db,
-            user=existing_user,
-            organization_id=invitation.organization_id,
-        )
+        has_password = user_has_any_local_password(db, existing_user)
 
     status_value = getattr(invitation.status, "value", invitation.status)
     return {
@@ -192,6 +188,48 @@ def get_invitation_preview(db: Session, token: str) -> dict:
         "user_exists": user_exists,
         "has_password": has_password,
     }
+
+
+def build_invite_join_notice(
+    db: Session,
+    *,
+    user: User,
+    organization_id: UUID,
+    organization_name: str,
+    source_organization_id: Optional[UUID] = None,
+) -> Optional[str]:
+    """Short UX hint after joining via invite (existing users only)."""
+    from app.core.auth.org_credentials import get_credential
+
+    credential = get_credential(
+        db, user_id=user.id, organization_id=organization_id
+    )
+    if credential is None or not credential.password_hash:
+        return (
+            f"You've joined {organization_name}. "
+            "Set a password for this organization in Profile so you can sign in again later."
+        )
+
+    if (
+        source_organization_id is not None
+        and source_organization_id != organization_id
+    ):
+        source_org = (
+            db.query(Organization)
+            .filter(Organization.id == source_organization_id)
+            .first()
+        )
+        if source_org is not None:
+            return (
+                f"You've joined {organization_name}. "
+                f"You can sign in with the same password you use for {source_org.name}. "
+                "Each organization has its own password."
+            )
+
+    return (
+        f"You've joined {organization_name}. "
+        "You can sign in with your existing password. Each organization has its own password."
+    )
 
 
 def invitation_to_response_dict(

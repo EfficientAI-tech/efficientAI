@@ -12,6 +12,7 @@ import {
   getPendingInviteToken,
   storePendingInviteToken,
 } from '../../lib/inviteToken'
+import { storeJoinNotice } from '../../lib/joinNotice'
 import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody, Button, Divider, Tabs, Tab } from '@heroui/react'
@@ -148,6 +149,7 @@ export default function Login() {
       }
       const accepted = await apiClient.acceptInvitationByToken(token)
       consumePendingInviteToken()
+      storeJoinNotice(accepted.join_notice)
       setSession(
         accepted.user,
         accepted.access_token

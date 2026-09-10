@@ -81,6 +81,7 @@ from app.services.signup_reference_codes import (
 from app.services.invitation_service import (
     InvitationError,
     accept_invitation as accept_invitation_record,
+    build_invite_join_notice,
     get_invitation_preview,
     get_valid_pending_invitation_by_token,
 )
@@ -164,6 +165,7 @@ class TokenResponse(BaseModel):
     token_type: str = "Bearer"
     expires_in: int  # seconds
     user: "UserSummary"
+    join_notice: Optional[str] = None
 
 
 class UserSummary(BaseModel):
@@ -356,6 +358,7 @@ def _issue_session_tokens(
     organization_id,
     role_value: Optional[str],
     authenticated_org_ids: Optional[List] = None,
+    join_notice: Optional[str] = None,
 ) -> TokenResponse:
     credential = get_or_create_credential(
         db,
@@ -382,6 +385,7 @@ def _issue_session_tokens(
         refresh_token=refresh_token,
         expires_in=ttl,
         user=_user_to_summary(user, organization_id, role_value, db=db),
+        join_notice=join_notice,
     )
 
 
@@ -393,6 +397,7 @@ def _respond_with_session(
     organization_id,
     role_value: Optional[str],
     authenticated_org_ids: Optional[List] = None,
+    join_notice: Optional[str] = None,
 ) -> TokenResponse:
     tokens = _issue_session_tokens(
         db,
@@ -400,6 +405,7 @@ def _respond_with_session(
         organization_id=organization_id,
         role_value=role_value,
         authenticated_org_ids=authenticated_org_ids,
+        join_notice=join_notice,
     )
     if cookie_session_enabled():
         set_session_cookies(
@@ -415,6 +421,7 @@ def _respond_with_session(
             token_type="Bearer",
             expires_in=tokens.expires_in,
             user=tokens.user,
+            join_notice=tokens.join_notice,
         )
     return tokens
 
@@ -449,6 +456,23 @@ def accept_invitation_by_token(
     except InvitationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
+    org = (
+        db.query(Organization)
+        .filter(Organization.id == invitation.organization_id)
+        .first()
+    )
+    org_name = org.name if org else "the organization"
+    source_org_id = principal.organization_id
+    if source_org_id == invitation.organization_id:
+        source_org_id = None
+    join_notice = build_invite_join_notice(
+        db,
+        user=current_user,
+        organization_id=invitation.organization_id,
+        organization_name=org_name,
+        source_organization_id=source_org_id,
+    )
+
     role_value = member.role.value if hasattr(member.role, "value") else member.role
     return _respond_with_session(
         response,
@@ -456,6 +480,7 @@ def accept_invitation_by_token(
         user=current_user,
         organization_id=invitation.organization_id,
         role_value=role_value,
+        join_notice=join_notice,
     )
 
 
