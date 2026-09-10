@@ -887,9 +887,12 @@ def establish_oidc_session(
         )
         .first()
     )
-    role_value = None
-    if membership:
-        role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this organization.",
+        )
+    role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
 
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
@@ -926,23 +929,6 @@ def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_
     if membership:
         role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
     return _user_to_summary(user, principal.organization_id, role_value, db=db)
-
-
-@router.get("/event-stream-token")
-def event_stream_token(
-    request: Request,
-    authorization: Optional[str] = Header(None, alias="Authorization"),
-    principal: Principal = Depends(get_principal),
-) -> dict:
-    """Return a bearer token for EventSource URLs when using httpOnly cookie sessions."""
-    del principal
-    token = _extract_bearer(authorization) or read_access_cookie(request)
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No access token available for event streams.",
-        )
-    return {"token": token}
 
 
 @router.post("/logout")

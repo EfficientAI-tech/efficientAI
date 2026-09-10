@@ -35,36 +35,21 @@ async def websocket_endpoint(
     """
     WebSocket endpoint for voice agent connection.
 
-    Authentication precedence (since browsers can't set custom headers on
-    WebSockets reliably, everything goes on query params):
+    Authentication precedence (query params and cookies; browsers cannot set
+    custom headers on WebSockets reliably):
 
-        1. ?token=<bearer>      -> local-password / SSO session token
-        2. ?X-API-Key=<key>     -> API key (legacy header name)
-        3. ?api_key=<key>       -> API key
+        1. ?token=<bearer> / ?access_token=<bearer> / eai_access cookie
+        2. ?X-API-Key=<key> / ?api_key=<key> / api_key cookie
 
     Under the hood we reuse the same pluggable auth registry used by the
     HTTP routes so the authorization rules stay consistent.
     """
-    from app.core.auth.providers import AuthError, RawCredential, get_provider_registry
+    from app.core.auth.dependency import resolve_websocket_credentials
+    from app.core.auth.providers import AuthError, get_provider_registry
 
-    bearer_token = (
-        websocket.query_params.get("token")
-        or websocket.query_params.get("access_token")
-    )
-    api_key = (
-        websocket.query_params.get("X-API-Key")
-        or websocket.query_params.get("api_key")
-    )
-
-    if not bearer_token and not api_key:
-        from urllib.parse import parse_qs
-
-        raw_qs = websocket.scope.get("query_string", b"")
-        if isinstance(raw_qs, bytes):
-            raw_qs = raw_qs.decode("utf-8", errors="replace")
-        parsed = parse_qs(raw_qs)
-        bearer_token = bearer_token or (parsed.get("token") or parsed.get("access_token") or [None])[0]
-        api_key = api_key or (parsed.get("X-API-Key") or parsed.get("api_key") or [None])[0]
+    cred = resolve_websocket_credentials(websocket)
+    bearer_token = cred.bearer_token
+    api_key = cred.api_key
 
     if not bearer_token and not api_key:
         print(
@@ -81,7 +66,6 @@ async def websocket_endpoint(
     try:
         db = next(get_db())
 
-        cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
         registry = get_provider_registry()
         provider = registry.find(cred)
         if provider is None:
@@ -764,18 +748,23 @@ async def websocket_endpoint(
 
 
 @router.options("/connect")
-async def bot_connect_options():
+async def bot_connect_options(request: Request):
     """Handle CORS preflight requests."""
     from fastapi.responses import Response
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Credentials": "true",
-        }
-    )
+
+    from app.config import settings
+
+    headers = {
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+    }
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        headers["Access-Control-Allow-Origin"] = "*"
+    return Response(status_code=200, headers=headers)
 
 @router.post("/connect", response_model=Dict[str, Any])
 @router.get("/connect", response_model=Dict[str, Any])

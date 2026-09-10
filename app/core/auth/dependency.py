@@ -20,8 +20,9 @@ from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.websockets import WebSocket
 
-from app.core.auth.cookies import read_access_cookie
+from app.core.auth.cookies import COOKIE_ACCESS, LEGACY_ACCESS_COOKIE, read_access_cookie
 from app.core.auth.principal import Principal
 from app.core.auth.providers import AuthError, RawCredential, get_provider_registry
 from app.database import get_db
@@ -60,6 +61,38 @@ def resolve_request_credentials(
             or request.query_params.get("X-API-Key")
             or request.cookies.get("api_key")
         )
+
+    return RawCredential(bearer_token=bearer_token, api_key=api_key)
+
+
+def resolve_websocket_credentials(websocket: WebSocket) -> RawCredential:
+    """Collect bearer/API-key credentials from WebSocket query params and cookies."""
+    bearer_token = (
+        websocket.query_params.get("token")
+        or websocket.query_params.get("access_token")
+    )
+    api_key = (
+        websocket.query_params.get("X-API-Key")
+        or websocket.query_params.get("api_key")
+    )
+
+    if not bearer_token:
+        bearer_token = (
+            websocket.cookies.get(COOKIE_ACCESS)
+            or websocket.cookies.get(LEGACY_ACCESS_COOKIE)
+        )
+    if not api_key:
+        api_key = websocket.cookies.get("api_key")
+
+    if not bearer_token and not api_key:
+        from urllib.parse import parse_qs
+
+        raw_qs = websocket.scope.get("query_string", b"")
+        if isinstance(raw_qs, bytes):
+            raw_qs = raw_qs.decode("utf-8", errors="replace")
+        parsed = parse_qs(raw_qs)
+        bearer_token = bearer_token or (parsed.get("token") or parsed.get("access_token") or [None])[0]
+        api_key = api_key or (parsed.get("X-API-Key") or parsed.get("api_key") or [None])[0]
 
     return RawCredential(bearer_token=bearer_token, api_key=api_key)
 

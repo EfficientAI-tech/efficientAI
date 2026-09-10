@@ -337,7 +337,7 @@ export default function VoiceAgent({
         throw new Error('Not authenticated. Please log in first.')
       }
 
-      if (!customEndpoint && apiKey) {
+      if (!customEndpoint && apiKey && !apiClient.isCookieSessionEnabled()) {
         document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
         log('Auth credentials set for /connect', 'system')
       } else {

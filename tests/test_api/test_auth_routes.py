@@ -1210,3 +1210,40 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
         .count()
     )
     assert workspace_membership >= 1
+
+
+def test_oidc_session_rejects_removed_organization_member(
+    client, db_session, org_id
+):
+    from app.core.auth import get_principal
+    from tests.conftest import _SESSION_API_APP
+
+    user = User(
+        id=uuid4(),
+        email="removed-oidc@example.com",
+        is_active=True,
+        auth_provider="oidc",
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    def _removed_member_principal():
+        return Principal(
+            organization_id=org_id,
+            auth_method=AuthMethod.EXTERNAL_OIDC,
+            user_id=user.id,
+            email=user.email,
+            token_sub="oidc-sub-removed",
+        )
+
+    _SESSION_API_APP.dependency_overrides[get_principal] = _removed_member_principal
+    try:
+        response = client.post(
+            "/api/v1/auth/oidc/session",
+            headers={"Authorization": "Bearer oidc-token"},
+        )
+    finally:
+        _SESSION_API_APP.dependency_overrides.pop(get_principal, None)
+
+    assert response.status_code == 403
+    assert "not a member" in response.json()["detail"].lower()

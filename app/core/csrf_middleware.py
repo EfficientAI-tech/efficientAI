@@ -14,6 +14,7 @@ from app.core.auth.cookies import (
     CSRF_HEADER,
     cookie_session_enabled,
     has_cookie_session,
+    has_platform_cookie_session,
     read_csrf_cookie,
 )
 
@@ -28,6 +29,7 @@ _CSRF_EXEMPT_SUFFIXES = (
     "auth/oidc/session",
     "auth/config",
     "auth/invitations/preview/",
+    "platform/auth/login",
     "telephony/",
     "public-blind-test/",
 )
@@ -68,10 +70,11 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         if request.method.upper() not in _UNSAFE_METHODS:
             return await call_next(request)
 
-        if not has_cookie_session(request):
+        has_browser_session = has_cookie_session(request) or has_platform_cookie_session(request)
+        if not has_browser_session:
             return await call_next(request)
 
-        if _has_machine_api_key_header(request):
+        if _has_machine_api_key_header(request) and not has_browser_session:
             return await call_next(request)
 
         prefix = _api_prefix()

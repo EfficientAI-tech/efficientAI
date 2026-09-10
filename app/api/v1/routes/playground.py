@@ -53,6 +53,81 @@ def _validate_playground_audio_url(url: str) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+def _provider_agent_id_from_metrics(platform: str, metrics: Dict[str, Any]) -> Optional[str]:
+    platform_key = (platform or "").lower()
+    if platform_key == "vapi":
+        assistant = metrics.get("assistant")
+        return (
+            metrics.get("assistantId")
+            or metrics.get("assistant_id")
+            or (assistant.get("id") if isinstance(assistant, dict) else None)
+        )
+    if platform_key == "elevenlabs":
+        metadata = metrics.get("metadata")
+        return metrics.get("agent_id") or (
+            metadata.get("agent_id") if isinstance(metadata, dict) else None
+        )
+    return metrics.get("agent_id") or metrics.get("agentId") or metrics.get("assistant_id")
+
+
+def _validate_provider_call_id_for_recording(
+    call_recording: CallRecording,
+    proposed_id: str,
+    agent: Agent,
+    decrypted_api_key: str,
+) -> None:
+    """Ensure a client-supplied provider call id belongs to this recording's agent."""
+    proposed_id = (proposed_id or "").strip()
+    if not proposed_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="provider_call_id is required",
+        )
+
+    existing = (call_recording.provider_call_id or "").strip()
+    if existing:
+        if existing == proposed_id:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="provider_call_id is already set and cannot be changed",
+        )
+
+    call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    bound_call_id = call_data.get("call_id")
+    if bound_call_id and str(bound_call_id).strip():
+        if str(bound_call_id).strip() != proposed_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="provider_call_id does not match the call created for this recording",
+            )
+        return
+
+    platform = str(call_recording.provider_platform or "")
+    expected_agent_id = (agent.voice_ai_agent_id or "").strip()
+    if not expected_agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent has no voice provider agent id",
+        )
+
+    try:
+        provider = get_voice_provider(platform, decrypted_api_key)
+        metrics = provider.retrieve_call_metrics(proposed_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not verify provider call id: {exc}",
+        ) from exc
+
+    actual_agent_id = _provider_agent_id_from_metrics(platform, metrics)
+    if not actual_agent_id or str(actual_agent_id).strip() != expected_agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="provider_call_id is not associated with this recording's agent",
+        )
+
+
 def generate_unique_result_id(db: Session) -> str:
     """Generate a unique 6-digit result ID for EvaluatorResult."""
     max_attempts = 100
@@ -344,23 +419,47 @@ async def update_call_recording(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Call recording not found"
         )
-    
+
+    agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+    if not agent or not agent.voice_ai_integration_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent or integration not found",
+        )
+    integration = db.query(Integration).filter(
+        Integration.id == agent.voice_ai_integration_id,
+        Integration.organization_id == organization_id,
+    ).first()
+    if not integration:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Integration not found",
+        )
+
+    try:
+        decrypted_api_key = decrypt_api_key(integration.api_key)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to decrypt integration API key: {exc}",
+        ) from exc
+
+    _validate_provider_call_id_for_recording(
+        call_recording,
+        update_data.provider_call_id,
+        agent,
+        decrypted_api_key,
+    )
+
     call_recording.provider_call_id = update_data.provider_call_id
     db.commit()
     db.refresh(call_recording)
     
     # Trigger polling if we have all info
     if call_recording.provider_platform:
-        # Get integration api key
-        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
         if agent and agent.voice_ai_integration_id:
-            integration = db.query(Integration).filter(
-                Integration.id == agent.voice_ai_integration_id
-            ).first()
-            
             if integration:
                 try:
-                    decrypted_api_key = decrypt_api_key(integration.api_key)
                     platform_key = (call_recording.provider_platform or "").lower()
                     # Vapi polls on call-end refresh only; update fires mid-call too.
                     if platform_key != "vapi":
@@ -984,25 +1083,22 @@ async def refresh_call_recording(
             detail="Call recording not found"
         )
 
-    if refresh_data and refresh_data.provider_call_id:
-        call_recording.provider_call_id = refresh_data.provider_call_id
-        db.commit()
-        db.refresh(call_recording)
-    
-    if not call_recording.provider_call_id or not call_recording.provider_platform:
+    if (
+        not (refresh_data and refresh_data.provider_call_id)
+        and (not call_recording.provider_call_id or not call_recording.provider_platform)
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Call recording does not have provider information"
+            detail="Call recording does not have provider information",
         )
-    
-    # Get the integration to get the API key
+
     agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
     if not agent or not agent.voice_ai_integration_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Agent or integration not found"
         )
-    
+
     integration = db.query(Integration).filter(
         Integration.id == agent.voice_ai_integration_id,
         Integration.organization_id == organization_id
@@ -1014,9 +1110,6 @@ async def refresh_call_recording(
             detail="Integration not found"
         )
 
-    if call_recording.evaluator_result_id:
-        return {"message": "Call recording already processed"}
-
     try:
         decrypted_api_key = decrypt_api_key(integration.api_key)
     except Exception as e:
@@ -1024,7 +1117,18 @@ async def refresh_call_recording(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to decrypt API key: {str(e)}"
         )
-    
+
+    if refresh_data and refresh_data.provider_call_id:
+        _validate_provider_call_id_for_recording(
+            call_recording,
+            refresh_data.provider_call_id,
+            agent,
+            decrypted_api_key,
+        )
+        call_recording.provider_call_id = refresh_data.provider_call_id
+        db.commit()
+        db.refresh(call_recording)
+
     # Start background task to poll for call metrics
     background_tasks.add_task(
         poll_call_metrics,

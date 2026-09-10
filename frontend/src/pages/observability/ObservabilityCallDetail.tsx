@@ -71,13 +71,10 @@ export default function ObservabilityCallDetail() {
     if (!isLive) return
 
     let eventSource: EventSource | null = null
-    let cancelled = false
 
-    void (async () => {
-      try {
-        const url = await apiClient.getObservabilityCallLiveEventsUrl(callShortId)
-        if (cancelled) return
-        eventSource = new EventSource(url)
+    try {
+        const url = apiClient.getObservabilityCallLiveEventsUrl(callShortId)
+        eventSource = new EventSource(url, { withCredentials: true })
 
         eventSource.onmessage = (event) => {
           try {
@@ -87,13 +84,11 @@ export default function ObservabilityCallDetail() {
             // ignore malformed events
           }
         }
-      } catch {
-        // Polling via react-query still updates live_transcript from call_data
-      }
-    })()
+    } catch {
+      // Polling via react-query still updates live_transcript from call_data
+    }
 
     return () => {
-      cancelled = true
       eventSource?.close()
     }
   }, [callShortId, callRecording?.call_event, callRecording?.is_live])

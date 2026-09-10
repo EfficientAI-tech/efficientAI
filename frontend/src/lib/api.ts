@@ -562,7 +562,7 @@ class ApiClient {
     })
 
     this.client.interceptors.request.use((config) => {
-      const apiKey = localStorage.getItem('apiKey')
+      const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')
       const workspaceId = localStorage.getItem('activeWorkspaceId')
       if (this.inMemoryAccessToken) {
         config.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
@@ -876,25 +876,46 @@ class ApiClient {
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
 
+  private platformRequestConfig(
+    method: string,
+    extraHeaders?: Record<string, string>,
+  ): { headers: Record<string, string>; withCredentials: boolean } {
+    const headers: Record<string, string> = {
+      ...this.platformHeaders(),
+      ...extraHeaders,
+    }
+    const methodLower = method.toLowerCase()
+    if (methodLower !== 'get' && methodLower !== 'head' && methodLower !== 'options') {
+      Object.assign(headers, csrfHeaders())
+    }
+    return { headers, withCredentials: true }
+  }
+
   async platformLogin(email: string, password: string): Promise<PlatformTokenResponse> {
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/auth/login`,
       { email, password },
-      { headers: { 'Content-Type': 'application/json' } },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        withCredentials: true,
+      },
     )
     return response.data
   }
 
   async platformLogout(accessToken?: string | null): Promise<{ success: boolean; admin_id: string }> {
     const token = accessToken ?? localStorage.getItem('platformAccessToken')
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...csrfHeaders(),
+    }
     if (token) {
       headers.Authorization = `Bearer ${token}`
     }
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/auth/logout`,
       {},
-      { headers },
+      { headers, withCredentials: true },
     )
     return response.data
   }
@@ -914,18 +935,16 @@ class ApiClient {
   }
 
   revokePlatformSessionBestEffort(accessToken?: string | null): void {
-    if (!accessToken) {
-      return
-    }
     void this.platformLogout(accessToken)
       .catch(() => this.platformLogout(accessToken))
       .catch(() => {})
   }
 
   async getPlatformOrganizationStats(): Promise<PlatformOrganizationStats> {
-    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations/stats`, {
-      headers: this.platformHeaders(),
-    })
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/platform/organizations/stats`,
+      this.platformRequestConfig('get'),
+    )
     return response.data
   }
 
@@ -936,7 +955,7 @@ class ApiClient {
     is_active?: boolean
   }): Promise<PlatformOrganizationListResponse> {
     const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations`, {
-      headers: this.platformHeaders(),
+      ...this.platformRequestConfig('get'),
       params,
     })
     return response.data
@@ -949,7 +968,7 @@ class ApiClient {
     const response = await axios.patch(
       `${API_BASE_URL}/api/v1/platform/organizations/${orgId}`,
       data,
-      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+      this.platformRequestConfig('patch', { 'Content-Type': 'application/json' }),
     )
     return response.data
   }
@@ -960,7 +979,7 @@ class ApiClient {
   ): Promise<PlatformOrgUser[]> {
     const response = await axios.get(
       `${API_BASE_URL}/api/v1/platform/organizations/${orgId}/users`,
-      { headers: this.platformHeaders(), params },
+      { ...this.platformRequestConfig('get'), params },
     )
     return response.data
   }
@@ -973,15 +992,16 @@ class ApiClient {
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/organizations/${orgId}/users/${userId}/reset-password`,
       { new_password: newPassword },
-      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+      this.platformRequestConfig('post', { 'Content-Type': 'application/json' }),
     )
     return response.data
   }
 
   async listPlatformSignupCodes(): Promise<PlatformSignupCode[]> {
-    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/signup-codes`, {
-      headers: this.platformHeaders(),
-    })
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/platform/signup-codes`,
+      this.platformRequestConfig('get'),
+    )
     return response.data
   }
 
@@ -991,9 +1011,11 @@ class ApiClient {
     max_uses?: number
     expires_at?: string
   }): Promise<PlatformSignupCode> {
-    const response = await axios.post(`${API_BASE_URL}/api/v1/platform/signup-codes`, data, {
-      headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' },
-    })
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/platform/signup-codes`,
+      data,
+      this.platformRequestConfig('post', { 'Content-Type': 'application/json' }),
+    )
     return response.data
   }
 
@@ -1004,7 +1026,7 @@ class ApiClient {
     const response = await axios.patch(
       `${API_BASE_URL}/api/v1/platform/signup-codes/${codeId}`,
       data,
-      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+      this.platformRequestConfig('patch', { 'Content-Type': 'application/json' }),
     )
     return response.data
   }
@@ -1012,7 +1034,7 @@ class ApiClient {
   async deactivatePlatformSignupCode(codeId: string): Promise<PlatformSignupCode> {
     const response = await axios.delete(
       `${API_BASE_URL}/api/v1/platform/signup-codes/${codeId}`,
-      { headers: this.platformHeaders() },
+      this.platformRequestConfig('delete'),
     )
     return response.data
   }
@@ -4251,37 +4273,22 @@ class ApiClient {
     return response.data
   }
 
-  private async resolveEventStreamToken(): Promise<string | null> {
-    if (this.inMemoryAccessToken) {
-      return this.inMemoryAccessToken
-    }
-    if (!this.cookieSessionEnabled) {
-      return null
-    }
-    try {
-      const response = await this.client.get<{ token?: string }>(
-        '/api/v1/auth/event-stream-token',
-      )
-      return response.data.token || null
-    } catch {
-      return null
-    }
-  }
-
-  private async buildAuthenticatedApiUrl(path: string): Promise<string> {
+  private buildAuthenticatedApiUrl(path: string): string {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`
     const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
     const url = configuredBase
       ? new URL(`${configuredBase}${normalizedPath}`)
       : new URL(normalizedPath, window.location.origin)
 
-    const apiKey = localStorage.getItem('apiKey')
     const workspaceId = localStorage.getItem('activeWorkspaceId')
-    const accessToken = this.inMemoryAccessToken || (await this.resolveEventStreamToken())
-    if (accessToken) {
-      url.searchParams.set('token', accessToken)
-    } else if (apiKey) {
-      url.searchParams.set('api_key', apiKey)
+    if (!this.cookieSessionEnabled) {
+      const accessToken = this.inMemoryAccessToken
+      const apiKey = localStorage.getItem('apiKey')
+      if (accessToken) {
+        url.searchParams.set('token', accessToken)
+      } else if (apiKey) {
+        url.searchParams.set('api_key', apiKey)
+      }
     }
     if (workspaceId) {
       url.searchParams.set('workspace_id', workspaceId)
@@ -4294,7 +4301,7 @@ class ApiClient {
     return response.data
   }
 
-  async getObservabilityCallLiveEventsUrl(callShortId: string): Promise<string> {
+  getObservabilityCallLiveEventsUrl(callShortId: string): string {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/observability/calls/${callShortId}/live-events`,
     )
@@ -4928,7 +4935,7 @@ class ApiClient {
     return response.data
   }
 
-  async getEvaluatorResultLiveEventsUrl(resultId: string): Promise<string> {
+  getEvaluatorResultLiveEventsUrl(resultId: string): string {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/evaluator-results/${resultId}/live-events`,
     )

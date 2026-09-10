@@ -492,28 +492,23 @@ export default function EvaluatorResultDetailPage({
 
     const streamId = result.result_id || id
     let eventSource: EventSource | null = null
-    let cancelled = false
 
-    void (async () => {
-      try {
-        const url = await apiClient.getEvaluatorResultLiveEventsUrl(streamId)
-        if (cancelled) return
-        eventSource = new EventSource(url)
-        eventSource.onmessage = (event) => {
-          try {
-            const entry = JSON.parse(event.data) as LiveTranscriptTurn
-            setLiveTranscript((prev) => [...prev, entry])
-          } catch {
-            // ignore malformed events
-          }
+    try {
+      const url = apiClient.getEvaluatorResultLiveEventsUrl(streamId)
+      eventSource = new EventSource(url, { withCredentials: true })
+      eventSource.onmessage = (event) => {
+        try {
+          const entry = JSON.parse(event.data) as LiveTranscriptTurn
+          setLiveTranscript((prev) => [...prev, entry])
+        } catch {
+          // ignore malformed events
         }
-      } catch {
-        // polling via react-query still updates live_transcript from call_data
       }
-    })()
+    } catch {
+      // polling via react-query still updates live_transcript from call_data
+    }
 
     return () => {
-      cancelled = true
       eventSource?.close()
     }
   }, [id, result?.result_id, result?.status, result?.call_data?.is_live])

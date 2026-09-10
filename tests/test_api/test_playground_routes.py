@@ -68,6 +68,11 @@ def test_refresh_call_recording_accepts_inline_provider_call_id(
 
     monkeypatch.setattr(playground_routes, "decrypt_api_key", lambda _key: "plain-key")
     monkeypatch.setattr(playground_routes, "poll_call_metrics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        playground_routes,
+        "_validate_provider_call_id_for_recording",
+        lambda *_args, **_kwargs: None,
+    )
 
     response = authenticated_client.post(
         "/api/v1/playground/call-recordings/654321/refresh",
@@ -76,6 +81,46 @@ def test_refresh_call_recording_accepts_inline_provider_call_id(
 
     assert response.status_code == 200
     assert response.json()["message"] == "Call recording refresh initiated"
+
+
+def test_refresh_rejects_mismatched_provider_call_id(
+    authenticated_client,
+    make_call_recording,
+    make_agent,
+    db_session,
+    org_id,
+):
+    integration = Integration(
+        id=uuid4(),
+        organization_id=org_id,
+        platform=IntegrationPlatform.RETELL.value,
+        api_key="encrypted-key",
+        name="Retell",
+        is_active=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+    agent = make_agent(
+        voice_ai_integration_id=integration.id,
+        voice_ai_agent_id="agent-retell-1",
+        call_medium="web_call",
+    )
+    make_call_recording(
+        call_short_id="222333",
+        source=CallRecordingSource.PLAYGROUND.value,
+        provider_platform=IntegrationPlatform.RETELL.value,
+        provider_call_id=None,
+        agent_id=agent.id,
+        call_data={"call_id": "retell-bound-call"},
+    )
+
+    response = authenticated_client.post(
+        "/api/v1/playground/call-recordings/222333/refresh",
+        json={"provider_call_id": "foreign-call-id"},
+    )
+
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"].lower()
 
 
 def test_refresh_call_recording_without_provider_info_returns_400(

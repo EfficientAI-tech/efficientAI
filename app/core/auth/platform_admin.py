@@ -7,11 +7,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID, uuid4
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.auth.cookies import read_platform_access_cookie
 from app.core.auth.token_revocation import is_access_jti_revoked, revoke_access_jti
 from app.database import get_db
 from app.models.database import PlatformAdmin
@@ -95,11 +96,12 @@ def require_platform_admin_feature(db: Session = Depends(get_db)) -> None:
 
 
 def get_platform_admin(
+    request: Request,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
     _feature: None = Depends(require_platform_admin_feature),
 ) -> PlatformAdminPrincipal:
-    bearer = _extract_bearer(authorization)
+    bearer = _extract_bearer(authorization) or read_platform_access_cookie(request)
     if not bearer:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

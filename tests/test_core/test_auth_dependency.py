@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from app.config import settings
 from app.core.auth.cookies import COOKIE_ACCESS
-from app.core.auth.dependency import _resolve
+from app.core.auth.dependency import _resolve, resolve_websocket_credentials
 from app.core.auth.providers import reset_provider_registry
 from app.core.auth.tokens import create_access_token, decode_access_token
 from app.models.database import Organization, OrganizationMember, RoleEnum, User
@@ -98,3 +98,23 @@ def test_resolve_accepts_eai_access_cookie(db_session, org_id, monkeypatch):
 
     assert principal is not None
     assert str(principal.user_id) == str(user_id)
+
+
+def test_resolve_websocket_credentials_reads_eai_access_cookie(db_session, org_id, monkeypatch):
+    monkeypatch.setattr(settings, "AUTH_PROVIDERS", ["api_key", "local_password"])
+    reset_provider_registry()
+    user_id = uuid4()
+    access_token, _, _ = create_access_token(
+        user_id=user_id,
+        organization_id=org_id,
+        email="ws-cookie@example.com",
+    )
+
+    websocket = MagicMock()
+    websocket.query_params = {}
+    websocket.cookies = {COOKIE_ACCESS: access_token}
+    websocket.scope = {"query_string": b""}
+
+    cred = resolve_websocket_credentials(websocket)
+    assert cred.bearer_token == access_token
+    assert cred.api_key is None
