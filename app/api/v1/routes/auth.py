@@ -928,6 +928,23 @@ def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_
     return _user_to_summary(user, principal.organization_id, role_value, db=db)
 
 
+@router.get("/event-stream-token")
+def event_stream_token(
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    principal: Principal = Depends(get_principal),
+) -> dict:
+    """Return a bearer token for EventSource URLs when using httpOnly cookie sessions."""
+    del principal
+    token = _extract_bearer(authorization) or read_access_cookie(request)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No access token available for event streams.",
+        )
+    return {"token": token}
+
+
 @router.post("/logout")
 def logout(
     request: Request,

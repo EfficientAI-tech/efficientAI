@@ -62,17 +62,7 @@ function ConversationEvaluationSection() {
     queryFn: async () => {
       if (!selectedAgent?.id) return []
       try {
-        const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
-        const apiKey = localStorage.getItem('apiKey') || ''
-        const params = new URLSearchParams({ agent_id: selectedAgent.id })
-        const response = await fetch(`${API_BASE_URL}/api/v1/conversation-evaluations?${params}`, {
-          headers: {
-            'X-API-Key': apiKey,
-            'Content-Type': 'application/json',
-          },
-        })
-        if (!response.ok) return []
-        return response.json()
+        return await apiClient.listConversationEvaluations(selectedAgent.id)
       } catch {
         return []
       }
@@ -83,21 +73,7 @@ function ConversationEvaluationSection() {
   // Create evaluation mutation
   const createEvaluationMutation = useMutation({
     mutationFn: async (data: { transcription_id: string; agent_id: string }) => {
-      const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
-      const apiKey = localStorage.getItem('apiKey') || ''
-      const response = await fetch(`${API_BASE_URL}/api/v1/conversation-evaluations`, {
-        method: 'POST',
-        headers: {
-          'X-API-Key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data),
-      })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || 'Failed to create evaluation')
-      }
-      return response.json()
+      return apiClient.createConversationEvaluation(data)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['conversation-evaluations'] })
@@ -108,20 +84,7 @@ function ConversationEvaluationSection() {
   // Delete evaluation mutation
   const deleteEvaluationMutation = useMutation({
     mutationFn: async (evaluationId: string) => {
-      const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
-      const apiKey = localStorage.getItem('apiKey') || ''
-      const response = await fetch(`${API_BASE_URL}/api/v1/conversation-evaluations/${evaluationId}`, {
-        method: 'DELETE',
-        headers: {
-          'X-API-Key': apiKey,
-          'Content-Type': 'application/json',
-        },
-      })
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || 'Failed to delete evaluation')
-      }
-      return response.json()
+      await apiClient.deleteConversationEvaluation(evaluationId)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['conversation-evaluations'] })
@@ -139,18 +102,8 @@ function ConversationEvaluationSection() {
     
     // Delete existing evaluation first, then create a new one
     try {
-      const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
-      const apiKey = localStorage.getItem('apiKey') || ''
-      
-      // Delete existing evaluation
-      await fetch(`${API_BASE_URL}/api/v1/conversation-evaluations/${evaluationId}`, {
-        method: 'DELETE',
-        headers: {
-          'X-API-Key': apiKey,
-          'Content-Type': 'application/json',
-        },
-      })
-      
+      await apiClient.deleteConversationEvaluation(evaluationId)
+
       // Create new evaluation
       setSelectedTranscriptionId(transcriptionId)
       createEvaluationMutation.mutate({

@@ -10,7 +10,7 @@ Credential resolution order (first match wins):
     2. `X-API-Key` header
     3. `X-EFFICIENTAI-API-KEY` header (legacy, for webhooks)
     4. `token` / `access_token` query param (SSE / EventSource / <audio> src)
-    5. `access_token` cookie (fallback when no explicit query token)
+    5. `eai_access` / `access_token` cookie (httpOnly browser sessions)
     6. `api_key` / `X-API-Key` query param, then cookie (SSE / EventSource)
 """
 
@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from app.core.auth.cookies import read_access_cookie
 from app.core.auth.principal import Principal
 from app.core.auth.providers import AuthError, RawCredential, get_provider_registry
 from app.database import get_db
@@ -35,6 +36,34 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
     return token.strip()
 
 
+def resolve_request_credentials(
+    *,
+    authorization: Optional[str] = None,
+    x_api_key: Optional[str] = None,
+    x_eai_api_key: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> RawCredential:
+    """Collect bearer/API-key credentials from headers, query params, and cookies."""
+    bearer_token = _extract_bearer(authorization)
+    api_key = x_api_key or x_eai_api_key or None
+
+    if request is not None:
+        bearer_token = (
+            bearer_token
+            or request.query_params.get("token")
+            or request.query_params.get("access_token")
+            or read_access_cookie(request)
+        )
+        api_key = (
+            api_key
+            or request.query_params.get("api_key")
+            or request.query_params.get("X-API-Key")
+            or request.cookies.get("api_key")
+        )
+
+    return RawCredential(bearer_token=bearer_token, api_key=api_key)
+
+
 def _resolve(
     authorization: Optional[str],
     x_api_key: Optional[str],
@@ -43,33 +72,11 @@ def _resolve(
     *,
     request: Optional[Request] = None,
 ) -> Optional[Principal]:
-    bearer_token = _extract_bearer(authorization)
-    api_key = x_api_key or x_eai_api_key or None
-
-    if request is not None:
-        query_bearer = (
-            request.query_params.get("token")
-            or request.query_params.get("access_token")
-        )
-        bearer_token = (
-            bearer_token
-            or query_bearer
-            or request.cookies.get("eai_access")
-            or request.cookies.get("access_token")
-        )
-        query_api_key = (
-            request.query_params.get("api_key")
-            or request.query_params.get("X-API-Key")
-        )
-        api_key = (
-            api_key
-            or query_api_key
-            or request.cookies.get("api_key")
-        )
-
-    cred = RawCredential(
-        bearer_token=bearer_token,
-        api_key=api_key,
+    cred = resolve_request_credentials(
+        authorization=authorization,
+        x_api_key=x_api_key,
+        x_eai_api_key=x_eai_api_key,
+        request=request,
     )
     if not cred.bearer_token and not cred.api_key:
         return None

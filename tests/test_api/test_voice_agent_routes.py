@@ -98,6 +98,61 @@ def test_voice_agent_connect_accepts_bearer_access_token(
     assert "X-API-Key=" not in ws_url
 
 
+def test_voice_agent_connect_accepts_eai_access_cookie(
+    client, db_session, monkeypatch
+):
+    from app.core.auth.cookies import COOKIE_ACCESS
+
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SESSION_ENABLED", True)
+    monkeypatch.setattr(settings, "AUTH_PROVIDERS", ["api_key", "local_password"])
+
+    org = Organization(id=uuid4(), name="Cookie Org")
+    user = User(
+        id=uuid4(),
+        email="cookie-voice@example.com",
+        password_hash=hash_password("the-password"),
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org, user])
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(
+            organization_id=org.id,
+            user_id=user.id,
+            role=RoleEnum.ADMIN.value,
+        )
+    )
+    from app.models.database import AIProvider, ModelProvider
+
+    db_session.add(
+        AIProvider(
+            id=uuid4(),
+            organization_id=org.id,
+            provider=ModelProvider.GOOGLE.value,
+            api_key="enc-google-key",
+            name="Google Key",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "cookie-voice@example.com", "password": "the-password"},
+    )
+    assert login_response.status_code == 200
+    access_token = login_response.cookies.get(COOKIE_ACCESS)
+    assert access_token
+
+    response = client.get("/api/v1/voice-agent/connect")
+
+    assert response.status_code == 200, response.text
+    ws_url = response.json()["ws_url"]
+    assert "/api/v1/voice-agent/ws" in ws_url
+    assert f"token={access_token}" in ws_url
+
+
 def test_voice_agent_audio_lists_files(authenticated_client, monkeypatch):
     from app.api.v1.routes import voice_agent as voice_agent_routes
 

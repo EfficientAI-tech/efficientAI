@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from uuid import uuid4
 
 from app.config import settings
+from app.core.auth.cookies import COOKIE_ACCESS
 from app.core.auth.dependency import _resolve
 from app.core.auth.providers import reset_provider_registry
 from app.core.auth.tokens import create_access_token, decode_access_token
@@ -58,3 +59,42 @@ def test_resolve_prefers_query_token_over_stale_access_token_cookie(
     claims = decode_access_token(fresh_token)
     assert str(principal.user_id) == claims["sub"]
     assert principal.email == "fresh@example.com"
+
+
+def test_resolve_accepts_eai_access_cookie(db_session, org_id, monkeypatch):
+    monkeypatch.setattr(settings, "AUTH_PROVIDERS", ["api_key", "local_password"])
+    reset_provider_registry()
+    user_id = uuid4()
+    db_session.add(Organization(id=org_id, name="Cookie Auth Dep Org"))
+    db_session.add(
+        User(
+            id=user_id,
+            email="cookie-dep@example.com",
+            name="Cookie User",
+            is_active=True,
+        )
+    )
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=user_id,
+            role=RoleEnum.ADMIN.value,
+        )
+    )
+    db_session.commit()
+
+    access_token, _, _ = create_access_token(
+        user_id=user_id,
+        organization_id=org_id,
+        email="cookie-dep@example.com",
+    )
+
+    request = MagicMock()
+    request.headers = {}
+    request.cookies = {COOKIE_ACCESS: access_token}
+    request.query_params = {}
+
+    principal = _resolve(None, None, None, db_session, request=request)
+
+    assert principal is not None
+    assert str(principal.user_id) == str(user_id)

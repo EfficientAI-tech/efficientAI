@@ -101,6 +101,21 @@ def test_refresh_rotates_http_only_session_cookies(cookie_auth_client):
     assert me.json()["email"] == "cookie@example.com"
 
 
+def test_event_stream_token_returns_cookie_session_access_token(cookie_auth_client):
+    client, _user = cookie_auth_client
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "cookie@example.com", "password": "CookiePass1!"},
+    )
+    assert login.status_code == 200
+    cookie_token = login.cookies.get(COOKIE_ACCESS)
+    assert cookie_token
+
+    response = client.get("/api/v1/auth/event-stream-token")
+    assert response.status_code == 200
+    assert response.json()["token"] == cookie_token
+
+
 def test_csrf_required_for_cookie_authenticated_mutations(cookie_auth_client):
     client, _user = cookie_auth_client
     login = client.post(

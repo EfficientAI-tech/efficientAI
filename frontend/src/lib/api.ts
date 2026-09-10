@@ -4220,16 +4220,33 @@ class ApiClient {
     return response.data
   }
 
-  private buildAuthenticatedApiUrl(path: string): string {
+  private async resolveEventStreamToken(): Promise<string | null> {
+    if (this.inMemoryAccessToken) {
+      return this.inMemoryAccessToken
+    }
+    if (!this.cookieSessionEnabled) {
+      return null
+    }
+    try {
+      const response = await this.client.get<{ token?: string }>(
+        '/api/v1/auth/event-stream-token',
+      )
+      return response.data.token || null
+    } catch {
+      return null
+    }
+  }
+
+  private async buildAuthenticatedApiUrl(path: string): Promise<string> {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`
     const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
     const url = configuredBase
       ? new URL(`${configuredBase}${normalizedPath}`)
       : new URL(normalizedPath, window.location.origin)
 
-    const accessToken = this.inMemoryAccessToken
     const apiKey = localStorage.getItem('apiKey')
     const workspaceId = localStorage.getItem('activeWorkspaceId')
+    const accessToken = this.inMemoryAccessToken || (await this.resolveEventStreamToken())
     if (accessToken) {
       url.searchParams.set('token', accessToken)
     } else if (apiKey) {
@@ -4246,7 +4263,7 @@ class ApiClient {
     return response.data
   }
 
-  getObservabilityCallLiveEventsUrl(callShortId: string): string {
+  async getObservabilityCallLiveEventsUrl(callShortId: string): Promise<string> {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/observability/calls/${callShortId}/live-events`,
     )
@@ -4880,10 +4897,40 @@ class ApiClient {
     return response.data
   }
 
-  getEvaluatorResultLiveEventsUrl(resultId: string): string {
+  async getEvaluatorResultLiveEventsUrl(resultId: string): Promise<string> {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/evaluator-results/${resultId}/live-events`,
     )
+  }
+
+  async listConversationEvaluations(agentId: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/conversation-evaluations', {
+      params: { agent_id: agentId },
+    })
+    return response.data
+  }
+
+  async createConversationEvaluation(data: {
+    transcription_id: string
+    agent_id: string
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/conversation-evaluations', data)
+    return response.data
+  }
+
+  async deleteConversationEvaluation(evaluationId: string): Promise<void> {
+    await this.client.delete(`/api/v1/conversation-evaluations/${evaluationId}`)
+  }
+
+  async updateConversationEvaluation(
+    evaluationId: string,
+    data: Record<string, unknown>,
+  ): Promise<any> {
+    const response = await this.client.patch(
+      `/api/v1/conversation-evaluations/${evaluationId}`,
+      data,
+    )
+    return response.data
   }
 
   async getEvaluatorResultMetrics(id: string): Promise<any> {

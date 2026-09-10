@@ -789,19 +789,17 @@ async def bot_connect(
 
     Accepts either a Bearer access token (email/password / SSO login) or an
     API key (legacy / machine access). Credentials may be supplied via the
-    `Authorization` header, `X-API-Key` header, cookies (`access_token` /
-    `api_key`), or query parameters (`token` / `X-API-Key` / `api_key`).
+    `Authorization` header, `X-API-Key` header, cookies (`eai_access` /
+    `access_token` / `api_key`), or query parameters (`token` / `X-API-Key` /
+    `api_key`).
 
     Supports both GET and POST requests for compatibility with different client
     implementations. Pipecat's `startBotAndConnect` issues an HTTP request to
     this endpoint; the WebSocket URL returned here embeds the same credential
     so the subsequent /ws connection can authenticate without re-prompting.
     """
-    from app.core.auth.providers import (
-        AuthError,
-        RawCredential,
-        get_provider_registry,
-    )
+    from app.core.auth.dependency import resolve_request_credentials
+    from app.core.auth.providers import AuthError, get_provider_registry
 
     print("=" * 80)
     print(f"[BACKEND] /connect endpoint called at {__import__('datetime').datetime.now()}")
@@ -810,30 +808,14 @@ async def bot_connect(
     print(f"[BACKEND] Request cookies present: {list(request.cookies.keys())}")
     print(f"[BACKEND] Query params: {dict(request.query_params)}")
 
-    def _extract_bearer(value: Optional[str]) -> Optional[str]:
-        if not value:
-            return None
-        scheme, _, token = value.partition(" ")
-        if scheme.lower() != "bearer" or not token.strip():
-            return None
-        return token.strip()
-
-    # Bearer / access token: header, query param, then cookie.
-    bearer_token = (
-        _extract_bearer(request.headers.get("Authorization"))
-        or request.query_params.get("token")
-        or request.query_params.get("access_token")
-        or request.cookies.get("access_token")
+    cred = resolve_request_credentials(
+        authorization=request.headers.get("Authorization"),
+        x_api_key=request.headers.get("X-API-Key"),
+        x_eai_api_key=request.headers.get("X-EFFICIENTAI-API-KEY"),
+        request=request,
     )
-
-    # API key: header, query param, then cookie.
-    api_key = (
-        request.headers.get("X-API-Key")
-        or request.headers.get("X-EFFICIENTAI-API-KEY")
-        or request.query_params.get("X-API-Key")
-        or request.query_params.get("api_key")
-        or request.cookies.get("api_key")
-    )
+    bearer_token = cred.bearer_token
+    api_key = cred.api_key
 
     print(
         f"[BACKEND] Bearer token: {'found' if bearer_token else 'not found'}, "
@@ -852,7 +834,6 @@ async def bot_connect(
             ),
         )
 
-    cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
     registry = get_provider_registry()
     provider = registry.find(cred)
     if provider is None:
