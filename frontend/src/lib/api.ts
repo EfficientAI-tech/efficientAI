@@ -871,9 +871,13 @@ class ApiClient {
     return response.data
   }
 
-  private platformHeaders() {
+  private platformHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {}
     const token = localStorage.getItem('platformAccessToken')
-    return token ? { Authorization: `Bearer ${token}` } : {}
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+    return headers
   }
 
   private platformRequestConfig(
