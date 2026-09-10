@@ -295,13 +295,15 @@ def test_playout_mode_does_not_compress_burst_audio(tmp_path):
     """
 
     async def run():
-        start = time.time()
         recorder, path = _make_recorder(
-            tmp_path, capture="output", alignment_mode="playout", start_time=start
+            tmp_path, capture="output", alignment_mode="playout", start_time=time.time()
         )
         recorder.push_frame = AsyncMock()
 
         await recorder.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        # Align the call timeline to utterance start so this test only checks that
+        # burst audio is not compressed, not variable pre-utterance wall-clock pad.
+        recorder.start_time = recorder._pending_anchor_time or time.time()
         # 1s of audio (8000 samples) delivered in one burst, i.e. no wall-clock time.
         for _ in range(10):
             await recorder.process_frame(

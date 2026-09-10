@@ -20,7 +20,7 @@ Covers three concerns:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
@@ -33,7 +33,9 @@ from app.core.auth import Principal, get_principal
 from app.core.auth.principal import AuthMethod
 from app.core.auth.org_credentials import (
     authenticated_org_id_strings,
+    build_authenticated_org_epochs,
     bump_org_session_epoch,
+    filter_authenticated_orgs_by_epoch,
     get_credential,
     get_or_create_credential,
     match_password_memberships,
@@ -44,10 +46,11 @@ from app.core.auth.org_credentials import (
     user_has_any_local_password,
 )
 from app.core.auth.refresh_tokens import (
-    authenticated_org_ids_from_refresh_row,
+    authenticated_org_auth_from_refresh_row,
     issue_refresh_token,
     revoke_refresh_token,
     revoke_refresh_tokens_for_user_org,
+    strip_org_from_user_refresh_auth,
     validate_refresh_token,
 )
 from app.core.api_rate_limit import enforce_auth_rate_limit
@@ -365,20 +368,68 @@ def _org_ids_from_token_claims(claims: dict) -> Optional[List]:
     return org_ids or None
 
 
+def _epochs_from_token_claims(claims: dict) -> Optional[Dict[str, int]]:
+    raw_epochs = claims.get("authenticated_org_epochs")
+    if not isinstance(raw_epochs, dict):
+        return None
+    epochs: Dict[str, int] = {}
+    for key, value in raw_epochs.items():
+        try:
+            epochs[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return epochs or None
+
+
+def _parse_authenticated_org_auth(
+    request: Request,
+    authorization: Optional[str] = None,
+) -> Tuple[Optional[List], Optional[Dict[str, int]]]:
+    bearer = _extract_bearer(authorization) or read_access_cookie(request)
+    if not bearer:
+        return None, None
+    for decoder in (decode_access_token, decode_access_token_allow_expired):
+        try:
+            claims = decoder(bearer)
+            return _org_ids_from_token_claims(claims), _epochs_from_token_claims(claims)
+        except JWTError:
+            continue
+    return None, None
+
+
 def _parse_authenticated_org_ids(
     request: Request,
     authorization: Optional[str] = None,
 ) -> Optional[List]:
-    bearer = _extract_bearer(authorization) or read_access_cookie(request)
-    if not bearer:
-        return None
-    for decoder in (decode_access_token, decode_access_token_allow_expired):
-        try:
-            claims = decoder(bearer)
-            return _org_ids_from_token_claims(claims)
-        except JWTError:
-            continue
-    return None
+    org_ids, _epochs = _parse_authenticated_org_auth(request, authorization)
+    return org_ids
+
+
+def _normalize_authenticated_org_auth(
+    db: Session,
+    user: User,
+    organization_id,
+    org_ids: Optional[List],
+    epochs: Optional[Dict[str, int]],
+) -> Tuple[List, Dict[str, int]]:
+    resolved_ids = list(org_ids or [organization_id])
+    resolved_epochs = dict(
+        epochs or build_authenticated_org_epochs(db, user, resolved_ids)
+    )
+    filtered_ids, filtered_epochs = filter_authenticated_orgs_by_epoch(
+        db, user, resolved_ids, resolved_epochs
+    )
+    credential = get_or_create_credential(
+        db,
+        user_id=user.id,
+        organization_id=organization_id,
+        user=user,
+    )
+    current_epoch = resolve_session_epoch(credential, user)
+    if organization_id not in filtered_ids:
+        filtered_ids = [*filtered_ids, organization_id]
+    filtered_epochs[str(organization_id)] = current_epoch
+    return filtered_ids, filtered_epochs
 
 
 def _refresh_ttl_seconds() -> int:
@@ -392,6 +443,7 @@ def _issue_session_tokens(
     organization_id,
     role_value: Optional[str],
     authenticated_org_ids: Optional[List] = None,
+    authenticated_org_epochs: Optional[Dict[str, int]] = None,
     join_notice: Optional[str] = None,
 ) -> TokenResponse:
     credential = get_or_create_credential(
@@ -400,19 +452,27 @@ def _issue_session_tokens(
         organization_id=organization_id,
         user=user,
     )
-    org_ids = authenticated_org_ids or [organization_id]
+    org_ids, org_epochs = _normalize_authenticated_org_auth(
+        db,
+        user,
+        organization_id,
+        authenticated_org_ids,
+        authenticated_org_epochs,
+    )
     access_token, _jti, ttl = create_access_token(
         user_id=user.id,
         organization_id=organization_id,
         email=user.email,
         session_epoch=resolve_session_epoch(credential, user),
         authenticated_org_ids=authenticated_org_id_strings(org_ids),
+        authenticated_org_epochs=org_epochs,
     )
     refresh_token = issue_refresh_token(
         db,
         user_id=user.id,
         organization_id=organization_id,
         authenticated_org_ids=authenticated_org_id_strings(org_ids),
+        authenticated_org_epochs=org_epochs,
     )
     db.commit()
     return TokenResponse(
@@ -432,6 +492,7 @@ def _respond_with_session(
     organization_id,
     role_value: Optional[str],
     authenticated_org_ids: Optional[List] = None,
+    authenticated_org_epochs: Optional[Dict[str, int]] = None,
     join_notice: Optional[str] = None,
 ) -> TokenResponse:
     tokens = _issue_session_tokens(
@@ -440,6 +501,7 @@ def _respond_with_session(
         organization_id=organization_id,
         role_value=role_value,
         authenticated_org_ids=authenticated_org_ids,
+        authenticated_org_epochs=authenticated_org_epochs,
         join_notice=join_notice,
     )
     if cookie_session_enabled():
@@ -953,12 +1015,20 @@ def refresh_session(
 
     revoke_refresh_token(db, refresh_token)
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
-    authenticated_org_ids = _parse_authenticated_org_ids(request, authorization)
+    authenticated_org_ids, authenticated_org_epochs = _parse_authenticated_org_auth(
+        request, authorization
+    )
     if authenticated_org_ids is None:
-        authenticated_org_ids = authenticated_org_ids_from_refresh_row(row)
-    if authenticated_org_ids is not None:
-        if row.organization_id not in authenticated_org_ids:
-            authenticated_org_ids = [*authenticated_org_ids, row.organization_id]
+        authenticated_org_ids, authenticated_org_epochs = authenticated_org_auth_from_refresh_row(
+            row
+        )
+    authenticated_org_ids, authenticated_org_epochs = _normalize_authenticated_org_auth(
+        db,
+        user,
+        row.organization_id,
+        authenticated_org_ids,
+        authenticated_org_epochs,
+    )
     return _respond_with_session(
         response,
         db,
@@ -966,6 +1036,7 @@ def refresh_session(
         organization_id=row.organization_id,
         role_value=role_value,
         authenticated_org_ids=authenticated_org_ids,
+        authenticated_org_epochs=authenticated_org_epochs,
     )
 
 
@@ -1062,10 +1133,13 @@ def switch_organization(
         )
 
     authenticated_org_ids: Optional[List] = None
+    authenticated_org_epochs: Optional[Dict[str, int]] = None
     if principal.auth_method == AuthMethod.LOCAL_PASSWORD:
         bearer = _extract_bearer(authorization) or read_access_cookie(request)
         if bearer:
-            authenticated_org_ids = _parse_authenticated_org_ids(request, authorization)
+            authenticated_org_ids, authenticated_org_epochs = _parse_authenticated_org_auth(
+                request, authorization
+            )
             _revoke_local_password_access_token(bearer)
         old_refresh = payload.refresh_token or read_refresh_cookie(request)
         if old_refresh:
@@ -1073,6 +1147,16 @@ def switch_organization(
 
         if authenticated_org_ids is None:
             authenticated_org_ids = [principal.organization_id]
+            authenticated_org_epochs = build_authenticated_org_epochs(
+                db, user, authenticated_org_ids
+            )
+
+        authenticated_org_ids, authenticated_org_epochs = filter_authenticated_orgs_by_epoch(
+            db,
+            user,
+            authenticated_org_ids,
+            authenticated_org_epochs,
+        )
 
         if target_org_id not in authenticated_org_ids:
             raise HTTPException(
@@ -1094,6 +1178,7 @@ def switch_organization(
         organization_id=membership.organization_id,
         role_value=role_value,
         authenticated_org_ids=authenticated_org_ids or [membership.organization_id],
+        authenticated_org_epochs=authenticated_org_epochs,
     )
 
 
@@ -1205,6 +1290,11 @@ def set_password(
     new_hash = hash_password(payload.new_password)
     set_org_password_hash(credential, new_hash)
     bump_org_session_epoch(credential)
+    strip_org_from_user_refresh_auth(
+        db,
+        user_id=user.id,
+        organization_id=principal.organization_id,
+    )
     revoke_refresh_tokens_for_user_org(
         db,
         user_id=user.id,

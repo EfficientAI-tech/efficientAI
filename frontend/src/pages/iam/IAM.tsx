@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
 import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check } from 'lucide-react'
 import Button from '../../components/Button'
+import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useIsAdmin } from '../../hooks/useRole'
@@ -146,6 +147,12 @@ export default function IAM() {
     },
   })
 
+  const closeRemoveModal = () => {
+    if (removeUserMutation.isPending) return
+    setShowRemoveModal(false)
+    setMemberToRemove(null)
+  }
+
   const handleRemoveClick = (member: OrganizationMember) => {
     setMemberToRemove(member)
     setShowRemoveModal(true)
@@ -155,6 +162,12 @@ export default function IAM() {
     if (memberToRemove) {
       removeUserMutation.mutate(memberToRemove.user_id)
     }
+  }
+
+  const closeCancelModal = () => {
+    if (cancelInvitationMutation.isPending) return
+    setShowCancelModal(false)
+    setInvitationToCancel(null)
   }
 
   const cancelInvitationMutation = useMutation({
@@ -716,64 +729,48 @@ export default function IAM() {
         </div>
       )}
 
-      {/* Remove User Confirmation Modal */}
-      {showRemoveModal && memberToRemove && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" onClick={() => setShowRemoveModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Remove User</h3>
-              <button
-                onClick={() => {
-                  setShowRemoveModal(false)
-                  setMemberToRemove(null)
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
+      <ConfirmModal
+        isOpen={showRemoveModal && !!memberToRemove}
+        title="Remove member from organization?"
+        confirmLabel="Remove member"
+        cancelLabel="Keep member"
+        variant="danger"
+        isLoading={removeUserMutation.isPending}
+        onCancel={closeRemoveModal}
+        onConfirm={handleRemoveConfirm}
+      >
+        {memberToRemove && (
+          <>
+            <p className="text-gray-700">
+              You are about to remove{' '}
+              <span className="font-semibold text-gray-900">
+                {memberToRemove.user.name || memberToRemove.user.email}
+              </span>
+              {memberToRemove.user.name ? (
+                <span className="text-gray-500"> ({memberToRemove.user.email})</span>
+              ) : null}{' '}
+              from this organization. They currently have the{' '}
+              <span className="font-medium capitalize text-gray-800">{memberToRemove.role}</span>{' '}
+              role.
+            </p>
+            <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-red-900">
+              <p className="text-xs font-semibold uppercase tracking-wide text-red-800 mb-2">
+                This will immediately
+              </p>
+              <ul className="list-disc pl-5 space-y-1.5 text-sm text-red-900/90">
+                <li>Remove them from every workspace in this organization</li>
+                <li>Revoke their access to all organization data and settings</li>
+                <li>Delete their organization-specific password for this org</li>
+                <li>Sign them out of any active sessions for this organization</li>
+              </ul>
             </div>
-            <div className="p-6">
-              <div className="flex items-start gap-4 mb-6">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-                    <Trash2 className="h-6 w-6 text-red-600" />
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to remove <span className="font-semibold text-gray-900">{memberToRemove.user.name || memberToRemove.user.email}</span> from the organization?
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    This action cannot be undone. The user will lose access to all organization resources.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowRemoveModal(false)
-                    setMemberToRemove(null)
-                  }}
-                  disabled={removeUserMutation.isPending}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={handleRemoveConfirm}
-                  isLoading={removeUserMutation.isPending}
-                  leftIcon={!removeUserMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                  className="flex-1"
-                >
-                  Remove User
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+            <p className="text-xs text-gray-500">
+              You can invite them back later, but they may need a new password or admin reset
+              before they can sign in to this organization again.
+            </p>
+          </>
+        )}
+      </ConfirmModal>
 
       {/* Admin Reset Password Modal */}
       {showResetPasswordModal && memberToResetPassword && (
@@ -918,64 +915,31 @@ export default function IAM() {
         </div>
       )}
 
-      {/* Cancel Invitation Confirmation Modal */}
-      {showCancelModal && invitationToCancel && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50" onClick={() => setShowCancelModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Cancel Invitation</h3>
-              <button
-                onClick={() => {
-                  setShowCancelModal(false)
-                  setInvitationToCancel(null)
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              <div className="flex items-start gap-4 mb-6">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center">
-                    <X className="h-6 w-6 text-yellow-600" />
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to cancel the invitation for <span className="font-semibold text-gray-900">{invitationToCancel.email}</span>?
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    This action cannot be undone. The invitation will be cancelled and the user will not be able to accept it.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowCancelModal(false)
-                    setInvitationToCancel(null)
-                  }}
-                  disabled={cancelInvitationMutation.isPending}
-                  className="flex-1"
-                >
-                  Keep Invitation
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={handleCancelConfirm}
-                  isLoading={cancelInvitationMutation.isPending}
-                  leftIcon={!cancelInvitationMutation.isPending ? <X className="h-4 w-4" /> : undefined}
-                  className="flex-1"
-                >
-                  Cancel Invitation
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmModal
+        isOpen={showCancelModal && !!invitationToCancel}
+        title="Cancel invitation?"
+        confirmLabel="Cancel invitation"
+        cancelLabel="Keep invitation"
+        variant="warning"
+        isLoading={cancelInvitationMutation.isPending}
+        onCancel={closeCancelModal}
+        onConfirm={handleCancelConfirm}
+      >
+        {invitationToCancel && (
+          <>
+            <p className="text-gray-700">
+              The pending invitation for{' '}
+              <span className="font-semibold text-gray-900">{invitationToCancel.email}</span> will
+              be withdrawn.
+            </p>
+            <ul className="list-disc pl-5 space-y-1.5">
+              <li>Any invite link you shared will stop working</li>
+              <li>They will not be added to this organization or its workspaces</li>
+              <li>You can send a new invitation later if needed</li>
+            </ul>
+          </>
+        )}
+      </ConfirmModal>
     </div>
   )
 }

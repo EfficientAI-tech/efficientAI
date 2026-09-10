@@ -23,9 +23,13 @@ from app.models.schemas import (
     RoleUpdate, MessageResponse, UserResponse
 )
 from app.core.password import hash_password, validate_password_strength
-from app.core.auth.refresh_tokens import revoke_refresh_tokens_for_user_org
+from app.core.auth.refresh_tokens import (
+    revoke_refresh_tokens_for_user_org,
+    strip_org_from_user_refresh_auth,
+)
 from app.core.auth.org_credentials import (
     bump_org_session_epoch,
+    delete_org_credential,
     get_credential,
     get_or_create_credential,
     provision_membership_credential,
@@ -484,12 +488,12 @@ async def remove_user(
         organization_id=organization_id,
         user_id=user_id,
     )
-    credential = get_credential(
-        db, user_id=user_id, organization_id=organization_id
-    )
-    if credential is not None:
-        bump_org_session_epoch(credential)
     revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+    delete_org_credential(
         db,
         user_id=user_id,
         organization_id=organization_id,
@@ -626,6 +630,11 @@ async def admin_reset_user_password(
     )
     set_org_password_hash(credential, hash_password(payload.new_password))
     bump_org_session_epoch(credential)
+    strip_org_from_user_refresh_auth(
+        db,
+        user_id=target.id,
+        organization_id=organization_id,
+    )
     revoke_refresh_tokens_for_user_org(
         db,
         user_id=target.id,

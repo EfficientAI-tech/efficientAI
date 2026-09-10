@@ -19,7 +19,10 @@ from app.core.auth.platform_admin import (
     platform_admin_feature_enabled,
     revoke_platform_access_token,
 )
-from app.core.auth.refresh_tokens import revoke_refresh_tokens_for_user_org
+from app.core.auth.refresh_tokens import (
+    revoke_refresh_tokens_for_user_org,
+    strip_org_from_user_refresh_auth,
+)
 from app.core.auth.org_credentials import (
     bump_org_session_epoch,
     get_or_create_credential,
@@ -365,6 +368,11 @@ def platform_reset_user_password(
     )
     set_org_password_hash(credential, hash_password(payload.new_password))
     bump_org_session_epoch(credential)
+    strip_org_from_user_refresh_auth(
+        db,
+        user_id=user.id,
+        organization_id=org_id,
+    )
     revoke_refresh_tokens_for_user_org(
         db,
         user_id=user.id,

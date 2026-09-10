@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from app.core.password import verify_password
 from app.models.database import Organization, OrganizationMember, OrganizationMemberCredential, User
+
+
+def delete_org_credential(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+) -> bool:
+    row = get_credential(db, user_id=user_id, organization_id=organization_id)
+    if row is None:
+        return False
+    db.delete(row)
+    db.flush()
+    return True
 
 
 def get_credential(
@@ -245,3 +259,37 @@ def match_password_memberships(
 
 def authenticated_org_id_strings(org_ids: Sequence[UUID]) -> List[str]:
     return [str(org_id) for org_id in org_ids]
+
+
+def build_authenticated_org_epochs(
+    db: Session,
+    user: User,
+    org_ids: Sequence[UUID],
+) -> Dict[str, int]:
+    epochs: Dict[str, int] = {}
+    for org_id in org_ids:
+        credential = get_credential(db, user_id=user.id, organization_id=org_id)
+        epochs[str(org_id)] = resolve_session_epoch(credential, user)
+    return epochs
+
+
+def filter_authenticated_orgs_by_epoch(
+    db: Session,
+    user: User,
+    org_ids: Sequence[UUID],
+    epochs: Optional[Dict[str, int]],
+) -> Tuple[List[UUID], Dict[str, int]]:
+    """Drop orgs whose stored password-auth epoch no longer matches the credential."""
+    valid_ids: List[UUID] = []
+    valid_epochs: Dict[str, int] = {}
+    for org_id in org_ids:
+        key = str(org_id)
+        stored_epoch = (epochs or {}).get(key)
+        if stored_epoch is None:
+            continue
+        credential = get_credential(db, user_id=user.id, organization_id=org_id)
+        if resolve_session_epoch(credential, user) != int(stored_epoch):
+            continue
+        valid_ids.append(org_id)
+        valid_epochs[key] = int(stored_epoch)
+    return valid_ids, valid_epochs

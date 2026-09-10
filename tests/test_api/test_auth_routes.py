@@ -962,6 +962,7 @@ def test_refresh_preserves_authenticated_org_ids_with_expired_access_token(
         organization_id=org_a.id,
         email=user.email,
         authenticated_org_ids=[str(org_a.id), str(org_b.id)],
+        authenticated_org_epochs={str(org_a.id): 0, str(org_b.id): 0},
         expires_in_minutes=-1,
     )
 

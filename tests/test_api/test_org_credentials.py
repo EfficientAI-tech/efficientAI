@@ -154,6 +154,103 @@ def test_admin_reset_password_only_invalidates_target_org_session(
     assert login_user_b_old.status_code == 200
 
 
+def test_other_org_password_reset_revokes_cross_org_refresh_authorization(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+    from app.core.auth.tokens import decode_access_token
+
+    org_a = Organization(id=uuid4(), name="Org A")
+    org_b = Organization(id=uuid4(), name="Org B")
+    user = User(
+        id=uuid4(),
+        email="cross-org-auth@example.com",
+        password_hash=hash_password("SharedPass1!"),
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([org_a, org_b, user])
+    db_session.flush()
+    db_session.add_all(
+        [
+            OrganizationMember(organization_id=org_a.id, user_id=user.id, role=RoleEnum.READER.value),
+            OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
+        ]
+    )
+    db_session.flush()
+    for org in (org_a, org_b):
+        credential = provision_membership_credential(
+            db_session, user_id=user.id, organization_id=org.id, user=user
+        )
+        set_org_password_hash(credential, user.password_hash)
+    db_session.commit()
+
+    login_a = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": user.email,
+            "password": "SharedPass1!",
+            "organization_id": str(org_a.id),
+        },
+    )
+    assert login_a.status_code == 200
+    login_body = login_a.json()
+    login_claims = decode_access_token(login_body["access_token"])
+    assert set(login_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+    assert login_claims["authenticated_org_epochs"][str(org_b.id)] == 0
+
+    from app.core.auth.org_credentials import bump_org_session_epoch, get_credential
+    from app.core.auth.refresh_tokens import (
+        revoke_refresh_tokens_for_user_org,
+        strip_org_from_user_refresh_auth,
+    )
+
+    cred_b = get_credential(db_session, user_id=user.id, organization_id=org_b.id)
+    set_org_password_hash(cred_b, hash_password("ResetInB1!"))
+    bump_org_session_epoch(cred_b)
+    strip_org_from_user_refresh_auth(
+        db_session,
+        user_id=user.id,
+        organization_id=org_b.id,
+    )
+    revoke_refresh_tokens_for_user_org(
+        db_session,
+        user_id=user.id,
+        organization_id=org_b.id,
+    )
+    db_session.commit()
+
+    switch_before_refresh = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(org_b.id),
+            "refresh_token": login_body["refresh_token"],
+        },
+        headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
+    assert switch_before_refresh.status_code == 403
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login_body["refresh_token"]},
+        headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert refresh_claims["authenticated_org_ids"] == [str(org_a.id)]
+    assert str(org_b.id) not in refresh_claims.get("authenticated_org_epochs", {})
+
+    switch_after_refresh = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(org_b.id),
+            "refresh_token": refreshed.json()["refresh_token"],
+        },
+        headers={"Authorization": f"Bearer {refreshed.json()['access_token']}"},
+    )
+    assert switch_after_refresh.status_code == 403
+
+
 def test_login_only_unlocks_orgs_with_matching_password(
     client, db_session, enable_local_password
 ):

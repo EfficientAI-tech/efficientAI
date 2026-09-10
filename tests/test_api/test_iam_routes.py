@@ -197,3 +197,46 @@ def test_remove_user_clears_workspace_memberships(
         .first()
         is None
     )
+
+
+def test_remove_user_deletes_org_credential(
+    iam_admin_override,
+    authenticated_client,
+    db_session,
+    org_id,
+    make_user,
+):
+    from app.core.auth.org_credentials import get_credential, provision_membership_credential, set_org_password_hash
+    from app.core.password import hash_password
+    from app.models.database import OrganizationMemberCredential
+
+    member_user = make_user(email="credential-cleanup@example.com", name="Credential Cleanup")
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=member_user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.flush()
+    credential = provision_membership_credential(
+        db_session, user_id=member_user.id, organization_id=org_id
+    )
+    set_org_password_hash(credential, hash_password("RemoveMe1!"))
+    db_session.commit()
+
+    assert get_credential(db_session, user_id=member_user.id, organization_id=org_id) is not None
+
+    response = authenticated_client.delete(f"/api/v1/iam/users/{member_user.id}")
+    assert response.status_code == 204
+
+    assert get_credential(db_session, user_id=member_user.id, organization_id=org_id) is None
+    assert (
+        db_session.query(OrganizationMemberCredential)
+        .filter(
+            OrganizationMemberCredential.organization_id == org_id,
+            OrganizationMemberCredential.user_id == member_user.id,
+        )
+        .first()
+        is None
+    )
