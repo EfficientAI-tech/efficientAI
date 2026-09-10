@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.password import verify_password
@@ -36,6 +37,64 @@ def get_session_revocation_floor(
     return int(row.min_session_epoch or 0)
 
 
+def _upsert_session_revocation_floor(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+    next_floor: int,
+) -> int:
+    dialect_name = db.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    elif dialect_name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+    else:
+        row = (
+            db.query(OrganizationMemberSessionRevocation)
+            .filter(
+                OrganizationMemberSessionRevocation.user_id == user_id,
+                OrganizationMemberSessionRevocation.organization_id == organization_id,
+            )
+            .first()
+        )
+        if row is None:
+            db.add(
+                OrganizationMemberSessionRevocation(
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    min_session_epoch=next_floor,
+                )
+            )
+        else:
+            row.min_session_epoch = max(int(row.min_session_epoch or 0), next_floor)
+        db.flush()
+        return get_session_revocation_floor(
+            db, user_id=user_id, organization_id=organization_id
+        )
+
+    table = OrganizationMemberSessionRevocation.__table__
+    stmt = dialect_insert(table).values(
+        organization_id=organization_id,
+        user_id=user_id,
+        min_session_epoch=next_floor,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["organization_id", "user_id"],
+        set_={
+            "min_session_epoch": func.max(
+                table.c.min_session_epoch,
+                stmt.excluded.min_session_epoch,
+            )
+        },
+    )
+    db.execute(stmt)
+    db.flush()
+    return get_session_revocation_floor(
+        db, user_id=user_id, organization_id=organization_id
+    )
+
+
 def record_org_membership_session_revocation(
     db: Session,
     *,
@@ -52,26 +111,12 @@ def record_org_membership_session_revocation(
     else:
         next_floor = max(prior_floor + 1, 1) if prior_floor else 1
 
-    row = (
-        db.query(OrganizationMemberSessionRevocation)
-        .filter(
-            OrganizationMemberSessionRevocation.user_id == user_id,
-            OrganizationMemberSessionRevocation.organization_id == organization_id,
-        )
-        .first()
+    return _upsert_session_revocation_floor(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        next_floor=next_floor,
     )
-    if row is None:
-        db.add(
-            OrganizationMemberSessionRevocation(
-                organization_id=organization_id,
-                user_id=user_id,
-                min_session_epoch=next_floor,
-            )
-        )
-    else:
-        row.min_session_epoch = max(int(row.min_session_epoch or 0), next_floor)
-    db.flush()
-    return next_floor
 
 
 def revoke_org_membership_credential(
