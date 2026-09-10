@@ -41,7 +41,41 @@ def get_or_create_credential(
         db,
         user_id=user_id,
         organization_id=organization_id,
+        user=user,
     )
+
+
+def user_has_any_org_credentials(db: Session, user_id: UUID) -> bool:
+    return (
+        db.query(OrganizationMemberCredential.id)
+        .filter(OrganizationMemberCredential.user_id == user_id)
+        .first()
+        is not None
+    )
+
+
+def find_source_password_for_new_membership(
+    db: Session,
+    user_id: UUID,
+    *,
+    user: Optional[User] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    existing = (
+        db.query(OrganizationMemberCredential)
+        .filter(
+            OrganizationMemberCredential.user_id == user_id,
+            OrganizationMemberCredential.password_hash.isnot(None),
+        )
+        .order_by(OrganizationMemberCredential.created_at.asc())
+        .first()
+    )
+    if existing is not None:
+        return existing.password_hash, existing.auth_provider
+    if user is None:
+        user = db.query(User).filter(User.id == user_id).first()
+    if user is not None and user.password_hash:
+        return user.password_hash, user.auth_provider or "local"
+    return None, None
 
 
 def provision_membership_credential(
@@ -51,10 +85,20 @@ def provision_membership_credential(
     organization_id: UUID,
     password_hash: Optional[str] = None,
     auth_provider: Optional[str] = None,
+    user: Optional[User] = None,
 ) -> OrganizationMemberCredential:
     row = get_credential(db, user_id=user_id, organization_id=organization_id)
     if row is not None:
         return row
+
+    if password_hash is None:
+        inherited_hash, inherited_provider = find_source_password_for_new_membership(
+            db, user_id, user=user
+        )
+        if inherited_hash:
+            password_hash = inherited_hash
+        if auth_provider is None and inherited_provider:
+            auth_provider = inherited_provider
 
     row = OrganizationMemberCredential(
         organization_id=organization_id,
@@ -83,11 +127,18 @@ def user_has_any_local_password(db: Session, user: User) -> bool:
 
 
 def resolve_password_hash(
-    credential: Optional[OrganizationMemberCredential],
+    db: Session,
     user: User,
+    credential: Optional[OrganizationMemberCredential],
 ) -> Optional[str]:
     if credential is not None and credential.password_hash:
         return credential.password_hash
+    if (
+        credential is None
+        and not user_has_any_org_credentials(db, user.id)
+        and user.password_hash
+    ):
+        return user.password_hash
     return None
 
 
@@ -134,7 +185,7 @@ def org_has_password(
     organization_id: UUID,
 ) -> bool:
     credential = get_credential(db, user_id=user.id, organization_id=organization_id)
-    return bool(resolve_password_hash(credential, user))
+    return bool(resolve_password_hash(db, user, credential))
 
 
 def match_password_memberships(
@@ -161,7 +212,7 @@ def match_password_memberships(
 
     matched: List[Tuple[OrganizationMember, Organization]] = []
     for member, org, credential in rows:
-        password_hash = resolve_password_hash(credential, user)
+        password_hash = resolve_password_hash(db, user, credential)
         if password_hash and verify_password(password, password_hash):
             matched.append((member, org))
     return matched

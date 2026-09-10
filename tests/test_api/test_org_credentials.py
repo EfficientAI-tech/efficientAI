@@ -300,3 +300,68 @@ def test_password_change_invalidates_only_current_org_session(
     with pytest.raises(AuthError, match="Session expired"):
         provider.authenticate(RawCredential(bearer_token=token_current), db_session)
     provider.authenticate(RawCredential(bearer_token=token_other), db_session)
+
+
+def test_accept_invitation_inherits_existing_org_password(db_session):
+    from datetime import datetime, timedelta, timezone
+
+    from app.core.auth.org_credentials import (
+        get_credential,
+        match_password_memberships,
+        provision_membership_credential,
+        set_org_password_hash,
+    )
+    from app.models.database import Invitation, InvitationStatus
+    from app.services.invitation_service import accept_invitation
+    from app.services.organization_provisioning import provision_default_workspace
+
+    password = "InvitePass1!"
+    home_org = Organization(id=uuid4(), name="Home Org")
+    invited_org = Organization(id=uuid4(), name="Invited Org")
+    inviter = User(id=uuid4(), email="inviter@example.com", is_active=True)
+    user = User(
+        id=uuid4(),
+        email="invitee@example.com",
+        password_hash=hash_password(password),
+        is_active=True,
+        auth_provider="local",
+    )
+    db_session.add_all([home_org, invited_org, inviter, user])
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(organization_id=home_org.id, user_id=user.id, role=RoleEnum.ADMIN.value)
+    )
+    db_session.flush()
+    home_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=home_org.id, user=user
+    )
+    set_org_password_hash(home_cred, user.password_hash)
+    provision_default_workspace(
+        db_session,
+        organization_id=invited_org.id,
+        created_by_user_id=inviter.id,
+    )
+
+    invitation = Invitation(
+        organization_id=invited_org.id,
+        invited_by_id=inviter.id,
+        email=user.email,
+        role=RoleEnum.WRITER.value,
+        status=InvitationStatus.PENDING.value,
+        token="invite-inherit",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db_session.add(invitation)
+    db_session.commit()
+
+    accept_invitation(db_session, invitation, user)
+
+    invited_cred = get_credential(
+        db_session, user_id=user.id, organization_id=invited_org.id
+    )
+    assert invited_cred is not None
+    assert invited_cred.password_hash == home_cred.password_hash
+    assert verify_password(password, invited_cred.password_hash)
+
+    matched = match_password_memberships(db_session, user=user, password=password)
+    assert {org.id for _, org in matched} == {home_org.id, invited_org.id}

@@ -140,6 +140,7 @@ def accept_invitation(
         db,
         user_id=user.id,
         organization_id=invitation.organization_id,
+        user=user,
     )
 
     invitation.status = InvitationStatus.ACCEPTED

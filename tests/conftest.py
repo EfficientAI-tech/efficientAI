@@ -103,6 +103,20 @@ def disable_cookie_sessions_in_tests(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def disable_api_rate_limits_in_tests(monkeypatch, request):
+    """Avoid flaky 429s from shared Redis counters across the full test suite."""
+    fspath = str(getattr(request.node, "fspath", ""))
+    if "test_security_remediation.py" in fspath:
+        yield
+        return
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "API_RATE_LIMIT_ENFORCE", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def ensure_workers_tasks_package():
     """Keep ``app.workers.tasks`` importable without eager Celery imports."""
     import importlib

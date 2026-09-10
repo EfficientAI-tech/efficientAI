@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.config import settings
 from app.core.api_rate_limit import check_auth_rate_limit, check_resource_create_rate_limit
 from app.core.auth.principal import AuthMethod, Principal
 from app.core.auth.session_epoch import bump_user_session_epoch
@@ -76,7 +77,8 @@ def test_bump_user_session_epoch_increments():
     assert user.session_epoch == 2
 
 
-def test_check_auth_rate_limit_allows_under_threshold():
+def test_check_auth_rate_limit_allows_under_threshold(monkeypatch):
+    monkeypatch.setattr(settings, "API_RATE_LIMIT_ENFORCE", True)
     request = MagicMock()
     request.headers = {}
     request.client = MagicMock(host="127.0.0.1")
@@ -84,7 +86,8 @@ def test_check_auth_rate_limit_allows_under_threshold():
         check_auth_rate_limit(request)
 
 
-def test_check_resource_create_rate_limit_blocks_burst():
+def test_check_resource_create_rate_limit_blocks_burst(monkeypatch):
+    monkeypatch.setattr(settings, "API_RATE_LIMIT_ENFORCE", True)
     principal = Principal(
         organization_id=uuid4(),
         auth_method=AuthMethod.LOCAL_PASSWORD,
