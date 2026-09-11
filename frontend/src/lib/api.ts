@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios'
 import {
   clearAuthSession,
+  csrfHeaders,
   getApiErrorDetail,
   hasRevocableUserCredentials,
   isOrganizationAccessDenied,
@@ -25,6 +26,7 @@ import type {
   EvaluationStatus,
   OrganizationMember,
   Invitation,
+  InvitationAcceptResponse,
   InvitationCreate,
   InvitationPreview,
   Profile,
@@ -154,6 +156,7 @@ export interface AuthConfigResponse {
   providers: AuthProviderConfig[]
   tier: 'oss' | 'enterprise'
   gated_signup?: boolean
+  cookie_session_enabled?: boolean
 }
 
 export interface AuthUserSummary {
@@ -174,6 +177,7 @@ export interface TokenResponse {
   token_type: string
   expires_in: number
   user: AuthUserSummary
+  join_notice?: string | null
 }
 
 export interface LoginOrgOption {
@@ -540,28 +544,28 @@ export const apiBaseUrl =
 
 const API_BASE_URL = apiBaseUrl
 
-let refreshPromise: Promise<string | null> | null = null
+let refreshPromise: Promise<boolean> | null = null
 
 class ApiClient {
   private client: AxiosInstance
+  private inMemoryAccessToken: string | null = null
+  private inMemoryRefreshToken: string | null = null
+  private cookieSessionEnabled = true
 
   constructor() {
     this.client = axios.create({
       baseURL: API_BASE_URL,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
     })
 
-    // Add request interceptor to add API key + active workspace to headers.
-    // Workspace selection is read directly from localStorage to avoid a
-    // circular import between this module and the workspace store.
     this.client.interceptors.request.use((config) => {
-      const accessToken = localStorage.getItem('accessToken')
-      const apiKey = localStorage.getItem('apiKey')
+      const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')
       const workspaceId = localStorage.getItem('activeWorkspaceId')
-      if (accessToken) {
-        config.headers.Authorization = `Bearer ${accessToken}`
+      if (this.inMemoryAccessToken) {
+        config.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
       } else if (config.headers.Authorization) {
         delete config.headers.Authorization
       }
@@ -570,14 +574,14 @@ class ApiClient {
       } else if (config.headers['X-API-Key']) {
         delete config.headers['X-API-Key']
       }
-      // Send X-Workspace-Id so the backend's get_workspace_id dep scopes
-      // listings to the active workspace. When absent (e.g. a brand-new
-      // session that hasn't called listWorkspaces yet) the backend
-      // falls back to the org's Default workspace.
       if (workspaceId) {
         config.headers['X-Workspace-Id'] = workspaceId
       } else if (config.headers['X-Workspace-Id']) {
         delete config.headers['X-Workspace-Id']
+      }
+      const method = (config.method || 'get').toLowerCase()
+      if (method !== 'get' && method !== 'head' && method !== 'options') {
+        Object.assign(config.headers, csrfHeaders())
       }
       return config
     })
@@ -606,7 +610,8 @@ class ApiClient {
           requestUrl.includes('/auth/signup') ||
           requestUrl.includes('/auth/refresh') ||
           requestUrl.includes('/auth/logout') ||
-          requestUrl.includes('/auth/config')
+          requestUrl.includes('/auth/config') ||
+          requestUrl.includes('/auth/password')
 
         const detail = getApiErrorDetail(error)
         if (
@@ -621,15 +626,18 @@ class ApiClient {
         if (
           response?.status === 401 &&
           originalRequest &&
-          !originalRequest._retry
+          !originalRequest._retry &&
+          !isAuthEndpoint
         ) {
-          if (!isAuthEndpoint) {
-            originalRequest._retry = true
-            const newToken = await this.tryRefreshAccessToken()
-            if (newToken) {
-              originalRequest.headers.Authorization = `Bearer ${newToken}`
-              return this.client(originalRequest)
+          originalRequest._retry = true
+          const refreshed = await this.tryRefreshAccessToken()
+          if (refreshed) {
+            if (this.cookieSessionEnabled) {
+              delete originalRequest.headers.Authorization
+            } else if (this.inMemoryAccessToken) {
+              originalRequest.headers.Authorization = `Bearer ${this.inMemoryAccessToken}`
             }
+            return this.client(originalRequest)
           }
 
           clearAuthSession()
@@ -640,26 +648,35 @@ class ApiClient {
     )
   }
 
-  private async tryRefreshAccessToken(): Promise<string | null> {
-    const refreshToken = localStorage.getItem('refreshToken')
-    if (!refreshToken) {
-      return null
+  private async tryRefreshAccessToken(): Promise<boolean> {
+    if (!this.cookieSessionEnabled && !this.inMemoryRefreshToken) {
+      return false
     }
 
     if (!refreshPromise) {
       refreshPromise = axios
         .post(
           `${API_BASE_URL}/api/v1/auth/refresh`,
-          { refresh_token: refreshToken },
-          { headers: { 'Content-Type': 'application/json' } },
+          this.cookieSessionEnabled
+            ? {}
+            : { refresh_token: this.inMemoryRefreshToken },
+          {
+            withCredentials: true,
+            headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+          },
         )
         .then((res) => {
           const { access_token, refresh_token: rotatedRefresh } = res.data as TokenResponse
-          this.setAccessToken(access_token)
+          if (access_token) {
+            this.setAccessToken(access_token)
+          }
           if (rotatedRefresh) {
             this.setRefreshToken(rotatedRefresh)
           }
-          return access_token as string
+          // Cookie sessions return empty tokens in JSON; new credentials are Set-Cookie only.
+          return Boolean(
+            this.cookieSessionEnabled || access_token || this.inMemoryAccessToken,
+          )
         })
         .catch((err) => {
           const refreshDetail = getApiErrorDetail(err)
@@ -671,7 +688,7 @@ class ApiClient {
               organizationAccessDeniedMessage(refreshDetail),
             )
           }
-          return null
+          return false
         })
         .finally(() => {
           refreshPromise = null
@@ -689,20 +706,37 @@ class ApiClient {
     localStorage.removeItem('apiKey')
   }
 
+  setCookieSessionEnabled(enabled: boolean) {
+    this.cookieSessionEnabled = enabled
+  }
+
+  isCookieSessionEnabled(): boolean {
+    return this.cookieSessionEnabled
+  }
+
   setAccessToken(accessToken: string) {
-    localStorage.setItem('accessToken', accessToken)
+    this.inMemoryAccessToken = accessToken
   }
 
   clearAccessToken() {
-    localStorage.removeItem('accessToken')
+    this.inMemoryAccessToken = null
   }
 
   setRefreshToken(refreshToken: string) {
-    localStorage.setItem('refreshToken', refreshToken)
+    this.inMemoryRefreshToken = refreshToken
   }
 
   clearRefreshToken() {
-    localStorage.removeItem('refreshToken')
+    this.inMemoryRefreshToken = null
+  }
+
+  clearInMemoryTokens() {
+    this.inMemoryAccessToken = null
+    this.inMemoryRefreshToken = null
+  }
+
+  getAccessToken(): string | null {
+    return this.inMemoryAccessToken
   }
 
   // Workspace endpoints (in-org isolation boundary for call imports + metrics).
@@ -810,6 +844,7 @@ class ApiClient {
   // Auth endpoints
   async getAuthConfig(): Promise<AuthConfigResponse> {
     const response = await this.client.get('/api/v1/auth/config')
+    this.setCookieSessionEnabled(Boolean(response.data.cookie_session_enabled))
     return response.data
   }
 
@@ -836,30 +871,55 @@ class ApiClient {
     return response.data
   }
 
-  private platformHeaders() {
+  private platformHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {}
     const token = localStorage.getItem('platformAccessToken')
-    return token ? { Authorization: `Bearer ${token}` } : {}
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+    return headers
+  }
+
+  private platformRequestConfig(
+    method: string,
+    extraHeaders?: Record<string, string>,
+  ): { headers: Record<string, string>; withCredentials: boolean } {
+    const headers: Record<string, string> = {
+      ...this.platformHeaders(),
+      ...extraHeaders,
+    }
+    const methodLower = method.toLowerCase()
+    if (methodLower !== 'get' && methodLower !== 'head' && methodLower !== 'options') {
+      Object.assign(headers, csrfHeaders())
+    }
+    return { headers, withCredentials: true }
   }
 
   async platformLogin(email: string, password: string): Promise<PlatformTokenResponse> {
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/auth/login`,
       { email, password },
-      { headers: { 'Content-Type': 'application/json' } },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        withCredentials: true,
+      },
     )
     return response.data
   }
 
   async platformLogout(accessToken?: string | null): Promise<{ success: boolean; admin_id: string }> {
     const token = accessToken ?? localStorage.getItem('platformAccessToken')
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...csrfHeaders(),
+    }
     if (token) {
       headers.Authorization = `Bearer ${token}`
     }
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/auth/logout`,
       {},
-      { headers },
+      { headers, withCredentials: true },
     )
     return response.data
   }
@@ -879,18 +939,16 @@ class ApiClient {
   }
 
   revokePlatformSessionBestEffort(accessToken?: string | null): void {
-    if (!accessToken) {
-      return
-    }
     void this.platformLogout(accessToken)
       .catch(() => this.platformLogout(accessToken))
       .catch(() => {})
   }
 
   async getPlatformOrganizationStats(): Promise<PlatformOrganizationStats> {
-    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations/stats`, {
-      headers: this.platformHeaders(),
-    })
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/platform/organizations/stats`,
+      this.platformRequestConfig('get'),
+    )
     return response.data
   }
 
@@ -901,7 +959,7 @@ class ApiClient {
     is_active?: boolean
   }): Promise<PlatformOrganizationListResponse> {
     const response = await axios.get(`${API_BASE_URL}/api/v1/platform/organizations`, {
-      headers: this.platformHeaders(),
+      ...this.platformRequestConfig('get'),
       params,
     })
     return response.data
@@ -914,7 +972,7 @@ class ApiClient {
     const response = await axios.patch(
       `${API_BASE_URL}/api/v1/platform/organizations/${orgId}`,
       data,
-      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+      this.platformRequestConfig('patch', { 'Content-Type': 'application/json' }),
     )
     return response.data
   }
@@ -925,7 +983,7 @@ class ApiClient {
   ): Promise<PlatformOrgUser[]> {
     const response = await axios.get(
       `${API_BASE_URL}/api/v1/platform/organizations/${orgId}/users`,
-      { headers: this.platformHeaders(), params },
+      { ...this.platformRequestConfig('get'), params },
     )
     return response.data
   }
@@ -938,15 +996,16 @@ class ApiClient {
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/platform/organizations/${orgId}/users/${userId}/reset-password`,
       { new_password: newPassword },
-      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+      this.platformRequestConfig('post', { 'Content-Type': 'application/json' }),
     )
     return response.data
   }
 
   async listPlatformSignupCodes(): Promise<PlatformSignupCode[]> {
-    const response = await axios.get(`${API_BASE_URL}/api/v1/platform/signup-codes`, {
-      headers: this.platformHeaders(),
-    })
+    const response = await axios.get(
+      `${API_BASE_URL}/api/v1/platform/signup-codes`,
+      this.platformRequestConfig('get'),
+    )
     return response.data
   }
 
@@ -956,9 +1015,11 @@ class ApiClient {
     max_uses?: number
     expires_at?: string
   }): Promise<PlatformSignupCode> {
-    const response = await axios.post(`${API_BASE_URL}/api/v1/platform/signup-codes`, data, {
-      headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' },
-    })
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/platform/signup-codes`,
+      data,
+      this.platformRequestConfig('post', { 'Content-Type': 'application/json' }),
+    )
     return response.data
   }
 
@@ -969,7 +1030,7 @@ class ApiClient {
     const response = await axios.patch(
       `${API_BASE_URL}/api/v1/platform/signup-codes/${codeId}`,
       data,
-      { headers: { ...this.platformHeaders(), 'Content-Type': 'application/json' } },
+      this.platformRequestConfig('patch', { 'Content-Type': 'application/json' }),
     )
     return response.data
   }
@@ -977,9 +1038,32 @@ class ApiClient {
   async deactivatePlatformSignupCode(codeId: string): Promise<PlatformSignupCode> {
     const response = await axios.delete(
       `${API_BASE_URL}/api/v1/platform/signup-codes/${codeId}`,
-      { headers: this.platformHeaders() },
+      this.platformRequestConfig('delete'),
     )
     return response.data
+  }
+
+  async establishOidcSession(oidcAccessToken: string): Promise<TokenResponse> {
+    const response = await axios.post(
+      `${API_BASE_URL}/api/v1/auth/oidc/session`,
+      {},
+      {
+        withCredentials: true,
+        headers: {
+          Authorization: `Bearer ${oidcAccessToken}`,
+          'Content-Type': 'application/json',
+          ...csrfHeaders(),
+        },
+      },
+    )
+    const data = response.data as TokenResponse
+    if (data.access_token) {
+      this.setAccessToken(data.access_token)
+    }
+    if (data.refresh_token) {
+      this.setRefreshToken(data.refresh_token)
+    }
+    return data
   }
 
   async loginWithPassword(
@@ -1008,8 +1092,11 @@ class ApiClient {
     refreshToken?: string | null,
     credentials?: { accessToken?: string | null; apiKey?: string | null },
   ): Promise<{ success: boolean; auth_method: string }> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-    const accessToken = credentials?.accessToken ?? localStorage.getItem('accessToken')
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...csrfHeaders(),
+    }
+    const accessToken = credentials?.accessToken ?? this.inMemoryAccessToken
     const apiKey = credentials?.apiKey ?? localStorage.getItem('apiKey')
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`
@@ -1018,19 +1105,25 @@ class ApiClient {
     }
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/auth/logout`,
-      {
-        refresh_token: refreshToken ?? localStorage.getItem('refreshToken') ?? undefined,
-      },
-      { headers },
+      this.cookieSessionEnabled
+        ? {}
+        : {
+            refresh_token:
+              refreshToken ?? this.inMemoryRefreshToken ?? undefined,
+          },
+      { headers, withCredentials: true },
     )
     return response.data
   }
 
-  async refreshSession(refreshToken: string): Promise<TokenResponse> {
+  async refreshSession(refreshToken?: string): Promise<TokenResponse> {
     const response = await axios.post(
       `${API_BASE_URL}/api/v1/auth/refresh`,
-      { refresh_token: refreshToken },
-      { headers: { 'Content-Type': 'application/json' } },
+      this.cookieSessionEnabled ? {} : { refresh_token: refreshToken },
+      {
+        withCredentials: true,
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+      },
     )
     return response.data
   }
@@ -1043,7 +1136,9 @@ class ApiClient {
   async switchOrganization(organizationId: string): Promise<TokenResponse> {
     const response = await this.client.post('/api/v1/auth/switch-org', {
       organization_id: organizationId,
-      refresh_token: localStorage.getItem('refreshToken') || undefined,
+      ...(this.cookieSessionEnabled
+        ? {}
+        : { refresh_token: this.inMemoryRefreshToken || undefined }),
     })
     return response.data
   }
@@ -1761,7 +1856,7 @@ class ApiClient {
     return response.data
   }
 
-  async acceptInvitation(invitationId: string): Promise<MessageResponse> {
+  async acceptInvitation(invitationId: string): Promise<InvitationAcceptResponse> {
     const response = await this.client.post(`/api/v1/profile/invitations/${invitationId}/accept`)
     return response.data
   }
@@ -4012,9 +4107,40 @@ class ApiClient {
     return response.data
   }
 
-  async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
-    const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
+  async refreshCallRecording(
+    callShortId: string,
+    providerCallId?: string | null,
+  ): Promise<{ message: string }> {
+    const response = await this.client.post(
+      `/api/v1/playground/call-recordings/${callShortId}/refresh`,
+      providerCallId ? { provider_call_id: providerCallId } : undefined,
+    )
     return response.data
+  }
+
+  async finalizePlaygroundCallRecording(
+    callShortId: string,
+    providerCallId?: string | null,
+  ): Promise<void> {
+    const maxAttempts = 6
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        await this.refreshCallRecording(callShortId, providerCallId)
+        return
+      } catch (error: unknown) {
+        const axiosError = error as {
+          response?: { status?: number; data?: { detail?: string } }
+        }
+        const status = axiosError.response?.status
+        const detail = String(axiosError.response?.data?.detail || '')
+        const missingProvider =
+          status === 400 && detail.toLowerCase().includes('provider')
+        if (!missingProvider || attempt === maxAttempts - 1) {
+          throw error
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)))
+      }
+    }
   }
 
   async updateCallRecording(callShortId: string, providerCallId: string): Promise<{ message: string; provider_call_id: string }> {
@@ -4158,13 +4284,15 @@ class ApiClient {
       ? new URL(`${configuredBase}${normalizedPath}`)
       : new URL(normalizedPath, window.location.origin)
 
-    const accessToken = localStorage.getItem('accessToken')
-    const apiKey = localStorage.getItem('apiKey')
     const workspaceId = localStorage.getItem('activeWorkspaceId')
-    if (accessToken) {
-      url.searchParams.set('token', accessToken)
-    } else if (apiKey) {
-      url.searchParams.set('api_key', apiKey)
+    if (!this.cookieSessionEnabled) {
+      const accessToken = this.inMemoryAccessToken
+      const apiKey = localStorage.getItem('apiKey')
+      if (accessToken) {
+        url.searchParams.set('token', accessToken)
+      } else if (apiKey) {
+        url.searchParams.set('api_key', apiKey)
+      }
     }
     if (workspaceId) {
       url.searchParams.set('workspace_id', workspaceId)
@@ -4815,6 +4943,36 @@ class ApiClient {
     return this.buildAuthenticatedApiUrl(
       `/api/v1/evaluator-results/${resultId}/live-events`,
     )
+  }
+
+  async listConversationEvaluations(agentId: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/conversation-evaluations', {
+      params: { agent_id: agentId },
+    })
+    return response.data
+  }
+
+  async createConversationEvaluation(data: {
+    transcription_id: string
+    agent_id: string
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/conversation-evaluations', data)
+    return response.data
+  }
+
+  async deleteConversationEvaluation(evaluationId: string): Promise<void> {
+    await this.client.delete(`/api/v1/conversation-evaluations/${evaluationId}`)
+  }
+
+  async updateConversationEvaluation(
+    evaluationId: string,
+    data: Record<string, unknown>,
+  ): Promise<any> {
+    const response = await this.client.patch(
+      `/api/v1/conversation-evaluations/${evaluationId}`,
+      data,
+    )
+    return response.data
   }
 
   async getEvaluatorResultMetrics(id: string): Promise<any> {

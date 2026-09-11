@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
+from app.core.api_rate_limit import enforce_resource_create_rate_limit
+from app.core.auth import Principal
 from app.services.billing.flexprice_service import record_agent_test_setup_generated
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
@@ -587,7 +589,8 @@ async def create_agent(
     agent: AgentCreate,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _principal: Principal = Depends(enforce_resource_create_rate_limit),
 ):
     """Create a new test agent.
 

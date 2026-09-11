@@ -223,6 +223,11 @@ export interface MessageResponse {
   message: string
 }
 
+export interface InvitationAcceptResponse {
+  message: string
+  join_notice?: string | null
+}
+
 // IAM & User Types
 export enum Role {
   READER = 'reader',

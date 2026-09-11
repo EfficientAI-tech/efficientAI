@@ -1,42 +1,52 @@
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Building2, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody } from '@heroui/react'
 import { apiClient } from '../../lib/api'
-import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useAuthStore } from '../../store/authStore'
+import { useOrgSwitch } from '../../hooks/useOrgSwitch'
+import OrgReauthModal from '../../components/OrgReauthModal'
 
 export default function SelectOrganization() {
   const navigate = useNavigate()
-  const { accessToken, switchOrg } = useAuthStore()
-  const [switchingTo, setSwitchingTo] = useState<string | null>(null)
-  const [error, setError] = useState('')
+  const { apiKey, user } = useAuthStore()
+  const {
+    switchingTo,
+    error,
+    reauthTarget,
+    reauthError,
+    reauthLoading,
+    switchToOrg,
+    closeReauth,
+    submitReauth,
+    user: authUser,
+  } = useOrgSwitch()
 
   const { data: profile, isLoading } = useQuery({
     queryKey: ['profile'],
     queryFn: () => apiClient.getProfile(),
-    enabled: !!accessToken,
+    enabled: !!user && !apiKey,
   })
 
-  if (!accessToken) {
+  if (!user || apiKey) {
     navigate('/login', { replace: true })
     return null
   }
 
   const orgs = profile?.organizations ?? []
 
-  const handleSelect = async (orgId: string) => {
-    setError('')
-    setSwitchingTo(orgId)
-    try {
-      await switchOrg(orgId)
+  const handleSelect = async (orgId: string, orgName: string) => {
+    const switched = await switchToOrg(orgId, orgName)
+    if (switched) {
       navigate('/', { replace: true })
-    } catch (err: unknown) {
-      setError(getApiErrorMessage(err, 'Could not enter the selected organization'))
-    } finally {
-      setSwitchingTo(null)
+    }
+  }
+
+  const handleReauthSuccess = async (password: string) => {
+    const ok = await submitReauth(password)
+    if (ok) {
+      navigate('/', { replace: true })
     }
   }
 
@@ -69,7 +79,7 @@ export default function SelectOrganization() {
                       key={org.id}
                       type="button"
                       disabled={!!switchingTo}
-                      onClick={() => handleSelect(org.id)}
+                      onClick={() => handleSelect(org.id, org.name)}
                       className="w-full px-4 py-3 text-left border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors flex items-center gap-3 disabled:opacity-60"
                     >
                       <Building2 className="h-5 w-5 text-gray-500 flex-shrink-0" />
@@ -93,6 +103,16 @@ export default function SelectOrganization() {
           </CardBody>
         </Card>
       </div>
+
+      <OrgReauthModal
+        open={!!reauthTarget}
+        organizationName={reauthTarget?.name ?? ''}
+        email={authUser?.email}
+        isLoading={reauthLoading}
+        error={reauthError}
+        onClose={closeReauth}
+        onSubmit={handleReauthSuccess}
+      />
     </div>
   )
 }

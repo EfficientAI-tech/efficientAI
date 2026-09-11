@@ -76,6 +76,13 @@ def test_validate_auth_configuration_requires_audience_for_external_oidc(monkeyp
         validate_auth_configuration()
 
 
+def test_validate_auth_configuration_rejects_weak_secret_when_not_debug(monkeypatch):
+    monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "SECRET_KEY", "your-secret-key-here-change-in-production")
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        validate_auth_configuration()
+
+
 def test_verify_jwt_rejects_missing_audience(monkeypatch):
     reset_jwks_cache()
     with pytest.raises(AuthError, match="OIDC audience is not configured"):

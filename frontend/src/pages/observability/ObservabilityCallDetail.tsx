@@ -71,18 +71,19 @@ export default function ObservabilityCallDetail() {
     if (!isLive) return
 
     let eventSource: EventSource | null = null
-    try {
-      const url = apiClient.getObservabilityCallLiveEventsUrl(callShortId)
-      eventSource = new EventSource(url)
 
-      eventSource.onmessage = (event) => {
-        try {
-          const entry = JSON.parse(event.data)
-          setLiveTranscript((prev) => [...prev, entry])
-        } catch {
-          // ignore malformed events
+    try {
+        const url = apiClient.getObservabilityCallLiveEventsUrl(callShortId)
+        eventSource = new EventSource(url, { withCredentials: true })
+
+        eventSource.onmessage = (event) => {
+          try {
+            const entry = JSON.parse(event.data)
+            setLiveTranscript((prev) => [...prev, entry])
+          } catch {
+            // ignore malformed events
+          }
         }
-      }
     } catch {
       // Polling via react-query still updates live_transcript from call_data
     }

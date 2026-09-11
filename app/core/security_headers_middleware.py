@@ -52,4 +52,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         _apply_cache_control(request, response)
         _apply_csp(response)
+        if settings.SECURITY_HSTS_ENABLED:
+            max_age = max(0, int(settings.SECURITY_HSTS_MAX_AGE))
+            if max_age > 0:
+                hsts = f"max-age={max_age}"
+                if settings.SECURITY_HSTS_INCLUDE_SUBDOMAINS:
+                    hsts += "; includeSubDomains"
+                response.headers["Strict-Transport-Security"] = hsts
         return response

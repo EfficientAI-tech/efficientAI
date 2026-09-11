@@ -6,12 +6,18 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from jose import JWTError
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.auth.cookies import (
+    clear_platform_session_cookies,
+    cookie_session_enabled,
+    read_platform_access_cookie,
+    set_platform_session_cookies,
+)
 from app.core.auth.platform_admin import (
     PlatformAdminPrincipal,
     create_platform_access_token,
@@ -19,7 +25,15 @@ from app.core.auth.platform_admin import (
     platform_admin_feature_enabled,
     revoke_platform_access_token,
 )
-from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
+from app.core.auth.refresh_tokens import (
+    revoke_refresh_tokens_for_user_org,
+    strip_org_from_user_refresh_auth,
+)
+from app.core.auth.org_credentials import (
+    bump_org_session_epoch,
+    get_or_create_credential,
+    set_org_password_hash,
+)
 from app.core.password import hash_password, validate_password_strength, verify_password
 from app.database import get_db
 from app.models.database import (
@@ -150,7 +164,11 @@ def _serialize_signup_code(row: SignupReferenceCode, *, include_code: bool = Fal
 
 
 @router.post("/auth/login", response_model=PlatformTokenResponse)
-def platform_login(payload: PlatformLoginRequest, db: Session = Depends(get_db)) -> PlatformTokenResponse:
+def platform_login(
+    payload: PlatformLoginRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> PlatformTokenResponse:
     if not platform_admin_feature_enabled(db):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
@@ -172,10 +190,22 @@ def platform_login(payload: PlatformLoginRequest, db: Session = Depends(get_db))
         platform_admin_id=admin.id,
         email=admin.email,
     )
+    admin_summary = PlatformAdminSummary(id=str(admin.id), email=admin.email)
+    if cookie_session_enabled():
+        set_platform_session_cookies(
+            response,
+            access_token=access_token,
+            access_ttl_seconds=expires_in,
+        )
+        return PlatformTokenResponse(
+            access_token="",
+            expires_in=expires_in,
+            admin=admin_summary,
+        )
     return PlatformTokenResponse(
         access_token=access_token,
         expires_in=expires_in,
-        admin=PlatformAdminSummary(id=str(admin.id), email=admin.email),
+        admin=admin_summary,
     )
 
 
@@ -197,12 +227,16 @@ def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
 
 @router.post("/auth/logout")
 def platform_logout(
+    request: Request,
+    response: Response,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     principal: PlatformAdminPrincipal = Depends(get_platform_admin),
 ) -> dict:
-    bearer = _extract_bearer(authorization)
+    bearer = _extract_bearer(authorization) or read_platform_access_cookie(request)
     if bearer:
         revoke_platform_access_token(bearer)
+    if cookie_session_enabled():
+        clear_platform_session_cookies(response)
     return {"success": True, "admin_id": str(principal.platform_admin_id)}
 
 
@@ -352,8 +386,24 @@ def platform_reset_user_password(
         )
 
     _validate_password_or_400(payload.new_password)
-    user.password_hash = hash_password(payload.new_password)
-    revoke_all_user_refresh_tokens(db, user_id=user.id)
+    credential = get_or_create_credential(
+        db,
+        user_id=user.id,
+        organization_id=org_id,
+        user=user,
+    )
+    set_org_password_hash(credential, hash_password(payload.new_password))
+    bump_org_session_epoch(credential)
+    strip_org_from_user_refresh_auth(
+        db,
+        user_id=user.id,
+        organization_id=org_id,
+    )
+    revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=user.id,
+        organization_id=org_id,
+    )
     db.commit()
 
     return PlatformPasswordResetResponse(user_id=str(user.id), email=user.email)

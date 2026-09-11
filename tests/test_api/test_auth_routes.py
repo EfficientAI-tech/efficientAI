@@ -288,6 +288,8 @@ def test_signup_returns_404_when_local_password_disabled(client, monkeypatch):
 
 def _seed_user_with_org(db_session, email, password, *, role=RoleEnum.ADMIN.value):
     """Create a user + org + membership + return (user, org)."""
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
     org = Organization(id=uuid4(), name="Login Test Org")
     user = User(
         id=uuid4(),
@@ -301,6 +303,11 @@ def _seed_user_with_org(db_session, email, password, *, role=RoleEnum.ADMIN.valu
     db_session.add(
         OrganizationMember(organization_id=org.id, user_id=user.id, role=role)
     )
+    db_session.flush()
+    credential = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=org.id
+    )
+    set_org_password_hash(credential, hash_password(password))
     db_session.commit()
     return user, org
 
@@ -371,10 +378,13 @@ def test_login_rejects_user_without_membership_with_403(
 
 
 def _seed_user_with_multiple_orgs(db_session, email, password):
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    password_hash = hash_password(password)
     user = User(
         id=uuid4(),
         email=email,
-        password_hash=hash_password(password),
+        password_hash=password_hash,
         is_active=True,
         auth_provider="local",
     )
@@ -388,6 +398,12 @@ def _seed_user_with_multiple_orgs(db_session, email, password):
             OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
         ]
     )
+    db_session.flush()
+    for org in (org_a, org_b):
+        credential = provision_membership_credential(
+            db_session, user_id=user.id, organization_id=org.id
+        )
+        set_org_password_hash(credential, password_hash)
     db_session.commit()
     return user, org_a, org_b
 
@@ -434,7 +450,7 @@ def test_login_with_organization_id_returns_scoped_token(
     assert body["user"]["role"] == RoleEnum.READER.value
 
 
-def test_login_rejects_invalid_organization_id_with_403(
+def test_login_rejects_invalid_organization_id_with_401(
     client, db_session, enable_local_password
 ):
     _seed_user_with_multiple_orgs(db_session, "multi@example.com", "TestPass1!")
@@ -448,8 +464,8 @@ def test_login_rejects_invalid_organization_id_with_403(
         },
     )
 
-    assert response.status_code == 403
-    assert "not a member" in response.json()["detail"].lower()
+    assert response.status_code == 401
+    assert "invalid email or password" in response.json()["detail"].lower()
 
 
 def test_provision_default_workspace_is_idempotent(db_session, org_id, seed_org):
@@ -505,8 +521,13 @@ def test_api_key_user_can_attach_password_and_real_email(
     assert body["email_is_placeholder"] is False
 
     db_session.refresh(user)
+    from app.core.auth.org_credentials import get_credential
+    from app.core.password import verify_password
+
     assert user.email == "alice@example.com"
-    assert user.password_hash is not None
+    credential = get_credential(db_session, user_id=user.id, organization_id=org_id)
+    assert credential is not None
+    assert verify_password("FreshPass1!", credential.password_hash)
 
 
 def test_set_password_rejects_email_change_for_non_placeholder_user(
@@ -549,14 +570,14 @@ def test_rotating_password_requires_current_password(
     db_session.flush()
     _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
 
-    # Missing current_password -> 401.
+    # Missing current_password -> 400 (validation, not session expiry).
     missing_current = authenticated_client.post(
         "/api/v1/auth/password",
         json={"new_password": "BrandNew1!"},
     )
-    assert missing_current.status_code == 401
+    assert missing_current.status_code == 400
 
-    # Wrong current_password -> 401.
+    # Wrong current_password -> 400 (validation, not session expiry).
     wrong_current = authenticated_client.post(
         "/api/v1/auth/password",
         json={
@@ -564,7 +585,7 @@ def test_rotating_password_requires_current_password(
             "current_password": "not-the-real-one",
         },
     )
-    assert wrong_current.status_code == 401
+    assert wrong_current.status_code == 400
 
     # Correct current_password -> 200 and password actually changes.
     correct = authenticated_client.post(
@@ -577,10 +598,60 @@ def test_rotating_password_requires_current_password(
     assert correct.status_code == 200
 
     db_session.refresh(user)
+    from app.core.auth.org_credentials import get_credential
     from app.core.password import verify_password
 
-    assert verify_password("BrandNew1!", user.password_hash) is True
-    assert verify_password("Original1!", user.password_hash) is False
+    credential = get_credential(db_session, user_id=user.id, organization_id=org_id)
+    assert credential is not None
+    assert verify_password("BrandNew1!", credential.password_hash) is True
+    assert verify_password("Original1!", credential.password_hash) is False
+
+
+def test_password_change_invalidates_existing_access_token(
+    db_session, org_id, seed_org, enable_local_password,
+):
+    from app.core.auth.local import LocalPasswordProvider
+    from app.core.auth.org_credentials import bump_org_session_epoch, get_or_create_credential
+    from app.core.auth.providers import AuthError, RawCredential, reset_provider_registry
+    from app.core.auth.tokens import create_access_token
+
+    reset_provider_registry()
+    user = User(
+        id=uuid4(),
+        email="epoch@example.com",
+        password_hash=hash_password("Original1!"),
+        is_active=True,
+        session_epoch=0,
+    )
+    db_session.add(user)
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=user.id,
+            role=RoleEnum.ADMIN.value,
+        )
+    )
+    db_session.flush()
+    credential = get_or_create_credential(
+        db_session, user_id=user.id, organization_id=org_id, user=user
+    )
+    credential.password_hash = user.password_hash
+    db_session.commit()
+
+    token, _, _ = create_access_token(
+        user_id=user.id,
+        organization_id=org_id,
+        email=user.email,
+        session_epoch=credential.session_epoch,
+    )
+    provider = LocalPasswordProvider()
+    provider.authenticate(RawCredential(bearer_token=token), db_session)
+
+    bump_org_session_epoch(credential)
+    db_session.commit()
+
+    with pytest.raises(AuthError, match="Session expired"):
+        provider.authenticate(RawCredential(bearer_token=token), db_session)
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +661,10 @@ def test_rotating_password_requires_current_password(
 def test_switch_org_mints_token_for_target_org(
     client, db_session, enable_local_password
 ):
-    """Happy path: user is a member of two orgs and switches into the second."""
+    """Happy path: user authenticated for both orgs can switch into the second."""
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+    from app.core.auth.tokens import decode_access_token
+
     user, source_org = _seed_user_with_org(
         db_session, "multi@example.com", "ThePass1!"
     )
@@ -605,29 +679,88 @@ def test_switch_org_mints_token_for_target_org(
             role=RoleEnum.READER.value,
         )
     )
+    db_session.flush()
+    target_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=target_org.id
+    )
+    set_org_password_hash(target_cred, hash_password("ThePass1!"))
     db_session.commit()
 
-    principal = Principal(
-        organization_id=source_org.id,
-        auth_method=AuthMethod.LOCAL_PASSWORD,
-        user_id=user.id,
-        email=user.email,
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "ThePass1!",
+            "organization_id": str(source_org.id),
+        },
     )
-    _override_principal(client, principal)
-    try:
-        response = client.post(
-            "/api/v1/auth/switch-org",
-            json={"organization_id": str(target_org.id)},
-        )
-    finally:
-        _clear_principal_override(client)
+    assert login.status_code == 200
+    login_body = login.json()
+    claims = decode_access_token(login_body["access_token"])
+    assert str(target_org.id) in claims["authenticated_org_ids"]
+
+    response = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(target_org.id),
+            "refresh_token": login_body["refresh_token"],
+        },
+        headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
 
     assert response.status_code == 200
     body = response.json()
     assert body["access_token"]
     assert body["user"]["organization_id"] == str(target_org.id)
-    # Role reflects the target-org membership, not the source-org role.
     assert body["user"]["role"] == RoleEnum.READER.value
+
+
+def test_switch_org_requires_reauth_when_target_not_authenticated(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    user, source_org = _seed_user_with_org(
+        db_session, "multi@example.com", "ThePass1!"
+    )
+
+    target_org = Organization(id=uuid4(), name="Target Org")
+    db_session.add(target_org)
+    db_session.flush()
+    db_session.add(
+        OrganizationMember(
+            organization_id=target_org.id,
+            user_id=user.id,
+            role=RoleEnum.READER.value,
+        )
+    )
+    db_session.flush()
+    target_cred = provision_membership_credential(
+        db_session, user_id=user.id, organization_id=target_org.id
+    )
+    set_org_password_hash(target_cred, hash_password("OtherPass2!"))
+    db_session.commit()
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "ThePass1!",
+            "organization_id": str(source_org.id),
+        },
+    ).json()
+
+    response = client.post(
+        "/api/v1/auth/switch-org",
+        json={
+            "organization_id": str(target_org.id),
+            "refresh_token": login["refresh_token"],
+        },
+        headers={"Authorization": f"Bearer {login['access_token']}"},
+    )
+
+    assert response.status_code == 403
+    assert "password" in response.json()["detail"].lower()
 
 
 def test_switch_org_rejects_api_key_caller_with_403(client, db_session, seed_org):
@@ -737,6 +870,7 @@ def test_refresh_rotates_tokens(client, db_session, enable_local_password):
     refreshed = client.post(
         "/api/v1/auth/refresh",
         json={"refresh_token": old_refresh},
+        headers={"Authorization": f"Bearer {login['access_token']}"},
     )
     assert refreshed.status_code == 200
     body = refreshed.json()
@@ -749,6 +883,97 @@ def test_refresh_rotates_tokens(client, db_session, enable_local_password):
         json={"refresh_token": old_refresh},
     )
     assert stale.status_code == 401
+
+
+def test_refresh_preserves_authenticated_org_ids(client, db_session, enable_local_password):
+    from app.core.auth.tokens import decode_access_token
+
+    user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "TestPass1!"
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "TestPass1!",
+            "organization_id": str(org_a.id),
+        },
+    )
+    assert login.status_code == 200
+    login_body = login.json()
+    login_claims = decode_access_token(login_body["access_token"])
+    assert set(login_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login_body["refresh_token"]},
+        headers={"Authorization": f"Bearer {login_body['access_token']}"},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert set(refresh_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+
+
+def test_refresh_preserves_authenticated_org_ids_without_access_token(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.tokens import decode_access_token
+
+    _user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "TestPass1!"
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "TestPass1!",
+            "organization_id": str(org_a.id),
+        },
+    ).json()
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login["refresh_token"]},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert set(refresh_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
+
+
+def test_refresh_preserves_authenticated_org_ids_with_expired_access_token(
+    client, db_session, enable_local_password
+):
+    from app.core.auth.tokens import create_access_token, decode_access_token
+
+    user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "TestPass1!"
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "TestPass1!",
+            "organization_id": str(org_a.id),
+        },
+    ).json()
+
+    expired_token, _jti, _ttl = create_access_token(
+        user_id=user.id,
+        organization_id=org_a.id,
+        email=user.email,
+        authenticated_org_ids=[str(org_a.id), str(org_b.id)],
+        authenticated_org_epochs={str(org_a.id): 0, str(org_b.id): 0},
+        expires_in_minutes=-1,
+    )
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": login["refresh_token"]},
+        headers={"Authorization": f"Bearer {expired_token}"},
+    )
+    assert refreshed.status_code == 200
+    refresh_claims = decode_access_token(refreshed.json()["access_token"])
+    assert set(refresh_claims["authenticated_org_ids"]) == {str(org_a.id), str(org_b.id)}
 
 
 def test_logout_revokes_access_and_refresh_tokens(
@@ -861,6 +1086,7 @@ def test_signup_with_invite_token_joins_invited_org(
 
     assert response.status_code == 200
     body = response.json()
+    assert body.get("join_notice") in (None, "")
     assert body["user"]["organization_id"] == str(org_id)
     assert body["user"]["role"] == RoleEnum.READER.value
 
@@ -939,6 +1165,13 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
             role=RoleEnum.ADMIN.value,
         )
     )
+    db_session.flush()
+    from app.core.auth.org_credentials import provision_membership_credential, set_org_password_hash
+
+    home_cred = provision_membership_credential(
+        db_session, user_id=existing_user.id, organization_id=home_org.id
+    )
+    set_org_password_hash(home_cred, existing_user.password_hash)
     provision_default_workspace(
         db_session,
         organization_id=invited_org.id,
@@ -963,6 +1196,9 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
     body = response.json()
     assert body["user"]["organization_id"] == str(invited_org.id)
     assert body["user"]["role"] == RoleEnum.WRITER.value
+    assert body.get("join_notice")
+    assert "Target Org" in body["join_notice"]
+    assert "password" in body["join_notice"].lower()
 
     workspace_membership = (
         db_session.query(WorkspaceMember)
@@ -974,3 +1210,40 @@ def test_accept_invitation_by_token_issues_org_scoped_session(
         .count()
     )
     assert workspace_membership >= 1
+
+
+def test_oidc_session_rejects_removed_organization_member(
+    client, db_session, org_id
+):
+    from app.core.auth import get_principal
+    from tests.conftest import _SESSION_API_APP
+
+    user = User(
+        id=uuid4(),
+        email="removed-oidc@example.com",
+        is_active=True,
+        auth_provider="oidc",
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    def _removed_member_principal():
+        return Principal(
+            organization_id=org_id,
+            auth_method=AuthMethod.EXTERNAL_OIDC,
+            user_id=user.id,
+            email=user.email,
+            token_sub="oidc-sub-removed",
+        )
+
+    _SESSION_API_APP.dependency_overrides[get_principal] = _removed_member_principal
+    try:
+        response = client.post(
+            "/api/v1/auth/oidc/session",
+            headers={"Authorization": "Bearer oidc-token"},
+        )
+    finally:
+        _SESSION_API_APP.dependency_overrides.pop(get_principal, None)
+
+    assert response.status_code == 403
+    assert "not a member" in response.json()["detail"].lower()

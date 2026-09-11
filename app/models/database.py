@@ -252,6 +252,7 @@ class User(Base):
     external_id = Column(String(255), unique=True, nullable=True, index=True)
     auth_provider = Column(String(50), nullable=True)
     mfa_enabled = Column(Boolean, default=False, nullable=False)
+    session_epoch = Column(Integer, default=0, nullable=False, server_default="0")
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -316,6 +317,8 @@ class RefreshToken(Base):
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
+    authenticated_org_ids = Column(JSON, nullable=True)
+    authenticated_org_epochs = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="refresh_tokens")
@@ -345,6 +348,44 @@ class OrganizationMember(Base):
     organization = relationship("Organization", back_populates="members")
     user = relationship("User", back_populates="organization_memberships")
     default_agent = relationship("Agent", foreign_keys=[default_agent_id])
+
+
+class OrganizationMemberCredential(Base):
+    """Per-organization password and session state for a membership."""
+
+    __tablename__ = "organization_member_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    password_hash = Column(String(255), nullable=True)
+    auth_provider = Column(String(50), nullable=True)
+    session_epoch = Column(Integer, default=0, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_org_member_credentials_org_user"),
+    )
+
+
+class OrganizationMemberSessionRevocation(Base):
+    """Minimum valid session epoch after membership removal for a user/org pair."""
+
+    __tablename__ = "organization_member_session_revocations"
+
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    min_session_epoch = Column(Integer, nullable=False, server_default="1")
+    revoked_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Invitation(Base):

@@ -35,36 +35,21 @@ async def websocket_endpoint(
     """
     WebSocket endpoint for voice agent connection.
 
-    Authentication precedence (since browsers can't set custom headers on
-    WebSockets reliably, everything goes on query params):
+    Authentication precedence (query params and cookies; browsers cannot set
+    custom headers on WebSockets reliably):
 
-        1. ?token=<bearer>      -> local-password / SSO session token
-        2. ?X-API-Key=<key>     -> API key (legacy header name)
-        3. ?api_key=<key>       -> API key
+        1. ?token=<bearer> / ?access_token=<bearer> / eai_access cookie
+        2. ?X-API-Key=<key> / ?api_key=<key> / api_key cookie
 
     Under the hood we reuse the same pluggable auth registry used by the
     HTTP routes so the authorization rules stay consistent.
     """
-    from app.core.auth.providers import AuthError, RawCredential, get_provider_registry
+    from app.core.auth.dependency import resolve_websocket_credentials
+    from app.core.auth.providers import AuthError, get_provider_registry
 
-    bearer_token = (
-        websocket.query_params.get("token")
-        or websocket.query_params.get("access_token")
-    )
-    api_key = (
-        websocket.query_params.get("X-API-Key")
-        or websocket.query_params.get("api_key")
-    )
-
-    if not bearer_token and not api_key:
-        from urllib.parse import parse_qs
-
-        raw_qs = websocket.scope.get("query_string", b"")
-        if isinstance(raw_qs, bytes):
-            raw_qs = raw_qs.decode("utf-8", errors="replace")
-        parsed = parse_qs(raw_qs)
-        bearer_token = bearer_token or (parsed.get("token") or parsed.get("access_token") or [None])[0]
-        api_key = api_key or (parsed.get("X-API-Key") or parsed.get("api_key") or [None])[0]
+    cred = resolve_websocket_credentials(websocket)
+    bearer_token = cred.bearer_token
+    api_key = cred.api_key
 
     if not bearer_token and not api_key:
         print(
@@ -81,7 +66,6 @@ async def websocket_endpoint(
     try:
         db = next(get_db())
 
-        cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
         registry = get_provider_registry()
         provider = registry.find(cred)
         if provider is None:
@@ -764,18 +748,23 @@ async def websocket_endpoint(
 
 
 @router.options("/connect")
-async def bot_connect_options():
+async def bot_connect_options(request: Request):
     """Handle CORS preflight requests."""
     from fastapi.responses import Response
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Credentials": "true",
-        }
-    )
+
+    from app.config import settings
+
+    headers = {
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+    }
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        headers["Access-Control-Allow-Origin"] = "*"
+    return Response(status_code=200, headers=headers)
 
 @router.post("/connect", response_model=Dict[str, Any])
 @router.get("/connect", response_model=Dict[str, Any])
@@ -789,19 +778,17 @@ async def bot_connect(
 
     Accepts either a Bearer access token (email/password / SSO login) or an
     API key (legacy / machine access). Credentials may be supplied via the
-    `Authorization` header, `X-API-Key` header, cookies (`access_token` /
-    `api_key`), or query parameters (`token` / `X-API-Key` / `api_key`).
+    `Authorization` header, `X-API-Key` header, cookies (`eai_access` /
+    `access_token` / `api_key`), or query parameters (`token` / `X-API-Key` /
+    `api_key`).
 
     Supports both GET and POST requests for compatibility with different client
     implementations. Pipecat's `startBotAndConnect` issues an HTTP request to
     this endpoint; the WebSocket URL returned here embeds the same credential
     so the subsequent /ws connection can authenticate without re-prompting.
     """
-    from app.core.auth.providers import (
-        AuthError,
-        RawCredential,
-        get_provider_registry,
-    )
+    from app.core.auth.dependency import resolve_request_credentials_with_sources
+    from app.core.auth.providers import AuthError, get_provider_registry
 
     print("=" * 80)
     print(f"[BACKEND] /connect endpoint called at {__import__('datetime').datetime.now()}")
@@ -810,30 +797,15 @@ async def bot_connect(
     print(f"[BACKEND] Request cookies present: {list(request.cookies.keys())}")
     print(f"[BACKEND] Query params: {dict(request.query_params)}")
 
-    def _extract_bearer(value: Optional[str]) -> Optional[str]:
-        if not value:
-            return None
-        scheme, _, token = value.partition(" ")
-        if scheme.lower() != "bearer" or not token.strip():
-            return None
-        return token.strip()
-
-    # Bearer / access token: header, query param, then cookie.
-    bearer_token = (
-        _extract_bearer(request.headers.get("Authorization"))
-        or request.query_params.get("token")
-        or request.query_params.get("access_token")
-        or request.cookies.get("access_token")
+    resolved = resolve_request_credentials_with_sources(
+        authorization=request.headers.get("Authorization"),
+        x_api_key=request.headers.get("X-API-Key"),
+        x_eai_api_key=request.headers.get("X-EFFICIENTAI-API-KEY"),
+        request=request,
     )
-
-    # API key: header, query param, then cookie.
-    api_key = (
-        request.headers.get("X-API-Key")
-        or request.headers.get("X-EFFICIENTAI-API-KEY")
-        or request.query_params.get("X-API-Key")
-        or request.query_params.get("api_key")
-        or request.cookies.get("api_key")
-    )
+    cred = resolved.credential
+    bearer_token = cred.bearer_token
+    api_key = cred.api_key
 
     print(
         f"[BACKEND] Bearer token: {'found' if bearer_token else 'not found'}, "
@@ -852,7 +824,6 @@ async def bot_connect(
             ),
         )
 
-    cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
     registry = get_provider_registry()
     provider = registry.find(cred)
     if provider is None:
@@ -1011,12 +982,52 @@ async def bot_connect(
     # Determine WebSocket URL — prefer dedicated media server when configured.
     from urllib.parse import quote
 
-    from app.services.media_urls import build_voice_agent_ws_url
+    from jose import JWTError
 
-    if bearer_token:
+    from app.core.auth.tokens import create_access_token, decode_access_token
+    from app.services.media_urls import (
+        build_voice_agent_ws_url,
+        cross_host_voice_ws,
+        resolve_voice_agent_ws_base,
+    )
+
+    fallback_host = request.headers.get("host", f"localhost:{settings.PORT}")
+    fallback_scheme = (
+        request.headers.get("x-forwarded-proto")
+        or getattr(request.url, "scheme", "http")
+        or "http"
+    )
+    ws_base = resolve_voice_agent_ws_base(
+        fallback_host=fallback_host,
+        fallback_scheme=fallback_scheme,
+    )
+    ws_cross_host = cross_host_voice_ws(ws_base, request)
+
+    # Same-host cookie sessions: WebSocket auth via httpOnly cookies (no URL secret).
+    # Cross-host media: cookies are not sent; use explicit creds or a 2-minute handshake token.
+    ws_auth_query: Optional[str] = None
+    if bearer_token and resolved.bearer_source in ("header", "query"):
         ws_auth_query = f"token={quote(bearer_token, safe='')}"
-    else:
-        ws_auth_query = f"X-API-Key={quote(api_key or '', safe='')}"
+    elif api_key and resolved.api_key_source in ("header", "query"):
+        ws_auth_query = f"X-API-Key={quote(api_key, safe='')}"
+    elif ws_cross_host:
+        if bearer_token and resolved.bearer_source == "cookie" and principal.user_id:
+            try:
+                claims = decode_access_token(bearer_token)
+            except JWTError:
+                claims = {}
+            handshake_token, _, _ = create_access_token(
+                user_id=principal.user_id,
+                organization_id=principal.organization_id,
+                email=principal.email or claims.get("email") or "",
+                session_epoch=int(claims.get("session_epoch", 0) or 0),
+                authenticated_org_ids=claims.get("authenticated_org_ids"),
+                authenticated_org_epochs=claims.get("authenticated_org_epochs"),
+                expires_in_minutes=2,
+            )
+            ws_auth_query = f"token={quote(handshake_token, safe='')}"
+        elif api_key and resolved.api_key_source == "cookie":
+            ws_auth_query = f"X-API-Key={quote(api_key, safe='')}"
 
     ws_url = build_voice_agent_ws_url(
         auth_query=ws_auth_query,
@@ -1025,12 +1036,8 @@ async def bot_connect(
         scenario_id=scenario_id,
         run_evaluation=run_evaluation,
         ui_surface=ui_surface,
-        fallback_host=request.headers.get("host", f"localhost:{settings.PORT}"),
-        fallback_scheme=(
-            request.headers.get("x-forwarded-proto")
-            or getattr(request.url, "scheme", "http")
-            or "http"
-        ),
+        fallback_host=fallback_host,
+        fallback_scheme=fallback_scheme,
     )
     
     # Return the response in the format Pipecat expects
@@ -1040,7 +1047,7 @@ async def bot_connect(
     response_data = {
         "ws_url": ws_url
     }
-    print(f"[BACKEND] ✅ Returning WebSocket URL: {ws_url}")
+    print(f"[BACKEND] ✅ Returning WebSocket URL (auth_in_url={ws_auth_query is not None})")
     print(f"[BACKEND] Response data: {response_data}")
     print("=" * 80)
     

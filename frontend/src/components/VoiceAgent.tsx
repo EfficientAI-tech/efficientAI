@@ -15,6 +15,7 @@ import Button from './Button'
 import VoiceOrb, { VoiceOrbSpeaker } from './VoiceOrb'
 import { useAgentStore } from '../store/agentStore'
 import { apiClient, apiBaseUrl } from '../lib/api'
+import { csrfHeaders } from '../lib/authSession'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -330,21 +331,14 @@ export default function VoiceAgent({
       // Resolve credentials. The backend `/connect` and websocket endpoints
       // accept either a Bearer access token (email/password / SSO login) or
       // an API key (legacy / machine access). We pass whichever the user has.
-      const accessToken = localStorage.getItem('accessToken')
+      const accessToken = apiClient.getAccessToken()
       const apiKey = localStorage.getItem('apiKey')
-      if (!accessToken && !apiKey) {
+      if (!accessToken && !apiKey && !apiClient.isCookieSessionEnabled()) {
         throw new Error('Not authenticated. Please log in first.')
       }
 
-      if (!customEndpoint) {
-        // Cookies are set as a fallback - we also pass the credential as a
-        // header below, which is more reliable in cross-origin dev setups.
-        if (accessToken) {
-          document.cookie = `access_token=${accessToken}; path=/; SameSite=Lax`
-        }
-        if (apiKey) {
-          document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
-        }
+      if (!customEndpoint && apiKey && !apiClient.isCookieSessionEnabled()) {
+        document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
         log('Auth credentials set for /connect', 'system')
       } else {
         log('Using custom endpoint, skipping backend API cookie flow', 'system')
@@ -462,7 +456,7 @@ export default function VoiceAgent({
         // Pass credentials via headers in addition to cookies so /connect
         // works even when the API is on a different origin (e.g. dev mode
         // with frontend on :3000 and API on :8000 where cookies aren't shared).
-        const authHeaders = new Headers()
+        const authHeaders = new Headers({ 'Content-Type': 'application/json' })
         if (!customEndpoint) {
           if (accessToken) {
             authHeaders.set('Authorization', `Bearer ${accessToken}`)
@@ -470,10 +464,24 @@ export default function VoiceAgent({
           if (apiKey) {
             authHeaders.set('X-API-Key', apiKey)
           }
+          for (const [name, value] of Object.entries(csrfHeaders())) {
+            authHeaders.set(name, value)
+          }
         }
+        // Pipecat uses raw fetch (not axios); cookie sessions need credentials + CSRF header.
+        const connectEndpoint =
+          !customEndpoint && apiClient.isCookieSessionEnabled()
+            ? new Request(endpointUrl, {
+                method: 'POST',
+                credentials: 'include',
+                mode: 'cors',
+                headers: authHeaders,
+                body: JSON.stringify({}),
+              })
+            : endpointUrl
         await pcClient.startBotAndConnect({
-          endpoint: endpointUrl,
-          headers: authHeaders,
+          endpoint: connectEndpoint,
+          ...(!customEndpoint && connectEndpoint instanceof Request ? {} : { headers: authHeaders }),
         })
         log('✅ Connection established and RTVI handshake complete!', 'system')
       }

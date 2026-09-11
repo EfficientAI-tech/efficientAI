@@ -24,12 +24,35 @@ operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+  # /health = liveness (always 200 ok) for ALB + internet; rate-limited for public IPs.
+  # /health/ready = readiness (503 while migrations run); VPC/LB peers in trusted_ips only.
+  health_rate_limit_per_minute: 60
+  health_readiness_cache_seconds: 10
 
 # HTTP security headers (CSP, X-Frame-Options, etc.)
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
+  # public_base_url: "https://sandbox.efficientai.cloud"
+  # Production: list your public hostname only. /health is exempt from Host checks;
+  # ALB/kube probes that send a VPC IP as Host are allowed via operational.trusted_ips.
+  # trusted_hosts:
+  #   - "sandbox.efficientai.cloud"
+  # Local dev (optional):
+  #   - "localhost"
+  #   - "127.0.0.1"
+  # hsts_enabled: true
+  # hsts_max_age: 31536000
+  # hsts_include_subdomains: true
   # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
+
+rate_limits:
+  enforce: true
+  auth_per_ip_per_minute: 15
+  resource_create_burst: 100
+  resource_create_burst_window_minutes: 10
+  resource_create_sustained_per_minute: 30
+  resource_create_org_per_hour: 2000
 
 # Database Configuration
 database:
@@ -54,6 +77,7 @@ database:
   #   shards   → efficientai_data_01, efficientai_data_02, …
   #   shard id → data-shard-01, data-shard-02, … (labels in config + registry)
   #
+  # Required when sharding.enabled is true in production: auth/RBAC migrations
   # catalog_url: "postgresql://efficientai:password@localhost:5432/efficientai_catalog"
   sharding:
     enabled: false
@@ -174,6 +198,11 @@ auth:
     # Keep this short; clients refresh silently via refresh tokens.
     token_ttl_minutes: 15
     refresh_token_ttl_days: 7
+    cookie_session:
+      enabled: true
+      secure: true
+      samesite: lax
+      # domain: ".efficientai.cloud"
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
     # When enabled, signup requires a valid reference code from the platform admin API.
@@ -222,6 +251,14 @@ judge_alignment:
 # call_imports.
 # license:
 #   key: "eyJhbGciOi..."
+
+# Telephony / recording URL safety (SSRF allowlist for provider recording fetches).
+# Built-in suffixes cover Exotel, Plivo, Vobiz, AWS S3/CloudFront, GCS, Azure Blob,
+# DigitalOcean Spaces, Backblaze B2, Cloudflare R2, Vapi, Retell, ElevenLabs,
+# Daily, LiveKit, and Smallest. Add custom CDN host suffixes below if needed.
+# telephony:
+#   recording_url_allowed_host_suffixes:
+#     - "recordings.mycompany.com"
 
 # Vobiz Telephony (platform-level). Shared account credentials used for
 # inbound/outbound PSTN calls bridged into agent Pipecat pipelines.

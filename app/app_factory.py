@@ -6,14 +6,16 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, validate_auth_configuration
 from app.core.auth.rbac import require_admin
-from app.core.health import build_health_status
+from app.core.api_rate_limit import check_health_rate_limit
+from app.core.health import build_liveness_status, build_readiness_status
+from app.core.operational_access_middleware import is_operational_access_allowed
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.migrations import check_migrations_status, ensure_migrations_directory, run_migrations
 from app.core.operational_access_middleware import OperationalAccessMiddleware
@@ -81,9 +83,10 @@ async def _api_lifespan(app: FastAPI):
 
         is_up_to_date, pending = check_migrations_status()
         if not is_up_to_date:
-            logger.warning("Warning: %d migration(s) still pending: %s", len(pending), ", ".join(pending))
-        else:
-            logger.info("All migrations are up to date")
+            detail = ", ".join(pending)
+            logger.error("CRITICAL: %d migration/schema issue(s) remain: %s", len(pending), detail)
+            raise RuntimeError(f"Database migrations incomplete: {detail}")
+        logger.info("All migrations are up to date")
 
         from app.services.billing.flexprice_service import log_startup_status
 
@@ -98,8 +101,17 @@ async def _api_lifespan(app: FastAPI):
 def _add_common_middleware(app: FastAPI) -> None:
     if _includes_http_routes():
         app.add_middleware(MigrationCheckMiddleware)
+        from app.core.csrf_middleware import CsrfMiddleware
+
+        app.add_middleware(CsrfMiddleware)
         app.add_middleware(ReaderReadOnlyMiddleware)
         app.add_middleware(LLMUsageContextMiddleware)
+
+    trusted_hosts = [h.strip() for h in (settings.TRUSTED_HOSTS or []) if h and h.strip()]
+    if trusted_hosts:
+        from app.core.trusted_host_middleware import SelectiveTrustedHostMiddleware
+
+        app.add_middleware(SelectiveTrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
     if settings.OBSERVABILITY_ENABLED and settings.LOKI_ENABLED and settings.LOKI_MULTI_TENANT:
         from app.core.observability_middleware import OrgLoggingMiddleware
@@ -148,6 +160,7 @@ def _mount_frontend(app: FastAPI) -> None:
             or full_path.startswith("redoc")
             or full_path.startswith("assets/")
             or full_path == "health"
+            or full_path == "health/ready"
             or full_path == "health/detail"
             or full_path == "metrics"
         ):
@@ -224,8 +237,21 @@ def create_app() -> FastAPI:
             )
 
     @app.get("/health")
-    async def health_check():
-        payload, status_code = build_health_status(detailed=False)
+    async def health_check(request: Request):
+        """Liveness probe for load balancers — process is up, no DB work."""
+        check_health_rate_limit(request)
+        payload, status_code = build_liveness_status()
+        return JSONResponse(content=payload, status_code=status_code)
+
+    @app.get("/health/ready")
+    async def health_ready(request: Request):
+        """Readiness probe (VPC/LB only): migrations must be current."""
+        if not is_operational_access_allowed(request):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        payload, status_code = build_readiness_status(detailed=False)
+        if status_code != 200:
+            detail_payload, _ = build_readiness_status(detailed=True)
+            logger.warning("Readiness check failed on /health/ready: %s", detail_payload)
         return JSONResponse(content=payload, status_code=status_code)
 
     if _includes_http_routes():
@@ -235,7 +261,7 @@ def create_app() -> FastAPI:
             from app.database import SessionLocal
             from app.services.observability.catalog_storage_stats import collect_catalog_storage_stats
 
-            payload, status_code = build_health_status(detailed=True)
+            payload, status_code = build_readiness_status(detailed=True)
             db = SessionLocal()
             try:
                 payload["catalog_storage"] = collect_catalog_storage_stats(db)

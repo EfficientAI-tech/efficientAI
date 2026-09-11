@@ -13,7 +13,10 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.database import Organization
+from app.services.telephony.exotel_client import ExotelInvalidContentError
+from app.services.telephony.recording_download import assert_outbound_http_url_safe
 from app.services.ai.llm_gateway import (
     EffectiveRouting,
     GatewayInterface,
@@ -195,7 +198,13 @@ def set_org_settings(
                     effective_type_for_validation,
                     effective_interface_for_validation,
                 )
+                assert_outbound_http_url_safe(
+                    trimmed,
+                    allow_loopback=bool(settings.DEBUG),
+                )
             except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except ExotelInvalidContentError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             payload["base_url"] = trimmed
         else:

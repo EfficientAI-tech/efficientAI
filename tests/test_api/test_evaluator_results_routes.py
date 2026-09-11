@@ -1,5 +1,7 @@
 """API tests for evaluator results routes."""
 
+import pytest
+
 
 def test_derive_speaker_segments_supports_smallest_payload():
     from app.api.v1.routes.evaluator_results import _derive_speaker_segments_from_call_data
@@ -546,6 +548,7 @@ def test_stream_evaluator_result_audio_proxies_elevenlabs(
     make_integration,
     make_evaluator_result,
     monkeypatch,
+    mock_recording_hostname_dns,
 ):
     from app.models.enums import IntegrationPlatform
 
@@ -594,12 +597,24 @@ def test_stream_evaluator_result_audio_proxies_elevenlabs(
     assert captured["headers"]["xi-api-key"] == "test-xi-key"
 
 
+@pytest.fixture
+def mock_recording_hostname_dns(monkeypatch):
+    import app.services.telephony.recording_download as recording_download
+
+    monkeypatch.setattr(
+        recording_download.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
+    )
+
+
 def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
     authenticated_client,
     make_agent,
     make_integration,
     make_evaluator_result,
     monkeypatch,
+    mock_recording_hostname_dns,
 ):
     from app.models.enums import IntegrationPlatform
 
@@ -643,9 +658,10 @@ def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
 def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
     authenticated_client,
     make_evaluator_result,
+    mock_recording_hostname_dns,
 ):
     signed_url = (
-        "https://hipaa-recordings.example/recording.wav?"
+        "https://hipaa-recordings.s3.amazonaws.com/recording.wav?"
         "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
     )
     make_evaluator_result(
@@ -655,7 +671,7 @@ def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
         call_data={
             "artifact": {
                 "presignedMonoUrl": signed_url,
-                "recordingUrl": "https://raw.example/recording.wav",
+                "recordingUrl": "https://bucket.s3.amazonaws.com/recording.wav",
             }
         },
     )
@@ -691,6 +707,7 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
     make_evaluator,
     make_evaluator_result,
     monkeypatch,
+    mock_recording_hostname_dns,
 ):
     from app.models.enums import IntegrationPlatform
 

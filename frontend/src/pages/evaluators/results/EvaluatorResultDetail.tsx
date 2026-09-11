@@ -492,8 +492,10 @@ export default function EvaluatorResultDetailPage({
 
     const streamId = result.result_id || id
     let eventSource: EventSource | null = null
+
     try {
-      eventSource = new EventSource(apiClient.getEvaluatorResultLiveEventsUrl(streamId))
+      const url = apiClient.getEvaluatorResultLiveEventsUrl(streamId)
+      eventSource = new EventSource(url, { withCredentials: true })
       eventSource.onmessage = (event) => {
         try {
           const entry = JSON.parse(event.data) as LiveTranscriptTurn

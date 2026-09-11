@@ -4,6 +4,7 @@ export type UserSessionCredentials = {
   accessToken?: string | null
   refreshToken?: string | null
   apiKey?: string | null
+  cookieSession?: boolean
 }
 
 export function getApiErrorDetail(error: unknown): string | undefined {
@@ -23,15 +24,35 @@ export function isOrganizationAccessDenied(detail?: string): boolean {
 
 export function clearAuthSession(): void {
   localStorage.removeItem('apiKey')
-  localStorage.removeItem('accessToken')
-  localStorage.removeItem('refreshToken')
   localStorage.removeItem('authUser')
   localStorage.removeItem('activeWorkspaceId')
+  localStorage.removeItem('accessToken')
+  localStorage.removeItem('refreshToken')
+}
+
+export function getCsrfTokenFromCookie(): string | null {
+  if (typeof document === 'undefined') return null
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim()
+    if (!trimmed.startsWith('eai_csrf=')) continue
+    return decodeURIComponent(trimmed.slice('eai_csrf='.length))
+  }
+  return null
+}
+
+export function csrfHeaders(): Record<string, string> {
+  const token = getCsrfTokenFromCookie()
+  return token ? { 'X-CSRF-Token': token } : {}
 }
 
 /** True when a voluntary logout can still revoke something server-side. */
 export function hasRevocableUserCredentials(credentials: UserSessionCredentials): boolean {
-  return Boolean(credentials.accessToken || credentials.apiKey || credentials.refreshToken)
+  return Boolean(
+    credentials.accessToken ||
+      credentials.apiKey ||
+      credentials.refreshToken ||
+      credentials.cookieSession,
+  )
 }
 
 export function clearPlatformAdminSession(): void {
