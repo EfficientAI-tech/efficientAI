@@ -553,8 +553,8 @@ def ingest_otlp_batch_to_s3(
     header_agent_id: Optional[str] = None,
     header_call_short_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    from app.services.storage import s3_service
     from app.services.storage.blob_paths import build_trace_batch_object_key
+    from app.services.storage.blob_storage_service import blob_storage_service
     from app.services.synthetic_traces.clickhouse_store import next_batch_seq
 
     trace_uuid = resolve_trace_uuid_for_s3_ingest(
@@ -573,7 +573,7 @@ def ingest_otlp_batch_to_s3(
         seq=seq,
     )
     try:
-        s3_service.upload_file_by_key(
+        blob_storage_service.upload_file_by_key(
             body,
             s3_key,
             content_type=content_type or "application/json",
@@ -767,13 +767,13 @@ def process_s3_otlp_batch(
     db: Optional[Session] = None,
 ) -> None:
     from app.database import SessionLocal
-    from app.services.storage import s3_service
+    from app.services.storage.blob_storage_service import blob_storage_service
     from app.services.synthetic_traces import ch_trace_ops
 
     owns_session = db is None
     session = db or SessionLocal()
     try:
-        body = s3_service.download_file_by_key(s3_key)
+        body = blob_storage_service.download_file_by_key(s3_key)
         spans, _fmt = parse_otlp_body(body, content_type)
         if not spans:
             return

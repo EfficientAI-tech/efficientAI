@@ -1,5 +1,6 @@
 """Tests for Celery Beat platform schedule."""
 
+from app.config import settings
 from app.workers.config import (
     _cron_dispatch_beat_seconds,
     _platform_beat_schedule,
@@ -35,15 +36,20 @@ def test_cron_dispatch_beat_seconds_clamps_minimum(monkeypatch):
     assert _cron_dispatch_beat_seconds() == 10.0
 
 
-def test_platform_beat_schedule_has_five_entries():
+def test_platform_beat_schedule_includes_platform_and_trace_tasks():
     schedule = _platform_beat_schedule()
-    assert set(schedule.keys()) == {
+    expected = {
         "flush-usage-counters",
         "dispatch-cron-jobs",
         "evaluate-alerts",
         "refresh-fx-rates",
         "prune-oss-usage-history",
+        "sweep-idle-traces",
+        "sweep-orphan-s3-batches",
     }
+    if not getattr(settings, "CLICKHOUSE_URL", None):
+        expected.add("sweep-staging-ingest")
+    assert set(schedule.keys()) == expected
 
 
 def test_flush_schedule_uses_env_interval(monkeypatch):
