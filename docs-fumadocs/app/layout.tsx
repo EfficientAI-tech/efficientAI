@@ -12,6 +12,11 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: 'EfficientAI Docs',
   metadataBase: new URL(process.env.NEXT_PUBLIC_DOCS_BASE_URL ?? 'https://docs.efficientai.cloud'),
+  icons: {
+    icon: '/efficientai_logo_light.png',
+    shortcut: '/efficientai_logo_light.png',
+    apple: '/efficientai_logo_light.png',
+  },
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {

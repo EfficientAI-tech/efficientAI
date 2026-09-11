@@ -1,4 +1,4 @@
-import faviconDark from '/favicon_dark.png'
+import lightModeLogo from '/efficientai_logo_light.png'
 
 interface LogoProps {
   className?: string
@@ -16,7 +16,7 @@ export default function Logo({ className = '', showText = true, textSize = 'md' 
 
   return (
     <div className={`flex items-center gap-2 ${className}`}>
-      <img src={faviconDark} alt="EfficientAI" className="h-8 w-8" />
+      <img src={lightModeLogo} alt="EfficientAI" className="h-8 w-auto object-contain" />
       {showText && (
         <h2 className={`font-bold ${textSizeClasses[textSize]}`}>
           <span className="text-gray-900">Efficient</span>

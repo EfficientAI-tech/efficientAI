@@ -50,7 +50,7 @@ class VoicePlaygroundReportService:
         """Load frontend favicon and convert it to an embeddable data URI."""
         project_root = Path(__file__).parent.parent.parent.parent
         candidate_paths = [
-            project_root / "frontend" / "public" / "favicon_dark.png",
+            project_root / "frontend" / "public" / "efficientai_logo_light.png",
             project_root / "frontend" / "public" / "favicon_light.png",
         ]
 
