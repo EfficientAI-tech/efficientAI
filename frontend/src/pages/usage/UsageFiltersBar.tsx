@@ -5,6 +5,7 @@ import SearchableSelect from './SearchableSelect'
 import UsageDateRangePicker from './UsageDateRangePicker'
 import { usageTheme } from './usageTheme'
 import { CALL_IMPORT_PRODUCT_SECTIONS, USAGE_SECTION_SOURCE_PREFIX } from './usageProductHints'
+import { usageModelDisplayLabel } from './usageModelLabel'
 
 type Kind = '' | 'llm' | 'stt' | 'tts'
 
@@ -161,7 +162,7 @@ export default function UsageFiltersBar({
     if (model) {
       chips.push({
         key: 'model',
-        label: model,
+        label: usageModelDisplayLabel(model, usageKind ? { usage_kind: usageKind } : undefined),
         onClear: () => onModelChange(''),
       })
     }
@@ -371,7 +372,9 @@ export default function UsageFiltersBar({
                 >
                   <option value="">All models</option>
                   {models.map((m) => (
-                    <option key={m} value={m}>{m}</option>
+                    <option key={m} value={m}>
+                      {usageModelDisplayLabel(m, usageKind ? { usage_kind: usageKind } : undefined)}
+                    </option>
                   ))}
                 </select>
               </label>

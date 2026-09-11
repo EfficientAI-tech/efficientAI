@@ -741,7 +741,7 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
 @patch("app.workers.tasks.initiate_vobiz_outbound.initiate_vobiz_outbound_call_task")
 @patch("app.services.telephony.vobiz_outbound_pool.resolve_outbound_from_number")
 @patch("app.services.telephony.vobiz_agent_context.vobiz_webhook_base_url")
-def test_create_vobiz_outbound_call_with_evaluator_excluded_from_observability(
+def test_create_vobiz_outbound_call_with_evaluator_included_in_observability(
     mock_base_url,
     mock_resolve_from,
     mock_outbound_task,
@@ -775,7 +775,7 @@ def test_create_vobiz_outbound_call_with_evaluator_excluded_from_observability(
     list_response = authenticated_client.get("/api/v1/observability/calls")
     assert list_response.status_code == 200
     call_short_ids = [row["call_short_id"] for row in list_response.json()]
-    assert body["call_short_id"] not in call_short_ids
+    assert body["call_short_id"] in call_short_ids
 
 
 @patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")

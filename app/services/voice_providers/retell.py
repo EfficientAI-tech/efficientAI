@@ -2,7 +2,7 @@
 Retell Voice Provider Implementation
 Handles integration with Retell AI voice agents
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from retell import Retell
 from loguru import logger
 
@@ -413,4 +413,30 @@ class RetellVoiceProvider(BaseVoiceProvider):
             return True
         except Exception as e:
             raise ValueError(f"Retell connection test failed: {str(e)}")
+
+    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List Retell agents."""
+        try:
+            raw = self.client.agent.list()
+            items = raw if isinstance(raw, list) else getattr(raw, "agents", None) or []
+            agents: List[Dict[str, str]] = []
+            needle = (search or "").strip().lower()
+            for item in items:
+                if hasattr(item, "model_dump"):
+                    item = item.model_dump()
+                elif hasattr(item, "dict"):
+                    item = item.dict()
+                if not isinstance(item, dict):
+                    continue
+                agent_id = str(item.get("agent_id") or item.get("id") or "").strip()
+                if not agent_id:
+                    continue
+                name = str(item.get("agent_name") or item.get("name") or agent_id).strip()
+                if needle and needle not in name.lower() and needle not in agent_id.lower():
+                    continue
+                agents.append({"id": agent_id, "name": name})
+            agents.sort(key=lambda row: row["name"].lower())
+            return agents
+        except Exception as e:
+            raise ValueError(f"Failed to list Retell agents: {str(e)}")
 

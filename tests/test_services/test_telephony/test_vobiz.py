@@ -80,6 +80,7 @@ def test_vobiz_client_create_outbound_call(mock_client_cls):
         to_="+14155550101",
         answer_url="https://example.com/answer",
         hangup_url="https://example.com/events",
+        sip_headers={"X-VH-EfficientAI-Call-Short-Id": "482931"},
     )
 
     assert result["request_uuid"] == "req-123"
@@ -87,6 +88,8 @@ def test_vobiz_client_create_outbound_call(mock_client_cls):
     args, kwargs = mock_client.request.call_args
     assert args[0] == "POST"
     assert args[1] == "https://api.vobiz.ai/api/v1/Account/MA_TEST/Call/"
+    assert "sipHeaders" in kwargs["json"]
+    assert "482931" in kwargs["json"]["sipHeaders"]
     assert kwargs["json"]["from"] == "+14155550100"
     assert kwargs["json"]["to"] == "+14155550101"
     assert kwargs["json"]["answer_url"] == "https://example.com/answer"

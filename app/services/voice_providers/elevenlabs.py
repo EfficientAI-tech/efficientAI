@@ -2,7 +2,7 @@
 ElevenLabs Voice Provider Implementation
 Handles integration with ElevenLabs Conversational AI agents
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import requests
 from loguru import logger
 
@@ -304,3 +304,61 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 raise ValueError(f"API error (status {response.status_code})")
         except requests.exceptions.RequestException as e:
             raise ValueError(f"ElevenLabs connection test failed: {str(e)}")
+
+    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List ElevenLabs ConvAI agents (paginated, capped)."""
+        max_pages = 10
+        page_size = 100
+        agents: List[Dict[str, str]] = []
+        cursor: Optional[str] = None
+        headers = {"xi-api-key": self.api_key}
+        needle = (search or "").strip().lower()
+        self.last_list_truncated = False
+
+        for page_idx in range(max_pages):
+            params: Dict[str, Any] = {
+                "page_size": page_size,
+                "archived": False,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            if search and search.strip():
+                params["search"] = search.strip()
+
+            response = requests.get(
+                f"{self.api_url}/convai/agents",
+                headers=headers,
+                params=params,
+                timeout=25,
+            )
+            if response.status_code == 401:
+                raise ValueError("Invalid API key")
+            if response.status_code != 200:
+                try:
+                    detail = response.json()
+                except Exception:
+                    detail = response.text[:200]
+                raise ValueError(f"ElevenLabs API error ({response.status_code}): {detail}")
+
+            data = response.json()
+            for item in data.get("agents") or []:
+                if not isinstance(item, dict):
+                    continue
+                agent_id = str(item.get("agent_id") or "").strip()
+                if not agent_id:
+                    continue
+                name = str(item.get("name") or agent_id).strip()
+                if needle and not (search and search.strip()) and needle not in name.lower() and needle not in agent_id.lower():
+                    continue
+                agents.append({"id": agent_id, "name": name})
+
+            if not data.get("has_more"):
+                break
+            cursor = data.get("next_cursor")
+            if not cursor:
+                break
+            if page_idx == max_pages - 1 and data.get("has_more"):
+                self.last_list_truncated = True
+
+        agents.sort(key=lambda row: row["name"].lower())
+        return agents

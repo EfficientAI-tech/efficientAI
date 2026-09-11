@@ -32,6 +32,23 @@ def initiate_vobiz_outbound_call_task(
     org_uuid = UUID(organization_id)
     db = SessionLocal()
     try:
+        row = db.query(CallRecording).filter(CallRecording.id == UUID(call_recording_id)).first()
+        sip_headers = None
+        if row:
+            from efficientai.integrations.efficientai_traces.correlation import (
+                build_outbound_sip_headers,
+            )
+
+            sip_headers = build_outbound_sip_headers(
+                call_short_id=row.call_short_id,
+                evaluator_result_id=str(row.evaluator_result_id) if row.evaluator_result_id else None,
+                agent_id=str(row.agent_id) if row.agent_id else None,
+            )
+            data = row.call_data if isinstance(row.call_data, dict) else {}
+            data["efficientai_sip_headers"] = sip_headers
+            row.call_data = data
+            db.commit()
+
         credential_id = UUID(telephony_integration_id) if telephony_integration_id else None
         provider_key = (provider or "vobiz").strip().lower()
         if provider_key == "plivo":
@@ -50,6 +67,7 @@ def initiate_vobiz_outbound_call_task(
             to_=to_number,
             answer_url=answer_url,
             hangup_url=events_url,
+            sip_headers=sip_headers,
         )
         call_uuid = (
             response.get("request_uuid")

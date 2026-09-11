@@ -140,6 +140,27 @@ api:
   key_header: "X-API-Key"
   rate_limit_per_minute: 60
 
+# Call traces / OTLP observability (Phase 2 scaling)
+traces:
+  async_ingest_enabled: true
+  rate_limit_per_minute: 120
+  rate_limit_enforce: true
+  max_body_bytes: 4194304
+  derive_debounce_seconds: 3
+  idle_close_seconds: 120
+  s3_prefix: "audio/"
+  list_default_days: 90
+  defer_parse_to_worker: true
+  staging_retention_hours: 48
+  live_turns_ttl_seconds: 180
+  api_key_cache_ttl_seconds: 300
+
+clickhouse:
+  url: "http://localhost:8123"
+  database: "efficientai"
+  user: "default"
+  password: ""
+
 # -----------------------------------------------------------------------------
 # Authentication
 # -----------------------------------------------------------------------------

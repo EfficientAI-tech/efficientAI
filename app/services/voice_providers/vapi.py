@@ -2,7 +2,7 @@
 Vapi Voice Provider Implementation
 Handles integration with Vapi voice AI agents
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import requests
 from loguru import logger
 
@@ -379,3 +379,37 @@ class VapiVoiceProvider(BaseVoiceProvider):
             raise ValueError(f"Vapi connection test failed: {str(e)}")
         except Exception as e:
             raise ValueError(f"Vapi connection test failed: {str(e)}")
+
+    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """List Vapi assistants."""
+        try:
+            url = f"{self.api_url}/assistant"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            response = requests.get(url, headers=headers, timeout=20)
+            if response.status_code == 401:
+                raise ValueError("Invalid API key")
+            if response.status_code != 200:
+                data = response.json() if response.content else {}
+                raise ValueError(data.get("message", f"API error (status {response.status_code})"))
+
+            raw = response.json()
+            items = raw if isinstance(raw, list) else raw.get("data") or raw.get("assistants") or []
+            agents: List[Dict[str, str]] = []
+            needle = (search or "").strip().lower()
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                agent_id = str(item.get("id") or item.get("assistantId") or "").strip()
+                if not agent_id:
+                    continue
+                name = str(item.get("name") or item.get("assistantName") or agent_id).strip()
+                if needle and needle not in name.lower() and needle not in agent_id.lower():
+                    continue
+                agents.append({"id": agent_id, "name": name})
+            agents.sort(key=lambda row: row["name"].lower())
+            return agents
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Failed to list Vapi agents: {str(e)}")

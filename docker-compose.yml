@@ -38,6 +38,25 @@ services:
       timeout: 5s
       retries: 5
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    container_name: efficientai_clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: efficientai
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./docker/clickhouse/init/001_traces.sql:/docker-entrypoint-initdb.d/001_traces.sql:ro
+    # get_mempolicy warnings are harmless on some host kernels; client healthcheck avoids wget dependency
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   api:
     # Pre-built image from GitHub Container Registry
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
@@ -84,6 +103,8 @@ services:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      clickhouse:
         condition: service_healthy
     command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
 
@@ -258,5 +279,35 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info --queues usage --pool threads --concurrency 4
 
+  worker-traces:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: ""
+    container_name: efficientai_worker_traces
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info --queues traces --pool threads --concurrency 8
+
 volumes:
   postgres_data:
+  clickhouse_data:

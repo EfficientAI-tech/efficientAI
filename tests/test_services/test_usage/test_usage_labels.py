@@ -44,6 +44,80 @@ class _FakeAgent:
         self.agent_id = agent_id
 
 
+RESULT_ID = UUID("cccccccc-dddd-eeee-ffff-000000000001")
+EVALUATOR_ID = UUID("dddddddd-eeee-ffff-0000-111111111111")
+PERSONA_ID = UUID("eeeeeeee-ffff-0000-1111-222222222222")
+SCENARIO_ID = UUID("ffffffff-0000-1111-2222-333333333333")
+
+
+class _FakeEvaluatorResult:
+    def __init__(
+        self,
+        id,
+        result_id="325494",
+        name=None,
+        agent_id=None,
+        persona_id=None,
+        scenario_id=None,
+        provider_platform=None,
+        timestamp=None,
+    ):
+        self.id = id
+        self.result_id = result_id
+        self.name = name
+        self.agent_id = agent_id
+        self.persona_id = persona_id
+        self.scenario_id = scenario_id
+        self.provider_platform = provider_platform
+        self.timestamp = timestamp
+
+
+class _FakeEvaluator:
+    def __init__(
+        self,
+        id,
+        evaluator_id="112233",
+        name=None,
+        agent_id=None,
+        persona_id=None,
+        scenario_id=None,
+        suite_id=None,
+    ):
+        self.id = id
+        self.evaluator_id = evaluator_id
+        self.name = name
+        self.agent_id = agent_id
+        self.persona_id = persona_id
+        self.scenario_id = scenario_id
+        self.suite_id = suite_id
+
+
+class _FakeCallRecording:
+    def __init__(
+        self,
+        evaluator_result_id,
+        call_short_id,
+        source="playground",
+        provider_platform=None,
+    ):
+        self.evaluator_result_id = evaluator_result_id
+        self.call_short_id = call_short_id
+        self.source = source
+        self.provider_platform = provider_platform
+
+
+class _FakePersona:
+    def __init__(self, id, name):
+        self.id = id
+        self.name = name
+
+
+class _FakeScenario:
+    def __init__(self, id, name):
+        self.id = id
+        self.name = name
+
+
 class _FakeQuery:
     def __init__(self, rows):
         self._rows = rows
@@ -59,12 +133,29 @@ class _FakeQuery:
 
 
 class _FakeDb:
-    def __init__(self, evaluations=(), imports=(), rows=(), tts_comparisons=(), agents=()):
+    def __init__(
+        self,
+        evaluations=(),
+        imports=(),
+        rows=(),
+        tts_comparisons=(),
+        agents=(),
+        evaluator_results=(),
+        evaluators=(),
+        call_recordings=(),
+        personas=(),
+        scenarios=(),
+    ):
         self._evaluations = evaluations
         self._imports = imports
         self._rows = rows
         self._tts_comparisons = tts_comparisons
         self._agents = agents
+        self._evaluator_results = evaluator_results
+        self._evaluators = evaluators
+        self._call_recordings = call_recordings
+        self._personas = personas
+        self._scenarios = scenarios
 
     def query(self, *entities):
         if len(entities) == 1:
@@ -79,6 +170,16 @@ class _FakeDb:
                 return _FakeQuery(self._tts_comparisons)
             if model.__name__ == "Agent":
                 return _FakeQuery(self._agents)
+            if model.__name__ == "EvaluatorResult":
+                return _FakeQuery(self._evaluator_results)
+            if model.__name__ == "Evaluator":
+                return _FakeQuery(self._evaluators)
+            if model.__name__ == "CallRecording":
+                return _FakeQuery(self._call_recordings)
+            if model.__name__ == "Persona":
+                return _FakeQuery(self._personas)
+            if model.__name__ == "Scenario":
+                return _FakeQuery(self._scenarios)
             raise AssertionError(f"unexpected model {model}")
         return _FakeQuery(())
 
@@ -244,7 +345,7 @@ def test_build_usage_resource_label_tts_comparison_with_simulation_id():
         "tts_comparison",
         resolver,
     )
-    assert label == "elevenlabs benchmark #781879"
+    assert label == "elevenlabs benchmark"
 
 
 def test_build_usage_resource_label_agent_with_short_id():
@@ -265,7 +366,7 @@ def test_build_usage_resource_label_agent_with_short_id():
         "agent",
         resolver,
     )
-    assert label == "Support bot #482910"
+    assert label == "Support bot"
 
 
 def test_labels_for_resource_buckets_empty_context_uses_bucket_id():
@@ -278,10 +379,171 @@ def test_labels_for_resource_buckets_empty_context_uses_bucket_id():
         [(str(AGENT_ID), "agent", [{}])],
         resolver,
     )
-    assert labels[str(AGENT_ID)] == "Support bot #482910"
+    assert labels[str(AGENT_ID)] == "Support bot"
 
 
 def test_usage_kind_label():
     assert usage_kind_label("stt") == "STT"
     assert usage_kind_label("llm") == "LLM"
     assert usage_kind_label("tts") == "TTS"
+
+
+def test_build_usage_resource_label_evaluator_result_prefers_run_over_agent_only():
+    db = _FakeDb(
+        agents=[_FakeAgent(AGENT_ID, name="Customer BOT Test", agent_id="567356")],
+        evaluator_results=[
+            _FakeEvaluatorResult(RESULT_ID, result_id="325494", agent_id=AGENT_ID)
+        ],
+    )
+    resolver = UsageNameResolver(db, ORG_ID)
+    resolver.preload(
+        [
+            {
+                "resource_type": "evaluator_result",
+                "resource_id": str(RESULT_ID),
+                "agent_id": str(AGENT_ID),
+            }
+        ]
+    )
+    label = build_usage_resource_label(
+        {
+            "resource_type": "evaluator_result",
+            "resource_id": str(RESULT_ID),
+            "agent_id": str(AGENT_ID),
+        },
+        "evaluator_result",
+        resolver,
+    )
+    assert label == "Customer BOT Test · Run #325494"
+
+
+def test_build_usage_resource_label_evaluator_result_uses_call_short_id_when_linked():
+    db = _FakeDb(
+        agents=[_FakeAgent(AGENT_ID, name="Customer BOT Test", agent_id="567356")],
+        evaluator_results=[
+            _FakeEvaluatorResult(RESULT_ID, result_id="325494", agent_id=AGENT_ID)
+        ],
+        call_recordings=[
+            _FakeCallRecording(RESULT_ID, "482931", source="playground", provider_platform="retell"),
+        ],
+    )
+    resolver = UsageNameResolver(db, ORG_ID)
+    resolver.preload(
+        [
+            {
+                "resource_type": "evaluator_result",
+                "resource_id": str(RESULT_ID),
+                "agent_id": str(AGENT_ID),
+            }
+        ]
+    )
+    label = build_usage_resource_label(
+        {
+            "resource_type": "evaluator_result",
+            "resource_id": str(RESULT_ID),
+            "agent_id": str(AGENT_ID),
+        },
+        "evaluator_result",
+        resolver,
+    )
+    assert label == "Customer BOT Test · Playground · Retell"
+
+
+def test_build_usage_resource_label_evaluator_suite_includes_evaluator_short_id():
+    db = _FakeDb(
+        agents=[_FakeAgent(AGENT_ID, name="Customer BOT Test", agent_id="567356")],
+        evaluators=[
+            _FakeEvaluator(EVALUATOR_ID, evaluator_id="998877", name="QA suite", agent_id=AGENT_ID)
+        ],
+    )
+    resolver = UsageNameResolver(db, ORG_ID)
+    resolver.preload(
+        [
+            {
+                "resource_type": "evaluator",
+                "resource_id": str(EVALUATOR_ID),
+                "agent_id": str(AGENT_ID),
+            }
+        ]
+    )
+    label = build_usage_resource_label(
+        {
+            "resource_type": "evaluator",
+            "resource_id": str(EVALUATOR_ID),
+            "agent_id": str(AGENT_ID),
+        },
+        "evaluator",
+        resolver,
+    )
+    assert label == "Customer BOT Test · QA suite"
+
+
+def test_build_usage_resource_label_evaluator_result_uses_friendly_name():
+    db = _FakeDb(
+        agents=[_FakeAgent(AGENT_ID, name="Customer BOT Test", agent_id="567356")],
+        evaluator_results=[
+            _FakeEvaluatorResult(
+                RESULT_ID,
+                result_id="325494",
+                agent_id=AGENT_ID,
+                name="Voice AI Call - Customer BOT Test",
+            )
+        ],
+    )
+    resolver = UsageNameResolver(db, ORG_ID)
+    resolver.preload(
+        [
+            {
+                "resource_type": "evaluator_result",
+                "resource_id": str(RESULT_ID),
+                "agent_id": str(AGENT_ID),
+            }
+        ]
+    )
+    label = build_usage_resource_label(
+        {
+            "resource_type": "evaluator_result",
+            "resource_id": str(RESULT_ID),
+            "agent_id": str(AGENT_ID),
+        },
+        "evaluator_result",
+        resolver,
+    )
+    assert label == "Customer BOT Test · Voice AI Call"
+
+
+def test_build_usage_resource_label_evaluator_result_uses_persona_and_scenario():
+    db = _FakeDb(
+        agents=[_FakeAgent(AGENT_ID, name="Customer BOT Test", agent_id="567356")],
+        evaluator_results=[
+            _FakeEvaluatorResult(
+                RESULT_ID,
+                result_id="325494",
+                agent_id=AGENT_ID,
+                persona_id=PERSONA_ID,
+                scenario_id=SCENARIO_ID,
+            )
+        ],
+        personas=[_FakePersona(PERSONA_ID, "Angry customer")],
+        scenarios=[_FakeScenario(SCENARIO_ID, "Billing dispute")],
+    )
+    resolver = UsageNameResolver(db, ORG_ID)
+    resolver.preload(
+        [
+            {
+                "resource_type": "evaluator_result",
+                "resource_id": str(RESULT_ID),
+                "agent_id": str(AGENT_ID),
+            }
+        ]
+    )
+    label = build_usage_resource_label(
+        {
+            "resource_type": "evaluator_result",
+            "resource_id": str(RESULT_ID),
+            "agent_id": str(AGENT_ID),
+        },
+        "evaluator_result",
+        resolver,
+    )
+    assert label == "Customer BOT Test · Angry customer · Billing dispute"

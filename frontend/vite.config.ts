@@ -27,8 +27,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
-    // Use relative paths for assets when building for production
-    base: './',
+    base: '/',
   },
   test: {
     environment: 'node',

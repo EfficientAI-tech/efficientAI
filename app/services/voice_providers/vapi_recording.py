@@ -12,7 +12,24 @@ def is_presigned_storage_url(url: Optional[str]) -> bool:
     return "X-Amz-Signature=" in url or "X-Amz-Algorithm=" in url
 
 
-def extract_vapi_recording_url(call_data: Any) -> Optional[str]:
+def extract_vapi_stereo_url(call_data: Any) -> Optional[str]:
+    """Prefer presigned stereo URL for dual-channel waveform."""
+    if not isinstance(call_data, dict):
+        return None
+
+    artifact = call_data.get("artifact") if isinstance(call_data.get("artifact"), dict) else {}
+    recording_urls = call_data.get("recording_urls") if isinstance(call_data.get("recording_urls"), dict) else {}
+
+    return (
+        artifact.get("presignedStereoUrl")
+        or call_data.get("presignedStereoUrl")
+        or call_data.get("stereoRecordingUrl")
+        or artifact.get("stereoRecordingUrl")
+        or recording_urls.get("stereo_url")
+    )
+
+
+def extract_vapi_recording_url(call_data: Any, *, stereo: bool = False) -> Optional[str]:
     """
     Resolve the best Vapi recording URL from provider call_data.
 
@@ -21,6 +38,11 @@ def extract_vapi_recording_url(call_data: Any) -> Optional[str]:
     """
     if not isinstance(call_data, dict):
         return None
+
+    if stereo:
+        stereo_url = extract_vapi_stereo_url(call_data)
+        if stereo_url:
+            return stereo_url
 
     artifact = call_data.get("artifact") if isinstance(call_data.get("artifact"), dict) else {}
     recording = artifact.get("recording") if isinstance(artifact.get("recording"), dict) else {}

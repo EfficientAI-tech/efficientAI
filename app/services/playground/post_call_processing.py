@@ -11,6 +11,43 @@ from app.models.database import CallRecording
 
 PLAYGROUND_CALL_DATA_PRESERVE_KEYS = ("ui_surface", "external_usage_recorded")
 
+_ENDED_STATUSES = frozenset(
+    {"ended", "completed", "failed", "end-of-call-report", "done"}
+)
+
+
+def call_metrics_indicate_ended(metrics: dict[str, Any]) -> bool:
+    status = str(metrics.get("call_status") or metrics.get("status") or "").lower()
+    end_timestamp = metrics.get("end_timestamp") or metrics.get("endedAt")
+    return bool(end_timestamp) or status in _ENDED_STATUSES
+
+
+def provider_metrics_enriched(provider_platform: str, metrics: dict[str, Any]) -> bool:
+    """True when the provider payload has analysis and/or pipeline latency details."""
+    plat = str(provider_platform or "").lower()
+    if plat == "vapi":
+        analysis = metrics.get("analysis") if isinstance(metrics.get("analysis"), dict) else {}
+        perf = (metrics.get("artifact") or {}).get("performanceMetrics") or {}
+        return bool(analysis.get("summary")) or bool(perf.get("turnLatencies"))
+    if plat == "retell":
+        return bool(metrics.get("call_analysis")) or bool(metrics.get("latency"))
+    if plat == "elevenlabs":
+        status = str(metrics.get("status") or "").lower()
+        return status in {"done", "completed"} or bool(metrics.get("conversation_turn_metrics"))
+    if plat == "smallest":
+        raw = metrics.get("raw_data") if isinstance(metrics.get("raw_data"), dict) else {}
+        latency_stats = raw.get("latencyStats") if isinstance(raw.get("latencyStats"), dict) else {}
+        has_latency = bool(latency_stats) or any(
+            raw.get(key) is not None
+            for key in (
+                "average_transcriber_latency",
+                "average_agent_latency",
+                "average_synthesizer_latency",
+            )
+        )
+        return has_latency or bool(metrics.get("transcript"))
+    return call_metrics_indicate_ended(metrics)
+
 
 def merge_playground_call_data(
     prev: Optional[dict[str, Any]],
@@ -131,3 +168,79 @@ def claim_playground_evaluator_result_slot(
         return None
 
     return locked
+
+
+def persist_provider_call_metrics(
+    db: Session,
+    call_recording_id: UUID,
+    call_metrics: dict[str, Any],
+) -> bool:
+    """Update stored provider call_data without creating an evaluator result."""
+    from app.models.enums import CallRecordingStatus
+
+    locked = _lock_call_recording(db, call_recording_id)
+    if not locked:
+        db.rollback()
+        return False
+
+    prev_data = locked.call_data if isinstance(locked.call_data, dict) else {}
+    merged = merge_playground_call_data(prev_data, call_metrics)
+    locked.call_data = merged
+    locked.status = CallRecordingStatus.UPDATED
+    db.commit()
+    return True
+
+
+def refresh_call_metrics_sync(
+    call_recording_id: UUID,
+    provider_call_id: str,
+    provider_platform: str,
+    integration_api_key: str,
+    *,
+    max_attempts: int = 12,
+    poll_interval: int = 2,
+) -> bool:
+    """Poll provider payloads for manual refresh; returns True when enriched."""
+    import time
+
+    from app.database import SessionLocal
+    from app.services.voice_providers import get_voice_provider
+
+    db = SessionLocal()
+    try:
+        call_recording = db.query(CallRecording).filter(CallRecording.id == call_recording_id).first()
+        if not call_recording or not provider_call_id:
+            return False
+
+        try:
+            provider_class = get_voice_provider(provider_platform)
+            provider = provider_class(api_key=integration_api_key)
+        except ValueError:
+            return False
+
+        if not hasattr(provider, "retrieve_call_metrics"):
+            return False
+
+        latest_metrics: dict[str, Any] | None = None
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                time.sleep(poll_interval)
+            try:
+                call_metrics = provider.retrieve_call_metrics(provider_call_id)
+                if not isinstance(call_metrics, dict):
+                    continue
+                persist_provider_call_metrics(db, call_recording_id, call_metrics)
+                latest_metrics = call_metrics
+                if provider_metrics_enriched(provider_platform, call_metrics):
+                    return True
+                if call_metrics_indicate_ended(call_metrics) and attempt >= 3:
+                    return provider_metrics_enriched(provider_platform, call_metrics)
+            except Exception as exc:
+                logger.warning("[Refresh Call Metrics] attempt {} failed: {}", attempt + 1, exc)
+
+        if latest_metrics is not None:
+            return provider_metrics_enriched(provider_platform, latest_metrics)
+        return False
+    finally:
+        db.close()
+

@@ -111,6 +111,33 @@ def test_csp_allows_frame_src_for_pdf_preview_and_voice(security_client, monkeyp
     assert "https://*.blob.core.windows.net" in policy
 
 
+def test_csp_skipped_for_openapi_docs_paths(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "CSP_ENABLED", True)
+    monkeypatch.setattr(settings, "CSP_REPORT_ONLY", False)
+
+    @security_client.app.get("/docs")
+    def swagger_docs():
+        return {"ok": True}
+
+    @security_client.app.get("/docs/oauth2-redirect")
+    def swagger_oauth():
+        return {"ok": True}
+
+    @security_client.app.get("/redoc")
+    def redoc():
+        return {"ok": True}
+
+    @security_client.app.get("/openapi.json")
+    def openapi():
+        return {"openapi": "3.1.0"}
+
+    for path in ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"):
+        response = security_client.get(path)
+        assert response.status_code == 200
+        assert "Content-Security-Policy" not in response.headers
+        assert "Content-Security-Policy-Report-Only" not in response.headers
+
+
 def test_asset_routes_use_long_cache(security_client):
     response = security_client.get("/assets/app.js")
 

@@ -19,6 +19,8 @@ const WORKSPACE_DETAIL_REDIRECTS: Array<{ pattern: RegExp; parent: string }> = [
   { pattern: /^\/playground\/call-recordings\/[^/]+$/, parent: '/playground' },
   { pattern: /^\/playground\/test-agent-results\/[^/]+$/, parent: '/playground' },
   { pattern: /^\/observability\/calls\/[^/]+$/, parent: '/observability/calls' },
+  { pattern: /^\/call-traces\/[^/]+$/, parent: '/observability/calls' },
+  { pattern: /^\/calls\/[^/]+$/, parent: '/observability/calls' },
   { pattern: /^\/judge-alignment\/datasets\/[^/]+$/, parent: '/judge-alignment' },
   { pattern: /^\/prompt-partials\/[^/]+$/, parent: '/prompt-partials' },
 ]

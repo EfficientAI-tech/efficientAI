@@ -518,6 +518,7 @@ async def run_voice_bundle_fastapi(
     caller_opening_text: str | None = None,
     call_direction: str = "outbound",
     persona_speaks_via_tts: bool = False,
+    tracing_task_kwargs: dict | None = None,
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
@@ -785,6 +786,7 @@ async def run_voice_bundle_fastapi(
         )
 
         pipeline_task_ref: list = []
+        sut_latency_observer = None
 
         async def on_silence_hangup():
             if pipeline_task_ref:
@@ -858,9 +860,14 @@ async def run_voice_bundle_fastapi(
         pipeline = imports["Pipeline"](pipeline_processors)
 
         if telephony_mode:
+            from app.services.voice_agent.sut_latency_observer import SutLatencyObserver
+
+            sut_latency_observer = SutLatencyObserver()
             task = imports["PipelineTask"](
                 pipeline,
                 params=pipeline_task_params,
+                observers=[sut_latency_observer],
+                **(tracing_task_kwargs or {}),
             )
             pipeline_task_ref.append(task)
 
@@ -909,6 +916,7 @@ async def run_voice_bundle_fastapi(
                 pipeline,
                 params=pipeline_task_params,
                 observers=[imports["RTVIObserver"](rtvi)],
+                **(tracing_task_kwargs or {}),
             )
             if silence_hangup_processor:
                 pipeline_task_ref.append(task)
@@ -975,6 +983,9 @@ async def run_voice_bundle_fastapi(
             await bot_recorder.cleanup()
 
             if telephony_mode and call_short_id:
+                trace_turns = (
+                    sut_latency_observer.get_turns() if sut_latency_observer else None
+                )
                 try:
                     from app.workers.celery_app import finalize_telephony_recording_task
 
@@ -990,6 +1001,7 @@ async def run_voice_bundle_fastapi(
                         transcript_text=transcript_text,
                         duration=duration_result,
                         call_direction=call_direction,
+                        trace_turns=trace_turns,
                     )
                     logger.info(
                         "Queued finalize_telephony_recording for call_short_id={} "
@@ -1029,6 +1041,7 @@ async def run_voice_bundle_fastapi(
                             transcript_text=transcript_text,
                             s3_key=s3_key_result,
                             duration=duration_result,
+                            trace_turns=trace_turns,
                         )
                     finally:
                         db.close()

@@ -89,6 +89,13 @@ async def _api_lifespan(app: FastAPI):
 
         log_startup_status(component="api")
 
+        from app.services.clickhouse.client import clickhouse_enabled
+        from app.services.clickhouse.schema import ensure_schema
+
+        if clickhouse_enabled():
+            ensure_schema()
+            logger.info("ClickHouse trace schema initialized")
+
     logger.info("Application startup complete - Ready to serve requests")
     logger.info("=" * 60)
     yield

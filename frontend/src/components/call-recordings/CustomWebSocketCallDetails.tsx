@@ -3,6 +3,7 @@ import {
   MessageSquare,
   Clock,
   Globe,
+  Download,
   Loader,
   TrendingUp,
   CheckCircle,
@@ -12,7 +13,8 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import RecordingAudioPlayer from '../audio/RecordingAudioPlayer'
+import SyntheticCallTracePanel from './SyntheticCallTracePanel'
+import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
 
 interface SpeakerSegment {
   speaker: string
@@ -243,8 +245,9 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
             </div>
           </div>
           <div className="p-3 bg-gray-50 rounded-lg">
-            <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">User / Agent turns</p>
-            <p className="text-sm font-medium text-gray-900">{userTurns} / {agentTurns}</p>
+            <p className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-1">Transcript turns</p>
+            <p className="text-sm font-medium text-gray-900">{userTurns} user / {agentTurns} agent</p>
+            <p className="text-[10px] text-gray-400 mt-1">From diarized transcript, not OTLP trace turns</p>
           </div>
         </div>
       </div>
@@ -260,33 +263,31 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
         </h3>
         <div className="flex items-center gap-3">
           {audioLoading && <Loader className="h-4 w-4 text-gray-400 animate-spin" />}
+          {audioBlobUrl && (
+            <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+              <audio controls src={audioBlobUrl} className="h-8 w-64" />
+              <a
+                href={audioBlobUrl}
+                download={`call_${callShortId || 'recording'}.webm`}
+                className="text-gray-500 hover:text-indigo-600 p-1"
+              >
+                <Download className="h-4 w-4" />
+              </a>
+            </div>
+          )}
           {audioError && hasAudio && (
             <span className="text-xs text-gray-400">Audio unavailable</span>
           )}
         </div>
       </div>
-      {audioBlobUrl && (
-        <div className="mb-4 flex-shrink-0">
-          <RecordingAudioPlayer
-            src={audioBlobUrl}
-            downloadUrl={audioBlobUrl}
-          />
-        </div>
-      )}
 
       <div className="flex-1 overflow-y-auto space-y-4 pr-2">
         {segments.length > 0 ? (
           segments.map((seg, idx) => (
             <div key={idx} className={`flex ${isUserSpeaker(seg.speaker) ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                isUserSpeaker(seg.speaker)
-                  ? 'bg-indigo-600 text-white rounded-br-none'
-                  : 'bg-gray-100 text-gray-800 rounded-bl-none'
-              }`}>
-                <div className="flex items-center gap-2 mb-1 opacity-80">
-                  <span className="text-xs font-semibold uppercase tracking-wider">
-                    {getSpeakerLabel(seg.speaker)}
-                  </span>
+              <div className={transcriptBubbleClass(isUserSpeaker(seg.speaker), '80')}>
+                <div className={`${transcriptMetaClass(isUserSpeaker(seg.speaker))} opacity-90`}>
+                  <span>{getSpeakerLabel(seg.speaker)}</span>
                 </div>
                 <p className="text-sm leading-relaxed whitespace-pre-wrap">{seg.text}</p>
               </div>
@@ -392,6 +393,9 @@ export default function CustomWebSocketCallDetails({ callData, callShortId }: Pr
       {activeTab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
+            {callShortId && (
+              <SyntheticCallTracePanel callShortId={callShortId} />
+            )}
             <SummaryCard />
             <TranscriptCard />
           </div>

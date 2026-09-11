@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Integration, IntegrationPlatform } from '../../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../../config/providers'
+import VoiceAgentPicker from './VoiceAgentPicker'
 
 const PLATFORM_OPTIONS: IntegrationPlatform[] = [
   IntegrationPlatform.VAPI,
@@ -52,7 +53,7 @@ export default function PlatformConnectStep({
       </div>
 
       <p className="text-sm text-gray-600">
-        Choose a voice AI platform and connect it with your integration credentials and external Agent ID.
+        Choose a voice AI platform, pick an integration, and select the external agent to test.
       </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -115,16 +116,14 @@ export default function PlatformConnectStep({
                           ))}
                         </select>
                       </div>
-                      <div>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">Agent ID *</label>
-                        <input
-                          type="text"
+                      {voiceAiIntegrationId ? (
+                        <VoiceAgentPicker
+                          integrationId={voiceAiIntegrationId}
+                          platformLabel={label}
                           value={voiceAiAgentId}
-                          onChange={(e) => onAgentIdChange(e.target.value)}
-                          placeholder={`Enter ${label} agent ID`}
-                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500 font-mono"
+                          onChange={onAgentIdChange}
                         />
-                      </div>
+                      ) : null}
                     </>
                   )}
                 </div>

@@ -222,6 +222,29 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
 
+    def iter_file_chunks_by_key(self, key: str, chunk_size: int = 8192):
+        """Stream file content from S3 in chunks (lower time-to-first-byte than full download)."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
+            body = response["Body"]
+            while True:
+                chunk = body.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in {"NoSuchKey", "404"}:
+                raise StorageError(f"File not found in S3: {key}")
+            raise StorageError(f"Failed to stream file from S3: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error streaming file from S3: {str(e)}")
+
     def delete_file(self, file_id: uuid.UUID, file_format: str) -> bool:
         """Delete file from S3."""
         self._ensure_initialized()
@@ -354,6 +377,34 @@ class S3Service:
             return False
         except Exception:
             return False
+
+    def list_objects_with_prefix(
+        self,
+        prefix: str,
+        *,
+        contains: str = "",
+        max_keys: int = 500,
+    ) -> List[tuple]:
+        """List object keys under prefix; returns (key, last_modified) tuples."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            return []
+
+        try:
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix,
+                MaxKeys=max_keys,
+            )
+            out: List[tuple] = []
+            for obj in response.get("Contents") or []:
+                key = obj["Key"]
+                if contains and contains not in key:
+                    continue
+                out.append((key, obj.get("LastModified")))
+            return out
+        except Exception as exc:
+            raise StorageError(f"Failed to list S3 objects: {exc}")
 
     def list_audio_files(self, prefix: Optional[str] = None, max_keys: int = 1000, organization_id: Optional[str] = None) -> List[dict]:
         """List audio files in S3 bucket."""

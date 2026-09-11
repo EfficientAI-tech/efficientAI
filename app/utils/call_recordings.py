@@ -5,7 +5,7 @@ import random
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models.database import CallRecording
+from app.models.database import CallRecording, SyntheticCallTrace
 
 
 def generate_unique_call_short_id(db: Session, max_attempts: int = 100) -> str:
@@ -29,8 +29,24 @@ def generate_unique_call_short_id(db: Session, max_attempts: int = 100) -> str:
             .filter(CallRecording.call_short_id == call_short_id)
             .first()
         )
-        if not existing:
-            return call_short_id
+        if existing:
+            continue
+        trace_existing = (
+            db.query(SyntheticCallTrace)
+            .filter(SyntheticCallTrace.call_short_id == call_short_id)
+            .first()
+        )
+        if trace_existing:
+            continue
+        try:
+            from app.services.clickhouse.client import clickhouse_enabled
+            from app.services.synthetic_traces.clickhouse_store import call_short_id_exists
+
+            if clickhouse_enabled() and call_short_id_exists(call_short_id):
+                continue
+        except Exception:
+            pass
+        return call_short_id
 
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -379,6 +379,20 @@ export interface IntegrationCreate {
   is_default?: boolean
 }
 
+export interface IntegrationVoiceAgentListItem {
+  id: string
+  name: string
+}
+
+export interface ListIntegrationVoiceAgentsResponse {
+  agents: IntegrationVoiceAgentListItem[]
+  platform: string
+  cached: boolean
+  truncated: boolean
+  list_supported: boolean
+  message?: string | null
+}
+
 // VoiceBundle Types
 export enum ModelProvider {
   OPENAI = 'openai',

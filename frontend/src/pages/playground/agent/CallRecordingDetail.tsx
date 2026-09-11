@@ -2,15 +2,16 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
+import { getCallRecordingPlaceholder, hasEnrichedCallRecordingDetails, refreshCallRecordingQueries } from '../../../lib/callRecordingQuery'
 import ConfirmModal from '../../../components/ConfirmModal'
-import { ArrowLeft, RefreshCw, Trash2, BarChart3, CheckCircle, XCircle, HelpCircle, Brain, Sparkles, AudioWaveform, Loader, RotateCcw } from 'lucide-react'
+import { ArrowLeft, RefreshCw, Trash2, BarChart3, CheckCircle, XCircle, HelpCircle, Brain, Sparkles, AudioWaveform, Loader, RotateCcw, Activity } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
-import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
-import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
-import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
+import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
+import { prefetchCallRecordingAudio } from '../../../lib/waveformAudioCache'
 import CustomWebSocketCallDetails from '../../../components/call-recordings/CustomWebSocketCallDetails'
-import SmallestCallDetails from '../../../components/call-recordings/SmallestCallDetails'
+import { getIntegrationPlatformLabel } from '../../../config/providers'
+import { IntegrationPlatform } from '../../../types/api'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -404,11 +405,18 @@ export default function CallRecordingDetail() {
   const { showToast, ToastContainer } = useToast()
   const [showDelete, setShowDelete] = useState(false)
   const [reEvalInProgress, setReEvalInProgress] = useState(false)
+  const [callDrawerOpen, setCallDrawerOpen] = useState(false)
 
   const { data: callRecording, refetch: refetchCallDetails, isLoading } = useQuery({
     queryKey: ['call-recording', callShortId],
     queryFn: () => apiClient.getCallRecording(callShortId!),
     enabled: !!callShortId,
+    placeholderData: () =>
+      callShortId ? getCallRecordingPlaceholder(queryClient, callShortId) : undefined,
+    refetchOnMount: (query) =>
+      hasEnrichedCallRecordingDetails(query.state.data as Record<string, unknown> | undefined)
+        ? true
+        : 'always',
     refetchInterval: (query) => {
       const data = query.state.data as any
       const inProgress = reEvalInProgress || (data?.evaluation?.status && ['queued', 'transcribing', 'evaluating'].includes(data.evaluation.status))
@@ -436,6 +444,37 @@ export default function CallRecordingDetail() {
     return ids
   }, [metrics])
 
+  const formatPlatformLabel = (platform: string | null | undefined): string => {
+    if (!platform) return 'N/A'
+    if (platform === 'custom_websocket') return 'Custom WebSocket'
+    if (platform === 'voice_bundle') return 'Test Agent (internal)'
+    const normalized = platform.toLowerCase()
+    if (
+      normalized === IntegrationPlatform.RETELL ||
+      normalized === IntegrationPlatform.VAPI ||
+      normalized === IntegrationPlatform.ELEVENLABS ||
+      normalized === IntegrationPlatform.SMALLEST
+    ) {
+      return getIntegrationPlatformLabel(normalized as IntegrationPlatform)
+    }
+    return platform
+  }
+
+  const isVoiceAiPlatform = (platform: string | null | undefined): boolean => {
+    const normalized = (platform || '').toLowerCase()
+    return (
+      normalized === IntegrationPlatform.RETELL ||
+      normalized === IntegrationPlatform.VAPI ||
+      normalized === IntegrationPlatform.ELEVENLABS ||
+      normalized === IntegrationPlatform.SMALLEST
+    )
+  }
+
+  const openCallDrawer = () => {
+    if (callShortId) prefetchCallRecordingAudio(callShortId, false)
+    setCallDrawerOpen(true)
+  }
+
   const shouldHideMetricScore = (
     metricId: string,
     metric: { parent_metric_id?: string | null; type?: string | null; metric_name?: string | null },
@@ -453,13 +492,17 @@ export default function CallRecordingDetail() {
     }
   }, [callRecording?.evaluation?.status, reEvalInProgress])
 
+  useEffect(() => {
+    if (!callRecording) return
+    if (callRecording.provider_platform === 'voice_bundle' && callRecording.evaluator_result_id) {
+      navigate(`/playground/test-agent-results/${callRecording.evaluator_result_id}`, { replace: true })
+    }
+  }, [callRecording, navigate])
+
   const refreshMutation = useMutation({
-    mutationFn: () => apiClient.refreshCallRecording(callShortId!),
+    mutationFn: () => refreshCallRecordingQueries(queryClient, callShortId!),
     onSuccess: () => {
-      showToast('Call recording refresh initiated', 'success')
-      setTimeout(() => {
-        refetchCallDetails()
-      }, 2000)
+      showToast('Call recording refreshed', 'success')
     },
     onError: (error: any) => {
       showToast(`Failed to refresh: ${error.response?.data?.detail || error.message}`, 'error')
@@ -497,7 +540,7 @@ export default function CallRecordingDetail() {
     setShowDelete(true)
   }
 
-  if (isLoading) {
+  if (isLoading && !callRecording) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-gray-600">Loading call recording...</div>
@@ -542,14 +585,23 @@ export default function CallRecordingDetail() {
                 </p>
               </div>
               <div className="flex gap-2">
-                {callRecording.status === 'PENDING' && (
+                {isVoiceAiPlatform(callRecording.provider_platform) && callShortId ? (
+                  <Button
+                    variant="outline"
+                    onClick={openCallDrawer}
+                    leftIcon={<Activity className="h-4 w-4" />}
+                  >
+                    Call details
+                  </Button>
+                ) : null}
+                {(callRecording.status === 'PENDING' || isVoiceAiPlatform(callRecording.provider_platform)) && (
                   <Button
                     variant="outline"
                     onClick={() => refreshMutation.mutate()}
                     leftIcon={<RefreshCw className="h-4 w-4" />}
                     isLoading={refreshMutation.isPending}
                   >
-                    Refresh
+                    {isVoiceAiPlatform(callRecording.provider_platform) ? 'Sync provider data' : 'Refresh'}
                   </Button>
                 )}
                 {callRecording.call_data && callRecording.provider_call_id && (
@@ -609,9 +661,7 @@ export default function CallRecordingDetail() {
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
                 <p className="text-sm text-gray-900">
-                  {callRecording.provider_platform === 'custom_websocket'
-                    ? 'Custom WebSocket'
-                    : callRecording.provider_platform || 'N/A'}
+                  {formatPlatformLabel(callRecording.provider_platform)}
                 </p>
               </div>
               <div>
@@ -794,28 +844,37 @@ export default function CallRecordingDetail() {
           </div>
         )}
 
-        {/* Call Data */}
+        {/* Call Data — non–Voice AI only; Voice AI uses the Call details drawer */}
+        {!isVoiceAiPlatform(callRecording.provider_platform) ? (
         <div className="bg-white shadow rounded-lg p-6">
           {callRecording.call_data ? (
             <>
-              {callRecording.provider_platform === 'retell' ? (
-                <RetellCallDetails callData={callRecording.call_data} />
-              ) : callRecording.provider_platform === 'vapi' ? (
-                <VapiCallDetails callData={callRecording.call_data} />
-              ) : callRecording.provider_platform === 'elevenlabs' ? (
-                <ElevenLabsCallDetails callData={callRecording.call_data} callShortId={callShortId} />
-              ) : callRecording.provider_platform === 'custom_websocket' ? (
-                <CustomWebSocketCallDetails callData={callRecording.call_data} callShortId={callShortId} />
-              ) : callRecording.provider_platform === 'smallest' ? (
-                <SmallestCallDetails callData={callRecording.call_data} />
-              ) : (
-                <>
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>
-                  <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs max-h-[600px]">
-                    {JSON.stringify(callRecording.call_data, null, 2)}
-                  </pre>
-                </>
-              )}
+              {(() => {
+                const platform = (callRecording.provider_platform || '').toLowerCase()
+                if (platform === 'custom_websocket') {
+                  return (
+                    <CustomWebSocketCallDetails
+                      callData={callRecording.call_data}
+                      callShortId={callShortId}
+                    />
+                  )
+                }
+                if (platform === 'voice_bundle') {
+                  return (
+                    <div className="text-sm text-gray-600">
+                      This is an internal test-agent call. Open it from the Test Agents tab for full details.
+                    </div>
+                  )
+                }
+                return (
+                  <>
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>
+                    <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs max-h-[600px]">
+                      {JSON.stringify(callRecording.call_data, null, 2)}
+                    </pre>
+                  </>
+                )
+              })()}
             </>
           ) : (
             <div className="text-center py-8 text-gray-500">
@@ -823,7 +882,15 @@ export default function CallRecordingDetail() {
             </div>
           )}
         </div>
+        ) : null}
+
       </div>
+
+      <TraceDetailDrawer
+        open={callDrawerOpen}
+        callShortId={callShortId ?? null}
+        onClose={() => setCallDrawerOpen(false)}
+      />
 
       <ConfirmModal
         title="Delete call recording"
