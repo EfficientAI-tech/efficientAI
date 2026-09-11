@@ -16,21 +16,21 @@
 
 EfficientAI ingests **OpenTelemetry spans** from voice agents during live calls. Unlike batch analytics (call import, evaluations), trace ingest is **continuous, high-frequency, and latency-sensitive** — spans arrive every few seconds for the entire call duration.
 
-**What we built (Phase 2 + Layout 3):**
-- Thin API: stage raw OTLP → **202** in milliseconds
-- Dedicated `worker-traces` Celery queue: parse, correlate, append-only batch INSERT
-- Debounced derive: turns + p50/p90/p95 without O(all spans) per batch
-- S3 offload on close: PG holds live spans only during the call
-- Rate limits, idle sweep, staging retention
+**What we built (S3 WAL + ClickHouse):**
+- Thin API: S3 batch PUT + **202** in milliseconds (no PG BYTEA staging)
+- Dedicated `worker-traces` Celery queue: `process_s3_otlp_batch` → ClickHouse observations + headers
+- Debounced derive: turns + p50/p90/p95; Redis live turns during open calls
+- S3 WAL batches during call; optional `spans.json` compact on close
+- Rate limits, idle sweep, orphan S3 batch sweeper
 
 **Capacity shift:**
 
 | Era | Comfortable concurrent OTLP calls | Primary bottleneck |
 | --- | --- | --- |
 | Phase 1 (sync JSONB rewrite) | 10–20 | API CPU + Postgres row locks |
-| Phase 2 + Layout 3 (now) | 100–500 (with worker scale-out) | `worker-traces` throughput, then Postgres writes |
-| Phase 3 (OTel Collector + gRPC) | 2,000–10,000+ ingest | Postgres catalog + derive CPU |
-| Phase 4 (shard / columnar TSDB) | 10,000+ concurrent, 100M+ traces | Cross-tenant query cost, retention economics |
+| S3 WAL + ClickHouse (now) | 100–500+ (with worker scale-out) | `worker-traces` throughput, ClickHouse insert IOPS |
+| Phase 3 (OTel Collector + gRPC) | 2,000–10,000+ ingest | ClickHouse derive CPU + S3 WAL fan-in |
+| Phase 4 (CH cluster / retention tiers) | 10,000+ concurrent, 100M+ traces | Cross-tenant query cost, retention economics |
 
 **Key insight for brainstorming:** Each optimization **moves** the bottleneck, it does not remove it. Faster ingest (gRPC, collector) pushes pressure to **Postgres write IOPS**, **derive CPU**, **S3 close spikes**, and **list/query paths**. Plan each layer independently.
 
@@ -77,7 +77,7 @@ This is closer to **session observability** than request tracing — design choi
 
 ---
 
-## 2. Current implementation (Phase 2 + Layout 3)
+## 2. Current implementation (S3 WAL + ClickHouse)
 
 ### 2.1 Architecture
 
@@ -87,79 +87,83 @@ Customer Pipecat / SDK
         ▼
 ┌───────────────────────────────────────────────────────────────┐
 │  API (FastAPI)                                                 │
-│  • Auth (API key) + workspace scope                            │
+│  • Auth (API key, Redis cache) + workspace scope                 │
 │  • Rate limit (Redis, 120/min per key default)                 │
-│  • INSERT synthetic_trace_ingest_staging (raw bytes)           │
-│  • Enqueue process_staged_otlp(staging_id)                     │
+│  • S3 PUT .../traces/{uuid}/batches/{seq}.json                 │
+│  • Enqueue process_s3_otlp_batch(s3_key, ...)                  │
 │  • Return 202                                                │
 └───────────────────────────┬───────────────────────────────────┘
                             │ Celery (Redis broker)
                             ▼
 ┌───────────────────────────────────────────────────────────────┐
 │  worker-traces (queue: traces, concurrency 8 threads default)  │
-│  process_staged_otlp  → parse, correlate, INSERT span_batch  │
-│  derive_trace_turns   → turns JSON + p50/p90/p95 on header     │
-│  close_and_offload    → S3 spans.json, DELETE batches        │
-│  sweep_idle_traces    → close if idle ≥120s (beat every 30s) │
-│  sweep_staging_ingest → delete staging >48h (beat hourly)    │
+│  process_s3_otlp_batch → parse, correlate, CH observations   │
+│  derive_trace_turns    → turns + p50/p90/p95 on CH header      │
+│  close_and_offload     → optional S3 spans.json compact        │
+│  sweep_idle_traces     → close if idle ≥120s (beat every 30s)  │
+│  sweep_orphan_s3_batches → re-enqueue stale WAL keys (15m)     │
 └───────────────────────────┬───────────────────────────────────┘
                             │
         ┌───────────────────┼───────────────────┐
         ▼                   ▼                   ▼
-   Postgres            Redis               S3
-   (headers,           (broker,            (spans.json
-    batches,            debounce,           on close)
-    staging,             rate limits)
-    turns)
+   ClickHouse           Redis               S3
+   (call_traces,        (broker,            (batch WAL +
+    observations)        live turns,         spans.json)
+                         debounce)
 ```
 
 ### 2.2 Data stores and lifetimes
 
 | Store | Table / object | Lifetime | Purpose |
 | --- | --- | --- | --- |
-| Postgres | `synthetic_call_traces` | Permanent | List row, status, latencies |
-| Postgres | `synthetic_trace_payloads` | Permanent | Derived turns (waterfall) |
-| Postgres | `synthetic_trace_span_batches` | **Open call only** | Append-only OTLP batches |
-| Postgres | `synthetic_trace_ingest_staging` | ≤48h | Raw OTLP before worker parse |
-| S3 | `.../traces/{trace_uuid}/spans.json` | Permanent (no TTL yet) | Cold span archive |
-| Redis | Celery + locks + rate keys | Seconds–hours | Not span storage |
+| ClickHouse | `call_traces` | Permanent | List row, status, latencies, turns JSON |
+| ClickHouse | `trace_observations` | Permanent | Normalized spans (waterfall) |
+| S3 | `.../traces/{uuid}/batches/{seq}.json` | Open call (WAL) | Raw OTLP before worker parse |
+| S3 | `.../traces/{trace_uuid}/spans.json` | Permanent (optional) | Compact archive on close |
+| Postgres | `evaluator_results.synthetic_call_trace_id` | Permanent | Control-plane link only |
+| Redis | `trace:live:{uuid}`, batch seq | TTL ~180s | Live drawer turns |
 
-**S3 key:**
+**S3 WAL key:**
+`{prefix}organizations/{org_id}/workspaces/{workspace_id}/traces/{trace_uuid}/batches/{seq}.json`
+
+**Compact key (on close):**
 `{prefix}organizations/{org_id}/workspaces/{workspace_id}/traces/{trace_uuid}/spans.json`
 
-One object per **trace session** (UUID). `call_short_id` is the business-facing 6-digit ID.
+See also: [Call Traces Storage Decision](call-traces-storage-decision-tdd-confluence.md).
 
-### 2.3 Current infra (docker-compose / staging)
+### 2.3 Current infra (docker-compose)
 
 | Service | Role | Scale note |
 | --- | --- | --- |
 | `api` | HTTP ingest + UI API | Horizontally scalable; stateless |
-| `db` (Postgres 15) | Single catalog instance | **Not sharded for traces today** |
-| `redis` | Celery broker | Single instance |
+| `clickhouse` | Trace serving store | Single-node local; cluster for prod scale |
+| `db` (Postgres 15) | Control plane only | Orgs, workspaces, API keys, evaluator links |
+| `redis` | Celery broker + live turns | Single instance |
 | `worker-traces` | Trace Celery tasks | Dedicated queue; scale replicas |
 | `beat` | Periodic sweeps | **Single replica** (do not scale) |
-| S3 | Span archive | Unlimited; per-close PUT latency |
+| S3 | WAL batches + span archive | Unlimited; per-batch PUT latency |
 
-**Existing sharding elsewhere:** `app/db_sharding/` routes evaluator payloads and call recordings to data shards. **Traces are catalog-only today** — they do not use live-entity sharding yet.
+**Existing sharding elsewhere:** `app/db_sharding/` routes evaluator payloads and call recordings to data shards. Trace span bytes live in ClickHouse + S3, not PG shards.
 
 ### 2.4 Configuration (defaults)
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `defer_parse_to_worker` | `true` | Layout 3 thin API |
+| `clickhouse.url` | `http://clickhouse:8123` (docker) | Required for deferred ingest |
+| `defer_parse_to_worker` | `true` | S3 WAL thin API |
 | `rate_limit_per_minute` | `120` | Per API key ingest cap |
 | `derive_debounce_seconds` | `3` | Coalesce derive jobs per trace |
 | `idle_close_seconds` | `120` | Auto-close idle traces |
-| `staging_retention_hours` | `48` | Staging cleanup |
+| `live_turns_ttl_seconds` | `180` | Redis live drawer TTL |
 | `max_body_bytes` | 4 MB | Per OTLP POST |
 
 ### 2.5 Validated numbers (local, Pipecat WebRTC)
 
 | Step | Observed |
 | --- | --- |
-| API 202 ack | Fast path (staging INSERT only) |
-| `process_staged_otlp` | ~30–50 ms |
-| `close_and_offload_trace` | ~1.75 s (derive + S3 + batch delete) |
+| API 202 ack | Fast path (S3 PUT + enqueue only) |
+| `process_s3_otlp_batch` | ~30–50 ms |
+| `close_and_offload_trace` | ~1.75 s (derive + optional S3 compact) |
 
 Load test harness: `scripts/load_test_trace_ingest.py` (default 20 concurrent calls, 5s interval).
 

@@ -152,6 +152,14 @@ traces:
   list_default_days: 90
   defer_parse_to_worker: true
   staging_retention_hours: 48
+  live_turns_ttl_seconds: 180
+  api_key_cache_ttl_seconds: 300
+
+clickhouse:
+  url: "http://localhost:8123"
+  database: "efficientai"
+  user: "default"
+  password: ""
 
 # -----------------------------------------------------------------------------
 # Authentication

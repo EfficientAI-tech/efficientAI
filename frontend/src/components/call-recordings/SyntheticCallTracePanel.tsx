@@ -9,6 +9,7 @@ import {
   ChevronRight,
   ExternalLink,
   Layers,
+  Loader2,
   MessageSquare,
   Radio,
   X,
@@ -111,6 +112,36 @@ const TABS: Array<{ id: DetailTab; label: string; icon: typeof Activity }> = [
   { id: 'timeline', label: 'Timeline', icon: Clock },
   { id: 'spans', label: 'Spans', icon: Layers },
 ]
+
+function TracePanelSkeleton({
+  embedded = false,
+  compact = false,
+  message = 'Loading trace…',
+}: {
+  embedded?: boolean
+  compact?: boolean
+  message?: string
+}) {
+  if (compact) {
+    return (
+      <div className={`flex flex-col items-center justify-center gap-3 ${embedded ? 'py-12' : 'py-16'}`}>
+        <Loader2 className="h-6 w-6 animate-spin text-primary-500" />
+        <p className="text-sm text-gray-500">{message}</p>
+      </div>
+    )
+  }
+  return (
+    <div className={`space-y-3 ${embedded ? 'p-1' : 'p-5'}`}>
+      <div className="flex items-center gap-3">
+        <Loader2 className="h-5 w-5 animate-spin text-primary-500" />
+        <p className="text-sm text-gray-500">{message}</p>
+      </div>
+      <div className="h-8 w-48 animate-pulse rounded-lg bg-gray-100" />
+      <div className={`animate-pulse rounded-xl bg-gray-100 ${embedded ? 'h-32' : 'h-48'}`} />
+      <div className="h-64 animate-pulse rounded-xl bg-gray-100" />
+    </div>
+  )
+}
 
 function TraceTabBar({
   tabs,
@@ -443,7 +474,7 @@ export default function SyntheticCallTracePanel({
   const lookupKey = traceId ?? callShortId ?? evaluatorResultId
   const lookupMode = traceId ? 'by-trace' : callShortId ? 'by-call-short-id' : 'by-result'
 
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading, isFetching, isError, error } = useQuery({
     queryKey: ['synthetic-call-trace', lookupKey, lookupMode],
     queryFn: () => {
       if (traceId) return apiClient.getSyntheticCallTrace(traceId, false)
@@ -457,12 +488,22 @@ export default function SyntheticCallTracePanel({
   const needsSpans = tab === 'spans' || tab === 'waterfall' || tab === 'trace' || tab === 'timeline'
   const resolvedTraceId = traceId ?? data?.id
 
-  const { data: spansData, isLoading: spansLoading } = useQuery({
+  const {
+    data: spansData,
+    isLoading: spansLoading,
+    isFetching: spansFetching,
+  } = useQuery({
     queryKey: ['synthetic-call-trace-spans', resolvedTraceId],
     queryFn: () => apiClient.getSyntheticCallTraceSpans(resolvedTraceId!),
     enabled: needsSpans && Boolean(resolvedTraceId),
     retry: false,
   })
+
+  const traceHeaderLoading = !data && (isLoading || isFetching)
+  const spansPending =
+    needsSpans &&
+    Boolean(resolvedTraceId) &&
+    (spansLoading || (spansFetching && spansData === undefined))
 
   const otelSpans = ((needsSpans ? spansData?.otel_spans : data?.otel_spans) ?? []) as OtelSpan[]
   const spansByTurn = useMemo(() => buildSpansByTurn(otelSpans), [otelSpans])
@@ -626,14 +667,8 @@ export default function SyntheticCallTracePanel({
     return buildOtelCallTimeline(otelSpans, timelineTurnInputs)
   }, [otelSpans, timelineTurnInputs])
 
-  if ((isLoading && !data) || (needsSpans && spansLoading && !spansData && resolvedTraceId)) {
-    return (
-      <div className={`space-y-3 ${embedded ? 'p-1' : 'p-5'}`}>
-        <div className="h-8 w-48 animate-pulse rounded-lg bg-gray-100" />
-        <div className={`animate-pulse rounded-xl bg-gray-100 ${embedded ? 'h-32' : 'h-48'}`} />
-        <div className="h-64 animate-pulse rounded-xl bg-gray-100" />
-      </div>
-    )
+  if (traceHeaderLoading) {
+    return <TracePanelSkeleton embedded={embedded} message="Loading trace…" />
   }
 
   if (isError) {
@@ -701,7 +736,9 @@ export default function SyntheticCallTracePanel({
   const agentRouteId = linkedAgent?.agent_id || linkedAgent?.id || trace.agent_id
   const agentLabel = linkedAgent?.name || (trace.agent_id ? 'Agent' : null)
 
-  const tabContent = (
+  const tabBody = spansPending ? (
+    <TracePanelSkeleton embedded={embedded} compact message="Loading spans and timeline…" />
+  ) : (
     <>
       {tab === 'trace' && (
         <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
@@ -769,9 +806,7 @@ export default function SyntheticCallTracePanel({
 
       {tab === 'spans' && (
         <div className={embedded ? 'overflow-hidden rounded-xl border border-gray-200 bg-white pb-4' : 'bg-white pb-16'}>
-          {spansLoading ? (
-            <p className="py-16 text-center text-sm text-gray-500">Loading spans…</p>
-          ) : otelSpans.length === 0 ? (
+          {otelSpans.length === 0 ? (
             <p className="py-16 text-center text-sm text-gray-500">No spans</p>
           ) : (
             <>
@@ -799,7 +834,7 @@ export default function SyntheticCallTracePanel({
     return (
       <div className="rounded-xl border border-gray-200 bg-white">
         <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} compact />
-        <div className="p-4">{tabContent}</div>
+        <div className="p-4">{tabBody}</div>
       </div>
     )
   }
@@ -939,7 +974,7 @@ export default function SyntheticCallTracePanel({
       </div>
 
       <div className={isDrawer ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : undefined}>
-        {tabContent}
+        {tabBody}
       </div>
     </div>
   )

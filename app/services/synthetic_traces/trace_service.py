@@ -31,6 +31,13 @@ from app.services.synthetic_traces.span_storage import (
     load_trace_spans,
     upload_trace_spans_to_s3,
 )
+from app.services.synthetic_traces import ch_trace_ops
+from app.services.synthetic_traces.clickhouse_store import (
+    get_trace_by_call_short_id as ch_get_trace_by_call_short_id,
+    get_trace_by_evaluator_result_id as ch_get_trace_by_evaluator_result_id,
+    get_trace_by_id as ch_get_trace_by_id,
+    list_traces as ch_list_traces,
+)
 from app.services.synthetic_traces.otlp_mapper import (
     annotate_spans_with_display_turn,
     compute_component_aggregates,
@@ -196,6 +203,24 @@ def open_trace(
     environment: str = "pre_prod",
     tier: str = "black_box",
 ) -> SyntheticCallTrace:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.open_trace_ch(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            evaluator_result_id=evaluator_result_id,
+            agent_id=agent_id,
+            persona_id=persona_id,
+            scenario_id=scenario_id,
+            evaluator_id=evaluator_id,
+            call_recording_id=call_recording_id,
+            call_short_id=call_short_id,
+            transport=transport,
+            provider_platform=provider_platform,
+            environment=environment,
+            tier=tier,
+        )
+
     existing = None
     if evaluator_result_id:
         existing = (
@@ -293,6 +318,17 @@ def open_trace_session(
     call_short_id: Optional[str] = None,
 ) -> SyntheticCallTrace:
     """Mint call_short_id and open a transport-agnostic trace before audio flows."""
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.open_trace_session_ch(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            evaluator_result_id=evaluator_result_id,
+            transport=transport,
+            call_short_id=call_short_id,
+        )
+
     if transport not in VALID_TRACE_TRANSPORTS:
         raise ValueError(f"transport must be one of {VALID_TRACE_TRANSPORTS}")
 
@@ -401,6 +437,14 @@ def close_trace_session(
     workspace_id: Optional[UUID] = None,
 ) -> Optional[SyntheticCallTrace]:
     """Close a trace session without requiring a CallRecording."""
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.close_trace_session_ch(
+            db,
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+        )
+
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.call_short_id == call_short_id,
@@ -640,6 +684,14 @@ def get_trace_for_result(
     workspace_id: Optional[UUID] = None,
     auto_close: bool = True,
 ) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        trace = ch_get_trace_by_evaluator_result_id(
+            organization_id=organization_id,
+            evaluator_result_id=evaluator_result_id,
+            workspace_id=workspace_id,
+        )
+        return trace
+
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.evaluator_result_id == evaluator_result_id,
@@ -659,6 +711,13 @@ def get_trace_by_id(
     trace_id: UUID,
     workspace_id: Optional[UUID] = None,
 ) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        return ch_get_trace_by_id(
+            organization_id=organization_id,
+            trace_id=trace_id,
+            workspace_id=workspace_id,
+        )
+
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.id == trace_id,
         SyntheticCallTrace.organization_id == organization_id,
@@ -679,6 +738,13 @@ def get_trace_by_call_short_id(
     workspace_id: Optional[UUID] = None,
     auto_close: bool = True,
 ) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        return ch_get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+        )
+
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.call_short_id == call_short_id,
@@ -702,6 +768,17 @@ def list_traces(
     cursor: Optional[str] = None,
     since: Optional[datetime] = None,
 ) -> tuple[List[SyntheticCallTrace], Optional[int], Optional[str], bool]:
+    if ch_trace_ops.use_ch():
+        return ch_list_traces(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            skip=skip,
+            limit=limit,
+            status=status,
+            cursor=cursor,
+            since=since,
+        )
+
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.workspace_id == workspace_id,
@@ -1373,6 +1450,9 @@ def load_trace_detail(
     *,
     include_spans: bool = True,
 ) -> Dict[str, Any]:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.load_trace_detail_ch(trace, include_spans=include_spans)
+
     payload = (
         db.query(SyntheticTracePayload)
         .filter(SyntheticTracePayload.synthetic_call_trace_id == trace.id)
@@ -1391,11 +1471,12 @@ def load_trace_detail(
         otel_payload,
         preloaded_spans=scoped_spans,
     )
-    otel_spans = (
+    annotated_spans = (
         annotate_spans_with_display_turn(scoped_spans, precomputed_turns=turns)
-        if include_spans
+        if scoped_spans
         else []
     )
+    otel_spans = annotated_spans if include_spans else []
     latency_summary = compute_trace_latency_summary(turns) if turns else {}
     trace_ids = collect_trace_ids(scoped_spans) if scoped_spans else []
     if not trace_ids and otel_payload:
@@ -1407,11 +1488,14 @@ def load_trace_detail(
         "otel_spans": otel_spans,
         "otel_trace_ids": trace_ids,
         "latency_summary": latency_summary,
-        "pipeline_models": extract_pipeline_models(otel_spans),
+        "pipeline_models": extract_pipeline_models(annotated_spans),
     }
 
 
 def load_trace_spans_only(db: Session, trace: SyntheticCallTrace) -> Dict[str, Any]:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.load_trace_spans_only_ch(trace)
+
     raw_spans = load_trace_spans(db, trace)
     scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
     payload = (
@@ -1473,6 +1557,9 @@ def _apply_derived_turns(
 
 
 def derive_trace_turns(db: Session, *, trace_id: UUID) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.derive_trace_turns_ch(db, trace_id=trace_id)
+
     from sqlalchemy import func
 
     from app.models.database import SyntheticTraceSpanBatch
@@ -1517,6 +1604,9 @@ def derive_trace_turns(db: Session, *, trace_id: UUID) -> Optional[SyntheticCall
 
 
 def sweep_idle_traces(db: Session) -> int:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.sweep_idle_traces_ch(db)
+
     idle_seconds = max(1, int(settings.TRACES_IDLE_CLOSE_SECONDS))
     cutoff = _utcnow() - timedelta(seconds=idle_seconds)
     rows = (
@@ -1546,6 +1636,9 @@ def sweep_idle_traces(db: Session) -> int:
 
 
 def close_and_offload_trace(db: Session, *, trace_id: UUID) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.close_and_offload_trace_ch(db, trace_id=trace_id)
+
     trace = (
         db.query(SyntheticCallTrace)
         .filter(SyntheticCallTrace.id == trace_id)

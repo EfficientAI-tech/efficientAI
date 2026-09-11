@@ -224,6 +224,57 @@ def schedule_derive(trace_id: UUID) -> None:
             db.close()
 
 
+def ingest_otlp_batch_ch(
+    db: Session,
+    *,
+    organization_id: UUID,
+    spans: List[Dict[str, Any]],
+    header_evaluator_result_id: Optional[str] = None,
+    header_agent_id: Optional[str] = None,
+    header_call_short_id: Optional[str] = None,
+    workspace_id: Optional[UUID] = None,
+) -> Tuple[Optional[Any], int, bool]:
+    from app.services.synthetic_traces import ch_trace_ops
+    from app.services.synthetic_traces.clickhouse_store import mint_trace_uuid
+
+    if not spans or workspace_id is None:
+        return None, 0, False
+
+    groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
+    last_trace: Optional[Any] = None
+    total_accepted = 0
+    any_correlated = False
+
+    for group_call_short_id, group_spans in groups.items():
+        trace_uuid = resolve_trace_uuid_for_s3_ingest(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_call_short_id=group_call_short_id or header_call_short_id,
+        )
+        trace, correlated = correlate_batch_ch(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            spans=group_spans,
+            trace_uuid=trace_uuid or mint_trace_uuid(),
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_agent_id=header_agent_id,
+            header_call_short_id=group_call_short_id or header_call_short_id,
+        )
+        if not trace:
+            total_accepted += len(group_spans)
+            continue
+        ch_trace_ops.persist_spans_ch(trace, group_spans)
+        schedule_derive(trace.id)
+        total_accepted += len(group_spans)
+        any_correlated = any_correlated or correlated
+        last_trace = trace
+
+    return last_trace, total_accepted, any_correlated
+
+
 def ingest_otlp_batch_async(
     db: Session,
     *,
@@ -234,6 +285,19 @@ def ingest_otlp_batch_async(
     header_call_short_id: Optional[str] = None,
     workspace_id: Optional[UUID] = None,
 ) -> Tuple[Optional[SyntheticCallTrace], int, bool]:
+    from app.services.synthetic_traces import ch_trace_ops
+
+    if ch_trace_ops.use_ch():
+        return ingest_otlp_batch_ch(
+            db,
+            organization_id=organization_id,
+            spans=spans,
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_agent_id=header_agent_id,
+            header_call_short_id=header_call_short_id,
+            workspace_id=workspace_id,
+        )
+
     if not spans:
         return None, 0, False
 
@@ -423,6 +487,316 @@ def get_staging_status(
         )
         .first()
     )
+
+
+class IngestUnavailable(Exception):
+    """S3 WAL or Celery enqueue failed; API should return 503."""
+
+
+def resolve_trace_uuid_for_s3_ingest(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    header_evaluator_result_id: Optional[str] = None,
+    header_call_short_id: Optional[str] = None,
+) -> UUID:
+    from app.services.synthetic_traces.clickhouse_store import (
+        get_trace_by_call_short_id,
+        get_trace_by_evaluator_result_id,
+        mint_trace_uuid,
+    )
+
+    if header_call_short_id:
+        found = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=header_call_short_id,
+            workspace_id=workspace_id,
+        )
+        if found:
+            return found.id
+
+    if header_evaluator_result_id:
+        try:
+            er_uuid = UUID(str(header_evaluator_result_id))
+            found = get_trace_by_evaluator_result_id(
+                organization_id=organization_id,
+                evaluator_result_id=er_uuid,
+                workspace_id=workspace_id,
+            )
+            if found:
+                return found.id
+            result = (
+                db.query(EvaluatorResult)
+                .filter(
+                    EvaluatorResult.id == er_uuid,
+                    EvaluatorResult.organization_id == organization_id,
+                )
+                .first()
+            )
+            if result and result.synthetic_call_trace_id:
+                return result.synthetic_call_trace_id
+        except ValueError:
+            pass
+
+    return mint_trace_uuid()
+
+
+def ingest_otlp_batch_to_s3(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    body: bytes,
+    content_type: str,
+    header_evaluator_result_id: Optional[str] = None,
+    header_agent_id: Optional[str] = None,
+    header_call_short_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    from app.services.storage import s3_service
+    from app.services.storage.blob_paths import build_trace_batch_object_key
+    from app.services.synthetic_traces.clickhouse_store import next_batch_seq
+
+    trace_uuid = resolve_trace_uuid_for_s3_ingest(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        header_evaluator_result_id=header_evaluator_result_id,
+        header_call_short_id=header_call_short_id,
+    )
+    seq = next_batch_seq(trace_uuid)
+    s3_key = build_trace_batch_object_key(
+        prefix=settings.TRACES_S3_PREFIX,
+        organization_id=str(organization_id),
+        workspace_id=str(workspace_id),
+        trace_id=str(trace_uuid),
+        seq=seq,
+    )
+    try:
+        s3_service.upload_file_by_key(
+            body,
+            s3_key,
+            content_type=content_type or "application/json",
+        )
+    except Exception as exc:
+        logger.error("S3 WAL PUT failed for {}: {}", s3_key, exc)
+        raise IngestUnavailable("S3 upload failed") from exc
+
+    try:
+        schedule_s3_batch_process(
+            s3_key=s3_key,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            trace_uuid=trace_uuid,
+            seq=seq,
+            content_type=content_type or "",
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_agent_id=header_agent_id,
+            header_call_short_id=header_call_short_id,
+        )
+    except Exception as exc:
+        logger.error("Celery enqueue failed after S3 PUT {}: {}", s3_key, exc)
+        raise IngestUnavailable("Failed to enqueue batch processing") from exc
+
+    return {
+        "trace_uuid": trace_uuid,
+        "seq": seq,
+        "s3_key": s3_key,
+        "accepted_bytes": len(body),
+        "correlated": header_correlation_hint(
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_call_short_id=header_call_short_id,
+        ),
+    }
+
+
+def schedule_s3_batch_process(
+    *,
+    s3_key: str,
+    organization_id: UUID,
+    workspace_id: UUID,
+    trace_uuid: UUID,
+    seq: int,
+    content_type: str,
+    header_evaluator_result_id: Optional[str] = None,
+    header_agent_id: Optional[str] = None,
+    header_call_short_id: Optional[str] = None,
+) -> None:
+    if not settings.TRACES_ASYNC_INGEST_ENABLED:
+        process_s3_otlp_batch(
+            s3_key=s3_key,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            trace_uuid=trace_uuid,
+            seq=seq,
+            content_type=content_type,
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_agent_id=header_agent_id,
+            header_call_short_id=header_call_short_id,
+        )
+        return
+
+    try:
+        from app.workers.tasks.trace_tasks import process_s3_otlp_batch_task
+
+        process_s3_otlp_batch_task.apply_async(
+            kwargs={
+                "s3_key": s3_key,
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
+                "trace_uuid": str(trace_uuid),
+                "seq": seq,
+                "content_type": content_type,
+                "header_evaluator_result_id": header_evaluator_result_id,
+                "header_agent_id": header_agent_id,
+                "header_call_short_id": header_call_short_id,
+            }
+        )
+    except Exception as exc:
+        logger.debug("Celery unavailable for S3 batch; running inline: {}", exc)
+        process_s3_otlp_batch(
+            s3_key=s3_key,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            trace_uuid=trace_uuid,
+            seq=seq,
+            content_type=content_type,
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_agent_id=header_agent_id,
+            header_call_short_id=header_call_short_id,
+        )
+
+
+def correlate_batch_ch(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    spans: List[Dict[str, Any]],
+    trace_uuid: UUID,
+    header_evaluator_result_id: Optional[str] = None,
+    header_agent_id: Optional[str] = None,
+    header_call_short_id: Optional[str] = None,
+) -> Tuple[Optional[Any], bool]:
+    from app.services.synthetic_traces.clickhouse_store import (
+        TraceRecord,
+        get_trace_by_call_short_id,
+        get_trace_by_uuid,
+        upsert_trace_header,
+    )
+    from app.services.synthetic_traces.span_storage import SPANS_STORAGE_S3
+
+    if not spans:
+        return None, False
+
+    correlation = extract_correlation_ids(spans)
+    evaluator_result_id = header_evaluator_result_id or correlation.get("evaluator_result_id")
+    call_short_id = correlation.get("call_short_id") or header_call_short_id
+    _ = header_agent_id or correlation.get("agent_id")
+
+    trace = get_trace_by_uuid(trace_uuid)
+    correlated = trace is not None
+
+    if not trace:
+        trace = TraceRecord(
+            id=trace_uuid,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            status="open",
+            started_at=_utcnow(),
+            spans_storage="clickhouse",
+        )
+
+    if not correlated and call_short_id:
+        existing = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+        )
+        if existing:
+            trace = existing
+            correlated = True
+
+    if call_short_id:
+        trace.call_short_id = call_short_id
+
+    if evaluator_result_id:
+        try:
+            trace.evaluator_result_id = UUID(str(evaluator_result_id))
+            result = (
+                db.query(EvaluatorResult)
+                .filter(EvaluatorResult.id == trace.evaluator_result_id)
+                .first()
+            )
+            if result:
+                trace.agent_id = result.agent_id
+                trace.persona_id = result.persona_id
+                trace.scenario_id = result.scenario_id
+                trace.evaluator_id = result.evaluator_id
+                result.synthetic_call_trace_id = trace.id
+                db.commit()
+                correlated = True
+        except ValueError:
+            pass
+
+    transport = correlation.get("transport") or trace.transport
+    if transport in VALID_TRACE_TRANSPORTS:
+        trace.transport = transport
+    elif not trace.transport:
+        trace.transport = "custom"
+
+    if trace.status in ("closed", "finalized") and trace.spans_storage != SPANS_STORAGE_S3:
+        trace.status = "open"
+        trace.ended_at = None
+
+    upsert_trace_header(trace)
+    return trace, correlated
+
+
+def process_s3_otlp_batch(
+    *,
+    s3_key: str,
+    organization_id: UUID,
+    workspace_id: UUID,
+    trace_uuid: UUID,
+    seq: int,
+    content_type: str,
+    header_evaluator_result_id: Optional[str] = None,
+    header_agent_id: Optional[str] = None,
+    header_call_short_id: Optional[str] = None,
+    db: Optional[Session] = None,
+) -> None:
+    from app.database import SessionLocal
+    from app.services.storage import s3_service
+    from app.services.synthetic_traces import ch_trace_ops
+
+    owns_session = db is None
+    session = db or SessionLocal()
+    try:
+        body = s3_service.download_file_by_key(s3_key)
+        spans, _fmt = parse_otlp_body(body, content_type)
+        if not spans:
+            return
+
+        groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
+        for group_call_short_id, group_spans in groups.items():
+            trace, _correlated = correlate_batch_ch(
+                session,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                spans=group_spans,
+                trace_uuid=trace_uuid,
+                header_evaluator_result_id=header_evaluator_result_id,
+                header_agent_id=header_agent_id,
+                header_call_short_id=group_call_short_id or header_call_short_id,
+            )
+            if not trace:
+                continue
+            ch_trace_ops.persist_spans_ch(trace, group_spans)
+            schedule_derive(trace.id)
+    finally:
+        if owns_session:
+            session.close()
 
 
 def sweep_staging_ingest(db: Session) -> int:

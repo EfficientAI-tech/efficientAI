@@ -97,6 +97,23 @@ def load_trace_spans(db: Session, trace: SyntheticCallTrace) -> List[Dict[str, A
     return []
 
 
+def upload_trace_spans_to_s3_ch(trace, spans: List[Dict[str, Any]]) -> Optional[str]:
+    if not settings.S3_ENABLED:
+        return None
+    key = build_trace_spans_object_key(
+        prefix=settings.TRACES_S3_PREFIX,
+        organization_id=str(trace.organization_id),
+        workspace_id=str(trace.workspace_id),
+        trace_id=str(trace.id),
+    )
+    body = json.dumps(
+        {"spans": spans, "trace_ids": collect_trace_ids(spans)},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    s3_service.upload_file_by_key(body, key, content_type="application/json")
+    return key
+
+
 def upload_trace_spans_to_s3(
     db: Session,
     trace: SyntheticCallTrace,

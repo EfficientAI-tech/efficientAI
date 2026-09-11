@@ -34,10 +34,13 @@ from app.models.synthetic_trace_schemas import (
     TraceSessionResponse,
     VALID_TRACE_TRANSPORTS,
 )
+from app.services.clickhouse.client import clickhouse_enabled
 from app.services.synthetic_traces.ingest_pipeline import (
+    IngestUnavailable,
     get_staging_status,
     header_correlation_hint,
     ingest_otlp_batch_async,
+    ingest_otlp_batch_to_s3,
     stage_otlp_ingest,
 )
 from app.services.synthetic_traces.otlp_ingest import parse_otlp_body
@@ -141,24 +144,32 @@ async def _ingest_otlp_traces_handler(
     content_type = request.headers.get("content-type", "")
 
     if settings.TRACES_DEFER_PARSE_TO_WORKER and settings.TRACES_ASYNC_INGEST_ENABLED:
-        staging = stage_otlp_ingest(
-            db,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            body=body,
-            content_type=content_type,
-            header_evaluator_result_id=x_efficientai_run_id,
-            header_agent_id=x_efficientai_agent_id,
-            header_call_short_id=x_efficientai_call_short_id,
-        )
-        return OtlpIngestResponse(
-            accepted_bytes=staging.body_bytes,
-            staging_id=staging.id,
-            deferred=True,
-            correlated=header_correlation_hint(
+        if not clickhouse_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="ClickHouse is required for deferred trace ingest (set clickhouse.url in config)",
+            )
+        try:
+            result = ingest_otlp_batch_to_s3(
+                db,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                body=body,
+                content_type=content_type,
                 header_evaluator_result_id=x_efficientai_run_id,
+                header_agent_id=x_efficientai_agent_id,
                 header_call_short_id=x_efficientai_call_short_id,
-            ),
+            )
+        except IngestUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+        return OtlpIngestResponse(
+            accepted_bytes=result["accepted_bytes"],
+            synthetic_call_trace_id=result["trace_uuid"],
+            deferred=True,
+            correlated=result["correlated"],
         )
 
     try:

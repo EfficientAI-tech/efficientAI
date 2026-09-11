@@ -98,7 +98,7 @@ def _cron_dispatch_beat_seconds() -> float:
 
 def _platform_beat_schedule() -> dict:
     """Periodic platform tasks — run from dedicated ``celery beat`` (single replica)."""
-    return {
+    schedule = {
         "flush-usage-counters": {
             "task": "flush_usage_counters",
             "schedule": _usage_flush_beat_seconds(),
@@ -123,11 +123,17 @@ def _platform_beat_schedule() -> dict:
             "task": "sweep_idle_traces",
             "schedule": 30.0,
         },
-        "sweep-staging-ingest": {
-            "task": "sweep_staging_ingest",
-            "schedule": 3600.0,
+        "sweep-orphan-s3-batches": {
+            "task": "sweep_orphan_s3_batches",
+            "schedule": 900.0,
         },
     }
+    if not getattr(settings, "CLICKHOUSE_URL", None):
+        schedule["sweep-staging-ingest"] = {
+            "task": "sweep_staging_ingest",
+            "schedule": 3600.0,
+        }
+    return schedule
 
 
 # Create Celery app
@@ -207,4 +213,15 @@ celery_app.conf.task_routes = {
     "process_staged_otlp": {"queue": TRACES_WORKER_QUEUE},
     "sweep_staging_ingest": {"queue": TRACES_WORKER_QUEUE},
     "close_and_offload_trace": {"queue": TRACES_WORKER_QUEUE},
+    "process_s3_otlp_batch": {"queue": TRACES_WORKER_QUEUE},
+    "sweep_orphan_s3_batches": {"queue": TRACES_WORKER_QUEUE},
 }
+
+
+@celery_app.on_after_configure.connect
+def _ensure_clickhouse_schema(**_kwargs):
+    from app.services.clickhouse.client import clickhouse_enabled
+    from app.services.clickhouse.schema import ensure_schema
+
+    if clickhouse_enabled():
+        ensure_schema()

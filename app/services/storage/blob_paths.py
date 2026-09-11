@@ -72,6 +72,22 @@ def build_trace_spans_object_key(
     )
 
 
+def build_trace_batch_object_key(
+    *,
+    prefix: str,
+    organization_id: str,
+    workspace_id: str,
+    trace_id: str,
+    seq: int,
+) -> str:
+    """S3 WAL key for a raw OTLP ingest batch."""
+    normalized = normalize_prefix(prefix)
+    return (
+        f"{normalized}organizations/{organization_id}/workspaces/{workspace_id}/"
+        f"traces/{trace_id}/batches/{seq}.json"
+    )
+
+
 def content_type_for_format(file_format: str) -> str:
     """Map audio file extension to MIME content type."""
     content_type_map = {

@@ -378,6 +378,34 @@ class S3Service:
         except Exception:
             return False
 
+    def list_objects_with_prefix(
+        self,
+        prefix: str,
+        *,
+        contains: str = "",
+        max_keys: int = 500,
+    ) -> List[tuple]:
+        """List object keys under prefix; returns (key, last_modified) tuples."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            return []
+
+        try:
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix,
+                MaxKeys=max_keys,
+            )
+            out: List[tuple] = []
+            for obj in response.get("Contents") or []:
+                key = obj["Key"]
+                if contains and contains not in key:
+                    continue
+                out.append((key, obj.get("LastModified")))
+            return out
+        except Exception as exc:
+            raise StorageError(f"Failed to list S3 objects: {exc}")
+
     def list_audio_files(self, prefix: Optional[str] = None, max_keys: int = 1000, organization_id: Optional[str] = None) -> List[dict]:
         """List audio files in S3 bucket."""
         self._ensure_initialized()

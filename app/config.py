@@ -119,6 +119,15 @@ class Settings(BaseSettings):
     TRACES_LIST_DEFAULT_DAYS: int = 90
     TRACES_DEFER_PARSE_TO_WORKER: bool = True
     TRACES_STAGING_RETENTION_HOURS: int = 48
+    TRACES_LIVE_TURNS_TTL_SECONDS: int = 180
+    TRACES_API_KEY_CACHE_TTL_SECONDS: int = 300
+    TRACES_S3_BATCH_ORPHAN_MINUTES: int = 15
+
+    # ClickHouse (call traces serving store)
+    CLICKHOUSE_URL: Optional[str] = None
+    CLICKHOUSE_DATABASE: str = "efficientai"
+    CLICKHOUSE_USER: str = "default"
+    CLICKHOUSE_PASSWORD: str = ""
 
     # Authentication
     AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
@@ -759,6 +768,23 @@ def load_config_from_file(config_path: str) -> None:
             settings.TRACES_DEFER_PARSE_TO_WORKER = bool(traces_config["defer_parse_to_worker"])
         if "staging_retention_hours" in traces_config:
             settings.TRACES_STAGING_RETENTION_HOURS = int(traces_config["staging_retention_hours"])
+        if "live_turns_ttl_seconds" in traces_config:
+            settings.TRACES_LIVE_TURNS_TTL_SECONDS = int(traces_config["live_turns_ttl_seconds"])
+        if "api_key_cache_ttl_seconds" in traces_config:
+            settings.TRACES_API_KEY_CACHE_TTL_SECONDS = int(traces_config["api_key_cache_ttl_seconds"])
+        if "s3_batch_orphan_minutes" in traces_config:
+            settings.TRACES_S3_BATCH_ORPHAN_MINUTES = int(traces_config["s3_batch_orphan_minutes"])
+
+    if "clickhouse" in config_data:
+        ch_config = config_data["clickhouse"]
+        if "url" in ch_config:
+            settings.CLICKHOUSE_URL = ch_config["url"]
+        if "database" in ch_config:
+            settings.CLICKHOUSE_DATABASE = ch_config["database"]
+        if "user" in ch_config:
+            settings.CLICKHOUSE_USER = ch_config["user"]
+        if "password" in ch_config:
+            settings.CLICKHOUSE_PASSWORD = ch_config["password"]
 
     if "auth" in config_data:
         auth_config = config_data["auth"]

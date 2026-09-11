@@ -89,6 +89,20 @@ class BlobStorageService:
     def download_file_by_key(self, key: str) -> bytes:
         return self._backend().download_file_by_key(key)
 
+    def list_objects_with_prefix(
+        self,
+        prefix: str,
+        *,
+        contains: str = "",
+        max_keys: int = 500,
+    ) -> List[tuple]:
+        backend = self._backend()
+        if hasattr(backend, "list_objects_with_prefix"):
+            return backend.list_objects_with_prefix(
+                prefix, contains=contains, max_keys=max_keys
+            )
+        return []
+
     def iter_file_chunks_by_key(self, key: str, chunk_size: int = 8192):
         """Stream file content in chunks from the active blob backend."""
         backend = self._backend()

@@ -108,7 +108,7 @@ export default function EvaluatorCallDetailPanel({
     prefetchEvaluatorRecordingAudio(evaluatorResultId)
   }, [evaluatorResultId])
 
-  const { data: result, isFetching, isError, error } = useQuery({
+  const { data: result, isLoading, isFetching, isError, error } = useQuery({
     queryKey: ['evaluator-result', evaluatorResultId],
     queryFn: () => apiClient.getEvaluatorResult(evaluatorResultId, true),
     enabled: Boolean(evaluatorResultId),
@@ -231,15 +231,16 @@ export default function EvaluatorCallDetailPanel({
     prefetchCallRecordingAudio(playgroundCallShortId, false)
   }, [playgroundCallShortId])
 
-  if (!result && isFetching) {
+  if (!result && (isLoading || isFetching)) {
     return (
-      <div className="flex h-full items-center justify-center p-8">
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
         <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+        <p className="text-sm text-gray-500">Loading call details…</p>
       </div>
     )
   }
 
-  if (!result && !isFetching) {
+  if (!result && !isLoading && !isFetching) {
     return <div className="p-8 text-sm text-gray-600">Call details not found.</div>
   }
 
@@ -253,7 +254,17 @@ export default function EvaluatorCallDetailPanel({
 
   const showLiveTranscript = isLiveCall && liveTranscript.length > 0
   const hasTranscript = Boolean(speakerSegments.length > 0 || transcription || showLiveTranscript)
-  const transcriptLoading = isFetching && !hasTranscript
+  const transcriptLoading = (isLoading || isFetching) && !hasTranscript
+  const evaluationInProgress = Boolean(
+    result && IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()),
+  )
+  const analysisLoading =
+    tab === 'analysis' &&
+    (evaluationInProgress ||
+      ((isLoading || isFetching) &&
+        !callAnalysis.call_summary &&
+        callAnalysis.call_successful == null &&
+        callAnalysis.user_sentiment === 'Neutral'))
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
@@ -373,6 +384,15 @@ export default function EvaluatorCallDetailPanel({
           ) : null}
 
           {tab === 'analysis' ? (
+            analysisLoading ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-gray-500">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
+                  {evaluationInProgress ? 'Evaluation in progress…' : 'Loading analysis…'}
+                </div>
+                <div className="h-32 animate-pulse rounded-xl bg-gray-100" />
+              </div>
+            ) : (
             <div className="rounded-xl border border-gray-200 bg-white p-5">
               {callAnalysis.call_summary ? (
                 <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
@@ -408,6 +428,7 @@ export default function EvaluatorCallDetailPanel({
                 <p className="mt-4 text-center text-sm text-gray-500">No call analysis available.</p>
               ) : null}
             </div>
+            )
           ) : null}
 
           {tab === 'pipeline' ? (

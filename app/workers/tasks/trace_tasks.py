@@ -1,4 +1,4 @@
-"""Celery tasks for async OTLP trace derive, idle close, and S3 offload."""
+"""Celery tasks for async OTLP trace derive, idle close, and S3 WAL processing."""
 
 from __future__ import annotations
 
@@ -34,6 +34,32 @@ def sweep_idle_traces_task() -> int:
         return sweep_idle_traces(db)
     finally:
         db.close()
+
+
+@celery_app.task(
+    name="process_s3_otlp_batch",
+    queue=TRACES_WORKER_QUEUE,
+    bind=True,
+    max_retries=3,
+)
+def process_s3_otlp_batch_task(self, **kwargs) -> None:
+    from app.services.synthetic_traces.ingest_pipeline import process_s3_otlp_batch
+
+    try:
+        process_s3_otlp_batch(
+            s3_key=kwargs["s3_key"],
+            organization_id=UUID(kwargs["organization_id"]),
+            workspace_id=UUID(kwargs["workspace_id"]),
+            trace_uuid=UUID(kwargs["trace_uuid"]),
+            seq=int(kwargs["seq"]),
+            content_type=kwargs.get("content_type") or "",
+            header_evaluator_result_id=kwargs.get("header_evaluator_result_id"),
+            header_agent_id=kwargs.get("header_agent_id"),
+            header_call_short_id=kwargs.get("header_call_short_id"),
+        )
+    except Exception as exc:
+        logger.warning("process_s3_otlp_batch failed for {}: {}", kwargs.get("s3_key"), exc)
+        raise self.retry(exc=exc, countdown=5)
 
 
 @celery_app.task(
@@ -84,6 +110,13 @@ def sweep_staging_ingest_task() -> int:
         return sweep_staging_ingest(db)
     finally:
         db.close()
+
+
+@celery_app.task(name="sweep_orphan_s3_batches", queue=TRACES_WORKER_QUEUE)
+def sweep_orphan_s3_batches_task() -> int:
+    from app.services.synthetic_traces.s3_batch_sweeper import sweep_orphan_s3_batches
+
+    return sweep_orphan_s3_batches()
 
 
 @celery_app.task(

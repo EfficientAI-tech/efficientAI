@@ -38,6 +38,14 @@ def generate_unique_call_short_id(db: Session, max_attempts: int = 100) -> str:
         )
         if trace_existing:
             continue
+        try:
+            from app.services.clickhouse.client import clickhouse_enabled
+            from app.services.synthetic_traces.clickhouse_store import call_short_id_exists
+
+            if clickhouse_enabled() and call_short_id_exists(call_short_id):
+                continue
+        except Exception:
+            pass
         return call_short_id
 
     raise HTTPException(

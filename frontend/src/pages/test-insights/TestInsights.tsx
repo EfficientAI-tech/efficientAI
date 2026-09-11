@@ -321,8 +321,9 @@ export default function TestInsights() {
   }, [resultFromUrl, traceFromUrl, obsFromUrl])
 
   const isListLoading =
-    (showPipelineRows && loadingList && !listData) ||
+    (showPipelineRows && loadingList && traces.length === 0) ||
     (showProviderRows && loadingObsCalls && productionObsCalls.length === 0)
+  const isListRefreshing = (fetchingList || fetchingObsCalls) && hasListRows
 
   const lastUpdatedLabel =
     dataUpdatedAt > 0 ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : null
@@ -506,6 +507,13 @@ export default function TestInsights() {
               <div className="p-12 text-center">
                 <Loader className="w-6 h-6 text-primary-500 animate-spin mx-auto mb-3" />
                 <p className="text-sm text-gray-500">Loading calls…</p>
+              </div>
+            )}
+
+            {isListRefreshing && !isListLoading && (
+              <div className="flex items-center justify-center gap-2 border-b border-gray-100 bg-gray-50/80 px-4 py-2 text-xs text-gray-500">
+                <Loader className="h-3.5 w-3.5 animate-spin text-primary-500" />
+                Refreshing calls…
               </div>
             )}
 

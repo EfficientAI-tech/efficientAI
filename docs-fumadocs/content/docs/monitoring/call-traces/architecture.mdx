@@ -21,7 +21,7 @@ EfficientAI:
 2. Ingests **OpenTelemetry spans** from the customer's bot (or in-process from Test Agent playground).
 3. Groups spans into **turn rows**, computes **p50 / p90 / p95**, and shows a **waterfall** in the Calls hub.
 
-**Phase 2 (current):** Layout 3 thin API ingest (`defer_parse_to_worker: true`) stages raw OTLP in Postgres, `worker-traces` parses/correlates/persists batches, Celery derives turns, S3 offload on close. Set `defer_parse_to_worker: false` to parse in API (legacy Phase 2 path). Legacy sync JSONB ingest remains via `traces.async_ingest_enabled: false`.
+**Current (S3 WAL + ClickHouse):** With `defer_parse_to_worker: true` and `clickhouse.url` configured, the API PUTs raw OTLP batches to S3 and enqueues `process_s3_otlp_batch` on `worker-traces`. The worker parses, writes `trace_observations` + `call_traces` in ClickHouse, refreshes Redis live turns, and optionally compacts to `spans.json` on close. Postgres holds control-plane links only (`evaluator_results.synthetic_call_trace_id`). Set `defer_parse_to_worker: false` to parse in API (sync path). Legacy PG staging remains when ClickHouse is not configured.
 
 ---
 

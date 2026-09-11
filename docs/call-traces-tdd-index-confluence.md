@@ -69,7 +69,7 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 | How many concurrent OTLP calls today? | **100–500** with worker scale (Phase 2) | [Scaling TDD](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/72417282) §3 |
 | What limits us at SaaS scale? | Postgres writes + derive CPU (not API) | Scaling TDD §4 |
 | What unlocks 2,000+ concurrent? | OTel Collector gRPC + PG tune (Phase 3) | Scaling TDD §6 |
-| What unlocks 10,000+ concurrent? | Shard PG or Kafka + columnar (Phase 4) | Scaling TDD §6 |
+| What unlocks 10,000+ concurrent? | ClickHouse cluster + OTel Collector (Phase 3–4) | Scaling TDD §6 · [Storage Decision](call-traces-storage-decision-tdd-confluence.md) |
 | Are traces sharded? | **No** — catalog Postgres only today | Scaling TDD §6.1 |
 | Auto-close idle traces? | **120 seconds** after last span | Main TDD §6 |
 

@@ -1249,7 +1249,7 @@ class CallRecordingPayload(Base):
 
 
 class SyntheticCallTrace(Base):
-    """Catalog row for synthetic test call timing and OTLP traces."""
+    """Legacy PG trace header (superseded by ClickHouse call_traces; dropped by migration 086)."""
 
     __tablename__ = "synthetic_call_traces"
 

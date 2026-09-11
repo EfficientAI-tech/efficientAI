@@ -130,7 +130,12 @@ export default function AgentPlayground() {
 
 
   // Fetch test voice agent evaluation results (playground results only, excluding Voice AI agent results)
-  const { data: testVoiceAgentList, refetch: refetchTestResults } = useQuery({
+  const {
+    data: testVoiceAgentList,
+    refetch: refetchTestResults,
+    isLoading: testResultsLoading,
+    isFetching: testResultsFetching,
+  } = useQuery({
     queryKey: ['test-voice-agent-results'],
     queryFn: async () => {
       return await apiClient.listEvaluatorResults(undefined, true, true)
@@ -1160,7 +1165,12 @@ export default function AgentPlayground() {
                     </Button>
                   </div>
                 )}
-                {testVoiceAgentResults.length === 0 ? (
+                {testResultsLoading && testVoiceAgentResults.length === 0 ? (
+                  <div className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-8 text-sm text-gray-600">
+                    <RefreshCw className="h-4 w-4 animate-spin text-primary-500" />
+                    Loading evaluation results…
+                  </div>
+                ) : testVoiceAgentResults.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">No test agent results found</p>
                   </div>
