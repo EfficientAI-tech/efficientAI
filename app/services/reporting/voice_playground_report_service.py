@@ -51,7 +51,6 @@ class VoicePlaygroundReportService:
         project_root = Path(__file__).parent.parent.parent.parent
         candidate_paths = [
             project_root / "frontend" / "public" / "efficientai_logo_light.png",
-            project_root / "frontend" / "public" / "favicon_light.png",
         ]
 
         for logo_path in candidate_paths:
