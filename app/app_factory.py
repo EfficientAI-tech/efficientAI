@@ -83,9 +83,10 @@ async def _api_lifespan(app: FastAPI):
 
         is_up_to_date, pending = check_migrations_status()
         if not is_up_to_date:
-            logger.warning("Warning: %d migration(s) still pending: %s", len(pending), ", ".join(pending))
-        else:
-            logger.info("All migrations are up to date")
+            detail = ", ".join(pending)
+            logger.error("CRITICAL: %d migration/schema issue(s) remain: %s", len(pending), detail)
+            raise RuntimeError(f"Database migrations incomplete: {detail}")
+        logger.info("All migrations are up to date")
 
         from app.services.billing.flexprice_service import log_startup_status
 

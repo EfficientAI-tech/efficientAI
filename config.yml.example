@@ -77,6 +77,7 @@ database:
   #   shards   → efficientai_data_01, efficientai_data_02, …
   #   shard id → data-shard-01, data-shard-02, … (labels in config + registry)
   #
+  # Required when sharding.enabled is true in production: auth/RBAC migrations
   # catalog_url: "postgresql://efficientai:password@localhost:5432/efficientai_catalog"
   sharding:
     enabled: false

@@ -222,6 +222,7 @@ def _stub_create_app_startup(monkeypatch) -> None:
     """Tests use create_all(); avoid re-running file migrations on TestClient startup."""
     monkeypatch.setattr("app.app_factory.run_migrations", lambda: None)
     monkeypatch.setattr("app.app_factory.init_db", lambda: None)
+    monkeypatch.setattr("app.app_factory.check_migrations_status", lambda: (True, []))
 
 
 def test_health_detail_returns_migration_info_for_admin(monkeypatch):
