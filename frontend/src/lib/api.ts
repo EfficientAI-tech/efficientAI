@@ -430,8 +430,6 @@ export interface VobizOutboundCallResponse {
   evaluator_result_id?: string
   result_id?: string
   message: string
-  evaluator_result_id?: string
-  result_id?: string
 }
 
 export interface EvaluatorSuiteCombination {

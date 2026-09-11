@@ -134,7 +134,6 @@ export default function AgentPlayground() {
     data: testVoiceAgentList,
     refetch: refetchTestResults,
     isLoading: testResultsLoading,
-    isFetching: testResultsFetching,
   } = useQuery({
     queryKey: ['test-voice-agent-results'],
     queryFn: async () => {
