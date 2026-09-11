@@ -19,9 +19,10 @@ from app.models.enums import CallRecordingStatus
 from app.services.telephony.phone_routing import resolve_inbound_agent_for_number
 from app.services.telephony.plivo_client import normalize_e164
 from app.services.telephony.vobiz_agent_context import (
-    build_vobiz_ws_url,
+    build_carrier_ws_url,
     extract_webhook_params,
     resolve_vobiz_agent_context,
+    resolve_vobiz_telephony_run_params,
     vobiz_webhook_base_url,
 )
 from app.services.telephony.call_recording_lifecycle import (
@@ -42,6 +43,7 @@ from app.services.telephony.vobiz_number_service import (
 from app.services.telephony.webhook_auth import verify_vobiz_webhook
 from app.services.telephony.vobiz_outbound_pool import (
     outbound_pool_api_payload,
+    outbound_telephony_integration_id,
     release_pool_slot,
     resolve_outbound_from_number,
 )
@@ -49,15 +51,19 @@ from app.services.telephony.vobiz_session import create_call_session, delete_cal
 from app.services.telephony.vobiz_xml import reject_call, speak_and_hangup, stream_to_agent
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
+from app.services.telephony.carrier_media_serializer import (
+    build_carrier_frame_serializer,
+    telephony_integration_id_from_call_row,
+)
 from efficientai.runner.utils import parse_telephony_websocket
-from efficientai.serializers.vobiz import VobizFrameSerializer
 
 # Exposed at module scope so tests can patch `.delay` without importing Celery tasks.
 initiate_vobiz_outbound_call_task = None
 
 router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony"])
 webhook_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Webhooks"])
-ws_router = APIRouter(prefix="/telephony/vobiz", tags=["Vobiz Telephony Media"])
+carrier_ws_router = APIRouter(prefix="/telephony/carrier", tags=["Carrier Telephony Media"])
+ws_router = carrier_ws_router
 
 
 class VobizOutboundCallRequest(BaseModel):
@@ -77,6 +83,8 @@ class VobizOutboundCallResponse(BaseModel):
     call_ref: str
     call_short_id: str = ""
     message: str = "Outbound call initiated"
+    evaluator_result_id: Optional[UUID] = None
+    result_id: Optional[str] = None
 
 
 class VobizAvailableNumberResponse(BaseModel):
@@ -164,7 +172,9 @@ def _resolve_agent_for_answer(
         if session and session.agent_id and session.organization_id:
             return UUID(session.agent_id), UUID(session.organization_id), call_ref
 
-    agent_id, organization_id = resolve_inbound_agent_for_number(db, params.get("to"))
+    agent_id, organization_id, _telephony_integration_id = resolve_inbound_agent_for_number(
+        db, params.get("to")
+    )
     if not agent_id or not organization_id:
         return None, None, None
     return agent_id, organization_id, None
@@ -243,11 +253,6 @@ async def create_vobiz_outbound_call(
     db: Session = Depends(get_db),
 ):
     del api_key
-    try:
-        build_vobiz_client_for_org(db, organization_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
     agent = db.query(Agent).filter(
         Agent.id == payload.agent_id,
         Agent.organization_id == organization_id,
@@ -274,31 +279,60 @@ async def create_vobiz_outbound_call(
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found for evaluator")
             payload = payload.model_copy(update={"agent_id": agent.id})
-        persona_id = persona_id or evaluator.persona_id
-        scenario_id = scenario_id or evaluator.scenario_id
+        if not agent.workspace_id:
+            raise HTTPException(status_code=400, detail="Agent workspace is required for evaluator calls")
+        from app.services.evaluators.evaluator_phone_run_service import initiate_phone_evaluator_call
+
+        to_number = normalize_e164(payload.to_number)
+        call_ref, call_short_id, result_response = initiate_phone_evaluator_call(
+            db,
+            organization_id,
+            agent.workspace_id,
+            evaluator,
+            agent,
+            to_number,
+            from_number=payload.from_number,
+        )
+        session = get_call_session(call_ref)
+        resolved_from = session.from_number if session and session.from_number else (payload.from_number or agent.phone_number or "")
+        return VobizOutboundCallResponse(
+            provider_request_uuid="",
+            call_status="queued",
+            from_number=resolved_from,
+            to_number=to_number,
+            call_ref=call_ref,
+            call_short_id=call_short_id,
+            evaluator_result_id=result_response.id if result_response else None,
+            result_id=result_response.result_id if result_response else None,
+        )
 
     try:
         from_number, used_pool, provider = resolve_outbound_from_number(
             db,
             organization_id,
             explicit_from_number=payload.from_number,
+            preferred_from_number=agent.phone_number,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-    if provider != "vobiz":
+    if provider == "vobiz":
+        try:
+            build_vobiz_client_for_org(db, organization_id)
+        except ValueError as e:
+            if used_pool:
+                release_pool_slot(organization_id)
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    elif provider != "plivo":
         if used_pool:
             release_pool_slot(organization_id)
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Outbound via the Vobiz API requires a Vobiz caller ID; "
-                f"resolved provider is {provider}. Use org-owned numbers or "
-                f"configure Vobiz entries in telephony.outbound_pool."
-            ),
+            detail=f"Outbound caller ID provider {provider} is not supported for live agent calls.",
         )
 
     to_number = normalize_e164(payload.to_number)
+    telephony_integration_id = outbound_telephony_integration_id(db, organization_id, from_number)
 
     session = create_call_session(
         agent_id=str(agent.id),
@@ -341,9 +375,12 @@ async def create_vobiz_outbound_call(
             "from_number": from_number,
             "to_number": to_number,
             "live_transcript": [],
+            "telephony_integration_id": (
+                str(telephony_integration_id) if telephony_integration_id else None
+            ),
         },
         provider_call_id=None,
-        provider_platform="vobiz",
+        provider_platform=provider,
         agent_id=agent.id,
     )
     db.add(recording)
@@ -365,6 +402,10 @@ async def create_vobiz_outbound_call(
         events_url=events_url,
         used_pool=used_pool,
         call_recording_id=str(recording.id),
+        provider=provider,
+        telephony_integration_id=(
+            str(telephony_integration_id) if telephony_integration_id else None
+        ),
     )
 
     return VobizOutboundCallResponse(
@@ -478,7 +519,7 @@ async def vobiz_answer_webhook(
     if session_token and call_uuid:
         link_provider_call_id(db, call_ref=session_token, provider_call_id=call_uuid)
 
-    ws_url = build_vobiz_ws_url(
+    ws_url = build_carrier_ws_url(
         agent_id=str(agent_id),
         session=session_token,
         persona_id=persona_id,
@@ -612,8 +653,8 @@ async def vobiz_recording_ready_webhook(
     return {"status": "ok"}
 
 
-@ws_router.websocket("/ws")
-async def vobiz_media_websocket(websocket: WebSocket):
+@carrier_ws_router.websocket("/ws")
+async def carrier_media_websocket(websocket: WebSocket):
     agent_id = websocket.query_params.get("agent_id")
     session_token = websocket.query_params.get("session")
     persona_id = websocket.query_params.get("persona_id")
@@ -655,7 +696,7 @@ async def vobiz_media_websocket(websocket: WebSocket):
     # endregion
     if not call_short_id:
         logger.warning(
-            "No CallRecording for Vobiz session {}; live transcript and recording will not be linked",
+            "No CallRecording for carrier media session {}; live transcript and recording will not be linked",
             session_token,
         )
     try:
@@ -679,8 +720,6 @@ async def vobiz_media_websocket(websocket: WebSocket):
                 persona_id=persona_id,
                 scenario_id=scenario_id,
             )
-            from app.services.telephony.vobiz_agent_context import resolve_vobiz_telephony_run_params
-
             run_params = resolve_vobiz_telephony_run_params(
                 db,
                 context=context,
@@ -689,15 +728,13 @@ async def vobiz_media_websocket(websocket: WebSocket):
                 scenario_id=scenario_id,
                 evaluator_id=session.evaluator_id,
             )
-            serializer = VobizFrameSerializer(
+            serializer = build_carrier_frame_serializer(
+                provider_platform=getattr(call_row, "provider_platform", None),
                 stream_id=stream_id,
                 call_id=call_id,
-                auth_id=settings.VOBIZ_AUTH_ID,
-                auth_token=settings.VOBIZ_AUTH_TOKEN,
-                params=VobizFrameSerializer.InputParams(
-                    sample_rate=8000,
-                    api_base=settings.VOBIZ_API_BASE,
-                ),
+                organization_id=UUID(session.organization_id),
+                db=db,
+                telephony_integration_id=telephony_integration_id_from_call_row(call_row),
             )
 
             if context.use_voice_bundle_pipeline:
@@ -717,6 +754,8 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     stt_api_key=context.stt_api_key,
                     tts_api_key=context.tts_api_key,
                     llm_api_key=context.llm_api_key,
+                    llm_endpoint_url=context.llm_endpoint_url,
+                    llm_base_url=context.llm_base_url,
                     serializer=serializer,
                     telephony_mode=True,
                     call_short_id=call_short_id,
@@ -751,12 +790,12 @@ async def vobiz_media_websocket(websocket: WebSocket):
                     persona_speaks_via_tts=run_params.persona_speaks_via_tts,
                 )
         except ValueError as e:
-            logger.error("Vobiz media websocket setup failed: {}", e)
+            logger.error("Carrier media websocket setup failed: {}", e)
             await websocket.close(code=1011, reason=str(e))
         except WebSocketDisconnect:
-            logger.info("Vobiz media websocket disconnected")
+            logger.info("Carrier media websocket disconnected")
         except Exception as e:
-            logger.error("Vobiz media websocket error: {}", e, exc_info=True)
+            logger.error("Carrier media websocket error: {}", e, exc_info=True)
             try:
                 await websocket.close(code=1011, reason="Server error")
             except Exception:

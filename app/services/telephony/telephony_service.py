@@ -27,7 +27,13 @@ from app.services.credentials import resolve_telephony_integration
 from app.services.credentials.resolver import clear_other_defaults
 from app.services.telephony.exotel_client import build_exotel_client_from_integration
 from app.services.telephony.plivo_client import PlivoClient, normalize_e164
-from app.services.telephony.plivo_xml import dial_number, reject_call, speak_and_hangup
+from app.services.telephony.plivo_webhook_urls import (
+    legacy_events_webhook_url,
+    plivo_answer_webhook_url,
+    plivo_hangup_webhook_url,
+)
+from app.services.telephony.inbound_stream_answer import build_inbound_stream_answer_xml
+from app.services.telephony.plivo_xml import reject_call
 from app.services.telephony.vobiz_client import build_vobiz_client_for_org
 from app.services.telephony.vobiz_xml import (
     speak_and_hangup as vobiz_speak_and_hangup,
@@ -88,7 +94,15 @@ class TelephonyService:
         auth_token = decrypt_api_key(integration.auth_token)
         provider_key = (integration.provider or provider or "").lower()
         if provider_key == "plivo":
-            return PlivoClient(auth_id=auth_id, auth_token=auth_token)
+            from app.workers.concurrency.telephony_credential_rate_limit import (
+                fingerprint_for_integration,
+            )
+
+            return PlivoClient(
+                auth_id=auth_id,
+                auth_token=auth_token,
+                credential_fingerprint=fingerprint_for_integration(integration),
+            )
         if provider_key == "exotel":
             from app.workers.concurrency.telephony_credential_rate_limit import (
                 fingerprint_for_integration,
@@ -492,9 +506,8 @@ class TelephonyService:
             raise ValueError("No active telephony integration found for from_number")
         client = self.get_provider_client(org_id, db, provider=integration.provider)
 
-        base = settings.PLIVO_WEBHOOK_BASE_URL.rstrip("/")
-        answer_url = f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/answer"
-        hangup_url = f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/events"
+        answer_url = plivo_answer_webhook_url()
+        hangup_url = plivo_hangup_webhook_url()
         response = client.create_outbound_call(
             from_=from_number, to_=to_number, answer_url=answer_url, hangup_url=hangup_url
         )
@@ -522,6 +535,8 @@ class TelephonyService:
                 raise ValueError("No default workspace found for organization")
             workspace_id = default_workspace.id
 
+        call_data = dict(response or {})
+        call_data["telephony_integration_id"] = str(integration.id)
         db.add(
             CallRecording(
                 organization_id=org_id,
@@ -530,7 +545,7 @@ class TelephonyService:
                 status=CallRecordingStatus.PENDING,
                 source=CallRecordingSource.WEBHOOK,
                 call_event="outbound_initiated",
-                call_data=response,
+                call_data=call_data,
                 provider_call_id=call_uuid,
                 provider_platform=integration.provider,
                 agent_id=agent_id,
@@ -551,8 +566,7 @@ class TelephonyService:
         recipient = normalize_e164(phone_number)
         callback_url = None
         if settings.PLIVO_WEBHOOK_BASE_URL:
-            base = settings.PLIVO_WEBHOOK_BASE_URL.rstrip("/")
-            callback_url = f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/events"
+            callback_url = legacy_events_webhook_url()
 
         response = self.get_provider_client(org_id, db, provider=provider).start_voice_verification(
             recipient=recipient, app_uuid=app_uuid, callback_url=callback_url
@@ -700,27 +714,17 @@ class TelephonyService:
             or params.get("call_sid")
             or params.get("Sid")
         )
-        logger.info("Telephony answer webhook call_uuid={} to={} from={}", call_uuid, to_number, from_number)
-
-        if not to_number:
-            return speak_and_hangup("Call could not be routed.")
-
-        to_number = normalize_e164(to_number)
-        number = db.query(TelephonyPhoneNumber).filter(TelephonyPhoneNumber.phone_number == to_number).first()
-        if not number:
-            return reject_call("This number is not configured.")
-
-        if number.agent_id:
-            agent = db.query(Agent).filter(Agent.id == number.agent_id).first()
-            if agent and agent.phone_number:
-                try:
-                    return dial_number(normalize_e164(agent.phone_number), to_number)
-                except ValueError:
-                    logger.warning("Agent {} has non-E.164 phone number", agent.id)
-
-        return speak_and_hangup("No active routing found for this number.")
+        logger.info(
+            "Telephony answer webhook call_uuid={} to={} from={}",
+            call_uuid,
+            to_number,
+            from_number,
+        )
+        return build_inbound_stream_answer_xml(db, params, provider_platform="plivo")
 
     def handle_event_webhook(self, params: Dict[str, Any], db: Session) -> None:
+        from app.services.telephony.call_recording_lifecycle import update_call_from_vobiz_event
+
         call_uuid = (
             params.get("CallUUID")
             or params.get("RequestUUID")
@@ -730,6 +734,15 @@ class TelephonyService:
         )
         call_status = params.get("CallStatus") or params.get("Event") or params.get("Status")
         if not call_uuid:
+            return
+
+        updated = update_call_from_vobiz_event(
+            db,
+            provider_call_id=call_uuid,
+            call_status=call_status,
+            payload=params,
+        )
+        if updated:
             return
 
         row = db.query(CallRecording).filter(CallRecording.provider_call_id == call_uuid).first()
@@ -771,6 +784,8 @@ class TelephonyService:
             return reject_call()
 
         target = session.party_b_number if from_number == session.party_a_number else session.party_a_number
+        from app.services.telephony.plivo_xml import dial_number
+
         return dial_number(target, to_number)
 
 

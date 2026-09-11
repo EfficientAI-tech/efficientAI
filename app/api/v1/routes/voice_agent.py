@@ -13,17 +13,16 @@ from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
 from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
-from app.services.voice_agent.bot_fast_api import run_bot
-from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
-from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
-from app.services.storage.s3_service import s3_service
 
 
 def _parse_bool_query(value: Optional[str], *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
-
+from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
+from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
+from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
 ws_router = APIRouter(prefix="/voice-agent", tags=["voice-agent-media"])
@@ -141,7 +140,7 @@ async def websocket_endpoint(
         # Resolve workspace_id: derive from agent when available, otherwise fall
         # back to the organization's default workspace so created records remain
         # workspace-scoped.
-        workspace_id = None
+        workspace_id: Optional[UUID] = None
         if agent and getattr(agent, "workspace_id", None):
             workspace_id = agent.workspace_id
         else:
@@ -307,21 +306,23 @@ async def websocket_endpoint(
                 return
         
         system_instruction = None
-        instruction_parts = []
+        caller_speaks_first = True
+        caller_opening_text = None
+        persona_speaks_via_tts = False
         
-        # Build system instruction as a bundle: Agent + Persona + Scenario
+        # Build system instruction from agent + persona + scenario
         from app.models.database import Agent, Persona, Scenario
+        
+        persona = None
+        scenario = None
         
         # 1. Add Agent description (base instruction) and get voice bundle for model
         model_name = None
         if agent:
-            if agent.description:
-                instruction_parts.append(agent.description)
             if voice_bundle and voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
                 model_name = voice_bundle.s2s_model
         
-        # 2. Add Persona information (characteristics)
-        persona = None
+        # 2. Load Persona
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
@@ -332,23 +333,10 @@ async def websocket_endpoint(
                 if workspace_id is not None:
                     persona_query = persona_query.filter(Persona.workspace_id == workspace_id)
                 persona = persona_query.first()
-                if persona:
-                    persona_parts = []
-                    persona_parts.append(f"\n\nPersona: {persona.name}")
-                    if persona.gender:
-                        gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
-                        persona_parts.append(f"Gender: {gender_val}")
-                    if getattr(persona, "tts_provider", None):
-                        persona_parts.append(f"Voice provider: {persona.tts_provider}")
-                    if getattr(persona, "tts_voice_name", None):
-                        persona_parts.append(f"Voice: {persona.tts_voice_name}")
-
-                    if persona_parts:
-                        instruction_parts.append("\n".join(persona_parts))
             except ValueError:
                 pass
         
-        # 3. Add Scenario information (context and goals)
+        # 3. Load Scenario
         if scenario_id:
             try:
                 scenario_uuid = UUID(scenario_id)
@@ -359,24 +347,33 @@ async def websocket_endpoint(
                 if workspace_id is not None:
                     scenario_query = scenario_query.filter(Scenario.workspace_id == workspace_id)
                 scenario = scenario_query.first()
-                if scenario:
-                    scenario_parts = []
-                    scenario_parts.append(f"\n\nScenario: {scenario.name}")
-                    if scenario.description:
-                        scenario_parts.append(f"Description: {scenario.description}")
-                    if scenario.required_info:
-                        required_info_str = ", ".join([f"{k}: {v}" for k, v in scenario.required_info.items()]) if isinstance(scenario.required_info, dict) else str(scenario.required_info)
-                        if required_info_str:
-                            scenario_parts.append(f"Required information to collect: {required_info_str}")
-                    
-                    if scenario_parts:
-                        instruction_parts.append("\n".join(scenario_parts))
             except ValueError:
                 pass
-        
-        # Combine all parts into final system instruction
-        if instruction_parts:
-            system_instruction = "\n".join(instruction_parts)
+
+        if agent and persona and scenario:
+            from app.services.testing.test_agent_simulation_prompt import (
+                build_live_test_agent_system_prompt,
+            )
+            from app.services.testing.test_agent_template import (
+                resolve_caller_opening_text,
+                resolve_first_message_from_agent,
+                should_caller_speak_first,
+            )
+
+            system_instruction = build_live_test_agent_system_prompt(agent, persona, scenario)
+            persona_speaks_via_tts = True
+            first_message_config = resolve_first_message_from_agent(agent)
+            scenario_first_message = None
+            if scenario.required_info and isinstance(scenario.required_info, dict):
+                scenario_first_message = scenario.required_info.get("first_message")
+            caller_opening_text = resolve_caller_opening_text(
+                first_message=first_message_config,
+                persona_name=persona.name or "Test Caller",
+                scenario_first_message=scenario_first_message,
+            )
+            caller_speaks_first = should_caller_speak_first(first_message_config)
+        elif agent and agent.description:
+            system_instruction = agent.description.strip()
         
         # Generate result_id BEFORE running bot (for meaningful S3 path)
         # Evaluator is only created if persona_id and scenario_id are provided
@@ -534,6 +531,13 @@ async def websocket_endpoint(
                     ).lower() == "azure"
                     else None
                 )
+                from app.services.voice_agent.llm_voice_providers import resolve_voice_llm_base_url
+
+                llm_base_url = (
+                    resolve_voice_llm_base_url(db, organization_id, voice_bundle, llm_provider)
+                    if llm_provider and voice_bundle
+                    else None
+                )
 
                 # If in bridge mode, we need to bridge test agent to Retell call
                 # For now, we'll run the voice bundle normally and note that bridging
@@ -565,7 +569,11 @@ async def websocket_endpoint(
                     tts_api_key=tts_api_key,
                     llm_api_key=llm_api_key,
                     llm_endpoint_url=llm_endpoint_url,
+                    llm_base_url=llm_base_url,
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    caller_speaks_first=caller_speaks_first,
+                    caller_opening_text=caller_opening_text,
+                    persona_speaks_via_tts=persona_speaks_via_tts,
                     tracing_task_kwargs=tracing_task_kwargs,
                 )
             else:
@@ -581,6 +589,7 @@ async def websocket_endpoint(
                     result_id=result_id,
                     model_name=model_name,  # Pass model name from voice bundle
                     silence_hangup_secs=agent_silence_hangup_secs,
+                    persona=persona,
                     workspace_id=str(workspace_id) if workspace_id else None,
                     tracing_task_kwargs=tracing_task_kwargs,
                 )
@@ -688,9 +697,6 @@ async def websocket_endpoint(
                     }
                     if ui_surface:
                         playground_call_data["ui_surface"] = ui_surface
-
-                    # Create evaluator result with QUEUED status
-                    # persona_id and scenario_id can be None for test calls without persona/scenario
                     evaluator_result = EvaluatorResult(
                         result_id=result_id,
                         organization_id=organization_id,

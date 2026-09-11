@@ -98,13 +98,16 @@ def fingerprint_for_integration(integration) -> str:
     )
 
 
+_CREDENTIALED_RECORDING_IMPORT_PROVIDERS = frozenset({"exotel", "plivo"})
+
+
 def requires_authenticated_recording_fetch(call_import) -> bool:
     """True when call-import recording fetch uses provider HTTP auth."""
     if call_import.telephony_integration_id is None and not (
         call_import.provider or ""
     ).strip():
         return False
-    return (call_import.provider or "").strip().lower() == "exotel"
+    return (call_import.provider or "").strip().lower() in _CREDENTIALED_RECORDING_IMPORT_PROVIDERS
 
 
 _PEEK_LUA = """

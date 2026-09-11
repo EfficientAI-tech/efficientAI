@@ -33,6 +33,7 @@ from app.services.telephony.webhook_auth import verify_plivo_webhook
 from app.services.telephony.platform_outbound_pool import outbound_pool_api_payload
 
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
+plivo_webhook_router = APIRouter(prefix="/telephony/plivo", tags=["Plivo Telephony Webhooks"])
 
 
 class TelephonyAvailableNumberResponse(BaseModel):
@@ -557,25 +558,52 @@ async def _read_webhook_params(request: Request) -> Dict[str, Any]:
     return params
 
 
-@router.post("/webhooks/answer")
-async def telephony_answer_webhook(request: Request, db: Session = Depends(get_db)):
+async def _handle_plivo_answer_webhook(request: Request, db: Session) -> Response:
     params = await _read_webhook_params(request)
     verify_plivo_webhook(request, params, "answer", db)
     xml = telephony_service.handle_answer_webhook(params, db)
     return Response(content=xml, media_type="application/xml")
 
 
-@router.post("/webhooks/events")
-async def telephony_events_webhook(request: Request, db: Session = Depends(get_db)):
+async def _handle_plivo_events_webhook(request: Request, db: Session) -> Dict[str, str]:
     params = await _read_webhook_params(request)
     verify_plivo_webhook(request, params, "events", db)
     telephony_service.handle_event_webhook(params, db)
     return {"status": "ok"}
 
 
-@router.post("/webhooks/masking")
-async def telephony_masking_webhook(request: Request, db: Session = Depends(get_db)):
+async def _handle_plivo_masking_webhook(request: Request, db: Session) -> Response:
     params = await _read_webhook_params(request)
     verify_plivo_webhook(request, params, "masking", db)
     xml = telephony_service.handle_masking_webhook(params, db)
     return Response(content=xml, media_type="application/xml")
+
+
+@plivo_webhook_router.post("/webhooks/answer")
+async def plivo_answer_webhook(request: Request, db: Session = Depends(get_db)):
+    return await _handle_plivo_answer_webhook(request, db)
+
+
+@plivo_webhook_router.post("/webhooks/events")
+async def plivo_events_webhook(request: Request, db: Session = Depends(get_db)):
+    return await _handle_plivo_events_webhook(request, db)
+
+
+@plivo_webhook_router.post("/webhooks/masking")
+async def plivo_masking_webhook(request: Request, db: Session = Depends(get_db)):
+    return await _handle_plivo_masking_webhook(request, db)
+
+
+@router.post("/webhooks/answer")
+async def telephony_answer_webhook(request: Request, db: Session = Depends(get_db)):
+    return await _handle_plivo_answer_webhook(request, db)
+
+
+@router.post("/webhooks/events")
+async def telephony_events_webhook(request: Request, db: Session = Depends(get_db)):
+    return await _handle_plivo_events_webhook(request, db)
+
+
+@router.post("/webhooks/masking")
+async def telephony_masking_webhook(request: Request, db: Session = Depends(get_db)):
+    return await _handle_plivo_masking_webhook(request, db)

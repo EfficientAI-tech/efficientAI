@@ -108,7 +108,7 @@ def test_vobiz_answer_webhook_returns_stream_xml(telephony_client, db_session, o
     assert response.headers["content-type"].startswith("application/xml")
     body = response.text
     assert "<Stream bidirectional=\"true\"" in body
-    assert "wss://public.example.com/api/v1/telephony/vobiz/ws" in body
+    assert "wss://public.example.com/api/v1/telephony/carrier/ws" in body
     assert f"agent_id={agent.id}" in body
 
 
@@ -268,7 +268,9 @@ def test_vobiz_inbound_routing_is_org_scoped(db_session, org_id, seed_org, make_
     agent = make_agent()
     _seed_vobiz_phone(db_session, org_id, phone_number="+919876543210", agent_id=agent.id)
 
-    resolved_agent_id, resolved_org_id = resolve_inbound_agent_for_number(db_session, "+919876543210")
+    resolved_agent_id, resolved_org_id, _resolved_integration_id = resolve_inbound_agent_for_number(
+        db_session, "+919876543210"
+    )
     assert resolved_agent_id == agent.id
     assert resolved_org_id == org_id
 
@@ -670,21 +672,21 @@ def test_create_vobiz_outbound_call_stores_persona_scenario_in_session(
     assert session.scenario_id == str(scenario.id)
 
 
-@patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")
-@patch("app.api.v1.routes.vobiz_telephony.build_vobiz_client_for_org")
-@patch("app.api.v1.routes.vobiz_telephony.resolve_outbound_from_number")
-@patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
+@patch("app.workers.tasks.initiate_vobiz_outbound.initiate_vobiz_outbound_call_task")
+@patch("app.services.telephony.vobiz_outbound_pool.resolve_outbound_from_number")
+@patch("app.services.telephony.vobiz_agent_context.vobiz_webhook_base_url")
 def test_create_vobiz_outbound_call_resolves_evaluator_context(
     mock_base_url,
     mock_resolve_from,
-    mock_build_client,
     mock_outbound_task,
     client,
+    db_session,
     make_agent,
     make_persona,
     make_scenario,
     make_evaluator,
 ):
+    from app.models.database import EvaluatorResult
     from app.services.telephony.vobiz_session import get_call_session
 
     agent = make_agent()
@@ -694,7 +696,6 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
 
     mock_base_url.return_value = "https://public.example.com"
     mock_resolve_from.return_value = ("+919876543210", False, "vobiz")
-    mock_build_client.return_value = (MagicMock(), None)
     mock_outbound_task.delay.return_value = None
 
     response = client.post(
@@ -707,10 +708,151 @@ def test_create_vobiz_outbound_call_resolves_evaluator_context(
     )
 
     assert response.status_code == 200
-    session = get_call_session(response.json()["call_ref"])
+    body = response.json()
+    assert body["call_status"] == "queued"
+    assert body["result_id"]
+    assert body["evaluator_result_id"]
+
+    session = get_call_session(body["call_ref"])
     assert session.persona_id == str(persona.id)
     assert session.scenario_id == str(scenario.id)
     assert session.evaluator_id == str(evaluator.id)
+
+    recording = (
+        db_session.query(CallRecording)
+        .filter(CallRecording.call_short_id == body["call_short_id"])
+        .first()
+    )
+    assert recording is not None
+    assert recording.evaluator_result_id is not None
+    assert str(recording.evaluator_result_id) == body["evaluator_result_id"]
+
+    evaluator_result = (
+        db_session.query(EvaluatorResult)
+        .filter(EvaluatorResult.id == recording.evaluator_result_id)
+        .first()
+    )
+    assert evaluator_result is not None
+    assert evaluator_result.result_id == body["result_id"]
+    assert evaluator_result.evaluator_id == evaluator.id
+    mock_outbound_task.delay.assert_called_once()
+
+
+@patch("app.workers.tasks.initiate_vobiz_outbound.initiate_vobiz_outbound_call_task")
+@patch("app.services.telephony.vobiz_outbound_pool.resolve_outbound_from_number")
+@patch("app.services.telephony.vobiz_agent_context.vobiz_webhook_base_url")
+def test_create_vobiz_outbound_call_with_evaluator_excluded_from_observability(
+    mock_base_url,
+    mock_resolve_from,
+    mock_outbound_task,
+    client,
+    authenticated_client,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+):
+    agent = make_agent()
+    persona = make_persona()
+    scenario = make_scenario()
+    evaluator = make_evaluator(agent_id=agent.id, persona_id=persona.id, scenario_id=scenario.id)
+
+    mock_base_url.return_value = "https://public.example.com"
+    mock_resolve_from.return_value = ("+919876543210", False, "vobiz")
+    mock_outbound_task.delay.return_value = None
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/calls/outbound",
+        json={
+            "to_number": "+919111111111",
+            "agent_id": str(agent.id),
+            "evaluator_id": str(evaluator.id),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    list_response = authenticated_client.get("/api/v1/observability/calls")
+    assert list_response.status_code == 200
+    call_short_ids = [row["call_short_id"] for row in list_response.json()]
+    assert body["call_short_id"] not in call_short_ids
+
+
+@patch("app.api.v1.routes.vobiz_telephony.initiate_vobiz_outbound_call_task")
+@patch("app.api.v1.routes.vobiz_telephony.vobiz_webhook_base_url")
+def test_outbound_uses_agent_plivo_number_instead_of_org_vobiz(
+    mock_base_url,
+    mock_outbound_task,
+    client,
+    db_session,
+    org_id,
+    seed_org,
+    make_agent,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.services.telephony.platform_outbound_pool.settings.TELEPHONY_OUTBOUND_POOL", [])
+    monkeypatch.setattr("app.services.telephony.platform_outbound_pool.settings.VOBIZ_OUTBOUND_POOL", [])
+    monkeypatch.setattr("app.services.telephony.platform_outbound_pool.settings.VOBIZ_FROM_NUMBER", "")
+    monkeypatch.setattr("app.services.telephony.platform_outbound_pool.settings.PLIVO_OUTBOUND_POOL", [])
+    monkeypatch.setattr("app.services.telephony.vobiz_client.settings.VOBIZ_AUTH_ID", "platform-vobiz", raising=False)
+    monkeypatch.setattr("app.services.telephony.vobiz_client.settings.VOBIZ_AUTH_TOKEN", "platform-token", raising=False)
+
+    _seed_vobiz_phone(db_session, org_id, phone_number="+918011223300")
+    plivo_integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider=TelephonyProvider.PLIVO.value,
+        auth_id="plivo-auth-id",
+        auth_token="plivo-auth-token",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(plivo_integration)
+    db_session.flush()
+    plivo_number = TelephonyPhoneNumber(
+        id=uuid4(),
+        organization_id=org_id,
+        telephony_integration_id=plivo_integration.id,
+        phone_number="+918011223399",
+        is_active=True,
+        inbound_enabled=True,
+        outbound_enabled=True,
+        source="imported",
+    )
+    db_session.add(plivo_number)
+    db_session.commit()
+
+    agent = make_agent(phone_number=plivo_number.phone_number)
+    agent.telephony_phone_number_id = plivo_number.id
+    db_session.commit()
+
+    mock_base_url.return_value = "https://public.example.com"
+    mock_outbound_task.delay.return_value = None
+
+    response = client.post(
+        "/api/v1/telephony/vobiz/calls/outbound",
+        json={
+            "to_number": "+919111111111",
+            "agent_id": str(agent.id),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["from_number"] == "+918011223399"
+    recording = (
+        db_session.query(CallRecording)
+        .filter(CallRecording.call_short_id == body["call_short_id"])
+        .first()
+    )
+    assert recording is not None
+    assert recording.provider_platform == "plivo"
+    assert recording.call_data["from_number"] == "+918011223399"
+    assert recording.call_data["telephony_integration_id"] == str(plivo_integration.id)
+    task_kwargs = mock_outbound_task.delay.call_args.kwargs
+    assert task_kwargs["from_number"] == "+918011223399"
+    assert task_kwargs["provider"] == "plivo"
+    assert task_kwargs["telephony_integration_id"] == str(plivo_integration.id)
 
 
 @patch("app.api.v1.routes.telephony.list_available_numbers")
@@ -756,3 +898,63 @@ def test_import_telephony_numbers_route(mock_import, client, org_id, seed_org):
     body = response.json()
     assert body["provider"] == "plivo"
     assert body["results"][0]["success"] is True
+
+
+def test_carrier_media_websocket_builds_run_params_for_plivo_outbound(
+    telephony_client, db_session, org_id, seed_org, make_agent, default_workspace
+):
+    agent = make_agent()
+    session = create_call_session(
+        agent_id=str(agent.id),
+        organization_id=str(org_id),
+        direction="outbound",
+        from_number="+14155550100",
+        to_number="+14155550101",
+    )
+    context = MagicMock()
+    context.use_voice_bundle_pipeline = True
+    context.system_instruction = "Answer as the production agent"
+    context.organization_id = org_id
+    context.workspace_id = default_workspace.id
+    context.agent = agent
+    context.voice_bundle = MagicMock()
+    context.persona = None
+    context.stt_api_key = "stt"
+    context.tts_api_key = "tts"
+    context.llm_api_key = "llm"
+    context.llm_endpoint_url = None
+    context.llm_base_url = None
+    captured = {}
+
+    async def _run_voice_bundle(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    call_row = MagicMock()
+    call_row.call_short_id = "654321"
+    call_row.provider_call_id = None
+    call_row.provider_platform = "plivo"
+    call_row.call_data = {}
+
+    with (
+        patch("app.api.v1.routes.vobiz_telephony.get_db", return_value=iter([db_session])),
+        patch("app.api.v1.routes.vobiz_telephony.resolve_vobiz_agent_context", return_value=context),
+        patch("app.api.v1.routes.vobiz_telephony.run_voice_bundle_fastapi", side_effect=_run_voice_bundle),
+        patch("app.api.v1.routes.vobiz_telephony.find_call_recording", return_value=call_row),
+        patch("app.api.v1.routes.vobiz_telephony.mark_call_in_progress"),
+        patch("app.api.v1.routes.vobiz_telephony.link_provider_call_id"),
+        patch("app.api.v1.routes.vobiz_telephony.finalize_call_on_media_disconnect"),
+        patch("app.api.v1.routes.vobiz_telephony.delete_call_session"),
+        patch("app.api.v1.routes.vobiz_telephony.build_carrier_frame_serializer", return_value=MagicMock()),
+        patch("app.database.SessionLocal", return_value=MagicMock()),
+    ):
+        with telephony_client.websocket_connect(
+            f"/api/v1/telephony/carrier/ws?agent_id={agent.id}&session={session.call_ref}"
+        ) as websocket:
+            websocket.send_json({"start": {"streamId": "stream-plivo", "callId": "call-plivo"}})
+            websocket.send_json({"event": "media"})
+
+    assert captured["args"][1] == "Answer as the production agent"
+    assert captured["kwargs"]["call_direction"] == "outbound"
+    assert captured["kwargs"]["caller_speaks_first"] is True
+    assert captured["kwargs"]["persona_speaks_via_tts"] is False

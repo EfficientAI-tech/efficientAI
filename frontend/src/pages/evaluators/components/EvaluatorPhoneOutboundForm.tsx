@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { Phone } from 'lucide-react'
@@ -12,6 +13,7 @@ interface Props {
   scenarioId: string
   personaName?: string
   scenarioName?: string
+  disabled?: boolean
   showToast: (message: string, type: 'success' | 'error') => void
 }
 
@@ -22,12 +24,14 @@ export default function EvaluatorPhoneOutboundForm({
   scenarioId,
   personaName,
   scenarioName,
+  disabled = false,
   showToast,
 }: Props) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [toNumber, setToNumber] = useState('')
   const [fromNumber, setFromNumber] = useState('')
 
-  const queryClient = useQueryClient()
   const { data: dialTargets = [] } = useQuery({
     queryKey: ['telephony-dial-targets'],
     queryFn: () => apiClient.listTelephonyDialTargets(),
@@ -44,10 +48,14 @@ export default function EvaluatorPhoneOutboundForm({
         from_number: fromNumber || undefined,
       }),
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
       queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
       const traceHint = data?.call_short_id ? ` Trace id ${data.call_short_id}.` : ''
       const suffix = data?.result_id ? ` (result ${data.result_id})` : ''
       showToast(`Outbound call initiated${suffix}.${traceHint} Export STT/LLM/TTS with this id.`, 'success')
+      if (data.result_id) {
+        navigate(`/results/${data.result_id}`)
+      }
     },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail
@@ -106,7 +114,7 @@ export default function EvaluatorPhoneOutboundForm({
         variant="primary"
         onClick={() => callMutation.mutate()}
         isLoading={callMutation.isPending}
-        disabled={!toNumber.trim()}
+        disabled={disabled || !toNumber.trim()}
         leftIcon={<Phone className="h-4 w-4" />}
       >
         Place call

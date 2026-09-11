@@ -26,10 +26,12 @@ import EvaluatorMetricPicker from '../components/EvaluatorMetricPicker'
 import EvaluatorLlmPicker from '../components/EvaluatorLlmPicker'
 import ScenarioViewModal from '../components/ScenarioViewModal'
 import EvaluatorDetailHeader from '../components/EvaluatorDetailHeader'
+import EvaluatorTtsMismatchBanner from '../components/EvaluatorTtsMismatchBanner'
 import EvaluatorMetricsDisplay from '../components/EvaluatorMetricsDisplay'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS, StatCard } from '../components/evaluatorUi'
 import { normalizeSelectedMetricIds, type MetricRow } from '../components/metricSelectionUtils'
 import { formatSuitePersonaLabel } from '../components/evaluatorSuitePersonas'
+import { suiteHasTtsProviderMismatch } from '../utils/evaluatorTtsMismatch'
 
 const DEFAULT_SCENARIO_NAMES = [
   'Cancel Subscription',
@@ -266,6 +268,8 @@ export default function EvaluatorDetail() {
   }
 
   const isInbound = suite.agent_call_type === 'inbound'
+  const hasTtsMismatch = suiteHasTtsProviderMismatch(suite)
+  const blocksOutboundRun = hasTtsMismatch && !isInbound
   const firstCombo = suite.combinations[0]
   const existingScenarioIds = new Set(suite.combinations.map((c) => c.scenario_id))
   const existingPersonaIds = new Set(suite.persona_ids ?? suite.combinations.map((c) => c.persona_id).filter(Boolean))
@@ -311,9 +315,19 @@ export default function EvaluatorDetail() {
         onCancelEdit={() => setIsEditing(false)}
         onSave={handleSave}
         onRun={() => setShowRunModal(true)}
+        runDisabled={blocksOutboundRun}
+        runDisabledReason="Resolve the TTS provider mismatch before running this suite"
         onActivate={() => activateMutation.mutate()}
         onDelete={() => setShowDeleteModal(true)}
       />
+
+      {hasTtsMismatch && (
+        <EvaluatorTtsMismatchBanner
+          suite={suite}
+          variant={isInbound ? 'inform' : 'block'}
+          onEditPersonas={isInbound ? undefined : handleStartEdit}
+        />
+      )}
 
       {/* Overview card */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
@@ -517,6 +531,8 @@ export default function EvaluatorDetail() {
           scenarioName={firstCombo.scenario_name || undefined}
           callMedium={suite.agent_call_medium || 'phone_call'}
           callType={suite.agent_call_type || 'outbound'}
+          suite={suite}
+          onEditPersonas={handleStartEdit}
           showToast={showToast}
         />
       ) : null}

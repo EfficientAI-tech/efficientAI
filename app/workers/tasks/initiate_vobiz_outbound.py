@@ -26,6 +26,8 @@ def initiate_vobiz_outbound_call_task(
     events_url: str,
     used_pool: bool,
     call_recording_id: str,
+    provider: str = "vobiz",
+    telephony_integration_id: str | None = None,
 ) -> dict:
     org_uuid = UUID(organization_id)
     db = SessionLocal()
@@ -47,7 +49,19 @@ def initiate_vobiz_outbound_call_task(
             row.call_data = data
             db.commit()
 
-        client, _ = build_vobiz_client_for_org(db, org_uuid)
+        credential_id = UUID(telephony_integration_id) if telephony_integration_id else None
+        provider_key = (provider or "vobiz").strip().lower()
+        if provider_key == "plivo":
+            from app.services.telephony.telephony_service import telephony_service
+
+            client = telephony_service.get_provider_client(
+                org_uuid,
+                db,
+                provider="plivo",
+                credential_id=credential_id,
+            )
+        else:
+            client, _ = build_vobiz_client_for_org(db, org_uuid, credential_id=credential_id)
         response = client.create_outbound_call(
             from_=from_number,
             to_=to_number,

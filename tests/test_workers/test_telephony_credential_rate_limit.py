@@ -125,7 +125,7 @@ def test_redis_failure_fails_open(monkeypatch):
     assert status.allowed is True
 
 
-def test_requires_authenticated_recording_fetch_only_for_exotel():
+def test_requires_authenticated_recording_fetch_for_exotel_and_plivo():
     credentialed = SimpleNamespace(
         telephony_integration_id="uuid",
         provider="exotel",
@@ -137,5 +137,5 @@ def test_requires_authenticated_recording_fetch_only_for_exotel():
     direct = SimpleNamespace(telephony_integration_id=None, provider=None)
 
     assert module.requires_authenticated_recording_fetch(credentialed) is True
-    assert module.requires_authenticated_recording_fetch(plivo) is False
+    assert module.requires_authenticated_recording_fetch(plivo) is True
     assert module.requires_authenticated_recording_fetch(direct) is False

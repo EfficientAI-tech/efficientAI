@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, validate_auth_configuration
 from app.core.auth.rbac import require_admin
@@ -138,31 +139,16 @@ def _mount_frontend(app: FastAPI) -> None:
     if not _includes_http_routes():
         return
 
-    frontend_dist = Path(settings.FRONTEND_DIR).resolve()
+    frontend_dist = Path(settings.FRONTEND_DIR)
     if not frontend_dist.exists() or not frontend_dist.is_dir():
         return
 
-    assets_dir = frontend_dist / "assets"
+    static_dir = frontend_dist / "assets"
+    if static_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(static_dir)), name="assets")
 
-    @app.get("/assets/{asset_path:path}", include_in_schema=False)
-    async def serve_frontend_asset(asset_path: str):
-        from fastapi import HTTPException
-
-        if not assets_dir.is_dir():
-            raise HTTPException(status_code=404, detail="Asset not found")
-        candidate = (assets_dir / asset_path).resolve()
-        try:
-            candidate.relative_to(assets_dir.resolve())
-        except ValueError:
-            raise HTTPException(status_code=404, detail="Asset not found")
-        if not candidate.is_file():
-            raise HTTPException(status_code=404, detail="Asset not found")
-        return FileResponse(str(candidate))
-
-    @app.get("/{full_path:path}", include_in_schema=False)
+    @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        from fastapi import HTTPException
-
         if (
             full_path.startswith("api/")
             or full_path.startswith("docs")
@@ -172,7 +158,7 @@ def _mount_frontend(app: FastAPI) -> None:
             or full_path == "health/detail"
             or full_path == "metrics"
         ):
-            raise HTTPException(status_code=404, detail="Not found")
+            return {"detail": "Not found"}
 
         file_path = frontend_dist / full_path
         if file_path.exists() and file_path.is_file() and file_path.parent == frontend_dist:
@@ -181,7 +167,7 @@ def _mount_frontend(app: FastAPI) -> None:
         index_path = frontend_dist / "index.html"
         if index_path.exists():
             return FileResponse(str(index_path))
-        raise HTTPException(status_code=404, detail="Frontend not found")
+        return {"detail": "Frontend not found"}
 
 
 def create_app() -> FastAPI:
@@ -236,7 +222,7 @@ def create_app() -> FastAPI:
         )
         if _service_mode() == "media":
             logger.info(
-                "Vobiz telephony edge: /telephony/vobiz/webhooks/* and /telephony/vobiz/ws"
+                "Carrier telephony edge: /telephony/vobiz/webhooks/* and /telephony/carrier/ws"
             )
         if settings.SERVICE_MODE == "api":
             logger.info(

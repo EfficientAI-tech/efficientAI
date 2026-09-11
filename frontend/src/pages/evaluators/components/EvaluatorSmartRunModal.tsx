@@ -5,6 +5,8 @@ import { apiClient, EvaluatorSuite } from '../../../lib/api'
 import Button from '../../../components/Button'
 import { X, Play } from 'lucide-react'
 import { MODERN_INPUT_CLASS, MODERN_SELECT_CLASS } from './evaluatorUi'
+import EvaluatorTtsMismatchBanner from './EvaluatorTtsMismatchBanner'
+import { suiteHasTtsProviderMismatch } from '../utils/evaluatorTtsMismatch'
 
 interface Props {
   open: boolean
@@ -24,6 +26,7 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
   const isPhoneOutbound =
     singleSuite?.agent_call_medium === 'phone_call' && singleSuite?.agent_call_type !== 'inbound'
   const isWeb = singleSuite?.agent_call_medium === 'web_call'
+  const runBlocked = singleSuite ? suiteHasTtsProviderMismatch(singleSuite) && !isInbound : false
 
   const { data: dialTargets = [] } = useQuery({
     queryKey: ['telephony-dial-targets'],
@@ -101,6 +104,10 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
               </div>
             )}
 
+            {singleSuite && !isInbound && runBlocked && (
+              <EvaluatorTtsMismatchBanner suite={singleSuite} variant="block" />
+            )}
+
             {singleSuite && !isInbound && (
               <>
                 <div>
@@ -170,7 +177,7 @@ export default function EvaluatorSmartRunModal({ open, onClose, suites, showToas
                 variant="primary"
                 onClick={() => runMutation.mutate({ suiteId: singleSuite.id, runs: runsPerCombination })}
                 isLoading={runMutation.isPending}
-                disabled={isPhoneOutbound && !toNumber.trim()}
+                disabled={runBlocked || (isPhoneOutbound && !toNumber.trim())}
                 leftIcon={<Play className="h-4 w-4" />}
               >
                 Queue {totalRuns} runs

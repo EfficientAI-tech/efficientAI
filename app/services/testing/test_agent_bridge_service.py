@@ -35,6 +35,7 @@ from app.services.testing.test_agent_template import (
     resolve_first_message_from_agent,
     should_caller_speak_first,
 )
+from app.services.evaluators.evaluator_helpers import require_matching_agent_persona_tts
 from app.workers.celery_app import process_evaluator_result_task
 
 
@@ -436,6 +437,8 @@ class TestAgentBridgeService:
                 raise ValueError(f"Agent not found: {agent_id}")
             if not persona or not scenario:
                 raise ValueError("Persona or scenario not found")
+
+            require_matching_agent_persona_tts(db, agent, persona)
 
             # Helper to resolve API key for a provider, honoring an optional
             # explicit credential row pinned in the voice bundle. Selection

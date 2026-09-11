@@ -8,4 +8,5 @@ from tests.test_api.conftest import (  # noqa: F401
     make_metric,
     make_persona,
     make_scenario,
+    make_voice_bundle,
 )

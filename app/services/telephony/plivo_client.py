@@ -1,6 +1,6 @@
 """Thin Plivo SDK wrapper for telephony operations."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 try:
@@ -85,12 +85,21 @@ def expand_phone_candidates(
 class PlivoClient:
     """Wrapper around plivo.RestClient that returns normalized dictionaries."""
 
-    def __init__(self, auth_id: str, auth_token: str):
+    def __init__(
+        self,
+        auth_id: str,
+        auth_token: str,
+        *,
+        credential_fingerprint: Optional[str] = None,
+    ):
         if plivo is None:
             raise ValueError(
                 "Plivo SDK is not installed. Install it with `pip install -e .` or `pip install plivo`."
             )
         self.client = plivo.RestClient(auth_id=auth_id, auth_token=auth_token)
+        self._auth_id = auth_id
+        self._auth_token = auth_token
+        self._credential_fingerprint = credential_fingerprint
 
     @staticmethod
     def _to_dict(data: Any) -> Dict[str, Any]:
@@ -210,6 +219,16 @@ class PlivoClient:
         except Exception as e:
             logger.exception("Failed to fetch call details")
             raise ValueError(f"Failed to fetch call details: {str(e)}")
+
+    def download_recording(self, recording_url: str) -> Tuple[bytes, str]:
+        """Download a recording from Plivo with HTTP Basic auth."""
+        from app.services.telephony.recording_download import download_recording_url
+
+        return download_recording_url(
+            recording_url,
+            auth=(self._auth_id, self._auth_token),
+            credential_fingerprint=self._credential_fingerprint,
+        )
 
     def start_voice_verification(
         self, recipient: str, app_uuid: str, callback_url: Optional[str] = None

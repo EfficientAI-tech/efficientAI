@@ -135,6 +135,72 @@ def _auth_token_for_vobiz_org(db: Session, org_id: UUID) -> Optional[str]:
     return _platform_vobiz_auth_token()
 
 
+def _auth_token_for_carrier_recording(db: Session, row: CallRecording) -> Optional[str]:
+    platform = (getattr(row, "provider_platform", None) or "vobiz").strip().lower()
+    data = row.call_data if isinstance(row.call_data, dict) else {}
+    raw_integration_id = data.get("telephony_integration_id")
+    credential_id = None
+    if raw_integration_id:
+        try:
+            credential_id = UUID(str(raw_integration_id))
+        except (TypeError, ValueError):
+            credential_id = None
+
+    if platform == "plivo":
+        integration = resolve_telephony_integration(
+            "plivo",
+            db,
+            row.organization_id,
+            credential_id=credential_id,
+        )
+        if integration:
+            return decrypt_api_key(integration.auth_token).strip()
+        return _platform_plivo_auth_token()
+
+    if credential_id:
+        integration = resolve_telephony_integration(
+            "vobiz",
+            db,
+            row.organization_id,
+            credential_id=credential_id,
+        )
+        if integration:
+            return decrypt_api_key(integration.auth_token).strip()
+    return _auth_token_for_vobiz_org(db, row.organization_id)
+
+
+def _platform_plivo_auth_token() -> Optional[str]:
+    token = (settings.PLIVO_AUTH_TOKEN or "").strip()
+    return token or None
+
+
+def _resolve_plivo_auth_token_by_auth_id(auth_id: str, db: Session) -> Optional[str]:
+    candidate = (auth_id or "").strip()
+    if not candidate:
+        return None
+
+    platform_id = (settings.PLIVO_AUTH_ID or "").strip()
+    if platform_id and candidate.lower() == platform_id.lower():
+        return _platform_plivo_auth_token()
+
+    rows = (
+        db.query(TelephonyIntegration)
+        .filter(
+            TelephonyIntegration.provider == "plivo",
+            TelephonyIntegration.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in rows:
+        try:
+            stored_id = decrypt_api_key(row.auth_id).strip()
+        except Exception:
+            continue
+        if stored_id.lower() == candidate.lower():
+            return decrypt_api_key(row.auth_token).strip()
+    return None
+
+
 def _resolve_auth_token_for_call_event(
     params: Dict[str, Any],
     db: Session,
@@ -181,7 +247,27 @@ def resolve_plivo_auth_token(
         phone_number = params.get("To") or params.get("to")
         return _resolve_auth_token_for_phone(phone_number, db)
     if webhook_kind == "events":
-        return _resolve_auth_token_for_call_event(params, db)
+        token = _resolve_auth_token_for_call_event(params, db)
+        if token:
+            return token
+
+        parent_auth_id = (
+            params.get("ParentAuthID")
+            or params.get("AuthID")
+            or params.get("auth_id")
+        )
+        if parent_auth_id:
+            token = _resolve_plivo_auth_token_by_auth_id(str(parent_auth_id), db)
+            if token:
+                return token
+
+        phone_number = (
+            params.get("To")
+            or params.get("to")
+            or params.get("From")
+            or params.get("from")
+        )
+        return _resolve_auth_token_for_phone(phone_number, db)
     return None
 
 
@@ -240,12 +326,12 @@ def resolve_vobiz_auth_token(
         from app.services.telephony.call_recording_lifecycle import find_call_recording
         from app.services.telephony.vobiz_session import get_call_session
 
+        row = find_call_recording(db, call_ref=call_ref, provider_call_id=None)
+        if row:
+            return _auth_token_for_carrier_recording(db, row)
         session = get_call_session(call_ref)
         if session and session.organization_id:
             return _auth_token_for_vobiz_org(db, UUID(session.organization_id))
-        row = find_call_recording(db, call_ref=call_ref, provider_call_id=None)
-        if row:
-            return _auth_token_for_vobiz_org(db, row.organization_id)
 
     parent_auth_id = params.get("ParentAuthID") or params.get("auth_id")
     if parent_auth_id:

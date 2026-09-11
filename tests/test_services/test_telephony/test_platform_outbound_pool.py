@@ -119,3 +119,63 @@ def test_resolve_outbound_from_number_rejects_unknown_explicit_number(
             org_id,
             explicit_from_number="+918099999999",
         )
+
+
+def test_resolve_outbound_from_number_prefers_agent_plivo_over_older_vobiz(
+    clear_pool_settings, db_session, org_id, seed_org
+):
+    from app.models.database import TelephonyIntegration, TelephonyPhoneNumber
+    from app.models.enums import TelephonyProvider
+
+    vobiz_integration = TelephonyIntegration(
+        organization_id=org_id,
+        provider=TelephonyProvider.VOBIZ.value,
+        auth_id="vobiz-id",
+        auth_token="vobiz-token",
+        is_active=True,
+        is_default=True,
+    )
+    plivo_integration = TelephonyIntegration(
+        organization_id=org_id,
+        provider=TelephonyProvider.PLIVO.value,
+        auth_id="plivo-id",
+        auth_token="plivo-token",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add_all([vobiz_integration, plivo_integration])
+    db_session.flush()
+
+    older_vobiz = TelephonyPhoneNumber(
+        organization_id=org_id,
+        telephony_integration_id=vobiz_integration.id,
+        phone_number="+918011223300",
+        is_active=True,
+        inbound_enabled=True,
+        outbound_enabled=True,
+        source="imported",
+    )
+    agent_plivo = TelephonyPhoneNumber(
+        organization_id=org_id,
+        telephony_integration_id=plivo_integration.id,
+        phone_number="+918011223399",
+        is_active=True,
+        inbound_enabled=True,
+        outbound_enabled=True,
+        source="imported",
+    )
+    db_session.add_all([older_vobiz, agent_plivo])
+    db_session.commit()
+
+    fallback_number, _, fallback_provider = resolve_outbound_from_number(db_session, org_id)
+    assert fallback_number == "+918011223300"
+    assert fallback_provider == "vobiz"
+
+    number, used_pool, provider = resolve_outbound_from_number(
+        db_session,
+        org_id,
+        preferred_from_number="+918011223399",
+    )
+    assert number == "+918011223399"
+    assert used_pool is False
+    assert provider == "plivo"

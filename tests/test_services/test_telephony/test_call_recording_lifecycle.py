@@ -1,5 +1,6 @@
 """Tests for Vobiz call recording lifecycle helpers."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -59,6 +60,47 @@ def test_find_call_recording_matches_request_uuid_in_call_data(db_session, org_i
     found = find_call_recording(db_session, provider_call_id="request-uuid-1")
     assert found is not None
     assert found.id == row.id
+
+
+def test_find_call_recording_by_call_ref_outside_recent_window(
+    db_session, org_id, seed_org, default_workspace
+):
+    """Live Plivo hangups need the recording even when 200 newer rows exist."""
+    now = datetime.now(timezone.utc)
+    target_ref = "plivo-live-session"
+    target = CallRecording(
+        organization_id=org_id,
+        workspace_id=default_workspace.id,
+        call_short_id="plivo1",
+        status=CallRecordingStatus.PENDING,
+        source=CallRecordingSource.WEBHOOK,
+        call_event="call_in_progress",
+        call_data={"call_ref": target_ref, "live_transcript": []},
+        provider_platform="plivo",
+        created_at=now - timedelta(hours=1),
+    )
+    db_session.add(target)
+    newer = [
+        CallRecording(
+            organization_id=org_id,
+            workspace_id=default_workspace.id,
+            call_short_id=f"{index:06d}",
+            status=CallRecordingStatus.PENDING,
+            source=CallRecordingSource.WEBHOOK,
+            call_event="call_ended",
+            call_data={"call_ref": f"newer-{index}", "live_transcript": []},
+            provider_platform="vobiz",
+            created_at=now + timedelta(seconds=index),
+        )
+        for index in range(200)
+    ]
+    db_session.add_all(newer)
+    db_session.commit()
+
+    found = find_call_recording(db_session, call_ref=target_ref)
+    assert found is not None
+    assert found.id == target.id
+    assert found.provider_platform == "plivo"
 
 
 def test_link_provider_call_id_updates_row(db_session, org_id, seed_org, default_workspace):

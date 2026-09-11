@@ -37,6 +37,60 @@ class VobizAgentContext:
     stt_api_key: Optional[str]
     tts_api_key: Optional[str]
     llm_api_key: Optional[str]
+    llm_endpoint_url: Optional[str] = None
+    llm_base_url: Optional[str] = None
+
+
+def _resolve_azure_endpoint_for_provider(
+    db: Session,
+    organization_id: UUID,
+    provider: ModelProvider,
+) -> Optional[str]:
+    from app.services.ai.llm_service import _resolve_azure_endpoint_from_provider
+
+    provider_value = provider.value if hasattr(provider, "value") else str(provider)
+    ai_provider_rec = db.query(AIProvider).filter(
+        AIProvider.organization_id == organization_id,
+        AIProvider.provider == provider_value,
+        AIProvider.is_active.is_(True),
+    ).first()
+    if not ai_provider_rec:
+        ai_provider_rec = db.query(AIProvider).filter(
+            AIProvider.organization_id == organization_id,
+            func.lower(AIProvider.provider) == provider_value.lower(),
+            AIProvider.is_active.is_(True),
+        ).first()
+    if not ai_provider_rec:
+        return None
+    return _resolve_azure_endpoint_from_provider(ai_provider_rec, None)
+
+
+def _resolve_voice_llm_urls(
+    db: Session,
+    organization_id: UUID,
+    voice_bundle: Optional[VoiceBundle],
+) -> tuple[Optional[str], Optional[str]]:
+    if not voice_bundle or not voice_bundle.llm_provider:
+        return None, None
+
+    llm_provider = voice_bundle.llm_provider
+    provider_key = (
+        llm_provider.value if hasattr(llm_provider, "value") else str(llm_provider)
+    ).lower()
+    llm_endpoint_url = (
+        _resolve_azure_endpoint_for_provider(db, organization_id, llm_provider)
+        if provider_key == "azure"
+        else None
+    )
+    from app.services.voice_agent.llm_voice_providers import resolve_voice_llm_base_url
+
+    llm_base_url = resolve_voice_llm_base_url(
+        db,
+        organization_id,
+        voice_bundle,
+        llm_provider,
+    )
+    return llm_endpoint_url, llm_base_url
 
 
 @dataclass
@@ -220,6 +274,8 @@ def resolve_vobiz_agent_context(
     stt_api_key = None
     tts_api_key = None
     llm_api_key = None
+    llm_endpoint_url = None
+    llm_base_url = None
 
     if use_voice_bundle_pipeline and voice_bundle:
         if voice_bundle.stt_provider:
@@ -228,6 +284,11 @@ def resolve_vobiz_agent_context(
             tts_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.tts_provider)
         if voice_bundle.llm_provider:
             llm_api_key = _resolve_api_key_for_provider(db, organization_id, voice_bundle.llm_provider)
+            llm_endpoint_url, llm_base_url = _resolve_voice_llm_urls(
+                db,
+                organization_id,
+                voice_bundle,
+            )
     else:
         ai_provider = None
         if agent.ai_provider_id:
@@ -270,6 +331,8 @@ def resolve_vobiz_agent_context(
         stt_api_key=stt_api_key,
         tts_api_key=tts_api_key,
         llm_api_key=llm_api_key,
+        llm_endpoint_url=llm_endpoint_url,
+        llm_base_url=llm_base_url,
     )
 
 
@@ -354,13 +417,14 @@ def vobiz_webhook_base_url() -> str:
     return base.rstrip("/")
 
 
-def build_vobiz_ws_url(
+def build_carrier_ws_url(
     *,
     agent_id: str,
     session: str,
     persona_id: Optional[str] = None,
     scenario_id: Optional[str] = None,
 ) -> str:
+    """Build the WebSocket URL for live carrier audio (Plivo, Vobiz, etc.)."""
     from app.config import settings
     from app.services.media_urls import carrier_media_ws_base_url
     from urllib.parse import quote
@@ -374,7 +438,12 @@ def build_vobiz_ws_url(
         query += f"&persona_id={quote(persona_id)}"
     if scenario_id:
         query += f"&scenario_id={quote(scenario_id)}"
-    return f"{ws_base}{settings.API_V1_PREFIX}/telephony/vobiz/ws?{query}"
+    return f"{ws_base}{settings.API_V1_PREFIX}/telephony/carrier/ws?{query}"
+
+
+def build_vobiz_ws_url(**kwargs) -> str:
+    """Deprecated alias for :func:`build_carrier_ws_url`."""
+    return build_carrier_ws_url(**kwargs)
 
 
 def extract_webhook_params(payload: Dict[str, Any]) -> Dict[str, Any]:

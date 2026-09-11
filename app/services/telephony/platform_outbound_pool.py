@@ -229,48 +229,76 @@ def _pool_entry_for_number(e164: str) -> Optional[PlatformOutboundPoolEntry]:
     return None
 
 
+def _provider_for_owned_number(db: Session, owned: TelephonyPhoneNumber) -> str:
+    if owned.telephony_integration_id:
+        from app.models.database import TelephonyIntegration
+
+        integration = (
+            db.query(TelephonyIntegration)
+            .filter(TelephonyIntegration.id == owned.telephony_integration_id)
+            .first()
+        )
+        if integration and integration.provider:
+            return integration.provider.lower()
+    return "vobiz"
+
+
+def _owned_outbound_number(db: Session, org_id: UUID, e164: str) -> Optional[TelephonyPhoneNumber]:
+    return (
+        db.query(TelephonyPhoneNumber)
+        .filter(
+            TelephonyPhoneNumber.organization_id == org_id,
+            TelephonyPhoneNumber.phone_number == e164,
+            TelephonyPhoneNumber.is_active.is_(True),
+            TelephonyPhoneNumber.outbound_enabled.is_(True),
+        )
+        .first()
+    )
+
+
+def _resolve_registered_from_number(
+    db: Session,
+    org_id: UUID,
+    e164: str,
+) -> Optional[tuple[str, bool, str]]:
+    owned = _owned_outbound_number(db, org_id, e164)
+    if owned:
+        return e164, False, _provider_for_owned_number(db, owned)
+    pool_entry = _pool_entry_for_number(e164)
+    if pool_entry:
+        return e164, True, pool_entry.provider
+    return None
+
+
 def resolve_outbound_from_number(
     db: Session,
     org_id: UUID,
     *,
     explicit_from_number: Optional[str] = None,
+    preferred_from_number: Optional[str] = None,
 ) -> tuple[str, bool, str]:
-    """Choose caller-ID: explicit -> org imported outbound -> platform pool.
+    """Choose caller-ID: explicit -> agent preferred -> org imported -> platform pool.
 
     Returns ``(from_number, used_pool, provider)``.
     """
     pool_entries = configured_outbound_pool()
-    pool_numbers = {entry.phone_number for entry in pool_entries}
 
     if explicit_from_number:
         e164 = normalize_e164(explicit_from_number)
-        owned = (
-            db.query(TelephonyPhoneNumber)
-            .filter(
-                TelephonyPhoneNumber.organization_id == org_id,
-                TelephonyPhoneNumber.phone_number == e164,
-                TelephonyPhoneNumber.is_active.is_(True),
-                TelephonyPhoneNumber.outbound_enabled.is_(True),
-            )
-            .first()
-        )
-        pool_entry = _pool_entry_for_number(e164)
-        if owned:
-            provider = "vobiz"
-            if owned.telephony_integration_id:
-                from app.models.database import TelephonyIntegration
-
-                integration = (
-                    db.query(TelephonyIntegration)
-                    .filter(TelephonyIntegration.id == owned.telephony_integration_id)
-                    .first()
-                )
-                if integration and integration.provider:
-                    provider = integration.provider.lower()
-            return e164, False, provider
-        if pool_entry:
-            return e164, True, pool_entry.provider
+        resolved = _resolve_registered_from_number(db, org_id, e164)
+        if resolved:
+            return resolved
         raise ValueError("from_number is not registered to this organization or outbound pool")
+
+    if preferred_from_number:
+        try:
+            preferred_e164 = normalize_e164(preferred_from_number)
+        except ValueError:
+            preferred_e164 = None
+        if preferred_e164:
+            resolved = _resolve_registered_from_number(db, org_id, preferred_e164)
+            if resolved:
+                return resolved
 
     org_number = (
         db.query(TelephonyPhoneNumber)
@@ -284,18 +312,7 @@ def resolve_outbound_from_number(
         .first()
     )
     if org_number:
-        provider = "vobiz"
-        if org_number.telephony_integration_id:
-            from app.models.database import TelephonyIntegration
-
-            integration = (
-                db.query(TelephonyIntegration)
-                .filter(TelephonyIntegration.id == org_number.telephony_integration_id)
-                .first()
-            )
-            if integration and integration.provider:
-                provider = integration.provider.lower()
-        return org_number.phone_number, False, provider
+        return org_number.phone_number, False, _provider_for_owned_number(db, org_number)
 
     if not pool_entries:
         raise ValueError(
@@ -307,3 +324,16 @@ def resolve_outbound_from_number(
 
     first = pool_entries[0]
     return first.phone_number, True, first.provider
+
+
+def outbound_telephony_integration_id(
+    db: Session,
+    org_id: UUID,
+    from_number: str,
+) -> Optional[UUID]:
+    try:
+        e164 = normalize_e164(from_number)
+    except ValueError:
+        return None
+    owned = _owned_outbound_number(db, org_id, e164)
+    return owned.telephony_integration_id if owned else None
