@@ -6,14 +6,16 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, validate_auth_configuration
 from app.core.auth.rbac import require_admin
-from app.core.health import build_health_status
+from app.core.api_rate_limit import check_health_rate_limit
+from app.core.health import build_liveness_status, build_readiness_status
+from app.core.operational_access_middleware import is_operational_access_allowed
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.migrations import check_migrations_status, ensure_migrations_directory, run_migrations
 from app.core.operational_access_middleware import OperationalAccessMiddleware
@@ -106,9 +108,9 @@ def _add_common_middleware(app: FastAPI) -> None:
 
     trusted_hosts = [h.strip() for h in (settings.TRUSTED_HOSTS or []) if h and h.strip()]
     if trusted_hosts:
-        from starlette.middleware.trustedhost import TrustedHostMiddleware
+        from app.core.trusted_host_middleware import SelectiveTrustedHostMiddleware
 
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+        app.add_middleware(SelectiveTrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
     if settings.OBSERVABILITY_ENABLED and settings.LOKI_ENABLED and settings.LOKI_MULTI_TENANT:
         from app.core.observability_middleware import OrgLoggingMiddleware
@@ -233,8 +235,12 @@ def create_app() -> FastAPI:
             )
 
     @app.get("/health")
-    async def health_check():
-        payload, status_code = build_health_status(detailed=False)
+    async def health_check(request: Request):
+        check_health_rate_limit(request)
+        if is_operational_access_allowed(request):
+            payload, status_code = build_readiness_status(detailed=False)
+        else:
+            payload, status_code = build_liveness_status()
         return JSONResponse(content=payload, status_code=status_code)
 
     if _includes_http_routes():
@@ -244,7 +250,7 @@ def create_app() -> FastAPI:
             from app.database import SessionLocal
             from app.services.observability.catalog_storage_stats import collect_catalog_storage_stats
 
-            payload, status_code = build_health_status(detailed=True)
+            payload, status_code = build_readiness_status(detailed=True)
             db = SessionLocal()
             try:
                 payload["catalog_storage"] = collect_catalog_storage_stats(db)

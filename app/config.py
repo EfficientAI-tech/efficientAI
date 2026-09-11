@@ -188,6 +188,8 @@ class Settings(BaseSettings):
     # Operational endpoints (/health, /metrics)
     OPERATIONAL_PUBLIC: bool = False
     OPERATIONAL_TRUSTED_IPS: List[str] = []
+    HEALTH_RATE_LIMIT_PER_MINUTE: int = 60
+    HEALTH_READINESS_CACHE_SECONDS: int = 10
 
     # SMTP / Email Notifications (for Alerts)
     SMTP_HOST: Optional[str] = None  # e.g., "smtp.gmail.com"
@@ -943,6 +945,14 @@ def load_config_from_file(config_path: str) -> None:
             settings.OPERATIONAL_PUBLIC = bool(operational_config["public"])
         if "trusted_ips" in operational_config:
             settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
+        if "health_rate_limit_per_minute" in operational_config:
+            settings.HEALTH_RATE_LIMIT_PER_MINUTE = int(
+                operational_config["health_rate_limit_per_minute"]
+            )
+        if "health_readiness_cache_seconds" in operational_config:
+            settings.HEALTH_READINESS_CACHE_SECONDS = int(
+                operational_config["health_readiness_cache_seconds"]
+            )
 
     if "security" in config_data:
         security_config = config_data["security"]

@@ -24,16 +24,23 @@ operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+  # Anonymous /health from the internet: cheap liveness only + per-IP rate limit.
+  # ALB/VPC peers in trusted_ips get full readiness (503 while migrations run).
+  health_rate_limit_per_minute: 60
+  health_readiness_cache_seconds: 10
 
 # HTTP security headers (CSP, X-Frame-Options, etc.)
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
   # public_base_url: "https://sandbox.efficientai.cloud"
+  # Production: list your public hostname only. /health is exempt from Host checks;
+  # ALB/kube probes that send a VPC IP as Host are allowed via operational.trusted_ips.
   # trusted_hosts:
+  #   - "sandbox.efficientai.cloud"
+  # Local dev (optional):
   #   - "localhost"
   #   - "127.0.0.1"
-  #   - "sandbox.efficientai.cloud"
   # hsts_enabled: true
   # hsts_max_age: 31536000
   # hsts_include_subdomains: true

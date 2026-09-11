@@ -21,11 +21,14 @@ operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+  health_rate_limit_per_minute: 60
+  health_readiness_cache_seconds: 10
 
 security:
   csp_enabled: true
   csp_report_only: false
   # public_base_url: "https://sandbox.efficientai.cloud"
+  # Production: trusted_hosts: ["sandbox.efficientai.cloud"] — /health exempt; VPC IPs via operational.trusted_ips
   # trusted_hosts:
   #   - "localhost"
   #   - "efficientai.local"

@@ -201,13 +201,17 @@ def test_docs_not_registered_when_debug_disabled(monkeypatch):
     assert "/openapi.json" not in route_paths
 
 
-def test_build_health_status_minimal_excludes_migration_details(monkeypatch):
+def test_build_readiness_status_minimal_excludes_migration_details(monkeypatch):
+    import app.core.health as health_module
+
+    monkeypatch.setattr(settings, "HEALTH_READINESS_CACHE_SECONDS", 0)
+    health_module._readiness_cached_at = 0.0
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (False, ["033_add_workspaces.sql"]),
     )
 
-    payload, status_code = build_health_status(detailed=False)
+    payload, status_code = health_module.build_readiness_status(detailed=False)
 
     assert status_code == 503
     assert payload == {"status": "degraded"}
@@ -232,6 +236,11 @@ def test_health_detail_returns_migration_info_for_admin(monkeypatch):
     monkeypatch.setattr(settings, "SECRET_KEY", "test-operational-secret-key-32chars")
     monkeypatch.setattr(settings, "FRONTEND_DIR", "__missing_frontend__")
     monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+    import app.core.health as health_module
+
+    monkeypatch.setattr(settings, "HEALTH_READINESS_CACHE_SECONDS", 0)
+    health_module._readiness_cached_at = 0.0
+    health_module._readiness_cached_status = (True, [])
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (True, []),

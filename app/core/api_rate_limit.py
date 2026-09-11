@@ -11,7 +11,10 @@ from fastapi import Depends, HTTPException, Request, status
 
 from app.config import settings
 from app.core.auth import Principal, get_principal
-from app.core.operational_access_middleware import _resolved_trusted_ip
+from app.core.operational_access_middleware import (
+    _resolved_trusted_ip,
+    is_operational_access_allowed,
+)
 
 _redis_client: Optional[redis.Redis] = None
 _KEY_PREFIX = "api:rate"
@@ -65,6 +68,19 @@ def check_auth_rate_limit(request: Request) -> None:
     ip = _client_ip(request)
     limit = max(1, int(settings.API_AUTH_RATE_LIMIT_PER_MINUTE))
     _check_limit(f"{_KEY_PREFIX}:auth:ip:{ip}", limit, 60)
+
+
+def check_health_rate_limit(request: Request) -> None:
+    """Rate-limit anonymous /health abuse; LB/VPC peers in operational.trusted_ips are exempt."""
+    if not settings.API_RATE_LIMIT_ENFORCE:
+        return
+    if is_operational_access_allowed(request):
+        return
+    limit = int(settings.HEALTH_RATE_LIMIT_PER_MINUTE)
+    if limit <= 0:
+        return
+    ip = _client_ip(request)
+    _check_limit(f"{_KEY_PREFIX}:health:ip:{ip}", max(1, limit), 60)
 
 
 def check_resource_create_rate_limit(principal: Principal) -> None:
