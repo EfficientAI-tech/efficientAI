@@ -9,7 +9,7 @@ from starlette.responses import PlainTextResponse, Response
 from app.config import settings
 from app.core.operational_access_middleware import _ip_in_trusted
 
-_HEALTH_PATHS = {"/health"}
+_HEALTH_PATHS = {"/health", "/health/ready"}
 
 
 def _normalize_path(path: str) -> str:

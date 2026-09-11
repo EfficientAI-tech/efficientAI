@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.config import settings
-from app.core.health import build_health_status
+from app.core.health import build_liveness_status
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.operational_access_middleware import (
     OperationalAccessMiddleware,
@@ -55,7 +55,7 @@ def operational_client(monkeypatch):
 
     @app.get("/health")
     def health():
-        payload, status_code = build_health_status(detailed=False)
+        payload, status_code = build_liveness_status()
         return JSONResponse(content=payload, status_code=status_code)
 
     @app.get("/metrics")

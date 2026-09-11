@@ -294,24 +294,34 @@ def run_migrations():
 def check_migrations_status() -> Tuple[bool, List[str]]:
     """
     Check if there are any pending migrations.
-    
+
+    Uses the same engine list and per-engine ``MIGRATION_SCOPE`` rules as
+    ``run_migrations`` so readiness checks do not false-positive when sharding
+    is enabled.
+
     Returns:
         Tuple of (is_up_to_date, pending_migration_names)
-        - is_up_to_date: True if all migrations are applied
-        - pending_migration_names: List of pending migration file names
     """
+    from app.db_sharding.pool_manager import db_pool_manager
+    from sqlalchemy.orm import sessionmaker
+
+    pending_names: List[str] = []
     try:
-        db = SessionLocal()
-        try:
-            runner = MigrationRunner(db)
-            pending = runner.get_pending_migrations()
-            pending_names = [m.stem for m in pending]
-            return (len(pending) == 0, pending_names)
-        finally:
-            db.close()
+        for eng in db_pool_manager.all_engines_for_migrations():
+            factory = sessionmaker(autocommit=False, autoflush=False, bind=eng)
+            db = factory()
+            try:
+                engine_role = _engine_role_for_url(str(eng.url))
+                runner = MigrationRunner(db, engine_role=engine_role)
+                for migration_file in runner.get_pending_migrations():
+                    name = migration_file.stem
+                    if name not in pending_names:
+                        pending_names.append(name)
+            finally:
+                db.close()
+        return (len(pending_names) == 0, pending_names)
     except Exception as e:
         logger.error(f"Error checking migration status: {e}")
-        # If we can't check, assume migrations are needed (fail safe)
         return (False, ["unknown"])
 
 

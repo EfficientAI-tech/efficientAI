@@ -24,8 +24,8 @@ operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
-  # Anonymous /health from the internet: cheap liveness only + per-IP rate limit.
-  # ALB/VPC peers in trusted_ips get full readiness (503 while migrations run).
+  # /health = liveness (always 200 ok) for ALB + internet; rate-limited for public IPs.
+  # /health/ready = readiness (503 while migrations run); VPC/LB peers in trusted_ips only.
   health_rate_limit_per_minute: 60
   health_readiness_cache_seconds: 10
 

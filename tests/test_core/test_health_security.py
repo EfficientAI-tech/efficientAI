@@ -21,7 +21,7 @@ def health_app(monkeypatch):
     monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", False)
     monkeypatch.setattr(settings, "OPERATIONAL_TRUSTED_IPS", ["10.0.0.0/8"])
     monkeypatch.setattr(settings, "API_RATE_LIMIT_ENFORCE", True)
-    monkeypatch.setattr(settings, "HEALTH_RATE_LIMIT_PER_MINUTE", 3)
+    monkeypatch.setattr(settings, "HEALTH_RATE_LIMIT_PER_MINUTE", 120)
     monkeypatch.setattr(settings, "HEALTH_READINESS_CACHE_SECONDS", 0)
 
     def _is_trusted_probe(request: Request) -> bool:
@@ -31,6 +31,7 @@ def health_app(monkeypatch):
         "app.core.operational_access_middleware.is_operational_access_allowed",
         _is_trusted_probe,
     )
+    monkeypatch.setattr("app.core.api_rate_limit.is_operational_access_allowed", _is_trusted_probe)
 
     app = FastAPI()
     app.add_middleware(MigrationCheckMiddleware)
@@ -38,20 +39,24 @@ def health_app(monkeypatch):
 
     @app.get("/health")
     def health(request: Request):
+        check_health_rate_limit(request)
+        payload, status_code = build_liveness_status()
+        return JSONResponse(content=payload, status_code=status_code)
+
+    @app.get("/health/ready")
+    def health_ready(request: Request):
         from app.core.operational_access_middleware import is_operational_access_allowed
 
-        check_health_rate_limit(request)
-        if is_operational_access_allowed(request):
-            payload, status_code = build_readiness_status(detailed=False)
-        else:
-            payload, status_code = build_liveness_status()
+        if not is_operational_access_allowed(request):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        payload, status_code = build_readiness_status(detailed=False)
         return JSONResponse(content=payload, status_code=status_code)
 
     with TestClient(app) as client:
         yield client
 
 
-def test_public_health_is_liveness_only_when_migrations_pending(monkeypatch, health_app):
+def test_public_health_is_liveness_when_migrations_pending(monkeypatch, health_app):
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (False, ["099_pending.sql"]),
@@ -63,19 +68,26 @@ def test_public_health_is_liveness_only_when_migrations_pending(monkeypatch, hea
     assert response.json() == {"status": "ok"}
 
 
-def test_trusted_lb_peer_gets_readiness_when_migrations_pending(monkeypatch, health_app):
+def test_trusted_lb_peer_gets_readiness_on_health_ready(monkeypatch, health_app):
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (False, ["099_pending.sql"]),
     )
 
-    response = health_app.get("/health", headers={"x-test-trusted-probe": "1"})
+    response = health_app.get("/health/ready", headers={"x-test-trusted-probe": "1"})
 
     assert response.status_code == 503
     assert response.json() == {"status": "degraded"}
 
 
+def test_public_health_ready_is_hidden(monkeypatch, health_app):
+    response = health_app.get("/health/ready", headers={"X-Forwarded-For": "203.0.113.1"})
+
+    assert response.status_code == 404
+
+
 def test_public_health_rate_limited(monkeypatch, health_app):
+    monkeypatch.setattr(settings, "HEALTH_RATE_LIMIT_PER_MINUTE", 3)
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (True, []),

@@ -159,6 +159,7 @@ def _mount_frontend(app: FastAPI) -> None:
             or full_path.startswith("redoc")
             or full_path.startswith("assets/")
             or full_path == "health"
+            or full_path == "health/ready"
             or full_path == "health/detail"
             or full_path == "metrics"
         ):
@@ -236,11 +237,20 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check(request: Request):
+        """Liveness probe for load balancers — process is up, no DB work."""
         check_health_rate_limit(request)
-        if is_operational_access_allowed(request):
-            payload, status_code = build_readiness_status(detailed=False)
-        else:
-            payload, status_code = build_liveness_status()
+        payload, status_code = build_liveness_status()
+        return JSONResponse(content=payload, status_code=status_code)
+
+    @app.get("/health/ready")
+    async def health_ready(request: Request):
+        """Readiness probe (VPC/LB only): migrations must be current."""
+        if not is_operational_access_allowed(request):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        payload, status_code = build_readiness_status(detailed=False)
+        if status_code != 200:
+            detail_payload, _ = build_readiness_status(detailed=True)
+            logger.warning("Readiness check failed on /health/ready: %s", detail_payload)
         return JSONResponse(content=payload, status_code=status_code)
 
     if _includes_http_routes():
