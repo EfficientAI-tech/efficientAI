@@ -48,7 +48,10 @@ def check_trace_rate_limit(principal: Principal, route_group: str = "ingest") ->
         pipe.expire(key, window + 5)
         _, _, count, _ = pipe.execute()
     except redis.RedisError:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Trace rate limiter unavailable",
+        )
     if int(count or 0) > limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

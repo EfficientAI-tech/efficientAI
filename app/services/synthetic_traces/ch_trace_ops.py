@@ -10,7 +10,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models.database import Agent, EvaluatorResult
+from app.models.database import Agent, CallRecording, EvaluatorResult
 from app.models.synthetic_trace_schemas import VALID_TRACE_TRANSPORTS
 from app.services.clickhouse.client import clickhouse_enabled
 from app.services.synthetic_traces.clickhouse_store import (
@@ -18,6 +18,7 @@ from app.services.synthetic_traces.clickhouse_store import (
     _resolve_otel_trace_id,
     get_live_turns,
     get_observations,
+    get_trace_by_call_short_id,
     get_trace_by_evaluator_result_id,
     get_trace_by_id,
     get_trace_by_uuid,
@@ -25,6 +26,7 @@ from app.services.synthetic_traces.clickhouse_store import (
     list_idle_open_traces,
     mint_trace_uuid,
     set_live_turns,
+    trace_header_lock,
     upsert_trace_header,
 )
 from app.services.synthetic_traces.otlp_mapper import (
@@ -53,14 +55,18 @@ def _utcnow():
     return utc()
 
 
-def _link_evaluator_result(db: Session, trace: TraceRecord) -> None:
+def _link_evaluator_result(
+    db: Session,
+    trace: TraceRecord,
+    *,
+    organization_id: Optional[UUID] = None,
+) -> None:
     if not trace.evaluator_result_id:
         return
-    result = (
-        db.query(EvaluatorResult)
-        .filter(EvaluatorResult.id == trace.evaluator_result_id)
-        .first()
-    )
+    query = db.query(EvaluatorResult).filter(EvaluatorResult.id == trace.evaluator_result_id)
+    if organization_id is not None:
+        query = query.filter(EvaluatorResult.organization_id == organization_id)
+    result = query.first()
     if result:
         result.synthetic_call_trace_id = trace.id
         db.commit()
@@ -93,7 +99,10 @@ def open_trace_ch(
             return existing
         result = (
             db.query(EvaluatorResult)
-            .filter(EvaluatorResult.id == evaluator_result_id)
+            .filter(
+                EvaluatorResult.id == evaluator_result_id,
+                EvaluatorResult.organization_id == organization_id,
+            )
             .first()
         )
         if result and result.synthetic_call_trace_id:
@@ -121,7 +130,7 @@ def open_trace_ch(
         spans_storage="clickhouse",
     )
     upsert_trace_header(trace)
-    _link_evaluator_result(db, trace)
+    _link_evaluator_result(db, trace, organization_id=organization_id)
     return trace
 
 
@@ -205,18 +214,20 @@ def _derive_turns_for_trace(trace: TraceRecord, spans: List[Dict[str, Any]]) -> 
 def apply_derived_to_trace(trace: TraceRecord, scoped_spans: List[Dict[str, Any]]) -> TraceRecord:
     turns = _derive_turns_for_trace(trace, scoped_spans)
     summary = compute_trace_latency_summary(turns) if turns else {}
-    trace.turns = turns
-    trace.turn_count = len(turns)
-    trace.component_aggregates = compute_component_aggregates(turns)
-    if summary.get("response_latency_p50_ms") is not None:
-        trace.response_latency_p50_ms = summary["response_latency_p50_ms"]
-        trace.response_latency_p90_ms = summary.get("response_latency_p90_ms")
-        trace.response_latency_p95_ms = summary.get("response_latency_p95_ms")
-    trace.derive_pending = False
-    trace.last_span_at = _utcnow()
-    upsert_trace_header(trace)
-    set_live_turns(trace.id, turns)
-    return trace
+    with trace_header_lock(trace.id):
+        latest = get_trace_by_uuid(trace.id) or trace
+        latest.turns = turns
+        latest.turn_count = len(turns)
+        latest.component_aggregates = compute_component_aggregates(turns)
+        if summary.get("response_latency_p50_ms") is not None:
+            latest.response_latency_p50_ms = summary["response_latency_p50_ms"]
+            latest.response_latency_p90_ms = summary.get("response_latency_p90_ms")
+            latest.response_latency_p95_ms = summary.get("response_latency_p95_ms")
+        latest.derive_pending = False
+        latest.last_span_at = _utcnow()
+        upsert_trace_header(latest)
+        set_live_turns(latest.id, turns)
+        return latest
 
 
 def derive_trace_turns_ch(db: Session, *, trace_id: UUID) -> Optional[TraceRecord]:
@@ -224,7 +235,7 @@ def derive_trace_turns_ch(db: Session, *, trace_id: UUID) -> Optional[TraceRecor
     if not trace:
         return None
 
-    spans = get_observations(trace_id)
+    spans = get_observations(trace_id, workspace_id=trace.workspace_id)
     scoped = filter_spans_for_trace(spans, call_short_id=trace.call_short_id)
     trace = apply_derived_to_trace(trace, scoped)
 
@@ -272,7 +283,7 @@ def close_and_offload_trace_ch(db: Session, *, trace_id: UUID) -> Optional[Trace
     if not trace:
         return None
 
-    spans = get_observations(trace_id)
+    spans = get_observations(trace_id, workspace_id=trace.workspace_id)
     scoped = filter_spans_for_trace(spans, call_short_id=trace.call_short_id)
     trace = apply_derived_to_trace(trace, scoped)
 
@@ -326,7 +337,7 @@ def load_trace_detail_ch(
 ) -> Dict[str, Any]:
     live_turns = get_live_turns(trace.id)
     turns = live_turns if live_turns is not None else (trace.turns or [])
-    spans = get_observations(trace.id)
+    spans = get_observations(trace.id, workspace_id=trace.workspace_id)
     scoped_spans = filter_spans_for_trace(spans, call_short_id=trace.call_short_id)
     scoped_spans = _hydrate_span_trace_ids(scoped_spans, trace.id.hex)
     if not turns and scoped_spans:
@@ -363,8 +374,194 @@ def persist_spans_ch(
     spans: List[Dict[str, Any]],
 ) -> TraceRecord:
     insert_observations(workspace_id=trace.workspace_id, trace_uuid=trace.id, spans=spans)
-    trace.span_count = int(trace.span_count or 0) + len(spans)
-    trace.last_span_at = _utcnow()
-    trace.derive_pending = True
-    upsert_trace_header(trace)
-    return trace
+    with trace_header_lock(trace.id):
+        latest = get_trace_by_uuid(trace.id) or trace
+        latest.span_count = int(latest.span_count or 0) + len(spans)
+        latest.last_span_at = _utcnow()
+        latest.derive_pending = True
+        upsert_trace_header(latest)
+        return latest
+
+
+def link_trace_to_evaluator_result_ch(
+    db: Session,
+    *,
+    organization_id: UUID,
+    call_short_id: str,
+    evaluator_result_id: UUID,
+    workspace_id: Optional[UUID] = None,
+    call_recording_id: Optional[UUID] = None,
+) -> Optional[TraceRecord]:
+    trace = get_trace_by_call_short_id(
+        organization_id=organization_id,
+        call_short_id=call_short_id,
+        workspace_id=workspace_id,
+    )
+    if not trace:
+        return None
+    with trace_header_lock(trace.id):
+        latest = get_trace_by_uuid(trace.id) or trace
+        latest.evaluator_result_id = evaluator_result_id
+        if call_recording_id:
+            latest.call_recording_id = call_recording_id
+        upsert_trace_header(latest)
+        _link_evaluator_result(db, latest, organization_id=organization_id)
+        return latest
+
+
+def finalize_trace_ch(
+    db: Session,
+    *,
+    call_short_id: str,
+    tier1_turns: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[TraceRecord]:
+    recording = (
+        db.query(CallRecording)
+        .filter(CallRecording.call_short_id == call_short_id)
+        .first()
+    )
+    if not recording:
+        logger.warning("finalize_trace_ch: no CallRecording for call_short_id={}", call_short_id)
+        return None
+
+    trace = None
+    if recording.evaluator_result_id:
+        trace = get_trace_by_evaluator_result_id(
+            organization_id=recording.organization_id,
+            evaluator_result_id=recording.evaluator_result_id,
+            workspace_id=recording.workspace_id,
+        )
+    if not trace:
+        trace = get_trace_by_call_short_id(
+            organization_id=recording.organization_id,
+            call_short_id=call_short_id,
+            workspace_id=recording.workspace_id,
+        )
+
+    if not trace and recording.evaluator_result_id:
+        result = (
+            db.query(EvaluatorResult)
+            .filter(
+                EvaluatorResult.id == recording.evaluator_result_id,
+                EvaluatorResult.organization_id == recording.organization_id,
+            )
+            .first()
+        )
+        if result:
+            trace = open_trace_ch(
+                db,
+                organization_id=recording.organization_id,
+                workspace_id=recording.workspace_id,
+                evaluator_result_id=result.id,
+                agent_id=result.agent_id,
+                persona_id=result.persona_id,
+                scenario_id=result.scenario_id,
+                evaluator_id=result.evaluator_id,
+                call_recording_id=recording.id,
+                call_short_id=call_short_id,
+                transport="phone",
+                provider_platform=recording.provider_platform or "vobiz",
+            )
+
+    if not trace:
+        return None
+
+    with trace_header_lock(trace.id):
+        latest = get_trace_by_uuid(trace.id) or trace
+        if tier1_turns:
+            otel_turns = derive_turns_from_spans(
+                get_observations(latest.id, workspace_id=latest.workspace_id)
+            )
+            merged = merge_tier1_and_otel_turns(tier1_turns, otel_turns)
+            latest.turns = merged
+            latest.turn_count = len(merged)
+            summary = compute_trace_latency_summary(merged) if merged else {}
+            latest.component_aggregates = compute_component_aggregates(merged)
+            if summary.get("response_latency_p50_ms") is not None:
+                latest.response_latency_p50_ms = summary["response_latency_p50_ms"]
+                latest.response_latency_p90_ms = summary.get("response_latency_p90_ms")
+                latest.response_latency_p95_ms = summary.get("response_latency_p95_ms")
+            if otel_turns:
+                latest.tier = "mixed" if tier1_turns else "component"
+        latest.status = "closed"
+        latest.ended_at = _utcnow()
+        latest.call_recording_id = recording.id
+        latest.call_short_id = call_short_id
+        flags: List[str] = []
+        if latest.turn_count == 0:
+            flags.append("no_turns")
+        if latest.response_latency_p95_ms and latest.response_latency_p95_ms > 3000:
+            flags.append("high_latency")
+        latest.failure_flags = flags
+        upsert_trace_header(latest)
+        return latest
+
+
+def backfill_missing_traces_ch(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    limit: int = 50,
+) -> int:
+    linked_result_ids = {
+        row[0]
+        for row in db.query(EvaluatorResult.id)
+        .filter(
+            EvaluatorResult.organization_id == organization_id,
+            EvaluatorResult.workspace_id == workspace_id,
+            EvaluatorResult.synthetic_call_trace_id.isnot(None),
+        )
+        .all()
+    }
+
+    recordings = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+            CallRecording.evaluator_result_id.isnot(None),
+            CallRecording.provider_platform == "vobiz",
+        )
+        .order_by(CallRecording.created_at.desc())
+        .limit(limit * 3)
+        .all()
+    )
+
+    created = 0
+    for recording in recordings:
+        if recording.evaluator_result_id in linked_result_ids:
+            continue
+        result = (
+            db.query(EvaluatorResult)
+            .filter(EvaluatorResult.id == recording.evaluator_result_id)
+            .first()
+        )
+        if not result:
+            continue
+        trace = open_trace_ch(
+            db,
+            organization_id=recording.organization_id,
+            workspace_id=recording.workspace_id,
+            evaluator_result_id=result.id,
+            agent_id=result.agent_id,
+            persona_id=result.persona_id,
+            scenario_id=result.scenario_id,
+            evaluator_id=result.evaluator_id,
+            call_recording_id=recording.id,
+            call_short_id=recording.call_short_id,
+            transport="phone",
+            provider_platform=recording.provider_platform or "vobiz",
+        )
+        if not trace:
+            continue
+        linked_result_ids.add(recording.evaluator_result_id)
+        created += 1
+        event = (recording.call_event or "").lower()
+        if event in {"call_ended", "completed", "failed"} or (
+            isinstance(recording.call_data, dict) and recording.call_data.get("ended_at")
+        ):
+            finalize_trace_ch(db, call_short_id=recording.call_short_id)
+        if created >= limit:
+            break
+    return created

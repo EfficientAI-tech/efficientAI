@@ -150,7 +150,8 @@ async def _ingest_otlp_traces_handler(
                 detail="ClickHouse is required for deferred trace ingest (set clickhouse.url in config)",
             )
         try:
-            result = ingest_otlp_batch_to_s3(
+            result = await run_in_threadpool(
+                ingest_otlp_batch_to_s3,
                 db,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
@@ -483,6 +484,7 @@ def get_trace_for_evaluator_result(
                     organization_id=organization_id,
                     call_short_id=linked_call_short_id.strip(),
                     evaluator_result_id=result.id,
+                    workspace_id=workspace_id,
                 )
     if not trace:
         raise HTTPException(status_code=404, detail="Call trace not found")

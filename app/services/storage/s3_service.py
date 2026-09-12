@@ -391,17 +391,30 @@ class S3Service:
             return []
 
         try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=prefix,
-                MaxKeys=max_keys,
-            )
             out: List[tuple] = []
-            for obj in response.get("Contents") or []:
-                key = obj["Key"]
-                if contains and contains not in key:
-                    continue
-                out.append((key, obj.get("LastModified")))
+            continuation: Optional[str] = None
+            while len(out) < max_keys:
+                page_size = min(1000, max_keys - len(out))
+                kwargs = {
+                    "Bucket": self.bucket_name,
+                    "Prefix": prefix,
+                    "MaxKeys": page_size,
+                }
+                if continuation:
+                    kwargs["ContinuationToken"] = continuation
+                response = self.s3_client.list_objects_v2(**kwargs)
+                for obj in response.get("Contents") or []:
+                    key = obj["Key"]
+                    if contains and contains not in key:
+                        continue
+                    out.append((key, obj.get("LastModified")))
+                    if len(out) >= max_keys:
+                        break
+                if not response.get("IsTruncated"):
+                    break
+                continuation = response.get("NextContinuationToken")
+                if not continuation:
+                    break
             return out
         except Exception as exc:
             raise StorageError(f"Failed to list S3 objects: {exc}")

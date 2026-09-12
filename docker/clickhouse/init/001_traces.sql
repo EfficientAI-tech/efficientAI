@@ -30,9 +30,13 @@ CREATE TABLE IF NOT EXISTS efficientai.call_traces
     span_count UInt32 DEFAULT 0,
     last_span_at Nullable(DateTime64(3)),
     turns Nullable(String),
-    updated_at DateTime64(3) DEFAULT now64(3)
+    updated_at DateTime64(3) DEFAULT now64(3),
+    INDEX idx_trace_uuid trace_uuid TYPE bloom_filter GRANULARITY 4,
+    INDEX idx_call_short_id call_short_id TYPE bloom_filter GRANULARITY 4,
+    INDEX idx_evaluator_result evaluator_result_id TYPE bloom_filter GRANULARITY 4
 )
 ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(started_at)
 ORDER BY (workspace_id, started_at, trace_uuid);
 
 CREATE TABLE IF NOT EXISTS efficientai.trace_observations
@@ -51,5 +55,6 @@ CREATE TABLE IF NOT EXISTS efficientai.trace_observations
     status_message Nullable(String),
     received_at DateTime64(3) DEFAULT now64(3)
 )
-ENGINE = MergeTree
+ENGINE = ReplacingMergeTree(received_at)
+PARTITION BY toYYYYMM(received_at)
 ORDER BY (workspace_id, trace_uuid, span_id);

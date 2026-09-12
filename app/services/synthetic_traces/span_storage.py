@@ -16,7 +16,7 @@ from app.models.database import (
     SyntheticTraceOtelPayload,
     SyntheticTraceSpanBatch,
 )
-from app.services.storage import s3_service
+from app.services.storage.blob_storage_service import blob_storage_service
 from app.services.storage.blob_paths import build_trace_spans_object_key
 
 SPANS_STORAGE_LEGACY = "legacy_jsonb"
@@ -65,7 +65,7 @@ def load_legacy_spans(db: Session, trace_id: UUID) -> List[Dict[str, Any]]:
 
 @lru_cache(maxsize=128)
 def _cached_s3_spans(s3_key: str) -> tuple:
-    data = s3_service.download_file_by_key(s3_key)
+    data = blob_storage_service.download_file_by_key(s3_key)
     payload = json.loads(data.decode("utf-8"))
     spans = list(payload.get("spans") or [])
     return tuple(spans)
@@ -110,7 +110,7 @@ def upload_trace_spans_to_s3_ch(trace, spans: List[Dict[str, Any]]) -> Optional[
         {"spans": spans, "trace_ids": collect_trace_ids(spans)},
         separators=(",", ":"),
     ).encode("utf-8")
-    s3_service.upload_file_by_key(body, key, content_type="application/json")
+    blob_storage_service.upload_file_by_key(body, key, content_type="application/json")
     return key
 
 
@@ -131,7 +131,7 @@ def upload_trace_spans_to_s3(
         {"spans": spans, "trace_ids": collect_trace_ids(spans)},
         separators=(",", ":"),
     ).encode("utf-8")
-    s3_service.upload_file_by_key(body, key, content_type="application/json")
+    blob_storage_service.upload_file_by_key(body, key, content_type="application/json")
     return key
 
 

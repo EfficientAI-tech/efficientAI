@@ -483,6 +483,8 @@ export default function SyntheticCallTracePanel({
     },
     enabled: Boolean(traceId || callShortId || evaluatorResultId),
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.status === 'open' ? 3000 : false,
   })
 
   const needsSpans = tab === 'spans' || tab === 'waterfall' || tab === 'trace' || tab === 'timeline'

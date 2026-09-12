@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 import redis
@@ -16,6 +18,11 @@ from app.config import settings
 from app.services.clickhouse.client import clickhouse_enabled, get_client
 
 _redis_client: Optional[redis.Redis] = None
+_BATCH_DONE_TTL_SECONDS = 30 * 24 * 3600
+
+
+class BatchSeqUnavailable(Exception):
+    """Redis unavailable for batch sequence allocation."""
 
 
 def _get_redis() -> redis.Redis:
@@ -23,6 +30,136 @@ def _get_redis() -> redis.Redis:
     if _redis_client is None:
         _redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
     return _redis_client
+
+
+def _call_short_id_cache_key(
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_short_id: str,
+) -> str:
+    return f"trace:call:{organization_id}:{workspace_id}:{call_short_id}"
+
+
+def _call_short_id_cache_ttl() -> int:
+    idle = max(1, int(settings.TRACES_IDLE_CLOSE_SECONDS))
+    return idle * 3
+
+
+def get_cached_trace_uuid_for_call_short_id(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_short_id: str,
+) -> Optional[UUID]:
+    key = _call_short_id_cache_key(organization_id, workspace_id, call_short_id)
+    try:
+        raw = _get_redis().get(key)
+    except redis.RedisError:
+        return None
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except ValueError:
+        return None
+
+
+def register_call_short_id_trace_uuid(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_short_id: str,
+    trace_uuid: UUID,
+) -> None:
+    key = _call_short_id_cache_key(organization_id, workspace_id, call_short_id)
+    try:
+        _get_redis().setex(key, _call_short_id_cache_ttl(), str(trace_uuid))
+    except redis.RedisError as exc:
+        logger.warning("Redis call_short_id cache set failed for {}: {}", call_short_id, exc)
+
+
+def claim_call_short_id_trace_uuid(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    call_short_id: str,
+    trace_uuid: UUID,
+) -> bool:
+    key = _call_short_id_cache_key(organization_id, workspace_id, call_short_id)
+    try:
+        return bool(
+            _get_redis().set(key, str(trace_uuid), nx=True, ex=_call_short_id_cache_ttl())
+        )
+    except redis.RedisError as exc:
+        logger.warning("Redis call_short_id claim failed for {}: {}", call_short_id, exc)
+        return False
+
+
+def store_batch_meta(s3_key: str, *, content_type: str) -> None:
+    key = f"trace:batch:meta:{s3_key}"
+    try:
+        _get_redis().setex(
+            key,
+            _BATCH_DONE_TTL_SECONDS,
+            json.dumps({"content_type": content_type or "application/json"}),
+        )
+    except redis.RedisError as exc:
+        logger.warning("Redis batch meta store failed for {}: {}", s3_key, exc)
+
+
+def get_batch_meta(s3_key: str) -> Dict[str, Any]:
+    key = f"trace:batch:meta:{s3_key}"
+    try:
+        raw = _get_redis().get(key)
+    except redis.RedisError:
+        return {}
+    if not raw:
+        return {}
+    data = _json_loads(raw)
+    return data if isinstance(data, dict) else {}
+
+
+def mark_batch_processed(s3_key: str) -> None:
+    key = f"trace:batch:done:{s3_key}"
+    try:
+        _get_redis().setex(key, _BATCH_DONE_TTL_SECONDS, "1")
+    except redis.RedisError as exc:
+        logger.warning("Redis batch done marker failed for {}: {}", s3_key, exc)
+
+
+def is_batch_processed(s3_key: str) -> bool:
+    key = f"trace:batch:done:{s3_key}"
+    try:
+        return bool(_get_redis().get(key))
+    except redis.RedisError:
+        return False
+
+
+@contextmanager
+def trace_header_lock(trace_uuid: UUID, *, wait_seconds: float = 5.0) -> Iterator[bool]:
+    lock_key = f"trace:hdrlock:{trace_uuid}"
+    token = str(uuid4())
+    acquired = False
+    deadline = time.monotonic() + wait_seconds
+    try:
+        while time.monotonic() < deadline:
+            try:
+                acquired = bool(_get_redis().set(lock_key, token, nx=True, ex=30))
+            except redis.RedisError as exc:
+                logger.warning("Redis header lock error for {}: {}", trace_uuid, exc)
+                break
+            if acquired:
+                break
+            time.sleep(0.02)
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                current = _get_redis().get(lock_key)
+                if current == token:
+                    _get_redis().delete(lock_key)
+            except redis.RedisError:
+                pass
 
 
 def _utcnow() -> datetime:
@@ -276,6 +413,7 @@ def get_trace_by_call_short_id(
     organization_id: UUID,
     call_short_id: str,
     workspace_id: Optional[UUID] = None,
+    open_only: bool = False,
 ) -> Optional[TraceRecord]:
     where = (
         "organization_id = {org_id:UUID} AND call_short_id = {short_id:String}"
@@ -284,6 +422,8 @@ def get_trace_by_call_short_id(
     if workspace_id is not None:
         where += " AND workspace_id = {ws_id:UUID}"
         params["ws_id"] = workspace_id
+    if open_only:
+        where += " AND status = 'open'"
     query = (
         f"SELECT {', '.join(_TRACE_COLUMNS)} FROM call_traces FINAL "
         f"WHERE {where} ORDER BY started_at DESC LIMIT 1"
@@ -438,16 +578,25 @@ def insert_observations(
     return len(rows)
 
 
-def get_observations(trace_uuid: UUID) -> List[Dict[str, Any]]:
+def get_observations(
+    trace_uuid: UUID,
+    *,
+    workspace_id: Optional[UUID] = None,
+) -> List[Dict[str, Any]]:
+    where = "trace_uuid = {trace_id:UUID}"
+    params: Dict[str, Any] = {"trace_id": trace_uuid}
+    if workspace_id is not None:
+        where += " AND workspace_id = {ws_id:UUID}"
+        params["ws_id"] = workspace_id
     result = get_client().query(
-        """
+        f"""
         SELECT span_id, parent_span_id, name, kind, start_time_unix_nano,
                end_time_unix_nano, attributes, events, status_code, status_message
-        FROM trace_observations
-        WHERE trace_uuid = {trace_id:UUID}
+        FROM trace_observations FINAL
+        WHERE {where}
         ORDER BY start_time_unix_nano ASC
         """,
-        parameters={"trace_id": trace_uuid},
+        parameters=params,
     )
     fallback_trace_id = trace_uuid.hex
     spans: List[Dict[str, Any]] = []
@@ -502,8 +651,8 @@ def next_batch_seq(trace_uuid: UUID) -> int:
     try:
         return int(_get_redis().incr(key))
     except redis.RedisError as exc:
-        logger.warning("Redis batch seq error for {}: {}", trace_uuid, exc)
-        return 1
+        logger.error("Redis batch seq error for {}: {}", trace_uuid, exc)
+        raise BatchSeqUnavailable("Redis unavailable for batch sequence") from exc
 
 
 def set_live_turns(trace_uuid: UUID, turns: List[Dict[str, Any]]) -> None:

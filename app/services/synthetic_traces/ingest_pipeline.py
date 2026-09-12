@@ -502,19 +502,52 @@ def resolve_trace_uuid_for_s3_ingest(
     header_call_short_id: Optional[str] = None,
 ) -> UUID:
     from app.services.synthetic_traces.clickhouse_store import (
+        claim_call_short_id_trace_uuid,
+        get_cached_trace_uuid_for_call_short_id,
         get_trace_by_call_short_id,
         get_trace_by_evaluator_result_id,
         mint_trace_uuid,
+        register_call_short_id_trace_uuid,
     )
 
     if header_call_short_id:
+        cached = get_cached_trace_uuid_for_call_short_id(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            call_short_id=header_call_short_id,
+        )
+        if cached:
+            return cached
         found = get_trace_by_call_short_id(
             organization_id=organization_id,
             call_short_id=header_call_short_id,
             workspace_id=workspace_id,
+            open_only=True,
         )
         if found:
+            register_call_short_id_trace_uuid(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                call_short_id=header_call_short_id,
+                trace_uuid=found.id,
+            )
             return found.id
+        candidate = mint_trace_uuid()
+        if claim_call_short_id_trace_uuid(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            call_short_id=header_call_short_id,
+            trace_uuid=candidate,
+        ):
+            return candidate
+        winner = get_cached_trace_uuid_for_call_short_id(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            call_short_id=header_call_short_id,
+        )
+        if winner:
+            return winner
+        return candidate
 
     if header_evaluator_result_id:
         try:
@@ -555,7 +588,11 @@ def ingest_otlp_batch_to_s3(
 ) -> Dict[str, Any]:
     from app.services.storage.blob_paths import build_trace_batch_object_key
     from app.services.storage.blob_storage_service import blob_storage_service
-    from app.services.synthetic_traces.clickhouse_store import next_batch_seq
+    from app.services.synthetic_traces.clickhouse_store import (
+        BatchSeqUnavailable,
+        next_batch_seq,
+        store_batch_meta,
+    )
 
     trace_uuid = resolve_trace_uuid_for_s3_ingest(
         db,
@@ -564,7 +601,10 @@ def ingest_otlp_batch_to_s3(
         header_evaluator_result_id=header_evaluator_result_id,
         header_call_short_id=header_call_short_id,
     )
-    seq = next_batch_seq(trace_uuid)
+    try:
+        seq = next_batch_seq(trace_uuid)
+    except BatchSeqUnavailable as exc:
+        raise IngestUnavailable("Redis unavailable for batch sequence") from exc
     s3_key = build_trace_batch_object_key(
         prefix=settings.TRACES_S3_PREFIX,
         organization_id=str(organization_id),
@@ -581,6 +621,8 @@ def ingest_otlp_batch_to_s3(
     except Exception as exc:
         logger.error("S3 WAL PUT failed for {}: {}", s3_key, exc)
         raise IngestUnavailable("S3 upload failed") from exc
+
+    store_batch_meta(s3_key, content_type=content_type or "application/json")
 
     try:
         schedule_s3_batch_process(
@@ -653,18 +695,8 @@ def schedule_s3_batch_process(
             }
         )
     except Exception as exc:
-        logger.debug("Celery unavailable for S3 batch; running inline: {}", exc)
-        process_s3_otlp_batch(
-            s3_key=s3_key,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            trace_uuid=trace_uuid,
-            seq=seq,
-            content_type=content_type,
-            header_evaluator_result_id=header_evaluator_result_id,
-            header_agent_id=header_agent_id,
-            header_call_short_id=header_call_short_id,
-        )
+        logger.error("Celery unavailable for S3 batch: {}", exc)
+        raise IngestUnavailable("Failed to enqueue batch processing") from exc
 
 
 def correlate_batch_ch(
@@ -682,6 +714,8 @@ def correlate_batch_ch(
         TraceRecord,
         get_trace_by_call_short_id,
         get_trace_by_uuid,
+        register_call_short_id_trace_uuid,
+        trace_header_lock,
         upsert_trace_header,
     )
     from app.services.synthetic_traces.span_storage import SPANS_STORAGE_S3
@@ -694,62 +728,76 @@ def correlate_batch_ch(
     call_short_id = correlation.get("call_short_id") or header_call_short_id
     _ = header_agent_id or correlation.get("agent_id")
 
-    trace = get_trace_by_uuid(trace_uuid)
-    correlated = trace is not None
+    with trace_header_lock(trace_uuid):
+        trace = get_trace_by_uuid(trace_uuid)
+        correlated = trace is not None
 
-    if not trace:
-        trace = TraceRecord(
-            id=trace_uuid,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            status="open",
-            started_at=_utcnow(),
-            spans_storage="clickhouse",
-        )
-
-    if not correlated and call_short_id:
-        existing = get_trace_by_call_short_id(
-            organization_id=organization_id,
-            call_short_id=call_short_id,
-            workspace_id=workspace_id,
-        )
-        if existing:
-            trace = existing
-            correlated = True
-
-    if call_short_id:
-        trace.call_short_id = call_short_id
-
-    if evaluator_result_id:
-        try:
-            trace.evaluator_result_id = UUID(str(evaluator_result_id))
-            result = (
-                db.query(EvaluatorResult)
-                .filter(EvaluatorResult.id == trace.evaluator_result_id)
-                .first()
+        if not trace:
+            trace = TraceRecord(
+                id=trace_uuid,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                status="open",
+                started_at=_utcnow(),
+                spans_storage="clickhouse",
             )
-            if result:
-                trace.agent_id = result.agent_id
-                trace.persona_id = result.persona_id
-                trace.scenario_id = result.scenario_id
-                trace.evaluator_id = result.evaluator_id
-                result.synthetic_call_trace_id = trace.id
-                db.commit()
+
+        if not correlated and call_short_id:
+            existing = get_trace_by_call_short_id(
+                organization_id=organization_id,
+                call_short_id=call_short_id,
+                workspace_id=workspace_id,
+                open_only=True,
+            )
+            if existing:
+                trace = existing
                 correlated = True
-        except ValueError:
-            pass
 
-    transport = correlation.get("transport") or trace.transport
-    if transport in VALID_TRACE_TRANSPORTS:
-        trace.transport = transport
-    elif not trace.transport:
-        trace.transport = "custom"
+        if call_short_id:
+            trace.call_short_id = call_short_id
+            register_call_short_id_trace_uuid(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                call_short_id=call_short_id,
+                trace_uuid=trace.id,
+            )
 
-    if trace.status in ("closed", "finalized") and trace.spans_storage != SPANS_STORAGE_S3:
-        trace.status = "open"
-        trace.ended_at = None
+        if evaluator_result_id:
+            try:
+                trace.evaluator_result_id = UUID(str(evaluator_result_id))
+                result = (
+                    db.query(EvaluatorResult)
+                    .filter(
+                        EvaluatorResult.id == trace.evaluator_result_id,
+                        EvaluatorResult.organization_id == organization_id,
+                    )
+                    .first()
+                )
+                if result:
+                    if workspace_id is not None and result.workspace_id != workspace_id:
+                        result = None
+                if result:
+                    trace.agent_id = result.agent_id
+                    trace.persona_id = result.persona_id
+                    trace.scenario_id = result.scenario_id
+                    trace.evaluator_id = result.evaluator_id
+                    result.synthetic_call_trace_id = trace.id
+                    db.commit()
+                    correlated = True
+            except ValueError:
+                pass
 
-    upsert_trace_header(trace)
+        transport = correlation.get("transport") or trace.transport
+        if transport in VALID_TRACE_TRANSPORTS:
+            trace.transport = transport
+        elif not trace.transport:
+            trace.transport = "custom"
+
+        if trace.status in ("closed", "finalized") and trace.spans_storage != SPANS_STORAGE_S3:
+            trace.status = "open"
+            trace.ended_at = None
+
+        upsert_trace_header(trace)
     return trace, correlated
 
 
@@ -769,13 +817,22 @@ def process_s3_otlp_batch(
     from app.database import SessionLocal
     from app.services.storage.blob_storage_service import blob_storage_service
     from app.services.synthetic_traces import ch_trace_ops
+    from app.services.synthetic_traces.clickhouse_store import (
+        is_batch_processed,
+        mark_batch_processed,
+    )
+
+    if is_batch_processed(s3_key):
+        return
 
     owns_session = db is None
     session = db or SessionLocal()
+    processed = False
     try:
         body = blob_storage_service.download_file_by_key(s3_key)
         spans, _fmt = parse_otlp_body(body, content_type)
         if not spans:
+            processed = True
             return
 
         groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
@@ -794,7 +851,14 @@ def process_s3_otlp_batch(
                 continue
             ch_trace_ops.persist_spans_ch(trace, group_spans)
             schedule_derive(trace.id)
+        processed = True
     finally:
+        if processed:
+            mark_batch_processed(s3_key)
+            try:
+                blob_storage_service.delete_file_by_key(s3_key)
+            except Exception as exc:
+                logger.warning("Failed to delete processed S3 batch {}: {}", s3_key, exc)
         if owns_session:
             session.close()
 

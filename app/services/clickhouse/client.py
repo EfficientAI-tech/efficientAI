@@ -31,6 +31,8 @@ def _create_client():
         password=settings.CLICKHOUSE_PASSWORD or "",
         database=settings.CLICKHOUSE_DATABASE or "efficientai",
         secure=secure,
+        connect_timeout=10,
+        send_receive_timeout=60,
     )
 
 

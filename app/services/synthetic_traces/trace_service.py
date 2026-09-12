@@ -547,7 +547,18 @@ def link_trace_to_evaluator_result(
     call_short_id: str,
     evaluator_result_id: UUID,
     call_recording_id: Optional[UUID] = None,
+    workspace_id: Optional[UUID] = None,
 ) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.link_trace_to_evaluator_result_ch(
+            db,
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            evaluator_result_id=evaluator_result_id,
+            workspace_id=workspace_id,
+            call_recording_id=call_recording_id,
+        )
+
     trace = (
         db.query(SyntheticCallTrace)
         .filter(
@@ -626,6 +637,14 @@ def backfill_missing_traces_from_call_recordings(
     limit: int = 50,
 ) -> int:
     """Create synthetic traces for phone evaluator recordings that never got one."""
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.backfill_missing_traces_ch(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+
     linked_result_ids = {
         row[0]
         for row in db.query(SyntheticCallTrace.evaluator_result_id)
@@ -1380,6 +1399,13 @@ def finalize_trace(
     call_short_id: str,
     tier1_turns: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[SyntheticCallTrace]:
+    if ch_trace_ops.use_ch():
+        return ch_trace_ops.finalize_trace_ch(
+            db,
+            call_short_id=call_short_id,
+            tier1_turns=tier1_turns,
+        )
+
     recording = (
         db.query(CallRecording)
         .filter(CallRecording.call_short_id == call_short_id)

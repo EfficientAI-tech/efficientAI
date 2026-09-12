@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     TRACES_MAX_BODY_BYTES: int = 4 * 1024 * 1024
     TRACES_DERIVE_DEBOUNCE_SECONDS: int = 3
     TRACES_IDLE_CLOSE_SECONDS: int = 120
-    TRACES_S3_PREFIX: str = "audio/"
+    TRACES_S3_PREFIX: str = "traces/"
     TRACES_LIST_DEFAULT_DAYS: int = 90
     TRACES_DEFER_PARSE_TO_WORKER: bool = True
     TRACES_STAGING_RETENTION_HOURS: int = 48
