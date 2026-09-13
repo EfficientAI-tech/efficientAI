@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 class SyntheticTraceTurn(BaseModel):
@@ -33,6 +33,10 @@ class OtelSpanRecord(BaseModel):
     end_time_unix_nano: Optional[int] = None
     attributes: Dict[str, Any] = Field(default_factory=dict)
     events: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_serializer("start_time_unix_nano", "end_time_unix_nano", when_used="json")
+    def _serialize_unix_nano(self, value: Optional[int]) -> Optional[str]:
+        return str(value) if value is not None else None
 
 
 class SyntheticCallTraceSummary(BaseModel):

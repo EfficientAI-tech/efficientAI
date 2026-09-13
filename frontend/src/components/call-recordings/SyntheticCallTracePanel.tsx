@@ -19,7 +19,13 @@ import TraceTurnDetail from './TraceTurnDetail'
 import TraceWaterfall from './TraceWaterfall'
 import CallWaveformPlayer from './CallWaveformPlayer'
 import CallEventTimeline from './CallEventTimeline'
-import { buildOtelCallTimeline, computeTurnMessageOffsets, resolveTraceStartNs } from './callTimelineUtils'
+import {
+  buildOtelCallTimeline,
+  computeTurnMessageOffsets,
+  resolveTraceStartNs,
+} from './callTimelineUtils'
+import { buildSpanTranscriptMessages } from './traceUtils'
+import { parseUnixNano, unixNanoOffsetMs } from './traceUtils'
 import { computeResponseLatencySummary, responseLatencySampleLabel, RESPONSE_LATENCY_SAMPLE_HINT } from '../../lib/traceLatencySummary'
 import { TurnSignalBadges } from './TraceTurnBadges'
 import {
@@ -56,6 +62,7 @@ interface PipelineModels {
 
 interface TraceTurnExtra {
   user_text?: string
+  user_utterances?: string[]
   assistant_text?: string
   agent_id?: string
   agent_role?: string
@@ -89,8 +96,8 @@ interface OtelSpan {
   span_id: string
   parent_span_id?: string | null
   name: string
-  start_time_unix_nano?: number | null
-  end_time_unix_nano?: number | null
+  start_time_unix_nano?: number | string | null
+  end_time_unix_nano?: number | string | null
   attributes?: Record<string, unknown>
   events?: Array<{ name?: string; attributes?: Record<string, unknown> }>
 }
@@ -224,17 +231,6 @@ function metaFromSpan(span: OtelSpan): ComponentMeta {
   return { model, provider: provider?.toLowerCase() ?? null }
 }
 
-function parseTranscript(transcript?: string | null): { user?: string; assistant?: string } {
-  if (!transcript) return {}
-  const userMatch = transcript.match(/^User:\s*(.+)$/m)
-  const assistantMatch = transcript.match(/^Assistant:\s*(.+)$/m)
-  if (userMatch || assistantMatch) {
-    return { user: userMatch?.[1]?.trim(), assistant: assistantMatch?.[1]?.trim() }
-  }
-  if (transcript.trim().startsWith('[') || transcript.trim().startsWith('{')) return {}
-  return { assistant: transcript.trim() }
-}
-
 function isS2sTurn(turn: TraceTurn): boolean {
   return turn.extra?.pipeline_mode === 's2s' || turn.s2s_ttfb_ms != null
 }
@@ -327,22 +323,13 @@ function mergeTurnMeta(
 function isSessionLevelSpan(span: OtelSpan, traceDurationMs: number): boolean {
   const name = span.name.toLowerCase()
   if (name !== 'conversation' && name !== 'turn') return false
-  if (span.start_time_unix_nano == null || span.end_time_unix_nano == null) {
+  const start = parseUnixNano(span.start_time_unix_nano)
+  const end = parseUnixNano(span.end_time_unix_nano)
+  if (start == null || end == null) {
     return name === 'conversation'
   }
-  const durationMs = Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
+  const durationMs = Number((end - start) / 1_000_000n)
   return traceDurationMs > 0 && durationMs >= traceDurationMs * 0.85
-}
-
-function compareTranscriptMessages(
-  a: { offsetMs: number; turn: number; role: 'user' | 'agent' },
-  b: { offsetMs: number; turn: number; role: 'user' | 'agent' },
-): number {
-  if (a.offsetMs !== b.offsetMs) return a.offsetMs - b.offsetMs
-  if (a.turn !== b.turn) return a.turn - b.turn
-  if (a.role === 'user' && b.role === 'agent') return -1
-  if (a.role === 'agent' && b.role === 'user') return 1
-  return 0
 }
 
 function formatTraceRoleLabel(raw?: string | null): string | null {
@@ -411,10 +398,9 @@ function RawSpanRow({ span }: { span: OtelSpan }) {
   const [open, setOpen] = useState(false)
   const kind = spanKind(span)
   const meta = metaFromSpan(span)
-  const durationMs =
-    span.start_time_unix_nano != null && span.end_time_unix_nano != null
-      ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
-      : null
+  const start = parseUnixNano(span.start_time_unix_nano)
+  const end = parseUnixNano(span.end_time_unix_nano)
+  const durationMs = start != null && end != null ? Number((end - start) / 1_000_000n) : null
   const hasError = spanHasError(span)
 
   const stageLabel = kind ? COMPONENT_LABELS[kind] : 'Other'
@@ -487,27 +473,33 @@ export default function SyntheticCallTracePanel({
       query.state.data?.status === 'open' ? 3000 : false,
   })
 
-  const needsSpans = tab === 'spans' || tab === 'waterfall' || tab === 'trace' || tab === 'timeline'
   const resolvedTraceId = traceId ?? data?.id
+
+  const tabNeedsSpans = tab === 'spans' || tab === 'waterfall' || tab === 'timeline'
+  const isOpenTrace = data?.status === 'open'
 
   const {
     data: spansData,
     isLoading: spansLoading,
     isFetching: spansFetching,
+    isError: spansIsError,
+    error: spansError,
   } = useQuery({
     queryKey: ['synthetic-call-trace-spans', resolvedTraceId],
     queryFn: () => apiClient.getSyntheticCallTraceSpans(resolvedTraceId!),
-    enabled: needsSpans && Boolean(resolvedTraceId),
+    enabled: Boolean(resolvedTraceId),
     retry: false,
+    refetchInterval: isOpenTrace ? 3000 : false,
   })
 
   const traceHeaderLoading = !data && (isLoading || isFetching)
   const spansPending =
-    needsSpans &&
+    tabNeedsSpans &&
     Boolean(resolvedTraceId) &&
     (spansLoading || (spansFetching && spansData === undefined))
+  const spansErrorMessage = spansIsError ? (spansError as Error)?.message || 'Failed to load spans' : null
 
-  const otelSpans = ((needsSpans ? spansData?.otel_spans : data?.otel_spans) ?? []) as OtelSpan[]
+  const otelSpans = (spansData?.otel_spans ?? data?.otel_spans ?? []) as OtelSpan[]
   const spansByTurn = useMemo(() => buildSpansByTurn(otelSpans), [otelSpans])
   const turns = (data?.turns ?? []) as TraceTurn[]
   const pipelineModels = (data?.pipeline_models ?? {}) as PipelineModels
@@ -522,10 +514,14 @@ export default function SyntheticCallTracePanel({
   const traceStartNs = useMemo(() => resolveTraceStartNs(otelSpans), [otelSpans])
   const traceDurationMs = useMemo(() => {
     if (!otelSpans.length) return 0
-    const traceEnd = Math.max(
-      ...otelSpans.map((span) => span.end_time_unix_nano ?? span.start_time_unix_nano ?? traceStartNs),
-    )
-    return Math.max(0, Math.round((traceEnd - traceStartNs) / 1_000_000))
+    const traceEnd = otelSpans.reduce((max, span) => {
+      const end =
+        parseUnixNano(span.end_time_unix_nano) ??
+        parseUnixNano(span.start_time_unix_nano) ??
+        traceStartNs
+      return end > max ? end : max
+    }, traceStartNs)
+    return Math.max(0, unixNanoOffsetMs(traceEnd, traceStartNs))
   }, [otelSpans, traceStartNs])
 
   const traceTurnRows = useMemo(() => {
@@ -571,10 +567,11 @@ export default function SyntheticCallTracePanel({
           kind: spanKind(span),
           name: span.name,
           model: metaFromSpan(span).model ?? undefined,
-          durationMs:
-            span.start_time_unix_nano != null && span.end_time_unix_nano != null
-              ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
-              : null,
+          durationMs: (() => {
+            const start = parseUnixNano(span.start_time_unix_nano)
+            const end = parseUnixNano(span.end_time_unix_nano)
+            return start != null && end != null ? Number((end - start) / 1_000_000n) : null
+          })(),
         })),
       }
     })
@@ -582,67 +579,49 @@ export default function SyntheticCallTracePanel({
 
   const transcriptMessages = useMemo(() => {
     const sessionAgentName = linkedAgent?.name ?? null
-    const messages: Array<{
-      role: 'user' | 'agent'
-      speakerLabel: string
-      text: string
-      turn: number
-      offsetMs: number
-      latencyMs?: number
-      talkOver?: boolean
-      interrupted?: boolean
-      incomplete?: boolean
-    }> = []
-    for (const turn of turns) {
-      const turnSpans = spansByTurn.get(turn.turn_number) ?? []
+    const turnByNumber = new Map(turns.map((turn) => [turn.turn_number, turn]))
+    const spanMessages = buildSpanTranscriptMessages(otelSpans, traceStartNs)
+
+    return spanMessages.map((message) => {
+      const turn = turnByNumber.get(message.turn)
+      const turnSpans = spansByTurn.get(message.turn) ?? []
       const spanMeta = turnMetaFromSpans(turnSpans)
-      const extra = mergeTurnMeta(turn, spanMeta, pipelineModels)
-      const parsed = parseTranscript(turn.transcript)
-      const userText = extra.user_text ?? parsed.user
-      const assistantText = extra.assistant_text ?? parsed.assistant
-      const incomplete = isTurnIncomplete(turn, pipelineMode)
-      const offsets = computeTurnMessageOffsets(
-        turnSpans,
-        {
-          turn_number: turn.turn_number,
-          stt_ttfb_ms: turn.stt_ttfb_ms,
-          llm_ttfb_ms: turn.llm_ttfb_ms,
-          tts_ttfb_ms: turn.tts_ttfb_ms,
-          sut_response_latency_ms: turn.sut_response_latency_ms,
-          transcript: turn.transcript,
-          extra: {
-            user_text: extra.user_text,
-            assistant_text: extra.assistant_text,
+      const extra = turn
+        ? mergeTurnMeta(turn, spanMeta, pipelineModels)
+        : { ...spanMeta, agent_role: message.agentRole ?? spanMeta.agent_role }
+      const incomplete = turn ? isTurnIncomplete(turn, pipelineMode) : false
+      const isLastAgentInTurn =
+        message.role === 'agent' &&
+        !spanMessages.some(
+          (other) =>
+            other.role === 'agent' &&
+            other.turn === message.turn &&
+            other.offsetMs > message.offsetMs,
+        )
+
+      return {
+        role: message.role,
+        speakerLabel: resolveTranscriptSpeakerLabel(
+          message.role,
+          {
+            ...extra,
+            agent_role: message.agentRole ?? extra.agent_role,
           },
-        },
-        traceStartNs,
-      )
-      if (userText) {
-        messages.push({
-          role: 'user',
-          speakerLabel: resolveTranscriptSpeakerLabel('user', extra, sessionAgentName),
-          text: userText,
-          turn: turn.turn_number,
-          offsetMs: offsets.userOffsetMs ?? 0,
-          talkOver: turn.talk_over,
-          incomplete,
-        })
+          sessionAgentName,
+        ),
+        text: message.text,
+        turn: message.turn,
+        offsetMs: message.offsetMs,
+        latencyMs:
+          message.role === 'agent' && isLastAgentInTurn
+            ? turn?.sut_response_latency_ms ?? undefined
+            : undefined,
+        talkOver: turn?.talk_over,
+        interrupted: message.role === 'agent' && isLastAgentInTurn ? extra.was_interrupted : undefined,
+        incomplete,
       }
-      if (assistantText) {
-        messages.push({
-          role: 'agent',
-          speakerLabel: resolveTranscriptSpeakerLabel('agent', extra, sessionAgentName),
-          text: assistantText,
-          turn: turn.turn_number,
-          offsetMs: offsets.agentOffsetMs ?? offsets.userOffsetMs ?? 0,
-          latencyMs: turn.sut_response_latency_ms ?? undefined,
-          interrupted: extra.was_interrupted,
-          incomplete,
-        })
-      }
-    }
-    return messages.sort(compareTranscriptMessages)
-  }, [turns, spansByTurn, pipelineModels, pipelineMode, linkedAgent?.name, traceStartNs])
+    })
+  }, [turns, spansByTurn, pipelineModels, pipelineMode, linkedAgent?.name, traceStartNs, otelSpans])
 
   const timelineTurnInputs = useMemo(() => {
     return turns.map((turn) => {
@@ -657,6 +636,7 @@ export default function SyntheticCallTracePanel({
         transcript: turn.transcript,
         extra: {
           user_text: extra.user_text,
+          user_utterances: extra.user_utterances,
           assistant_text: extra.assistant_text,
         },
       }
@@ -738,10 +718,17 @@ export default function SyntheticCallTracePanel({
   const agentRouteId = linkedAgent?.agent_id || linkedAgent?.id || trace.agent_id
   const agentLabel = linkedAgent?.name || (trace.agent_id ? 'Agent' : null)
 
+  const spansErrorBanner = spansErrorMessage ? (
+    <div className={`text-sm text-red-800 bg-red-50 ${embedded ? 'mx-0 mb-4 rounded-lg border border-red-200 p-3' : 'mx-5 mb-4 rounded-lg border border-red-200 p-3'}`}>
+      Could not load span data: {spansErrorMessage}
+    </div>
+  ) : null
+
   const tabBody = spansPending ? (
     <TracePanelSkeleton embedded={embedded} compact message="Loading spans and timeline…" />
   ) : (
     <>
+      {spansErrorBanner}
       {tab === 'trace' && (
         <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
           <TraceTurnDetail
@@ -756,7 +743,9 @@ export default function SyntheticCallTracePanel({
 
       {tab === 'waterfall' && (
         <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
-          {traceTurnRows.length === 0 ? (
+          {spansErrorMessage ? (
+            <p className="py-12 text-center text-sm text-gray-500">Waterfall unavailable until spans load.</p>
+          ) : traceTurnRows.length === 0 ? (
             <p className="py-12 text-center text-sm text-gray-500">No waterfall data</p>
           ) : (
             <TraceWaterfall rows={traceTurnRows} />
@@ -799,10 +788,14 @@ export default function SyntheticCallTracePanel({
 
       {tab === 'timeline' && (
         <div className={embedded ? 'pb-4' : 'p-5 pb-16'}>
-          <CallEventTimeline
-            events={timelineEvents}
-            emptyMessage="No pipeline events captured for this session."
-          />
+          {spansErrorMessage ? (
+            <p className="py-12 text-center text-sm text-gray-500">Timeline unavailable until spans load.</p>
+          ) : (
+            <CallEventTimeline
+              events={timelineEvents}
+              emptyMessage="No pipeline events captured for this session."
+            />
+          )}
         </div>
       )}
 
@@ -821,7 +814,12 @@ export default function SyntheticCallTracePanel({
               {otelSpans
                 .filter((span) => !isSessionLevelSpan(span, traceDurationMs))
                 .slice()
-                .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))
+                .sort((a, b) => {
+                  const startA = parseUnixNano(a.start_time_unix_nano) ?? 0n
+                  const startB = parseUnixNano(b.start_time_unix_nano) ?? 0n
+                  if (startA === startB) return 0
+                  return startA < startB ? -1 : 1
+                })
                 .map((span) => (
                   <RawSpanRow key={`${span.trace_id}-${span.span_id}`} span={span} />
                 ))}

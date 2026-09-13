@@ -267,6 +267,7 @@ def _turn_has_content(turn: Dict[str, Any]) -> bool:
     extra = turn.get("extra") or {}
     return bool(
         extra.get("user_text")
+        or extra.get("user_utterances")
         or extra.get("assistant_text")
         or turn.get("stt_ttfb_ms")
         or turn.get("llm_ttfb_ms")
@@ -574,13 +575,128 @@ def _detect_turn_pipeline_mode(turn: Dict[str, Any]) -> None:
         extra["pipeline_mode"] = "stt_llm_tts"
 
 
+def _user_text_lines(turn: Dict[str, Any]) -> List[str]:
+    extra = turn.get("extra") or {}
+    lines: List[str] = []
+    primary = extra.get("user_text")
+    if primary:
+        lines.append(str(primary))
+    for utterance in extra.get("user_utterances") or []:
+        text = str(utterance).strip()
+        if not text:
+            continue
+        if any(_text_similar(text, existing) for existing in lines):
+            continue
+        lines.append(text)
+    return lines
+
+
+def _turn_already_has_user_text(turn: Dict[str, Any], text: str) -> bool:
+    cleaned = text.strip()
+    if not cleaned:
+        return True
+    return any(_text_similar(cleaned, existing) for existing in _user_text_lines(turn))
+
+
+def _append_user_utterance(
+    turn: Dict[str, Any],
+    text: str,
+    *,
+    span_id: Any = None,
+) -> None:
+    cleaned = text.strip()
+    if not cleaned or _looks_like_chat_json(cleaned) or _is_low_signal_transcript(cleaned):
+        return
+    if _turn_already_has_user_text(turn, cleaned):
+        if span_id:
+            _track_span(turn, span_id)
+        return
+    extra = turn.setdefault("extra", {})
+    if span_id:
+        _track_span(turn, span_id)
+    if not extra.get("user_text"):
+        extra["user_text"] = cleaned
+        return
+    utterances = list(extra.get("user_utterances") or [])
+    utterances.append(cleaned)
+    extra["user_utterances"] = utterances
+
+
+def _merge_user_utterances(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    for text in _user_text_lines(source):
+        _append_user_utterance(target, text)
+
+
+def _nearest_turn_for_span(
+    turns: List[Dict[str, Any]],
+    span_start_ns: int,
+    by_id: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not turns:
+        return None
+    for turn in turns:
+        t_start, t_end = _turn_time_bounds(turn, by_id)
+        if t_start is not None:
+            end = t_end if t_end is not None else t_start
+            if t_start <= span_start_ns <= max(end, t_start):
+                return turn
+    return min(
+        turns,
+        key=lambda turn: abs(_turn_earliest_start_ns(turn, by_id) - span_start_ns),
+    )
+
+
+def _reconcile_stt_transcripts(
+    turns: List[Dict[str, Any]],
+    spans: List[Dict[str, Any]],
+) -> None:
+    """Ensure every STT transcript is represented in derived turn text."""
+    by_id = _span_index(spans)
+    stt_spans = sorted(
+        [
+            span
+            for span in spans
+            if (span.get("name") or "").lower() == "stt"
+        ],
+        key=lambda span: _span_start_ns(span) or 0,
+    )
+    for span in stt_spans:
+        attrs = span.get("attributes") or {}
+        transcript = attrs.get("transcript")
+        if not transcript:
+            continue
+        text = str(transcript).strip()
+        if not text or _is_low_signal_transcript(text):
+            continue
+        if any(_turn_already_has_user_text(turn, text) for turn in turns):
+            continue
+        span_id = span.get("span_id")
+        span_start = _span_start_ns(span)
+        matched: Optional[Dict[str, Any]] = None
+        if span_id:
+            for turn in turns:
+                if str(span_id) in ((turn.get("extra") or {}).get("_span_ids") or []):
+                    matched = turn
+                    break
+        if matched is None and span_start is not None:
+            matched = _nearest_turn_for_span(turns, span_start, by_id)
+        if matched is None:
+            matched = _new_turn()
+            turns.append(matched)
+        _append_user_utterance(matched, text, span_id=span_id)
+        field = _component_field("stt", "stt")
+        if field:
+            _set_max_ms(matched, field, _component_latency_ms(span, attrs, field))
+            _set_component_meta(matched, "stt", attrs)
+
+
 def _merge_turn_fields(target: Dict[str, Any], source: Dict[str, Any]) -> None:
     for field in ("stt_ttfb_ms", "llm_ttfb_ms", "tts_ttfb_ms", "s2s_ttfb_ms", "sut_response_latency_ms"):
         _set_max_ms(target, field, source.get(field))
     src_extra = source.get("extra") or {}
     tgt_extra = target.setdefault("extra", {})
+    _merge_user_utterances(target, source)
     for key in (
-        "user_text",
         "assistant_text",
         "agent_id",
         "s2s_model",
@@ -878,8 +994,10 @@ def _rebuild_conversation_turns(spans: List[Dict[str, Any]]) -> Optional[List[Di
         _finalize_turn_metrics(turn)
         _detect_turn_pipeline_mode(turn)
     turns = _consolidate_turn_rows(turns)
+    _reconcile_stt_transcripts(turns, spans)
     for idx, turn in enumerate(turns, start=1):
         turn["turn_number"] = idx
+        _build_transcript_display(turn)
     return turns
 
 
@@ -930,16 +1048,16 @@ def _is_low_signal_transcript(text: str) -> bool:
 
 
 def _set_turn_text(turn: Dict[str, Any], role: str, text: str) -> None:
-    extra = turn.setdefault("extra", {})
-    key = "user_text" if role == "user" else "assistant_text"
     cleaned = text.strip()
     if not cleaned or _looks_like_chat_json(cleaned):
         return
-    if role == "user" and _is_low_signal_transcript(cleaned):
+    if role == "user":
+        _append_user_utterance(turn, cleaned)
         return
-    existing = extra.get(key)
+    extra = turn.setdefault("extra", {})
+    existing = extra.get("assistant_text")
     if existing is None or len(cleaned) > len(str(existing)):
-        extra[key] = cleaned
+        extra["assistant_text"] = cleaned
 
 
 def latency_percentile(values: List[float], pct: float) -> Optional[float]:
@@ -1004,11 +1122,10 @@ def _derive_sut_from_span_wall_clock(
 
 def _build_transcript_display(turn: Dict[str, Any]) -> None:
     extra = turn.get("extra") or {}
-    user = extra.get("user_text")
     assistant = extra.get("assistant_text")
     parts: List[str] = []
-    if user:
-        parts.append(f"User: {user}")
+    for user_line in _user_text_lines(turn):
+        parts.append(f"User: {user_line}")
     if assistant:
         parts.append(f"Assistant: {assistant}")
     if parts:
@@ -1111,6 +1228,7 @@ def _derive_turns_by_pipecat_turn(spans: List[Dict[str, Any]]) -> List[Dict[str,
 
         field = _component_field(op, name)
         if field:
+            _track_span(turn, span.get("span_id"))
             _set_max_ms(turn, field, _component_latency_ms(span, attrs, field))
             kind = "s2s" if field == "s2s_ttfb_ms" else field.removesuffix("_ttfb_ms")
             _set_component_meta(turn, kind, attrs)
@@ -1131,7 +1249,11 @@ def _derive_turns_by_pipecat_turn(spans: List[Dict[str, Any]]) -> List[Dict[str,
         _finalize_turn_metrics(turn)
         _detect_turn_pipeline_mode(turn)
 
-    return [turn_spans[k] for k in sorted(turn_spans)]
+    turns = [turn_spans[k] for k in sorted(turn_spans)]
+    _reconcile_stt_transcripts(turns, spans)
+    for turn in turns:
+        _build_transcript_display(turn)
+    return turns
 
 
 def merge_tier1_and_otel_turns(
@@ -1310,7 +1432,8 @@ def filter_spans_for_trace(
 
     if call_short_id:
         matched = [s for s in spans if _span_call_short_id(s) == call_short_id]
-        if matched:
+        tagged = [s for s in spans if _span_call_short_id(s)]
+        if tagged:
             spans = matched
 
     turn_trace_ids: Dict[str, int] = {}

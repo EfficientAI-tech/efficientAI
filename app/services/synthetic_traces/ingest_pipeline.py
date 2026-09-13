@@ -547,7 +547,23 @@ def resolve_trace_uuid_for_s3_ingest(
         )
         if winner:
             return winner
-        return candidate
+        found = get_trace_by_call_short_id(
+            organization_id=organization_id,
+            call_short_id=header_call_short_id,
+            workspace_id=workspace_id,
+            open_only=True,
+        )
+        if found:
+            register_call_short_id_trace_uuid(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                call_short_id=header_call_short_id,
+                trace_uuid=found.id,
+            )
+            return found.id
+        raise RuntimeError(
+            f"Failed to claim trace UUID for call_short_id={header_call_short_id}"
+        )
 
     if header_evaluator_result_id:
         try:

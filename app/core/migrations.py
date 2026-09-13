@@ -6,7 +6,7 @@ Migrations are tracked in a `schema_migrations` table to ensure they only run on
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.exc import ProgrammingError
@@ -40,11 +40,11 @@ def _migration_applies_to_engine(migration_file: Path, engine_role: str) -> bool
     return scope == engine_role
 
 
-def _canonical_db_url_key(url: str) -> tuple:
+def _canonical_db_url_key(url: Union[str, object]) -> tuple:
     """Compare DB URLs ignoring driver suffix normalisation (postgresql vs postgresql+psycopg2)."""
-    from sqlalchemy.engine import make_url
+    from sqlalchemy.engine import URL, make_url
 
-    parsed = make_url(url)
+    parsed = url if isinstance(url, URL) else make_url(url)
     driver = (parsed.drivername or "").split("+", 1)[0]
     return (
         driver,
@@ -56,7 +56,7 @@ def _canonical_db_url_key(url: str) -> tuple:
     )
 
 
-def _engine_role_for_url(engine_url: str) -> str:
+def _engine_role_for_url(engine_url: Union[str, object]) -> str:
     from app.config import settings
 
     if not getattr(settings, "DB_SHARDING_ENABLED", False):
@@ -245,7 +245,7 @@ def run_migrations():
         factory = sessionmaker(autocommit=False, autoflush=False, bind=eng)
         db = factory()
         try:
-            engine_role = _engine_role_for_url(str(eng.url))
+            engine_role = _engine_role_for_url(eng.url)
             runner = MigrationRunner(db, engine_role=engine_role)
 
             applied = runner.get_applied_migrations()
@@ -300,15 +300,21 @@ def check_migrations_status() -> Tuple[bool, List[str]]:
         - is_up_to_date: True if all migrations are applied
         - pending_migration_names: List of pending migration file names
     """
+    from app.db_sharding.pool_manager import db_pool_manager
+
     try:
-        db = SessionLocal()
-        try:
-            runner = MigrationRunner(db)
-            pending = runner.get_pending_migrations()
-            pending_names = [m.stem for m in pending]
-            return (len(pending) == 0, pending_names)
-        finally:
-            db.close()
+        pending_names: List[str] = []
+        for eng in db_pool_manager.all_engines_for_migrations():
+            factory = sessionmaker(autocommit=False, autoflush=False, bind=eng)
+            db = factory()
+            try:
+                engine_role = _engine_role_for_url(eng.url)
+                runner = MigrationRunner(db, engine_role=engine_role)
+                pending_names.extend(m.stem for m in runner.get_pending_migrations())
+            finally:
+                db.close()
+        unique_pending = sorted(set(pending_names))
+        return (len(unique_pending) == 0, unique_pending)
     except Exception as e:
         logger.error(f"Error checking migration status: {e}")
         # If we can't check, assume migrations are needed (fail safe)

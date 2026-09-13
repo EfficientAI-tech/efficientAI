@@ -100,9 +100,13 @@ def test_process_s3_otlp_batch_downloads_parses_and_persists(
 
 @patch("app.services.synthetic_traces.ch_trace_ops.close_and_offload_trace_ch")
 @patch("app.services.synthetic_traces.clickhouse_store.get_trace_by_call_short_id")
-def test_close_trace_session_ch_finds_clickhouse_trace(mock_get_trace, mock_close):
+def test_close_trace_session_ch_finds_clickhouse_trace(mock_get_trace, mock_close, monkeypatch):
     from app.services.synthetic_traces.ch_trace_ops import close_trace_session_ch
 
+    monkeypatch.setattr(
+        "app.services.synthetic_traces.ch_trace_ops.settings.TRACES_ASYNC_INGEST_ENABLED",
+        False,
+    )
     trace_id = uuid4()
     org_id = uuid4()
     trace = MagicMock()
@@ -148,6 +152,7 @@ def test_load_trace_detail_ch_pipeline_models_without_spans_in_response(
             "span_id": "s1",
             "name": "llm",
             "attributes": {
+                "efficientai.call_short_id": "632776",
                 "gen_ai.operation.name": "chat",
                 "gen_ai.request.model": "accounts/fireworks/models/deepseek-v4",
                 "gen_ai.provider.name": "fireworks",

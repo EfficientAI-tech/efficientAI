@@ -717,3 +717,32 @@ def test_derive_turns_ignores_low_signal_stt_fragments():
     user_texts = [(t.get("extra") or {}).get("user_text") for t in turns]
     assert "Ah" not in user_texts
     assert any("Hi Raj" in str(text) for text in user_texts if text)
+
+
+def test_derive_turns_preserves_consecutive_stt_transcripts_on_same_turn():
+    spans = [
+        {
+            "name": "turn",
+            "span_id": "turn-6",
+            "attributes": {"turn.number": 6},
+        },
+        {
+            "name": "stt",
+            "span_id": "stt-leave",
+            "parent_span_id": "turn-6",
+            "attributes": {"turn.number": 6, "transcript": "No, leave it, äh."},
+        },
+        {
+            "name": "stt",
+            "span_id": "stt-bye",
+            "parent_span_id": "turn-6",
+            "attributes": {"turn.number": 6, "transcript": "Bye bye."},
+        },
+    ]
+    turns = derive_turns_from_spans(spans)
+    assert len(turns) == 1
+    extra = turns[0]["extra"]
+    assert extra["user_text"] == "No, leave it, äh."
+    assert "Bye bye." in (extra.get("user_utterances") or [])
+    assert "No, leave it, äh." in turns[0]["transcript"]
+    assert "Bye bye." in turns[0]["transcript"]

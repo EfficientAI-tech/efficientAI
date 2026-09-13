@@ -1,8 +1,10 @@
 """S3 service for handling audio file storage and retrieval from S3 buckets."""
 
+import re
+
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 import uuid
 from app.config import settings
@@ -13,6 +15,29 @@ from app.services.storage.blob_paths import (
     get_organization_root_prefix,
     normalize_prefix,
 )
+
+_MERGED_TRACES_PATH_RE = re.compile(r"^workspaces/[^/]+/traces(?:/.*)?$")
+
+
+def _merge_browse_results(*results: Dict[str, Any]) -> Dict[str, Any]:
+    folders_by_name: Dict[str, Dict[str, str]] = {}
+    files_by_key: Dict[str, Dict[str, Any]] = {}
+    for result in results:
+        for folder in result.get("folders") or []:
+            name = folder.get("name")
+            if not name:
+                continue
+            existing = folders_by_name.get(name)
+            if existing is None or len(folder.get("path") or "") < len(existing.get("path") or ""):
+                folders_by_name[name] = folder
+        for file_info in result.get("files") or []:
+            key = file_info.get("key")
+            if key:
+                files_by_key[key] = file_info
+    return {
+        "folders": sorted(folders_by_name.values(), key=lambda item: item["name"].lower()),
+        "files": sorted(files_by_key.values(), key=lambda item: item["filename"].lower()),
+    }
 
 
 class S3Service:
@@ -459,6 +484,50 @@ class S3Service:
         """Get the root S3 prefix for a given organization."""
         return get_organization_root_prefix(settings.S3_PREFIX, organization_id)
 
+    def _browse_prefix(
+        self,
+        *,
+        org_root: str,
+        path: str,
+        max_keys: int,
+    ) -> dict:
+        full_prefix = f"{org_root}{path}"
+        if full_prefix and not full_prefix.endswith("/"):
+            full_prefix += "/"
+
+        response = self.s3_client.list_objects_v2(
+            Bucket=self.bucket_name,
+            Prefix=full_prefix,
+            Delimiter="/",
+            MaxKeys=max_keys,
+        )
+
+        folders = []
+        if "CommonPrefixes" in response:
+            for cp in response["CommonPrefixes"]:
+                folder_key = cp["Prefix"]
+                relative = folder_key[len(org_root):]
+                folder_name = relative.rstrip("/").rsplit("/", 1)[-1]
+                folders.append({
+                    "name": folder_name,
+                    "path": relative.rstrip("/"),
+                })
+
+        files = []
+        if "Contents" in response:
+            for obj in response["Contents"]:
+                key = obj["Key"]
+                if key == full_prefix:
+                    continue
+                files.append({
+                    "key": key,
+                    "filename": Path(key).name,
+                    "size": obj["Size"],
+                    "last_modified": obj["LastModified"].isoformat(),
+                })
+
+        return {"folders": folders, "files": files}
+
     def browse_folder(
         self,
         organization_id: str,
@@ -474,47 +543,42 @@ class S3Service:
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
             raise StorageError(error_msg)
 
-        org_root = self.get_organization_root_prefix(organization_id)
-        full_prefix = f"{org_root}{path}"
-        if full_prefix and not full_prefix.endswith("/"):
-            full_prefix += "/"
+        normalized_path = (path or "").strip().strip("/")
+        traces_root = (
+            f"{normalize_prefix(settings.TRACES_S3_PREFIX)}organizations/{organization_id}/"
+        )
 
         try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=full_prefix,
-                Delimiter="/",
-                MaxKeys=max_keys,
+            org_root = self.get_organization_root_prefix(organization_id)
+            if _MERGED_TRACES_PATH_RE.match(normalized_path):
+                audio_result = self._browse_prefix(
+                    org_root=org_root,
+                    path=normalized_path,
+                    max_keys=max_keys,
+                )
+                traces_result = self._browse_prefix(
+                    org_root=traces_root,
+                    path=normalized_path,
+                    max_keys=max_keys,
+                )
+                merged = _merge_browse_results(audio_result, traces_result)
+                return {
+                    "folders": merged["folders"],
+                    "files": merged["files"],
+                    "current_path": normalized_path,
+                    "organization_id": organization_id,
+                }
+
+            result = self._browse_prefix(
+                org_root=org_root,
+                path=normalized_path,
+                max_keys=max_keys,
             )
 
-            folders = []
-            if "CommonPrefixes" in response:
-                for cp in response["CommonPrefixes"]:
-                    folder_key = cp["Prefix"]
-                    relative = folder_key[len(org_root):]
-                    folder_name = relative.rstrip("/").rsplit("/", 1)[-1]
-                    folders.append({
-                        "name": folder_name,
-                        "path": relative,
-                    })
-
-            files = []
-            if "Contents" in response:
-                for obj in response["Contents"]:
-                    key = obj["Key"]
-                    if key == full_prefix:
-                        continue
-                    files.append({
-                        "key": key,
-                        "filename": Path(key).name,
-                        "size": obj["Size"],
-                        "last_modified": obj["LastModified"].isoformat(),
-                    })
-
             return {
-                "folders": folders,
-                "files": files,
-                "current_path": path,
+                "folders": result["folders"],
+                "files": result["files"],
+                "current_path": normalized_path,
                 "organization_id": organization_id,
             }
         except ClientError as e:

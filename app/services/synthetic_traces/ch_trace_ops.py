@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import UUID
 
@@ -16,6 +16,7 @@ from app.services.clickhouse.client import clickhouse_enabled
 from app.services.synthetic_traces.clickhouse_store import (
     TraceRecord,
     _resolve_otel_trace_id,
+    clear_live_turns,
     get_live_turns,
     get_observations,
     get_trace_by_call_short_id,
@@ -224,7 +225,6 @@ def apply_derived_to_trace(trace: TraceRecord, scoped_spans: List[Dict[str, Any]
             latest.response_latency_p90_ms = summary.get("response_latency_p90_ms")
             latest.response_latency_p95_ms = summary.get("response_latency_p95_ms")
         latest.derive_pending = False
-        latest.last_span_at = _utcnow()
         upsert_trace_header(latest)
         set_live_turns(latest.id, turns)
         return latest
@@ -304,6 +304,7 @@ def close_and_offload_trace_ch(db: Session, *, trace_id: UUID) -> Optional[Trace
     trace.failure_flags = flags
     trace.derive_pending = False
     upsert_trace_header(trace)
+    clear_live_turns(trace.id)
     return trace
 
 
@@ -335,7 +336,7 @@ def load_trace_detail_ch(
     *,
     include_spans: bool = True,
 ) -> Dict[str, Any]:
-    live_turns = get_live_turns(trace.id)
+    live_turns = get_live_turns(trace.id) if trace.status == "open" else None
     turns = live_turns if live_turns is not None else (trace.turns or [])
     spans = get_observations(trace.id, workspace_id=trace.workspace_id)
     scoped_spans = filter_spans_for_trace(spans, call_short_id=trace.call_short_id)
@@ -369,6 +370,21 @@ def load_trace_spans_only_ch(trace: TraceRecord) -> Dict[str, Any]:
     }
 
 
+def _latest_span_time(spans: List[Dict[str, Any]]) -> datetime:
+    latest_ns = 0
+    for span in spans:
+        for key in ("end_time_unix_nano", "start_time_unix_nano"):
+            try:
+                value = int(span.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > latest_ns:
+                latest_ns = value
+    if latest_ns > 0:
+        return datetime.fromtimestamp(latest_ns / 1_000_000_000, tz=timezone.utc)
+    return _utcnow()
+
+
 def persist_spans_ch(
     trace: TraceRecord,
     spans: List[Dict[str, Any]],
@@ -377,7 +393,7 @@ def persist_spans_ch(
     with trace_header_lock(trace.id):
         latest = get_trace_by_uuid(trace.id) or trace
         latest.span_count = int(latest.span_count or 0) + len(spans)
-        latest.last_span_at = _utcnow()
+        latest.last_span_at = _latest_span_time(spans)
         latest.derive_pending = True
         upsert_trace_header(latest)
         return latest
@@ -469,9 +485,9 @@ def finalize_trace_ch(
     with trace_header_lock(trace.id):
         latest = get_trace_by_uuid(trace.id) or trace
         if tier1_turns:
-            otel_turns = derive_turns_from_spans(
-                get_observations(latest.id, workspace_id=latest.workspace_id)
-            )
+            spans = get_observations(latest.id, workspace_id=latest.workspace_id)
+            scoped = filter_spans_for_trace(spans, call_short_id=latest.call_short_id)
+            otel_turns = derive_turns_from_spans(scoped)
             merged = merge_tier1_and_otel_turns(tier1_turns, otel_turns)
             latest.turns = merged
             latest.turn_count = len(merged)
@@ -494,6 +510,7 @@ def finalize_trace_ch(
             flags.append("high_latency")
         latest.failure_flags = flags
         upsert_trace_header(latest)
+        clear_live_turns(latest.id)
         return latest
 
 

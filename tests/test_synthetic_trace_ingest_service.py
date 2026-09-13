@@ -1,5 +1,6 @@
 """Tests for synthetic trace OTLP ingest correlation."""
 
+from unittest.mock import patch
 from uuid import uuid4
 
 from app.models.database import (
@@ -392,7 +393,9 @@ def test_maybe_auto_close_open_trace_after_idle(db_session, org_id, default_work
     assert closed.ended_at is not None
 
 
+@patch("app.services.synthetic_traces.ch_trace_ops.use_ch", return_value=False)
 def test_ingest_json_spans(
+    _mock_use_ch,
     db_session,
     org_id,
     default_workspace,

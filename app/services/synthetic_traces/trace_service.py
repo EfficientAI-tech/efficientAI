@@ -1160,6 +1160,21 @@ def ingest_otlp_spans(
     header_call_short_id: Optional[str] = None,
     workspace_id: Optional[UUID] = None,
 ) -> tuple[SyntheticCallTrace | None, int, bool]:
+    from app.services.synthetic_traces import ch_trace_ops
+
+    if ch_trace_ops.use_ch():
+        from app.services.synthetic_traces.ingest_pipeline import ingest_otlp_batch_ch
+
+        return ingest_otlp_batch_ch(
+            db,
+            organization_id=organization_id,
+            spans=spans,
+            header_evaluator_result_id=header_evaluator_result_id,
+            header_agent_id=header_agent_id,
+            header_call_short_id=header_call_short_id,
+            workspace_id=workspace_id,
+        )
+
     if not spans:
         return None, 0, False
 

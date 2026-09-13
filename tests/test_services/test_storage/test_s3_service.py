@@ -122,6 +122,41 @@ def test_browse_folder_returns_folders_and_files(configured_s3):
     assert len(result["files"]) == 1
 
 
+def test_browse_folder_merges_workspace_traces_from_audio_and_traces_prefixes(
+    configured_s3,
+    monkeypatch,
+):
+    service, fake_client = configured_s3
+    monkeypatch.setattr(s3_module.settings, "TRACES_S3_PREFIX", "traces/", raising=False)
+    ws = "ws-1"
+    path = f"workspaces/{ws}/traces"
+
+    def list_objects_v2(**kwargs):
+        prefix = kwargs.get("Prefix", "")
+        if prefix == f"traces/organizations/org-1/{path}/":
+            return {
+                "CommonPrefixes": [
+                    {"Prefix": f"traces/organizations/org-1/{path}/new-trace/"},
+                ],
+                "Contents": [],
+            }
+        if prefix == f"organizations/org-1/{path}/":
+            return {
+                "CommonPrefixes": [
+                    {"Prefix": f"organizations/org-1/{path}/old-trace/"},
+                ],
+                "Contents": [],
+            }
+        return {"CommonPrefixes": [], "Contents": []}
+
+    fake_client.list_objects_v2 = list_objects_v2
+
+    result = service.browse_folder(organization_id="org-1", path=path)
+    names = {folder["name"] for folder in result["folders"]}
+    assert names == {"new-trace", "old-trace"}
+    assert result["current_path"] == path
+
+
 # ---------------------------------------------------------------------------
 # delete_keys / delete_keys_by_prefix
 # ---------------------------------------------------------------------------

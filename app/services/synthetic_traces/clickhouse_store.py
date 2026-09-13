@@ -664,6 +664,14 @@ def set_live_turns(trace_uuid: UUID, turns: List[Dict[str, Any]]) -> None:
         logger.warning("Redis live turns error for {}: {}", trace_uuid, exc)
 
 
+def clear_live_turns(trace_uuid: UUID) -> None:
+    key = f"trace:live:{trace_uuid}"
+    try:
+        _get_redis().delete(key)
+    except redis.RedisError as exc:
+        logger.warning("Redis clear live turns error for {}: {}", trace_uuid, exc)
+
+
 def get_live_turns(trace_uuid: UUID) -> Optional[List[Dict[str, Any]]]:
     key = f"trace:live:{trace_uuid}"
     try:

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildElevenLabsCallTimeline, buildOtelCallTimeline, buildVapiCallTimeline } from './callTimelineUtils'
+import {
+  buildElevenLabsCallTimeline,
+  buildOtelCallTimeline,
+  buildVapiCallTimeline,
+  computeTurnMessageOffsets,
+  resolveTraceStartNs,
+} from './callTimelineUtils'
 
 describe('buildVapiCallTimeline', () => {
   it('orders call ended after pipeline events and uses real timestamps', () => {
@@ -169,6 +175,60 @@ describe('buildOtelCallTimeline', () => {
     expect(llmIdx).toBeGreaterThan(sttIdx)
     expect(agentIdx).toBeGreaterThan(llmIdx)
     expect(events[userIdx].offsetMs).toBeLessThanOrEqual(events[sttIdx].offsetMs)
+  })
+
+  it('computes non-zero transcript offsets from real OTLP nanosecond timestamps', () => {
+    const traceStart = 1789153005157148232
+    const spans = [
+      {
+        span_id: 't1',
+        name: 'turn',
+        start_time_unix_nano: traceStart + 5_400_000,
+        attributes: { 'efficientai.display_turn_number': 1 },
+      },
+      {
+        span_id: 't3',
+        name: 'turn',
+        start_time_unix_nano: traceStart + 20_906_800_000,
+        attributes: { 'efficientai.display_turn_number': 3 },
+      },
+      {
+        span_id: 'stt3',
+        parent_span_id: 't3',
+        name: 'stt',
+        start_time_unix_nano: traceStart + 20_704_800_000,
+        attributes: {
+          'efficientai.display_turn_number': 3,
+          'gen_ai.operation.name': 'stt',
+        },
+      },
+      {
+        span_id: 'tts3',
+        parent_span_id: 't3',
+        name: 'tts',
+        start_time_unix_nano: traceStart + 26_500_000_000,
+        end_time_unix_nano: traceStart + 26_600_000_000,
+        attributes: {
+          'efficientai.display_turn_number': 3,
+          'gen_ai.operation.name': 'tts',
+        },
+      },
+    ]
+
+    const offsets = computeTurnMessageOffsets(
+      spans,
+      {
+        turn_number: 3,
+        extra: {
+          user_text: 'Rocket Boots',
+          assistant_text: 'Let me help with Rocket Boots.',
+        },
+      },
+      resolveTraceStartNs(spans),
+    )
+
+    expect(offsets.userOffsetMs).toBeGreaterThan(20_000)
+    expect(offsets.agentOffsetMs).toBeGreaterThan(offsets.userOffsetMs ?? 0)
   })
 })
 

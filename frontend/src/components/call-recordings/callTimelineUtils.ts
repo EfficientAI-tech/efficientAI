@@ -1,3 +1,13 @@
+import {
+  type OtelSpanLike,
+  collectUserTextLines,
+  parseUnixNano,
+  resolveTraceStartNsFromSpans,
+  unixNanoOffsetMs,
+} from './traceUtils'
+
+export type { OtelSpanLike }
+
 export type TimelineCategory =
   | 'call'
   | 'stt'
@@ -699,16 +709,6 @@ export function buildElevenLabsCallTimeline(callData: Record<string, unknown>): 
   return sortTimeline(events)
 }
 
-export interface OtelSpanLike {
-  span_id: string
-  parent_span_id?: string | null
-  name: string
-  start_time_unix_nano?: number | null
-  end_time_unix_nano?: number | null
-  attributes?: Record<string, unknown>
-  events?: Array<{ name?: string; attributes?: Record<string, unknown> }>
-}
-
 export interface OtelTurnTimelineInput {
   turn_number: number
   stt_ttfb_ms?: number | null
@@ -718,6 +718,7 @@ export interface OtelTurnTimelineInput {
   transcript?: string | null
   extra?: {
     user_text?: string
+    user_utterances?: string[]
     assistant_text?: string
   }
 }
@@ -732,15 +733,14 @@ const OTEL_SORT = {
   agentMessage: 70,
 } as const
 
-function spanOffsetMs(span: OtelSpanLike, traceStart: number): number {
-  return span.start_time_unix_nano != null
-    ? Math.round((span.start_time_unix_nano - traceStart) / 1_000_000)
-    : 0
+function spanOffsetMs(span: OtelSpanLike, traceStart: bigint): number {
+  return unixNanoOffsetMs(span.start_time_unix_nano, traceStart)
 }
 
-function spanEndOffsetMs(span: OtelSpanLike, traceStart: number): number {
-  if (span.end_time_unix_nano != null) {
-    return Math.round((span.end_time_unix_nano - traceStart) / 1_000_000)
+function spanEndOffsetMs(span: OtelSpanLike, traceStart: bigint): number {
+  const end = parseUnixNano(span.end_time_unix_nano)
+  if (end != null) {
+    return unixNanoOffsetMs(end, traceStart)
   }
   return spanOffsetMs(span, traceStart)
 }
@@ -778,7 +778,8 @@ function isPipelineSpan(span: OtelSpanLike): boolean {
 
 function parseOtelTurnTexts(turn?: OtelTurnTimelineInput): { user?: string; assistant?: string } {
   if (!turn) return {}
-  const user = turn.extra?.user_text?.trim()
+  const userLines = collectUserTextLines(turn)
+  const user = userLines[0]
   const assistant = turn.extra?.assistant_text?.trim()
   if (user || assistant) return { user, assistant }
   const transcript = turn.transcript
@@ -805,17 +806,24 @@ function spanEventDetail(span: OtelSpanLike, durationMs?: number): string | unde
     .join(' · ')
 }
 
+function compareSpanStart(a: OtelSpanLike, b: OtelSpanLike): number {
+  const startA = parseUnixNano(a.start_time_unix_nano) ?? 0n
+  const startB = parseUnixNano(b.start_time_unix_nano) ?? 0n
+  if (startA === startB) return 0
+  return startA < startB ? -1 : 1
+}
+
 function makeSpanTimelineEvent(
   span: OtelSpanLike,
-  traceStart: number,
+  traceStart: bigint,
   seq: number,
   sortOrder: number,
 ): CallTimelineEvent {
   const offsetMs = spanOffsetMs(span, traceStart)
+  const start = parseUnixNano(span.start_time_unix_nano)
+  const end = parseUnixNano(span.end_time_unix_nano)
   const durationMs =
-    span.start_time_unix_nano != null && span.end_time_unix_nano != null
-      ? Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
-      : undefined
+    start != null && end != null ? Number((end - start) / 1_000_000n) : undefined
   const kind = spanKindFromName(span)
   const hasError = span.attributes?.['error.type'] != null
   return {
@@ -830,7 +838,7 @@ function makeSpanTimelineEvent(
   }
 }
 
-function turnAnchorMs(turnSpans: OtelSpanLike[], traceStart: number): number {
+function turnAnchorMs(turnSpans: OtelSpanLike[], traceStart: bigint): number {
   const pipelineSpans = turnSpans.filter(isPipelineSpan)
   const pool = pipelineSpans.length ? pipelineSpans : turnSpans
   if (!pool.length) return 0
@@ -840,7 +848,7 @@ function turnAnchorMs(turnSpans: OtelSpanLike[], traceStart: number): number {
 function userMessageOffsetMs(
   turnSpans: OtelSpanLike[],
   _turn: OtelTurnTimelineInput | undefined,
-  traceStart: number,
+  traceStart: bigint,
   anchor: number,
 ): number {
   const sttSpans = turnSpans.filter((span) => spanKindFromName(span) === 'stt')
@@ -850,7 +858,36 @@ function userMessageOffsetMs(
   return anchor
 }
 
-function agentMessageOffsetMs(turnSpans: OtelSpanLike[], traceStart: number, anchor: number): number {
+function normalizeTranscriptText(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+export function userUtteranceOffsetMs(
+  text: string,
+  turnSpans: OtelSpanLike[],
+  allSpans: OtelSpanLike[],
+  traceStart: bigint,
+  anchor: number,
+): number {
+  const target = normalizeTranscriptText(text)
+  if (!target) return anchor
+  const seen = new Set<string>()
+  const sttSpans: OtelSpanLike[] = []
+  for (const span of [...turnSpans, ...allSpans]) {
+    const id = span.span_id
+    if (id && seen.has(id)) continue
+    if (id) seen.add(id)
+    if (spanKindFromName(span) !== 'stt') continue
+    sttSpans.push(span)
+  }
+  const match = sttSpans.find(
+    (span) => normalizeTranscriptText(span.attributes?.transcript) === target,
+  )
+  if (match) return spanOffsetMs(match, traceStart)
+  return userMessageOffsetMs(turnSpans, undefined, traceStart, anchor)
+}
+
+function agentMessageOffsetMs(turnSpans: OtelSpanLike[], traceStart: bigint, anchor: number): number {
   const ttsSpans = turnSpans.filter((span) => spanKindFromName(span) === 'tts')
   const llmSpans = turnSpans.filter((span) => spanKindFromName(span) === 'llm')
   const s2sSpans = turnSpans.filter((span) => spanKindFromName(span) === 's2s')
@@ -880,24 +917,23 @@ function spanKindFromName(span: OtelSpanLike): TimelineCategory {
 function isSessionLevelPipelineSpan(span: OtelSpanLike, traceDurationMs: number): boolean {
   const name = span.name.toLowerCase()
   if (name !== 'conversation' && name !== 'turn') return false
-  if (span.start_time_unix_nano == null || span.end_time_unix_nano == null) {
+  const start = parseUnixNano(span.start_time_unix_nano)
+  const end = parseUnixNano(span.end_time_unix_nano)
+  if (start == null || end == null) {
     return name === 'conversation'
   }
-  const durationMs = Math.round((span.end_time_unix_nano - span.start_time_unix_nano) / 1_000_000)
+  const durationMs = Number((end - start) / 1_000_000n)
   return traceDurationMs > 0 && durationMs >= traceDurationMs * 0.85
 }
 
-export function resolveTraceStartNs(spans: OtelSpanLike[]): number {
-  const starts = spans
-    .map((span) => span.start_time_unix_nano)
-    .filter((value): value is number => value != null)
-  return starts.length ? Math.min(...starts) : 0
+export function resolveTraceStartNs(spans: OtelSpanLike[]): bigint {
+  return resolveTraceStartNsFromSpans(spans)
 }
 
 export function computeTurnMessageOffsets(
   turnSpans: OtelSpanLike[],
   turn: OtelTurnTimelineInput | undefined,
-  traceStart: number,
+  traceStart: bigint,
 ): { userOffsetMs?: number; agentOffsetMs?: number } {
   const anchor = turnAnchorMs(turnSpans, traceStart)
   const { user, assistant } = parseOtelTurnTexts(turn)
@@ -913,12 +949,14 @@ export function buildOtelCallTimeline(
 ): CallTimelineEvent[] {
   if (!spans.length) return []
   const traceStart = resolveTraceStartNs(spans)
-  const traceEnd = Math.max(
-    ...spans
-      .map((span) => span.end_time_unix_nano ?? span.start_time_unix_nano ?? traceStart)
-      .filter((value): value is number => value != null),
-  )
-  const traceDurationMs = Math.max(0, Math.round((traceEnd - traceStart) / 1_000_000))
+  const traceEnd = spans.reduce((max, span) => {
+    const end =
+      parseUnixNano(span.end_time_unix_nano) ??
+      parseUnixNano(span.start_time_unix_nano) ??
+      traceStart
+    return end > max ? end : max
+  }, traceStart)
+  const traceDurationMs = Math.max(0, unixNanoOffsetMs(traceEnd, traceStart))
   const byId = new Map(spans.map((span) => [span.span_id, span]))
   let seq = 0
 
@@ -940,9 +978,7 @@ export function buildOtelCallTimeline(
     events.push({ ...partial, id: `otel-${seq++}` })
   }
 
-  for (const span of [...globalSpans].sort(
-    (a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0),
-  )) {
+  for (const span of [...globalSpans].sort(compareSpanStart)) {
     if (isSessionLevelPipelineSpan(span, traceDurationMs)) continue
     events.push(makeSpanTimelineEvent(span, traceStart, seq++, OTEL_SORT.globalPipeline))
     for (const ev of span.events || []) {
@@ -969,32 +1005,31 @@ export function buildOtelCallTimeline(
   for (const turnNumber of turnNumbers) {
     const turnSpans = spansByTurn.get(turnNumber) ?? []
     const turnData = turns.find((turn) => turn.turn_number === turnNumber)
-    const { user, assistant } = parseOtelTurnTexts(turnData)
+    const { assistant } = parseOtelTurnTexts(turnData)
     const anchor = turnAnchorMs(turnSpans, traceStart)
 
     for (const span of turnSpans.filter(
       (item) => isPipelineSpan(item) && !isSessionLevelPipelineSpan(item, traceDurationMs),
-    ).sort(
-      (a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0),
-    )) {
+    ).sort(compareSpanStart)) {
       events.push(makeSpanTimelineEvent(span, traceStart, seq++, OTEL_SORT.turnPipeline))
     }
 
-    if (user) {
+    const userLines = collectUserTextLines(turnData)
+    for (const [lineIndex, userLine] of userLines.entries()) {
       push({
-        offsetMs: userMessageOffsetMs(turnSpans, turnData, traceStart, anchor),
+        offsetMs: userUtteranceOffsetMs(userLine, turnSpans, spans, traceStart, anchor),
         category: 'message',
         level: 'info',
         title: `User spoke (turn ${turnNumber})`,
-        detail: truncate(user),
-        sortOrder: OTEL_SORT.userMessage,
+        detail: truncate(userLine),
+        sortOrder: OTEL_SORT.userMessage + lineIndex,
       })
     }
 
     let ttsOrder = 0
     for (const span of [...turnSpans]
       .filter((item) => !isPipelineSpan(item))
-      .sort((a, b) => (a.start_time_unix_nano ?? 0) - (b.start_time_unix_nano ?? 0))) {
+      .sort(compareSpanStart)) {
       const kind = spanKindFromName(span)
       const sortOrder =
         kind === 'stt'

@@ -75,6 +75,56 @@ _TRACE_INDEX_ALTER_STATEMENTS = [
     "ALTER TABLE call_traces ADD INDEX IF NOT EXISTS idx_evaluator_result evaluator_result_id TYPE bloom_filter GRANULARITY 4",
 ]
 
+_TRACE_OBSERVATIONS_LEGACY_TABLE = "trace_observations__legacy_mergetree"
+
+
+def _table_engine(client, table_name: str) -> str | None:
+    result = client.query(
+        "SELECT engine FROM system.tables "
+        "WHERE database = {db:String} AND name = {name:String}",
+        parameters={"db": client.database, "name": table_name},
+    )
+    if not result.result_rows:
+        return None
+    return str(result.result_rows[0][0])
+
+
+def _trace_observations_ddl(table_name: str) -> str:
+    return TRACE_OBSERVATIONS_DDL.replace(
+        "CREATE TABLE IF NOT EXISTS trace_observations",
+        f"CREATE TABLE {table_name}",
+    )
+
+
+def _migrate_trace_observations_engine(client) -> None:
+    engine = _table_engine(client, "trace_observations")
+    if engine is None or engine == "ReplacingMergeTree":
+        return
+    if engine != "MergeTree":
+        logger.warning(
+            "trace_observations uses unexpected engine {}, skipping migration",
+            engine,
+        )
+        return
+
+    logger.info("Migrating trace_observations from MergeTree to ReplacingMergeTree")
+    client.command(
+        f"RENAME TABLE trace_observations TO {_TRACE_OBSERVATIONS_LEGACY_TABLE}"
+    )
+    try:
+        client.command(_trace_observations_ddl("trace_observations"))
+        client.command(
+            f"INSERT INTO trace_observations SELECT * FROM {_TRACE_OBSERVATIONS_LEGACY_TABLE}"
+        )
+        client.command(f"DROP TABLE {_TRACE_OBSERVATIONS_LEGACY_TABLE}")
+    except Exception:
+        client.command(f"DROP TABLE IF EXISTS trace_observations")
+        client.command(
+            f"RENAME TABLE {_TRACE_OBSERVATIONS_LEGACY_TABLE} TO trace_observations"
+        )
+        raise
+    logger.info("trace_observations engine migration complete")
+
 
 def ensure_schema() -> None:
     if not clickhouse_enabled():
@@ -83,6 +133,7 @@ def ensure_schema() -> None:
     client.command(f"CREATE DATABASE IF NOT EXISTS {client.database}")
     client.command(CALL_TRACES_DDL)
     client.command(TRACE_OBSERVATIONS_DDL)
+    _migrate_trace_observations_engine(client)
     for stmt in _TRACE_INDEX_ALTER_STATEMENTS:
         try:
             client.command(stmt)
