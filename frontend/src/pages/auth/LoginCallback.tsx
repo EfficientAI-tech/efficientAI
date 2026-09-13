@@ -6,6 +6,7 @@ import { apiClient } from '../../lib/api'
 import { useAuthStore } from '../../store/authStore'
 import { exchangeAuthorizationCode, readPkceState } from '../../lib/oidc'
 import { consumePendingInviteToken, getPendingInviteToken } from '../../lib/inviteToken'
+import { storeJoinNotice } from '../../lib/joinNotice'
 
 export default function LoginCallback() {
   const navigate = useNavigate()
@@ -45,10 +46,9 @@ export default function LoginCallback() {
         }
 
         const redirectUri = `${window.location.origin}/login/callback`
-        const accessToken = await exchangeAuthorizationCode(provider, code, redirectUri)
+        const oidcAccessToken = await exchangeAuthorizationCode(provider, code, redirectUri)
 
-        apiClient.setAccessToken(accessToken)
-        const user = await apiClient.getMe()
+        const session = await apiClient.establishOidcSession(oidcAccessToken)
         if (!active) return
 
         const pendingInvite = getPendingInviteToken()
@@ -56,19 +56,35 @@ export default function LoginCallback() {
           try {
             const accepted = await apiClient.acceptInvitationByToken(pendingInvite)
             consumePendingInviteToken()
-            setSession(accepted.access_token, accepted.user, accepted.refresh_token)
+            storeJoinNotice(accepted.join_notice)
+            setSession(
+              accepted.user,
+              accepted.access_token
+                ? { access: accepted.access_token, refresh: accepted.refresh_token }
+                : undefined,
+            )
             navigate('/', { replace: true })
             return
           } catch (inviteErr: any) {
             if (!active) return
             setError(inviteErr?.response?.data?.detail || 'Signed in, but could not accept the invitation')
-            setSession(accessToken, user)
+            setSession(
+              session.user,
+              session.access_token
+                ? { access: session.access_token, refresh: session.refresh_token }
+                : undefined,
+            )
             navigate('/', { replace: true })
             return
           }
         }
 
-        setSession(accessToken, user)
+        setSession(
+          session.user,
+          session.access_token
+            ? { access: session.access_token, refresh: session.refresh_token }
+            : undefined,
+        )
 
         const profile = await apiClient.getProfile()
         if (!active) return

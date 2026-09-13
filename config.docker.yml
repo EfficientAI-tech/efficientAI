@@ -6,7 +6,7 @@ app:
   name: "EfficientAI Voice AI Evaluation Platform"
   version: "0.1.0"
   debug: false
-  secret_key: "your-secret-key-here-change-in-production"
+  secret_key: "${SECRET_KEY}"
   frontend_base_url: "http://localhost:8000"
 
 # Server Settings
@@ -21,10 +21,26 @@ operational:
   public: false
   trusted_ips:
     - "10.0.0.0/8"
+  health_rate_limit_per_minute: 60
+  health_readiness_cache_seconds: 10
 
 security:
   csp_enabled: true
   csp_report_only: false
+  # public_base_url: "https://sandbox.efficientai.cloud"
+  # Production: trusted_hosts: ["sandbox.efficientai.cloud"] — /health exempt; VPC IPs via operational.trusted_ips
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "efficientai.local"
+  # hsts_enabled: true
+
+rate_limits:
+  enforce: true
+  auth_per_ip_per_minute: 15
+  resource_create_burst: 100
+  resource_create_burst_window_minutes: 10
+  resource_create_sustained_per_minute: 30
+  resource_create_org_per_hour: 2000
 
 # Database Configuration (Docker service name)
 database:

@@ -1,5 +1,10 @@
 """API tests for playground routes."""
 
+from unittest.mock import MagicMock
+from uuid import uuid4
+
+from app.models.database import CallRecordingSource, Integration, IntegrationPlatform
+
 
 def test_extract_transcript_from_smallest_call_data():
     from app.api.v1.routes.playground import extract_transcript_from_call_data
@@ -19,101 +24,6 @@ def test_extract_transcript_from_smallest_call_data():
     assert segments[0]["speaker"] == "User"
 
 
-def test_download_playground_recording_audio_prefers_vapi_presigned_url(monkeypatch):
-    from app.api.v1.routes.playground import _download_playground_recording_audio
-
-    captured = {}
-
-    class FakeResp:
-        status_code = 200
-        content = b"audio-bytes"
-        headers = {"content-type": "audio/wav"}
-
-    def fake_get(url, headers=None, timeout=120):
-        captured["url"] = url
-        captured["headers"] = headers
-        return FakeResp()
-
-    monkeypatch.setattr("requests.get", fake_get)
-
-    call_data = {
-        "artifact": {
-            "presignedMonoUrl": "https://storage.example.com/mono.wav?X-Amz-Signature=abc",
-            "recordingUrl": "https://storage.example.com/raw-mono.wav",
-        }
-    }
-    audio_bytes, resp = _download_playground_recording_audio(call_data, "vapi", "vapi-secret")
-
-    assert audio_bytes == b"audio-bytes"
-    assert captured["url"] == "https://storage.example.com/mono.wav?X-Amz-Signature=abc"
-    assert captured["headers"] is None
-
-
-def test_download_playground_recording_audio_uses_vapi_bearer_for_non_presigned(monkeypatch):
-    from app.api.v1.routes.playground import _download_playground_recording_audio
-
-    captured = {}
-
-    class FakeResp:
-        status_code = 200
-        content = b"audio-bytes"
-        headers = {"content-type": "audio/mpeg"}
-
-    def fake_get(url, headers=None, timeout=120):
-        captured["headers"] = headers
-        return FakeResp()
-
-    monkeypatch.setattr("requests.get", fake_get)
-
-    call_data = {"recordingUrl": "https://api.vapi.ai/recording.wav"}
-    _download_playground_recording_audio(call_data, "vapi", "vapi-secret")
-
-    assert captured["headers"] == {"Authorization": "Bearer vapi-secret"}
-
-
-def test_refresh_call_recording_queues_evaluation_without_result(
-    authenticated_client,
-    make_agent,
-    make_integration,
-    make_call_recording,
-    monkeypatch,
-):
-    from app.models.enums import IntegrationPlatform
-
-    integration = make_integration(
-        platform=IntegrationPlatform.VAPI.value,
-        api_key="enc",
-    )
-    agent = make_agent(integration=integration)
-    make_call_recording(
-        call_short_id="464643",
-        source="playground",
-        provider_platform="vapi",
-        provider_call_id="vapi-call-1",
-        agent_id=agent.id,
-        call_data={"status": "ended"},
-    )
-
-    queued = []
-
-    def fake_poll(*args, **kwargs):
-        queued.append(args)
-
-    monkeypatch.setattr("app.api.v1.routes.playground.poll_call_metrics", fake_poll)
-    monkeypatch.setattr(
-        "app.services.playground.post_call_processing.refresh_call_metrics_sync",
-        lambda *args, **kwargs: True,
-    )
-    monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "vapi-secret")
-
-    response = authenticated_client.post("/api/v1/playground/call-recordings/464643/refresh")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["evaluation_queued"] is True
-    assert len(queued) == 1
-
-
 def test_list_playground_call_recordings(authenticated_client, make_call_recording):
     make_call_recording(call_short_id="111111", source="playground", call_data={"foo": "bar"})
 
@@ -122,3 +32,139 @@ def test_list_playground_call_recordings(authenticated_client, make_call_recordi
     assert response.status_code == 200
     assert len(response.json()) == 1
     assert response.json()[0]["call_short_id"] == "111111"
+
+
+def test_validate_provider_call_id_instantiates_voice_provider(monkeypatch):
+    from app.api.v1.routes import playground as playground_routes
+
+    mock_provider = MagicMock()
+    mock_provider.retrieve_call_metrics.return_value = {"assistantId": "assistant-1"}
+    mock_class = MagicMock(return_value=mock_provider)
+    monkeypatch.setattr(playground_routes, "get_voice_provider", lambda _platform: mock_class)
+
+    recording = MagicMock()
+    recording.provider_call_id = None
+    recording.call_data = {}
+    recording.provider_platform = "vapi"
+
+    agent = MagicMock()
+    agent.voice_ai_agent_id = "assistant-1"
+
+    playground_routes._validate_provider_call_id_for_recording(
+        recording,
+        "vapi-call-abc",
+        agent,
+        "plain-key",
+    )
+
+    mock_class.assert_called_once_with(api_key="plain-key")
+    mock_provider.retrieve_call_metrics.assert_called_once_with("vapi-call-abc")
+
+
+def test_refresh_call_recording_accepts_inline_provider_call_id(
+    authenticated_client,
+    make_call_recording,
+    make_agent,
+    db_session,
+    org_id,
+    monkeypatch,
+):
+    from app.api.v1.routes import playground as playground_routes
+
+    integration = Integration(
+        id=uuid4(),
+        organization_id=org_id,
+        platform=IntegrationPlatform.VAPI.value,
+        api_key="encrypted-key",
+        name="Vapi",
+        is_active=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+    agent = make_agent(
+        voice_ai_integration_id=integration.id,
+        voice_ai_agent_id="assistant-1",
+        call_medium="web_call",
+    )
+    make_call_recording(
+        call_short_id="654321",
+        source=CallRecordingSource.PLAYGROUND.value,
+        provider_platform=IntegrationPlatform.VAPI.value,
+        provider_call_id=None,
+        agent_id=agent.id,
+    )
+
+    monkeypatch.setattr(playground_routes, "decrypt_api_key", lambda _key: "plain-key")
+    monkeypatch.setattr(playground_routes, "poll_call_metrics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        playground_routes,
+        "_validate_provider_call_id_for_recording",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = authenticated_client.post(
+        "/api/v1/playground/call-recordings/654321/refresh",
+        json={"provider_call_id": "vapi-call-abc"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Call recording refresh initiated"
+
+
+def test_refresh_rejects_mismatched_provider_call_id(
+    authenticated_client,
+    make_call_recording,
+    make_agent,
+    db_session,
+    org_id,
+):
+    integration = Integration(
+        id=uuid4(),
+        organization_id=org_id,
+        platform=IntegrationPlatform.RETELL.value,
+        api_key="encrypted-key",
+        name="Retell",
+        is_active=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+    agent = make_agent(
+        voice_ai_integration_id=integration.id,
+        voice_ai_agent_id="agent-retell-1",
+        call_medium="web_call",
+    )
+    make_call_recording(
+        call_short_id="222333",
+        source=CallRecordingSource.PLAYGROUND.value,
+        provider_platform=IntegrationPlatform.RETELL.value,
+        provider_call_id=None,
+        agent_id=agent.id,
+        call_data={"call_id": "retell-bound-call"},
+    )
+
+    response = authenticated_client.post(
+        "/api/v1/playground/call-recordings/222333/refresh",
+        json={"provider_call_id": "foreign-call-id"},
+    )
+
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"].lower()
+
+
+def test_refresh_call_recording_without_provider_info_returns_400(
+    authenticated_client,
+    make_call_recording,
+):
+    make_call_recording(
+        call_short_id="000001",
+        source=CallRecordingSource.PLAYGROUND.value,
+        provider_platform=None,
+        provider_call_id=None,
+    )
+
+    response = authenticated_client.post(
+        "/api/v1/playground/call-recordings/000001/refresh",
+    )
+
+    assert response.status_code == 400
+    assert "provider" in response.json()["detail"].lower()

@@ -1,5 +1,7 @@
 """API tests for evaluator results routes."""
 
+import pytest
+
 
 def test_derive_speaker_segments_supports_smallest_payload():
     from app.api.v1.routes.evaluator_results import _derive_speaker_segments_from_call_data
@@ -36,25 +38,34 @@ def test_list_and_get_evaluator_results(authenticated_client, make_evaluator_res
     assert get_response.json()["result_id"] == "778899"
 
 
-def test_playground_test_agents_only_excludes_voice_ai_provider_results(
-    authenticated_client, make_evaluator_result, make_call_recording
+def test_playground_linked_results_excluded_from_default_list(
+    authenticated_client,
+    make_evaluator,
+    make_evaluator_result,
+    make_call_recording,
 ):
-    internal = make_evaluator_result(result_id="111111", provider_platform=None)
-    voice_ai = make_evaluator_result(result_id="222222", provider_platform="elevenlabs")
+    evaluator = make_evaluator(evaluator_id="991122")
+    playground_result = make_evaluator_result(
+        result_id="554433",
+        evaluator_id=evaluator.id,
+    )
     make_call_recording(
-        call_short_id="999999",
+        call_short_id="665544",
         source="playground",
-        provider_platform="elevenlabs",
-        evaluator_result_id=voice_ai.id,
+        evaluator_result_id=playground_result.id,
     )
+    make_evaluator_result(result_id="776655", evaluator_id=evaluator.id)
 
-    response = authenticated_client.get(
-        "/api/v1/evaluator-results?playground=true&test_agents_only=true"
-    )
-    assert response.status_code == 200
-    result_ids = {item["result_id"] for item in response.json()["items"]}
-    assert internal.result_id in result_ids
-    assert voice_ai.result_id not in result_ids
+    list_response = authenticated_client.get("/api/v1/evaluator-results")
+    assert list_response.status_code == 200
+    ids = {item["result_id"] for item in list_response.json()["items"]}
+    assert "554433" not in ids
+    assert "776655" in ids
+
+    playground_response = authenticated_client.get("/api/v1/evaluator-results?playground=true")
+    assert playground_response.status_code == 200
+    playground_ids = {item["result_id"] for item in playground_response.json()["items"]}
+    assert "554433" in playground_ids
 
 
 def test_list_evaluator_results_filter_by_agent_id(
@@ -117,11 +128,38 @@ def test_delete_evaluator_result_with_linked_call_recording(
     make_evaluator_result,
     make_call_recording,
 ):
+    from app.models.database import CallRecording
+
     result = make_evaluator_result(result_id="221133")
     recording = make_call_recording(
         call_short_id="887766",
         evaluator_result_id=result.id,
         provider_platform="vobiz",
+        source="webhook",
+    )
+
+    response = authenticated_client.delete(f"/api/v1/evaluator-results/{result.result_id}")
+
+    assert response.status_code == 204
+    assert (
+        db_session.query(CallRecording)
+        .filter(CallRecording.id == recording.id)
+        .first()
+        is None
+    )
+
+
+def test_delete_evaluator_result_keeps_playground_call_recording(
+    authenticated_client,
+    db_session,
+    make_evaluator_result,
+    make_call_recording,
+):
+    result = make_evaluator_result(result_id="221134")
+    recording = make_call_recording(
+        call_short_id="887767",
+        evaluator_result_id=result.id,
+        source="playground",
     )
 
     response = authenticated_client.delete(f"/api/v1/evaluator-results/{result.result_id}")
@@ -137,10 +175,12 @@ def test_delete_evaluator_results_bulk_with_linked_call_recording(
     make_evaluator_result,
     make_call_recording,
 ):
+    from app.models.database import CallRecording
+
     r1 = make_evaluator_result(result_id="111222")
     r2 = make_evaluator_result(result_id="333444")
-    rec1 = make_call_recording(call_short_id="111111", evaluator_result_id=r1.id)
-    rec2 = make_call_recording(call_short_id="222222", evaluator_result_id=r2.id)
+    rec1 = make_call_recording(call_short_id="111111", evaluator_result_id=r1.id, source="webhook")
+    rec2 = make_call_recording(call_short_id="222222", evaluator_result_id=r2.id, source="webhook")
 
     response = authenticated_client.delete(
         "/api/v1/evaluator-results",
@@ -148,10 +188,8 @@ def test_delete_evaluator_results_bulk_with_linked_call_recording(
     )
 
     assert response.status_code == 204
-    db_session.refresh(rec1)
-    db_session.refresh(rec2)
-    assert rec1.evaluator_result_id is None
-    assert rec2.evaluator_result_id is None
+    assert db_session.query(CallRecording).filter(CallRecording.id == rec1.id).first() is None
+    assert db_session.query(CallRecording).filter(CallRecording.id == rec2.id).first() is None
 
 
 def test_list_evaluator_results_scenario_and_status_filters(
@@ -239,7 +277,10 @@ def test_evaluator_results_overview_and_aggregate(
     assert overview.status_code == 200
     body = overview.json()
     assert body["workspace_counts"]["total"] >= 1
-    assert any(a["agent_id"] == str(agent.id) for a in body["agents"])
+    agent_entry = next(a for a in body["agents"] if a["agent_id"] == str(agent.id))
+    suite_entry = next(s for s in agent_entry["suites"] if s["suite_id"] == str(suite.id))
+    assert suite_entry["scenarios"]
+    assert suite_entry["scenarios"][0]["scenario_name"] == "Overview Scenario"
 
     suite_overview = authenticated_client.get(
         f"/api/v1/evaluator-results/overview?suite_id={suite.id}"
@@ -257,27 +298,226 @@ def test_evaluator_results_overview_and_aggregate(
     assert agg["completed_rows"] == 1
 
 
+def test_evaluator_results_aggregate_agent_only_scope(
+    authenticated_client,
+    db_session,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+    make_evaluator_result,
+):
+    from app.models.database import EvaluatorSuite
+
+    agent = make_agent(name="Aggregate Agent")
+    persona = make_persona()
+    scenario = make_scenario(agent_id=agent.id, name="Agg Scenario")
+    suite = EvaluatorSuite(
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+        name="Agg Suite",
+        agent_id=agent.id,
+        persona_id=persona.id,
+    )
+    db_session.add(suite)
+    db_session.commit()
+    db_session.refresh(suite)
+
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        suite_id=suite.id,
+    )
+    make_evaluator_result(
+        result_id="556001",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+        metric_scores={"m1": {"value": 4, "type": "rating", "metric_name": "Quality"}},
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/evaluator-results/aggregate?agent_id={agent.id}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == str(agent.id)
+    assert body["total_rows"] == 1
+    assert body["completed_rows"] == 1
+
+
+def test_evaluator_results_aggregate_workspace_date_scope(
+    authenticated_client,
+    db_session,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+    make_evaluator_result,
+):
+    from app.models.database import EvaluatorSuite
+
+    agent = make_agent(name="Workspace Agg Agent")
+    persona = make_persona()
+    scenario = make_scenario(agent_id=agent.id, name="Workspace Scenario")
+    suite = EvaluatorSuite(
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+        name="Workspace Suite",
+        agent_id=agent.id,
+        persona_id=persona.id,
+    )
+    db_session.add(suite)
+    db_session.commit()
+    db_session.refresh(suite)
+
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        suite_id=suite.id,
+    )
+    make_evaluator_result(
+        result_id="556002",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+    )
+
+    response = authenticated_client.get("/api/v1/evaluator-results/aggregate")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == "workspace"
+    assert body["total_rows"] >= 1
+
+
+def test_evaluator_results_aggregate_categorization_parent_rollup(
+    authenticated_client,
+    db_session,
+    make_agent,
+    make_persona,
+    make_scenario,
+    make_evaluator,
+    make_evaluator_result,
+    make_metric,
+):
+    from app.models.database import EvaluatorSuite
+
+    agent = make_agent(name="Categorization Agent")
+    persona = make_persona()
+    scenario = make_scenario(agent_id=agent.id, name="Cat Scenario")
+    suite = EvaluatorSuite(
+        organization_id=agent.organization_id,
+        workspace_id=agent.workspace_id,
+        name="Cat Suite",
+        agent_id=agent.id,
+        persona_id=persona.id,
+    )
+    db_session.add(suite)
+    db_session.commit()
+    db_session.refresh(suite)
+
+    parent = make_metric(
+        name="AI Reveal",
+        metric_type="category",
+        selection_mode="single_choice",
+    )
+    yes_child = make_metric(
+        name="Yes",
+        metric_type="boolean",
+        parent_metric_id=parent.id,
+    )
+    no_child = make_metric(
+        name="No",
+        metric_type="boolean",
+        parent_metric_id=parent.id,
+    )
+
+    evaluator = make_evaluator(
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        suite_id=suite.id,
+    )
+    parent_id = str(parent.id)
+    yes_id = str(yes_child.id)
+    no_id = str(no_child.id)
+    make_evaluator_result(
+        result_id="557001",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+        metric_scores={
+            parent_id: {
+                "type": "category",
+                "metric_name": "AI Reveal",
+                "selection_mode": "single_choice",
+                "value": "Yes",
+                "chosen_child_name": "Yes",
+                "chosen_child_id": yes_id,
+            },
+            yes_id: {"type": "boolean", "metric_name": "Yes", "value": True},
+            no_id: {"type": "boolean", "metric_name": "No", "value": False},
+        },
+    )
+    make_evaluator_result(
+        result_id="557002",
+        evaluator_id=evaluator.id,
+        agent_id=agent.id,
+        persona_id=persona.id,
+        scenario_id=scenario.id,
+        status="completed",
+        metric_scores={
+            parent_id: {
+                "type": "category",
+                "metric_name": "AI Reveal",
+                "selection_mode": "single_choice",
+                "value": "No",
+                "chosen_child_name": "No",
+                "chosen_child_id": no_id,
+            },
+            yes_id: {"type": "boolean", "metric_name": "Yes", "value": False},
+            no_id: {"type": "boolean", "metric_name": "No", "value": True},
+        },
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/evaluator-results/aggregate?suite_id={suite.id}"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    metric_ids = {m["metric_id"] for m in body["metrics"]}
+    assert yes_id not in metric_ids
+    assert no_id not in metric_ids
+    parent_metric = next(m for m in body["metrics"] if m["metric_id"] == parent_id)
+    assert parent_metric["metric_name"] == "AI Reveal"
+    labels = {vc["label"]: vc["count"] for vc in parent_metric["value_counts"]}
+    assert labels.get("Yes") == 1
+    assert labels.get("No") == 1
+
+
 def _patch_blob_storage_download(monkeypatch, *, audio_bytes: bytes = b"fake-audio-bytes"):
     """Patch both the blob singleton and the lazy s3_service alias."""
     import importlib
     from types import SimpleNamespace
 
-    def _iter_chunks(_key, chunk_size=8192):
-        yield audio_bytes
-
     fake = SimpleNamespace(
         is_enabled=lambda: True,
         download_file_by_key=lambda _key: audio_bytes,
-        iter_file_chunks_by_key=_iter_chunks,
         upload_file_by_key=lambda *_args, **_kwargs: None,
     )
     blob_module = importlib.import_module("app.services.storage.blob_storage_service")
     s3_module = importlib.import_module("app.services.storage.s3_service")
-    audio_delivery_module = importlib.import_module("app.services.storage.audio_delivery")
     # Patch the lazy s3_service alias first so undo restores the real singleton.
     monkeypatch.setattr(s3_module, "s3_service", fake, raising=False)
     monkeypatch.setattr(blob_module, "blob_storage_service", fake)
-    monkeypatch.setattr(audio_delivery_module, "blob_storage_service", fake)
     return fake
 
 
@@ -302,73 +542,13 @@ def test_stream_evaluator_result_audio_from_s3(
     assert response.headers["content-type"] == "audio/mpeg"
 
 
-def test_stream_evaluator_result_audio_falls_back_to_provider_when_s3_missing(
-    authenticated_client,
-    make_agent,
-    make_integration,
-    make_evaluator_result,
-    monkeypatch,
-):
-    from types import SimpleNamespace
-
-    from app.core.exceptions import StorageError
-    from app.models.enums import IntegrationPlatform
-
-    integration = make_integration(
-        platform=IntegrationPlatform.ELEVENLABS.value,
-        api_key="enc-key",
-    )
-    agent = make_agent(integration=integration)
-    make_evaluator_result(
-        result_id="991133",
-        agent_id=agent.id,
-        audio_s3_key="audio/organizations/test/evaluations/call-1/recording.mp3",
-        provider_platform="elevenlabs",
-        provider_call_id="conv-abc",
-        call_data={
-            "recording_urls": {
-                "conversation_audio": (
-                    "https://api.elevenlabs.io/v1/convai/conversations/conv-abc/audio"
-                ),
-            },
-        },
-    )
-
-    def _iter_chunks(_key, chunk_size=8192):
-        raise StorageError("File not found in S3: missing")
-
-    fake = SimpleNamespace(
-        is_enabled=lambda: True,
-        iter_file_chunks_by_key=_iter_chunks,
-        download_file_by_key=lambda _key: (_ for _ in ()).throw(StorageError("missing")),
-    )
-    import importlib
-
-    blob_module = importlib.import_module("app.services.storage.blob_storage_service")
-    monkeypatch.setattr(blob_module, "blob_storage_service", fake)
-    monkeypatch.setattr("app.core.encryption.decrypt_api_key", lambda _key: "test-xi-key")
-
-    class FakeResponse:
-        status_code = 200
-        headers = {"content-type": "audio/mpeg"}
-
-        def iter_content(self, chunk_size=8192):
-            yield b"proxied-audio"
-
-    monkeypatch.setattr("requests.get", lambda *args, **kwargs: FakeResponse())
-
-    response = authenticated_client.get("/api/v1/evaluator-results/991133/audio")
-
-    assert response.status_code == 200
-    assert response.content == b"proxied-audio"
-
-
 def test_stream_evaluator_result_audio_proxies_elevenlabs(
     authenticated_client,
     make_agent,
     make_integration,
     make_evaluator_result,
     monkeypatch,
+    mock_recording_hostname_dns,
 ):
     from app.models.enums import IntegrationPlatform
 
@@ -417,12 +597,24 @@ def test_stream_evaluator_result_audio_proxies_elevenlabs(
     assert captured["headers"]["xi-api-key"] == "test-xi-key"
 
 
+@pytest.fixture
+def mock_recording_hostname_dns(monkeypatch):
+    import app.services.telephony.recording_download as recording_download
+
+    monkeypatch.setattr(
+        recording_download.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(None, None, None, None, ("52.0.0.1", 0))],
+    )
+
+
 def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
     authenticated_client,
     make_agent,
     make_integration,
     make_evaluator_result,
     monkeypatch,
+    mock_recording_hostname_dns,
 ):
     from app.models.enums import IntegrationPlatform
 
@@ -466,9 +658,10 @@ def test_stream_evaluator_result_audio_proxies_vapi_with_bearer(
 def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
     authenticated_client,
     make_evaluator_result,
+    mock_recording_hostname_dns,
 ):
     signed_url = (
-        "https://hipaa-recordings.example/recording.wav?"
+        "https://hipaa-recordings.s3.amazonaws.com/recording.wav?"
         "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
     )
     make_evaluator_result(
@@ -478,7 +671,7 @@ def test_stream_evaluator_result_audio_redirects_vapi_presigned_url(
         call_data={
             "artifact": {
                 "presignedMonoUrl": signed_url,
-                "recordingUrl": "https://raw.example/recording.wav",
+                "recordingUrl": "https://bucket.s3.amazonaws.com/recording.wav",
             }
         },
     )
@@ -514,6 +707,7 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
     make_evaluator,
     make_evaluator_result,
     monkeypatch,
+    mock_recording_hostname_dns,
 ):
     from app.models.enums import IntegrationPlatform
 
@@ -563,6 +757,52 @@ def test_re_evaluate_downloads_vapi_audio_with_bearer(
 
     assert response.status_code == 200
     assert captured["headers"]["Authorization"] == "Bearer vapi-secret"
+
+
+def test_list_evaluator_results_filter_by_date_range(
+    authenticated_client,
+    db_session,
+    make_evaluator,
+    make_evaluator_result,
+):
+    from datetime import datetime, timezone
+
+    evaluator = make_evaluator(evaluator_id="900001")
+    older = make_evaluator_result(
+        result_id="900011",
+        evaluator_id=evaluator.id,
+        name="Older run",
+    )
+    newer = make_evaluator_result(
+        result_id="900022",
+        evaluator_id=evaluator.id,
+        name="Newer run",
+    )
+    older.timestamp = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    newer.timestamp = datetime(2025, 6, 1, 12, 0, tzinfo=timezone.utc)
+    db_session.commit()
+
+    filtered = authenticated_client.get(
+        "/api/v1/evaluator-results",
+        params={
+            "since": "2025-01-01T00:00:00+00:00",
+            "until": "2025-12-31T23:59:59+00:00",
+        },
+    )
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert body["total"] == 1
+    assert body["items"][0]["result_id"] == "900022"
+
+    overview = authenticated_client.get(
+        "/api/v1/evaluator-results/overview",
+        params={
+            "since": "2025-01-01T00:00:00+00:00",
+            "until": "2025-12-31T23:59:59+00:00",
+        },
+    )
+    assert overview.status_code == 200
+    assert overview.json()["workspace_counts"]["total"] == 1
 
 
 def test_re_evaluate_playground_result_without_evaluator_id(

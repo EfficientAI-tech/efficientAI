@@ -727,10 +727,11 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     """Schema for updating user profile."""
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    email: Optional[str] = None
 
 
 class UserResponse(BaseModel):
