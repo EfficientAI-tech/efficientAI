@@ -56,12 +56,14 @@ class ImprovePromptRequest(BaseModel):
 class GenerateFlowchartRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
     regenerate: bool = False
 
 
 class NodePromptMapRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
+    credential_id: Optional[UUID] = None
 
 
 def _partial_has_imported_agent_tag(tags: Optional[list]) -> bool:
@@ -739,6 +741,7 @@ async def generate_prompt_partial_flowchart(
             "partial_id": str(partial.id),
             "provider": data.provider,
             "model": data.model,
+            "credential_id": str(data.credential_id) if data.credential_id else None,
         },
     )
     db.refresh(partial)
@@ -869,6 +872,7 @@ async def map_prompt_partial_flowchart_nodes(
             "partial_id": str(partial.id),
             "provider": data.provider,
             "model": data.model,
+            "credential_id": str(data.credential_id) if data.credential_id else None,
         },
     )
     db.refresh(partial)

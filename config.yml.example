@@ -149,6 +149,7 @@ traces:
   derive_debounce_seconds: 3
   idle_close_seconds: 120
   s3_prefix: "traces/"
+  s3_batch_orphan_minutes: 15
   list_default_days: 90
   defer_parse_to_worker: true
   staging_retention_hours: 48

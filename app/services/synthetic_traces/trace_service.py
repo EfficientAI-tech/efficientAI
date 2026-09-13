@@ -55,6 +55,18 @@ from app.services.synthetic_traces.otlp_mapper import (
 OPEN_TRACE_IDLE_CLOSE_SECONDS = settings.TRACES_IDLE_CLOSE_SECONDS
 
 
+def _require_pg_trace_storage(db: Session) -> None:
+    """Fail fast when migration 092 removed PG tables and ClickHouse is not configured."""
+    from sqlalchemy import inspect
+
+    if inspect(db.get_bind()).has_table("synthetic_call_traces"):
+        return
+    raise RuntimeError(
+        "Trace storage requires ClickHouse (configure clickhouse.url). "
+        "Postgres trace tables are unavailable after migration 092."
+    )
+
+
 def _normalize_turn_row(turn: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(turn)
     if row.get("talk_over") is None:
@@ -221,6 +233,7 @@ def open_trace(
             tier=tier,
         )
 
+    _require_pg_trace_storage(db)
     existing = None
     if evaluator_result_id:
         existing = (
@@ -329,6 +342,7 @@ def open_trace_session(
             call_short_id=call_short_id,
         )
 
+    _require_pg_trace_storage(db)
     if transport not in VALID_TRACE_TRANSPORTS:
         raise ValueError(f"transport must be one of {VALID_TRACE_TRANSPORTS}")
 
@@ -445,6 +459,7 @@ def close_trace_session(
             workspace_id=workspace_id,
         )
 
+    _require_pg_trace_storage(db)
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.call_short_id == call_short_id,
@@ -559,6 +574,7 @@ def link_trace_to_evaluator_result(
             call_recording_id=call_recording_id,
         )
 
+    _require_pg_trace_storage(db)
     trace = (
         db.query(SyntheticCallTrace)
         .filter(
@@ -645,6 +661,7 @@ def backfill_missing_traces_from_call_recordings(
             limit=limit,
         )
 
+    _require_pg_trace_storage(db)
     linked_result_ids = {
         row[0]
         for row in db.query(SyntheticCallTrace.evaluator_result_id)
@@ -711,6 +728,7 @@ def get_trace_for_result(
         )
         return trace
 
+    _require_pg_trace_storage(db)
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.evaluator_result_id == evaluator_result_id,
@@ -737,6 +755,7 @@ def get_trace_by_id(
             workspace_id=workspace_id,
         )
 
+    _require_pg_trace_storage(db)
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.id == trace_id,
         SyntheticCallTrace.organization_id == organization_id,
@@ -764,6 +783,7 @@ def get_trace_by_call_short_id(
             workspace_id=workspace_id,
         )
 
+    _require_pg_trace_storage(db)
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.call_short_id == call_short_id,
@@ -798,6 +818,7 @@ def list_traces(
             since=since,
         )
 
+    _require_pg_trace_storage(db)
     query = db.query(SyntheticCallTrace).filter(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.workspace_id == workspace_id,
@@ -1175,6 +1196,7 @@ def ingest_otlp_spans(
             workspace_id=workspace_id,
         )
 
+    _require_pg_trace_storage(db)
     if not spans:
         return None, 0, False
 
@@ -1421,6 +1443,7 @@ def finalize_trace(
             tier1_turns=tier1_turns,
         )
 
+    _require_pg_trace_storage(db)
     recording = (
         db.query(CallRecording)
         .filter(CallRecording.call_short_id == call_short_id)
@@ -1494,6 +1517,7 @@ def load_trace_detail(
     if ch_trace_ops.use_ch():
         return ch_trace_ops.load_trace_detail_ch(trace, include_spans=include_spans)
 
+    _require_pg_trace_storage(db)
     payload = (
         db.query(SyntheticTracePayload)
         .filter(SyntheticTracePayload.synthetic_call_trace_id == trace.id)
@@ -1537,6 +1561,7 @@ def load_trace_spans_only(db: Session, trace: SyntheticCallTrace) -> Dict[str, A
     if ch_trace_ops.use_ch():
         return ch_trace_ops.load_trace_spans_only_ch(trace)
 
+    _require_pg_trace_storage(db)
     raw_spans = load_trace_spans(db, trace)
     scoped_spans = filter_spans_for_trace(raw_spans, call_short_id=trace.call_short_id)
     payload = (
@@ -1601,6 +1626,7 @@ def derive_trace_turns(db: Session, *, trace_id: UUID) -> Optional[SyntheticCall
     if ch_trace_ops.use_ch():
         return ch_trace_ops.derive_trace_turns_ch(db, trace_id=trace_id)
 
+    _require_pg_trace_storage(db)
     from sqlalchemy import func
 
     from app.models.database import SyntheticTraceSpanBatch
@@ -1648,6 +1674,7 @@ def sweep_idle_traces(db: Session) -> int:
     if ch_trace_ops.use_ch():
         return ch_trace_ops.sweep_idle_traces_ch(db)
 
+    _require_pg_trace_storage(db)
     idle_seconds = max(1, int(settings.TRACES_IDLE_CLOSE_SECONDS))
     cutoff = _utcnow() - timedelta(seconds=idle_seconds)
     rows = (
@@ -1680,6 +1707,7 @@ def close_and_offload_trace(db: Session, *, trace_id: UUID) -> Optional[Syntheti
     if ch_trace_ops.use_ch():
         return ch_trace_ops.close_and_offload_trace_ch(db, trace_id=trace_id)
 
+    _require_pg_trace_storage(db)
     trace = (
         db.query(SyntheticCallTrace)
         .filter(SyntheticCallTrace.id == trace_id)

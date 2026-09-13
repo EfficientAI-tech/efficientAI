@@ -34,6 +34,7 @@ def _flowchart_llm_generate(
     db: Session,
     temperature: float,
     max_tokens: int,
+    credential_id: Optional[UUID] = None,
 ) -> Dict[str, Any]:
     """Call the LLM for flowchart work, retrying with temperature=1 when needed."""
     temperatures = [temperature]
@@ -51,6 +52,7 @@ def _flowchart_llm_generate(
                 db=db,
                 temperature=temp,
                 max_tokens=max_tokens,
+                credential_id=credential_id,
             )
         except RuntimeError as exc:
             last_exc = exc
@@ -279,6 +281,7 @@ def _llm_map_node_chunk(
     db: Session,
     provider_enum: ModelProvider,
     model_str: str,
+    credential_id: Optional[UUID] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Map a chunk of nodes to prompt offsets via one LLM call."""
     user_payload = {
@@ -313,6 +316,7 @@ def _llm_map_node_chunk(
             db=db,
             temperature=0.1,
             max_tokens=max_tokens,
+            credential_id=credential_id,
         )
         try:
             raw = _extract_json_object(result["text"])
@@ -461,6 +465,7 @@ def generate_agent_flowchart(
     db: Session,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
 ) -> Tuple[AgentFlowGraph, ModelProvider, str]:
     """Generate a flowchart graph from a production agent prompt."""
     if not prompt_text.strip():
@@ -471,6 +476,7 @@ def generate_agent_flowchart(
         db,
         provider,
         model,
+        credential_id=credential_id,
     )
 
     messages = [
@@ -496,6 +502,7 @@ def generate_agent_flowchart(
             db=db,
             temperature=0.2,
             max_tokens=max_tokens,
+            credential_id=credential_id,
         )
         if not result.get("truncated"):
             break
@@ -542,6 +549,7 @@ def map_all_flow_nodes_to_prompt(
     db: Session,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
 ) -> AgentFlowGraph:
     """Locate prompt excerpts for all flowchart nodes via chunked LLM calls."""
     if not prompt_text.strip():
@@ -554,6 +562,7 @@ def map_all_flow_nodes_to_prompt(
         db,
         provider,
         model,
+        credential_id=credential_id,
     )
 
     mapping_by_id: Dict[str, Dict[str, Any]] = {}
@@ -570,6 +579,7 @@ def map_all_flow_nodes_to_prompt(
                 db=db,
                 provider_enum=provider_enum,
                 model_str=model_str,
+                credential_id=credential_id,
             )
             mapping_by_id.update(chunk_mappings)
             logger.info(
