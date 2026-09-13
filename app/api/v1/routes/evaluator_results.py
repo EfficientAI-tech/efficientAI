@@ -60,16 +60,23 @@ def _lookup_evaluator_result(
         ).first()
 
 
-def _detach_call_recordings_from_evaluator_results(
+def _cleanup_call_recordings_for_deleted_evaluator_results(
     db: Session,
     evaluator_result_ids: List[UUID],
 ) -> None:
-    """Clear FK references so observability call rows survive result deletion."""
+    """Remove eval-telephony webhook recordings; detach playground recordings."""
     if not evaluator_result_ids:
         return
-    db.query(CallRecording).filter(
-        CallRecording.evaluator_result_id.in_(evaluator_result_ids)
-    ).update({CallRecording.evaluator_result_id: None}, synchronize_session=False)
+    recordings = (
+        db.query(CallRecording)
+        .filter(CallRecording.evaluator_result_id.in_(evaluator_result_ids))
+        .all()
+    )
+    for recording in recordings:
+        if recording.source == CallRecordingSource.PLAYGROUND:
+            recording.evaluator_result_id = None
+        else:
+            db.delete(recording)
 
 
 def _derive_speaker_segments_from_call_data(
@@ -281,6 +288,8 @@ def _resolve_transcription(result: EvaluatorResult, segments: Optional[List[Dict
 def get_evaluator_results_overview(
     agent_id: Optional[str] = Query(None, description="When set, return suites for this agent"),
     suite_id: Optional[str] = Query(None, description="When set, return scenarios for this suite"),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
@@ -305,6 +314,8 @@ def get_evaluator_results_overview(
         workspace_id=workspace_id,
         agent_id=agent_uuid,
         suite_id=suite_uuid,
+        since=since,
+        until=until,
     )
 
 
@@ -583,7 +594,7 @@ def delete_evaluator_result(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
-    _detach_call_recordings_from_evaluator_results(db, [result.id])
+    _cleanup_call_recordings_for_deleted_evaluator_results(db, [result.id])
     db.delete(result)
     db.commit()
     return None
@@ -622,7 +633,7 @@ def delete_evaluator_results_bulk(
             to_delete.append(result)
 
     if to_delete:
-        _detach_call_recordings_from_evaluator_results(
+        _cleanup_call_recordings_for_deleted_evaluator_results(
             db, [row.id for row in to_delete]
         )
         for result in to_delete:

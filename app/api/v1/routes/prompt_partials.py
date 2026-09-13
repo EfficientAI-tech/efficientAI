@@ -85,8 +85,11 @@ def _flowchart_for_response(partial: PromptPartial) -> Optional[dict]:
 def _agent_flowchart_response(partial: PromptPartial) -> AgentFlowGraph:
     """Build API flowchart payload from the current partial row."""
     raw = _flowchart_for_response(partial)
-    if isinstance(raw, dict) and raw.get("nodes"):
-        return AgentFlowGraph.model_validate(raw)
+    if isinstance(raw, dict):
+        if raw.get("nodes"):
+            return AgentFlowGraph.model_validate(raw)
+        if raw.get("generation_error") or raw.get("mapping_error"):
+            return AgentFlowGraph.model_validate(raw)
     return AgentFlowGraph()
 
 

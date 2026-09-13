@@ -23,6 +23,20 @@ def _supports_flowchart(partial: PromptPartial) -> bool:
     return partial_supports_flowchart(partial.tags if isinstance(partial.tags, list) else None)
 
 
+def _user_facing_flowchart_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    if "\nDetails:" in message:
+        message = message.split("\nDetails:", 1)[0].strip()
+    if "\nTraceback" in message:
+        message = message.split("\nTraceback", 1)[0].strip()
+    prefix = "LLM generation failed for "
+    if message.startswith(prefix) and ": " in message:
+        message = message.split(": ", 1)[1]
+    if len(message) > 500:
+        message = message[:497] + "..."
+    return message or "Flowchart generation failed."
+
+
 @celery_app.task(name="generate_agent_flowchart", bind=True, max_retries=0)
 def generate_agent_flowchart_task(
     self,
@@ -104,7 +118,7 @@ def generate_agent_flowchart_task(
             )
             partial.agent_flowchart = {
                 **flowchart_payload,
-                "generation_error": str(exc),
+                "generation_error": _user_facing_flowchart_error(exc),
             }
             partial.agent_flowchart_status = "failed"
             flag_modified(partial, "agent_flowchart")
@@ -194,7 +208,7 @@ def map_agent_flowchart_prompt_sections_task(
             )
             partial.agent_flowchart = {
                 **flowchart_payload,
-                "mapping_error": str(exc),
+                "mapping_error": _user_facing_flowchart_error(exc),
             }
             partial.agent_flowchart_status = "completed"
             flag_modified(partial, "agent_flowchart")

@@ -54,6 +54,7 @@ import type { AgentFlowGraph, AgentFlowNode } from '../../types/api'
 import {
   countMappedNodes,
   flowchartNeedsPromptMapping,
+  formatFlowchartErrorMessage,
   nodeHasValidMapping,
 } from './flowchartUtils'
 
@@ -215,6 +216,9 @@ export default function PromptPartials() {
         model: pickerModel || undefined,
         credential_id: pickerCredentialId || undefined,
       }),
+    onMutate: () => {
+      setFlowchartError(null)
+    },
     onSuccess: () => {
       setFlowchartError(null)
       setSelectedFlowNodeId(null)
@@ -861,7 +865,7 @@ export default function PromptPartials() {
                                 Generating flowchart…
                               </span>
                             ) : flowchart?.generation_error ? (
-                              flowchart.generation_error
+                              formatFlowchartErrorMessage(flowchart.generation_error)
                             ) : (
                               'Generate a flowchart to visualize agent logic.'
                             )}

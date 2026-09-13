@@ -17,6 +17,55 @@ from app.models.schemas import AgentFlowEdge, AgentFlowGraph, AgentFlowNode
 from app.services.ai.llm_resolver import get_llm_provider_and_model
 from app.services.ai.llm_service import llm_service
 
+
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "temperature" in message and (
+        "unsupported" in message or "does not support" in message
+    )
+
+
+def _flowchart_llm_generate(
+    *,
+    messages: List[Dict[str, str]],
+    provider_enum: ModelProvider,
+    model_str: str,
+    organization_id: UUID,
+    db: Session,
+    temperature: float,
+    max_tokens: int,
+) -> Dict[str, Any]:
+    """Call the LLM for flowchart work, retrying with temperature=1 when needed."""
+    temperatures = [temperature]
+    if temperature != 1.0:
+        temperatures.append(1.0)
+
+    last_exc: Optional[Exception] = None
+    for temp in temperatures:
+        try:
+            return llm_service.generate_response(
+                messages=messages,
+                llm_provider=provider_enum,
+                llm_model=model_str,
+                organization_id=organization_id,
+                db=db,
+                temperature=temp,
+                max_tokens=max_tokens,
+            )
+        except RuntimeError as exc:
+            last_exc = exc
+            if temp != 1.0 and _is_unsupported_temperature_error(exc):
+                logger.warning(
+                    "Flowchart LLM rejected temperature={}; retrying with 1.0",
+                    temp,
+                )
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Flowchart LLM call failed")
+
+
 _FLOWCHART_SYSTEM_PROMPT = (
     "You are a senior voice-agent architect. Given a production agent system "
     "prompt, infer the agent's conversational logic as a directed flowchart.\n\n"
@@ -256,10 +305,10 @@ def _llm_map_node_chunk(
     raw: Dict[str, Any] = {}
     result: Dict[str, Any] = {}
     for attempt_idx, max_tokens in enumerate(max_tokens_attempts):
-        result = llm_service.generate_response(
+        result = _flowchart_llm_generate(
             messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
+            provider_enum=provider_enum,
+            model_str=model_str,
             organization_id=organization_id,
             db=db,
             temperature=0.1,
@@ -439,10 +488,10 @@ def generate_agent_flowchart(
     max_tokens_attempts = (8000, 16000)
     result: Dict[str, Any] = {}
     for attempt_idx, max_tokens in enumerate(max_tokens_attempts):
-        result = llm_service.generate_response(
+        result = _flowchart_llm_generate(
             messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
+            provider_enum=provider_enum,
+            model_str=model_str,
             organization_id=organization_id,
             db=db,
             temperature=0.2,
