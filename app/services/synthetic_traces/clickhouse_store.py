@@ -451,6 +451,7 @@ def list_traces(
     status: Optional[str] = None,
     cursor: Optional[str] = None,
     since: Optional[datetime] = None,
+    exclude_playground_websocket: bool = False,
 ) -> tuple[List[TraceRecord], Optional[int], Optional[str], bool]:
     client = get_client()
     conditions = [
@@ -467,6 +468,8 @@ def list_traces(
         else:
             conditions.append("status = {status:String}")
             params["status"] = status
+    if exclude_playground_websocket:
+        conditions.append("transport != 'websocket'")
     where = " AND ".join(conditions)
     cols = ", ".join(_TRACE_COLUMNS)
 

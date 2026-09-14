@@ -73,8 +73,9 @@ export default function ObservabilityCallDetail() {
     let eventSource: EventSource | null = null
 
     try {
-        const url = apiClient.getObservabilityCallLiveEventsUrl(callShortId)
-        eventSource = new EventSource(url, { withCredentials: true })
+        eventSource = apiClient.openAuthenticatedEventSource(
+          `/api/v1/observability/calls/${callShortId}/live-events`,
+        )
 
         eventSource.onmessage = (event) => {
           try {

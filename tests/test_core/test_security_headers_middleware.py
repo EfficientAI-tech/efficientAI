@@ -95,6 +95,19 @@ def test_csp_allows_voice_provider_connect_src(security_client, monkeypatch):
     assert "worker-src 'self' blob:" in policy
 
 
+def test_csp_allows_storage_connect_src_for_recordings(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "CSP_ENABLED", True)
+    monkeypatch.setattr(settings, "CSP_REPORT_ONLY", False)
+
+    response = security_client.get("/health")
+    policy = response.headers["Content-Security-Policy"]
+
+    assert "https://*.r2.cloudflarestorage.com" in policy
+    assert "https://*.s3.amazonaws.com" in policy
+    assert "https://*.amazonaws.com" in policy
+    assert "https://*.cloudfront.net" in policy
+
+
 def test_csp_allows_frame_src_for_pdf_preview_and_voice(security_client, monkeypatch):
     monkeypatch.setattr(settings, "CSP_ENABLED", True)
     monkeypatch.setattr(settings, "CSP_REPORT_ONLY", False)

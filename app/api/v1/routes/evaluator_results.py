@@ -465,21 +465,44 @@ def get_evaluator_result(
 
     enriched_call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
 
+    linked_playground_recording = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.evaluator_result_id == result.id,
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+        )
+        .order_by(CallRecording.created_at.desc())
+        .first()
+    )
+
+    if linked_playground_recording:
+        if not isinstance(enriched_call_data, dict):
+            enriched_call_data = {}
+        if not enriched_call_data.get("call_short_id") and linked_playground_recording.call_short_id:
+            enriched_call_data = {
+                **enriched_call_data,
+                "call_short_id": linked_playground_recording.call_short_id,
+            }
+
     call_recording_source = None
-    if isinstance(result.call_data, dict):
-        linked_call_short_id = result.call_data.get("call_short_id")
-        if isinstance(linked_call_short_id, str) and linked_call_short_id:
-            linked_recording = (
-                db.query(CallRecording)
-                .filter(
-                    CallRecording.call_short_id == linked_call_short_id,
-                    CallRecording.organization_id == organization_id,
-                    CallRecording.workspace_id == workspace_id,
-                )
-                .first()
+    linked_call_short_id = (
+        enriched_call_data.get("call_short_id")
+        if isinstance(enriched_call_data, dict)
+        else None
+    )
+    if isinstance(linked_call_short_id, str) and linked_call_short_id:
+        linked_recording = (
+            db.query(CallRecording)
+            .filter(
+                CallRecording.call_short_id == linked_call_short_id,
+                CallRecording.organization_id == organization_id,
+                CallRecording.workspace_id == workspace_id,
             )
-            if linked_recording and linked_recording.source:
-                call_recording_source = linked_recording.source.value
+            .first()
+        )
+        if linked_recording and linked_recording.source:
+            call_recording_source = linked_recording.source.value
     
     speaker_segments = _resolve_speaker_segments(result)
     transcription = _resolve_transcription(result, speaker_segments)

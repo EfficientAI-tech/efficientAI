@@ -9,6 +9,35 @@ from loguru import logger
 from app.services.voice_providers.base import BaseVoiceProvider
 
 
+def _retell_agent_list_page(raw: Any) -> tuple[List[Any], bool, Optional[str]]:
+    """Retell SDK v5+ returns AgentListResponse { items, has_more, pagination_key }, not a bare list."""
+    if isinstance(raw, list):
+        return raw, False, None
+    if hasattr(raw, "model_dump"):
+        try:
+            raw = raw.model_dump()
+        except Exception:
+            pass
+    elif hasattr(raw, "dict"):
+        try:
+            raw = raw.dict()
+        except Exception:
+            pass
+    if isinstance(raw, dict):
+        items = raw.get("items") or raw.get("agents") or []
+        return (
+            list(items) if isinstance(items, list) else [],
+            bool(raw.get("has_more")),
+            raw.get("pagination_key"),
+        )
+    items = getattr(raw, "items", None) or getattr(raw, "agents", None) or []
+    return (
+        list(items) if isinstance(items, list) else [],
+        bool(getattr(raw, "has_more", False)),
+        getattr(raw, "pagination_key", None),
+    )
+
+
 class RetellVoiceProvider(BaseVoiceProvider):
     """Retell AI voice provider implementation."""
     
@@ -409,7 +438,7 @@ class RetellVoiceProvider(BaseVoiceProvider):
         Test Retell connection by attempting to list agents.
         """
         try:
-            self.client.agent.list()
+            self.client.agent.list(limit=1)
             return True
         except Exception as e:
             raise ValueError(f"Retell connection test failed: {str(e)}")
@@ -417,11 +446,21 @@ class RetellVoiceProvider(BaseVoiceProvider):
     def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
         """List Retell agents."""
         try:
-            raw = self.client.agent.list()
-            items = raw if isinstance(raw, list) else getattr(raw, "agents", None) or []
+            collected: List[Any] = []
+            pagination_key: Optional[str] = None
+            for _ in range(50):
+                list_params: Dict[str, Any] = {"limit": 100}
+                if pagination_key:
+                    list_params["pagination_key"] = pagination_key
+                raw = self.client.agent.list(**list_params)
+                page_items, has_more, pagination_key = _retell_agent_list_page(raw)
+                collected.extend(page_items)
+                if not has_more or not pagination_key:
+                    break
+
             agents: List[Dict[str, str]] = []
             needle = (search or "").strip().lower()
-            for item in items:
+            for item in collected:
                 if hasattr(item, "model_dump"):
                     item = item.model_dump()
                 elif hasattr(item, "dict"):

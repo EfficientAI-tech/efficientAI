@@ -1098,7 +1098,9 @@ class ApiClient {
       ...csrfHeaders(),
     }
     const accessToken = credentials?.accessToken ?? this.inMemoryAccessToken
-    const apiKey = credentials?.apiKey ?? localStorage.getItem('apiKey')
+    const apiKey = this.cookieSessionEnabled
+      ? credentials?.apiKey ?? null
+      : credentials?.apiKey ?? localStorage.getItem('apiKey')
     if (accessToken) {
       headers.Authorization = `Bearer ${accessToken}`
     } else if (apiKey) {
@@ -4079,8 +4081,20 @@ class ApiClient {
   }
 
   // Voice Agent endpoints
-  async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
-    const response = await this.client.post('/api/v1/voice-agent/connect')
+  async getVoiceAgentConnection(
+    query?: Record<string, string | boolean | undefined | null>,
+  ): Promise<{ ws_url: string; endpoint?: string }> {
+    const search = new URLSearchParams()
+    if (query) {
+      for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined && value !== null && value !== '') {
+          search.set(key, String(value))
+        }
+      }
+    }
+    const qs = search.toString()
+    const path = `/api/v1/voice-agent/connect${qs ? `?${qs}` : ''}`
+    const response = await this.client.post(path)
     return response.data
   }
 
@@ -4344,19 +4358,23 @@ class ApiClient {
       : new URL(normalizedPath, window.location.origin)
 
     const workspaceId = localStorage.getItem('activeWorkspaceId')
-    if (!this.cookieSessionEnabled) {
-      const accessToken = this.inMemoryAccessToken
-      const apiKey = localStorage.getItem('apiKey')
-      if (accessToken) {
-        url.searchParams.set('token', accessToken)
-      } else if (apiKey) {
-        url.searchParams.set('api_key', apiKey)
-      }
+    const accessToken = this.inMemoryAccessToken
+    const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')
+    if (accessToken) {
+      url.searchParams.set('token', accessToken)
+    } else if (apiKey) {
+      url.searchParams.set('api_key', apiKey)
     }
     if (workspaceId) {
       url.searchParams.set('workspace_id', workspaceId)
     }
     return url.toString()
+  }
+
+  /** SSE / EventSource cannot use axios; must send session cookies explicitly. */
+  openAuthenticatedEventSource(path: string): EventSource {
+    const url = this.buildAuthenticatedApiUrl(path)
+    return new EventSource(url, { withCredentials: true })
   }
 
   async getObservabilityCall(callShortId: string): Promise<ObservabilityCall> {

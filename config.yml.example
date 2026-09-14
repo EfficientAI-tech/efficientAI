@@ -29,7 +29,9 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
-  # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
+  # csp_policy: "default-src 'self'; ..."  # optional full override
+  # Defaults: voice providers (Vapi/Daily/Retell/ElevenLabs/LiveKit/Sentry) + blob storage
+  # (R2, S3, CloudFront, GCS, Azure, B2, DO Spaces) in connect-src for waveform/presigned audio fetch
 
 # Database Configuration
 database:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from typing import Any
+from typing import Any, Dict, Optional
 
+from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.core.exceptions import StorageError
@@ -102,3 +103,36 @@ def collect_call_data_audio_keys(call_data: dict | None) -> list[str]:
             if value and value not in keys:
                 keys.append(value)
     return keys
+
+
+def stream_audio_from_provider_url(
+    url: str,
+    *,
+    filename: str,
+    headers: Optional[Dict[str, str]] = None,
+) -> StreamingResponse:
+    """Fetch a provider/presigned recording URL server-side and stream to the client."""
+    import requests as http_requests
+
+    from app.services.telephony.exotel_client import ExotelInvalidContentError
+    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+    try:
+        assert_safe_provider_recording_url(str(url))
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    upstream = http_requests.get(url, headers=headers or {}, stream=True, timeout=60)
+    if upstream.status_code != 200:
+        raise HTTPException(
+            status_code=upstream.status_code,
+            detail=f"Recording audio fetch failed ({upstream.status_code})",
+        )
+    content_type = upstream.headers.get("content-type", "audio/mpeg")
+    return StreamingResponse(
+        upstream.iter_content(chunk_size=8192),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+        },
+    )

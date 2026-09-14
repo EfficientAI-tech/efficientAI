@@ -54,6 +54,7 @@ from app.services.synthetic_traces.trace_service import (
     get_trace_by_call_short_id,
     get_trace_by_id,
     get_trace_for_result,
+    resolve_call_short_id_for_evaluator_result,
     ingest_json_spans,
     ingest_otlp_spans,
     list_traces,
@@ -421,6 +422,8 @@ def list_observability_traces(
         status=status,
         cursor=cursor,
         since=since,
+        # In-app Test Agent / hosted voice-agent sessions (playground); use Agent Playground.
+        exclude_playground_websocket=True,
     )
     items = enrich_trace_summaries(db, rows)
     return SyntheticCallTraceListResponse(
@@ -467,13 +470,13 @@ def get_trace_for_evaluator_result(
             trace_id=result.synthetic_call_trace_id,
             workspace_id=workspace_id,
         )
-    if not trace and isinstance(result.call_data, dict):
-        linked_call_short_id = result.call_data.get("call_short_id")
-        if isinstance(linked_call_short_id, str) and linked_call_short_id.strip():
+    if not trace:
+        linked_call_short_id = resolve_call_short_id_for_evaluator_result(db, result)
+        if linked_call_short_id:
             trace = get_trace_by_call_short_id(
                 db,
                 organization_id=organization_id,
-                call_short_id=linked_call_short_id.strip(),
+                call_short_id=linked_call_short_id,
                 workspace_id=workspace_id,
             )
             if trace and trace.evaluator_result_id is None:
@@ -482,7 +485,7 @@ def get_trace_for_evaluator_result(
                 link_trace_to_evaluator_result(
                     db,
                     organization_id=organization_id,
-                    call_short_id=linked_call_short_id.strip(),
+                    call_short_id=linked_call_short_id,
                     evaluator_result_id=result.id,
                     workspace_id=workspace_id,
                 )

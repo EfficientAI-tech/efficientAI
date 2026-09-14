@@ -713,15 +713,17 @@ async def websocket_endpoint(
                     db.add(call_recording)
                     db.flush()
 
-                    if trace_call_short_id:
+                    link_call_short_id = trace_call_short_id or call_short_id
+                    if link_call_short_id:
                         from app.services.synthetic_traces.trace_service import link_trace_to_evaluator_result
 
                         link_trace_to_evaluator_result(
                             db,
                             organization_id=organization_id,
-                            call_short_id=trace_call_short_id,
+                            call_short_id=link_call_short_id,
                             evaluator_result_id=evaluator_result.id,
                             call_recording_id=call_recording.id,
+                            workspace_id=workspace_id,
                         )
 
                     db.commit()
@@ -903,6 +905,7 @@ async def bot_connect(
     scenario_id = request.query_params.get("scenario_id")
     run_evaluation = _parse_bool_query(request.query_params.get("run_evaluation"), default=False)
     ui_surface = request.query_params.get("ui_surface")
+    call_short_id = (request.query_params.get("call_short_id") or "").strip() or None
     
     # Determine which AI Provider to use based on agent configuration
     ai_provider = None
@@ -1089,6 +1092,7 @@ async def bot_connect(
         persona_id=persona_id,
         scenario_id=scenario_id,
         run_evaluation=run_evaluation,
+        call_short_id=call_short_id,
         ui_surface=ui_surface,
         fallback_host=fallback_host,
         fallback_scheme=fallback_scheme,

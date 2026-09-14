@@ -170,7 +170,9 @@ export default function EvaluatorCallDetailPanel({
 
     let eventSource: EventSource | null = null
     try {
-      eventSource = new EventSource(apiClient.getEvaluatorResultLiveEventsUrl(evaluatorResultId))
+      eventSource = apiClient.openAuthenticatedEventSource(
+        `/api/v1/evaluator-results/${evaluatorResultId}/live-events`,
+      )
       eventSource.onmessage = (event) => {
         try {
           const entry = JSON.parse(event.data)
@@ -434,6 +436,10 @@ export default function EvaluatorCallDetailPanel({
           {tab === 'pipeline' ? (
             <SyntheticCallTracePanel
               evaluatorResultId={evaluatorResultId}
+              traceId={
+                (result as { synthetic_call_trace_id?: string | null }).synthetic_call_trace_id ??
+                undefined
+              }
               callShortId={callShortId}
               embedded
             />

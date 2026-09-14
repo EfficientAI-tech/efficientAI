@@ -259,6 +259,14 @@ export default function VoiceAgent({
   const setupTrackListeners = () => {
     if (!pcClientRef.current) return
 
+    // Pipecat also emits RTVIEvent.Error; without a listener Node throws on bare "error" events.
+    pcClientRef.current.on(RTVIEvent.Error, (rtviError) => {
+      if (rtviError === undefined || rtviError === null) return
+      const errorMessage = formatErrorMessage(rtviError)
+      if (!errorMessage || errorMessage === 'Unknown error') return
+      log(`RTVI error: ${errorMessage}`, 'system')
+    })
+
     // Listen for new tracks starting
     pcClientRef.current.on(RTVIEvent.TrackStarted, (track, participant) => {
       // Only handle non-local (bot) tracks
@@ -328,25 +336,30 @@ export default function VoiceAgent({
         }
       }
 
-      // Resolve credentials. The backend `/connect` and websocket endpoints
-      // accept either a Bearer access token (email/password / SSO login) or
-      // an API key (legacy / machine access). We pass whichever the user has.
-      const accessToken = localStorage.getItem('accessToken')
-      const apiKey = localStorage.getItem('apiKey')
-      if (!accessToken && !apiKey) {
+      const cookieSession = apiClient.isCookieSessionEnabled()
+      const accessToken =
+        apiClient.getAccessToken() ||
+        (!cookieSession ? localStorage.getItem('accessToken') : null)
+      const apiKey = cookieSession ? null : localStorage.getItem('apiKey')
+      if (!accessToken && !apiKey && !cookieSession) {
         throw new Error('Not authenticated. Please log in first.')
       }
 
       if (!customEndpoint) {
-        // Cookies are set as a fallback - we also pass the credential as a
-        // header below, which is more reliable in cross-origin dev setups.
-        if (accessToken) {
-          document.cookie = `access_token=${accessToken}; path=/; SameSite=Lax`
+        if (!cookieSession) {
+          if (accessToken) {
+            document.cookie = `access_token=${accessToken}; path=/; SameSite=Lax`
+          }
+          if (apiKey) {
+            document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
+          }
         }
-        if (apiKey) {
-          document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
-        }
-        log('Auth credentials set for /connect', 'system')
+        log(
+          cookieSession
+            ? 'Using cookie session for /connect'
+            : 'Auth credentials set for /connect',
+          'system',
+        )
       } else {
         log('Using custom endpoint, skipping backend API cookie flow', 'system')
       }
@@ -358,7 +371,7 @@ export default function VoiceAgent({
       traceSessionRef.current = null
 
       let traceCallShortId: string | null = null
-      if (!customEndpoint && (accessToken || apiKey)) {
+      if (!customEndpoint && (accessToken || apiKey || cookieSession)) {
         try {
           const session = await apiClient.createSyntheticTraceSession({
             transport: 'websocket',
@@ -469,6 +482,11 @@ export default function VoiceAgent({
       if (!customEndpoint && billingSurface) params.append('ui_surface', billingSurface)
       if (!customEndpoint && traceCallShortId) params.append('call_short_id', traceCallShortId)
 
+      const connectQuery: Record<string, string> = {}
+      params.forEach((value, key) => {
+        connectQuery[key] = value
+      })
+
       if (!customEndpoint && params.toString()) {
         endpointUrl += `?${params.toString()}`
       }
@@ -478,15 +496,20 @@ export default function VoiceAgent({
         ? 'websocket'
         : 'http'
 
+      const useCookieSessionConnect =
+        !customEndpoint && cookieSession && !accessToken && !apiKey
+
       if (endpointProtocol === 'websocket') {
         log('Using direct connect() for websocket URL...', 'system')
         await pcClient.connect({ wsUrl: endpointUrl })
         log('✅ WebSocket transport connected', 'system')
+      } else if (useCookieSessionConnect) {
+        log('Using authenticated /connect (cookie session)...', 'system')
+        const { ws_url } = await apiClient.getVoiceAgentConnection(connectQuery)
+        await pcClient.connect({ wsUrl: ws_url })
+        log('✅ Connection established via cookie session!', 'system')
       } else {
         log('Using startBotAndConnect() - this will handle RTVI protocol handshake...', 'system')
-        // Pass credentials via headers in addition to cookies so /connect
-        // works even when the API is on a different origin (e.g. dev mode
-        // with frontend on :3000 and API on :8000 where cookies aren't shared).
         const authHeaders = new Headers()
         if (!customEndpoint) {
           if (accessToken) {

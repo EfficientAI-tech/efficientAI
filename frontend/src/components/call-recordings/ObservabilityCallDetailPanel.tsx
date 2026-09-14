@@ -116,7 +116,9 @@ export default function ObservabilityCallDetailPanel({
 
     let eventSource: EventSource | null = null
     try {
-      eventSource = new EventSource(apiClient.getObservabilityCallLiveEventsUrl(callShortId))
+      eventSource = apiClient.openAuthenticatedEventSource(
+        `/api/v1/observability/calls/${callShortId}/live-events`,
+      )
       eventSource.onmessage = (event) => {
         try {
           const entry = JSON.parse(event.data)

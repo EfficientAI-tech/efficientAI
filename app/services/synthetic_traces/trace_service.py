@@ -712,6 +712,28 @@ def backfill_missing_traces_from_call_recordings(
     return created
 
 
+def resolve_call_short_id_for_evaluator_result(
+    db: Session,
+    result: EvaluatorResult,
+) -> Optional[str]:
+    if isinstance(result.call_data, dict):
+        raw = result.call_data.get("call_short_id")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    recording = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.evaluator_result_id == result.id,
+            CallRecording.organization_id == result.organization_id,
+        )
+        .order_by(CallRecording.created_at.desc())
+        .first()
+    )
+    if recording and recording.call_short_id:
+        return recording.call_short_id
+    return None
+
+
 def get_trace_for_result(
     db: Session,
     *,
@@ -806,6 +828,7 @@ def list_traces(
     status: Optional[str] = None,
     cursor: Optional[str] = None,
     since: Optional[datetime] = None,
+    exclude_playground_websocket: bool = False,
 ) -> tuple[List[SyntheticCallTrace], Optional[int], Optional[str], bool]:
     if ch_trace_ops.use_ch():
         return ch_list_traces(
@@ -816,6 +839,7 @@ def list_traces(
             status=status,
             cursor=cursor,
             since=since,
+            exclude_playground_websocket=exclude_playground_websocket,
         )
 
     _require_pg_trace_storage(db)
@@ -823,6 +847,8 @@ def list_traces(
         SyntheticCallTrace.organization_id == organization_id,
         SyntheticCallTrace.workspace_id == workspace_id,
     )
+    if exclude_playground_websocket:
+        query = query.filter(SyntheticCallTrace.transport != "websocket")
     if since is not None:
         query = query.filter(SyntheticCallTrace.started_at >= since)
     if status:

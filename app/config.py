@@ -180,6 +180,16 @@ class Settings(BaseSettings):
         "https://*.ingest.sentry.io "
         "https://*.ingest.us.sentry.io"
     )
+    _CSP_STORAGE_CONNECT_SRC: str = (
+        "https://*.r2.cloudflarestorage.com "
+        "https://*.s3.amazonaws.com "
+        "https://*.amazonaws.com "
+        "https://*.cloudfront.net "
+        "https://storage.googleapis.com "
+        "https://*.blob.core.windows.net "
+        "https://*.digitaloceanspaces.com "
+        "https://*.backblazeb2.com"
+    )
     _CSP_FRAME_SRC: str = (
         "https://*.daily.co "
         "https://*.s3.amazonaws.com "
@@ -196,7 +206,7 @@ class Settings(BaseSettings):
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https:; "
-        f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC}; "
+        f"connect-src 'self' wss: ws: {_CSP_VOICE_CONNECT_SRC} {_CSP_STORAGE_CONNECT_SRC}; "
         "media-src 'self' blob: https:; "
         f"frame-src 'self' blob: {_CSP_FRAME_SRC}; "
         "worker-src 'self' blob:; "

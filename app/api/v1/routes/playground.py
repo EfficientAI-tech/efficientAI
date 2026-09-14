@@ -2,7 +2,7 @@
 Playground API Routes
 API endpoints for testing voice agents in the playground
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks, Form, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks, Form, File, UploadFile, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
@@ -1414,6 +1414,8 @@ async def re_evaluate_call_recording(
 @router.get("/call-recordings/{call_short_id}/audio")
 async def stream_call_audio(
     call_short_id: str,
+    proxy: bool = Query(False),
+    stereo: bool = Query(False),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -1439,26 +1441,74 @@ async def stream_call_audio(
     recording_urls = call_data.get("recording_urls", {})
     platform = (call_recording.provider_platform or "").lower()
 
-    # For Retell / Vapi / Smallest the URL is public – redirect directly
+    # For Retell / Vapi / Smallest — redirect for direct browser navigation; proxy streams for XHR/cookies
     if platform in ("retell", "vapi", "smallest"):
-        artifact = call_data.get("artifact", {})
-        recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
-        mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
-        url = (
-            call_data.get("recordingUrl")
-            or call_data.get("stereoRecordingUrl")
-            or artifact.get("recordingUrl")
-            or artifact.get("stereoRecordingUrl")
-            or mono_recording.get("combinedUrl")
-            or recording_urls.get("combined_url")
-            or recording_urls.get("stereo_url")
-            or call_data.get("recording_url")
-            or recording_urls.get("conversation_audio")
+        from app.services.voice_providers.vapi_recording import (
+            extract_vapi_recording_url,
+            is_presigned_storage_url,
         )
+
+        if platform == "vapi":
+            url = extract_vapi_recording_url(call_data, stereo=stereo)
+        else:
+            artifact = call_data.get("artifact", {})
+            recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+            mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
+            if stereo:
+                url = (
+                    call_data.get("stereoRecordingUrl")
+                    or artifact.get("stereoRecordingUrl")
+                    or recording_urls.get("stereo_url")
+                    or call_data.get("recordingUrl")
+                    or artifact.get("recordingUrl")
+                    or mono_recording.get("combinedUrl")
+                    or recording_urls.get("combined_url")
+                    or call_data.get("recording_url")
+                    or recording_urls.get("conversation_audio")
+                )
+            else:
+                url = (
+                    call_data.get("recordingUrl")
+                    or artifact.get("recordingUrl")
+                    or mono_recording.get("combinedUrl")
+                    or recording_urls.get("combined_url")
+                    or call_data.get("stereoRecordingUrl")
+                    or artifact.get("stereoRecordingUrl")
+                    or recording_urls.get("stereo_url")
+                    or call_data.get("recording_url")
+                    or recording_urls.get("conversation_audio")
+                )
         if not url:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
         _validate_playground_audio_url(url)
+        if proxy:
+            headers: Optional[Dict[str, str]] = None
+            if platform == "vapi" and not is_presigned_storage_url(url):
+                agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+                if agent and agent.voice_ai_integration_id:
+                    integration = db.query(Integration).filter(
+                        Integration.id == agent.voice_ai_integration_id,
+                        Integration.organization_id == organization_id,
+                    ).first()
+                    if integration:
+                        headers = {"Authorization": f"Bearer {decrypt_api_key(integration.api_key)}"}
+                if headers is None and "r2.cloudflarestorage.com" in url.lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            "Recording URL is a private storage object without a presigned URL. "
+                            "Refresh the call recording from Vapi to fetch a playable link."
+                        ),
+                    )
+            from app.services.storage.audio_delivery import stream_audio_from_provider_url
+
+            return stream_audio_from_provider_url(
+                url,
+                filename=f"call_{call_short_id}",
+                headers=headers,
+            )
         from fastapi.responses import RedirectResponse
+
         return RedirectResponse(url)
 
     # ElevenLabs requires API key header – proxy the stream
