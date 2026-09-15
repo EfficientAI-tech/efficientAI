@@ -4,6 +4,7 @@ Manage users, invitations, and roles within organizations
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -22,8 +23,20 @@ from app.models.schemas import (
     RoleUpdate, MessageResponse, UserResponse
 )
 from app.core.password import hash_password, validate_password_strength
-from app.core.auth.refresh_tokens import revoke_all_user_refresh_tokens
+from app.core.auth.refresh_tokens import (
+    revoke_refresh_tokens_for_user_org,
+    strip_org_from_user_refresh_auth,
+)
+from app.core.auth.org_credentials import (
+    bump_org_session_epoch,
+    revoke_org_membership_credential,
+    get_credential,
+    get_or_create_credential,
+    provision_membership_credential,
+    set_org_password_hash,
+)
 from app.services.invitation_service import invitation_to_response_dict, to_aware_utc
+from app.services.workspace_rbac import remove_user_org_workspace_memberships
 
 router = APIRouter(prefix="/iam", tags=["IAM"])
 
@@ -57,6 +70,12 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
                     role=RoleEnum.ADMIN
                 )
                 db.add(member)
+                db.flush()
+                provision_membership_credential(
+                    db,
+                    user_id=user.id,
+                    organization_id=db_key.organization_id,
+                )
                 db.commit()
             
             return user
@@ -84,6 +103,12 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
             role=RoleEnum.ADMIN
         )
         db.add(member)
+        db.flush()
+        provision_membership_credential(
+            db,
+            user_id=user.id,
+            organization_id=db_key.organization_id,
+        )
         db.commit()
     else:
         # User exists but might not be in organization
@@ -104,6 +129,12 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
                 role=RoleEnum.ADMIN
             )
             db.add(member)
+            db.flush()
+            provision_membership_credential(
+                db,
+                user_id=user.id,
+                organization_id=db_key.organization_id,
+            )
             db.commit()
     
     return user
@@ -275,13 +306,13 @@ async def invite_user(
     
     if existing_invitation:
         # Check if expired
-        if _to_aware_utc(existing_invitation.expires_at) < datetime.now(timezone.utc):
-            existing_invitation.status = InvitationStatus.EXPIRED
+        if to_aware_utc(existing_invitation.expires_at) < datetime.now(timezone.utc):
+            existing_invitation.status = InvitationStatus.EXPIRED.value
             db.commit()
         else:
             raise HTTPException(
-                status_code=400,
-                detail="An invitation is already pending for this email"
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An invitation is already pending for this email",
             )
     
     # Create invitation
@@ -294,14 +325,21 @@ async def invite_user(
         invited_by_id=current_user.id,
         email=invitation_data.email,
         role=invitation_data.role,
-        status=InvitationStatus.PENDING,
+        status=InvitationStatus.PENDING.value,
         token=invitation_token,
         expires_at=expires_at
     )
     
-    db.add(invitation)
-    db.commit()
-    db.refresh(invitation)
+    try:
+        db.add(invitation)
+        db.commit()
+        db.refresh(invitation)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An invitation is already pending for this email",
+        ) from None
     
     org = db.query(Organization).filter(Organization.id == organization_id).first()
 
@@ -444,7 +482,22 @@ async def remove_user(
                 status_code=400,
                 detail="Cannot remove the last admin from the organization"
             )
-    
+
+    remove_user_org_workspace_memberships(
+        db,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+    revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+    revoke_org_membership_credential(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
     db.delete(member)
     db.commit()
     return None
@@ -527,11 +580,10 @@ async def admin_reset_user_password(
     """
     Reset another organization member's password.
 
-    Requires the caller to be an ADMIN of the organization. The new password
-    is set immediately; existing Bearer tokens for that user remain valid
-    until their natural expiry (the app does not maintain a server-side
-    token revocation list yet). Communicate the new password to the user
-    out-of-band.
+    Requires the caller to be an ADMIN of the organization. Updates the
+    target user's password for this organization only and revokes their
+    refresh tokens for this organization. Sessions in other organizations
+    stay valid.
     """
     if user_id == current_user.id:
         raise HTTPException(
@@ -570,10 +622,24 @@ async def admin_reset_user_password(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    target.password_hash = hash_password(payload.new_password)
-    if not target.auth_provider:
-        target.auth_provider = "local"
-    revoke_all_user_refresh_tokens(db, target.id)
+    credential = get_or_create_credential(
+        db,
+        user_id=target.id,
+        organization_id=organization_id,
+        user=target,
+    )
+    set_org_password_hash(credential, hash_password(payload.new_password))
+    bump_org_session_epoch(credential)
+    strip_org_from_user_refresh_auth(
+        db,
+        user_id=target.id,
+        organization_id=organization_id,
+    )
+    revoke_refresh_tokens_for_user_org(
+        db,
+        user_id=target.id,
+        organization_id=organization_id,
+    )
     db.commit()
     db.refresh(target)
 

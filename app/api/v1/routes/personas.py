@@ -13,6 +13,8 @@ from pydantic import BaseModel
 from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key, require_enterprise_entitlement
+from app.core.api_rate_limit import enforce_resource_create_rate_limit
+from app.core.auth import Principal
 from app.models.database import (
     Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
     PromptOptimizationRun, CallRecording, Agent, AmbientNoiseAsset,
@@ -302,7 +304,8 @@ async def create_persona(
     persona: PersonaCreate,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _principal: Principal = Depends(enforce_resource_create_rate_limit),
 ):
     """Create a new persona stamped with the active workspace."""
     try:

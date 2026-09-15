@@ -774,6 +774,14 @@ async def stream_evaluator_result_audio(
     if not audio_url:
         raise HTTPException(status_code=404, detail="No recording available")
 
+    from app.services.telephony.exotel_client import ExotelInvalidContentError
+    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+    try:
+        assert_safe_provider_recording_url(str(audio_url))
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     if platform in {"retell", "smallest"}:
         return RedirectResponse(audio_url)
 
@@ -1001,6 +1009,18 @@ def re_evaluate_result(
             audio_bytes = None
             decrypted_key = None
 
+            from app.services.telephony.exotel_client import ExotelInvalidContentError
+            from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+            def _provider_audio_url(url: Optional[str]) -> Optional[str]:
+                if not url:
+                    return None
+                try:
+                    assert_safe_provider_recording_url(str(url))
+                except ExotelInvalidContentError:
+                    return None
+                return str(url)
+
             # Resolve the integration API key (needed for ElevenLabs auth header)
             agent = db.query(Agent).filter(Agent.id == result.agent_id).first() if result.agent_id else None
             if agent and agent.voice_ai_integration_id:
@@ -1012,13 +1032,13 @@ def re_evaluate_result(
                     decrypted_key = decrypt_api_key(integration.api_key)
 
             if platform == "elevenlabs":
-                audio_url = recording_urls.get("conversation_audio")
+                audio_url = _provider_audio_url(recording_urls.get("conversation_audio"))
                 if audio_url and decrypted_key:
                     resp = _http.get(audio_url, headers={"xi-api-key": decrypted_key}, timeout=120)
                     if resp.status_code == 200:
                         audio_bytes = resp.content
             elif platform == "retell":
-                audio_url = call_data.get("recording_url")
+                audio_url = _provider_audio_url(call_data.get("recording_url"))
                 if audio_url:
                     resp = _http.get(audio_url, timeout=120)
                     if resp.status_code == 200:
@@ -1029,7 +1049,7 @@ def re_evaluate_result(
                     is_presigned_storage_url,
                 )
 
-                audio_url = extract_vapi_recording_url(call_data)
+                audio_url = _provider_audio_url(extract_vapi_recording_url(call_data))
                 if audio_url:
                     headers = (
                         None
@@ -1040,7 +1060,7 @@ def re_evaluate_result(
                     if resp.status_code == 200:
                         audio_bytes = resp.content
             elif platform == "smallest":
-                audio_url = (
+                audio_url = _provider_audio_url(
                     call_data.get("recording_url")
                     or call_data.get("recordingUrl")
                     or recording_urls.get("combined_url")

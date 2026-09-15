@@ -5,7 +5,10 @@ import { Profile as ProfileType, Invitation, UserUpdate, InvitationStatus } from
 import { User, Mail, Building2, CheckCircle, XCircle, KeyRound, AlertTriangle, ArrowRightLeft, Loader2 } from 'lucide-react'
 import Button from '../../components/Button'
 import { useAuthStore } from '../../store/authStore'
+import { redirectToLoginWithMessage } from '../../lib/authSession'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
+import { useOrgSwitch } from '../../hooks/useOrgSwitch'
+import OrgReauthModal from '../../components/OrgReauthModal'
 
 export default function Profile() {
   const queryClient = useQueryClient()
@@ -13,7 +16,6 @@ export default function Profile() {
   const [name, setName] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
-  const [email, setEmail] = useState('')
 
   const { data: profile, isLoading: profileLoading } = useQuery<ProfileType>({
     queryKey: ['profile'],
@@ -23,7 +25,7 @@ export default function Profile() {
   // Separately call /auth/me to find out whether this user already has a
   // password set and whether their email is still the synthetic placeholder
   // we create for raw API-key users.
-  const { data: authMe, refetch: refetchMe } = useQuery({
+  const { data: authMe } = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: () => apiClient.getMe(),
   })
@@ -53,16 +55,16 @@ export default function Profile() {
       apiClient.setPassword(data),
     onSuccess: (data) => {
       const hadPasswordBefore = !!authMe?.has_password
-      setPwError('')
-      setPwSuccess(
-        hadPasswordBefore
-          ? 'Password updated successfully.'
-          : `Password set. You can now sign in with ${data.email} and your new password.`
-      )
       resetPasswordForm()
       setIsEditingPassword(false)
-      refetchMe()
-      queryClient.invalidateQueries({ queryKey: ['profile'] })
+      queryClient.clear()
+      const { logout } = useAuthStore.getState()
+      logout()
+      redirectToLoginWithMessage(
+        hadPasswordBefore
+          ? 'Password updated. Sign in again with your new password.'
+          : `Password set for ${data.email}. Sign in with your new password.`,
+      )
     },
     onError: (err: any) => {
       setPwSuccess('')
@@ -111,7 +113,6 @@ export default function Profile() {
       setName(profile.name || '')
       setFirstName(profile.first_name || '')
       setLastName(profile.last_name || '')
-      setEmail(profile.email)
     }
   }, [profile])
 
@@ -131,55 +132,62 @@ export default function Profile() {
   // After a successful accept we remember what org the user just joined so
   // we can offer a one-click "Switch to <Org>" button. They can also switch
   // from the Organizations section below.
-  const { accessToken, user, switchOrg } = useAuthStore()
-  const [switchingOrgId, setSwitchingOrgId] = useState<string | null>(null)
-  const [orgSwitchError, setOrgSwitchError] = useState('')
+  const { apiKey, user } = useAuthStore()
+  const {
+    switchingTo,
+    error: orgSwitchError,
+    reauthTarget,
+    reauthError,
+    reauthLoading,
+    switchToOrg,
+    closeReauth,
+    submitReauth,
+    user: authUser,
+  } = useOrgSwitch()
   const [justJoined, setJustJoined] = useState<
-    | { organizationId: string; organizationName: string; role: string }
+    | {
+        organizationId: string
+        organizationName: string
+        role: string
+        joinNotice?: string | null
+      }
     | null
   >(null)
-  const [isSwitchingToJoined, setIsSwitchingToJoined] = useState(false)
-  const [switchError, setSwitchError] = useState('')
 
   const acceptInvitationMutation = useMutation({
     mutationFn: (invitation: Invitation) => apiClient.acceptInvitation(invitation.id),
-    onSuccess: (_data, invitation) => {
+    onSuccess: (data, invitation) => {
       queryClient.invalidateQueries({ queryKey: ['profile'] })
       queryClient.invalidateQueries({ queryKey: ['iam'] })
       setJustJoined({
         organizationId: invitation.organization_id,
         organizationName: invitation.organization_name || 'the organization',
         role: invitation.role,
+        joinNotice: data.join_notice,
       })
     },
   })
 
-  const handleSwitchOrganization = async (orgId: string) => {
+  const handleSwitchOrganization = async (orgId: string, orgName: string) => {
     if (orgId === user?.organization_id) return
-    setOrgSwitchError('')
-    setSwitchingOrgId(orgId)
-    try {
-      await switchOrg(orgId)
-      await queryClient.invalidateQueries()
-    } catch (err: any) {
-      setOrgSwitchError(err?.response?.data?.detail || 'Could not switch organization')
-    } finally {
-      setSwitchingOrgId(null)
+    const switched = await switchToOrg(orgId, orgName)
+    if (switched && justJoined?.organizationId === orgId) {
+      setJustJoined(null)
     }
   }
 
   const handleJumpToJoinedOrg = async () => {
     if (!justJoined) return
-    setSwitchError('')
-    setIsSwitchingToJoined(true)
-    try {
-      await switchOrg(justJoined.organizationId)
-      await queryClient.invalidateQueries()
+    const switched = await switchToOrg(justJoined.organizationId, justJoined.organizationName)
+    if (switched) {
       setJustJoined(null)
-    } catch (err: any) {
-      setSwitchError(err?.response?.data?.detail || 'Could not switch organization')
-    } finally {
-      setIsSwitchingToJoined(false)
+    }
+  }
+
+  const handleReauth = async (password: string) => {
+    const ok = await submitReauth(password)
+    if (ok && justJoined && reauthTarget?.id === justJoined.organizationId) {
+      setJustJoined(null)
     }
   }
 
@@ -192,11 +200,10 @@ export default function Profile() {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault()
-    updateMutation.mutate({ 
-      name: name || undefined, 
+    updateMutation.mutate({
+      name: name || undefined,
       first_name: firstName || undefined,
       last_name: lastName || undefined,
-      email 
     })
   }
 
@@ -206,7 +213,6 @@ export default function Profile() {
       setName(profile.name || '')
       setFirstName(profile.first_name || '')
       setLastName(profile.last_name || '')
-      setEmail(profile.email)
     }
   }
 
@@ -242,6 +248,7 @@ export default function Profile() {
   }
 
   return (
+    <>
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Profile</h1>
@@ -307,20 +314,6 @@ export default function Profile() {
                   onChange={(e) => setName(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                   placeholder="Your full name"
-                />
-              </div>
-              <div>
-                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-                  Email
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="your@email.com"
                 />
               </div>
               <div className="flex gap-3 pt-4">
@@ -515,7 +508,7 @@ export default function Profile() {
             <Building2 className="h-5 w-5" />
             Organizations
           </h2>
-          {accessToken && (profile?.organizations?.length ?? 0) > 1 && (
+          {!apiKey && user && (profile?.organizations?.length ?? 0) > 1 && (
             <p className="mt-1 text-sm text-gray-500">
               Switch between organizations you belong to.
             </p>
@@ -531,8 +524,8 @@ export default function Profile() {
               )}
               {profile.organizations.map((org) => {
                 const isCurrent = org.id === user?.organization_id
-                const isSwitching = switchingOrgId === org.id
-                const canSwitch = !!accessToken && profile.organizations.length > 1
+                const isSwitching = switchingTo === org.id
+                const canSwitch = !apiKey && !!user && profile.organizations.length > 1
 
                 return (
                   <div
@@ -560,8 +553,8 @@ export default function Profile() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => handleSwitchOrganization(org.id)}
-                          disabled={!!switchingOrgId}
+                          onClick={() => handleSwitchOrganization(org.id, org.name)}
+                          disabled={!!switchingTo}
                           leftIcon={
                             isSwitching ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -585,7 +578,7 @@ export default function Profile() {
       </div>
 
       {/* Post-accept switch prompt */}
-      {justJoined && accessToken && (
+      {justJoined && user && !apiKey && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex items-start gap-3">
           <CheckCircle className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
@@ -593,36 +586,38 @@ export default function Profile() {
               You&apos;ve joined <span className="font-semibold">{justJoined.organizationName}</span>{' '}
               as {justJoined.role}.
             </div>
+            {justJoined.joinNotice && (
+              <div className="text-xs text-green-800 mt-0.5 leading-relaxed">{justJoined.joinNotice}</div>
+            )}
             <div className="text-xs text-green-800 mt-0.5">
               Your current session is still in your previous organization. Switch now to start working there.
             </div>
-            {switchError && (
-              <div className="text-xs text-red-700 mt-2">{switchError}</div>
+            {orgSwitchError && !reauthTarget && (
+              <div className="text-xs text-red-700 mt-2">{orgSwitchError}</div>
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <Button
               size="sm"
               onClick={handleJumpToJoinedOrg}
-              disabled={isSwitchingToJoined}
+              disabled={switchingTo === justJoined.organizationId}
               leftIcon={
-                isSwitchingToJoined ? (
+                switchingTo === justJoined.organizationId ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <ArrowRightLeft className="h-4 w-4" />
                 )
               }
             >
-              {isSwitchingToJoined ? 'Switching…' : `Switch to ${justJoined.organizationName}`}
+              {switchingTo === justJoined.organizationId
+                ? 'Switching…'
+                : `Switch to ${justJoined.organizationName}`}
             </Button>
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
-                setJustJoined(null)
-                setSwitchError('')
-              }}
-              disabled={isSwitchingToJoined}
+              onClick={() => setJustJoined(null)}
+              disabled={!!switchingTo}
             >
               Dismiss
             </Button>
@@ -699,6 +694,17 @@ export default function Profile() {
         </div>
       </div>
     </div>
+
+    <OrgReauthModal
+      open={!!reauthTarget}
+      organizationName={reauthTarget?.name ?? ''}
+      email={authUser?.email}
+      isLoading={reauthLoading}
+      error={reauthError}
+      onClose={closeReauth}
+      onSubmit={handleReauth}
+    />
+    </>
   )
 }
 

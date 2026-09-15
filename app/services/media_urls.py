@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+
+from starlette.requests import Request
 
 from app.config import settings
 
@@ -61,9 +63,41 @@ def ws_base_from_http_host(host: str, *, scheme: str = "http") -> str:
     return f"{ws_scheme}://{host.rstrip('/')}"
 
 
+def resolve_voice_agent_ws_base(
+    *,
+    fallback_host: Optional[str] = None,
+    fallback_scheme: str = "http",
+) -> str:
+    """Resolve the WebSocket origin used for browser voice-agent connections."""
+    ws_base = media_ws_base_url()
+    if ws_base:
+        return ws_base
+    if (settings.PUBLIC_BASE_URL or "").strip():
+        public = settings.PUBLIC_BASE_URL.strip().rstrip("/")
+        if public.startswith("https://"):
+            return "wss://" + public[len("https://") :]
+        if public.startswith("http://"):
+            return "ws://" + public[len("http://") :]
+        if public.startswith("wss://") or public.startswith("ws://"):
+            return public
+        return f"wss://{public}"
+    if fallback_host:
+        return ws_base_from_http_host(fallback_host, scheme=fallback_scheme)
+    return f"ws://localhost:{settings.PORT}"
+
+
+def cross_host_voice_ws(ws_base: str, request: Request) -> bool:
+    """True when the WS host cannot receive the API's host-scoped session cookies."""
+    ws_hostname = (urlparse(ws_base).hostname or "").lower()
+    req_hostname = (request.url.hostname or "").lower()
+    if not ws_hostname or not req_hostname:
+        return False
+    return ws_hostname != req_hostname
+
+
 def build_voice_agent_ws_url(
     *,
-    auth_query: str,
+    auth_query: Optional[str] = None,
     agent_id: Optional[str] = None,
     persona_id: Optional[str] = None,
     scenario_id: Optional[str] = None,
@@ -73,24 +107,26 @@ def build_voice_agent_ws_url(
     fallback_scheme: str = "http",
 ) -> str:
     """Build the browser voice-agent WebSocket URL."""
-    ws_base = media_ws_base_url()
-    if ws_base:
-        base = ws_base
-    elif fallback_host:
-        base = ws_base_from_http_host(fallback_host, scheme=fallback_scheme)
-    else:
-        base = f"ws://localhost:{settings.PORT}"
+    base = resolve_voice_agent_ws_base(
+        fallback_host=fallback_host,
+        fallback_scheme=fallback_scheme,
+    )
 
-    query = auth_query
+    query_parts: list[str] = []
+    if auth_query:
+        query_parts.append(auth_query)
     if agent_id:
-        query += f"&agent_id={quote(agent_id)}"
+        query_parts.append(f"agent_id={quote(agent_id)}")
     if persona_id:
-        query += f"&persona_id={quote(persona_id)}"
+        query_parts.append(f"persona_id={quote(persona_id)}")
     if scenario_id:
-        query += f"&scenario_id={quote(scenario_id)}"
+        query_parts.append(f"scenario_id={quote(scenario_id)}")
     if run_evaluation:
-        query += "&run_evaluation=true"
+        query_parts.append("run_evaluation=true")
     if ui_surface:
-        query += f"&ui_surface={quote(ui_surface, safe='')}"
+        query_parts.append(f"ui_surface={quote(ui_surface, safe='')}")
 
-    return f"{base}{settings.API_V1_PREFIX}/voice-agent/ws?{query}"
+    path = f"{base}{settings.API_V1_PREFIX}/voice-agent/ws"
+    if not query_parts:
+        return path
+    return f"{path}?{'&'.join(query_parts)}"

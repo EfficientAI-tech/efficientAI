@@ -1,9 +1,11 @@
+import type { ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import Button from './Button'
 
 interface ConfirmModalProps {
   title: string
-  description?: string
+  description?: ReactNode
+  children?: ReactNode
   confirmLabel?: string
   cancelLabel?: string
   isOpen: boolean
@@ -16,6 +18,7 @@ interface ConfirmModalProps {
 export default function ConfirmModal({
   title,
   description,
+  children,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   isOpen,
@@ -74,9 +77,16 @@ export default function ConfirmModal({
           </div>
           
           {/* Body */}
-          {description && (
-            <div className="mb-6">
-              <p className="text-gray-600">{description}</p>
+          {(description || children) && (
+            <div className="mb-6 space-y-3 text-sm text-gray-600">
+              {description && (
+                typeof description === 'string' ? (
+                  <p>{description}</p>
+                ) : (
+                  description
+                )
+              )}
+              {children}
             </div>
           )}
           

@@ -51,7 +51,9 @@ def test_flush_eval_restores_redis_when_catalog_flush_fails():
 
 
 def test_engine_role_uses_parsed_url_comparison():
-    from app.core.migrations import _engine_role_for_url
+    from sqlalchemy.engine import make_url
+
+    from app.core.migrations import _is_catalog_engine_url
 
     catalog = "postgresql://user:pass@localhost:5432/efficientai_catalog"
     normalized = "postgresql+psycopg2://user:pass@localhost:5432/efficientai_catalog"
@@ -62,7 +64,7 @@ def test_engine_role_uses_parsed_url_comparison():
         DATABASE_URL = catalog
 
     with patch("app.config.settings", _Settings()):
-        assert _engine_role_for_url(normalized) == "catalog"
-        assert _engine_role_for_url(
+        assert _is_catalog_engine_url(make_url(normalized))
+        assert not _is_catalog_engine_url(
             "postgresql://user:pass@localhost:5432/efficientai_data_01"
-        ) == "shard"
+        )

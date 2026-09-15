@@ -23,10 +23,16 @@ from app.core.password import hash_password
 from app.services.invitation_service import (
     InvitationError,
     accept_invitation as accept_invitation_record,
+    build_invite_join_notice,
     to_aware_utc,
 )
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
+
+
+class InvitationAcceptResponse(BaseModel):
+    message: str
+    join_notice: Optional[str] = None
 
 
 # Preferences schemas
@@ -190,20 +196,7 @@ async def update_profile(
     
     if profile_update.last_name is not None:
         current_user.last_name = profile_update.last_name
-    
-    if profile_update.email is not None:
-        # Check if email is already taken
-        existing_user = db.query(User).filter(
-            User.email == profile_update.email,
-            User.id != current_user.id
-        ).first()
-        if existing_user:
-            raise HTTPException(
-                status_code=400,
-                detail="Email is already in use"
-            )
-        current_user.email = profile_update.email
-    
+
     db.commit()
     db.refresh(current_user)
     
@@ -278,9 +271,14 @@ async def get_my_invitations(
     return result
 
 
-@router.post("/invitations/{invitation_id}/accept", response_model=MessageResponse, operation_id="acceptInvitation")
+@router.post(
+    "/invitations/{invitation_id}/accept",
+    response_model=InvitationAcceptResponse,
+    operation_id="acceptInvitation",
+)
 async def accept_invitation(
     invitation_id: UUID,
+    principal: Principal = Depends(get_principal),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -296,11 +294,36 @@ async def accept_invitation(
         raise HTTPException(status_code=404, detail="Invitation not found")
 
     try:
-        accept_invitation_record(db, invitation, current_user)
+        accept_invitation_record(
+            db,
+            invitation,
+            current_user,
+            source_organization_id=principal.organization_id,
+        )
     except InvitationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    return {"message": "Invitation accepted successfully"}
+    org = (
+        db.query(Organization)
+        .filter(Organization.id == invitation.organization_id)
+        .first()
+    )
+    org_name = org.name if org else "the organization"
+    source_org_id = principal.organization_id
+    if source_org_id == invitation.organization_id:
+        source_org_id = None
+    join_notice = build_invite_join_notice(
+        db,
+        user=current_user,
+        organization_id=invitation.organization_id,
+        organization_name=org_name,
+        source_organization_id=source_org_id,
+    )
+
+    return InvitationAcceptResponse(
+        message="Invitation accepted successfully",
+        join_notice=join_notice,
+    )
 
 
 @router.post("/invitations/{invitation_id}/decline", response_model=MessageResponse, operation_id="declineInvitation")

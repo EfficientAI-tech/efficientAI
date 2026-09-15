@@ -205,6 +205,31 @@ def count_workspace_admins(db: Session, *, workspace_id: UUID) -> int:
     return count
 
 
+def remove_user_org_workspace_memberships(
+    db: Session,
+    *,
+    organization_id: UUID,
+    user_id: UUID,
+) -> int:
+    """Drop workspace memberships for a user across all workspaces in an org."""
+    workspace_ids = [
+        row[0]
+        for row in db.query(Workspace.id)
+        .filter(Workspace.organization_id == organization_id)
+        .all()
+    ]
+    if not workspace_ids:
+        return 0
+    return (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.user_id == user_id,
+            WorkspaceMember.workspace_id.in_(workspace_ids),
+        )
+        .delete(synchronize_session=False)
+    )
+
+
 def backfill_org_workspace_memberships(db: Session, *, organization_id: UUID) -> None:
     """Add every org member to every org workspace (idempotent)."""
     roles = seed_system_workspace_roles(db, organization_id=organization_id)

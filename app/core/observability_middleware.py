@@ -20,8 +20,9 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.core.auth.dependency import resolve_request_credentials
+from app.core.auth.providers import get_provider_registry
 from app.database import get_db
-from app.core.security import get_api_key_organization_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +37,23 @@ def _get_client() -> httpx.AsyncClient:
 
 
 def _extract_org_id(request: Request) -> Optional[UUID]:
-    """Extract organization ID from the request's API key header."""
-    api_key = request.headers.get("X-API-Key") or request.headers.get("X-EFFICIENTAI-API-KEY")
-    if not api_key:
+    """Extract organization ID from API key, bearer token, or session cookie."""
+    cred = resolve_request_credentials(
+        authorization=request.headers.get("Authorization"),
+        x_api_key=request.headers.get("X-API-Key"),
+        x_eai_api_key=request.headers.get("X-EFFICIENTAI-API-KEY"),
+        request=request,
+    )
+    if not cred.bearer_token and not cred.api_key:
         return None
 
     db = next(get_db())
     try:
-        return get_api_key_organization_id(api_key, db)
+        provider = get_provider_registry().find(cred)
+        if provider is None:
+            return None
+        principal = provider.authenticate(cred, db)
+        return principal.organization_id
     except Exception:
         return None
     finally:
