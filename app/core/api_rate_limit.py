@@ -36,7 +36,7 @@ RESOURCE_CREATE_RATE_LIMIT_ROUTES: tuple[str, ...] = (
     "agents:create_agent",
     "personas:create_persona",
     "scenarios:create_scenario",
-    "chat:create_chat_session",
+    "chat:chat_completion",
 )
 
 SCALE_EXEMPT_ROUTE_MODULE_PREFIXES: frozenset[str] = frozenset(

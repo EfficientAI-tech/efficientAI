@@ -35,9 +35,16 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
-  # public_base_url: "https://sandbox.efficientai.cloud"
-  # Host header allowlist is derived from app.frontend_base_url (+ *.parent domain).
-  # Optional extras: trusted_hosts: ["internal-only.example.com"]
+  # Production Host allowlist (exact hostnames only — no wildcards):
+  #   - app.frontend_base_url hostname (e.g. https://app.yourcompany.com)
+  #   - security.public_base_url if API uses a different host (e.g. https://api.yourcompany.com)
+  # Do NOT list localhost/127.0.0.1 in production.
+  # public_base_url: "https://api.yourcompany.com"
+  # Optional extra hosts: trusted_hosts: ["legacy.yourcompany.com"]
+  # Local dev only:
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "127.0.0.1"
   # trusted_hosts_auto_from_frontend: true
   # csp_connect_src_extra: []  # merged onto built-in voice/storage allowlist
   # hsts_enabled: true

@@ -26,11 +26,12 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false
-  # public_base_url: "https://sandbox.efficientai.cloud"
-  # Production: trusted_hosts: ["sandbox.efficientai.cloud"] — /health exempt; VPC IPs via operational.trusted_ips
+  # Production: set app.frontend_base_url to your public app URL (Host allowlist = exact hostname).
+  # API on a different host? security.public_base_url: "https://api.example.com"
+  # No localhost in trusted_hosts for production. Local docker only:
   # trusted_hosts:
   #   - "localhost"
-  #   - "efficientai.local"
+  #   - "127.0.0.1"
   # hsts_enabled: true
 
 # rate_limits: see env.example (self-host defaults off; SaaS sets enforce: true)

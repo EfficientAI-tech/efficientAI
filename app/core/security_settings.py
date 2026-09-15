@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import List
 from urllib.parse import urlparse
 
@@ -19,17 +18,6 @@ def _hostname_from_url(url: str) -> str | None:
     return host or None
 
 
-def _wildcard_parent_domain(host: str) -> str | None:
-    if host in ("localhost", "127.0.0.1"):
-        return None
-    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
-        return None
-    parts = host.split(".")
-    if len(parts) >= 2:
-        return f"*.{parts[-2]}.{parts[-1]}"
-    return None
-
-
 def _dedupe_hosts(hosts: List[str]) -> List[str]:
     seen: set[str] = set()
     out: List[str] = []
@@ -43,7 +31,11 @@ def _dedupe_hosts(hosts: List[str]) -> List[str]:
 
 
 def resolve_trusted_hosts() -> List[str]:
+    """Exact hosts: env + FRONTEND_BASE_URL + PUBLIC_BASE_URL + YAML extras (no wildcards)."""
     hosts: List[str] = []
+    for entry in settings.TRUSTED_HOSTS_FROM_ENV or []:
+        if entry and str(entry).strip():
+            hosts.append(str(entry).strip())
     if settings.TRUSTED_HOSTS_AUTO_FROM_FRONTEND:
         for url in (settings.FRONTEND_BASE_URL, settings.PUBLIC_BASE_URL):
             hostname = _hostname_from_url(url)
@@ -53,9 +45,6 @@ def resolve_trusted_hosts() -> List[str]:
                 hosts.extend(["localhost", "127.0.0.1"])
             else:
                 hosts.append(hostname)
-                wildcard = _wildcard_parent_domain(hostname)
-                if wildcard:
-                    hosts.append(wildcard)
     for entry in settings.TRUSTED_HOSTS_EXPLICIT or []:
         if entry and str(entry).strip():
             hosts.append(str(entry).strip())
@@ -90,9 +79,16 @@ def build_csp_policy_with_extras() -> str:
 
 
 def finalize_security_settings() -> None:
+    if not settings.TRUSTED_HOSTS_RESOLVED:
+        settings.TRUSTED_HOSTS_FROM_ENV = [
+            h.strip()
+            for h in (settings.TRUSTED_HOSTS or [])
+            if h and str(h).strip()
+        ]
     if not (settings.PUBLIC_BASE_URL or "").strip() and (settings.FRONTEND_BASE_URL or "").strip():
         settings.PUBLIC_BASE_URL = settings.FRONTEND_BASE_URL.strip().rstrip("/")
     settings.TRUSTED_HOSTS = resolve_trusted_hosts()
+    settings.TRUSTED_HOSTS_RESOLVED = True
     if settings.CSP_POLICY_CUSTOM:
         return
     has_csp_extras = bool(
