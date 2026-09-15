@@ -1,6 +1,6 @@
 """Shared object key/path helpers for cloud blob storage backends."""
 
-from typing import Optional
+from typing import Iterable, Optional
 from urllib.parse import unquote
 import uuid
 
@@ -46,15 +46,51 @@ def assert_key_belongs_to_org(
     *,
     storage_prefix: str,
     decode: bool = False,
+    extra_storage_prefixes: Optional[Iterable[str]] = None,
 ) -> str:
     """Validate that a blob key belongs to the caller's organization namespace."""
     key = unquote(file_key) if decode else file_key
     if "\x00" in key or "/../" in f"/{key}/" or key.startswith("../"):
         raise HTTPException(status_code=403, detail="Access denied")
-    expected = get_organization_root_prefix(storage_prefix, str(organization_id))
-    if not key.startswith(expected):
-        raise HTTPException(status_code=403, detail="Access denied")
-    return key
+    prefixes = [storage_prefix]
+    if extra_storage_prefixes:
+        prefixes.extend(extra_storage_prefixes)
+    for prefix in prefixes:
+        expected = get_organization_root_prefix(prefix, str(organization_id))
+        if key.startswith(expected):
+            return key
+    raise HTTPException(status_code=403, detail="Access denied")
+
+
+def build_trace_spans_object_key(
+    *,
+    prefix: str,
+    organization_id: str,
+    workspace_id: str,
+    trace_id: str,
+) -> str:
+    """S3 key for consolidated OTLP span JSON for a closed trace."""
+    normalized = normalize_prefix(prefix)
+    return (
+        f"{normalized}organizations/{organization_id}/workspaces/{workspace_id}/"
+        f"traces/{trace_id}/spans.json"
+    )
+
+
+def build_trace_batch_object_key(
+    *,
+    prefix: str,
+    organization_id: str,
+    workspace_id: str,
+    trace_id: str,
+    seq: int,
+) -> str:
+    """S3 WAL key for a raw OTLP ingest batch."""
+    normalized = normalize_prefix(prefix)
+    return (
+        f"{normalized}organizations/{organization_id}/workspaces/{workspace_id}/"
+        f"traces/{trace_id}/batches/{seq}.json"
+    )
 
 
 def content_type_for_format(file_format: str) -> str:

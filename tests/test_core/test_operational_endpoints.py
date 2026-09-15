@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.config import settings
-from app.core.health import build_health_status
+from app.core.health import build_liveness_status
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.operational_access_middleware import (
     OperationalAccessMiddleware,
@@ -55,7 +55,7 @@ def operational_client(monkeypatch):
 
     @app.get("/health")
     def health():
-        payload, status_code = build_health_status(detailed=False)
+        payload, status_code = build_liveness_status()
         return JSONResponse(content=payload, status_code=status_code)
 
     @app.get("/metrics")
@@ -187,6 +187,12 @@ def test_docs_not_registered_when_debug_disabled(monkeypatch):
     from app.main import create_app
 
     monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "SECRET_KEY", "test-operational-secret-key-32chars")
+    monkeypatch.setattr(
+        settings,
+        "TRUSTED_HOSTS",
+        ["testserver", "localhost", "127.0.0.1"],
+    )
     app = create_app()
     route_paths = {getattr(route, "path", None) for route in app.routes}
 
@@ -195,13 +201,17 @@ def test_docs_not_registered_when_debug_disabled(monkeypatch):
     assert "/openapi.json" not in route_paths
 
 
-def test_build_health_status_minimal_excludes_migration_details(monkeypatch):
+def test_build_readiness_status_minimal_excludes_migration_details(monkeypatch):
+    import app.core.health as health_module
+
+    monkeypatch.setattr(settings, "HEALTH_READINESS_CACHE_SECONDS", 0)
+    health_module._readiness_cached_at = 0.0
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (False, ["033_add_workspaces.sql"]),
     )
 
-    payload, status_code = build_health_status(detailed=False)
+    payload, status_code = health_module.build_readiness_status(detailed=False)
 
     assert status_code == 503
     assert payload == {"status": "degraded"}
@@ -212,18 +222,7 @@ def _stub_create_app_startup(monkeypatch) -> None:
     """Tests use create_all(); avoid re-running file migrations on TestClient startup."""
     monkeypatch.setattr("app.app_factory.run_migrations", lambda: None)
     monkeypatch.setattr("app.app_factory.init_db", lambda: None)
-
-
-    monkeypatch.setattr(
-        "app.core.health.check_migrations_status",
-        lambda: (False, ["033_add_workspaces.sql"]),
-    )
-
-    payload, status_code = build_health_status(detailed=True)
-
-    assert status_code == 503
-    assert payload["status"] == "degraded"
-    assert payload["pending_migrations"] == ["033_add_workspaces.sql"]
+    monkeypatch.setattr("app.app_factory.check_migrations_status", lambda: (True, []))
 
 
 def test_health_detail_returns_migration_info_for_admin(monkeypatch):
@@ -235,16 +234,31 @@ def test_health_detail_returns_migration_info_for_admin(monkeypatch):
     )
     monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", True)
     monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "SECRET_KEY", "test-operational-secret-key-32chars")
     monkeypatch.setattr(settings, "FRONTEND_DIR", "__missing_frontend__")
     monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
+    import app.core.health as health_module
+
+    monkeypatch.setattr(settings, "HEALTH_READINESS_CACHE_SECONDS", 0)
+    health_module._readiness_cached_at = 0.0
+    health_module._readiness_cached_status = (True, [])
     monkeypatch.setattr(
         "app.core.health.check_migrations_status",
         lambda: (True, []),
+    )
+    monkeypatch.setattr(
+        "app.services.observability.catalog_storage_stats.collect_catalog_storage_stats",
+        lambda _db: {"tables": {}},
     )
 
     from app.core.auth.rbac import require_admin
     from app.main import create_app
 
+    monkeypatch.setattr(
+        settings,
+        "TRUSTED_HOSTS",
+        ["testserver", "localhost", "127.0.0.1"],
+    )
     app = create_app()
     app.dependency_overrides[require_admin] = lambda: object()
 
@@ -264,11 +278,17 @@ def test_health_detail_requires_authentication_via_create_app(monkeypatch):
     )
     monkeypatch.setattr(settings, "OPERATIONAL_PUBLIC", True)
     monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "SECRET_KEY", "test-operational-secret-key-32chars")
     monkeypatch.setattr(settings, "FRONTEND_DIR", "__missing_frontend__")
     monkeypatch.setattr(settings, "OBSERVABILITY_ENABLED", False)
 
     from app.main import create_app
 
+    monkeypatch.setattr(
+        settings,
+        "TRUSTED_HOSTS",
+        ["testserver", "localhost", "127.0.0.1"],
+    )
     with TestClient(create_app()) as client:
         response = client.get("/health/detail")
 

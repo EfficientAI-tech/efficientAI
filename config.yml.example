@@ -29,7 +29,9 @@ operational:
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
-  # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
+  # csp_policy: "default-src 'self'; ..."  # optional full override
+  # Defaults: voice providers (Vapi/Daily/Retell/ElevenLabs/LiveKit/Sentry) + blob storage
+  # (R2, S3, CloudFront, GCS, Azure, B2, DO Spaces) in connect-src for waveform/presigned audio fetch
 
 # Database Configuration
 database:
@@ -139,6 +141,28 @@ api:
   prefix: "/api/v1"
   key_header: "X-API-Key"
   rate_limit_per_minute: 60
+
+# Call traces / OTLP observability (Phase 2 scaling)
+traces:
+  async_ingest_enabled: true
+  rate_limit_per_minute: 120
+  rate_limit_enforce: true
+  max_body_bytes: 4194304
+  derive_debounce_seconds: 3
+  idle_close_seconds: 120
+  s3_prefix: "traces/"
+  s3_batch_orphan_minutes: 15
+  list_default_days: 90
+  defer_parse_to_worker: true
+  staging_retention_hours: 48
+  live_turns_ttl_seconds: 180
+  api_key_cache_ttl_seconds: 300
+
+clickhouse:
+  url: "http://localhost:8123"
+  database: "efficientai"
+  user: "default"
+  password: ""
 
 # -----------------------------------------------------------------------------
 # Authentication

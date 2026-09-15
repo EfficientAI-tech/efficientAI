@@ -32,7 +32,8 @@ function routeExists(routePath) {
   if (!cleaned) return true;
   const asFile = path.join(docsRoot, `${cleaned}.mdx`);
   const asDirMeta = path.join(docsRoot, cleaned, 'meta.json');
-  return fs.existsSync(asFile) || fs.existsSync(asDirMeta);
+  const asDirIndex = path.join(docsRoot, cleaned, 'index.mdx');
+  return fs.existsSync(asFile) || fs.existsSync(asDirMeta) || fs.existsSync(asDirIndex);
 }
 
 function markdownTargetExists(fromFile, href) {

@@ -493,13 +493,8 @@ class LLMService:
         try:
             response = litellm.completion(**call_kwargs)
         except Exception as e:
-            import traceback
-
-            tb = traceback.format_exc()
-            logger.error(f"[LLMService] LiteLLM call failed ({model_str}): {e}")
-            raise RuntimeError(
-                f"LLM generation failed for {model_str}: {e}\nDetails: {tb}"
-            )
+            logger.exception("[LLMService] LiteLLM call failed (%s)", model_str)
+            raise RuntimeError(f"LLM generation failed for {model_str}: {e}") from e
 
         # --- normalise response into our standard shape --------------------
         text = response.choices[0].message.content if response.choices else ""

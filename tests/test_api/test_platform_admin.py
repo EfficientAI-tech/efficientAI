@@ -61,6 +61,27 @@ def test_platform_login_returns_token(client, platform_admin_user):
     assert body["admin"]["email"] == "platform@example.com"
 
 
+def test_platform_login_sets_http_only_cookie_when_enabled(
+    client, platform_admin_user, monkeypatch
+):
+    from app.core.auth.cookies import COOKIE_CSRF, COOKIE_PLATFORM_ACCESS
+
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SESSION_ENABLED", True)
+    response = client.post(
+        "/api/v1/platform/auth/login",
+        json={"email": "platform@example.com", "password": PLATFORM_PASSWORD},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"] == ""
+    assert COOKIE_PLATFORM_ACCESS in response.cookies
+    assert COOKIE_CSRF in response.cookies
+
+    me = client.get("/api/v1/platform/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "platform@example.com"
+
+
 def test_platform_login_returns_404_when_no_admins(client, db_session):
     db_session.query(PlatformAdmin).delete()
     db_session.commit()

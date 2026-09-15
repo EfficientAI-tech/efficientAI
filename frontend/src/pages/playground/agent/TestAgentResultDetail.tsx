@@ -1,21 +1,39 @@
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, RotateCcw } from 'lucide-react'
+import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
+import { Activity, ArrowLeft, RotateCcw } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import TestVoiceAgentResultDetails from '../../../components/call-recordings/TestVoiceAgentResultDetails'
+import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
+import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
+import { prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
 
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const queryClient = useQueryClient()
+  const [traceDrawerOpen, setTraceDrawerOpen] = useState(false)
+
+  useEffect(() => {
+    if (!id) return
+    prefetchEvaluatorRecordingAudio(id)
+    void queryClient.prefetchQuery({
+      queryKey: ['evaluator-result', id],
+      queryFn: () => apiClient.getEvaluatorResult(id, true),
+      staleTime: 30_000,
+    })
+  }, [id, queryClient])
 
   const { data: result, isLoading } = useQuery({
-    queryKey: ['test-agent-result', id],
+    queryKey: ['evaluator-result', id],
     queryFn: () => apiClient.getEvaluatorResult(id!, true),
     enabled: !!id,
+    placeholderData: () => (id ? getEvaluatorResultPlaceholder(queryClient, id) : undefined),
+    staleTime: 30_000,
     refetchInterval: (query) => {
       const status = (query.state.data as { status?: string } | undefined)?.status
       if (status && ['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(status)) {
@@ -25,19 +43,10 @@ export default function TestAgentResultDetail() {
     },
   })
 
-  const { data: presignedUrl } = useQuery({
-    queryKey: ['audio-presigned-url', result?.audio_s3_key],
-    queryFn: () => {
-      if (!result?.audio_s3_key) return null
-      return apiClient.getAudioPresignedUrl(result.audio_s3_key)
-    },
-    enabled: !!result?.audio_s3_key,
-  })
-
   const reEvaluateMutation = useMutation({
     mutationFn: () => apiClient.reEvaluateResult(id!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['test-agent-result', id] })
+      queryClient.invalidateQueries({ queryKey: ['evaluator-result', id] })
       queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
       showToast('Evaluation queued', 'success')
     },
@@ -52,6 +61,13 @@ export default function TestAgentResultDetail() {
     result.status !== 'completed' &&
     !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
 
+  const formatDuration = (seconds?: number | null) => {
+    if (!seconds) return 'N/A'
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}m ${secs}s`
+  }
+
   const getStatusClass = (status: string) => {
     if (status === 'completed') return 'bg-green-100 text-green-800'
     if (status === 'failed') return 'bg-red-100 text-red-800'
@@ -59,7 +75,7 @@ export default function TestAgentResultDetail() {
     return 'bg-yellow-100 text-yellow-800'
   }
 
-  if (isLoading) {
+  if (isLoading && !result) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-gray-600">Loading result...</div>
@@ -84,8 +100,28 @@ export default function TestAgentResultDetail() {
   const resultData = {
     ...result,
     call_analysis: result.call_data?.call_analysis || undefined,
-    audioUrl: presignedUrl?.url || undefined,
   }
+
+  const sentiment =
+    result.call_data?.call_analysis?.user_sentiment ||
+    (result.metric_scores?.sentiment?.value as string | undefined) ||
+    'Neutral'
+
+  const callSuccessful =
+    result.call_data?.call_analysis?.call_successful !== undefined
+      ? result.call_data.call_analysis.call_successful
+      : result.metric_scores?.successful?.value !== undefined
+        ? Boolean(result.metric_scores.successful.value)
+        : null
+
+  const callShortId =
+    typeof result.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : null
+  const drawerTargets = resolveTraceDrawerTargets({
+    callShortId,
+    providerPlatform: result.provider_platform,
+    callRecordingSource: (result as { call_recording_source?: string | null }).call_recording_source,
+    evaluatorResultId: result.id,
+  })
 
   return (
     <>
@@ -108,7 +144,7 @@ export default function TestAgentResultDetail() {
                   Call ID: <span className="font-mono font-semibold text-primary-600">{result.result_id}</span>
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 {canRunEvaluation && (
                   <Button
                     variant="outline"
@@ -120,10 +156,65 @@ export default function TestAgentResultDetail() {
                     Run evaluation
                   </Button>
                 )}
-                <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusClass(result.status)}`}>
+                <Button
+                  variant="outline"
+                  onClick={() => setTraceDrawerOpen(true)}
+                  leftIcon={<Activity className="h-4 w-4" />}
+                >
+                  Call details
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
+                <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full capitalize ${getStatusClass(result.status)}`}>
                   {result.status}
                 </span>
               </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Agent</p>
+                <p className="text-sm text-gray-900">{result.agent?.name || 'N/A'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Duration</p>
+                <p className="text-sm text-gray-900">{formatDuration(result.duration_seconds)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Sentiment</p>
+                <p className="text-sm text-gray-900">{sentiment}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Created</p>
+                <p className="text-sm text-gray-900">
+                  {result.timestamp ? new Date(result.timestamp).toLocaleString() : 'N/A'}
+                </p>
+              </div>
+              {result.persona?.name && (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
+                  <p className="text-sm text-gray-900">{result.persona.name}</p>
+                </div>
+              )}
+              {result.scenario?.name && (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Scenario</p>
+                  <p className="text-sm text-gray-900">{result.scenario.name}</p>
+                </div>
+              )}
+              {callSuccessful !== null && (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Outcome</p>
+                  <span
+                    className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                      callSuccessful ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    }`}
+                  >
+                    {callSuccessful ? 'Successful' : 'Unsuccessful'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -132,6 +223,14 @@ export default function TestAgentResultDetail() {
           <TestVoiceAgentResultDetails resultData={resultData} />
         </div>
       </div>
+
+      <TraceDetailDrawer
+        open={traceDrawerOpen}
+        callShortId={drawerTargets.callShortId}
+        observabilityCallShortId={drawerTargets.observabilityCallShortId}
+        evaluatorResultId={drawerTargets.evaluatorResultId}
+        onClose={() => setTraceDrawerOpen(false)}
+      />
     </>
   )
 }

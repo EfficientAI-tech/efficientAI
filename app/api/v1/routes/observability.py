@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -558,6 +558,7 @@ async def stream_call_live_events(
 @router.get("/calls/{call_short_id}/audio")
 async def stream_observability_call_audio(
     call_short_id: str,
+    proxy: bool = Query(False),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
@@ -584,6 +585,21 @@ async def stream_observability_call_audio(
     call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
     recording_url = call_data.get("recording_url")
     if recording_url:
+        from app.services.telephony.exotel_client import ExotelInvalidContentError
+        from app.services.telephony.recording_download import assert_recording_url_safe
+
+        try:
+            assert_recording_url_safe(str(recording_url), user_supplied=True)
+        except ExotelInvalidContentError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+        if proxy:
+            from app.services.storage.audio_delivery import stream_audio_from_provider_url
+
+            return stream_audio_from_provider_url(
+                str(recording_url),
+                filename=f"call_{call_short_id}",
+            )
         return RedirectResponse(recording_url)
 
     s3_key = call_data.get("recording_s3_key")

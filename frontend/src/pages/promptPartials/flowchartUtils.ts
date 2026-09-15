@@ -28,3 +28,9 @@ export function countMappedNodes(
   if (!flowchart?.nodes?.length) return 0
   return flowchart.nodes.filter((node) => nodeHasValidMapping(node, content)).length
 }
+
+export function formatFlowchartErrorMessage(error: string): string {
+  const withoutTrace = error.split('\nDetails:')[0].split('\nTraceback')[0].trim()
+  if (withoutTrace.length <= 400) return withoutTrace
+  return `${withoutTrace.slice(0, 397)}...`
+}

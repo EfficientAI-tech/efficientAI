@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
+import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink, Activity } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../../../components/Button'
 import RecordingAudioPlayer from '../../../components/audio/RecordingAudioPlayer'
@@ -16,6 +17,8 @@ import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
 import LiveTranscriptPanel, { type LiveTranscriptTurn } from '../../../components/call-recordings/LiveTranscriptPanel'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
 import { getProviderRecordingUrl, hasEvaluatorResultRecording } from '../../../lib/recordingUrls'
+import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
+import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -364,6 +367,7 @@ export default function EvaluatorResultDetailPage({
   const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [reEvalInProgress, setReEvalInProgress] = useState(false)
+  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false)
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
   const audioRef = useRef<HTMLAudioElement>(null)
 
@@ -378,6 +382,8 @@ export default function EvaluatorResultDetailPage({
     queryKey: ['evaluator-result', id],
     queryFn: () => apiClient.getEvaluatorResult(id!),
     enabled: !!id,
+    placeholderData: () => (id ? getEvaluatorResultPlaceholder(queryClient, id) : undefined),
+    staleTime: 30_000,
     refetchInterval: (query) => {
       const data = query.state.data as any
       const inProgress = reEvalInProgress || (data && ['queued', 'call_initiating', 'call_connecting', 'call_in_progress', 'call_ended', 'transcribing', 'evaluating', 'fetching_details'].includes(data?.status))
@@ -492,8 +498,11 @@ export default function EvaluatorResultDetailPage({
 
     const streamId = result.result_id || id
     let eventSource: EventSource | null = null
+
     try {
-      eventSource = new EventSource(apiClient.getEvaluatorResultLiveEventsUrl(streamId))
+      eventSource = apiClient.openAuthenticatedEventSource(
+        `/api/v1/evaluator-results/${streamId}/live-events`,
+      )
       eventSource.onmessage = (event) => {
         try {
           const entry = JSON.parse(event.data) as LiveTranscriptTurn
@@ -838,6 +847,14 @@ export default function EvaluatorResultDetailPage({
         ? resultData.call_data.live_transcript
         : []
   const statusConfig = getStatusConfig(displayStatus)
+  const callShortId =
+    typeof resultData.call_data?.call_short_id === 'string' ? resultData.call_data.call_short_id : null
+  const drawerTargets = resolveTraceDrawerTargets({
+    callShortId,
+    providerPlatform: resultData.provider_platform,
+    callRecordingSource: (resultData as { call_recording_source?: string | null }).call_recording_source,
+    evaluatorResultId: resultData.id,
+  })
   const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
   const providerRecordingUrl = getProviderRecordingUrl(resultData.call_data, resultData.provider_platform)
   const hasCallMediaOrTranscript = Boolean(
@@ -890,6 +907,14 @@ export default function EvaluatorResultDetailPage({
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDetailDrawerOpen(true)}
+                leftIcon={<Activity className="w-4 h-4" />}
+              >
+                Call details
+              </Button>
               {!reEvalInProgress && (resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
                 <Button
                   variant="outline"
@@ -1538,6 +1563,13 @@ export default function EvaluatorResultDetailPage({
           </div>
         </div>
       ) : null}
+      <TraceDetailDrawer
+        open={detailDrawerOpen}
+        callShortId={drawerTargets.callShortId}
+        observabilityCallShortId={drawerTargets.observabilityCallShortId}
+        evaluatorResultId={drawerTargets.evaluatorResultId}
+        onClose={() => setDetailDrawerOpen(false)}
+      />
       <ToastContainer />
     </div>
   )

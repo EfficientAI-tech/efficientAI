@@ -50,7 +50,7 @@ def test_assert_recording_url_safe_rejects_non_allowlisted_host(monkeypatch):
     monkeypatch.setattr(
         module.settings,
         "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
-        ["exotel.com"],
+        [],
         raising=False,
     )
     with pytest.raises(ExotelInvalidContentError, match="not allowlisted"):
@@ -58,6 +58,32 @@ def test_assert_recording_url_safe_rejects_non_allowlisted_host(monkeypatch):
             "https://evil.example/recording.mp3",
             user_supplied=True,
         )
+
+
+def test_assert_recording_url_safe_allows_cloudflare_r2(monkeypatch):
+    monkeypatch.setattr(
+        module.settings,
+        "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
+        [],
+        raising=False,
+    )
+    with patch.object(module.socket, "getaddrinfo") as mock_getaddrinfo:
+        mock_getaddrinfo.return_value = [(None, None, None, None, ("104.16.0.1", 0))]
+        module.assert_safe_provider_recording_url(
+            "https://hipaa-recordings.94bdb67bb98da30b06bdd917725c037d.r2.cloudflarestorage.com/rec.wav"
+        )
+
+
+def test_allowed_host_suffixes_merges_configured_extras(monkeypatch):
+    monkeypatch.setattr(
+        module.settings,
+        "RECORDING_URL_ALLOWED_HOST_SUFFIXES",
+        ["recordings.mycompany.com"],
+        raising=False,
+    )
+    suffixes = module._allowed_host_suffixes()
+    assert "r2.cloudflarestorage.com" in suffixes
+    assert "recordings.mycompany.com" in suffixes
 
 
 def test_download_recording_url_rejects_credentials_for_user_supplied_urls():

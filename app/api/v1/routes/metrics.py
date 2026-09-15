@@ -13,6 +13,8 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key, get_workspace_id
+from app.core.api_rate_limit import enforce_resource_create_rate_limit
+from app.core.auth import Principal
 from app.services.billing.flexprice_service import record_metrics_llm_assist
 from app.models.database import Metric, MetricCategory, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
@@ -220,6 +222,7 @@ def create_metric(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
+    _principal: Principal = Depends(enforce_resource_create_rate_limit),
 ):
     """Create a new metric.
 

@@ -77,6 +77,7 @@ IMPORTS_WORKER_QUEUES = "imports,diarization,eval-control,evaluations"
 EVAL_CONTROL_QUEUE = "eval-control"
 USAGE_WORKER_QUEUE = "usage"
 PLATFORM_WORKER_QUEUE = "platform"
+TRACES_WORKER_QUEUE = "traces"
 
 
 def _usage_flush_beat_seconds() -> float:
@@ -97,7 +98,7 @@ def _cron_dispatch_beat_seconds() -> float:
 
 def _platform_beat_schedule() -> dict:
     """Periodic platform tasks — run from dedicated ``celery beat`` (single replica)."""
-    return {
+    schedule = {
         "flush-usage-counters": {
             "task": "flush_usage_counters",
             "schedule": _usage_flush_beat_seconds(),
@@ -118,7 +119,21 @@ def _platform_beat_schedule() -> dict:
             "task": "prune_oss_usage_history",
             "schedule": crontab(hour=3, minute=0),
         },
+        "sweep-idle-traces": {
+            "task": "sweep_idle_traces",
+            "schedule": 30.0,
+        },
+        "sweep-orphan-s3-batches": {
+            "task": "sweep_orphan_s3_batches",
+            "schedule": 900.0,
+        },
     }
+    if not getattr(settings, "CLICKHOUSE_URL", None):
+        schedule["sweep-staging-ingest"] = {
+            "task": "sweep_staging_ingest",
+            "schedule": 3600.0,
+        }
+    return schedule
 
 
 # Create Celery app
@@ -193,4 +208,20 @@ celery_app.conf.task_routes = {
     "prune_oss_usage_history": {"queue": PLATFORM_WORKER_QUEUE},
     "dispatch_cron_jobs": {"queue": USAGE_WORKER_QUEUE},
     "run_cron_evaluator_job": {"queue": "celery"},
+    "derive_trace_turns": {"queue": TRACES_WORKER_QUEUE},
+    "sweep_idle_traces": {"queue": TRACES_WORKER_QUEUE},
+    "process_staged_otlp": {"queue": TRACES_WORKER_QUEUE},
+    "sweep_staging_ingest": {"queue": TRACES_WORKER_QUEUE},
+    "close_and_offload_trace": {"queue": TRACES_WORKER_QUEUE},
+    "process_s3_otlp_batch": {"queue": TRACES_WORKER_QUEUE},
+    "sweep_orphan_s3_batches": {"queue": TRACES_WORKER_QUEUE},
 }
+
+
+@celery_app.on_after_configure.connect
+def _ensure_clickhouse_schema(**_kwargs):
+    from app.services.clickhouse.client import clickhouse_enabled
+    from app.services.clickhouse.schema import ensure_schema
+
+    if clickhouse_enabled():
+        ensure_schema()

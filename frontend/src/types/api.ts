@@ -223,6 +223,11 @@ export interface MessageResponse {
   message: string
 }
 
+export interface InvitationAcceptResponse {
+  message: string
+  join_notice?: string | null
+}
+
 // IAM & User Types
 export enum Role {
   READER = 'reader',
@@ -377,6 +382,20 @@ export interface IntegrationCreate {
   routing_mode?: CredentialRoutingMode
   /** Mark the new credential as the default for (org, platform). */
   is_default?: boolean
+}
+
+export interface IntegrationVoiceAgentListItem {
+  id: string
+  name: string
+}
+
+export interface ListIntegrationVoiceAgentsResponse {
+  agents: IntegrationVoiceAgentListItem[]
+  platform: string
+  cached: boolean
+  truncated: boolean
+  list_supported: boolean
+  message?: string | null
 }
 
 // VoiceBundle Types

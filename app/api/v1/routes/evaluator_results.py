@@ -1,6 +1,6 @@
 """Evaluator Results routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
@@ -254,15 +254,34 @@ def _derive_speaker_segments_from_call_data(
 
 
 def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str, Any]]]:
-    """
-    Prefer deriving speaker segments from provider call_data for provider-linked results.
-    Falls back to persisted speaker_segments for non-provider/manual results.
-    """
+    """Return speaker segments, preferring persisted values over slim call_data."""
+    if result.speaker_segments:
+        return result.speaker_segments
     if result.provider_platform and isinstance(result.call_data, dict):
+        from app.services.evaluators.call_data_transcript import extract_transcript_from_call_data
+
+        _, segments = extract_transcript_from_call_data(result.call_data, result.provider_platform)
+        if segments:
+            return segments
         derived = _derive_speaker_segments_from_call_data(result.call_data, result.provider_platform)
         if derived:
             return derived
     return result.speaker_segments
+
+
+def _resolve_transcription(result: EvaluatorResult, segments: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    if result.transcription and str(result.transcription).strip():
+        return result.transcription
+    if not segments:
+        return result.transcription
+    lines = []
+    for seg in segments:
+        text = str(seg.get("text", "")).strip()
+        if not text:
+            continue
+        speaker = str(seg.get("speaker", "Speaker")).strip() or "Speaker"
+        lines.append(f"{speaker}: {text}")
+    return "\n".join(lines) if lines else result.transcription
 
 
 @router.get("/overview", response_model=EvaluatorResultsOverviewResponse)
@@ -443,9 +462,51 @@ def get_evaluator_result(
 
     hydrate_evaluator_results([result])
     repair_evaluator_result_status_if_needed(db, result)
-    
+
     enriched_call_data = enrich_evaluator_result_live_telephony(db, result, result.call_data)
+
+    linked_playground_recording = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.evaluator_result_id == result.id,
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+        )
+        .order_by(CallRecording.created_at.desc())
+        .first()
+    )
+
+    if linked_playground_recording:
+        if not isinstance(enriched_call_data, dict):
+            enriched_call_data = {}
+        if not enriched_call_data.get("call_short_id") and linked_playground_recording.call_short_id:
+            enriched_call_data = {
+                **enriched_call_data,
+                "call_short_id": linked_playground_recording.call_short_id,
+            }
+
+    call_recording_source = None
+    linked_call_short_id = (
+        enriched_call_data.get("call_short_id")
+        if isinstance(enriched_call_data, dict)
+        else None
+    )
+    if isinstance(linked_call_short_id, str) and linked_call_short_id:
+        linked_recording = (
+            db.query(CallRecording)
+            .filter(
+                CallRecording.call_short_id == linked_call_short_id,
+                CallRecording.organization_id == organization_id,
+                CallRecording.workspace_id == workspace_id,
+            )
+            .first()
+        )
+        if linked_recording and linked_recording.source:
+            call_recording_source = linked_recording.source.value
     
+    speaker_segments = _resolve_speaker_segments(result)
+    transcription = _resolve_transcription(result, speaker_segments)
+
     # Build response
     response_data = {
         "id": result.id,
@@ -460,8 +521,8 @@ def get_evaluator_result(
         "duration_seconds": result.duration_seconds,
         "status": effective_evaluator_result_status(result),
         "audio_s3_key": result.audio_s3_key,
-        "transcription": result.transcription,
-        "speaker_segments": _resolve_speaker_segments(result),
+        "transcription": transcription,
+        "speaker_segments": speaker_segments,
         "metric_scores": result.metric_scores,
         "celery_task_id": result.celery_task_id,
         "error_message": result.error_message,
@@ -470,6 +531,8 @@ def get_evaluator_result(
         "provider_call_id": result.provider_call_id,
         "provider_platform": result.provider_platform,
         "call_data": enriched_call_data,
+        "call_recording_source": call_recording_source,
+        "synthetic_call_trace_id": result.synthetic_call_trace_id,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,
@@ -523,69 +586,6 @@ def get_evaluator_result(
                 response_data["suite_id"] = evaluator.suite_id
     
     return EvaluatorResultResponse(**response_data)
-
-
-@router.get("/{id}/live-events")
-async def stream_evaluator_result_live_events(
-    id: str,
-    organization_id: UUID = Depends(get_organization_id),
-    workspace_id: UUID = Depends(get_workspace_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db),
-):
-    """SSE stream of live transcript turns for an in-progress eval telephony call."""
-    from fastapi.responses import StreamingResponse
-
-    from app.services.evaluators.evaluator_result_telephony import find_evaluator_telephony_recording
-    from app.services.telephony.live_transcript_sse import stream_live_transcript_events
-
-    del api_key
-
-    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Evaluator result not found")
-
-    call_recording = find_evaluator_telephony_recording(db, result)
-    if not call_recording:
-        raise HTTPException(status_code=404, detail="No live telephony call linked to this result")
-
-    bound_recording_id = call_recording.id
-    call_short_id = call_recording.call_short_id
-    bound_result_id = result.id
-
-    def _fetch_recording(session):
-        row = (
-            session.query(CallRecording)
-            .filter(
-                CallRecording.id == bound_recording_id,
-                CallRecording.evaluator_result_id == bound_result_id,
-                CallRecording.source == CallRecordingSource.WEBHOOK,
-            )
-            .first()
-        )
-        if row:
-            from app.services.live_entity_storage import hydrate_call_recordings
-
-            hydrate_call_recordings([row])
-        return row
-
-    async def event_generator():
-        async for chunk in stream_live_transcript_events(
-            call_short_id=call_short_id,
-            bound_recording_id=bound_recording_id,
-            fetch_recording=_fetch_recording,
-        ):
-            yield chunk
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -720,6 +720,94 @@ def get_evaluator_result_metrics(
     }
 
 
+@router.get("/{id}/live-events")
+async def stream_evaluator_result_live_events(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """SSE stream of live transcript turns for an in-progress eval telephony call."""
+    from fastapi.responses import StreamingResponse
+
+    from app.services.evaluators.evaluator_result_telephony import find_evaluator_telephony_recording
+    from app.services.telephony.live_transcript_sse import stream_live_transcript_events
+
+    del api_key
+
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    call_recording = find_evaluator_telephony_recording(db, result)
+    if not call_recording:
+        raise HTTPException(status_code=404, detail="No live telephony call linked to this result")
+
+    bound_recording_id = call_recording.id
+    call_short_id = call_recording.call_short_id
+    bound_result_id = result.id
+
+    def _fetch_recording(session):
+        row = (
+            session.query(CallRecording)
+            .filter(
+                CallRecording.id == bound_recording_id,
+                CallRecording.evaluator_result_id == bound_result_id,
+                CallRecording.source == CallRecordingSource.WEBHOOK,
+            )
+            .first()
+        )
+        if row:
+            from app.services.live_entity_storage import hydrate_call_recordings
+
+            hydrate_call_recordings([row])
+        return row
+
+    async def event_generator():
+        async for chunk in stream_live_transcript_events(
+            call_short_id=call_short_id,
+            bound_recording_id=bound_recording_id,
+            fetch_recording=_fetch_recording,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/{id}/otel-correlation")
+def get_evaluator_result_otel_correlation(
+    id: str,
+    request: Request,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    """Return OTLP endpoint and correlation env vars for customer Pipecat setup."""
+    from app.models.synthetic_trace_schemas import OtelCorrelationInfo
+    from app.services.synthetic_traces.trace_service import build_otel_correlation
+
+    del api_key
+    result = _lookup_evaluator_result(db, id, organization_id, workspace_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+    info = build_otel_correlation(
+        db,
+        result,
+        api_base_url=str(request.base_url).rstrip("/"),
+    )
+    return OtelCorrelationInfo(**info)
+
+
 @router.get("/{id}/audio")
 async def stream_evaluator_result_audio(
     id: str,
@@ -729,13 +817,14 @@ async def stream_evaluator_result_audio(
     db: Session = Depends(get_db),
 ):
     """Stream evaluator result audio from S3 or proxy auth-gated provider URLs."""
-    from io import BytesIO
-
     import requests as http_requests
     from fastapi.responses import RedirectResponse, StreamingResponse
 
     from app.core.encryption import decrypt_api_key
-    from app.services.storage.s3_service import s3_service
+    from app.services.storage.audio_delivery import (
+        collect_evaluator_result_audio_keys,
+        stream_audio_from_keys,
+    )
     from app.services.voice_providers.vapi_recording import is_presigned_storage_url
     from app.workers.tasks.process_evaluator_result import _extract_audio_url
 
@@ -745,34 +834,26 @@ async def stream_evaluator_result_audio(
     if not result:
         raise HTTPException(status_code=404, detail="Evaluator result not found")
 
-    s3_key = result.audio_s3_key
-    if not s3_key and isinstance(result.call_data, dict):
-        s3_key = result.call_data.get("recording_s3_key")
-
-    if s3_key:
-        if not s3_service.is_enabled():
-            raise HTTPException(status_code=400, detail="S3 storage is not configured")
-        try:
-            audio_bytes = s3_service.download_file_by_key(s3_key)
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail="Audio file not found in storage") from exc
-
-        extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "wav"
-        content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
-        content_type = content_type_map.get(extension, "audio/wav")
-        return StreamingResponse(
-            BytesIO(audio_bytes),
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="result_{result.result_id}.{extension}"',
-            },
-        )
+    storage_stream = stream_audio_from_keys(
+        collect_evaluator_result_audio_keys(result),
+        filename=f"result_{result.result_id}",
+    )
+    if storage_stream:
+        return storage_stream
 
     call_data = result.call_data if isinstance(result.call_data, dict) else {}
     platform = (result.provider_platform or "").lower()
     audio_url = _extract_audio_url(call_data, platform)
     if not audio_url:
         raise HTTPException(status_code=404, detail="No recording available")
+
+    from app.services.telephony.exotel_client import ExotelInvalidContentError
+    from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+    try:
+        assert_safe_provider_recording_url(str(audio_url))
+    except ExotelInvalidContentError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     if platform in {"retell", "smallest"}:
         return RedirectResponse(audio_url)
@@ -1001,6 +1082,18 @@ def re_evaluate_result(
             audio_bytes = None
             decrypted_key = None
 
+            from app.services.telephony.exotel_client import ExotelInvalidContentError
+            from app.services.telephony.recording_download import assert_safe_provider_recording_url
+
+            def _provider_audio_url(url: Optional[str]) -> Optional[str]:
+                if not url:
+                    return None
+                try:
+                    assert_safe_provider_recording_url(str(url))
+                except ExotelInvalidContentError:
+                    return None
+                return str(url)
+
             # Resolve the integration API key (needed for ElevenLabs auth header)
             agent = db.query(Agent).filter(Agent.id == result.agent_id).first() if result.agent_id else None
             if agent and agent.voice_ai_integration_id:
@@ -1012,13 +1105,13 @@ def re_evaluate_result(
                     decrypted_key = decrypt_api_key(integration.api_key)
 
             if platform == "elevenlabs":
-                audio_url = recording_urls.get("conversation_audio")
+                audio_url = _provider_audio_url(recording_urls.get("conversation_audio"))
                 if audio_url and decrypted_key:
                     resp = _http.get(audio_url, headers={"xi-api-key": decrypted_key}, timeout=120)
                     if resp.status_code == 200:
                         audio_bytes = resp.content
             elif platform == "retell":
-                audio_url = call_data.get("recording_url")
+                audio_url = _provider_audio_url(call_data.get("recording_url"))
                 if audio_url:
                     resp = _http.get(audio_url, timeout=120)
                     if resp.status_code == 200:
@@ -1029,7 +1122,7 @@ def re_evaluate_result(
                     is_presigned_storage_url,
                 )
 
-                audio_url = extract_vapi_recording_url(call_data)
+                audio_url = _provider_audio_url(extract_vapi_recording_url(call_data))
                 if audio_url:
                     headers = (
                         None
@@ -1040,7 +1133,7 @@ def re_evaluate_result(
                     if resp.status_code == 200:
                         audio_bytes = resp.content
             elif platform == "smallest":
-                audio_url = (
+                audio_url = _provider_audio_url(
                     call_data.get("recording_url")
                     or call_data.get("recordingUrl")
                     or recording_urls.get("combined_url")

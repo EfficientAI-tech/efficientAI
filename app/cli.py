@@ -723,6 +723,17 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     help="Concurrency for the usage worker (default: 4; thread pool).",
 )
 @click.option(
+    "--traces-worker/--no-traces-worker",
+    default=True,
+    help="Also start a dedicated worker for the `traces` queue (OTLP derive/close; default: True).",
+)
+@click.option(
+    "--traces-worker-concurrency",
+    default=8,
+    type=int,
+    help="Concurrency for the traces worker (default: 8; thread pool).",
+)
+@click.option(
     "--beat/--no-beat",
     default=True,
     help=(
@@ -747,6 +758,11 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     type=int,
     help="Telephony media server port (default: MEDIA_PORT / 8001).",
 )
+@click.option(
+    "--clickhouse/--no-clickhouse",
+    default=True,
+    help="Start ClickHouse via docker compose when clickhouse.url is configured (default: on).",
+)
 def start_all(
     config: str,
     host: Optional[str],
@@ -761,10 +777,13 @@ def start_all(
     imports_worker_concurrency: int,
     usage_worker: bool,
     usage_worker_concurrency: int,
+    traces_worker: bool,
+    traces_worker_concurrency: int,
     beat: bool,
     beat_loglevel: Optional[str],
     telephony_worker: bool,
     media_port: Optional[int],
+    clickhouse: bool,
 ):
     """Start the application server and Celery worker(s) together.
 
@@ -803,6 +822,16 @@ def start_all(
         sys.exit(1)
 
     bind_media_port = media_port or settings.MEDIA_PORT
+
+    if clickhouse and getattr(settings, "CLICKHOUSE_URL", None):
+        compose_file = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+        if compose_file.exists():
+            click.echo("🗄️  Starting ClickHouse (docker compose up -d clickhouse)...")
+            subprocess.run(
+                ["docker", "compose", "up", "-d", "clickhouse"],
+                cwd=str(compose_file.parent),
+                check=False,
+            )
 
     os.environ["SERVICE_MODE"] = "api"
     
@@ -1013,6 +1042,30 @@ def start_all(
                     f"pool=threads, concurrency={usage_worker_concurrency})"
                 ),
                 prefix="[WORKER-USAGE]",
+            )
+
+        if traces_worker:
+            from app.workers.config import TRACES_WORKER_QUEUE
+
+            _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "worker",
+                    f"--loglevel={worker_loglevel}",
+                    "-Q",
+                    TRACES_WORKER_QUEUE,
+                    "-P",
+                    "threads",
+                    "-c",
+                    str(traces_worker_concurrency),
+                ],
+                label=(
+                    f"Celery worker ({TRACES_WORKER_QUEUE} queue, "
+                    f"pool=threads, concurrency={traces_worker_concurrency})"
+                ),
+                prefix="[WORKER-TRACES]",
             )
 
         if beat:

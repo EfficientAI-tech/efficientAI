@@ -25,6 +25,7 @@ from app.core.auth.dependency import (
     get_principal,
     get_optional_principal,
     get_user_principal,
+    resolve_request_credentials,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "get_principal",
     "get_optional_principal",
     "get_user_principal",
+    "resolve_request_credentials",
 ]

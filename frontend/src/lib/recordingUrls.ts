@@ -57,3 +57,38 @@ export function hasEvaluatorResultRecording(
 function pickString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
+
+export interface VapiRecordingTracks {
+  stereo: string | null
+  combined: string | null
+  customer: string | null
+  assistant: string | null
+}
+
+export function getVapiRecordingTracks(callData: Record<string, unknown> | null | undefined): VapiRecordingTracks {
+  if (!callData) {
+    return { stereo: null, combined: null, customer: null, assistant: null }
+  }
+  const artifact = (callData.artifact || {}) as Record<string, unknown>
+  const recording = (artifact.recording || {}) as Record<string, unknown>
+  const mono = (recording.mono || {}) as Record<string, unknown>
+  const recordingUrls = (callData.recording_urls || {}) as Record<string, unknown>
+
+  return {
+    stereo:
+      pickString(artifact.presignedStereoUrl) ||
+      pickString(callData.presignedStereoUrl) ||
+      pickString(callData.stereoRecordingUrl) ||
+      pickString(artifact.stereoRecordingUrl) ||
+      pickString(recordingUrls.stereo_url),
+    combined:
+      pickString(artifact.presignedMonoUrl) ||
+      pickString(callData.presignedMonoUrl) ||
+      pickString(callData.recordingUrl) ||
+      pickString(artifact.recordingUrl) ||
+      pickString(mono.combinedUrl) ||
+      pickString(recordingUrls.combined_url),
+    customer: pickString(mono.customerUrl) || pickString(recordingUrls.customer_url),
+    assistant: pickString(mono.assistantUrl) || pickString(recordingUrls.assistant_url),
+  }
+}

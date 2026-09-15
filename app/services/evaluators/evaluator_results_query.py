@@ -69,14 +69,10 @@ def apply_playground_scope_filter(
 
     if playground is True:
         if test_agents_only is True:
+            # Internal EfficientAI test-agent runs only (no Voice AI provider platform).
             query = query.filter(
-                or_(
-                    EvaluatorResult.id.in_(playground_ids),
-                    and_(
-                        EvaluatorResult.evaluator_id.is_(None),
-                        EvaluatorResult.provider_platform.is_(None),
-                    ),
-                )
+                EvaluatorResult.evaluator_id.is_(None),
+                EvaluatorResult.provider_platform.is_(None),
             )
         else:
             query = query.filter(

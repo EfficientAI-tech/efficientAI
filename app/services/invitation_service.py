@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -88,6 +89,7 @@ def accept_invitation(
     user: User,
     *,
     require_email_match: bool = True,
+    source_organization_id: Optional[UUID] = None,
 ) -> OrganizationMember:
     """
     Accept an invitation and add the user to the organization.
@@ -132,6 +134,17 @@ def accept_invitation(
         role=invitation.role,
     )
     db.add(member)
+    db.flush()
+
+    from app.core.auth.org_credentials import provision_membership_credential
+
+    provision_membership_credential(
+        db,
+        user_id=user.id,
+        organization_id=invitation.organization_id,
+        user=user,
+        source_organization_id=source_organization_id,
+    )
 
     invitation.status = InvitationStatus.ACCEPTED
     invitation.accepted_at = datetime.now(timezone.utc)
@@ -159,7 +172,11 @@ def get_invitation_preview(db: Session, token: str) -> dict:
     )
     existing_user = db.query(User).filter(User.email == invitation.email).first()
     user_exists = existing_user is not None
-    has_password = bool(existing_user and existing_user.password_hash)
+    has_password = False
+    if existing_user is not None:
+        from app.core.auth.org_credentials import user_has_any_local_password
+
+        has_password = user_has_any_local_password(db, existing_user)
 
     status_value = getattr(invitation.status, "value", invitation.status)
     return {
@@ -171,6 +188,57 @@ def get_invitation_preview(db: Session, token: str) -> dict:
         "user_exists": user_exists,
         "has_password": has_password,
     }
+
+
+def build_invite_join_notice(
+    db: Session,
+    *,
+    user: User,
+    organization_id: UUID,
+    organization_name: str,
+    source_organization_id: Optional[UUID] = None,
+) -> Optional[str]:
+    """Short UX hint after joining via invite (existing users only)."""
+    from app.core.auth.org_credentials import get_credential
+
+    credential = get_credential(
+        db, user_id=user.id, organization_id=organization_id
+    )
+    if credential is None or not credential.password_hash:
+        return (
+            f"You've joined {organization_name}. "
+            "Set a password for this organization in Profile so you can sign in again later."
+        )
+
+    if (
+        source_organization_id is not None
+        and source_organization_id != organization_id
+    ):
+        source_cred = get_credential(
+            db, user_id=user.id, organization_id=source_organization_id
+        )
+        if (
+            source_cred is not None
+            and source_cred.password_hash
+            and credential.password_hash == source_cred.password_hash
+        ):
+            source_org = (
+                db.query(Organization)
+                .filter(Organization.id == source_organization_id)
+                .first()
+            )
+            if source_org is not None:
+                return (
+                    f"You've joined {organization_name}. "
+                    f"You can sign in with the same password you use for {source_org.name}. "
+                    "Each organization has its own password."
+                )
+
+    return (
+        f"You've joined {organization_name}. "
+        "Sign in with the password for this organization. "
+        "Each organization has its own password."
+    )
 
 
 def invitation_to_response_dict(

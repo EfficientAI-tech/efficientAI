@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     JSON,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -252,6 +253,7 @@ class User(Base):
     external_id = Column(String(255), unique=True, nullable=True, index=True)
     auth_provider = Column(String(50), nullable=True)
     mfa_enabled = Column(Boolean, default=False, nullable=False)
+    session_epoch = Column(Integer, default=0, nullable=False, server_default="0")
     last_login_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -316,6 +318,8 @@ class RefreshToken(Base):
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
+    authenticated_org_ids = Column(JSON, nullable=True)
+    authenticated_org_epochs = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="refresh_tokens")
@@ -345,6 +349,44 @@ class OrganizationMember(Base):
     organization = relationship("Organization", back_populates="members")
     user = relationship("User", back_populates="organization_memberships")
     default_agent = relationship("Agent", foreign_keys=[default_agent_id])
+
+
+class OrganizationMemberCredential(Base):
+    """Per-organization password and session state for a membership."""
+
+    __tablename__ = "organization_member_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    password_hash = Column(String(255), nullable=True)
+    auth_provider = Column(String(50), nullable=True)
+    session_epoch = Column(Integer, default=0, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "user_id", name="uq_org_member_credentials_org_user"),
+    )
+
+
+class OrganizationMemberSessionRevocation(Base):
+    """Minimum valid session epoch after membership removal for a user/org pair."""
+
+    __tablename__ = "organization_member_session_revocations"
+
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    min_session_epoch = Column(Integer, nullable=False, server_default="1")
+    revoked_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class Invitation(Base):
@@ -1129,6 +1171,12 @@ class EvaluatorResult(Base):
     
     # Data-plane shard routing (payload rows on shard DBs when sharding enabled)
     shard_id = Column(String(64), nullable=True, index=True)
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1237,6 +1285,139 @@ class CallRecordingPayload(Base):
     call_recording_id = Column(UUID(as_uuid=True), primary_key=True)
     workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     call_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyntheticCallTrace(Base):
+    """Legacy PG trace header (superseded by ClickHouse call_traces; dropped by migration 086)."""
+
+    __tablename__ = "synthetic_call_traces"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    evaluator_result_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("evaluator_results.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id", ondelete="SET NULL"), nullable=True)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id", ondelete="SET NULL"), nullable=True)
+    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id", ondelete="SET NULL"), nullable=True)
+    call_recording_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_recordings.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    call_short_id = Column(String(6), nullable=True, index=True)
+    environment = Column(String(32), nullable=False, default="pre_prod")
+    provider_platform = Column(String(64), nullable=True)
+    transport = Column(String(32), nullable=False, default="phone")
+    tier = Column(String(32), nullable=False, default="black_box")
+    status = Column(String(32), nullable=False, default="open")
+    started_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    turn_count = Column(Integer, nullable=False, default=0)
+    response_latency_p50_ms = Column(Float, nullable=True)
+    response_latency_p90_ms = Column(Float, nullable=True)
+    response_latency_p95_ms = Column(Float, nullable=True)
+    component_aggregates = Column(JSON, nullable=True)
+    failure_flags = Column(JSON, nullable=True)
+    trace_version = Column(Integer, nullable=False, default=1)
+    shard_id = Column(String(64), nullable=True, index=True)
+    spans_s3_key = Column(String(512), nullable=True)
+    spans_storage = Column(String(16), nullable=False, default="legacy_jsonb")
+    span_count = Column(Integer, nullable=False, default=0)
+    last_span_at = Column(DateTime(timezone=True), nullable=True)
+    derive_pending = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyntheticTraceSpanBatch(Base):
+    """Append-only OTLP span batch for Phase 2 async ingest."""
+
+    __tablename__ = "synthetic_trace_span_batches"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    seq = Column(BigInteger, nullable=False)
+    span_count = Column(Integer, nullable=False, default=0)
+    spans = Column(JSON, nullable=False, default=list)
+    received_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SyntheticTraceIngestStaging(Base):
+    """Short-lived raw OTLP payload staged before worker parse (Layout 3)."""
+
+    __tablename__ = "synthetic_trace_ingest_staging"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    content_type = Column(String(128), nullable=False, default="")
+    body = Column(LargeBinary, nullable=False)
+    body_bytes = Column(Integer, nullable=False, default=0)
+    header_evaluator_result_id = Column(String(128), nullable=True)
+    header_agent_id = Column(String(128), nullable=True)
+    header_call_short_id = Column(String(32), nullable=True)
+    status = Column(String(16), nullable=False, default="pending", index=True)
+    error_message = Column(Text, nullable=True)
+    accepted_spans = Column(Integer, nullable=True)
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    correlated = Column(Boolean, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    received_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class SyntheticTracePayload(Base):
+    """Per-turn timing payload for a synthetic call trace."""
+
+    __tablename__ = "synthetic_trace_payloads"
+
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    turns = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SyntheticTraceOtelPayload(Base):
+    """Full OTLP span tree for a synthetic call trace."""
+
+    __tablename__ = "synthetic_trace_otel_payloads"
+
+    synthetic_call_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("synthetic_call_traces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    workspace_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    spans = Column(JSON, nullable=False, default=list)
+    trace_ids = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

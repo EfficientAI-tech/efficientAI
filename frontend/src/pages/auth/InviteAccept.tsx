@@ -11,6 +11,7 @@ import { useAuthStore } from '../../store/authStore'
 import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { storePendingInviteToken } from '../../lib/inviteToken'
+import { storeJoinNotice } from '../../lib/joinNotice'
 
 type Mode = 'signup' | 'password' | 'sso'
 
@@ -52,7 +53,7 @@ function InvitePageShell({ children }: { children: React.ReactNode }) {
 export default function InviteAccept() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
-  const { user, accessToken, setSession, logout } = useAuthStore()
+  const { user, setSession, logout } = useAuthStore()
 
   const [preview, setPreview] = useState<InvitationPreview | null>(null)
   const [loadingPreview, setLoadingPreview] = useState(true)
@@ -106,7 +107,7 @@ export default function InviteAccept() {
   }, [token])
 
   useEffect(() => {
-    if (!token || !preview || preview.status !== 'pending' || !accessToken || !user) {
+    if (!token || !preview || preview.status !== 'pending' || !user) {
       return
     }
 
@@ -123,7 +124,11 @@ export default function InviteAccept() {
       .acceptInvitationByToken(token)
       .then((res) => {
         if (!active) return
-        setSession(res.access_token, res.user, res.refresh_token)
+        storeJoinNotice(res.join_notice)
+        setSession(
+          res.user,
+          res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
+        )
         navigate('/', { replace: true })
       })
       .catch((err: any) => {
@@ -137,7 +142,7 @@ export default function InviteAccept() {
     return () => {
       active = false
     }
-  }, [token, preview, accessToken, user, setSession, navigate])
+  }, [token, preview, user, setSession, navigate, logout])
 
   const localPwd = authConfig?.providers.find((p) => p.name === 'local_password' && p.enabled)
   const oidc = authConfig?.providers.find((p) => p.name === 'external_oidc' && p.enabled)
@@ -184,7 +189,10 @@ export default function InviteAccept() {
         last_name: lastName || undefined,
         invite_token: token,
       })
-      setSession(res.access_token, res.user, res.refresh_token)
+      setSession(
+        res.user,
+        res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
+      )
       navigate('/', { replace: true })
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Sign up failed')
@@ -205,7 +213,13 @@ export default function InviteAccept() {
         return
       }
       const accepted = await apiClient.acceptInvitationByToken(token)
-      setSession(accepted.access_token, accepted.user, accepted.refresh_token)
+      storeJoinNotice(accepted.join_notice)
+      setSession(
+        accepted.user,
+        accepted.access_token
+          ? { access: accepted.access_token, refresh: accepted.refresh_token }
+          : undefined,
+      )
       navigate('/', { replace: true })
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Sign in failed')
@@ -245,7 +259,7 @@ export default function InviteAccept() {
   const showAuthForms =
     !previewError &&
     preview?.status === 'pending' &&
-    (!accessToken || autoAcceptFailed)
+    (!user || autoAcceptFailed)
 
   return (
     <InvitePageShell>
@@ -262,7 +276,7 @@ export default function InviteAccept() {
 
       <Card className="shadow-xl">
         <CardBody className="p-6">
-          {preview && !previewError && preview.has_password && showAuthForms && (
+          {preview && !previewError && preview.user_exists && showAuthForms && (
             <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
               An account already exists for <span className="font-medium">{preview.email}</span>.
               Sign in below to join {orgName} — you don&apos;t need to create a new account.
@@ -283,7 +297,7 @@ export default function InviteAccept() {
 
           {previewError && <FormError message={previewError} />}
 
-          {previewError && accessToken && user && (
+          {previewError && user && (
             <div className="mt-4">
               <Button
                 variant="outline"
