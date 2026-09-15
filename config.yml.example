@@ -1,4 +1,5 @@
 # EfficientAI Configuration File
+# Self-host checklist: see env.example (top section — what to set in this file vs .env).
 
 # Application Settings
 app:
@@ -22,8 +23,9 @@ server:
 # Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
-  trusted_ips:
-    - "10.0.0.0/8"
+  # trusted_ips: defaults in app/config.py (10/8, 172.16/12, 127/8); set to replace entirely
+  # trusted_ips:
+  #   - "10.0.0.0/8"
   # /health = liveness (always 200 ok) for ALB + internet; rate-limited for public IPs.
   # /health/ready = readiness (503 while migrations run); VPC/LB peers in trusted_ips only.
   health_rate_limit_per_minute: 60
@@ -34,25 +36,17 @@ security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
   # public_base_url: "https://sandbox.efficientai.cloud"
-  # Production: list your public hostname only. /health is exempt from Host checks;
-  # ALB/kube probes that send a VPC IP as Host are allowed via operational.trusted_ips.
-  # trusted_hosts:
-  #   - "sandbox.efficientai.cloud"
-  # Local dev (optional):
-  #   - "localhost"
-  #   - "127.0.0.1"
+  # Host header allowlist is derived from app.frontend_base_url (+ *.parent domain).
+  # Optional extras: trusted_hosts: ["internal-only.example.com"]
+  # trusted_hosts_auto_from_frontend: true
+  # csp_connect_src_extra: []  # merged onto built-in voice/storage allowlist
   # hsts_enabled: true
   # hsts_max_age: 31536000
   # hsts_include_subdomains: true
   # csp_policy: "default-src 'self'; ..."  # optional override (defaults include Vapi/Daily, Retell/LiveKit, ElevenLabs)
 
-rate_limits:
-  enforce: true
-  auth_per_ip_per_minute: 15
-  resource_create_burst: 100
-  resource_create_burst_window_minutes: 10
-  resource_create_sustained_per_minute: 30
-  resource_create_org_per_hour: 2000
+# HTTP rate limits: off by default (self-host). EfficientAI SaaS sets enforce: true.
+# See env.example for what each limit affects (call imports / evals are NOT HTTP-limited).
 
 # Database Configuration
 database:

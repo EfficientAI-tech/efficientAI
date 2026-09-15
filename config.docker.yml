@@ -19,8 +19,7 @@ server:
 # Add VPC CIDRs here if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
-  trusted_ips:
-    - "10.0.0.0/8"
+  # trusted_ips: use config.py defaults unless you need a custom list
   health_rate_limit_per_minute: 60
   health_readiness_cache_seconds: 10
 
@@ -34,13 +33,7 @@ security:
   #   - "efficientai.local"
   # hsts_enabled: true
 
-rate_limits:
-  enforce: true
-  auth_per_ip_per_minute: 15
-  resource_create_burst: 100
-  resource_create_burst_window_minutes: 10
-  resource_create_sustained_per_minute: 30
-  resource_create_org_per_hour: 2000
+# rate_limits: see env.example (self-host defaults off; SaaS sets enforce: true)
 
 # Database Configuration (Docker service name)
 database:

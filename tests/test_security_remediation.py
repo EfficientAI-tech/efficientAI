@@ -94,7 +94,7 @@ def test_check_resource_create_rate_limit_blocks_burst(monkeypatch):
         user_id=uuid4(),
         email="u@example.com",
     )
-    with patch("app.core.api_rate_limit._sliding_window_count", return_value=999):
+    with patch("app.core.api_rate_limit._sliding_window_count", return_value=25000):
         with pytest.raises(HTTPException) as exc:
             check_resource_create_rate_limit(principal)
         assert exc.value.status_code == 429

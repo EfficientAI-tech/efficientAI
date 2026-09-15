@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings, validate_auth_configuration
+from app.core.security_settings import finalize_security_settings
 from app.core.auth.rbac import require_admin
 from app.core.api_rate_limit import check_health_rate_limit
 from app.core.health import build_liveness_status, build_readiness_status
@@ -99,6 +100,7 @@ async def _api_lifespan(app: FastAPI):
 
 
 def _add_common_middleware(app: FastAPI) -> None:
+    finalize_security_settings()
     if _includes_http_routes():
         app.add_middleware(MigrationCheckMiddleware)
         from app.core.csrf_middleware import CsrfMiddleware
