@@ -87,6 +87,7 @@ def test_csp_allows_voice_provider_connect_src(security_client, monkeypatch):
     assert "https://api.vapi.ai" in policy
     assert "https://*.daily.co" in policy
     assert "wss://*.livekit.cloud" in policy
+    assert "https://*.livekit.cloud" in policy
     assert "https://api.elevenlabs.io" in policy
     assert "https://*.ingest.sentry.io" in policy
     assert "'unsafe-eval'" in policy

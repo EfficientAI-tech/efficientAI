@@ -173,6 +173,7 @@ class Settings(BaseSettings):
         "https://*.daily.co "
         "wss://*.daily.co "
         "wss://*.livekit.cloud "
+        "https://*.livekit.cloud "
         "https://api.elevenlabs.io "
         "wss://api.elevenlabs.io "
         "https://api.retellai.com "
