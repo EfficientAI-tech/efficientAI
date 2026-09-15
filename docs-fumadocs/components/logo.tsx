@@ -7,9 +7,9 @@ export function Logo({ className = '', showText = true }: LogoProps) {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       <img
-        src="/favicon_dark.png"
+        src="/efficientai_logo_light.png"
         alt="EfficientAI"
-        className="h-8 w-8 dark:invert"
+        className="h-8 w-auto object-contain"
       />
       {showText && (
         <span className="text-xl font-bold tracking-tight">
