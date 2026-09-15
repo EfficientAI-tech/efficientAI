@@ -26,6 +26,25 @@ def test_resolve_trusted_hosts_no_wildcard_for_co_uk(monkeypatch):
     assert hosts == ["app.example.co.uk"]
 
 
+def test_finalize_reload_does_not_treat_resolved_hosts_as_env(monkeypatch):
+    monkeypatch.setattr(settings, "TRUSTED_HOSTS_FROM_ENV", ["env-only.example.com"])
+    monkeypatch.setattr(settings, "TRUSTED_HOSTS_AUTO_FROM_FRONTEND", False)
+    monkeypatch.setattr(settings, "FRONTEND_BASE_URL", "")
+    monkeypatch.setattr(settings, "PUBLIC_BASE_URL", "")
+    monkeypatch.setattr(settings, "TRUSTED_HOSTS_EXPLICIT", ["still-valid.example.com"])
+    settings.TRUSTED_HOSTS = [
+        "still-valid.example.com",
+        "env-only.example.com",
+        "stale-from-prior-resolve.example.com",
+    ]
+    from app.core.security_settings import finalize_security_settings
+
+    finalize_security_settings()
+    assert "stale-from-prior-resolve.example.com" not in settings.TRUSTED_HOSTS
+    assert "still-valid.example.com" in settings.TRUSTED_HOSTS
+    assert "env-only.example.com" in settings.TRUSTED_HOSTS
+
+
 def test_resolve_trusted_hosts_merges_env_hosts(monkeypatch):
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_AUTO_FROM_FRONTEND", False)
     monkeypatch.setattr(settings, "TRUSTED_HOSTS_EXPLICIT", [])

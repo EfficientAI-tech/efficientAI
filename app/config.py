@@ -128,7 +128,6 @@ class Settings(BaseSettings):
     TRUSTED_HOSTS_AUTO_FROM_FRONTEND: bool = True
     TRUSTED_HOSTS_EXPLICIT: List[str] = []
     TRUSTED_HOSTS_FROM_ENV: List[str] = []
-    TRUSTED_HOSTS_RESOLVED: bool = False
     SECURITY_HSTS_ENABLED: bool = False
     SECURITY_HSTS_MAX_AGE: int = 31536000
     SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
@@ -1066,7 +1065,6 @@ def load_config_from_file(config_path: str) -> None:
 
     from app.core.security_settings import finalize_security_settings
 
-    settings.TRUSTED_HOSTS_RESOLVED = False
     finalize_security_settings()
 
 
@@ -1112,6 +1110,7 @@ except Exception as e:
         # No .env file, create normally
         settings = Settings()
 
-from app.core.security_settings import finalize_security_settings
+from app.core.security_settings import capture_trusted_hosts_from_env, finalize_security_settings
 
+capture_trusted_hosts_from_env()
 finalize_security_settings()

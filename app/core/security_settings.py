@@ -78,17 +78,21 @@ def build_csp_policy_with_extras() -> str:
     )
 
 
+def capture_trusted_hosts_from_env() -> None:
+    """Snapshot env TRUSTED_HOSTS once at process start (before finalize overwrites TRUSTED_HOSTS)."""
+    if settings.TRUSTED_HOSTS_FROM_ENV:
+        return
+    settings.TRUSTED_HOSTS_FROM_ENV = [
+        h.strip()
+        for h in (settings.TRUSTED_HOSTS or [])
+        if h and str(h).strip()
+    ]
+
+
 def finalize_security_settings() -> None:
-    if not settings.TRUSTED_HOSTS_RESOLVED:
-        settings.TRUSTED_HOSTS_FROM_ENV = [
-            h.strip()
-            for h in (settings.TRUSTED_HOSTS or [])
-            if h and str(h).strip()
-        ]
     if not (settings.PUBLIC_BASE_URL or "").strip() and (settings.FRONTEND_BASE_URL or "").strip():
         settings.PUBLIC_BASE_URL = settings.FRONTEND_BASE_URL.strip().rstrip("/")
     settings.TRUSTED_HOSTS = resolve_trusted_hosts()
-    settings.TRUSTED_HOSTS_RESOLVED = True
     if settings.CSP_POLICY_CUSTOM:
         return
     has_csp_extras = bool(
