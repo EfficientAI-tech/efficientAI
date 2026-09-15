@@ -106,13 +106,21 @@ class Settings(BaseSettings):
 
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
-    RATE_LIMIT_PER_MINUTE: int = 60
+    RATE_LIMIT_PER_MINUTE: int = 60  # legacy; not enforced on HTTP handlers
+    # HTTP abuse limits (yaml: rate_limits.*). Self-host: keep False. SaaS: enforce true in deploy config.
     API_RATE_LIMIT_ENFORCE: bool = False
-    API_AUTH_RATE_LIMIT_PER_MINUTE: int = 60
-    API_RESOURCE_CREATE_BURST: int = 20000
+    API_AUTH_RATE_LIMIT_PER_MINUTE: int = 60  # POST /auth/login, /auth/register per client IP
+    # UI resource-create limits apply only when API_RATE_LIMIT_ENFORCE is true, on:
+    #   POST /api/v1/agents              (create agent)
+    #   POST /api/v1/personas            (create persona)
+    #   POST /api/v1/scenarios           (create scenario)
+    #   POST /api/v1/chat/completion     (chat completion)
+    # NOT on metrics, call imports, evaluations, evaluators, traces, or bulk ingest.
+    API_RESOURCE_CREATE_BURST: int = 20000  # per user/api_key per burst window
     API_RESOURCE_CREATE_BURST_WINDOW_MINUTES: int = 10
-    API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE: int = 2000
-    API_RESOURCE_CREATE_ORG_PER_HOUR: int = 0
+    API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE: int = 2000  # per user/api_key per minute
+    # One shared org counter per hour across the four POST routes above (not whole-product traffic).
+    API_RESOURCE_CREATE_ORG_PER_HOUR: int = 0  # 0 = org bucket disabled
 
     # HTTP security
     PUBLIC_BASE_URL: str = ""
