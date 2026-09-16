@@ -1,4 +1,5 @@
 # EfficientAI Configuration File
+# Self-host checklist: see env.example (top section — what to set in this file vs .env).
 
 # Application Settings
 app:
@@ -22,16 +23,39 @@ server:
 # Include VPC CIDRs in trusted_ips if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
-  trusted_ips:
-    - "10.0.0.0/8"
+  # trusted_ips: defaults in app/config.py (10/8, 172.16/12, 127/8); set to replace entirely
+  # trusted_ips:
+  #   - "10.0.0.0/8"
+  # /health = liveness (always 200 ok) for ALB + internet; rate-limited for public IPs.
+  # /health/ready = readiness (503 while migrations run); VPC/LB peers in trusted_ips only.
+  health_rate_limit_per_minute: 60
+  health_readiness_cache_seconds: 10
 
 # HTTP security headers (CSP, X-Frame-Options, etc.)
 security:
   csp_enabled: true
   csp_report_only: false   # false = enforcing Content-Security-Policy header (required for compliance scans)
+  # Production Host allowlist (exact hostnames only — no wildcards):
+  #   - app.frontend_base_url hostname (e.g. https://app.yourcompany.com)
+  #   - security.public_base_url if API uses a different host (e.g. https://api.yourcompany.com)
+  # Do NOT list localhost/127.0.0.1 in production.
+  # public_base_url: "https://api.yourcompany.com"
+  # Optional extra hosts: trusted_hosts: ["legacy.yourcompany.com"]
+  # Local dev only:
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "127.0.0.1"
+  # trusted_hosts_auto_from_frontend: true
+  # csp_connect_src_extra: []  # merged onto built-in voice/storage allowlist
+  # hsts_enabled: true
+  # hsts_max_age: 31536000
+  # hsts_include_subdomains: true
   # csp_policy: "default-src 'self'; ..."  # optional full override
   # Defaults: voice providers (Vapi/Daily/Retell/ElevenLabs/LiveKit/Sentry) + blob storage
   # (R2, S3, CloudFront, GCS, Azure, B2, DO Spaces) in connect-src for waveform/presigned audio fetch
+
+# HTTP rate limits: off by default (self-host). EfficientAI SaaS sets enforce: true.
+# See env.example for what each limit affects (call imports / evals are NOT HTTP-limited).
 
 # Database Configuration
 database:
@@ -56,6 +80,7 @@ database:
   #   shards   → efficientai_data_01, efficientai_data_02, …
   #   shard id → data-shard-01, data-shard-02, … (labels in config + registry)
   #
+  # Required when sharding.enabled is true in production: auth/RBAC migrations
   # catalog_url: "postgresql://efficientai:password@localhost:5432/efficientai_catalog"
   sharding:
     enabled: false
@@ -142,6 +167,7 @@ api:
   key_header: "X-API-Key"
   rate_limit_per_minute: 60
 
+
 # Call traces / OTLP observability (Phase 2 scaling)
 traces:
   async_ingest_enabled: true
@@ -163,6 +189,7 @@ clickhouse:
   database: "efficientai"
   user: "default"
   password: ""
+
 
 # -----------------------------------------------------------------------------
 # Authentication
@@ -198,6 +225,11 @@ auth:
     # Keep this short; clients refresh silently via refresh tokens.
     token_ttl_minutes: 15
     refresh_token_ttl_days: 7
+    cookie_session:
+      enabled: true
+      secure: true
+      samesite: lax
+      # domain: ".efficientai.cloud"
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
     # When enabled, signup requires a valid reference code from the platform admin API.
@@ -246,6 +278,14 @@ judge_alignment:
 # call_imports.
 # license:
 #   key: "eyJhbGciOi..."
+
+# Telephony / recording URL safety (SSRF allowlist for provider recording fetches).
+# Built-in suffixes cover Exotel, Plivo, Vobiz, AWS S3/CloudFront, GCS, Azure Blob,
+# DigitalOcean Spaces, Backblaze B2, Cloudflare R2, Vapi, Retell, ElevenLabs,
+# Daily, LiveKit, and Smallest. Add custom CDN host suffixes below if needed.
+# telephony:
+#   recording_url_allowed_host_suffixes:
+#     - "recordings.mycompany.com"
 
 # Vobiz Telephony (platform-level). Shared account credentials used for
 # inbound/outbound PSTN calls bridged into agent Pipecat pipelines.

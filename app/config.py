@@ -106,17 +106,28 @@ class Settings(BaseSettings):
 
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
-    RATE_LIMIT_PER_MINUTE: int = 60
-    API_RATE_LIMIT_ENFORCE: bool = True
-    API_AUTH_RATE_LIMIT_PER_MINUTE: int = 15
-    API_RESOURCE_CREATE_BURST: int = 100
+    RATE_LIMIT_PER_MINUTE: int = 60  # legacy; not enforced on HTTP handlers
+    # HTTP abuse limits (yaml: rate_limits.*). Self-host: keep False. SaaS: enforce true in deploy config.
+    API_RATE_LIMIT_ENFORCE: bool = False
+    API_AUTH_RATE_LIMIT_PER_MINUTE: int = 60  # POST /auth/login, /auth/register per client IP
+    # UI resource-create limits apply only when API_RATE_LIMIT_ENFORCE is true, on:
+    #   POST /api/v1/agents              (create agent)
+    #   POST /api/v1/personas            (create persona)
+    #   POST /api/v1/scenarios           (create scenario)
+    #   POST /api/v1/chat/completion     (chat completion)
+    # NOT on metrics, call imports, evaluations, evaluators, traces, or bulk ingest.
+    API_RESOURCE_CREATE_BURST: int = 20000  # per user/api_key per burst window
     API_RESOURCE_CREATE_BURST_WINDOW_MINUTES: int = 10
-    API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE: int = 30
-    API_RESOURCE_CREATE_ORG_PER_HOUR: int = 2000
+    API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE: int = 2000  # per user/api_key per minute
+    # One shared org counter per hour across the four POST routes above (not whole-product traffic).
+    API_RESOURCE_CREATE_ORG_PER_HOUR: int = 0  # 0 = org bucket disabled
 
     # HTTP security
     PUBLIC_BASE_URL: str = ""
     TRUSTED_HOSTS: Annotated[List[str], NoDecode] = []
+    TRUSTED_HOSTS_AUTO_FROM_FRONTEND: bool = True
+    TRUSTED_HOSTS_EXPLICIT: List[str] = []
+    TRUSTED_HOSTS_FROM_ENV: List[str] = []
     SECURITY_HSTS_ENABLED: bool = False
     SECURITY_HSTS_MAX_AGE: int = 31536000
     SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
@@ -166,6 +177,10 @@ class Settings(BaseSettings):
     # Content Security Policy (enforcing by default; set CSP_REPORT_ONLY=true for local report-only mode)
     CSP_ENABLED: bool = True
     CSP_REPORT_ONLY: bool = False
+    CSP_POLICY_CUSTOM: bool = False
+    CSP_CONNECT_SRC_EXTRA: List[str] = []
+    CSP_FRAME_SRC_EXTRA: List[str] = []
+    CSP_SCRIPT_SRC_EXTRA: List[str] = []
     # Browser voice SDKs (Vapi/Daily, Retell/LiveKit, ElevenLabs convai) and their telemetry.
     _CSP_VOICE_CONNECT_SRC: str = (
         "https://api.vapi.ai "
@@ -199,7 +214,6 @@ class Settings(BaseSettings):
         "https://storage.googleapis.com "
         "https://*.blob.core.windows.net"
     )
-    # Vapi → Daily.co call-machine bundle requires eval + blob worklets for audio
     _CSP_DAILY_SCRIPT_SRC: str = "'unsafe-eval' blob: https://c.daily.co https://*.daily.co"
     CSP_POLICY: str = (
         "default-src 'self'; "
@@ -219,7 +233,12 @@ class Settings(BaseSettings):
 
     # Operational endpoints (/health, /metrics)
     OPERATIONAL_PUBLIC: bool = False
-    OPERATIONAL_TRUSTED_IPS: List[str] = []
+    # Enterprise VPC ranges (AWS 10.x, GCP/Azure 172.16–31) + loopback for LB/kube probes.
+    OPERATIONAL_TRUSTED_IPS: List[str] = [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "127.0.0.0/8",
+    ]
     HEALTH_RATE_LIMIT_PER_MINUTE: int = 60
     HEALTH_READINESS_CACHE_SECONDS: int = 10
 
@@ -501,6 +520,14 @@ def validate_auth_configuration() -> None:
         raise RuntimeError(
             f"external_oidc is enabled but required settings are missing: {', '.join(missing)}"
         )
+
+    if not settings.DEBUG:
+        frontend = (settings.FRONTEND_BASE_URL or "").strip()
+        if not frontend.startswith(("http://", "https://")):
+            raise RuntimeError(
+                "FRONTEND_BASE_URL must be set to a valid http(s) URL in non-debug deployments "
+                "(app.frontend_base_url in config.yml or FRONTEND_BASE_URL env)."
+            )
 
 
 def apply_service_mode(mode: str) -> None:
@@ -1034,10 +1061,21 @@ def load_config_from_file(config_path: str) -> None:
             settings.CSP_REPORT_ONLY = bool(security_config["csp_report_only"])
         if security_config.get("csp_policy"):
             settings.CSP_POLICY = security_config["csp_policy"]
+            settings.CSP_POLICY_CUSTOM = True
+        if security_config.get("csp_connect_src_extra"):
+            settings.CSP_CONNECT_SRC_EXTRA = list(security_config["csp_connect_src_extra"])
+        if security_config.get("csp_frame_src_extra"):
+            settings.CSP_FRAME_SRC_EXTRA = list(security_config["csp_frame_src_extra"])
+        if security_config.get("csp_script_src_extra"):
+            settings.CSP_SCRIPT_SRC_EXTRA = list(security_config["csp_script_src_extra"])
+        if "trusted_hosts_auto_from_frontend" in security_config:
+            settings.TRUSTED_HOSTS_AUTO_FROM_FRONTEND = bool(
+                security_config["trusted_hosts_auto_from_frontend"]
+            )
         if security_config.get("public_base_url"):
             settings.PUBLIC_BASE_URL = str(security_config["public_base_url"]).strip()
         if "trusted_hosts" in security_config:
-            settings.TRUSTED_HOSTS = list(security_config["trusted_hosts"])
+            settings.TRUSTED_HOSTS_EXPLICIT = list(security_config["trusted_hosts"])
         if "hsts_enabled" in security_config:
             settings.SECURITY_HSTS_ENABLED = bool(security_config["hsts_enabled"])
         if "hsts_max_age" in security_config:
@@ -1096,6 +1134,10 @@ def load_config_from_file(config_path: str) -> None:
     if not settings.CELERY_RESULT_BACKEND:
         settings.CELERY_RESULT_BACKEND = settings.REDIS_URL
 
+    from app.core.security_settings import finalize_security_settings
+
+    finalize_security_settings()
+
 
 # Initialize settings with error handling for problematic env vars
 # If .env file has invalid format, we'll use defaults (YAML config will override anyway)
@@ -1138,3 +1180,8 @@ except Exception as e:
     else:
         # No .env file, create normally
         settings = Settings()
+
+from app.core.security_settings import capture_trusted_hosts_from_env, finalize_security_settings
+
+capture_trusted_hosts_from_env()
+finalize_security_settings()

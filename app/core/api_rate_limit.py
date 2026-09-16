@@ -1,4 +1,20 @@
-"""Abuse-only API rate limits (auth strict, resource creates generous)."""
+"""HTTP abuse rate limits (SaaS only when API_RATE_LIMIT_ENFORCE is true).
+
+Self-hosted defaults keep API_RATE_LIMIT_ENFORCE=false so call imports, evals,
+and bulk API traffic are not capped by this module.
+
+When enforce is enabled (EfficientAI SaaS config.yml rate_limits.enforce: true):
+
+  - Auth: POST /auth/login, POST /auth/register (per client IP)
+  - Health: GET /health for anonymous IPs (LB/VPC peers exempt)
+  - UI resource create: only routes listed in RESOURCE_CREATE_RATE_LIMIT_ROUTES
+
+Does NOT apply to: call_imports*, evaluations*, evaluators*, traces ingest,
+metric create, uploads, or any scale/bulk workflow.
+
+Worker throughput (workers.eval_*, workers.import_*, telephony_import_credit_*)
+is separate — Redis inflight caps, not HTTP 429. See env.example.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +30,24 @@ from app.core.auth import Principal, get_principal
 from app.core.operational_access_middleware import (
     _resolved_trusted_ip,
     is_operational_access_allowed,
+)
+
+RESOURCE_CREATE_RATE_LIMIT_ROUTES: tuple[str, ...] = (
+    "agents:create_agent",
+    "personas:create_persona",
+    "scenarios:create_scenario",
+    "chat:chat_completion",
+)
+
+SCALE_EXEMPT_ROUTE_MODULE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "call_import",
+        "call_import_",
+        "evaluation",
+        "evaluator",
+        "conversation_evaluation",
+        "manual_evaluation",
+    }
 )
 
 _redis_client: Optional[redis.Redis] = None
@@ -89,7 +123,7 @@ def check_resource_create_rate_limit(principal: Principal) -> None:
     burst_limit = max(1, int(settings.API_RESOURCE_CREATE_BURST))
     burst_window = max(1, int(settings.API_RESOURCE_CREATE_BURST_WINDOW_MINUTES)) * 60
     sustained_limit = max(1, int(settings.API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE))
-    org_limit = max(1, int(settings.API_RESOURCE_CREATE_ORG_PER_HOUR))
+    org_limit = int(settings.API_RESOURCE_CREATE_ORG_PER_HOUR)
 
     if principal.user_id:
         user_key = f"{_KEY_PREFIX}:create:user:{principal.user_id}"
@@ -100,8 +134,9 @@ def check_resource_create_rate_limit(principal: Principal) -> None:
         _check_limit(key, burst_limit, burst_window)
         _check_limit(f"{key}:min", sustained_limit, 60)
 
-    org_key = f"{_KEY_PREFIX}:create:org:{principal.organization_id}"
-    _check_limit(org_key, org_limit, 3600)
+    if org_limit > 0:
+        org_key = f"{_KEY_PREFIX}:create:org:{principal.organization_id}"
+        _check_limit(org_key, org_limit, 3600)
 
 
 def enforce_auth_rate_limit(request: Request) -> None:
