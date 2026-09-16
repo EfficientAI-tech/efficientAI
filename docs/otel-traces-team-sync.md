@@ -14,7 +14,7 @@
 |------|----------------|
 | **Ingest** | HTTP OTLP (protobuf/JSON); optional async path: S3 WAL → Celery → ClickHouse |
 | **Storage** | ClickHouse for trace list/detail/spans; S3 under `traces/organizations/...` for batches and archived spans |
-| **Workers** | Dedicated Celery queue **`traces`** → **`worker-traces`** (Docker) or **`[WORKER-TRACES]`** (`eai start-all`) |
+| **Workers** | Queue **`traces`** — **mandatory** for default ingest: Docker **`worker-traces`** or **`[WORKER-TRACES]`** from **`eai start-all`** (always spawned; no `--no-traces-worker`) |
 | **Runtime wiring** | Playground + voice WebSocket: `call_short_id`, in-process OTLP export, link/close trace session |
 | **UI** | **Calls** hub (`/observability/calls`): list, detail, waterfall, span-based transcript |
 | **SDK** | `efficientai[otel]` — session API + OTLP export (`src/efficientai/integrations/efficientai_traces/`) |
@@ -26,34 +26,48 @@
 
 ## 2. Mental model: two planes
 
+### HTTP vs “ingest complete”
+
+Bots only speak **HTTP** to the **API**. They never call **`worker-traces`**.
+
+On the **default** path (`defer_parse_to_worker` + `async_ingest_enabled`):
+
+| Step | Component | What happens |
+|------|-----------|----------------|
+| Accept | **API** | Auth, rate limit, validate body |
+| Buffer | **API → S3** | PUT raw OTLP bytes to `…/batches/{seq}.json` (**WAL only** — not parsed, not in ClickHouse yet) |
+| Schedule | **API → Redis** | Celery job `process_s3_otlp_batch` on queue **`traces`** |
+| Respond | **API → bot** | **202** deferred |
+| **Complete ingest** | **`worker-traces` only** | GET S3 → parse OTLP → **INSERT ClickHouse** → DELETE S3 batch → derive turns |
+
+So **API → S3** in diagrams means **write-ahead log**, not “spans are stored.” **ClickHouse writes for OTLP ingest happen only in `worker-traces`** on that path.
+
+The API **does** talk to ClickHouse for **reads** (list trace, detail, spans) and on **non-defer** ingest modes (see §3 matrix).
+
 ```mermaid
-flowchart LR
+flowchart TB
   subgraph control["Control plane (Postgres)"]
     Eval[Evaluator results]
     Link[synthetic_call_trace_id UUID]
-    Rec[Call recordings]
   end
 
-  subgraph data["Trace data plane"]
-    API[FastAPI API]
-    S3[S3 traces/ WAL]
-    Redis[Redis locks / cache / rate limits]
-    CH[ClickHouse traces + spans]
-    WT[worker-traces]
+  Bot[Voice agent] -->|OTLP HTTP POST| API[FastAPI API]
+
+  subgraph defer["Default deferred ingest"]
+    API -->|1 PUT WAL bytes| S3[(S3 batches/)]
+    API -->|2 enqueue| Q[(Redis Celery queue: traces)]
+    Q -->|3 consume job| WT[worker-traces]
+    WT -->|4 GET + parse| S3
+    WT -->|5 INSERT spans + header| CH[(ClickHouse)]
+    WT -->|6 DELETE WAL| S3
   end
 
-  Bot[Pipecat / voice client] -->|OTLP HTTP| API
-  API --> S3
-  API --> Redis
-  API --> WT
-  WT --> CH
-  WT --> S3
-  API --> CH
+  API -->|read list / detail / spans| CH
   Eval --> Link
-  Link -.->|same UUID| CH
+  Link -.->|same trace UUID| CH
 ```
 
-Ingest order for the default config: **Bot → API → S3 → (async) worker-traces → ClickHouse**. See **§3**.
+Ingest order: **Bot → API → S3 (buffer) → Redis (job) → worker-traces → ClickHouse**. See **§3**.
 
 - **Postgres:** evaluator runs, recording metadata, foreign keys — not span payloads at scale.
 - **ClickHouse + S3:** high-volume spans, aggregations, list/filter traces, waterfall queries.
@@ -61,9 +75,15 @@ Ingest order for the default config: **Bot → API → S3 → (async) worker-tra
 
 ---
 
-## 3. Ingest: API first, then S3 — **not** through the worker first
+## 3. Ingest: API is the HTTP edge; worker-traces finishes ingest
 
-**Short answer:** OTLP always hits the **API** first. The worker never receives the HTTP request. In the **recommended** config, the API writes the **raw OTLP body to S3**, then **enqueues** a Celery job; **`worker-traces`** reads S3 later and writes **ClickHouse**.
+**Short answer:**
+
+- **HTTP** always lands on the **API** only (`worker-traces` has no public OTLP port).
+- On the **recommended** path, the API **does not parse OTLP or insert spans into ClickHouse**. It **PUTs** the raw body to S3 and **enqueues** `process_s3_otlp_batch`.
+- **`worker-traces`** is what **parses OTLP and writes ClickHouse** (and deletes the S3 WAL batch).
+
+Misread to avoid: **API → S3** is not “ingest bypassing the worker” — it is **staging** until the worker runs.
 
 ```mermaid
 sequenceDiagram
@@ -80,8 +100,10 @@ sequenceDiagram
     API->>Redis: INCR batch seq (per trace UUID)
     API->>S3: PUT raw body → …/batches/{seq}.json
     API->>Redis: batch meta (content-type) for sweeper
-    API->>Redis: Celery enqueue process_s3_otlp_batch
+    API->>Redis: Celery enqueue process_s3_otlp_batch (queue traces)
+    Note over API,WT: API does not insert CH on this path
     API-->>Bot: 202 deferred (bytes accepted)
+    Redis-->>WT: deliver job (worker-traces consumer)
     WT->>S3: GET batch
     WT->>WT: parse OTLP, correlate call_short_id
     WT->>CH: insert trace_observations + update call_traces header
@@ -171,6 +193,8 @@ sequenceDiagram
 |------|------------|
 | Evaluator results, `synthetic_call_trace_id`, call recordings, org/workspace | App down; cannot correlate evaluator UI to trace UUID |
 | Does **not** store span payloads at scale (post-092) | — |
+
+**Calls → Traces tab (read path):** With ClickHouse configured, **`GET /observability/traces`** and trace detail/spans are served from **ClickHouse** (and **Redis** for live turns on open calls). Postgres is **not** queried for trace rows or span bodies on that path. Postgres is still used on the same request for **auth** (API key / user → org) and **workspace** resolution (`X-Workspace-Id`, RBAC). Trace headers in CH may carry `evaluator_result_id` / `agent_id` copied at ingest time — those IDs point at Postgres rows when you open evaluator or agent UI, but the list itself is CH-only.
 
 ### Celery beat (optional)
 
