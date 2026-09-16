@@ -723,11 +723,6 @@ def start_worker_all(config: str, loglevel: str, media_port: Optional[int]):
     help="Concurrency for the usage worker (default: 4; thread pool).",
 )
 @click.option(
-    "--traces-worker/--no-traces-worker",
-    default=True,
-    help="Also start a dedicated worker for the `traces` queue (OTLP derive/close; default: True).",
-)
-@click.option(
     "--traces-worker-concurrency",
     default=8,
     type=int,
@@ -777,7 +772,6 @@ def start_all(
     imports_worker_concurrency: int,
     usage_worker: bool,
     usage_worker_concurrency: int,
-    traces_worker: bool,
     traces_worker_concurrency: int,
     beat: bool,
     beat_loglevel: Optional[str],
@@ -789,7 +783,8 @@ def start_all(
 
     By default this also spawns a telephony media server (``eai telephony-worker``)
     and a second Celery worker that consumes the ``imports`` queue (call-import CSV
-    fan-out). Use --no-telephony-worker or --no-imports-worker to skip either.
+    fan-out). A dedicated `traces` queue worker always runs (async OTLP ingest).
+    Use --no-telephony-worker or --no-imports-worker to skip those optional services.
     """
     import signal
     import atexit
@@ -834,11 +829,13 @@ def start_all(
             )
 
     os.environ["SERVICE_MODE"] = "api"
-    
+    os.environ["EFFICIENTAI_CONFIG_PATH"] = str(config_path.resolve())
+
     # Store worker processes for cleanup.
     worker_process = None
     worker_imports_process = None
     worker_usage_process = None
+    worker_traces_process = None
     beat_process = None
     platform_worker_process = None
     telephony_process = None
@@ -860,13 +857,15 @@ def start_all(
 
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process, worker_imports_process, worker_usage_process, beat_process, platform_worker_process, telephony_process
+        nonlocal worker_process, worker_imports_process, worker_usage_process
+        nonlocal worker_traces_process, beat_process, platform_worker_process, telephony_process
         _terminate(telephony_process, "Telephony media server")
         _terminate(beat_process, "Celery Beat")
         _terminate(platform_worker_process, "Celery platform worker")
         _terminate(worker_process, "Celery worker (default)")
         _terminate(worker_imports_process, "Celery worker (imports)")
         _terminate(worker_usage_process, "Celery worker (usage)")
+        _terminate(worker_traces_process, "Celery worker (traces)")
     
     # Register cleanup on exit
     atexit.register(cleanup_processes)
@@ -1044,29 +1043,28 @@ def start_all(
                 prefix="[WORKER-USAGE]",
             )
 
-        if traces_worker:
-            from app.workers.config import TRACES_WORKER_QUEUE
+        from app.workers.config import TRACES_WORKER_QUEUE
 
-            _spawn_worker(
-                [
-                    "celery",
-                    "-A",
-                    "app.workers.celery_app",
-                    "worker",
-                    f"--loglevel={worker_loglevel}",
-                    "-Q",
-                    TRACES_WORKER_QUEUE,
-                    "-P",
-                    "threads",
-                    "-c",
-                    str(traces_worker_concurrency),
-                ],
-                label=(
-                    f"Celery worker ({TRACES_WORKER_QUEUE} queue, "
-                    f"pool=threads, concurrency={traces_worker_concurrency})"
-                ),
-                prefix="[WORKER-TRACES]",
-            )
+        worker_traces_process = _spawn_worker(
+            [
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                f"--loglevel={worker_loglevel}",
+                "-Q",
+                TRACES_WORKER_QUEUE,
+                "-P",
+                "threads",
+                "-c",
+                str(traces_worker_concurrency),
+            ],
+            label=(
+                f"Celery worker ({TRACES_WORKER_QUEUE} queue, "
+                f"pool=threads, concurrency={traces_worker_concurrency})"
+            ),
+            prefix="[WORKER-TRACES]",
+        )
 
         if beat:
             from app.workers.config import PLATFORM_WORKER_QUEUE

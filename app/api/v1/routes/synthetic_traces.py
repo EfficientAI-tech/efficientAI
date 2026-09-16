@@ -390,7 +390,7 @@ def get_otlp_setup(
     api_key: str = Depends(get_api_key),
     workspace_id: UUID = Depends(get_workspace_id),
 ):
-    """One-time OTLP endpoint + Pipecat config."""
+    """OTLP endpoint, session API, and integration snippets for voice-agent tracing."""
     _ = api_key
     return OtlpSetupInfo(
         **build_otlp_setup_info(

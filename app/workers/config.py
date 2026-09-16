@@ -60,7 +60,7 @@ from app.config import settings, load_config_from_file  # noqa: E402
 
 # Load config.yml if it exists (before using settings)
 # This ensures the Celery worker has the same configuration as the main app
-_config_path = Path("config.yml")
+_config_path = Path(os.environ.get("EFFICIENTAI_CONFIG_PATH", "config.yml"))
 if _config_path.exists():
     try:
         load_config_from_file(str(_config_path))

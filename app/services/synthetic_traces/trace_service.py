@@ -29,6 +29,7 @@ from app.services.synthetic_traces.span_storage import (
     collect_trace_ids,
     delete_trace_batches,
     load_trace_spans,
+    delete_trace_s3_wal_batches,
     upload_trace_spans_to_s3,
 )
 from app.services.synthetic_traces import ch_trace_ops
@@ -145,8 +146,18 @@ def enrich_trace_summaries(
         payload_by_trace = {p.synthetic_call_trace_id: p for p in payloads}
         otel_by_trace = {p.synthetic_call_trace_id: p for p in otel_payloads}
 
+    use_ch = ch_trace_ops.use_ch()
     items: List[Dict[str, Any]] = []
     for trace in traces:
+        turn_count = int(trace.turn_count or 0)
+        if use_ch and trace.status == "open":
+            from app.services.synthetic_traces.clickhouse_store import get_live_turns
+
+            live_turns = get_live_turns(trace.id)
+            if live_turns is not None:
+                turn_count = len(live_turns)
+            elif trace.turns:
+                turn_count = len(trace.turns)
         base = {
             "id": trace.id,
             "evaluator_result_id": trace.evaluator_result_id,
@@ -158,7 +169,7 @@ def enrich_trace_summaries(
             "status": trace.status,
             "started_at": trace.started_at,
             "ended_at": trace.ended_at,
-            "turn_count": trace.turn_count,
+            "turn_count": turn_count,
             "response_latency_p50_ms": trace.response_latency_p50_ms,
             "response_latency_p90_ms": trace.response_latency_p90_ms,
             "response_latency_p95_ms": trace.response_latency_p95_ms,
@@ -167,6 +178,8 @@ def enrich_trace_summaries(
             "failure_flags": trace.failure_flags,
             "call_recording_id": trace.call_recording_id,
             "spans_storage": trace.spans_storage,
+            "span_count": int(getattr(trace, "span_count", 0) or 0),
+            "derive_pending": bool(getattr(trace, "derive_pending", False)),
         }
         storage = trace.spans_storage or "legacy_jsonb"
         needs_fallback = (
@@ -924,26 +937,22 @@ def build_otlp_setup_info(
     otlp_endpoint = f"{api_base}{OBSERVABILITY_TRACES_API_PATH}"
     sessions_endpoint = f"{api_base}{OBSERVABILITY_TRACES_API_PATH}/sessions"
     workspace_value = str(workspace_id) if workspace_id else "<workspace-uuid>"
-    install_command = "\n".join(
-        [
-            'pip install "pipecat-ai[silero,deepgram,openai,cartesia,runner,webrtc]>=1.4.0"',
-            'pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"',
-        ]
+    install_command = (
+        'pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"'
     )
-    docs_url = "https://docs.efficientai.cloud/docs/monitoring/call-traces/pipecat-integration/"
+    docs_url = "https://docs.efficientai.cloud/docs/monitoring/call-traces/"
     env_block = "\n".join(
         [
-            "# Save as .env in your Pipecat project folder.",
+            "# Save as .env next to your voice agent (Pipecat, LiveKit worker, etc.).",
             "# Do NOT set EFFICIENTAI_CALL_SHORT_ID — a new Call ID is created per call.",
             "",
             f"EFFICIENTAI_API_BASE={api_base}",
             f"EFFICIENTAI_WORKSPACE_ID={workspace_value}",
             "EFFICIENTAI_API_KEY=",
+            f"# EFFICIENTAI_OTLP_ENDPOINT={otlp_endpoint}",
             "",
-            "# Your voice provider keys (examples — add the ones your bot uses)",
-            "# DEEPGRAM_API_KEY=",
-            "# OPENAI_API_KEY=",
-            "# CARTESIA_API_KEY=",
+            "# Optional: webrtc | websocket | phone | custom",
+            "# EFFICIENTAI_TRACE_TRANSPORT=websocket",
         ]
     )
     bot_imports_snippet = '''from dotenv import load_dotenv
@@ -952,29 +961,31 @@ from efficientai.integrations.efficientai_traces import (
     close_trace_session,
     ensure_trace_session,
     require_deployment_trace_env,
-    resolve_trace_transport,
-    setup_pipecat_worker_tracing,
+    setup_efficientai_tracing,
 )
 
 load_dotenv(override=True)
 require_deployment_trace_env()
 '''
-    pipecat_example = '''async def run_bot(transport, runner_args):
-    trace_ctx = await ensure_trace_session(
-        transport=resolve_trace_transport(runner_args, transport),
-    )
-    tracing = setup_pipecat_worker_tracing(trace_ctx)
+    pipecat_example = '''# Framework-agnostic session + OTLP (works for any stack that exports spans)
 
-    worker = PipelineWorker(
-        pipeline,
-        enable_tracing=True,
-        additional_span_attributes=tracing["additional_span_attributes"],
+async def on_call_start(transport: str = "websocket"):
+    trace_ctx = await ensure_trace_session(transport=transport)
+    setup_efficientai_tracing(
+        service_name="voice-agent",
+        call_short_id=trace_ctx["call_short_id"],
+        workspace_id=trace_ctx.get("workspace_id"),
+        otlp_endpoint=trace_ctx["otlp_endpoint"],
+        api_key=os.environ["EFFICIENTAI_API_KEY"],
     )
+    return trace_ctx
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        await worker.cancel()
-        await close_trace_session(trace_ctx)
+async def on_call_end(trace_ctx):
+    await close_trace_session(trace_ctx)
+
+# Pipecat: use setup_pipecat_worker_tracing(trace_ctx) + PipelineWorker(enable_tracing=True)
+# LiveKit / custom: point your OTLP HTTP exporter at trace_ctx["otlp_endpoint"] with X-API-Key
+# and span attributes efficientai.call_short_id / efficientai.workspace_id
 '''
     setup_sections = [
         {
@@ -993,16 +1004,16 @@ require_deployment_trace_env()
                     "title": "Create an API key",
                     "detail": (
                         "Open Settings → API keys, create a key, and copy it. "
-                        "You will paste it into your Pipecat .env file below."
+                        "You will paste it into your agent .env file below."
                     ),
                 },
             ],
         },
         {
             "part": "2",
-            "title": "Pipecat project (on your computer)",
+            "title": "Voice agent project (on your computer)",
             "subtitle": (
-                "In the folder where you run bot.py — not inside the EfficientAI repository."
+                "In the folder where you run your bot or worker — not inside the EfficientAI repo."
             ),
             "steps": [
                 {
@@ -1015,7 +1026,7 @@ require_deployment_trace_env()
                 {
                     "title": "Install packages (once)",
                     "detail": (
-                        "Run both install commands in your Pipecat project folder. "
+                        "Install efficientai[otel] in your agent project. "
                         "You do not need to clone or run EfficientAI locally."
                     ),
                 },
@@ -1023,10 +1034,10 @@ require_deployment_trace_env()
         },
         {
             "part": "3",
-            "title": "Add the three hooks to bot.py",
+            "title": "Open session, export OTLP, close session",
             "subtitle": (
-                "Pipecat creates STT/LLM/TTS spans (enable_tracing=True). "
-                "EfficientAI routes them to this workspace."
+                "Mint a Call ID per conversation, export OpenTelemetry spans to EfficientAI, "
+                "then close the session when the call ends."
             ),
             "steps": [
                 {
@@ -1036,16 +1047,15 @@ require_deployment_trace_env()
                 {
                     "title": "Wire tracing when a call starts and ends",
                     "detail": (
-                        "Copy the run_bot snippet: ensure_trace_session → "
-                        "setup_pipecat_worker_tracing → PipelineWorker(enable_tracing=True) → "
-                        "close_trace_session on disconnect."
+                        "on_call_start: ensure_trace_session + setup_efficientai_tracing (or your "
+                        "framework's OTLP exporter). on_call_end: close_trace_session."
                     ),
                 },
                 {
-                    "title": "Or copy a full example bot",
+                    "title": "Framework examples (optional)",
                     "detail": (
-                        "From the EfficientAI repo: "
-                        "docs/examples/pipecat_multi_provider_webrtc_tracing.py → save as bot.py"
+                        "Pipecat: docs/examples/pipecat_*_tracing.py in the EfficientAI repo. "
+                        "Other stacks: send OTLP HTTP to the endpoint below with API key headers."
                     ),
                 },
             ],
@@ -1057,13 +1067,13 @@ require_deployment_trace_env()
             "steps": [
                 {
                     "title": "Start your bot",
-                    "detail": "Run: uv run bot.py (or python bot.py)",
+                    "detail": "Run your agent (e.g. uv run bot.py or your LiveKit worker).",
                 },
                 {
-                    "title": "Place a WebRTC test call",
+                    "title": "Place a test call",
                     "detail": (
-                        "Open http://localhost:7860/client → WebRTC → Connect → "
-                        "speak for two or three turns → Disconnect."
+                        "Connect via your transport (WebRTC, WebSocket, phone, etc.), "
+                        "speak for a few turns, then hang up."
                     ),
                 },
                 {
@@ -1083,16 +1093,22 @@ require_deployment_trace_env()
     ]
     setup_checklist = [
         "API key created in Settings → API keys",
-        ".env file in Pipecat folder with EFFICIENTAI_API_KEY, EFFICIENTAI_WORKSPACE_ID, EFFICIENTAI_API_BASE",
-        "efficientai[otel] and Pipecat packages installed",
-        "Three hooks + enable_tracing=True in bot.py",
-        "uv run bot.py → WebRTC test call → Refresh on Calls tab",
+        ".env in agent project: EFFICIENTAI_API_KEY, EFFICIENTAI_WORKSPACE_ID, EFFICIENTAI_API_BASE",
+        "efficientai[otel] installed (plus your voice framework)",
+        "Per call: ensure_trace_session → OTLP spans → close_trace_session",
+        "Test call → Refresh on Calls tab",
     ]
     integration_pieces = [
         {"piece": ".env", "role": "API key, workspace, and where to send traces"},
         {"piece": "ensure_trace_session()", "role": "Opens a trace and receives a six-digit Call ID"},
-        {"piece": "setup_pipecat_worker_tracing()", "role": "Sends spans to EfficientAI with that Call ID"},
-        {"piece": "enable_tracing=True", "role": "Pipecat records STT, LLM, and TTS timing spans"},
+        {
+            "piece": "setup_efficientai_tracing() or OTLP exporter",
+            "role": "Sends OpenTelemetry spans with Call ID + workspace correlation",
+        },
+        {
+            "piece": "STT / LLM / TTS spans",
+            "role": "From your framework (e.g. Pipecat enable_tracing) or your own instrumentation",
+        },
         {"piece": "close_trace_session()", "role": "Flushes spans and marks the trace closed"},
     ]
     troubleshooting = [
@@ -1106,7 +1122,7 @@ require_deployment_trace_env()
         },
         {
             "symptom": "Call ID in logs but empty trace",
-            "fix": "Set enable_tracing=True on PipelineWorker and install efficientai[otel]",
+            "fix": "Ensure OTLP export is configured and spans include efficientai.call_short_id",
         },
         {
             "symptom": "Trace stays open",
@@ -1117,17 +1133,17 @@ require_deployment_trace_env()
         "otlp_endpoint": otlp_endpoint,
         "api_key_header": "X-API-Key",
         "setup_intro": (
-            "Connect your Pipecat voice agent running on your computer to EfficientAI. "
-            "You do not need to install or run EfficientAI locally — only add a .env file, "
-            "install a small package, and three short code hooks in your bot.py."
+            "Connect any self-hosted voice agent (Pipecat, LiveKit, custom) via OpenTelemetry. "
+            "Add a .env file, install efficientai[otel], open a trace session per call, "
+            "export spans to EfficientAI, and close the session when the call ends."
         ),
         "install_command": install_command,
         "env_block": env_block,
         "docs_url": docs_url,
         "bot_imports_snippet": bot_imports_snippet,
-        "run_command": "uv run bot.py",
-        "test_client_url": "http://localhost:7860/client",
-        "example_bot_path": "docs/examples/pipecat_multi_provider_webrtc_tracing.py",
+        "run_command": "# your agent start command",
+        "test_client_url": "",
+        "example_bot_path": "docs/examples/",
         "one_time_env_vars": {
             "EFFICIENTAI_API_BASE": api_base,
             "EFFICIENTAI_WORKSPACE_ID": workspace_value,
@@ -1135,7 +1151,10 @@ require_deployment_trace_env()
             "EFFICIENTAI_OTLP_ENDPOINT": otlp_endpoint,
         },
         "transport_options": {
-            "webrtc": "Default — Pipecat runner at http://localhost:7860/client",
+            "webrtc": "WebRTC client",
+            "websocket": "WebSocket / RTVI",
+            "phone": "Telephony / SIP",
+            "custom": "Other",
         },
         "sessions_endpoint": sessions_endpoint,
         "workspace_header": "X-Workspace-Id",
@@ -1752,6 +1771,11 @@ def close_and_offload_trace(db: Session, *, trace_id: UUID) -> Optional[Syntheti
         trace.spans_s3_key = s3_key
         trace.spans_storage = SPANS_STORAGE_S3
         delete_trace_batches(db, trace.id)
+        delete_trace_s3_wal_batches(
+            organization_id=trace.organization_id,
+            workspace_id=trace.workspace_id,
+            trace_id=trace.id,
+        )
         otel_payload = (
             db.query(SyntheticTraceOtelPayload)
             .filter(SyntheticTraceOtelPayload.synthetic_call_trace_id == trace.id)

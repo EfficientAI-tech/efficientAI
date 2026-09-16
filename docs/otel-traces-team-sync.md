@@ -4,7 +4,7 @@
 
 **Branch:** `otel-traces`
 
-**Goal (when we ship):** Production-scale **call observability** for voice agents. Pipecat (and similar) emit **OTLP spans** during a call; we ingest, store, derive turns/latency, and show **waterfall + transcript** in the UI. Trace headers and spans live in **ClickHouse**; **Postgres** stays the control plane (orgs, evaluators, `evaluator_results.synthetic_call_trace_id` as an opaque UUID link).
+**Goal (when we ship):** Production-scale **call observability** for voice agents (Pipecat, LiveKit, custom OTLP). Bots emit **OTLP spans** during a call; we ingest, store, derive turns/latency, and show **waterfall + transcript** in the UI. Trace headers and spans live in **ClickHouse**; **Postgres** stays the control plane (orgs, evaluators, `evaluator_results.synthetic_call_trace_id` as an opaque UUID link).
 
 ---
 
@@ -14,9 +14,10 @@
 |------|----------------|
 | **Ingest** | HTTP OTLP (protobuf/JSON); optional async path: S3 WAL → Celery → ClickHouse |
 | **Storage** | ClickHouse for trace list/detail/spans; S3 under `traces/organizations/...` for batches and archived spans |
-| **Workers** | Dedicated Celery queue **`traces`** → Docker service **`worker-traces`** |
+| **Workers** | Dedicated Celery queue **`traces`** → **`worker-traces`** (Docker) or **`[WORKER-TRACES]`** (`eai start-all`) |
 | **Runtime wiring** | Playground + voice WebSocket: `call_short_id`, in-process OTLP export, link/close trace session |
-| **UI** | Test Insights / call trace views: list, detail, waterfall, span-based transcript, Pipecat setup wizard |
+| **UI** | **Calls** hub (`/observability/calls`): list, detail, waterfall, span-based transcript |
+| **SDK** | `efficientai[otel]` — session API + OTLP export (`src/efficientai/integrations/efficientai_traces/`) |
 | **Evaluators** | Trace linked to evaluator results; OTEL correlation API |
 | **Ops** | Readiness checks ClickHouse when `clickhouse.url` is set; CH schema bootstrapped on API startup |
 | **Migrations** | `078` / `084` / `085` trace-related PG (legacy); **`092` drops PG trace tables** → CH required for traces in prod |
@@ -76,15 +77,16 @@ sequenceDiagram
   Bot->>API: POST OTLP (protobuf/JSON)
   Note over API: Rate limit, auth, size check
   alt defer_parse_to_worker + async (default for scale)
-    API->>Redis: next batch seq (per trace UUID)
-    API->>S3: PUT raw body (WAL batch)
-    API->>CH: batch metadata (dedupe / bookkeeping)
+    API->>Redis: INCR batch seq (per trace UUID)
+    API->>S3: PUT raw body → …/batches/{seq}.json
+    API->>Redis: batch meta (content-type) for sweeper
     API->>Redis: Celery enqueue process_s3_otlp_batch
     API-->>Bot: 202 deferred (bytes accepted)
     WT->>S3: GET batch
     WT->>WT: parse OTLP, correlate call_short_id
-    WT->>CH: insert spans + update trace header
-    WT->>WT: schedule derive_trace_turns (turns, latency)
+    WT->>CH: insert trace_observations + update call_traces header
+    WT->>S3: DELETE batch (WAL consumed)
+    WT->>Redis: mark batch processed + enqueue derive_trace_turns (debounced)
   else defer off: parse in API, async on
     API->>API: parse OTLP in request thread
     API->>CH: persist spans (ingest_otlp_batch_ch)
@@ -126,7 +128,7 @@ sequenceDiagram
 
 | Task | Does | Without worker-traces |
 |------|------|------------------------|
-| **`process_s3_otlp_batch`** | Download WAL from S3 → parse OTLP → correlate → **insert spans into CH** → mark batch processed | Ingest returns **202** but **UI stays empty**: batches pile up in S3, no spans in CH |
+| **`process_s3_otlp_batch`** | Download WAL from S3 → parse OTLP → correlate → **insert spans into CH** → delete S3 object → mark batch processed in Redis. **Fails/retry** if 0 rows persisted. | Ingest returns **202** but **UI empty**: batches pile up in S3, no spans in CH |
 | **`derive_trace_turns`** | Recompute turns, latency percentiles, component aggregates from spans | Waterfall may show raw spans but **transcript / latency summary stale or missing** |
 | **`process_staged_otlp`** | Process rows in ingest staging table (if that path is used) | Staged ingests stuck **pending** |
 | **`close_and_offload_trace`** | Close session, derive final metrics, optional **spans.json** archive to S3 | Traces stuck **open**; offload to S3 may not run |
@@ -144,9 +146,16 @@ sequenceDiagram
 
 ### S3 (`traces.s3_prefix`, e.g. `traces/`)
 
+| Object | Lifetime | Purpose |
+|--------|----------|---------|
+| `…/traces/{trace_uuid}/batches/{seq}.json` | **Seconds** (while worker lags) | Durable WAL between API accept and CH insert; **deleted after successful worker parse** |
+| `…/traces/{trace_uuid}/spans.json` | **Long-term** | Compact archive written on **close** from ClickHouse spans; leftover `batches/` prefix deleted on close |
+
 | Does | Without it |
 |------|------------|
-| **WAL** for raw OTLP batches before worker parse; long-term **spans.json** archive on close | Deferred ingest **fails** at PUT; no durable buffer if worker is slow |
+| WAL + archive | Deferred ingest **fails** at PUT; no buffer if worker is slow |
+
+**Healthy path (what you see in the bucket):** often **no `batches/` during a live call** (worker keeps up). After hangup: **`spans.json` only** under that trace prefix.
 
 ### Redis
 
@@ -235,7 +244,19 @@ sequenceDiagram
 
 ### Workers (Celery)
 
-See **§4** for each task and failure mode. Queue **`traces`** only on **`worker-traces`** (`docker compose`: `--queues traces --concurrency 8`).
+See **§4** for each task and failure mode. Queue **`traces`** only on a dedicated consumer (see **§6b**).
+
+### 6b. Runtime topologies (do not double-consume)
+
+| How you run | Traces worker | Infra |
+|-------------|---------------|--------|
+| **Local dev (common)** | `eai start-all` spawns **`[WORKER-TRACES]`** subprocess (always on; not optional). Does **not** start Docker `worker-traces`. | `docker compose up -d db redis clickhouse` + `start-all` on host |
+| **Full Docker Compose** | Service **`worker-traces`** (`eai worker … -Q traces`). API service uses **`eai start`** only — **no** embedded traces worker. | `app` + `worker-traces` + `beat` + … |
+| **Production** | Scale **N replicas** of traces worker; same Redis broker + S3 + CH as API | LB → API pods; HPA on `worker-traces` |
+
+`start-all` sets **`EFFICIENTAI_CONFIG_PATH`** so Celery children load the same `config.yml` as `--config`.
+
+**Celery Beat** (idle close, orphan S3 sweep every 15m) runs in `start-all` by default; schedules tasks on queue **`traces`** — still needs a traces consumer.
 
 ---
 
@@ -297,7 +318,21 @@ After **092**, rolling back trace **code** without CH is not viable. Keep CH up 
 
 ---
 
-## 9. On the branch today vs what prod will need at ship time
+## 9. Scaling mental model (thousands of calls)
+
+| Tier | Concurrent OTLP calls (order of magnitude) | Topology |
+|------|---------------------------------------------|----------|
+| Local / pilot | 1–20 | `start-all` + single CH container |
+| Production tenant | 20–100+ | Multiple API pods + **multiple `worker-traces`** + managed CH + S3 |
+| High volume | 500+ | Same + CH sizing, rate limits, Phase 3 rollups/collector (see architecture.mdx) |
+
+**Design properties that scale:** API O(1) per batch (S3 PUT + enqueue); S3 WAL not held for whole call; CH partitioned observations; `call_short_id` correlation independent of OTel `trace_id`.
+
+**Not scalable as a single process:** one laptop `start-all` for thousands of **concurrent** calls — scale **workers and CH**, not the dev entrypoint.
+
+---
+
+## 10. On the branch today vs what prod will need at ship time
 
 | Implemented on `otel-traces` | Must be in place when we go live |
 |------------------------------|----------------------------------|
@@ -308,7 +343,7 @@ After **092**, rolling back trace **code** without CH is not viable. Keep CH up 
 
 ---
 
-## 10. Further reading in-repo
+## 11. Further reading in-repo
 
 | Doc | Topic |
 |-----|--------|
@@ -320,7 +355,7 @@ After **092**, rolling back trace **code** without CH is not viable. Keep CH up 
 
 ---
 
-## 11. Key API surface (quick reference)
+## 12. Key API surface (quick reference)
 
 | Endpoint area | Purpose |
 |---------------|---------|

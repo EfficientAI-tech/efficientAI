@@ -17,7 +17,10 @@ from app.models.database import (
     SyntheticTraceSpanBatch,
 )
 from app.services.storage.blob_storage_service import blob_storage_service
-from app.services.storage.blob_paths import build_trace_spans_object_key
+from app.services.storage.blob_paths import (
+    build_trace_batches_prefix,
+    build_trace_spans_object_key,
+)
 
 SPANS_STORAGE_LEGACY = "legacy_jsonb"
 SPANS_STORAGE_BATCHES = "batches"
@@ -139,3 +142,44 @@ def delete_trace_batches(db: Session, trace_id: UUID) -> None:
     db.query(SyntheticTraceSpanBatch).filter(
         SyntheticTraceSpanBatch.synthetic_call_trace_id == trace_id
     ).delete(synchronize_session=False)
+
+
+def delete_trace_s3_wal_batches(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    trace_id: UUID,
+) -> int:
+    """Remove leftover S3 WAL batch JSON after spans.json is the canonical archive."""
+    if not settings.S3_ENABLED:
+        return 0
+    prefix = build_trace_batches_prefix(
+        prefix=settings.TRACES_S3_PREFIX,
+        organization_id=str(organization_id),
+        workspace_id=str(workspace_id),
+        trace_id=str(trace_id),
+    )
+    try:
+        deleted, errors = blob_storage_service.delete_keys_by_prefix(prefix)
+        if errors:
+            logger.warning(
+                "Partial S3 WAL batch cleanup trace_id={} prefix={} errors={}",
+                trace_id,
+                prefix,
+                errors[:3],
+            )
+        if deleted:
+            logger.debug(
+                "Deleted {} S3 WAL batch object(s) for trace_id={}",
+                deleted,
+                trace_id,
+            )
+        return deleted
+    except Exception as exc:
+        logger.warning(
+            "Failed S3 WAL batch cleanup trace_id={} prefix={}: {}",
+            trace_id,
+            prefix,
+            exc,
+        )
+        return 0

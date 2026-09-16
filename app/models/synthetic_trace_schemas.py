@@ -59,6 +59,8 @@ class SyntheticCallTraceSummary(BaseModel):
     failure_flags: Optional[List[str]] = None
     call_recording_id: Optional[UUID] = None
     spans_storage: Optional[str] = None
+    span_count: int = 0
+    derive_pending: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -117,7 +119,7 @@ class SyntheticCallTraceListResponse(BaseModel):
 
 
 class OtlpSetupInfo(BaseModel):
-    """Pipecat WebRTC local setup for call trace ingest."""
+    """OTLP + session API setup for self-hosted voice agents (Pipecat, LiveKit, custom)."""
 
     otlp_endpoint: str
     sessions_endpoint: str = ""
@@ -130,7 +132,7 @@ class OtlpSetupInfo(BaseModel):
     bot_imports_snippet: str = ""
     run_command: str = "uv run bot.py"
     test_client_url: str = "http://localhost:7860/client"
-    example_bot_path: str = "docs/examples/pipecat_multi_provider_webrtc_tracing.py"
+    example_bot_path: str = "docs/examples/"
     one_time_env_vars: Dict[str, str] = Field(default_factory=dict)
     setup_steps: List[Dict[str, str]] = Field(default_factory=list)
     setup_sections: List[Dict[str, Any]] = Field(default_factory=list)

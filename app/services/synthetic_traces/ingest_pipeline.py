@@ -266,9 +266,10 @@ def ingest_otlp_batch_ch(
         if not trace:
             total_accepted += len(group_spans)
             continue
-        ch_trace_ops.persist_spans_ch(trace, group_spans)
-        schedule_derive(trace.id)
-        total_accepted += len(group_spans)
+        _trace, inserted = ch_trace_ops.persist_spans_ch(trace, group_spans)
+        if inserted > 0:
+            schedule_derive(_trace.id)
+        total_accepted += inserted
         any_correlated = any_correlated or correlated
         last_trace = trace
 
@@ -839,16 +840,24 @@ def process_s3_otlp_batch(
     )
 
     if is_batch_processed(s3_key):
+        try:
+            blob_storage_service.delete_file_by_key(s3_key)
+        except Exception as exc:
+            logger.debug("Orphan S3 batch cleanup after done marker {}: {}", s3_key, exc)
         return
 
     owns_session = db is None
     session = db or SessionLocal()
-    processed = False
+    persisted_rows = 0
     try:
         body = blob_storage_service.download_file_by_key(s3_key)
         spans, _fmt = parse_otlp_body(body, content_type)
         if not spans:
-            processed = True
+            mark_batch_processed(s3_key)
+            try:
+                blob_storage_service.delete_file_by_key(s3_key)
+            except Exception as exc:
+                logger.warning("Failed to delete empty S3 batch {}: {}", s3_key, exc)
             return
 
         groups = group_spans_by_call_short_id(spans, header_call_short_id=header_call_short_id)
@@ -864,17 +873,27 @@ def process_s3_otlp_batch(
                 header_call_short_id=group_call_short_id or header_call_short_id,
             )
             if not trace:
+                logger.warning(
+                    "S3 batch {} skipped group call_short_id={}: trace correlate failed",
+                    s3_key,
+                    group_call_short_id,
+                )
                 continue
-            ch_trace_ops.persist_spans_ch(trace, group_spans)
-            schedule_derive(trace.id)
-        processed = True
-    finally:
-        if processed:
+            _trace, inserted = ch_trace_ops.persist_spans_ch(trace, group_spans)
+            persisted_rows += inserted
+            if inserted > 0:
+                schedule_derive(_trace.id)
+        if persisted_rows > 0:
             mark_batch_processed(s3_key)
             try:
                 blob_storage_service.delete_file_by_key(s3_key)
             except Exception as exc:
                 logger.warning("Failed to delete processed S3 batch {}: {}", s3_key, exc)
+        else:
+            raise RuntimeError(
+                f"S3 batch {s3_key} parsed {len(spans)} span(s) but persisted 0 to ClickHouse"
+            )
+    finally:
         if owns_session:
             session.close()
 

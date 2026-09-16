@@ -1,4 +1,4 @@
-"""OTLP export setup for customer Pipecat pipelines."""
+"""OTLP export setup for customer voice-agent pipelines (framework-agnostic)."""
 
 from __future__ import annotations
 

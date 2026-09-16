@@ -1,15 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import {
-  Activity,
-  BookOpen,
-  Eye,
-  Loader,
-  PhoneCall,
-  RefreshCw,
-  Trash2,
-} from 'lucide-react'
+import { Eye, Loader, PhoneCall, RefreshCw, Trash2 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
@@ -19,9 +11,6 @@ import { CallAgentLink } from '../observability/CallAgentLink'
 import { EventBadge, PlatformBadge } from '../observability/observabilityCallUi'
 import { ObservabilityCall } from '../../types/api'
 import { useWorkspaceStore } from '../../store/workspaceStore'
-import PipecatConnectSetup from './PipecatConnectSetup'
-
-type Tab = 'runs' | 'setup'
 type StatusFilter = 'all' | 'open' | 'closed'
 type EventFilter = 'all' | 'call_ended' | 'call_started' | 'other'
 
@@ -68,7 +57,6 @@ export default function TestInsights() {
   const resultFromUrl = searchParams.get('result')
   const traceFromUrl = searchParams.get('trace')
   const obsFromUrl = searchParams.get('obs')
-  const [tab, setTab] = useState<Tab>('runs')
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(traceFromUrl)
   const [selectedObsCallId, setSelectedObsCallId] = useState<string | null>(obsFromUrl)
   const [selectedEvaluatorResultId, setSelectedEvaluatorResultId] = useState<string | null>(resultFromUrl)
@@ -97,20 +85,12 @@ export default function TestInsights() {
         limit: PAGE_SIZE,
         status: apiStatus,
       }),
-    enabled: tab === 'runs' && Boolean(activeWorkspaceId),
+    enabled: Boolean(activeWorkspaceId),
     retry: false,
     staleTime: 0,
     refetchOnMount: 'always',
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
-  })
-
-  const { data: setup, isLoading: loadingSetup } = useQuery({
-    queryKey: ['synthetic-call-trace-setup', activeWorkspaceId],
-    queryFn: () => apiClient.getSyntheticCallTraceSetup(),
-    enabled: tab === 'setup' && Boolean(activeWorkspaceId),
-    retry: false,
-    staleTime: 5 * 60 * 1000,
   })
 
   const {
@@ -121,7 +101,7 @@ export default function TestInsights() {
   } = useQuery<ObservabilityCall[]>({
     queryKey: ['observability-calls', activeWorkspaceId],
     queryFn: () => apiClient.listObservabilityCalls(),
-    enabled: tab === 'runs' && Boolean(activeWorkspaceId),
+    enabled: Boolean(activeWorkspaceId),
     refetchInterval: (query) => {
       const data = query.state.data
       if (!data || !Array.isArray(data)) return false
@@ -221,14 +201,6 @@ export default function TestInsights() {
       : listError
         ? 'Could not load traces'
         : null
-
-  const envBlock =
-    (typeof setup?.env_block === 'string' && setup.env_block.trim()) ||
-    (setup?.one_time_env_vars
-      ? Object.entries(setup.one_time_env_vars)
-          .map(([k, v]) => `${k}=${v}`)
-          .join('\n')
-      : '')
 
   const openTrace = (traceId: string) => {
     setSelectedTraceId(traceId)
@@ -334,77 +306,28 @@ export default function TestInsights() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Calls</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Telephony and externally connected Pipecat sessions (not in-app Test Agent playground calls)
+            Telephony and externally connected voice agents (OTLP), not in-app Test Agent playground calls
           </p>
         </div>
-        {tab === 'runs' && (
-          <Button
-            variant="outline"
-            onClick={handleRefresh}
-            disabled={fetchingList || fetchingObsCalls}
-          >
-            <RefreshCw
-              className={`w-4 h-4 mr-2 ${fetchingList || fetchingObsCalls ? 'animate-spin' : ''}`}
-            />
-            Refresh
-          </Button>
-        )}
+        <Button
+          variant="outline"
+          onClick={handleRefresh}
+          disabled={fetchingList || fetchingObsCalls}
+        >
+          <RefreshCw
+            className={`w-4 h-4 mr-2 ${fetchingList || fetchingObsCalls ? 'animate-spin' : ''}`}
+          />
+          Refresh
+        </Button>
       </div>
 
-      <div className="flex gap-1 border-b border-gray-200">
-        <button
-          type="button"
-          onClick={() => setTab('runs')}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === 'runs'
-              ? 'border-primary-600 text-primary-700'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <Activity className="w-4 h-4 inline mr-1.5 -mt-0.5" />
-          Calls
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('setup')}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === 'setup'
-              ? 'border-primary-600 text-primary-700'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          <BookOpen className="w-4 h-4 inline mr-1.5 -mt-0.5" />
-          Connect Pipecat
-        </button>
-      </div>
-
-      {tab === 'setup' && (
-        <div className="bg-white shadow rounded-lg border border-gray-200 overflow-hidden">
-          {!activeWorkspaceId && (
-            <p className="p-6 text-sm text-amber-900 bg-amber-50">
-              Select a workspace to load Pipecat setup instructions for that workspace.
-            </p>
-          )}
-          {activeWorkspaceId && loadingSetup && (
-            <p className="p-6 text-sm text-gray-500">Loading setup…</p>
-          )}
-          {activeWorkspaceId && setup && (
-            <PipecatConnectSetup
-              setup={setup}
-              envBlock={envBlock}
-              onGoToCalls={() => setTab('runs')}
-            />
-          )}
-        </div>
-      )}
-
-      {tab === 'runs' && !activeWorkspaceId && (
+      {!activeWorkspaceId && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg px-6 py-8 text-center text-sm text-amber-900">
           Select a workspace to view calls.
         </div>
       )}
 
-      {tab === 'runs' && activeWorkspaceId && (
+      {activeWorkspaceId && (
         <>
           {(traces.length > 0 || productionObsCalls.length > 0) && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -526,14 +449,7 @@ export default function TestInsights() {
             {!isListLoading && !hasListRows && !listError && (
               <div className="p-12 text-center text-sm text-gray-600">
                 <p className="font-medium text-gray-900 mb-1">No calls yet</p>
-                <p className="mb-4">Run a voice agent session to see calls here.</p>
-                <button
-                  type="button"
-                  onClick={() => setTab('setup')}
-                  className="text-primary-600 hover:text-primary-800 font-medium"
-                >
-                  Connect Pipecat →
-                </button>
+                <p>Run a voice agent session with OTLP tracing enabled to see calls here.</p>
               </div>
             )}
 
@@ -627,6 +543,8 @@ export default function TestInsights() {
                         status: string
                         failure_flags?: string[]
                         turn_count: number
+                        span_count?: number
+                        derive_pending?: boolean
                         response_latency_p50_ms?: number | null
                         started_at: string
                       }) => (
@@ -661,7 +579,11 @@ export default function TestInsights() {
                             {trace.transport ?? 'webrtc'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 tabular-nums">
-                            {trace.turn_count} turns
+                            {trace.status === 'open' &&
+                            trace.turn_count < 1 &&
+                            (trace.derive_pending || (trace.span_count ?? 0) > 0)
+                              ? 'Processing spans…'
+                              : `${trace.turn_count} turns`}
                             {trace.response_latency_p50_ms != null
                               ? ` · ${Math.round(trace.response_latency_p50_ms)} ms p50`
                               : ''}

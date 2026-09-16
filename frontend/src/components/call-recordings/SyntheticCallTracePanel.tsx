@@ -662,9 +662,9 @@ export default function SyntheticCallTracePanel({
             <p>No pipeline trace for this run yet. OTLP tracing is available for internal Test Agent web sessions.</p>
           ) : (
             <>
-              No trace yet. Run a Pipecat session with tracing enabled, then see{' '}
+              No trace yet. Run a voice agent session with OTLP tracing enabled, then check{' '}
               <Link to="/observability/calls" className="text-primary-600 hover:text-primary-800 font-medium">
-                Connect Pipecat →
+                Calls
               </Link>
             </>
           )}

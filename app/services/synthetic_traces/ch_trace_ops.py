@@ -287,12 +287,20 @@ def close_and_offload_trace_ch(db: Session, *, trace_id: UUID) -> Optional[Trace
     scoped = filter_spans_for_trace(spans, call_short_id=trace.call_short_id)
     trace = apply_derived_to_trace(trace, scoped)
 
-    from app.services.synthetic_traces.span_storage import upload_trace_spans_to_s3_ch
+    from app.services.synthetic_traces.span_storage import (
+        delete_trace_s3_wal_batches,
+        upload_trace_spans_to_s3_ch,
+    )
 
     s3_key = upload_trace_spans_to_s3_ch(trace, scoped)
     if s3_key:
         trace.spans_s3_key = s3_key
         trace.spans_storage = SPANS_STORAGE_S3
+        delete_trace_s3_wal_batches(
+            organization_id=trace.organization_id,
+            workspace_id=trace.workspace_id,
+            trace_id=trace.id,
+        )
 
     trace.status = "closed"
     trace.ended_at = _utcnow()
@@ -388,15 +396,17 @@ def _latest_span_time(spans: List[Dict[str, Any]]) -> datetime:
 def persist_spans_ch(
     trace: TraceRecord,
     spans: List[Dict[str, Any]],
-) -> TraceRecord:
-    insert_observations(workspace_id=trace.workspace_id, trace_uuid=trace.id, spans=spans)
+) -> tuple[TraceRecord, int]:
+    inserted = insert_observations(
+        workspace_id=trace.workspace_id, trace_uuid=trace.id, spans=spans
+    )
     with trace_header_lock(trace.id):
         latest = get_trace_by_uuid(trace.id) or trace
-        latest.span_count = int(latest.span_count or 0) + len(spans)
+        latest.span_count = int(latest.span_count or 0) + inserted
         latest.last_span_at = _latest_span_time(spans)
         latest.derive_pending = True
         upsert_trace_header(latest)
-        return latest
+        return latest, inserted
 
 
 def link_trace_to_evaluator_result_ch(

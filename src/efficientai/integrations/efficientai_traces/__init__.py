@@ -1,4 +1,4 @@
-"""EfficientAI synthetic trace helpers for self-hosted Pipecat agents."""
+"""EfficientAI call-trace helpers for self-hosted voice agents (OTLP + session API)."""
 
 from efficientai.integrations.efficientai_traces.correlation import (
     build_outbound_sip_headers,
