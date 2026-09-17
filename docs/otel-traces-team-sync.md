@@ -371,7 +371,7 @@ After **092**, rolling back trace **code** without CH is not viable. Keep CH up 
 
 | Doc | Topic |
 |-----|--------|
-| `docs/call-traces-scaling-tdd-confluence.md` | Scaling, queues, failure modes |
+| `docs/call-traces-scaling-tdd-confluence.md` | **v2.0** — Confluence TDD: E2E architecture, DevOps service map, bottlenecks (CH/S3 WAL) |
 | `docs/call-traces-storage-decision-tdd-confluence.md` | S3-first ingest decision |
 | `docs-fumadocs/content/docs/monitoring/call-traces/architecture.mdx` | S3 WAL + ClickHouse architecture |
 | `docker-compose.yml` | `clickhouse`, `worker-traces` services |
