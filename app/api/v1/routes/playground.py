@@ -53,6 +53,30 @@ def _validate_playground_audio_url(url: str) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+def _refresh_playground_vapi_call_data(
+    db: Session,
+    call_recording: CallRecording,
+    organization_id: UUID,
+) -> Dict[str, Any]:
+    from app.services.voice_providers.vapi_recording import refresh_vapi_call_data_from_provider
+
+    prev_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    merged = refresh_vapi_call_data_from_provider(
+        db,
+        organization_id=organization_id,
+        agent_id=call_recording.agent_id,
+        provider_call_id=call_recording.provider_call_id or "",
+        prev_call_data=prev_data,
+    )
+    if not merged:
+        return prev_data
+    call_recording.call_data = merged
+    call_recording.status = CallRecordingStatus.UPDATED
+    db.commit()
+    db.refresh(call_recording)
+    return merged
+
+
 def _provider_agent_id_from_metrics(platform: str, metrics: Dict[str, Any]) -> Optional[str]:
     platform_key = (platform or "").lower()
     if platform_key == "vapi":
@@ -743,24 +767,36 @@ async def list_call_recordings(
             return agent.name
         return cr.call_short_id
 
-    return [
-        {
-            "id": str(cr.id),
-            "call_short_id": cr.call_short_id,
-            "display_name": _display_name(cr),
-            "status": cr.status if cr.status else None,
-            "provider_platform": cr.provider_platform,
-            "provider_call_id": cr.provider_call_id,
-            "agent_id": str(cr.agent_id) if cr.agent_id else None,
-            "evaluator_result_id": str(cr.evaluator_result_id) if cr.evaluator_result_id else None,
-            "evaluation_status": result_info.get(str(cr.evaluator_result_id), {}).get("status") if cr.evaluator_result_id else None,
-            "metric_scores": result_info.get(str(cr.evaluator_result_id), {}).get("metric_scores") if cr.evaluator_result_id else None,
-            "result_id": result_info.get(str(cr.evaluator_result_id), {}).get("result_id") if cr.evaluator_result_id else None,
-            "created_at": cr.created_at.isoformat() if cr.created_at else None,
-            "updated_at": cr.updated_at.isoformat() if cr.updated_at else None,
-        }
-        for cr in call_recordings
-    ]
+    from app.services.synthetic_traces.trace_service import lookup_call_trace_status
+
+    rows = []
+    for cr in call_recordings:
+        er_id = result_info.get(str(cr.evaluator_result_id), {}) if cr.evaluator_result_id else {}
+        trace_status = lookup_call_trace_status(
+            db,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            call_short_id=cr.call_short_id,
+        )
+        rows.append(
+            {
+                "id": str(cr.id),
+                "call_short_id": cr.call_short_id,
+                "display_name": _display_name(cr),
+                "status": cr.status if cr.status else None,
+                "provider_platform": cr.provider_platform,
+                "provider_call_id": cr.provider_call_id,
+                "agent_id": str(cr.agent_id) if cr.agent_id else None,
+                "evaluator_result_id": str(cr.evaluator_result_id) if cr.evaluator_result_id else None,
+                "evaluation_status": er_id.get("status") if cr.evaluator_result_id else None,
+                "metric_scores": er_id.get("metric_scores") if cr.evaluator_result_id else None,
+                "result_id": er_id.get("result_id") if cr.evaluator_result_id else None,
+                "call_trace_status": trace_status,
+                "created_at": cr.created_at.isoformat() if cr.created_at else None,
+                "updated_at": cr.updated_at.isoformat() if cr.updated_at else None,
+            }
+        )
+    return rows
 
 
 @router.post("/custom-websocket-sessions", response_model=Dict[str, Any])
@@ -1262,15 +1298,14 @@ async def re_evaluate_call_recording(
             elif platform == "retell":
                 url = payload.get("recording_url")
             elif platform == "vapi":
-                url = (
-                    payload.get("recordingUrl")
-                    or payload.get("stereoRecordingUrl")
-                    or artifact.get("recordingUrl")
-                    or artifact.get("stereoRecordingUrl")
-                    or mono_recording.get("combinedUrl")
-                    or payload_urls.get("combined_url")
-                    or payload_urls.get("stereo_url")
+                from app.services.voice_providers.vapi_recording import (
+                    extract_vapi_recording_url,
+                    vapi_proxy_request_headers,
                 )
+
+                url = extract_vapi_recording_url(payload)
+                if url and decrypted_key:
+                    headers = vapi_proxy_request_headers(url, decrypted_key)
             elif platform == "smallest":
                 url = (
                     payload.get("recording_url")
@@ -1445,11 +1480,15 @@ async def stream_call_audio(
     if platform in ("retell", "vapi", "smallest"):
         from app.services.voice_providers.vapi_recording import (
             extract_vapi_recording_url,
-            is_presigned_storage_url,
+            vapi_playback_url_needs_refresh,
+            vapi_proxy_request_headers,
         )
 
         if platform == "vapi":
             url = extract_vapi_recording_url(call_data, stereo=stereo)
+            if proxy and vapi_playback_url_needs_refresh(url):
+                call_data = _refresh_playground_vapi_call_data(db, call_recording, organization_id)
+                url = extract_vapi_recording_url(call_data, stereo=stereo)
         else:
             artifact = call_data.get("artifact", {})
             recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
@@ -1483,7 +1522,8 @@ async def stream_call_audio(
         _validate_playground_audio_url(url)
         if proxy:
             headers: Optional[Dict[str, str]] = None
-            if platform == "vapi" and not is_presigned_storage_url(url):
+            vapi_integration_key: Optional[str] = None
+            if platform == "vapi":
                 agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
                 if agent and agent.voice_ai_integration_id:
                     integration = db.query(Integration).filter(
@@ -1491,22 +1531,46 @@ async def stream_call_audio(
                         Integration.organization_id == organization_id,
                     ).first()
                     if integration:
-                        headers = {"Authorization": f"Bearer {decrypt_api_key(integration.api_key)}"}
-                if headers is None and "r2.cloudflarestorage.com" in url.lower():
+                        try:
+                            vapi_integration_key = decrypt_api_key(integration.api_key)
+                        except Exception:
+                            vapi_integration_key = None
+                headers = vapi_proxy_request_headers(url, vapi_integration_key)
+                if vapi_playback_url_needs_refresh(url):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=(
-                            "Recording URL is a private storage object without a presigned URL. "
-                            "Refresh the call recording from Vapi to fetch a playable link."
+                            "Recording URL is a private storage object without a playable presigned URL. "
+                            "Use Refresh on this call or check the Vapi integration."
                         ),
                     )
             from app.services.storage.audio_delivery import stream_audio_from_provider_url
 
-            return stream_audio_from_provider_url(
-                url,
-                filename=f"call_{call_short_id}",
-                headers=headers,
-            )
+            try:
+                return stream_audio_from_provider_url(
+                    url,
+                    filename=f"call_{call_short_id}",
+                    headers=headers,
+                )
+            except HTTPException as exc:
+                if (
+                    platform == "vapi"
+                    and exc.status_code in (401, 403)
+                    and call_recording.provider_call_id
+                ):
+                    call_data = _refresh_playground_vapi_call_data(
+                        db, call_recording, organization_id
+                    )
+                    retry_url = extract_vapi_recording_url(call_data, stereo=stereo)
+                    if retry_url and retry_url != url:
+                        _validate_playground_audio_url(retry_url)
+                        retry_headers = vapi_proxy_request_headers(retry_url, vapi_integration_key)
+                        return stream_audio_from_provider_url(
+                            retry_url,
+                            filename=f"call_{call_short_id}",
+                            headers=retry_headers,
+                        )
+                raise
         from fastapi.responses import RedirectResponse
 
         return RedirectResponse(url)
@@ -1553,9 +1617,23 @@ async def stream_call_audio(
             },
         )
 
-    # Custom WebSocket sessions store audio in S3
-    if platform == "custom_websocket":
-        s3_key = call_data.get("recording_s3_key")
+    # Internal test-agent / voice bundle sessions store audio in S3
+    if platform in ("custom_websocket", "voice_bundle"):
+        s3_key = call_data.get("recording_s3_key") or call_data.get("audio_s3_key")
+        if not s3_key and call_recording.evaluator_result_id:
+            from app.models.database import EvaluatorResult
+
+            linked = (
+                db.query(EvaluatorResult)
+                .filter(
+                    EvaluatorResult.id == call_recording.evaluator_result_id,
+                    EvaluatorResult.organization_id == organization_id,
+                    EvaluatorResult.workspace_id == workspace_id,
+                )
+                .first()
+            )
+            if linked and linked.audio_s3_key:
+                s3_key = linked.audio_s3_key
         if not s3_key:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available for this session")
 

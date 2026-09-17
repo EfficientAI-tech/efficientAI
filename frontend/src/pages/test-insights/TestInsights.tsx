@@ -5,22 +5,34 @@ import { Eye, Loader, PhoneCall, RefreshCw, Trash2 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import TableListPagination from '../../components/TableListPagination'
 import TraceDetailDrawer from '../../components/call-recordings/TraceDetailDrawer'
-import { FAILURE_FLAG_LABELS } from '../../components/call-recordings/traceUtils'
 import { CallAgentLink } from '../observability/CallAgentLink'
-import { EventBadge, PlatformBadge } from '../observability/observabilityCallUi'
-import { ObservabilityCall } from '../../types/api'
+import { CallSourceBadge, EventBadge, PlatformBadge } from '../observability/observabilityCallUi'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 type StatusFilter = 'all' | 'open' | 'closed'
 type EventFilter = 'all' | 'call_ended' | 'call_started' | 'other'
 
-const PAGE_SIZE = 25
+const PAGE_SIZE = 15
 
-const tracesQueryKey = (
+type SyntheticTraceRow = {
+  id: string
+  call_short_id?: string
+  transport?: string
+  status: string
+  turn_count: number
+  span_count?: number
+  derive_pending?: boolean
+  started_at: string
+}
+
+const callsHubQueryKey = (
   workspaceId: string | null,
   page: number,
   status: StatusFilter,
-) => ['observability-traces', workspaceId, page, status] as const
+  event: EventFilter,
+  search: string,
+) => ['calls-hub', workspaceId, page, status, event, search] as const
 
 function formatWhen(iso: string): string {
   return new Date(iso).toLocaleString()
@@ -61,52 +73,48 @@ export default function TestInsights() {
   const [selectedObsCallId, setSelectedObsCallId] = useState<string | null>(obsFromUrl)
   const [selectedEvaluatorResultId, setSelectedEvaluatorResultId] = useState<string | null>(resultFromUrl)
   const [deleteObsCallId, setDeleteObsCallId] = useState<string | null>(null)
-  const [page, setPage] = useState(0)
+  const [deleteTraceId, setDeleteTraceId] = useState<string | null>(null)
+  const [callsPage, setCallsPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [eventFilter, setEventFilter] = useState<EventFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const prevWorkspaceRef = useRef<string | null>(null)
 
   const apiStatus = statusFilter === 'all' ? undefined : statusFilter
+  const hubSkip = (callsPage - 1) * PAGE_SIZE
 
   const {
-    data: listData,
-    isLoading: loadingList,
-    isFetching: fetchingList,
+    data: hubData,
+    isLoading: loadingHub,
+    isFetching: fetchingHub,
     isError: listError,
     error: listErrorDetail,
-    refetch: refetchTraces,
+    refetch: refetchHub,
     dataUpdatedAt,
   } = useQuery({
-    queryKey: tracesQueryKey(activeWorkspaceId, page, statusFilter),
+    queryKey: callsHubQueryKey(
+      activeWorkspaceId,
+      callsPage,
+      statusFilter,
+      eventFilter,
+      searchQuery.trim(),
+    ),
     queryFn: () =>
-      apiClient.listSyntheticCallTraces({
-        skip: page * PAGE_SIZE,
+      apiClient.listCallsHub({
+        skip: hubSkip,
         limit: PAGE_SIZE,
         status: apiStatus,
+        search: searchQuery.trim() || undefined,
+        event: eventFilter,
       }),
     enabled: Boolean(activeWorkspaceId),
     retry: false,
     staleTime: 0,
     refetchOnMount: 'always',
     refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  })
-
-  const {
-    data: observabilityCalls = [],
-    isLoading: loadingObsCalls,
-    isFetching: fetchingObsCalls,
-    refetch: refetchObsCalls,
-  } = useQuery<ObservabilityCall[]>({
-    queryKey: ['observability-calls', activeWorkspaceId],
-    queryFn: () => apiClient.listObservabilityCalls(),
-    enabled: Boolean(activeWorkspaceId),
     refetchInterval: (query) => {
-      const data = query.state.data
-      if (!data || !Array.isArray(data)) return false
-      const production = data.filter((call) => call.source !== 'playground')
-      return production.some((call) => call.is_live) ? 3000 : false
+      const live = query.state.data?.summary?.obs_live ?? 0
+      return live > 0 ? 3000 : false
     },
   })
 
@@ -120,80 +128,41 @@ export default function TestInsights() {
         next.delete('obs')
         setSearchParams(next, { replace: true })
       }
-      void queryClient.invalidateQueries({ queryKey: ['observability-calls'] })
+      void queryClient.invalidateQueries({ queryKey: ['calls-hub'] })
     },
   })
 
-  const traces = listData?.items ?? []
-  const totalCount = listData?.total ?? 0
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE))
+  const deleteTraceMutation = useMutation({
+    mutationFn: (traceId: string) => apiClient.deleteSyntheticCallTrace(traceId),
+    onSuccess: (_data, traceId) => {
+      setDeleteTraceId(null)
+      setSelectedTraceId((current) => (current === traceId ? null : current))
+      const next = new URLSearchParams(searchParams)
+      if (next.get('trace') === traceId) {
+        next.delete('trace')
+        setSearchParams(next, { replace: true })
+      }
+      void queryClient.invalidateQueries({ queryKey: ['calls-hub'] })
+    },
+  })
 
-  const productionObsCalls = useMemo(
-    () => observabilityCalls.filter((call) => call.source !== 'playground'),
-    [observabilityCalls],
+  const hubItems = hubData?.items ?? []
+  const hubSummary = hubData?.summary
+  const hubTotal = hubData?.total ?? 0
+  const hubPage = hubData?.page ?? callsPage
+  const hubPageCount = hubData?.page_count ?? 1
+
+  const eventSummary = useMemo(
+    () => ({
+      total: hubSummary?.obs_total ?? 0,
+      ended: hubSummary?.obs_ended ?? 0,
+      started: hubSummary?.obs_started ?? 0,
+      other: hubSummary?.obs_other ?? 0,
+    }),
+    [hubSummary],
   )
 
-  const filteredTraces = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return traces
-    return traces.filter((t: { call_short_id?: string; id?: string; transport?: string }) => {
-      const id = (t.call_short_id ?? t.id ?? '').toLowerCase()
-      const transport = (t.transport ?? '').toLowerCase()
-      return id.includes(q) || transport.includes(q)
-    })
-  }, [traces, searchQuery])
-
-  const filteredObsCalls = useMemo(() => {
-    let rows = productionObsCalls
-    if (eventFilter === 'call_ended') {
-      rows = rows.filter((c) => c.call_event === 'call_ended')
-    } else if (eventFilter === 'call_started') {
-      rows = rows.filter((c) => c.call_event === 'call_started')
-    } else if (eventFilter === 'other') {
-      rows = rows.filter(
-        (c) => c.call_event !== 'call_ended' && c.call_event !== 'call_started',
-      )
-    }
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return rows
-    return rows.filter((call) => {
-      const id = (call.call_short_id ?? '').toLowerCase()
-      const providerId = (call.provider_call_id ?? '').toLowerCase()
-      const agentName = (call.agent?.name ?? '').toLowerCase()
-      return id.includes(q) || providerId.includes(q) || agentName.includes(q)
-    })
-  }, [productionObsCalls, eventFilter, searchQuery])
-
-  const eventSummary = useMemo(() => {
-    const total = productionObsCalls.length
-    const ended = productionObsCalls.filter((c) => c.call_event === 'call_ended').length
-    const started = productionObsCalls.filter((c) => c.call_event === 'call_started').length
-    const other = total - ended - started
-    return { total, ended, started, other }
-  }, [productionObsCalls])
-
-  const showPipelineRows = true
-  const showProviderRows = true
-  const hasListRows =
-    (showPipelineRows && filteredTraces.length > 0) ||
-    (showProviderRows && filteredObsCalls.length > 0)
-
-  const summaryStats = useMemo(() => {
-    const open = traces.filter((t: { status?: string }) => t.status === 'open').length
-    const closed = traces.filter(
-      (t: { status?: string }) => t.status === 'closed' || t.status === 'finalized',
-    ).length
-    const withLatency = traces.filter(
-      (t: { response_latency_p50_ms?: number | null }) => t.response_latency_p50_ms != null,
-    ).length
-    return { open, closed, withLatency }
-  }, [traces])
-
-  const providerSummary = useMemo(() => {
-    const ended = productionObsCalls.filter((c) => c.call_event === 'call_ended').length
-    const live = productionObsCalls.filter((c) => c.is_live).length
-    return { total: productionObsCalls.length, ended, live }
-  }, [productionObsCalls])
+  const hasWorkspaceCalls = (hubSummary?.total ?? 0) > 0
 
   const listErrorMessage =
     listError && listErrorDetail instanceof Error
@@ -246,15 +215,13 @@ export default function TestInsights() {
   }
 
   const handleRefresh = () => {
-    void refetchTraces()
-    void refetchObsCalls()
-    void queryClient.invalidateQueries({ queryKey: ['observability-traces'] })
-    void queryClient.invalidateQueries({ queryKey: ['observability-calls'] })
+    void refetchHub()
+    void queryClient.invalidateQueries({ queryKey: ['calls-hub'] })
   }
 
   useEffect(() => {
     if (prevWorkspaceRef.current !== null && prevWorkspaceRef.current !== activeWorkspaceId) {
-      setPage(0)
+      setCallsPage(1)
       setSelectedTraceId(null)
       setSelectedObsCallId(null)
       setSelectedEvaluatorResultId(null)
@@ -292,31 +259,31 @@ export default function TestInsights() {
     }
   }, [resultFromUrl, traceFromUrl, obsFromUrl])
 
-  const isListLoading =
-    (showPipelineRows && loadingList && traces.length === 0) ||
-    (showProviderRows && loadingObsCalls && productionObsCalls.length === 0)
-  const isListRefreshing = (fetchingList || fetchingObsCalls) && hasListRows
+  useEffect(() => {
+    setCallsPage(1)
+  }, [statusFilter, eventFilter, searchQuery, activeWorkspaceId])
+
+  const isListLoading = loadingHub && hubItems.length === 0
+  const isListRefreshing = fetchingHub && hubItems.length > 0
 
   const lastUpdatedLabel =
     dataUpdatedAt > 0 ? `Updated ${new Date(dataUpdatedAt).toLocaleTimeString()}` : null
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Calls</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Telephony and externally connected voice agents (OTLP), not in-app Test Agent playground calls
+            Telephony and OTLP voice sessions with recordings, transcripts, and traces.
           </p>
         </div>
         <Button
           variant="outline"
           onClick={handleRefresh}
-          disabled={fetchingList || fetchingObsCalls}
+          disabled={fetchingHub}
         >
-          <RefreshCw
-            className={`w-4 h-4 mr-2 ${fetchingList || fetchingObsCalls ? 'animate-spin' : ''}`}
-          />
+          <RefreshCw className={`mr-2 h-4 w-4 ${fetchingHub ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
       </div>
@@ -329,34 +296,42 @@ export default function TestInsights() {
 
       {activeWorkspaceId && (
         <>
-          {(traces.length > 0 || productionObsCalls.length > 0) && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {hasWorkspaceCalls && hubSummary && (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <div className="rounded-lg border border-primary-400 bg-primary-50/40 px-4 py-3 shadow-sm">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-primary-800/70">Total</p>
-                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">
-                  {totalCount + providerSummary.total}
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-primary-800/70">
+                  Total
+                </p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-gray-900">
+                  {hubSummary.total}
                 </p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Open</p>
-                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">{summaryStats.open}</p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-gray-900">
+                  {hubSummary.traces_open}
+                </p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Closed</p>
-                <p className="text-2xl font-semibold text-gray-900 tabular-nums mt-0.5">{summaryStats.closed}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                  Closed
+                </p>
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-gray-900">
+                  {hubSummary.traces_closed}
+                </p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Live</p>
-                <p className="text-2xl font-semibold text-sky-600 tabular-nums mt-0.5">
-                  {providerSummary.live}
+                <p className="mt-0.5 text-2xl font-semibold tabular-nums text-sky-600">
+                  {hubSummary.obs_live}
                 </p>
               </div>
             </div>
           )}
 
-          <div className="bg-white shadow rounded-lg overflow-hidden border border-gray-200">
-            <div className="px-6 py-4 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <div className="flex items-center gap-3 flex-wrap">
+          <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow">
+            <div className="flex flex-col gap-4 border-b border-gray-200 px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-2">
                   <PhoneCall className="h-5 w-5 text-gray-500" />
                   <h2 className="text-lg font-semibold text-gray-900">All calls</h2>
@@ -374,23 +349,23 @@ export default function TestInsights() {
                       type="button"
                       onClick={() => {
                         setStatusFilter(key)
-                        setPage(0)
+                        setCallsPage(1)
                       }}
-                      className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                         statusFilter === key
-                          ? 'bg-gray-200 text-gray-800 border border-gray-300'
-                          : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                          ? 'border-gray-300 bg-gray-200 text-gray-800'
+                          : 'border-transparent text-gray-600 hover:bg-gray-100'
                       }`}
                     >
                       {label}
                     </button>
                   ))}
                 </div>
-                {productionObsCalls.length > 0 && (
+                {(hubSummary?.obs_total ?? 0) > 0 && (
                   <div className="flex items-center gap-1">
                     {(
                       [
-                        { key: 'all' as const, label: 'All', count: eventSummary.total },
+                        { key: 'all' as const, label: 'All events', count: eventSummary.total },
                         { key: 'call_ended' as const, label: 'Ended', count: eventSummary.ended },
                         { key: 'call_started' as const, label: 'Started', count: eventSummary.started },
                         { key: 'other' as const, label: 'Other', count: eventSummary.other },
@@ -400,10 +375,10 @@ export default function TestInsights() {
                         key={key}
                         type="button"
                         onClick={() => setEventFilter(key)}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                           eventFilter === key
-                            ? 'bg-primary-100 text-primary-800 border border-primary-300'
-                            : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                            ? 'border-primary-300 bg-primary-100 text-primary-800'
+                            : 'border-transparent text-gray-600 hover:bg-gray-100'
                         }`}
                       >
                         {label} ({count})
@@ -418,10 +393,10 @@ export default function TestInsights() {
                   placeholder="Search call ID…"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 w-40 sm:w-48 focus:ring-primary-500 focus:border-primary-500"
+                  className="w-40 rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:ring-primary-500 sm:w-48"
                 />
                 {lastUpdatedLabel && (
-                  <span className="text-xs text-gray-500 hidden sm:inline">{lastUpdatedLabel}</span>
+                  <span className="hidden text-xs text-gray-500 sm:inline">{lastUpdatedLabel}</span>
                 )}
               </div>
             </div>
@@ -440,35 +415,38 @@ export default function TestInsights() {
               </div>
             )}
 
-            {listErrorMessage && showPipelineRows && (
-              <div className="p-4 text-sm text-red-800 bg-red-50 border-b border-red-100">
-                Could not load traces: {listErrorMessage}
+            {listErrorMessage && (
+              <div className="border-b border-red-100 bg-red-50 p-4 text-sm text-red-800">
+                Could not load calls: {listErrorMessage}
               </div>
             )}
 
-            {!isListLoading && !hasListRows && !listError && (
+            {!isListLoading && !hasWorkspaceCalls && !listError && (
               <div className="p-12 text-center text-sm text-gray-600">
-                <p className="font-medium text-gray-900 mb-1">No calls yet</p>
-                <p>Run a voice agent session with OTLP tracing enabled to see calls here.</p>
+                <p className="mb-1 font-medium text-gray-900">No calls yet</p>
+                <p>Enable OTLP tracing or connect telephony to see calls here.</p>
               </div>
             )}
 
-            {hasListRows && (
+            {!isListLoading && hubItems.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                         Call ID
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                        Source
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                         Status
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                         Platform
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Details
+                      <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                        Summary
                       </th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                         Started
@@ -479,8 +457,10 @@ export default function TestInsights() {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {showProviderRows &&
-                      filteredObsCalls.map((call) => (
+                    {hubItems.map((row) => {
+                      if (row.kind === 'obs' && row.obs) {
+                        const call = row.obs
+                        return (
                         <tr
                           key={`obs-${call.id}`}
                           className={`transition-colors cursor-pointer ${
@@ -494,6 +474,9 @@ export default function TestInsights() {
                             <span className="font-mono font-semibold text-primary-600">
                               #{call.call_short_id}
                             </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <CallSourceBadge source="telephony" />
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <EventBadge event={call.call_event ?? undefined} />
@@ -533,21 +516,12 @@ export default function TestInsights() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                        )
+                      }
 
-                    {showPipelineRows &&
-                      filteredTraces.map((trace: {
-                        id: string
-                        call_short_id?: string
-                        transport?: string
-                        status: string
-                        failure_flags?: string[]
-                        turn_count: number
-                        span_count?: number
-                        derive_pending?: boolean
-                        response_latency_p50_ms?: number | null
-                        started_at: string
-                      }) => (
+                      const trace = row.trace as SyntheticTraceRow | undefined
+                      if (!trace) return null
+                      return (
                         <tr
                           key={`trace-${trace.id}`}
                           className={`transition-colors cursor-pointer ${
@@ -563,17 +537,10 @@ export default function TestInsights() {
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="flex flex-col gap-1">
-                              <StatusLabel status={trace.status} />
-                              {trace.failure_flags?.map((flag) => (
-                                <span
-                                  key={flag}
-                                  className="inline-flex w-fit rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[10px] font-medium text-rose-800"
-                                >
-                                  {FAILURE_FLAG_LABELS[flag] ?? flag}
-                                </span>
-                              ))}
-                            </div>
+                            <CallSourceBadge source="otlp" />
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <StatusLabel status={trace.status} />
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 capitalize">
                             {trace.transport ?? 'webrtc'}
@@ -584,9 +551,6 @@ export default function TestInsights() {
                             (trace.derive_pending || (trace.span_count ?? 0) > 0)
                               ? 'Processing spans…'
                               : `${trace.turn_count} turns`}
-                            {trace.response_latency_p50_ms != null
-                              ? ` · ${Math.round(trace.response_latency_p50_ms)} ms p50`
-                              : ''}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                             <span title={formatWhen(trace.started_at)}>
@@ -597,74 +561,78 @@ export default function TestInsights() {
                             className="px-6 py-4 whitespace-nowrap text-right"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openTrace(trace.id)}
-                              leftIcon={<Eye className="w-4 h-4" />}
-                            >
-                              View
-                            </Button>
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openTrace(trace.id)}
+                                leftIcon={<Eye className="w-4 h-4" />}
+                              >
+                                View
+                              </Button>
+                              <button
+                                type="button"
+                                onClick={() => setDeleteTraceId(trace.id)}
+                                className="rounded-lg p-1.5 text-gray-400 hover:bg-rose-50 hover:text-rose-600"
+                                aria-label="Delete call trace"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
-                      ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
 
-            {showPipelineRows && totalPages > 1 && filteredTraces.length > 0 && (
-              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between text-sm">
-                <p className="text-gray-500">
-                  Page {page + 1} of {totalPages} · {totalCount} sessions
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page === 0}
-                    onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={page >= totalPages - 1}
-                    onClick={() => setPage((p) => p + 1)}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
+            {hubTotal > 0 && (
+              <TableListPagination
+                page={hubPage}
+                pageCount={hubPageCount}
+                total={hubTotal}
+                pageSize={PAGE_SIZE}
+                onPrev={() => setCallsPage((p) => Math.max(1, p - 1))}
+                onNext={() => setCallsPage((p) => Math.min(hubPageCount, p + 1))}
+              />
             )}
 
-            {hasListRows &&
-              showPipelineRows &&
-              traces.length > 0 &&
-              filteredTraces.length === 0 &&
-              showProviderRows &&
-              filteredObsCalls.length === 0 && (
-                <div className="p-12 text-center text-sm text-gray-500">
-                  No rows match your search.{' '}
-                  <button
-                    type="button"
-                    onClick={() => setSearchQuery('')}
-                    className="text-primary-600 font-medium"
-                  >
-                    Clear search
-                  </button>
-                </div>
-              )}
+            {!isListLoading && hasWorkspaceCalls && hubTotal === 0 && (
+              <div className="p-12 text-center text-sm text-gray-500">
+                No rows match your filters.{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery('')
+                    setStatusFilter('all')
+                    setEventFilter('all')
+                  }}
+                  className="text-primary-600 font-medium"
+                >
+                  Clear filters
+                </button>
+              </div>
+            )}
           </div>
 
           <ConfirmModal
             title="Delete call"
-            description="This will permanently remove this provider call record."
+            description="Permanently removes this telephony call record from observability."
             isOpen={Boolean(deleteObsCallId)}
             isLoading={deleteObsMutation.isPending}
             onCancel={() => setDeleteObsCallId(null)}
             onConfirm={() => deleteObsCallId && deleteObsMutation.mutate(deleteObsCallId)}
+          />
+
+          <ConfirmModal
+            title="Delete call trace"
+            description="Permanently removes this OTLP trace session and its span data from observability."
+            isOpen={Boolean(deleteTraceId)}
+            isLoading={deleteTraceMutation.isPending}
+            onCancel={() => setDeleteTraceId(null)}
+            onConfirm={() => deleteTraceId && deleteTraceMutation.mutate(deleteTraceId)}
           />
         </>
       )}

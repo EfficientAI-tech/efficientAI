@@ -4350,6 +4350,33 @@ class ApiClient {
     return response.data
   }
 
+  async listCallsHub(params?: {
+    skip?: number
+    limit?: number
+    status?: string
+    search?: string
+    event?: string
+  }): Promise<{
+    items: Array<{ kind: 'obs' | 'trace'; sort_at?: string; obs?: ObservabilityCall; trace?: Record<string, unknown> }>
+    total: number
+    page: number
+    page_size: number
+    page_count: number
+    summary: {
+      total: number
+      obs_total: number
+      obs_live: number
+      obs_ended: number
+      obs_started: number
+      obs_other: number
+      traces_open: number
+      traces_closed: number
+    }
+  }> {
+    const response = await this.client.get('/api/v1/observability/calls-hub', { params })
+    return response.data
+  }
+
   private buildAuthenticatedApiUrl(path: string): string {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`
     const configuredBase = (this.client.defaults.baseURL || '').replace(/\/$/, '')
@@ -5091,6 +5118,11 @@ class ApiClient {
     cursor?: string
   }): Promise<{ items: any[]; total: number; next_cursor?: string; has_more?: boolean }> {
     const response = await this.client.get('/api/v1/observability/traces', { params })
+    return response.data
+  }
+
+  async deleteSyntheticCallTrace(traceId: string): Promise<{ message: string }> {
+    const response = await this.client.delete(`/api/v1/observability/traces/${traceId}`)
     return response.data
   }
 

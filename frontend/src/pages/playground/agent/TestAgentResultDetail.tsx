@@ -10,6 +10,8 @@ import TestVoiceAgentResultDetails from '../../../components/call-recordings/Tes
 import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 import { prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
+import { hasEvaluatorResultRecording } from '../../../lib/recordingUrls'
+import { agentPlaygroundPath } from '../../../lib/playgroundAgentTabs'
 
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
@@ -20,7 +22,6 @@ export default function TestAgentResultDetail() {
 
   useEffect(() => {
     if (!id) return
-    prefetchEvaluatorRecordingAudio(id)
     void queryClient.prefetchQuery({
       queryKey: ['evaluator-result', id],
       queryFn: () => apiClient.getEvaluatorResult(id, true),
@@ -42,6 +43,11 @@ export default function TestAgentResultDetail() {
       return false
     },
   })
+
+  useEffect(() => {
+    if (!id || !result || !hasEvaluatorResultRecording(result)) return
+    prefetchEvaluatorRecordingAudio(id)
+  }, [id, result])
 
   const reEvaluateMutation = useMutation({
     mutationFn: () => apiClient.reEvaluateResult(id!),
@@ -78,7 +84,7 @@ export default function TestAgentResultDetail() {
   if (isLoading && !result) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="text-gray-600">Loading result...</div>
+        <div className="text-gray-600">Loading call details…</div>
       </div>
     )
   }
@@ -88,7 +94,7 @@ export default function TestAgentResultDetail() {
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <p className="text-gray-600 mb-4">Result not found</p>
-          <Button variant="outline" onClick={() => navigate('/playground')}>
+          <Button variant="outline" onClick={() => navigate(agentPlaygroundPath('test_agents'))}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Playground
           </Button>
@@ -130,7 +136,7 @@ export default function TestAgentResultDetail() {
         <div className="mb-6">
           <Button
             variant="outline"
-            onClick={() => navigate('/playground')}
+            onClick={() => navigate(agentPlaygroundPath('test_agents'))}
             leftIcon={<ArrowLeft className="h-4 w-4" />}
             className="mb-4"
           >

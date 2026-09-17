@@ -16,7 +16,8 @@ from app.core.rate_limit import (
     enforce_trace_ingest_rate_limit,
     enforce_trace_session_rate_limit,
 )
-from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id
+from app.core.auth.capabilities import CALLS_DELETE
+from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id, require_capability
 from app.models.database import EvaluatorResult
 from app.models.synthetic_trace_schemas import (
     JsonTraceIngestRequest,
@@ -61,6 +62,7 @@ from app.services.synthetic_traces.trace_service import (
     load_trace_detail,
     load_trace_spans_only,
     open_trace_session,
+    delete_call_trace,
 )
 
 router = APIRouter(prefix="/observability/traces", tags=["observability-traces"])
@@ -535,6 +537,26 @@ def get_trace_spans(
         raise HTTPException(status_code=404, detail="Call trace not found")
     payload = load_trace_spans_only(db, trace)
     return SyntheticTraceSpansResponse(**payload)
+
+
+@router.delete("/{trace_id}", dependencies=[Depends(require_capability(CALLS_DELETE))])
+def delete_observability_trace(
+    trace_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+    api_key: str = Depends(get_api_key),
+):
+    _ = api_key
+    deleted = delete_call_trace(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        trace_id=trace_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call trace not found")
+    return {"message": "Call trace deleted"}
 
 
 @router.get("/{trace_id}", response_model=SyntheticCallTraceDetail)

@@ -1,22 +1,14 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { getEvaluatorResultPlaceholder } from '../../../lib/evaluatorResultQuery'
 import { apiClient } from '../../../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink, Activity } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Brain, HelpCircle, Sparkles, AudioWaveform, RotateCcw, Activity, Phone } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../../../components/Button'
-import RecordingAudioPlayer from '../../../components/audio/RecordingAudioPlayer'
-import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
-import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
-import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
-import VobizCallDetails from '../../../components/call-recordings/VobizCallDetails'
 import { useToast } from '../../../hooks/useToast'
-import { useRecordingPresignedUrl } from '../../../hooks/useRecordingPresignedUrl'
 import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
-import LiveTranscriptPanel, { type LiveTranscriptTurn } from '../../../components/call-recordings/LiveTranscriptPanel'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
-import { getProviderRecordingUrl, hasEvaluatorResultRecording } from '../../../lib/recordingUrls'
 import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
 
@@ -38,18 +30,6 @@ function isLegacyCategoryLabelMetric(metric: {
   return LEGACY_CATEGORY_LABEL_METRIC_NAMES.has(name)
 }
 
-function getVobizPhoneNumbers(callData: any): { from: string | null; to: string | null } {
-  return {
-    from: callData?.from_phone_number || callData?.from_number || callData?.From || null,
-    to: callData?.to_phone_number || callData?.to_number || callData?.To || null,
-  }
-}
-
-function getResultAudioS3Key(result: any): string | null {
-  return result?.audio_s3_key || result?.call_data?.recording_s3_key || null
-}
-
-const AUTH_GATED_PROVIDERS = new Set(['elevenlabs'])
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
   description: string
@@ -362,21 +342,8 @@ export default function EvaluatorResultDetailPage({
   const location = window.location.pathname
   const isFromPlayground = location.includes('/playground/test-agent-results')
   const { showToast, ToastContainer } = useToast()
-  const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const [audioDuration, setAudioDuration] = useState(0)
-  const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null)
-  const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const [reEvalInProgress, setReEvalInProgress] = useState(false)
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false)
-  const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
-  const audioRef = useRef<HTMLAudioElement>(null)
-
-  const LIVE_CALL_STATUSES = new Set([
-    'call_initiating',
-    'call_connecting',
-    'call_in_progress',
-    'call_ended',
-  ])
 
   const { data: result, isLoading, error, refetch: refetchResult } = useQuery({
     queryKey: ['evaluator-result', id],
@@ -456,10 +423,6 @@ export default function EvaluatorResultDetailPage({
     )
   }
 
-  const audioS3Key = getResultAudioS3Key(result)
-
-  const { data: presignedUrl } = useRecordingPresignedUrl(audioS3Key)
-
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
     onMutate: () => {
@@ -484,145 +447,10 @@ export default function EvaluatorResultDetailPage({
   }, [result?.status, reEvalInProgress])
 
   useEffect(() => {
-    const existing = result?.call_data?.live_transcript
-    if (!Array.isArray(existing) || existing.length === 0) return
-    setLiveTranscript((prev) => (existing.length >= prev.length ? existing : prev))
-  }, [result?.call_data?.live_transcript])
-
-  useEffect(() => {
-    if (!id || !result) return
-    const displayStatus = displayEvaluatorResultStatus(result)
-    const isLive =
-      LIVE_CALL_STATUSES.has(displayStatus) || Boolean(result.call_data?.is_live)
-    if (!isLive) return
-
-    const streamId = result.result_id || id
-    let eventSource: EventSource | null = null
-
-    try {
-      const url = apiClient.getEvaluatorResultLiveEventsUrl(streamId)
-      eventSource = new EventSource(url, { withCredentials: true })
-      eventSource.onmessage = (event) => {
-        try {
-          const entry = JSON.parse(event.data) as LiveTranscriptTurn
-          setLiveTranscript((prev) => [...prev, entry])
-        } catch {
-          // ignore malformed events
-        }
-      }
-    } catch {
-      // polling via react-query still updates live_transcript from call_data
-    }
-
-    return () => {
-      eventSource?.close()
-    }
-  }, [id, result?.result_id, result?.status, result?.call_data?.is_live])
-
-  useEffect(() => {
-    if (!result) return
-    const displayStatus = displayEvaluatorResultStatus(result)
-    if (LIVE_CALL_STATUSES.has(displayStatus) || result.call_data?.is_live) {
-      setActiveTab('transcript')
-    }
-  }, [result?.status, result?.call_data?.is_live])
-
-  useEffect(() => {
     if (result?.status === 'completed') {
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
     }
   }, [result?.status, queryClient])
-
-  useEffect(() => {
-    let cancelled = false
-    let objectUrl: string | null = null
-
-    async function resolveAudioUrl() {
-      if (presignedUrl?.url) {
-        if (!cancelled) setAudioUrl(presignedUrl.url)
-        return
-      }
-
-      const provider = (result?.provider_platform || '').toLowerCase()
-      const providerRecordingUrl = getProviderRecordingUrl(result?.call_data, provider)
-      const resultId = result?.result_id || id
-
-      if (!audioS3Key && providerRecordingUrl && provider !== 'elevenlabs') {
-        if (!cancelled) setAudioUrl(providerRecordingUrl)
-        return
-      }
-
-      if (!audioS3Key && resultId && (AUTH_GATED_PROVIDERS.has(provider) || provider === 'vapi')) {
-        try {
-          objectUrl = await apiClient.getEvaluatorResultAudioUrl(resultId)
-          if (!cancelled) setAudioUrl(objectUrl)
-          return
-        } catch {
-          // fall through
-        }
-      }
-
-      if (!cancelled) setAudioUrl(null)
-    }
-
-    void resolveAudioUrl()
-
-    return () => {
-      cancelled = true
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
-    }
-  }, [
-    presignedUrl,
-    audioS3Key,
-    result?.call_data,
-    result?.provider_platform,
-    result?.result_id,
-    id,
-  ])
-
-  useEffect(() => {
-    const audio = audioRef.current
-    if (!audio || !audioUrl) return
-
-    const handleLoadedMetadata = () => {
-      if (audio.duration && audio.duration !== Infinity) {
-        setAudioDuration(audio.duration)
-      }
-    }
-
-    const handleTimeUpdate = () => {
-      if (result && 'speaker_segments' in result) {
-        const resultData = result as EvaluatorResultDetail
-        if (resultData.speaker_segments) {
-          const activeIndex = resultData.speaker_segments.findIndex(
-            (seg) => audio.currentTime >= seg.start && audio.currentTime <= seg.end
-          )
-          setActiveSegmentIndex(activeIndex >= 0 ? activeIndex : null)
-        }
-      }
-    }
-
-    audio.addEventListener('loadedmetadata', handleLoadedMetadata)
-    audio.addEventListener('timeupdate', handleTimeUpdate)
-    
-    return () => {
-      audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
-      audio.removeEventListener('timeupdate', handleTimeUpdate)
-    }
-  }, [result, audioUrl])
-
-  const formatTime = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
-
-  const handleSegmentClick = (startTime: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = startTime
-      audioRef.current.play()
-    }
-  }
 
   const formatDuration = (seconds: number | null): string => {
     if (!seconds) return '--'
@@ -646,9 +474,6 @@ export default function EvaluatorResultDetailPage({
       if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs) {
         return (endMs - startMs) / 1000
       }
-    }
-    if (audioDuration && audioDuration > 0) {
-      return audioDuration
     }
     return result?.duration_seconds ?? null
   }
@@ -836,15 +661,6 @@ export default function EvaluatorResultDetailPage({
 
   const resultData = result as EvaluatorResultDetail
   const displayStatus = displayEvaluatorResultStatus(resultData)
-  const isLiveCall =
-    LIVE_CALL_STATUSES.has(displayStatus) ||
-    Boolean(resultData.call_data?.is_live)
-  const liveTranscriptTurns: LiveTranscriptTurn[] =
-    liveTranscript.length > 0
-      ? liveTranscript
-      : Array.isArray(resultData.call_data?.live_transcript)
-        ? resultData.call_data.live_transcript
-        : []
   const statusConfig = getStatusConfig(displayStatus)
   const callShortId =
     typeof resultData.call_data?.call_short_id === 'string' ? resultData.call_data.call_short_id : null
@@ -854,16 +670,28 @@ export default function EvaluatorResultDetailPage({
     callRecordingSource: (resultData as { call_recording_source?: string | null }).call_recording_source,
     evaluatorResultId: resultData.id,
   })
-  const vobizPhoneNumbers = getVobizPhoneNumbers(resultData.call_data)
-  const providerRecordingUrl = getProviderRecordingUrl(resultData.call_data, resultData.provider_platform)
-  const hasCallMediaOrTranscript = Boolean(
-    hasEvaluatorResultRecording(resultData) ||
-    resultData.transcription ||
-    resultData.speaker_segments?.length ||
-    (Array.isArray(resultData.call_data?.messages) && resultData.call_data.messages.length > 0) ||
-    isLiveCall ||
-    liveTranscriptTurns.length > 0
+  const callDetailsInDrawer = Boolean(
+    drawerTargets.callShortId ||
+      drawerTargets.observabilityCallShortId ||
+      drawerTargets.evaluatorResultId,
   )
+
+  const callAnalysisSummary =
+    resultData.call_data?.call_analysis?.call_summary ||
+    (typeof resultData.metric_scores?.summary?.value === 'string'
+      ? resultData.metric_scores.summary.value
+      : null)
+  const userSentiment =
+    resultData.call_data?.call_analysis?.user_sentiment ||
+    (typeof resultData.metric_scores?.sentiment?.value === 'string'
+      ? resultData.metric_scores.sentiment.value
+      : null)
+  const callSuccessful =
+    resultData.call_data?.call_analysis?.call_successful !== undefined
+      ? Boolean(resultData.call_data.call_analysis.call_successful)
+      : resultData.metric_scores?.successful?.value !== undefined
+        ? Boolean(resultData.metric_scores.successful.value)
+        : null
 
   return (
     <div
@@ -906,14 +734,16 @@ export default function EvaluatorResultDetailPage({
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setDetailDrawerOpen(true)}
-                leftIcon={<Activity className="w-4 h-4" />}
-              >
-                Call details
-              </Button>
+              {callDetailsInDrawer ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDetailDrawerOpen(true)}
+                  leftIcon={<Activity className="w-4 h-4" />}
+                >
+                  Call details
+                </Button>
+              ) : null}
               {!reEvalInProgress && (resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
                 <Button
                   variant="outline"
@@ -933,88 +763,70 @@ export default function EvaluatorResultDetailPage({
             </div>
           </div>
 
-          {/* Metadata */}
-          <div className="mt-6 grid grid-cols-2 md:grid-cols-5 gap-4">
-            <div>
-              <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
-              <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${statusConfig.bg} ${statusConfig.text}`}>
-                {statusConfig.label}
-              </span>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium mb-1">Agent</p>
-              <p className="text-sm text-gray-900">{resultData.agent?.name || 'N/A'}</p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium mb-1">Duration</p>
-              <p className="text-sm text-gray-900 flex items-center">
-                <Clock className="w-4 h-4 mr-1" />
-                {formatDuration(getEffectiveDuration())}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium mb-1">Created</p>
-              <p className="text-sm text-gray-900">
-                {resultData.timestamp
-                  ? new Date(resultData.timestamp).toLocaleString()
-                  : 'N/A'}
-              </p>
-            </div>
-            {resultData.persona && (
+          <div className="mt-6 space-y-4 border-t border-gray-100 pt-6">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
               <div>
-                <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
-                <p className="text-sm text-gray-900">{resultData.persona.name}</p>
+                <p className="text-xs text-gray-500 font-medium mb-1">Agent</p>
+                <p className="text-sm text-gray-900">{resultData.agent?.name || 'N/A'}</p>
               </div>
-            )}
-          </div>
-
-          {/* Extended details row */}
-          {(resultData.scenario || resultData.persona || resultData.evaluator) && (
-            <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-2 md:grid-cols-5 gap-4">
-              {resultData.scenario && (
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Duration</p>
+                <p className="text-sm text-gray-900 flex items-center">
+                  <Clock className="w-4 h-4 mr-1 shrink-0" />
+                  {formatDuration(getEffectiveDuration())}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Created</p>
+                <p className="text-sm text-gray-900">
+                  {resultData.timestamp
+                    ? new Date(resultData.timestamp).toLocaleString()
+                    : 'N/A'}
+                </p>
+              </div>
+              {resultData.persona ? (
                 <div>
-                  <p className="text-xs text-gray-500 font-medium mb-1">Scenario</p>
-                  <p className="text-sm text-gray-900">{resultData.scenario.name}</p>
-                  {resultData.scenario.description && (
-                    <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{resultData.scenario.description}</p>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
+                  <p className="text-sm text-gray-900">{resultData.persona.name}</p>
+                  {(resultData.persona.tts_provider || resultData.persona.tts_voice_name) && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {[resultData.persona.tts_provider, resultData.persona.tts_voice_name]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
                   )}
                 </div>
-              )}
-              {resultData.persona && (
-                <div>
-                  <p className="text-xs text-gray-500 font-medium mb-1">Persona Details</p>
-                  <p className="text-xs text-gray-500">
-                    {resultData.persona.tts_provider || '--'} &middot; {resultData.persona.tts_voice_name || '--'} &middot; {resultData.persona.gender}
-                  </p>
-                  {resultData.persona.description?.trim() ? (
-                    <p className="text-xs text-gray-600 mt-1 line-clamp-3">{resultData.persona.description}</p>
-                  ) : null}
-                </div>
-              )}
-              {resultData.evaluator && (
-                <div>
-                  <p className="text-xs text-gray-500 font-medium mb-1">Evaluator</p>
-                  <p className="text-sm font-mono text-gray-900 text-xs">
-                    {resultData.evaluator.evaluator_id}
-                  </p>
-                </div>
-              )}
-              {resultData.provider_platform && (
+              ) : null}
+              {resultData.provider_platform ? (
                 <div>
                   <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
                   <p className="text-sm text-gray-900 capitalize">{resultData.provider_platform}</p>
                 </div>
-              )}
-              {resultData.provider_call_id && (
-                <div>
+              ) : null}
+              {resultData.provider_call_id ? (
+                <div className="lg:col-span-2">
                   <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
-                  <p className="text-sm font-mono text-gray-900 text-xs">
+                  <p className="text-sm font-mono text-gray-900 text-xs break-all">
                     {resultData.provider_call_id}
                   </p>
                 </div>
-              )}
+              ) : null}
             </div>
-          )}
+            {resultData.scenario ? (
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Scenario</p>
+                <p className="text-sm font-medium text-gray-900">{resultData.scenario.name}</p>
+              </div>
+            ) : null}
+            {resultData.evaluator ? (
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Evaluator</p>
+                <p className="text-sm font-mono text-gray-900 text-xs">
+                  {resultData.evaluator.evaluator_id}
+                </p>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 
@@ -1031,11 +843,6 @@ export default function EvaluatorResultDetailPage({
         <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
           <BarChart3 className="w-5 h-5 mr-2" />
           Evaluation Metrics
-          {resultData.result_id && (
-            <span className="ml-2 text-sm font-mono text-gray-500">
-              #{resultData.result_id}
-            </span>
-          )}
         </h2>
         
         <div>
@@ -1178,390 +985,43 @@ export default function EvaluatorResultDetailPage({
         </div>
       </div>
 
-      {/* Provider-specific call details (Call Analysis, Cost, Latency, System Details) */}
-      {resultData.call_data && (resultData.provider_platform === 'retell' || (resultData.call_data.call_id?.startsWith('call_') && resultData.provider_platform !== 'vobiz')) && (
-        <div className="mb-6 bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-            <Phone className="w-5 h-5 mr-2" />
-            Provider Call Details
-            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">retell</span>
-            {(resultData.provider_call_id || resultData.call_data.call_id) && (
-              <span className="ml-2 text-xs text-gray-500 font-mono">
-                {resultData.provider_call_id || resultData.call_data.call_id}
-              </span>
-            )}
-          </h2>
-          <RetellCallDetails callData={resultData.call_data} hideTranscript />
-        </div>
-      )}
-
-      {resultData.call_data && resultData.provider_platform === 'vapi' && (
-        <div className="mb-6 bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-            <Phone className="w-5 h-5 mr-2" />
-            Provider Call Details
-            <span className="ml-2 px-2 py-0.5 text-xs bg-violet-100 text-violet-800 rounded-full">vapi</span>
-            {(resultData.provider_call_id || resultData.call_data.call_id) && (
-              <span className="ml-2 text-xs text-gray-500 font-mono">
-                {resultData.provider_call_id || resultData.call_data.call_id}
-              </span>
-            )}
-          </h2>
-          <VapiCallDetails callData={resultData.call_data} hideTranscript />
-        </div>
-      )}
-
-      {resultData.call_data && resultData.provider_platform === 'elevenlabs' && (
-        <div className="mb-6 bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-            <Phone className="w-5 h-5 mr-2" />
-            Provider Call Details
-            <span className="ml-2 px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800 rounded-full">elevenlabs</span>
-            {(resultData.provider_call_id || resultData.call_data.call_id) && (
-              <span className="ml-2 text-xs text-gray-500 font-mono">
-                {resultData.provider_call_id || resultData.call_data.call_id}
-              </span>
-            )}
-          </h2>
-          <ElevenLabsCallDetails
-            callData={resultData.call_data}
-            callShortId={resultData.call_data?.call_short_id}
-            hideTranscript
-          />
-        </div>
-      )}
-
-      {resultData.call_data && resultData.provider_platform === 'vobiz' && (
-        <div className="mb-6 bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-            <Phone className="w-5 h-5 mr-2" />
-            Provider Call Details
-            <span className="ml-2 px-2 py-0.5 text-xs bg-teal-100 text-teal-800 rounded-full">vobiz</span>
-            {(resultData.provider_call_id || resultData.call_data.call_ref) && (
-              <span className="ml-2 text-xs text-gray-500 font-mono">
-                {resultData.provider_call_id || resultData.call_data.call_ref}
-              </span>
-            )}
-          </h2>
-          <VobizCallDetails callData={resultData.call_data} />
-        </div>
-      )}
-
-      {/* Unified Transcript & Call Details Section */}
-      {hasCallMediaOrTranscript ? (
-        <div className="bg-white shadow rounded-lg overflow-hidden">
-          {/* Tab Navigation */}
-          <div className="px-6 border-b border-gray-100 flex items-center gap-0">
-            <button
-              onClick={() => setActiveTab('overview')}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
-                activeTab === 'overview'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Overview
-            </button>
-            <button
-              onClick={() => setActiveTab('transcript')}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
-                activeTab === 'transcript'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              Transcript
-            </button>
+      {callDetailsInDrawer &&
+        (callAnalysisSummary || userSentiment || callSuccessful !== null) && (
+          <div className="mb-6 bg-white rounded-lg shadow p-6">
+            <h2 className="text-sm font-semibold text-gray-900 mb-3">Call summary</h2>
+            {callAnalysisSummary ? (
+              <p className="text-sm text-gray-700 leading-relaxed mb-4">{callAnalysisSummary}</p>
+            ) : null}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              {userSentiment ? (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Sentiment</p>
+                  <p className="text-gray-900">{userSentiment}</p>
+                </div>
+              ) : null}
+              {callSuccessful !== null ? (
+                <div>
+                  <p className="text-xs text-gray-500 font-medium mb-1">Outcome</p>
+                  <p className="text-gray-900">
+                    {callSuccessful ? 'Successful' : 'Unsuccessful'}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+            <p className="text-xs text-gray-500 mt-4">
+              Recording, full transcript, and provider details are in{' '}
+              <button
+                type="button"
+                className="font-medium text-primary-600 hover:text-primary-800"
+                onClick={() => setDetailDrawerOpen(true)}
+              >
+                Call details
+              </button>
+              .
+            </p>
           </div>
+        )}
 
-          <div className="p-6">
-            {audioUrl && (
-              <div className="mb-6">
-                <RecordingAudioPlayer
-                  src={audioUrl}
-                  downloadUrl={audioUrl}
-                  audioRef={audioRef}
-                  onLoadedMetadata={(duration) => {
-                    if (duration > 0 && duration !== Infinity) {
-                      setAudioDuration(duration)
-                    }
-                  }}
-                  onEnded={() => setActiveSegmentIndex(null)}
-                />
-              </div>
-            )}
-
-            {/* Overview Tab */}
-            {activeTab === 'overview' && (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Transcript Preview (2 cols) */}
-                <div className="lg:col-span-2">
-                  {isLiveCall || (liveTranscriptTurns.length > 0 && LIVE_CALL_STATUSES.has(displayStatus)) ? (
-                    <LiveTranscriptPanel
-                      turns={liveTranscriptTurns}
-                      isLive={isLiveCall && displayStatus !== 'call_ended'}
-                      agentName={resultData.agent?.name || 'Agent'}
-                      heightClass="h-[560px]"
-                    />
-                  ) : (
-                  <div className="rounded-xl border border-gray-100 bg-gray-50/30 flex flex-col h-[560px]">
-                    <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="h-4 w-4 text-indigo-500" />
-                        <span className="text-sm font-medium text-gray-900">Transcript</span>
-                        {resultData.speaker_segments && resultData.speaker_segments.length > 0 && (
-                          <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full">
-                            {resultData.speaker_segments.length} messages
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                      {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
-                        resultData.speaker_segments.map((segment, index) => {
-                          const isUser = segment.speaker === 'Speaker 1'
-                          const isActive = activeSegmentIndex === index
-                          
-                          return (
-                            <div 
-                              key={index} 
-                              className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
-                              onClick={() => handleSegmentClick(segment.start)}
-                            >
-                              <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 cursor-pointer transition-all ${
-                                isUser
-                                  ? 'bg-indigo-600 text-white rounded-br-sm'
-                                  : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm'
-                              } ${isActive ? 'ring-2 ring-indigo-300 shadow-md' : ''}`}>
-                                <div className={`flex items-center gap-2 mb-0.5 ${isUser ? 'text-indigo-200' : 'text-gray-400'}`}>
-                                  <span className="text-[10px] font-semibold uppercase tracking-wider">
-                                    {isUser ? 'Caller' : (resultData.agent?.name || 'Agent')}
-                                  </span>
-                                  <span className="text-[10px] tabular-nums">{formatTime(segment.start)}</span>
-                                </div>
-                                <p className="text-sm leading-relaxed">{segment.text}</p>
-                              </div>
-                            </div>
-                          )
-                        })
-                      ) : resultData.transcription ? (
-                        <div className="p-4 bg-white rounded-lg border border-gray-100">
-                          <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{resultData.transcription}</p>
-                        </div>
-                      ) : (
-                        <div className="text-center py-12 text-gray-500">
-                          <MessageSquare className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                          <p className="text-sm">
-                            {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcript available'}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  )}
-                </div>
-
-                {/* Call Info Sidebar (1 col) */}
-                <div className="lg:col-span-1 space-y-4">
-                  <div className="rounded-xl border border-gray-100 bg-gray-50/30 p-5">
-                    <h3 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                      <Phone className="h-4 w-4 text-indigo-500" />
-                      Call Summary
-                    </h3>
-                    <div className="space-y-3">
-                      <div className="p-3 bg-white rounded-lg border border-gray-100">
-                        <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Duration</p>
-                        <p className="text-base font-semibold text-gray-900 tabular-nums">{formatDuration(getEffectiveDuration())}</p>
-                      </div>
-                      
-                      <div className="p-3 bg-white rounded-lg border border-gray-100">
-                        <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Status</p>
-                        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium border ${statusConfig.bg} ${statusConfig.text} ${statusConfig.border}`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${statusConfig.dot}`} />
-                          {statusConfig.label}
-                        </span>
-                      </div>
-
-                      {resultData.agent && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Agent</p>
-                          <p className="text-sm font-medium text-gray-900">{resultData.agent.name}</p>
-                          {resultData.agent.description && (
-                            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{resultData.agent.description}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {resultData.persona && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Persona</p>
-                          <p className="text-sm font-medium text-gray-900">{resultData.persona.name}</p>
-                          <div className="flex flex-wrap gap-1.5 mt-1.5">
-                            {resultData.persona.tts_provider && (
-                              <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.tts_provider}</span>
-                            )}
-                            {resultData.persona.tts_voice_name && (
-                              <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.tts_voice_name}</span>
-                            )}
-                            <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.gender}</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {resultData.scenario && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Scenario</p>
-                          <p className="text-sm font-medium text-gray-900">{resultData.scenario.name}</p>
-                          {resultData.scenario.description && (
-                            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{resultData.scenario.description}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Call metadata from call_data (live calls, provider calls) */}
-                      {(resultData.call_data?.from_phone_number ||
-                        resultData.call_data?.to_phone_number ||
-                        vobizPhoneNumbers.from ||
-                        vobizPhoneNumbers.to) && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Phone Numbers</p>
-                          <div className="space-y-2 mt-1.5">
-                            {(resultData.call_data.from_phone_number || vobizPhoneNumbers.from) && (
-                              <div className="flex items-center gap-2">
-                                <PhoneOutgoing className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-sm text-gray-700 font-mono">
-                                  {resultData.call_data.from_phone_number || vobizPhoneNumbers.from}
-                                </span>
-                              </div>
-                            )}
-                            {(resultData.call_data.to_phone_number || vobizPhoneNumbers.to) && (
-                              <div className="flex items-center gap-2">
-                                <PhoneIncoming className="w-3.5 h-3.5 text-gray-400" />
-                                <span className="text-sm text-gray-700 font-mono">
-                                  {resultData.call_data.to_phone_number || vobizPhoneNumbers.to}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {resultData.call_data?.endedReason && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">End Reason</p>
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border bg-gray-50 text-gray-700 border-gray-200">
-                            {resultData.call_data.endedReason.replace(/-/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-                          </span>
-                        </div>
-                      )}
-
-                      {resultData.call_data?.metadata && Object.keys(resultData.call_data.metadata).length > 0 && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-2">Metadata</p>
-                          <div className="space-y-1.5">
-                            {Object.entries(resultData.call_data.metadata).map(([key, value]) => (
-                              <div key={key} className="flex items-start gap-2">
-                                <Tag className="w-3 h-3 text-gray-300 mt-0.5 flex-shrink-0" />
-                                <div className="min-w-0">
-                                  <span className="text-xs text-gray-500">{key}:</span>
-                                  <span className="text-xs text-gray-800 ml-1 font-medium">{String(value)}</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {(providerRecordingUrl || audioS3Key) && (
-                        <div className="p-3 bg-white rounded-lg border border-gray-100">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Recording</p>
-                          {providerRecordingUrl ? (
-                            <a
-                              href={providerRecordingUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-800"
-                            >
-                              <ExternalLink className="w-3.5 h-3.5" />
-                              Open provider recording
-                            </a>
-                          ) : (
-                            <p className="text-sm text-gray-600">Recording available in player above</p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Full Transcript Tab */}
-            {activeTab === 'transcript' && (
-              isLiveCall || liveTranscriptTurns.length > 0 ? (
-                <LiveTranscriptPanel
-                  turns={liveTranscriptTurns}
-                  isLive={isLiveCall && displayStatus !== 'call_ended'}
-                  agentName={resultData.agent?.name || 'Agent'}
-                  heightClass="h-[650px]"
-                />
-              ) : (
-              <div className="rounded-xl border border-gray-100 bg-gray-50/30 flex flex-col h-[650px]">
-                <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 text-indigo-500" />
-                    <span className="text-sm font-medium text-gray-900">Full Transcript</span>
-                  </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                  {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
-                    resultData.speaker_segments.map((segment, index) => {
-                      const isUser = segment.speaker === 'Speaker 1'
-                      const isActive = activeSegmentIndex === index
-                      
-                      return (
-                        <div 
-                          key={index} 
-                          className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
-                          onClick={() => handleSegmentClick(segment.start)}
-                        >
-                          <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 cursor-pointer transition-all ${
-                            isUser
-                              ? 'bg-indigo-600 text-white rounded-br-sm'
-                              : 'bg-white border border-gray-200 text-gray-800 rounded-bl-sm'
-                          } ${isActive ? 'ring-2 ring-indigo-300 shadow-md' : ''}`}>
-                            <div className={`flex items-center gap-2 mb-0.5 ${isUser ? 'text-indigo-200' : 'text-gray-400'}`}>
-                              <span className="text-[10px] font-semibold uppercase tracking-wider">
-                                {isUser ? 'Caller' : (resultData.agent?.name || 'Agent')}
-                              </span>
-                              <span className="text-[10px] tabular-nums">{formatTime(segment.start)}</span>
-                            </div>
-                            <p className="text-sm leading-relaxed">{segment.text}</p>
-                          </div>
-                        </div>
-                      )
-                    })
-                  ) : resultData.transcription ? (
-                    <div className="p-4 bg-white rounded-lg border border-gray-100">
-                      <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{resultData.transcription}</p>
-                    </div>
-                  ) : (
-                    <div className="text-center py-12 text-gray-500">
-                      <MessageSquare className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                      <p className="text-sm">
-                        {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcript available'}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-              )
-            )}
-          </div>
-        </div>
-      ) : null}
       <TraceDetailDrawer
         open={detailDrawerOpen}
         callShortId={drawerTargets.callShortId}
@@ -1573,3 +1033,4 @@ export default function EvaluatorResultDetailPage({
     </div>
   )
 }
+

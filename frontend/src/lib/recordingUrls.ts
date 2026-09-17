@@ -1,3 +1,5 @@
+import { isVoiceAiProviderPlatform } from './callDetailRouting'
+
 /** Resolve a browser-playable recording URL from provider call_data. */
 
 export function getProviderRecordingUrl(
@@ -51,6 +53,14 @@ export function hasEvaluatorResultRecording(
 ): boolean {
   if (!result) return false
   const audioS3Key = result.audio_s3_key || pickString(result.call_data?.recording_s3_key)
+  const callShortId = pickString(result.call_data?.call_short_id)
+  const plat = (result.provider_platform || '').toLowerCase()
+  if (callShortId && isVoiceAiProviderPlatform(result.provider_platform)) {
+    return true
+  }
+  if (plat === 'voice_bundle' || plat === 'custom_websocket') {
+    return Boolean(audioS3Key)
+  }
   return Boolean(audioS3Key || getProviderRecordingUrl(result.call_data, result.provider_platform))
 }
 

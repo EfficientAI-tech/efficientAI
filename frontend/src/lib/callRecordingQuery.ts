@@ -38,6 +38,14 @@ export function getCallRecordingPlaceholder(
 }
 
 function placeholderFromRow(row: Record<string, unknown>): Record<string, unknown> {
+  const evaluationStatus =
+    typeof row.evaluation_status === 'string' ? row.evaluation_status : undefined
+  const metricScores = row.metric_scores
+  const resultId = row.result_id
+  const hasEvaluation =
+    evaluationStatus ||
+    (metricScores && typeof metricScores === 'object' && Object.keys(metricScores as object).length > 0)
+
   return {
     id: row.id,
     call_short_id: row.call_short_id,
@@ -48,6 +56,18 @@ function placeholderFromRow(row: Record<string, unknown>): Record<string, unknow
     created_at: row.created_at,
     updated_at: row.updated_at,
     call_data: row.call_data ?? null,
+    evaluator_result_id: row.evaluator_result_id ?? null,
+    evaluation_status: evaluationStatus ?? null,
+    evaluation: hasEvaluation
+      ? {
+          status: evaluationStatus,
+          result_id: resultId ?? null,
+          metric_scores:
+            metricScores && typeof metricScores === 'object'
+              ? (metricScores as Record<string, unknown>)
+              : undefined,
+        }
+      : undefined,
   }
 }
 

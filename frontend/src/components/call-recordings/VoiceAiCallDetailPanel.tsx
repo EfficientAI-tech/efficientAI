@@ -3,7 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import { Clock, DollarSign, FileText, ListTree, Loader, MessageSquare, Sparkles } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import CallWaveformPlayer from './CallWaveformPlayer'
-import { ProviderCostPanel, ProviderLatencyPanel } from './ProviderMetricsPanels'
+import {
+  ProviderCostPanel,
+  ProviderLatencyPanel,
+  type ProviderBillingScope,
+} from './ProviderMetricsPanels'
+import { CallDetailScopeTags, evaluatorDrawerScopeTags } from './callDetailScope'
 import VapiCallDetails, { type VapiDetailSection } from './VapiCallDetails'
 import RetellCallDetails, { type RetellDetailSection } from './RetellCallDetails'
 import ElevenLabsCallDetails from './ElevenLabsCallDetails'
@@ -20,7 +25,10 @@ import { getVoiceProviderCapabilities } from '../../lib/voiceProviderRegistry'
 import { extractProviderCostSummary, formatProviderCostAmount } from '../../lib/voiceProviderMetrics'
 import VoiceProviderEmptyState from './VoiceProviderEmptyState'
 
-type DrawerTab = 'transcript' | 'cost' | 'latency' | 'logs' | 'analysis'
+export type VoiceAiDrawerTab = 'transcript' | 'cost' | 'latency' | 'logs' | 'analysis'
+export type VoiceAiMetricsSection = 'cost' | 'latency' | 'logs'
+
+type DrawerTab = VoiceAiDrawerTab
 type LogsView = 'timeline' | 'raw'
 
 const TABS: Array<{ id: DrawerTab; label: string; icon: typeof FileText }> = [
@@ -37,6 +45,38 @@ function formatDuration(seconds?: number | null): string {
   const sec = Math.floor(seconds % 60)
   if (mins > 0) return `${mins}m ${sec}s`
   return `${sec}s`
+}
+
+export function ProviderSummaryChips({
+  recording,
+}: {
+  recording: {
+    provider_platform?: string
+    call_data?: Record<string, unknown>
+  }
+}) {
+  const platform = recording.provider_platform
+  const providerCaps = getVoiceProviderCapabilities(platform)
+  const cost = extractCost(recording)
+  const durationSec = extractDurationSeconds(recording)
+
+  return (
+    <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-gray-700">
+        <DollarSign className="h-3 w-3 text-primary-600" />
+        {cost != null ? formatProviderCostAmount(cost.amount, cost.unit) : 'Cost —'}
+      </span>
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-gray-700">
+        <Clock className="h-3 w-3 text-primary-600" />
+        {formatDuration(durationSec)}
+      </span>
+      {platform ? (
+        <span className="inline-flex shrink-0 items-center rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-gray-700">
+          {providerCaps.label}
+        </span>
+      ) : null}
+    </div>
+  )
 }
 
 function extractCost(recording: {
@@ -90,6 +130,8 @@ export default function VoiceAiCallDetailPanel({
   onRefresh,
   refreshing = false,
   fillHeight = false,
+  embeddedSection,
+  billingScope,
 }: {
   recording: {
     id?: string | null
@@ -106,9 +148,13 @@ export default function VoiceAiCallDetailPanel({
   onRefresh?: () => void
   refreshing?: boolean
   fillHeight?: boolean
+  /** When set, render only cost / latency / logs (no nested transcript tabs). */
+  embeddedSection?: VoiceAiMetricsSection
+  billingScope?: ProviderBillingScope
 }) {
   const [tab, setTab] = useState<DrawerTab>('transcript')
   const [logsView, setLogsView] = useState<LogsView>('timeline')
+  const activeTab: DrawerTab = embeddedSection ?? tab
   const platform = recording.provider_platform
   const providerCaps = getVoiceProviderCapabilities(platform)
   const callData = (recording.call_data || {}) as Record<string, unknown>
@@ -125,20 +171,20 @@ export default function VoiceAiCallDetailPanel({
   const logUrl = externalLogUrl(platform, callData)
 
   const logEvents = useMemo(() => {
-    if (tab !== 'logs' || logsView !== 'timeline') return []
+    if (activeTab !== 'logs' || logsView !== 'timeline') return []
     if (platform === 'vapi') return buildVapiCallTimeline(callData)
     if (platform === 'retell') return buildRetellCallTimeline(callData)
     if (platform === 'elevenlabs') return buildElevenLabsCallTimeline(callData)
     if (platform === 'smallest') return buildSmallestCallTimeline(callData)
     return []
-  }, [platform, callData, tab, logsView])
+  }, [platform, callData, activeTab, logsView])
 
   const supportsRawLogs = providerCaps.supportsRawLogs
   const supportsTimelineLogs = providerCaps.supportsTimelineLogs
   const { data: rawLogs, isFetching: rawLogsLoading } = useQuery({
     queryKey: ['call-recording-logs', callShortId],
     queryFn: () => apiClient.getCallRecordingLogs(callShortId),
-    enabled: tab === 'logs' && logsView === 'raw' && supportsRawLogs,
+    enabled: activeTab === 'logs' && logsView === 'raw' && supportsRawLogs,
     staleTime: 60_000,
   })
 
@@ -192,23 +238,7 @@ export default function VoiceAiCallDetailPanel({
     )
   }
 
-  const summaryChips = (
-    <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-gray-700">
-        <DollarSign className="h-3 w-3 text-primary-600" />
-        {cost != null ? formatProviderCostAmount(cost.amount, cost.unit) : 'Cost —'}
-      </span>
-      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-gray-700">
-        <Clock className="h-3 w-3 text-primary-600" />
-        {formatDuration(durationSec)}
-      </span>
-      {platform ? (
-        <span className="inline-flex shrink-0 items-center rounded-full border border-gray-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-gray-700">
-          {providerCaps.label}
-        </span>
-      ) : null}
-    </div>
-  )
+  const summaryChips = <ProviderSummaryChips recording={recording} />
 
   const waveform = !hideWaveform ? (
     <CallWaveformPlayer
@@ -248,7 +278,7 @@ export default function VoiceAiCallDetailPanel({
           Loading call details…
         </div>
       ) : null}
-      {!detailsLoading && tab === 'transcript' && !hasDetails ? (
+      {!detailsLoading && activeTab === 'transcript' && !hasDetails ? (
         <VoiceProviderEmptyState
           recording={recording as Record<string, unknown>}
           platform={platform}
@@ -256,19 +286,20 @@ export default function VoiceAiCallDetailPanel({
           refreshing={refreshing}
         />
       ) : null}
-      {!detailsLoading && tab === 'transcript' && hasDetails ? renderPlatformSection('transcript') : null}
-      {!detailsLoading && tab === 'cost' ? (
+      {!detailsLoading && activeTab === 'transcript' && hasDetails ? renderPlatformSection('transcript') : null}
+      {!detailsLoading && activeTab === 'cost' ? (
         <ProviderCostPanel
           callData={callData}
           platform={platform}
           totalCost={cost?.amount}
           durationSec={durationSec}
+          billingScope={billingScope}
         />
       ) : null}
-      {!detailsLoading && tab === 'latency' ? (
-        <ProviderLatencyPanel callData={callData} platform={platform} />
+      {!detailsLoading && activeTab === 'latency' ? (
+        <ProviderLatencyPanel callData={callData} platform={platform} billingScope={billingScope} />
       ) : null}
-      {!detailsLoading && tab === 'analysis' && !hasDetails ? (
+      {!detailsLoading && activeTab === 'analysis' && !hasDetails ? (
         <VoiceProviderEmptyState
           recording={recording as Record<string, unknown>}
           platform={platform}
@@ -276,9 +307,18 @@ export default function VoiceAiCallDetailPanel({
           refreshing={refreshing}
         />
       ) : null}
-      {!detailsLoading && tab === 'analysis' && hasDetails ? renderPlatformSection('analysis') : null}
-      {!detailsLoading && tab === 'logs' ? (
+      {!detailsLoading && activeTab === 'analysis' && hasDetails ? renderPlatformSection('analysis') : null}
+      {!detailsLoading && activeTab === 'logs' ? (
         <div className="space-y-3">
+          {(() => {
+            const logsScope = evaluatorDrawerScopeTags('logs', {
+              agentName: billingScope?.subjectLabel,
+              personaName: billingScope?.personaName,
+              personaTtsLine: billingScope?.personaTtsLine,
+              platform,
+            })
+            return <CallDetailScopeTags tags={logsScope.tags} hint={logsScope.hint} />
+          })()}
           {supportsRawLogs || supportsTimelineLogs ? (
             <div className="flex flex-wrap gap-2">
               <button
@@ -358,6 +398,10 @@ export default function VoiceAiCallDetailPanel({
       ) : null}
     </div>
   )
+
+  if (embeddedSection) {
+    return <div className="min-h-0">{tabContent}</div>
+  }
 
   if (fillHeight) {
     return (

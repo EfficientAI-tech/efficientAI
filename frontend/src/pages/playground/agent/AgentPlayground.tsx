@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Activity, Search } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Search } from 'lucide-react'
 import Button from '../../../components/Button'
 import TableListPagination from '../../../components/TableListPagination'
 import { useToast } from '../../../hooks/useToast'
@@ -13,13 +13,28 @@ import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from '../../../components/VoiceAgent'
 import GenericVoiceWSClient from '../../../components/GenericVoiceWSClient'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
+import PlaygroundTraceOpenButton from './PlaygroundTraceStatusCell'
 import { getProtocolById } from '../../../lib/wsProtocols'
 import { prefetchCallRecordingQuery, refreshCallRecordingQueries, warmCallRecordingQueryFromList } from '../../../lib/callRecordingQuery'
 import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
+import {
+  DEFAULT_AGENT_PLAYGROUND_TAB,
+  parseAgentPlaygroundTab,
+  type AgentPlaygroundTab,
+} from '../../../lib/playgroundAgentTabs'
 
 const PLAYGROUND_LIST_PAGE_SIZE = 10
+
+function PlaygroundCallsListLoading({ message }: { message: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-8 text-sm text-gray-600">
+      <RefreshCw className="h-4 w-4 animate-spin text-primary-500" />
+      {message}
+    </div>
+  )
+}
 
 function paginateList<T>(items: T[], page: number, pageSize: number) {
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize))
@@ -95,13 +110,27 @@ export default function AgentPlayground() {
   const { selectedAgent } = useAgentStore()
   const { showToast, ToastContainer } = useToast()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
+  const activeTab = parseAgentPlaygroundTab(searchParams)
+  const setActiveTab = useCallback(
+    (tab: AgentPlaygroundTab) => {
+      const next = new URLSearchParams(searchParams)
+      if (tab === DEFAULT_AGENT_PLAYGROUND_TAB) {
+        next.delete('tab')
+      } else {
+        next.set('tab', tab)
+      }
+      setSearchParams(next, { replace: true })
+    },
+    [searchParams, setSearchParams],
+  )
   const [showModal, setShowModal] = useState(false)
   const [showTestModal, setShowTestModal] = useState(false)
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
   const [testPersonaId, setTestPersonaId] = useState('')
   const [testScenarioId, setTestScenarioId] = useState('')
-  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(true)
+  const [runPostCallEvaluation, setRunPostCallEvaluation] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false)
@@ -143,7 +172,11 @@ export default function AgentPlayground() {
   const testVoiceAgentResults = testVoiceAgentList?.items ?? []
 
   // Fetch call recordings (for Voice AI Agents tab)
-  const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({
+  const {
+    data: callRecordings = [],
+    refetch: refetchCallRecordings,
+    isLoading: callRecordingsLoading,
+  } = useQuery({
     queryKey: ['call-recordings'],
     queryFn: () => apiClient.listCallRecordings(),
     // Refetch every 5 seconds if there are any evaluations in progress
@@ -167,7 +200,6 @@ export default function AgentPlayground() {
     staleTime: 60_000,
   })
 
-  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents' | 'custom_websocket'>('voice_ai_agents')
   const [testAgentsPage, setTestAgentsPage] = useState(1)
   const [voiceAiPage, setVoiceAiPage] = useState(1)
   const [customWsPage, setCustomWsPage] = useState(1)
@@ -206,6 +238,7 @@ export default function AgentPlayground() {
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
   const [otlpTraceResultId, setOtlpTraceResultId] = useState<string | null>(null)
+  const [otlpTraceCallShortId, setOtplTraceCallShortId] = useState<string | null>(null)
   const isVoiceAiProviderRecording = (recording: { provider_platform?: string | null }) => {
     const platform = (recording.provider_platform || '').toLowerCase()
     return (
@@ -850,6 +883,7 @@ export default function AgentPlayground() {
 
 
   const handleOpenTestAgentTrace = (resultId: string) => {
+    setOtplTraceCallShortId(null)
     prefetchEvaluatorRecordingAudio(resultId)
     void queryClient.prefetchQuery({
       queryKey: ['evaluator-result', resultId],
@@ -857,6 +891,13 @@ export default function AgentPlayground() {
       staleTime: 30_000,
     })
     setOtlpTraceResultId(resultId)
+  }
+
+  const handleOpenVoiceAgentTrace = (callShortId: string) => {
+    setOtlpTraceResultId(null)
+    prefetchCallRecordingAudio(callShortId, false)
+    void prefetchCallRecordingQuery(queryClient, callShortId)
+    setOtplTraceCallShortId(callShortId)
   }
 
   const handleViewCallRecording = (callShortId: string) => {
@@ -1165,10 +1206,7 @@ export default function AgentPlayground() {
                   </div>
                 )}
                 {testResultsLoading && testVoiceAgentResults.length === 0 ? (
-                  <div className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-8 text-sm text-gray-600">
-                    <RefreshCw className="h-4 w-4 animate-spin text-primary-500" />
-                    Loading evaluation results…
-                  </div>
+                  <PlaygroundCallsListLoading message="Loading test agent calls…" />
                 ) : testVoiceAgentResults.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">No test agent results found</p>
@@ -1295,15 +1333,9 @@ export default function AgentPlayground() {
                                   : 'N/A'}
                               </td>
                               <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenTestAgentTrace(result.id)}
-                                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                                  title="View OTLP call trace"
-                                >
-                                  <Activity className="h-3.5 w-3.5" />
-                                  Trace
-                                </button>
+                                <PlaygroundTraceOpenButton
+                                  onOpen={() => handleOpenTestAgentTrace(result.id)}
+                                />
                               </td>
                             </tr>
                           )
@@ -1345,7 +1377,9 @@ export default function AgentPlayground() {
                     </Button>
                   </div>
                 )}
-                {voiceAICallRecordings.length === 0 ? (
+                {callRecordingsLoading && voiceAICallRecordings.length === 0 ? (
+                  <PlaygroundCallsListLoading message="Loading Voice AI calls…" />
+                ) : voiceAICallRecordings.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">
                       No Retell, Vapi, ElevenLabs, or Smallest calls yet. Start a Voice AI Agent test from the agent sidebar.
@@ -1414,6 +1448,9 @@ export default function AgentPlayground() {
                           </th>
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
+                            Trace
                           </th>
                         </tr>
                       </thead>
@@ -1504,6 +1541,12 @@ export default function AgentPlayground() {
                                 {recording.created_at
                                   ? new Date(recording.created_at).toLocaleString()
                                   : 'N/A'}
+                              </td>
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <PlaygroundTraceOpenButton
+                                  onOpen={() => handleOpenVoiceAgentTrace(recording.call_short_id)}
+                                  title="View provider call and trace"
+                                />
                               </td>
                             </tr>
                           )
@@ -1638,7 +1681,9 @@ export default function AgentPlayground() {
                     <h4 className="text-sm font-semibold text-gray-900">Saved Custom Sessions</h4>
                   </div>
                   <div className="p-4">
-                    {customWebsocketSessions.length === 0 ? (
+                    {callRecordingsLoading && customWebsocketSessions.length === 0 ? (
+                      <PlaygroundCallsListLoading message="Loading custom WebSocket sessions…" />
+                    ) : customWebsocketSessions.length === 0 ? (
                       <p className="text-sm text-gray-600">No saved custom websocket sessions yet.</p>
                     ) : (
                       <div className="space-y-3">
@@ -2037,7 +2082,7 @@ export default function AgentPlayground() {
                 <div>
                   <p className="text-sm font-medium text-gray-900">Run post-call evaluation</p>
                   <p className="text-xs text-gray-600 mt-0.5">
-                    On by default. Disable to skip automatic scoring when the call ends.
+                    Off by default. Enable to run automatic scoring when the call ends.
                   </p>
                 </div>
                 <label className="relative inline-flex shrink-0 cursor-pointer items-center">
@@ -2091,9 +2136,13 @@ export default function AgentPlayground() {
       )}
 
       <TraceDetailDrawer
-        open={Boolean(otlpTraceResultId)}
+        open={Boolean(otlpTraceResultId || otlpTraceCallShortId)}
         evaluatorResultId={otlpTraceResultId}
-        onClose={() => setOtlpTraceResultId(null)}
+        callShortId={otlpTraceCallShortId}
+        onClose={() => {
+          setOtlpTraceResultId(null)
+          setOtplTraceCallShortId(null)
+        }}
       />
     </>
   )

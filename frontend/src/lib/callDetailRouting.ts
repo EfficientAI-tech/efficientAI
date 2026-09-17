@@ -53,3 +53,52 @@ export function resolveTraceDrawerTargets(input: {
     traceId: input.syntheticTraceId || null,
   }
 }
+
+export function resolveEvaluatorAudioPlayback(input: {
+  callShortId?: string | null
+  providerPlatform?: string | null
+  callRecordingSource?: string | null
+  evaluatorResultId: string
+}): {
+  callShortId?: string
+  observabilityCallShortId?: string
+  evaluatorResultId?: string
+} {
+  const callShortId = input.callShortId?.trim() || null
+  const platform = input.providerPlatform
+  const source = input.callRecordingSource
+
+  if (
+    callShortId &&
+    isVoiceAiProviderPlatform(platform) &&
+    isWebhookCallRecordingSource(source)
+  ) {
+    return { observabilityCallShortId: callShortId }
+  }
+
+  if (callShortId && isVoiceAiProviderPlatform(platform)) {
+    return { callShortId }
+  }
+
+  if (callShortId && isPlaygroundCallRecordingSource(source)) {
+    const plat = (platform || '').toLowerCase()
+    if ((plat === 'voice_bundle' || plat === 'custom_websocket') && input.evaluatorResultId) {
+      return { evaluatorResultId: input.evaluatorResultId }
+    }
+    return { callShortId }
+  }
+
+  const routed = resolveTraceDrawerTargets({
+    callShortId,
+    providerPlatform: platform,
+    callRecordingSource: source,
+    evaluatorResultId: input.evaluatorResultId,
+  })
+  if (routed.callShortId) {
+    return { callShortId: routed.callShortId }
+  }
+  if (routed.observabilityCallShortId) {
+    return { observabilityCallShortId: routed.observabilityCallShortId }
+  }
+  return { evaluatorResultId: input.evaluatorResultId }
+}

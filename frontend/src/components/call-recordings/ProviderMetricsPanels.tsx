@@ -14,6 +14,7 @@ import {
   formatProviderCostAmount,
   type ProviderCostUnit,
 } from '../../lib/voiceProviderMetrics'
+import { CallDetailScopeTags, evaluatorDrawerScopeTags, type EvaluatorCallScope } from './callDetailScope'
 
 export interface CostSlice {
   key: string
@@ -122,10 +123,20 @@ function parseElevenLabsCostSlices(callData: Record<string, unknown>): CostSlice
     const llmPrice = Number(charging.llm_price)
     const platformPrice = Number(charging.platform_price)
     if (llmPrice > 0) {
-      slices.push({ key: 'llm', label: 'LLM', value: llmPrice, color: COST_COLORS.llm })
+      slices.push({
+        key: 'llm',
+        label: 'Agent LLM',
+        value: llmPrice,
+        color: COST_COLORS.llm,
+      })
     }
     if (platformPrice > 0) {
-      slices.push({ key: 'call', label: 'Voice', value: platformPrice, color: COST_COLORS.tts })
+      slices.push({
+        key: 'call',
+        label: 'Agent voice',
+        value: platformPrice,
+        color: COST_COLORS.tts,
+      })
     }
     if (slices.length) return slices
   }
@@ -311,16 +322,25 @@ function parseSmallestPipeline(callData: Record<string, unknown>): {
   return { stages, turns: [], avgTurnMs }
 }
 
+export type ProviderBillingScope = {
+  /** Agent or assistant billed on the voice platform (e.g. ElevenLabs ConvAI agent). */
+  subjectLabel?: string | null
+  personaName?: string | null
+  personaTtsLine?: string | null
+}
+
 export function ProviderCostPanel({
   callData,
   platform,
   totalCost,
   durationSec,
+  billingScope,
 }: {
   callData: Record<string, unknown>
   platform?: string | null
   totalCost?: number | null
   durationSec?: number | null
+  billingScope?: ProviderBillingScope
 }) {
   const slices = useMemo(() => {
     if (platform === 'retell') return parseRetellCostSlices(callData)
@@ -348,8 +368,17 @@ export function ProviderCostPanel({
     return <p className="py-12 text-center text-sm text-gray-500">No cost data available yet.</p>
   }
 
+  const scopeFromBilling: EvaluatorCallScope = {
+    agentName: billingScope?.subjectLabel,
+    personaName: billingScope?.personaName,
+    personaTtsLine: billingScope?.personaTtsLine,
+    platform,
+  }
+  const costScope = evaluatorDrawerScopeTags('cost', scopeFromBilling)
+
   return (
     <div className="space-y-5">
+      <CallDetailScopeTags tags={costScope.tags} hint={costScope.hint} />
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-medium text-gray-500">Total cost</p>
@@ -451,11 +480,11 @@ export function ProviderCostPanel({
                   : 'Language model usage'
                 : slice.key === 'tts' || slice.key === 'call'
                   ? ttsChars != null
-                    ? `${Number(ttsChars).toLocaleString()} characters`
+                    ? `${Number(ttsChars).toLocaleString()} agent voice characters`
                     : ttsUsage?.total_characters != null
-                      ? `${Number(ttsUsage.total_characters).toLocaleString()} characters`
+                      ? `${Number(ttsUsage.total_characters).toLocaleString()} agent voice characters`
                       : slice.key === 'call'
-                        ? 'Voice platform usage'
+                        ? 'ElevenLabs agent speech (TTS + platform)'
                         : 'Text-to-speech synthesis'
                   : 'Speech-to-text processing'
             return (
@@ -476,10 +505,18 @@ export function ProviderCostPanel({
 export function ProviderLatencyPanel({
   callData,
   platform,
+  billingScope,
 }: {
   callData: Record<string, unknown>
   platform?: string | null
+  billingScope?: ProviderBillingScope
 }) {
+  const latencyScope = evaluatorDrawerScopeTags('latency', {
+    agentName: billingScope?.subjectLabel,
+    personaName: billingScope?.personaName,
+    personaTtsLine: billingScope?.personaTtsLine,
+    platform,
+  })
   const { stages, turns, avgTurnMs } = useMemo(() => {
     if (platform === 'vapi') return parseVapiPipeline(callData)
     if (platform === 'elevenlabs') return parseElevenLabsPipeline(callData)
@@ -504,6 +541,7 @@ export function ProviderLatencyPanel({
 
   return (
     <div className="space-y-5">
+      <CallDetailScopeTags tags={latencyScope.tags} hint={latencyScope.hint} />
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-medium text-gray-500">Turns</p>

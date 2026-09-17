@@ -34,6 +34,7 @@ from app.services.synthetic_traces.span_storage import (
 )
 from app.services.synthetic_traces import ch_trace_ops
 from app.services.synthetic_traces.clickhouse_store import (
+    delete_trace_record as ch_delete_trace_record,
     get_trace_by_call_short_id as ch_get_trace_by_call_short_id,
     get_trace_by_evaluator_result_id as ch_get_trace_by_evaluator_result_id,
     get_trace_by_id as ch_get_trace_by_id,
@@ -774,6 +775,97 @@ def get_trace_for_result(
     if trace and auto_close:
         trace = maybe_auto_close_open_trace(db, trace)
     return trace
+
+
+def lookup_call_trace_status(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    synthetic_call_trace_id: Optional[UUID] = None,
+    call_short_id: Optional[str] = None,
+) -> Optional[str]:
+    trace = None
+    if synthetic_call_trace_id:
+        trace = get_trace_by_id(
+            db,
+            organization_id=organization_id,
+            trace_id=synthetic_call_trace_id,
+            workspace_id=workspace_id,
+        )
+    elif call_short_id:
+        trace = get_trace_by_call_short_id(
+            db,
+            organization_id=organization_id,
+            call_short_id=call_short_id,
+            workspace_id=workspace_id,
+            auto_close=False,
+        )
+    return trace.status if trace else None
+
+
+def _unlink_evaluator_result_trace(db: Session, trace_id: UUID, evaluator_result_id: Optional[UUID]) -> None:
+    if not evaluator_result_id:
+        return
+    result = db.query(EvaluatorResult).filter(EvaluatorResult.id == evaluator_result_id).first()
+    if result and result.synthetic_call_trace_id == trace_id:
+        result.synthetic_call_trace_id = None
+
+
+def delete_call_trace(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    trace_id: UUID,
+) -> bool:
+    trace = get_trace_by_id(
+        db,
+        organization_id=organization_id,
+        trace_id=trace_id,
+        workspace_id=workspace_id,
+    )
+    if not trace:
+        return False
+
+    tid = trace.id
+    er_id = getattr(trace, "evaluator_result_id", None)
+
+    if ch_trace_ops.use_ch():
+        if not ch_delete_trace_record(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            trace_id=tid,
+        ):
+            return False
+        delete_trace_s3_wal_batches(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            trace_id=tid,
+        )
+        _unlink_evaluator_result_trace(db, tid, er_id)
+        db.commit()
+        return True
+
+    _require_pg_trace_storage(db)
+    if not isinstance(trace, SyntheticCallTrace):
+        return False
+    delete_trace_batches(db, tid)
+    delete_trace_s3_wal_batches(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        trace_id=tid,
+    )
+    db.query(SyntheticTraceOtelPayload).filter(
+        SyntheticTraceOtelPayload.synthetic_call_trace_id == tid,
+    ).delete(synchronize_session=False)
+    db.query(SyntheticTracePayload).filter(
+        SyntheticTracePayload.synthetic_call_trace_id == tid,
+    ).delete(synchronize_session=False)
+    _unlink_evaluator_result_trace(db, tid, er_id)
+    db.delete(trace)
+    db.commit()
+    return True
 
 
 def get_trace_by_id(

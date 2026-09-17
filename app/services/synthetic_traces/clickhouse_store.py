@@ -375,6 +375,48 @@ def get_trace_by_id(
     return _row_to_trace(result.result_rows[0], list(result.column_names))
 
 
+def delete_trace_record(
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    trace_id: UUID,
+) -> bool:
+    if not clickhouse_enabled():
+        return False
+    trace = get_trace_by_id(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        trace_id=trace_id,
+    )
+    if not trace:
+        return False
+    params = {
+        "org_id": organization_id,
+        "ws_id": workspace_id,
+        "trace_id": trace_id,
+    }
+    client = get_client()
+    client.command(
+        "ALTER TABLE trace_observations DELETE WHERE "
+        "workspace_id = {ws_id:UUID} AND trace_uuid = {trace_id:UUID}",
+        parameters=params,
+    )
+    client.command(
+        "ALTER TABLE call_traces DELETE WHERE "
+        "organization_id = {org_id:UUID} AND workspace_id = {ws_id:UUID} AND trace_uuid = {trace_id:UUID}",
+        parameters=params,
+    )
+    clear_live_turns(trace_id)
+    if trace.call_short_id:
+        try:
+            _get_redis().delete(
+                _call_short_id_cache_key(organization_id, workspace_id, trace.call_short_id),
+            )
+        except redis.RedisError as exc:
+            logger.warning("Redis call_short_id cache delete failed: {}", exc)
+    return True
+
+
 def get_trace_by_uuid(trace_uuid: UUID) -> Optional[TraceRecord]:
     result = get_client().query(
         _select_trace_query("trace_uuid = {trace_id:UUID}"),

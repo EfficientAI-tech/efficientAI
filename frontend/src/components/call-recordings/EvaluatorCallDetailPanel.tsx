@@ -1,22 +1,67 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { MessageSquare, Sparkles, Activity, X } from 'lucide-react'
+import {
+  MessageSquare,
+  Sparkles,
+  Activity,
+  X,
+  DollarSign,
+  Clock,
+  ListTree,
+  BarChart3,
+  Layers,
+} from 'lucide-react'
+import { isVoiceAiProviderPlatform } from '../../lib/callDetailRouting'
+import VoiceAiCallDetailPanel, {
+  ProviderSummaryChips,
+  type VoiceAiMetricsSection,
+} from './VoiceAiCallDetailPanel'
 import { apiClient } from '../../lib/api'
 import { formatMessageTiming } from '../../lib/callTranscriptTiming'
 import { transcriptBubbleClass, transcriptMetaClass } from './transcriptBubbleStyles'
-import { isPlaygroundCallRecordingSource, isVoiceAiProviderPlatform } from '../../lib/callDetailRouting'
+import { resolveEvaluatorAudioPlayback } from '../../lib/callDetailRouting'
 import { getEvaluatorResultPlaceholder } from '../../lib/evaluatorResultQuery'
-import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../lib/waveformAudioCache'
+import { hasEvaluatorResultRecording } from '../../lib/recordingUrls'
+import {
+  prefetchCallRecordingAudio,
+  prefetchEvaluatorRecordingAudio,
+  prefetchObservabilityCallAudio,
+} from '../../lib/waveformAudioCache'
 import CallWaveformPlayer from './CallWaveformPlayer'
-import SyntheticCallTracePanel from './SyntheticCallTracePanel'
+import SyntheticCallTracePanel, { type SyntheticTraceDetailTab } from './SyntheticCallTracePanel'
 import LiveTranscriptPanel, { type LiveTranscriptTurn } from './LiveTranscriptPanel'
+import {
+  CallDetailScopeTags,
+  evaluatorDrawerScopeTags,
+  type EvaluatorCallScope,
+} from './callDetailScope'
 
-type DrawerTab = 'transcript' | 'analysis' | 'pipeline'
+type DrawerTab =
+  | 'transcript'
+  | 'analysis'
+  | 'cost'
+  | 'latency'
+  | 'logs'
+  | SyntheticTraceDetailTab
 
-const TABS: Array<{ id: DrawerTab; label: string; icon: typeof MessageSquare }> = [
+const PIPELINE_TAB_IDS: SyntheticTraceDetailTab[] = ['trace', 'waterfall', 'timeline', 'spans']
+
+const BASE_TABS: Array<{ id: DrawerTab; label: string; icon: typeof MessageSquare }> = [
   { id: 'transcript', label: 'Transcript', icon: MessageSquare },
   { id: 'analysis', label: 'Analysis', icon: Sparkles },
-  { id: 'pipeline', label: 'Pipeline', icon: Activity },
+]
+
+const PROVIDER_METRIC_TABS: Array<{ id: DrawerTab; label: string; icon: typeof MessageSquare }> = [
+  { id: 'cost', label: 'Cost', icon: DollarSign },
+  { id: 'latency', label: 'Latency', icon: Clock },
+  { id: 'logs', label: 'Logs', icon: ListTree },
+]
+
+const PIPELINE_SUB_TABS: Array<{ id: SyntheticTraceDetailTab; label: string; icon: typeof Activity }> = [
+  { id: 'trace', label: 'Trace', icon: Activity },
+  { id: 'waterfall', label: 'Waterfall', icon: BarChart3 },
+  { id: 'timeline', label: 'Timeline', icon: Clock },
+  { id: 'spans', label: 'Spans', icon: Layers },
 ]
 
 const IN_PROGRESS_STATUSES = new Set([
@@ -45,8 +90,8 @@ function isUserSpeaker(speaker: string): boolean {
   )
 }
 
-function getSpeakerLabel(speaker: string, agentName?: string): string {
-  if (isUserSpeaker(speaker)) return 'Caller'
+function getSpeakerLabel(speaker: string, agentName?: string, personaName?: string): string {
+  if (isUserSpeaker(speaker)) return personaName?.trim() || 'Caller'
   if (['assistant', 'speaker 2', 'bot', 'agent'].includes(speaker.trim().toLowerCase())) {
     return agentName || 'Agent'
   }
@@ -103,11 +148,6 @@ export default function EvaluatorCallDetailPanel({
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptTurn[]>([])
   const queryClient = useQueryClient()
 
-  useEffect(() => {
-    if (!evaluatorResultId) return
-    prefetchEvaluatorRecordingAudio(evaluatorResultId)
-  }, [evaluatorResultId])
-
   const { data: result, isLoading, isFetching, isError, error } = useQuery({
     queryKey: ['evaluator-result', evaluatorResultId],
     queryFn: () => apiClient.getEvaluatorResult(evaluatorResultId, true),
@@ -121,12 +161,90 @@ export default function EvaluatorCallDetailPanel({
     persistedSegments.length > 0 || String(result?.transcription ?? '').trim(),
   )
 
+  const syntheticTraceId =
+    typeof (result as { synthetic_call_trace_id?: string | null } | undefined)?.synthetic_call_trace_id ===
+    'string'
+      ? (result as { synthetic_call_trace_id: string }).synthetic_call_trace_id
+      : undefined
+  const callShortIdFromData =
+    typeof result?.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : undefined
+
   const { data: traceFallback } = useQuery({
-    queryKey: ['synthetic-call-trace', evaluatorResultId, 'transcript-fallback'],
-    queryFn: () => apiClient.getSyntheticCallTraceForResult(evaluatorResultId),
-    enabled: Boolean(evaluatorResultId) && !isFetching && !hasPersistedTranscript,
+    queryKey: ['synthetic-call-trace', syntheticTraceId, 'transcript-fallback'],
+    queryFn: () => apiClient.getSyntheticCallTrace(syntheticTraceId!, false),
+    enabled: Boolean(syntheticTraceId && !hasPersistedTranscript),
     retry: false,
   })
+
+  const { data: hasPipelineTrace = false } = useQuery({
+    queryKey: [
+      'evaluator-pipeline-trace-available',
+      evaluatorResultId,
+      syntheticTraceId,
+      callShortIdFromData,
+    ],
+    queryFn: async () => {
+      if (syntheticTraceId) {
+        try {
+          await apiClient.getSyntheticCallTrace(syntheticTraceId, false)
+          return true
+        } catch {
+          return false
+        }
+      }
+      if (callShortIdFromData) {
+        try {
+          await apiClient.getSyntheticCallTraceByCallShortId(callShortIdFromData, false)
+          return true
+        } catch {
+          return false
+        }
+      }
+      if (result?.persona || result?.scenario) {
+        try {
+          await apiClient.getSyntheticCallTraceForResult(evaluatorResultId, false)
+          return true
+        } catch {
+          return false
+        }
+      }
+      return false
+    },
+    enabled: Boolean(evaluatorResultId && result),
+    retry: false,
+    staleTime: 60_000,
+  })
+
+  const showProviderTab = Boolean(
+    result && isVoiceAiProviderPlatform(result.provider_platform) && result.call_data,
+  )
+
+  const visibleTabs = useMemo(() => {
+    const tabs = [...BASE_TABS]
+    if (showProviderTab) tabs.push(...PROVIDER_METRIC_TABS)
+    if (hasPipelineTrace) tabs.push(...PIPELINE_SUB_TABS)
+    return tabs
+  }, [hasPipelineTrace, showProviderTab])
+
+  useEffect(() => {
+    if (PIPELINE_TAB_IDS.includes(tab as SyntheticTraceDetailTab) && !hasPipelineTrace) {
+      setTab('transcript')
+    }
+    if ((tab === 'cost' || tab === 'latency' || tab === 'logs') && !showProviderTab) {
+      setTab('transcript')
+    }
+  }, [tab, hasPipelineTrace, showProviderTab])
+
+  const providerRecording = useMemo(
+    () =>
+      result
+        ? {
+            provider_platform: result.provider_platform,
+            call_data: result.call_data as Record<string, unknown>,
+          }
+        : null,
+    [result],
+  )
 
   const traceSegments = useMemo(
     () => segmentsFromTraceTurns((traceFallback?.turns ?? []) as Array<Record<string, unknown>>),
@@ -134,18 +252,19 @@ export default function EvaluatorCallDetailPanel({
   )
 
   const speakerSegments = persistedSegments.length > 0 ? persistedSegments : traceSegments
+  const personaName = result?.persona?.name
   const transcription =
     String(result?.transcription ?? '').trim() ||
     (speakerSegments.length > 0
-      ? speakerSegments.map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name)}: ${seg.text}`).join('\n')
+      ? speakerSegments
+          .map((seg) => `${getSpeakerLabel(seg.speaker, result?.agent?.name, personaName)}: ${seg.text}`)
+          .join('\n')
       : '')
 
   const isLiveCall = Boolean(
     result &&
       IN_PROGRESS_STATUSES.has(String(result.status ?? '').toLowerCase()) &&
-      (result.call_event === 'call_started' ||
-        result.call_event === 'call_in_progress' ||
-        !result.call_event),
+      (result.call_event === 'call_started' || result.call_event === 'call_in_progress'),
   )
 
   useEffect(() => {
@@ -219,19 +338,30 @@ export default function EvaluatorCallDetailPanel({
     }
   }, [result])
 
-  const callShortId =
-    typeof result?.call_data?.call_short_id === 'string' ? result.call_data.call_short_id : undefined
-  const playgroundCallShortId =
-    callShortId &&
-    isPlaygroundCallRecordingSource(result?.call_recording_source) &&
-    isVoiceAiProviderPlatform(result?.provider_platform)
-      ? callShortId
-      : undefined
+  const audioPlayback = useMemo(() => {
+    if (!result) return {}
+    return resolveEvaluatorAudioPlayback({
+      callShortId: callShortIdFromData,
+      providerPlatform: result.provider_platform,
+      callRecordingSource: (result as { call_recording_source?: string | null }).call_recording_source,
+      evaluatorResultId,
+    })
+  }, [result, callShortIdFromData, evaluatorResultId])
 
   useEffect(() => {
-    if (!playgroundCallShortId) return
-    prefetchCallRecordingAudio(playgroundCallShortId, false)
-  }, [playgroundCallShortId])
+    if (!result) return
+    if (audioPlayback.callShortId) {
+      prefetchCallRecordingAudio(audioPlayback.callShortId, false)
+      return
+    }
+    if (audioPlayback.observabilityCallShortId) {
+      prefetchObservabilityCallAudio(audioPlayback.observabilityCallShortId)
+      return
+    }
+    if (hasEvaluatorResultRecording(result)) {
+      prefetchEvaluatorRecordingAudio(evaluatorResultId)
+    }
+  }, [result, audioPlayback, evaluatorResultId])
 
   if (!result && (isLoading || isFetching)) {
     return (
@@ -268,18 +398,45 @@ export default function EvaluatorCallDetailPanel({
         callAnalysis.call_successful == null &&
         callAnalysis.user_sentiment === 'Neutral'))
 
+  const callScope: EvaluatorCallScope = {
+    agentName: result?.agent?.name,
+    personaName: result?.persona?.name,
+    personaTtsLine:
+      result?.persona?.tts_provider || result?.persona?.tts_voice_name
+        ? [result.persona.tts_provider, result.persona.tts_voice_name].filter(Boolean).join(' · ')
+        : null,
+    platform: result?.provider_platform,
+  }
+  const tabScope = evaluatorDrawerScopeTags(tab, callScope)
+  const providerBillingScope = {
+    subjectLabel: result?.agent?.name,
+    personaName: result?.persona?.name,
+    personaTtsLine: callScope.personaTtsLine,
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-gray-50">
       <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="font-mono text-xl font-bold tracking-tight text-primary-600">
-              #{result?.result_id ?? evaluatorResultId}
-            </h2>
-            <p className="mt-1 text-sm text-gray-600">
-              {result?.agent?.name ? `${result.agent.name} · ` : ''}
-              Transcript, analysis, and pipeline trace
+            <h2 className="text-lg font-semibold text-gray-900">Call details</h2>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Result{' '}
+              <span className="font-mono font-medium text-primary-600">
+                {result?.result_id ?? evaluatorResultId}
+              </span>
+              {result?.agent?.name ? (
+                <>
+                  {' '}
+                  · <span className="text-gray-700">{result.agent.name}</span>
+                </>
+              ) : null}
             </p>
+            {showProviderTab && providerRecording ? (
+              <div className="mt-3">
+                <ProviderSummaryChips recording={providerRecording} />
+              </div>
+            ) : null}
           </div>
           {onClose ? (
             <button
@@ -295,26 +452,28 @@ export default function EvaluatorCallDetailPanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="shrink-0 space-y-2.5 border-b border-gray-200 bg-gray-50 px-5 pb-3 pt-4">
+        <div className="shrink-0 space-y-2.5 border-b border-gray-200 bg-gray-50 px-5 pb-0 pt-3">
           {fetchError ? (
             <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               {fetchError}
             </div>
           ) : null}
+
           <CallWaveformPlayer
-            evaluatorResultId={playgroundCallShortId ? undefined : evaluatorResultId}
-            callShortId={playgroundCallShortId}
+            evaluatorResultId={audioPlayback.evaluatorResultId}
+            callShortId={audioPlayback.callShortId}
+            observabilityCallShortId={audioPlayback.observabilityCallShortId}
             callData={result?.call_data}
             platform={result?.provider_platform}
           />
 
-          <div className="flex flex-nowrap gap-0.5 overflow-x-auto border-b border-gray-200 bg-white px-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {TABS.map(({ id, label, icon: Icon }) => (
+          <div className="-mx-5 flex flex-nowrap gap-0.5 overflow-x-auto border-t border-gray-200 bg-white px-5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {visibleTabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-sm font-medium transition-colors ${
+                className={`inline-flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm font-medium transition-colors ${
                   tab === id
                     ? 'border-primary-500 text-primary-800'
                     : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
@@ -328,6 +487,9 @@ export default function EvaluatorCallDetailPanel({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3">
+          {tab !== 'cost' && tab !== 'latency' && tab !== 'logs' ? (
+            <CallDetailScopeTags tags={tabScope.tags} hint={tabScope.hint} />
+          ) : null}
           {tab === 'transcript' ? (
             transcriptLoading ? (
               <div className="space-y-3">
@@ -354,7 +516,9 @@ export default function EvaluatorCallDetailPanel({
                         >
                           <div className={transcriptBubbleClass(isUserSpeaker(segment.speaker))}>
                             <div className={transcriptMetaClass(isUserSpeaker(segment.speaker))}>
-                              <span>{getSpeakerLabel(segment.speaker, result?.agent?.name)}</span>
+                              <span>
+                                {getSpeakerLabel(segment.speaker, result?.agent?.name, personaName)}
+                              </span>
                               {timing ? (
                                 <span className="font-normal normal-case tracking-normal tabular-nums">
                                   {timing}
@@ -424,24 +588,49 @@ export default function EvaluatorCallDetailPanel({
                   </p>
                 </div>
               </div>
+              {result?.call_data?.endedReason ? (
+                <div className="mt-4 rounded-lg bg-gray-50 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                    End reason
+                  </p>
+                  <p className="mt-1 text-sm text-gray-900">
+                    {String(result.call_data.endedReason).replace(/-/g, ' ')}
+                  </p>
+                </div>
+              ) : null}
               {!callAnalysis.call_summary &&
               callAnalysis.call_successful == null &&
-              callAnalysis.user_sentiment === 'Neutral' ? (
+              callAnalysis.user_sentiment === 'Neutral' &&
+              !result?.call_data?.endedReason ? (
                 <p className="mt-4 text-center text-sm text-gray-500">No call analysis available.</p>
               ) : null}
             </div>
             )
           ) : null}
 
-          {tab === 'pipeline' ? (
+          {showProviderTab && result && (tab === 'cost' || tab === 'latency' || tab === 'logs') ? (
+            <VoiceAiCallDetailPanel
+              recording={{
+                provider_platform: result.provider_platform,
+                provider_call_id: result.provider_call_id,
+                call_data: result.call_data as Record<string, unknown>,
+                status: result.status,
+              }}
+              callShortId={audioPlayback.callShortId ?? callShortIdFromData ?? ''}
+              hideWaveform
+              embeddedSection={tab as VoiceAiMetricsSection}
+              billingScope={providerBillingScope}
+            />
+          ) : null}
+
+          {PIPELINE_TAB_IDS.includes(tab as SyntheticTraceDetailTab) && hasPipelineTrace ? (
             <SyntheticCallTracePanel
               evaluatorResultId={evaluatorResultId}
-              traceId={
-                (result as { synthetic_call_trace_id?: string | null }).synthetic_call_trace_id ??
-                undefined
-              }
-              callShortId={callShortId}
+              traceId={syntheticTraceId}
+              callShortId={callShortIdFromData}
               embedded
+              hideTabBar
+              activeTab={tab as SyntheticTraceDetailTab}
             />
           ) : null}
         </div>

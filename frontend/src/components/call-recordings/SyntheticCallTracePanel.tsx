@@ -46,6 +46,9 @@ interface SyntheticCallTracePanelProps {
   onClose?: () => void
   embedded?: boolean
   hideRecording?: boolean
+  /** When set, parent owns tab navigation (e.g. unified call-details tab bar). */
+  activeTab?: SyntheticTraceDetailTab
+  hideTabBar?: boolean
 }
 
 interface ComponentMeta {
@@ -102,7 +105,8 @@ interface OtelSpan {
   events?: Array<{ name?: string; attributes?: Record<string, unknown> }>
 }
 
-type DetailTab = 'trace' | 'waterfall' | 'transcript' | 'timeline' | 'spans'
+export type SyntheticTraceDetailTab = 'trace' | 'waterfall' | 'transcript' | 'timeline' | 'spans'
+type DetailTab = SyntheticTraceDetailTab
 type ComponentKind = 'stt' | 'llm' | 'tts' | 's2s'
 
 const COMPONENT_LABELS: Record<ComponentKind, string> = {
@@ -453,8 +457,11 @@ export default function SyntheticCallTracePanel({
   onClose,
   embedded = false,
   hideRecording = false,
+  activeTab: controlledTab,
+  hideTabBar = false,
 }: SyntheticCallTracePanelProps) {
-  const [tab, setTab] = useState<DetailTab>('trace')
+  const [internalTab, setInternalTab] = useState<DetailTab>('trace')
+  const tab = controlledTab ?? internalTab
   const visibleTabs = embedded ? TABS.filter((item) => item.id !== 'transcript') : TABS
 
   const lookupKey = traceId ?? callShortId ?? evaluatorResultId
@@ -831,9 +838,12 @@ export default function SyntheticCallTracePanel({
   )
 
   if (embedded) {
+    if (hideTabBar) {
+      return <div className="min-h-0">{tabBody}</div>
+    }
     return (
       <div className="rounded-xl border border-gray-200 bg-white">
-        <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} compact />
+        <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setInternalTab} compact />
         <div className="p-4">{tabBody}</div>
       </div>
     )
@@ -967,10 +977,10 @@ export default function SyntheticCallTracePanel({
             />
             <MetricTile label="Turns" value={String(trace.turn_count)} />
           </div>
-          {isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} compact /> : null}
+          {isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setInternalTab} compact /> : null}
         </div>
 
-        {!isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setTab} /> : null}
+        {!isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setInternalTab} /> : null}
       </div>
 
       <div className={isDrawer ? 'min-h-0 flex-1 overflow-y-auto overscroll-contain' : undefined}>

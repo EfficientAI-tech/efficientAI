@@ -34,6 +34,39 @@ from app.services.evaluators.evaluator_result_status import (
 router = APIRouter(prefix="/evaluator-results", tags=["evaluator-results"])
 
 
+def _linked_call_recording_for_result(
+    db: Session,
+    result: EvaluatorResult,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> CallRecording | None:
+    linked = (
+        db.query(CallRecording)
+        .filter(
+            CallRecording.evaluator_result_id == result.id,
+            CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
+        )
+        .order_by(CallRecording.created_at.desc())
+        .first()
+    )
+    if linked:
+        return linked
+    call_data = result.call_data if isinstance(result.call_data, dict) else {}
+    short_id = call_data.get("call_short_id")
+    if isinstance(short_id, str) and short_id.strip():
+        return (
+            db.query(CallRecording)
+            .filter(
+                CallRecording.call_short_id == short_id.strip(),
+                CallRecording.organization_id == organization_id,
+                CallRecording.workspace_id == workspace_id,
+            )
+            .first()
+        )
+    return None
+
+
 def _lookup_evaluator_result(
     db: Session,
     id: str,
@@ -822,6 +855,7 @@ async def stream_evaluator_result_audio(
 
     from app.core.encryption import decrypt_api_key
     from app.services.storage.audio_delivery import (
+        collect_call_data_audio_keys,
         collect_evaluator_result_audio_keys,
         stream_audio_from_keys,
     )
@@ -841,9 +875,24 @@ async def stream_evaluator_result_audio(
     if storage_stream:
         return storage_stream
 
+    linked_recording = _linked_call_recording_for_result(
+        db, result, organization_id, workspace_id
+    )
+    if linked_recording:
+        linked_stream = stream_audio_from_keys(
+            collect_call_data_audio_keys(linked_recording.call_data),
+            filename=f"result_{result.result_id}",
+        )
+        if linked_stream:
+            return linked_stream
+
     call_data = result.call_data if isinstance(result.call_data, dict) else {}
     platform = (result.provider_platform or "").lower()
     audio_url = _extract_audio_url(call_data, platform)
+    if not audio_url and linked_recording and isinstance(linked_recording.call_data, dict):
+        call_data = linked_recording.call_data
+        platform = (linked_recording.provider_platform or platform or "").lower()
+        audio_url = _extract_audio_url(call_data, platform)
     if not audio_url:
         raise HTTPException(status_code=404, detail="No recording available")
 
@@ -858,8 +907,12 @@ async def stream_evaluator_result_audio(
     if platform in {"retell", "smallest"}:
         return RedirectResponse(audio_url)
 
-    if platform == "vapi" and is_presigned_storage_url(audio_url):
-        return RedirectResponse(audio_url)
+    from app.services.voice_providers.vapi_recording import (
+        extract_vapi_recording_url,
+        refresh_vapi_call_data_from_provider,
+        vapi_playback_url_needs_refresh,
+        vapi_proxy_request_headers,
+    )
 
     decrypted_key = None
     agent = db.query(Agent).filter(Agent.id == result.agent_id).first() if result.agent_id else None
@@ -874,32 +927,82 @@ async def stream_evaluator_result_audio(
             except Exception:
                 decrypted_key = None
 
+    if platform == "vapi":
+        audio_url = extract_vapi_recording_url(call_data) or audio_url
+        if vapi_playback_url_needs_refresh(audio_url) and result.provider_call_id:
+            refreshed = refresh_vapi_call_data_from_provider(
+                db,
+                organization_id=organization_id,
+                agent_id=result.agent_id,
+                provider_call_id=result.provider_call_id,
+                prev_call_data=call_data,
+            )
+            if refreshed:
+                call_data = refreshed
+                result.call_data = refreshed
+                db.commit()
+                audio_url = extract_vapi_recording_url(call_data) or audio_url
+        if is_presigned_storage_url(audio_url):
+            return RedirectResponse(audio_url)
+        if vapi_playback_url_needs_refresh(audio_url):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Vapi recording URL is not playable (private storage without presign). "
+                    "Refresh the call from the provider."
+                ),
+            )
+
     headers = None
     if platform == "elevenlabs" and decrypted_key:
         headers = {"xi-api-key": decrypted_key}
-    elif platform == "vapi" and decrypted_key:
-        headers = {"Authorization": f"Bearer {decrypted_key}"}
     elif platform == "vapi":
-        return RedirectResponse(audio_url)
+        headers = vapi_proxy_request_headers(audio_url, decrypted_key)
+        if headers is None and not is_presigned_storage_url(audio_url):
+            return RedirectResponse(audio_url)
 
     if platform == "elevenlabs" and not headers:
         raise HTTPException(status_code=400, detail="Agent integration not found for ElevenLabs audio")
 
-    upstream = http_requests.get(audio_url, headers=headers, stream=True, timeout=60)
-    if upstream.status_code != 200:
-        raise HTTPException(
-            status_code=upstream.status_code,
-            detail=f"Provider audio fetch failed ({upstream.status_code})",
+    def _stream_provider_audio(url: str, req_headers: Optional[dict]) -> StreamingResponse:
+        upstream = http_requests.get(url, headers=req_headers, stream=True, timeout=60)
+        if upstream.status_code != 200:
+            raise HTTPException(
+                status_code=upstream.status_code,
+                detail=f"Provider audio fetch failed ({upstream.status_code})",
+            )
+        content_type = upstream.headers.get("content-type", "audio/mpeg")
+        return StreamingResponse(
+            upstream.iter_content(chunk_size=8192),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="result_{result.result_id}.mp3"',
+            },
         )
 
-    content_type = upstream.headers.get("content-type", "audio/mpeg")
-    return StreamingResponse(
-        upstream.iter_content(chunk_size=8192),
-        media_type=content_type,
-        headers={
-            "Content-Disposition": f'inline; filename="result_{result.result_id}.mp3"',
-        },
-    )
+    try:
+        return _stream_provider_audio(audio_url, headers)
+    except HTTPException as exc:
+        if (
+            platform == "vapi"
+            and exc.status_code in (401, 403)
+            and result.provider_call_id
+        ):
+            refreshed = refresh_vapi_call_data_from_provider(
+                db,
+                organization_id=organization_id,
+                agent_id=result.agent_id,
+                provider_call_id=result.provider_call_id,
+                prev_call_data=call_data,
+            )
+            if refreshed:
+                result.call_data = refreshed
+                db.commit()
+                retry_url = extract_vapi_recording_url(refreshed)
+                if retry_url and retry_url != audio_url:
+                    retry_headers = vapi_proxy_request_headers(retry_url, decrypted_key)
+                    return _stream_provider_audio(retry_url, retry_headers)
+        raise
 
 
 @router.post("", response_model=EvaluatorResultResponse, status_code=status.HTTP_201_CREATED)
@@ -1124,11 +1227,9 @@ def re_evaluate_result(
 
                 audio_url = _provider_audio_url(extract_vapi_recording_url(call_data))
                 if audio_url:
-                    headers = (
-                        None
-                        if is_presigned_storage_url(audio_url)
-                        else ({"Authorization": f"Bearer {decrypted_key}"} if decrypted_key else None)
-                    )
+                    from app.services.voice_providers.vapi_recording import vapi_proxy_request_headers
+
+                    headers = vapi_proxy_request_headers(audio_url, decrypted_key)
                     resp = _http.get(audio_url, headers=headers, timeout=120)
                     if resp.status_code == 200:
                         audio_bytes = resp.content

@@ -1,7 +1,7 @@
 import { useState, useMemo, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform
+  BarChart3, HelpCircle, Brain, Sparkles, AudioWaveform, Loader2
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 
@@ -395,12 +395,36 @@ export default function TestVoiceAgentResultDetails({
   }
 
   const MetricsCard = () => {
-    if (!resultData.metric_scores || Object.keys(resultData.metric_scores).length === 0) {
+    const metricCount = resultData.metric_scores
+      ? Object.keys(resultData.metric_scores).length
+      : 0
+    const evaluationInProgress = ['queued', 'transcribing', 'evaluating'].includes(
+      resultData.status || '',
+    )
+
+    if (metricCount === 0 && evaluationInProgress) {
+      return (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <BarChart3 className="h-5 w-5 text-indigo-600" />
+            Evaluation Metrics
+          </h3>
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-sm text-gray-600">
+            <Loader2 className="h-5 w-5 animate-spin text-primary-500" />
+            Loading evaluation results…
+          </div>
+        </div>
+      )
+    }
+
+    if (metricCount === 0) {
       return null
     }
 
+    const metricScores = resultData.metric_scores ?? {}
+
     // Categorize metrics
-    const metrics = Object.entries(resultData.metric_scores)
+    const metrics = Object.entries(metricScores)
     const llmMetrics = metrics.filter(([id, m]) => {
       if (shouldHideMetricScore(id, m)) return false
       if (!hasValidValue(m)) return false

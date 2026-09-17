@@ -1,10 +1,12 @@
-"""Session debug logging (agent instrumentation)."""
+"""Session debug logging (agent instrumentation). Disabled unless app.debug is true."""
 
 from __future__ import annotations
 
 import json
 import time
 from pathlib import Path
+
+from app.config import settings
 
 _DEBUG_LOG = Path(__file__).resolve().parents[2] / "debug-33d9d2.log"
 
@@ -16,7 +18,8 @@ def agent_debug_log(
     hypothesis_id: str,
     run_id: str = "pre-fix",
 ) -> None:
-    # region agent log
+    if not settings.DEBUG:
+        return
     try:
         with open(_DEBUG_LOG, "a", encoding="utf-8") as f:
             f.write(
@@ -35,4 +38,3 @@ def agent_debug_log(
             )
     except Exception:
         pass
-    # endregion

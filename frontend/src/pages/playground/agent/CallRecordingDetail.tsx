@@ -12,6 +12,10 @@ import { prefetchCallRecordingAudio } from '../../../lib/waveformAudioCache'
 import CustomWebSocketCallDetails from '../../../components/call-recordings/CustomWebSocketCallDetails'
 import { getIntegrationPlatformLabel } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
+import {
+  agentPlaygroundPath,
+  agentPlaygroundTabFromProviderPlatform,
+} from '../../../lib/playgroundAgentTabs'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -21,6 +25,16 @@ const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'same',
   'different',
 ])
+
+function hasEvaluationMetricScores(
+  evaluation: { metric_scores?: Record<string, unknown> | null } | null | undefined,
+): boolean {
+  return Boolean(evaluation?.metric_scores && Object.keys(evaluation.metric_scores).length > 0)
+}
+
+function isEvaluationRunning(status: string | null | undefined): boolean {
+  return Boolean(status && ['queued', 'transcribing', 'evaluating'].includes(status))
+}
 
 function isLegacyCategoryLabelMetric(metric: {
   type?: string | null
@@ -398,6 +412,20 @@ function EvaluationStepper({ status }: { status: string }) {
 }
 
 
+function EvaluationMetricsLoading({ status }: { status?: string }) {
+  const stepStatus = isEvaluationRunning(status) ? status! : 'queued'
+  return (
+    <div className="space-y-4 py-4">
+      <div className="flex flex-col items-center justify-center gap-2 text-sm text-gray-600">
+        <Loader className="h-6 w-6 animate-spin text-primary-500" />
+        Loading evaluation results…
+      </div>
+      {isEvaluationRunning(status) ? <EvaluationStepper status={stepStatus} /> : null}
+    </div>
+  )
+}
+
+
 export default function CallRecordingDetail() {
   const { callShortId } = useParams<{ callShortId: string }>()
   const navigate = useNavigate()
@@ -407,7 +435,7 @@ export default function CallRecordingDetail() {
   const [reEvalInProgress, setReEvalInProgress] = useState(false)
   const [callDrawerOpen, setCallDrawerOpen] = useState(false)
 
-  const { data: callRecording, refetch: refetchCallDetails, isLoading } = useQuery({
+  const { data: callRecording, refetch: refetchCallDetails, isLoading, isFetching } = useQuery({
     queryKey: ['call-recording', callShortId],
     queryFn: () => apiClient.getCallRecording(callShortId!),
     enabled: !!callShortId,
@@ -424,9 +452,10 @@ export default function CallRecordingDetail() {
     },
   })
 
-  const { data: metrics = [] } = useQuery({
+  const { data: metrics = [], isLoading: metricsCatalogLoading } = useQuery({
     queryKey: ['metrics'],
     queryFn: () => apiClient.listMetrics(),
+    staleTime: 60_000,
   })
 
   const childMetricIds = useMemo(() => {
@@ -474,6 +503,30 @@ export default function CallRecordingDetail() {
     if (callShortId) prefetchCallRecordingAudio(callShortId, false)
     setCallDrawerOpen(true)
   }
+
+  const listEvalStatus =
+    typeof (callRecording as { evaluation_status?: string | null }).evaluation_status === 'string'
+      ? (callRecording as { evaluation_status: string }).evaluation_status
+      : undefined
+  const evaluation = callRecording?.evaluation
+  const evalStatus = evaluation?.status ?? listEvalStatus
+  const metricsReady =
+    hasEvaluationMetricScores(evaluation) &&
+    !metricsCatalogLoading
+  const hasEvalLink = Boolean(
+    callRecording?.evaluator_result_id || evaluation || listEvalStatus,
+  )
+  const evalRunning = reEvalInProgress || isEvaluationRunning(evalStatus)
+  const metricsLoading =
+    evalRunning ||
+    metricsCatalogLoading ||
+    (hasEvalLink &&
+      !metricsReady &&
+      (isLoading ||
+        isFetching ||
+        isEvaluationRunning(evalStatus) ||
+        evalStatus === 'completed'))
+  const showEvaluationSection = hasEvalLink || reEvalInProgress
 
   const shouldHideMetricScore = (
     metricId: string,
@@ -524,12 +577,16 @@ export default function CallRecordingDetail() {
     },
   })
 
+  const playgroundBackPath = agentPlaygroundPath(
+    agentPlaygroundTabFromProviderPlatform(callRecording?.provider_platform),
+  )
+
   const deleteMutation = useMutation({
     mutationFn: () => apiClient.deleteCallRecording(callShortId!),
     onSuccess: () => {
       showToast('Call recording deleted successfully', 'success')
       queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
-      navigate('/playground')
+      navigate(playgroundBackPath)
     },
     onError: (error: any) => {
       showToast(`Failed to delete: ${error.response?.data?.detail || error.message}`, 'error')
@@ -543,7 +600,7 @@ export default function CallRecordingDetail() {
   if (isLoading && !callRecording) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="text-gray-600">Loading call recording...</div>
+        <div className="text-gray-600">Loading call details…</div>
       </div>
     )
   }
@@ -553,7 +610,7 @@ export default function CallRecordingDetail() {
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <p className="text-gray-600 mb-4">Call recording not found</p>
-          <Button variant="outline" onClick={() => navigate('/playground')}>
+          <Button variant="outline" onClick={() => navigate(playgroundBackPath)}>
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Playground
           </Button>
@@ -570,7 +627,7 @@ export default function CallRecordingDetail() {
         <div className="mb-6">
           <Button
             variant="outline"
-            onClick={() => navigate('/playground')}
+            onClick={() => navigate(playgroundBackPath)}
             leftIcon={<ArrowLeft className="h-4 w-4" />}
             className="mb-4"
           >
@@ -640,19 +697,19 @@ export default function CallRecordingDetail() {
               </div>
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Evaluation</p>
-                {callRecording.evaluation ? (
+                {evalStatus ? (
                   <span
                     className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                      callRecording.evaluation.status === 'completed'
+                      evalStatus === 'completed'
                         ? 'bg-green-100 text-green-800'
-                        : callRecording.evaluation.status === 'failed'
+                        : evalStatus === 'failed'
                         ? 'bg-red-100 text-red-800'
-                        : callRecording.evaluation.status === 'evaluating'
+                        : evalStatus === 'evaluating'
                         ? 'bg-blue-100 text-blue-800'
                         : 'bg-yellow-100 text-yellow-800'
                     }`}
                   >
-                    {callRecording.evaluation.status || 'queued'}
+                    {evalStatus}
                   </span>
                 ) : (
                   <span className="text-sm text-gray-500">Pending</span>
@@ -683,21 +740,23 @@ export default function CallRecordingDetail() {
         </div>
 
         {/* Evaluation Metrics Section */}
-        {(callRecording.evaluation || reEvalInProgress) && (
+        {showEvaluationSection && (
           <div className="mb-6 bg-white rounded-lg shadow p-6">
             <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
               <BarChart3 className="w-5 h-5 mr-2" />
               Evaluation Metrics
-              {callRecording.evaluation?.result_id && (
+              {evaluation?.result_id && (
                 <span className="ml-2 text-sm font-mono font-semibold text-primary-600">
-                  #{callRecording.evaluation.result_id}
+                  #{evaluation.result_id}
                 </span>
               )}
             </h2>
-            
-            {!reEvalInProgress && callRecording.evaluation?.status === 'completed' && callRecording.evaluation.metric_scores && Object.keys(callRecording.evaluation.metric_scores).length > 0 ? (
+
+            {metricsLoading ? (
+              <EvaluationMetricsLoading status={evalStatus} />
+            ) : metricsReady && evaluation?.status === 'completed' ? (
               (() => {
-                const metricScores = callRecording.evaluation.metric_scores
+                const metricScores = evaluation!.metric_scores!
                 
                 // Categorize metrics - only include those with valid values
                 const acousticMetrics = Object.entries(metricScores).filter(
@@ -825,13 +884,7 @@ export default function CallRecordingDetail() {
                   </div>
                 )
               })()
-            ) : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(callRecording.evaluation?.status || '') ? (
-              <EvaluationStepper status={
-                reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(callRecording.evaluation?.status || '')
-                  ? 'queued'
-                  : (callRecording.evaluation?.status || 'queued')
-              } />
-            ) : callRecording.evaluation?.status === 'failed' ? (
+            ) : evaluation?.status === 'failed' ? (
               <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
                 <XCircle className="w-6 h-6 text-red-500 mx-auto mb-2" />
                 <p className="text-red-700">Evaluation failed. Please try again.</p>

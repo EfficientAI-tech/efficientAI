@@ -5,10 +5,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import { useBodyScrollLock } from '../../hooks/useBodyScrollLock'
 import { prefetchCallRecordingQuery } from '../../lib/callRecordingQuery'
-import {
-  prefetchCallRecordingAudio,
-  prefetchEvaluatorRecordingAudio,
-} from '../../lib/waveformAudioCache'
+import { prefetchCallRecordingAudio } from '../../lib/waveformAudioCache'
 import SyntheticCallTracePanel from './SyntheticCallTracePanel'
 import ProviderCallTracePanel from './ProviderCallTracePanel'
 import EvaluatorCallDetailPanel from './EvaluatorCallDetailPanel'
@@ -63,7 +60,6 @@ export default function TraceDetailDrawer({
       })
     }
     if (evaluatorResultId) {
-      prefetchEvaluatorRecordingAudio(evaluatorResultId)
       void queryClient.prefetchQuery({
         queryKey: ['evaluator-result', evaluatorResultId],
         queryFn: () => apiClient.getEvaluatorResult(evaluatorResultId, true),
