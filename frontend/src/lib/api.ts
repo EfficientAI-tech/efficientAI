@@ -4358,12 +4358,14 @@ class ApiClient {
       : new URL(normalizedPath, window.location.origin)
 
     const workspaceId = localStorage.getItem('activeWorkspaceId')
-    const accessToken = this.inMemoryAccessToken
-    const apiKey = this.cookieSessionEnabled ? null : localStorage.getItem('apiKey')
-    if (accessToken) {
-      url.searchParams.set('token', accessToken)
-    } else if (apiKey) {
-      url.searchParams.set('api_key', apiKey)
+    if (!this.cookieSessionEnabled) {
+      const accessToken = this.inMemoryAccessToken
+      const apiKey = localStorage.getItem('apiKey')
+      if (accessToken) {
+        url.searchParams.set('token', accessToken)
+      } else if (apiKey) {
+        url.searchParams.set('api_key', apiKey)
+      }
     }
     if (workspaceId) {
       url.searchParams.set('workspace_id', workspaceId)

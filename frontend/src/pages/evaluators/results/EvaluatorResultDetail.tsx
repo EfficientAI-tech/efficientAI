@@ -500,9 +500,8 @@ export default function EvaluatorResultDetailPage({
     let eventSource: EventSource | null = null
 
     try {
-      eventSource = apiClient.openAuthenticatedEventSource(
-        `/api/v1/evaluator-results/${streamId}/live-events`,
-      )
+      const url = apiClient.getEvaluatorResultLiveEventsUrl(streamId)
+      eventSource = new EventSource(url, { withCredentials: true })
       eventSource.onmessage = (event) => {
         try {
           const entry = JSON.parse(event.data) as LiveTranscriptTurn
