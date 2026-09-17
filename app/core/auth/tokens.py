@@ -28,6 +28,9 @@ def create_access_token(
     user_id: UUID,
     organization_id: UUID,
     email: str,
+    session_epoch: int = 0,
+    authenticated_org_ids: Optional[list[str]] = None,
+    authenticated_org_epochs: Optional[dict[str, int]] = None,
     expires_in_minutes: Optional[int] = None,
 ) -> Tuple[str, str, int]:
     """Issue a short-lived Bearer token for the given user/org.
@@ -44,6 +47,10 @@ def create_access_token(
         "sub": str(user_id),
         "org_id": str(organization_id),
         "email": email,
+        "session_epoch": int(session_epoch or 0),
+        "authenticated_org_ids": authenticated_org_ids or [str(organization_id)],
+        "authenticated_org_epochs": authenticated_org_epochs
+        or {str(organization_id): int(session_epoch or 0)},
         "jti": jti,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ttl_minutes)).timestamp()),
@@ -64,3 +71,14 @@ def decode_access_token(token: str) -> Dict[str, Any]:
     except JWTError:
         # Re-raise so caller can distinguish from other errors.
         raise
+
+
+def decode_access_token_allow_expired(token: str) -> Dict[str, Any]:
+    """Verify signature/issuer but allow expired tokens (e.g. refresh org list)."""
+    return jwt.decode(
+        token,
+        settings.SECRET_KEY,
+        algorithms=[ALGORITHM],
+        issuer=ISSUER,
+        options={"verify_exp": False, "verify_aud": False},
+    )

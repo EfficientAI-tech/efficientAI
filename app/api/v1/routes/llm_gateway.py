@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.core.auth.rbac import require_admin
 from app.dependencies import get_db, get_organization_id
 from app.services.ai.llm_gateway_settings import (
     GatewayInterfaceOverride,
@@ -87,6 +89,7 @@ def update_llm_gateway_settings(
     body: LLMGatewaySettingsUpdate,
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
+    _admin: None = Depends(require_admin),
 ):
     result = set_org_settings(
         organization_id,

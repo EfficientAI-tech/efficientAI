@@ -21,7 +21,8 @@ def test_usage_flush_beat_seconds_clamps_minimum(monkeypatch):
     assert _usage_flush_beat_seconds() == 30.0
 
 
-def test_cron_dispatch_beat_seconds_defaults_to_30():
+def test_cron_dispatch_beat_seconds_defaults_to_30(monkeypatch):
+    monkeypatch.delenv("CRON_DISPATCH_INTERVAL_SECONDS", raising=False)
     assert _cron_dispatch_beat_seconds() == 30.0
 
 

@@ -19,7 +19,7 @@ _migrations_up_to_date = False
 
 
 def _migration_bypass_paths() -> list[str]:
-    paths = ["/health"]
+    paths = ["/health", "/health/ready"]
     if settings.DEBUG:
         paths.extend(["/docs", "/redoc", "/openapi.json"])
     return paths

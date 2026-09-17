@@ -60,6 +60,7 @@ export default function AgentTalkSidebar({
   const wasOpenRef = useRef(false)
   const userSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const callShortIdRef = useRef<string | null>(null)
+  const providerCallIdRef = useRef<string | null>(null)
 
   const pulseUserSpeaking = (durationMs = 1200) => {
     setActiveSpeaker('user')
@@ -162,6 +163,8 @@ export default function AgentTalkSidebar({
     try {
       if (isRetell) {
         const client = retellClientRef.current!
+        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
+        callShortIdRef.current = webCall.call_short_id ?? null
         client.on('call_started', () => {
           setIsConnected(true)
           setIsConnecting(false)
@@ -192,13 +195,19 @@ export default function AgentTalkSidebar({
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
+          if (callShortIdRef.current) {
+            apiClient
+              .finalizePlaygroundCallRecording(callShortIdRef.current, webCall.call_id)
+              .catch((err) => {
+                console.error('Failed to refresh Retell call recording', err)
+              })
+          }
         })
         client.on('error', () => {
           setIsConnecting(false)
           setIsConnected(false)
           setActiveSpeaker(null)
         })
-        const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         await client.startCall({
           accessToken: webCall.access_token!,
           callId: webCall.call_id,
@@ -209,6 +218,9 @@ export default function AgentTalkSidebar({
         client.on('call-start', async (call: any) => {
           setIsConnected(true)
           setIsConnecting(false)
+          if (call?.id) {
+            providerCallIdRef.current = call.id
+          }
           if (callShortIdRef.current && call?.id) {
             try {
               await apiClient.updateCallRecording(callShortIdRef.current, call.id)
@@ -232,19 +244,26 @@ export default function AgentTalkSidebar({
             }
           }
         })
-        client.on('call-end', async () => {
+        client.on('call-end', async (call: any) => {
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
+          const providerCallId = call?.id ?? providerCallIdRef.current
           if (callShortIdRef.current) {
-            apiClient.refreshCallRecording(callShortIdRef.current).catch((err) => {
-              console.error('Failed to refresh Vapi call recording', err)
-            })
+            apiClient
+              .finalizePlaygroundCallRecording(callShortIdRef.current, providerCallId)
+              .catch((err) => {
+                console.error('Failed to refresh Vapi call recording', err)
+              })
           }
+          providerCallIdRef.current = null
         })
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         callShortIdRef.current = webCall.call_short_id ?? null
         const vapiCall = await client.start(agent.voice_ai_agent_id!)
+        if (vapiCall?.id) {
+          providerCallIdRef.current = vapiCall.id
+        }
         if (callShortIdRef.current && vapiCall?.id) {
           try {
             await apiClient.updateCallRecording(callShortIdRef.current, vapiCall.id)
@@ -255,6 +274,8 @@ export default function AgentTalkSidebar({
       } else if (isElevenLabs) {
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         if (!webCall.signed_url) throw new Error('No signed URL')
+        callShortIdRef.current = webCall.call_short_id ?? null
+        let elevenLabsConversationIdStored = false
         const conversation = await Conversation.startSession({
           signedUrl: webCall.signed_url,
           onConnect: () => {
@@ -266,6 +287,14 @@ export default function AgentTalkSidebar({
             setIsConnecting(false)
             setActiveSpeaker(null)
             elevenLabsConversationRef.current = null
+            if (callShortIdRef.current && elevenLabsConversationIdStored) {
+              const callShortId = callShortIdRef.current
+              setTimeout(() => {
+                apiClient
+                  .finalizePlaygroundCallRecording(callShortId)
+                  .catch((err) => console.error('Failed to refresh ElevenLabs call recording', err))
+              }, 5000)
+            }
           },
           onModeChange: (mode: { mode?: string }) => {
             if (mode.mode === 'speaking') {
@@ -295,10 +324,20 @@ export default function AgentTalkSidebar({
           },
         })
         elevenLabsConversationRef.current = conversation
+        try {
+          const conversationId = conversation?.getId()
+          if (callShortIdRef.current && conversationId) {
+            await apiClient.updateCallRecording(callShortIdRef.current, conversationId)
+            elevenLabsConversationIdStored = true
+          }
+        } catch (err) {
+          console.error('Failed to update ElevenLabs call recording', err)
+        }
       } else if (isSmallest) {
         const { AtomsClient } = await import('atoms-client-sdk')
         const webCall = await apiClient.createWebCall({ agent_id: agent.id, metadata: {}, ui_surface: 'agents_talk' })
         if (!webCall.access_token || !webCall.host) throw new Error('Missing Smallest credentials')
+        callShortIdRef.current = webCall.call_short_id ?? null
         const client = new AtomsClient()
         smallestClientRef.current = client
         client.on('session_started', () => {
@@ -309,6 +348,14 @@ export default function AgentTalkSidebar({
           setIsConnected(false)
           setIsConnecting(false)
           setActiveSpeaker(null)
+          if (callShortIdRef.current) {
+            const callShortId = callShortIdRef.current
+            setTimeout(() => {
+              apiClient
+                .finalizePlaygroundCallRecording(callShortId)
+                .catch((err) => console.error('Failed to refresh Smallest call recording', err))
+            }, 3000)
+          }
         })
         client.on('transcript', (data: any) => {
           if (data?.text) {

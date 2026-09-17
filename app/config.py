@@ -106,7 +106,31 @@ class Settings(BaseSettings):
 
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
-    RATE_LIMIT_PER_MINUTE: int = 60
+    RATE_LIMIT_PER_MINUTE: int = 60  # legacy; not enforced on HTTP handlers
+    # HTTP abuse limits (yaml: rate_limits.*). Self-host: keep False. SaaS: enforce true in deploy config.
+    API_RATE_LIMIT_ENFORCE: bool = False
+    API_AUTH_RATE_LIMIT_PER_MINUTE: int = 60  # POST /auth/login, /auth/register per client IP
+    # UI resource-create limits apply only when API_RATE_LIMIT_ENFORCE is true, on:
+    #   POST /api/v1/agents              (create agent)
+    #   POST /api/v1/personas            (create persona)
+    #   POST /api/v1/scenarios           (create scenario)
+    #   POST /api/v1/chat/completion     (chat completion)
+    # NOT on metrics, call imports, evaluations, evaluators, traces, or bulk ingest.
+    API_RESOURCE_CREATE_BURST: int = 20000  # per user/api_key per burst window
+    API_RESOURCE_CREATE_BURST_WINDOW_MINUTES: int = 10
+    API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE: int = 2000  # per user/api_key per minute
+    # One shared org counter per hour across the four POST routes above (not whole-product traffic).
+    API_RESOURCE_CREATE_ORG_PER_HOUR: int = 0  # 0 = org bucket disabled
+
+    # HTTP security
+    PUBLIC_BASE_URL: str = ""
+    TRUSTED_HOSTS: Annotated[List[str], NoDecode] = []
+    TRUSTED_HOSTS_AUTO_FROM_FRONTEND: bool = True
+    TRUSTED_HOSTS_EXPLICIT: List[str] = []
+    TRUSTED_HOSTS_FROM_ENV: List[str] = []
+    SECURITY_HSTS_ENABLED: bool = False
+    SECURITY_HSTS_MAX_AGE: int = 31536000
+    SECURITY_HSTS_INCLUDE_SUBDOMAINS: bool = True
 
     # Authentication
     AUTH_PROVIDERS: Annotated[List[str], NoDecode] = ["api_key"]
@@ -114,6 +138,10 @@ class Settings(BaseSettings):
     AUTH_GATED_SIGNUP_ENABLED: bool = False
     AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 15
     AUTH_REFRESH_TOKEN_TTL_DAYS: int = 7
+    AUTH_COOKIE_SESSION_ENABLED: bool = True
+    AUTH_COOKIE_SECURE: Optional[bool] = None
+    AUTH_COOKIE_SAMESITE: str = "lax"
+    AUTH_COOKIE_DOMAIN: Optional[str] = None
     AUTH_OIDC_ISSUER: Optional[str] = None
     AUTH_OIDC_CLIENT_ID: Optional[str] = None
     AUTH_OIDC_AUDIENCE: Optional[str] = None
@@ -128,6 +156,10 @@ class Settings(BaseSettings):
     # Content Security Policy (enforcing by default; set CSP_REPORT_ONLY=true for local report-only mode)
     CSP_ENABLED: bool = True
     CSP_REPORT_ONLY: bool = False
+    CSP_POLICY_CUSTOM: bool = False
+    CSP_CONNECT_SRC_EXTRA: List[str] = []
+    CSP_FRAME_SRC_EXTRA: List[str] = []
+    CSP_SCRIPT_SRC_EXTRA: List[str] = []
     # Browser voice SDKs (Vapi/Daily, Retell/LiveKit, ElevenLabs convai) and their telemetry.
     _CSP_VOICE_CONNECT_SRC: str = (
         "https://api.vapi.ai "
@@ -135,6 +167,7 @@ class Settings(BaseSettings):
         "https://*.daily.co "
         "wss://*.daily.co "
         "wss://*.livekit.cloud "
+        "https://*.livekit.cloud "
         "https://api.elevenlabs.io "
         "wss://api.elevenlabs.io "
         "https://api.retellai.com "
@@ -150,7 +183,6 @@ class Settings(BaseSettings):
         "https://storage.googleapis.com "
         "https://*.blob.core.windows.net"
     )
-    # Vapi → Daily.co call-machine bundle requires eval + blob worklets for audio
     _CSP_DAILY_SCRIPT_SRC: str = "'unsafe-eval' blob: https://c.daily.co https://*.daily.co"
     CSP_POLICY: str = (
         "default-src 'self'; "
@@ -170,7 +202,14 @@ class Settings(BaseSettings):
 
     # Operational endpoints (/health, /metrics)
     OPERATIONAL_PUBLIC: bool = False
-    OPERATIONAL_TRUSTED_IPS: List[str] = []
+    # Enterprise VPC ranges (AWS 10.x, GCP/Azure 172.16–31) + loopback for LB/kube probes.
+    OPERATIONAL_TRUSTED_IPS: List[str] = [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "127.0.0.0/8",
+    ]
+    HEALTH_RATE_LIMIT_PER_MINUTE: int = 60
+    HEALTH_READINESS_CACHE_SECONDS: int = 10
 
     # SMTP / Email Notifications (for Alerts)
     SMTP_HOST: Optional[str] = None  # e.g., "smtp.gmail.com"
@@ -227,14 +266,9 @@ class Settings(BaseSettings):
     PLIVO_OUTBOUND_POOL: List[str] = []
     EXOTEL_OUTBOUND_POOL: List[str] = []
 
-    # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
-    RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
-        "exotel.com",
-        "plivo.com",
-        "vobiz.ai",
-        "amazonaws.com",
-        "cloudfront.net",
-    ]
+    # Extra recording URL host suffixes merged onto built-in provider allowlist.
+    # Leave empty to use defaults only (see recording_download.py).
+    RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = []
 
     # Live telephony pipeline recording merge (dual-track → natural mono)
     # Residual one-way carrier latency trim applied to the bot track at merge time.
@@ -416,9 +450,28 @@ class Settings(BaseSettings):
             self.CELERY_RESULT_BACKEND = self.REDIS_URL
 
 
+_PLACEHOLDER_SECRETS = frozenset({
+    "your-secret-key-here-change-in-production",
+    "changeme",
+    "change-me",
+    "secret",
+})
+
+
 def validate_auth_configuration() -> None:
-    """Fail fast when external OIDC is licensed and enabled but misconfigured."""
+    """Fail fast when auth or session signing is misconfigured."""
     from app.core.license import has_auth_feature
+
+    secret = (settings.SECRET_KEY or "").strip()
+    if not settings.DEBUG and (
+        not secret
+        or len(secret) < 32
+        or secret.lower() in _PLACEHOLDER_SECRETS
+    ):
+        raise RuntimeError(
+            "SECRET_KEY must be set to a random string of at least 32 characters "
+            "in non-debug deployments."
+        )
 
     providers = {p.strip().lower() for p in (settings.AUTH_PROVIDERS or [])}
     if "external_oidc" not in providers:
@@ -436,6 +489,14 @@ def validate_auth_configuration() -> None:
         raise RuntimeError(
             f"external_oidc is enabled but required settings are missing: {', '.join(missing)}"
         )
+
+    if not settings.DEBUG:
+        frontend = (settings.FRONTEND_BASE_URL or "").strip()
+        if not frontend.startswith(("http://", "https://")):
+            raise RuntimeError(
+                "FRONTEND_BASE_URL must be set to a valid http(s) URL in non-debug deployments "
+                "(app.frontend_base_url in config.yml or FRONTEND_BASE_URL env)."
+            )
 
 
 def apply_service_mode(mode: str) -> None:
@@ -481,7 +542,16 @@ def load_config_from_file(config_path: str) -> None:
         if "debug" in app_config:
             settings.DEBUG = app_config["debug"]
         if "secret_key" in app_config:
-            settings.SECRET_KEY = app_config["secret_key"]
+            yaml_secret = str(_expand_env_ref(app_config["secret_key"]) or "").strip()
+            env_secret = (os.environ.get("SECRET_KEY") or "").strip()
+            if (
+                not yaml_secret
+                or len(yaml_secret) < 32
+                or yaml_secret.lower() in _PLACEHOLDER_SECRETS
+            ) and env_secret:
+                settings.SECRET_KEY = env_secret
+            elif yaml_secret:
+                settings.SECRET_KEY = yaml_secret
         if "frontend_base_url" in app_config:
             settings.FRONTEND_BASE_URL = app_config["frontend_base_url"]
         server_config = config_data["server"]
@@ -738,6 +808,16 @@ def load_config_from_file(config_path: str) -> None:
                 settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_config["token_ttl_minutes"])
             if "refresh_token_ttl_days" in local_config:
                 settings.AUTH_REFRESH_TOKEN_TTL_DAYS = int(local_config["refresh_token_ttl_days"])
+            cookie_config = local_config.get("cookie_session", {})
+            if isinstance(cookie_config, dict):
+                if "enabled" in cookie_config:
+                    settings.AUTH_COOKIE_SESSION_ENABLED = bool(cookie_config["enabled"])
+                if "secure" in cookie_config:
+                    settings.AUTH_COOKIE_SECURE = bool(cookie_config["secure"])
+                if "samesite" in cookie_config:
+                    settings.AUTH_COOKIE_SAMESITE = str(cookie_config["samesite"])
+                if "domain" in cookie_config:
+                    settings.AUTH_COOKIE_DOMAIN = cookie_config["domain"] or None
             gated_config = local_config.get("gated_signup", {})
             if isinstance(gated_config, dict) and "enabled" in gated_config:
                 settings.AUTH_GATED_SIGNUP_ENABLED = bool(gated_config["enabled"])
@@ -849,6 +929,10 @@ def load_config_from_file(config_path: str) -> None:
             settings.TELEPHONY_OUTBOUND_POOL_MAX_CONCURRENT_PER_ORG = int(
                 telephony_cfg["outbound_pool_max_concurrent_per_org"]
             )
+        if telephony_cfg.get("recording_url_allowed_host_suffixes"):
+            settings.RECORDING_URL_ALLOWED_HOST_SUFFIXES = list(
+                telephony_cfg["recording_url_allowed_host_suffixes"]
+            )
 
     if "judge_alignment" in config_data:
         ja_cfg = config_data["judge_alignment"]
@@ -889,6 +973,14 @@ def load_config_from_file(config_path: str) -> None:
             settings.OPERATIONAL_PUBLIC = bool(operational_config["public"])
         if "trusted_ips" in operational_config:
             settings.OPERATIONAL_TRUSTED_IPS = operational_config["trusted_ips"]
+        if "health_rate_limit_per_minute" in operational_config:
+            settings.HEALTH_RATE_LIMIT_PER_MINUTE = int(
+                operational_config["health_rate_limit_per_minute"]
+            )
+        if "health_readiness_cache_seconds" in operational_config:
+            settings.HEALTH_READINESS_CACHE_SECONDS = int(
+                operational_config["health_readiness_cache_seconds"]
+            )
 
     if "security" in config_data:
         security_config = config_data["security"]
@@ -898,6 +990,50 @@ def load_config_from_file(config_path: str) -> None:
             settings.CSP_REPORT_ONLY = bool(security_config["csp_report_only"])
         if security_config.get("csp_policy"):
             settings.CSP_POLICY = security_config["csp_policy"]
+            settings.CSP_POLICY_CUSTOM = True
+        if security_config.get("csp_connect_src_extra"):
+            settings.CSP_CONNECT_SRC_EXTRA = list(security_config["csp_connect_src_extra"])
+        if security_config.get("csp_frame_src_extra"):
+            settings.CSP_FRAME_SRC_EXTRA = list(security_config["csp_frame_src_extra"])
+        if security_config.get("csp_script_src_extra"):
+            settings.CSP_SCRIPT_SRC_EXTRA = list(security_config["csp_script_src_extra"])
+        if "trusted_hosts_auto_from_frontend" in security_config:
+            settings.TRUSTED_HOSTS_AUTO_FROM_FRONTEND = bool(
+                security_config["trusted_hosts_auto_from_frontend"]
+            )
+        if security_config.get("public_base_url"):
+            settings.PUBLIC_BASE_URL = str(security_config["public_base_url"]).strip()
+        if "trusted_hosts" in security_config:
+            settings.TRUSTED_HOSTS_EXPLICIT = list(security_config["trusted_hosts"])
+        if "hsts_enabled" in security_config:
+            settings.SECURITY_HSTS_ENABLED = bool(security_config["hsts_enabled"])
+        if "hsts_max_age" in security_config:
+            settings.SECURITY_HSTS_MAX_AGE = int(security_config["hsts_max_age"])
+        if "hsts_include_subdomains" in security_config:
+            settings.SECURITY_HSTS_INCLUDE_SUBDOMAINS = bool(
+                security_config["hsts_include_subdomains"]
+            )
+
+    if "rate_limits" in config_data:
+        rate_cfg = config_data["rate_limits"]
+        if "enforce" in rate_cfg:
+            settings.API_RATE_LIMIT_ENFORCE = bool(rate_cfg["enforce"])
+        if "auth_per_ip_per_minute" in rate_cfg:
+            settings.API_AUTH_RATE_LIMIT_PER_MINUTE = int(rate_cfg["auth_per_ip_per_minute"])
+        if "resource_create_burst" in rate_cfg:
+            settings.API_RESOURCE_CREATE_BURST = int(rate_cfg["resource_create_burst"])
+        if "resource_create_burst_window_minutes" in rate_cfg:
+            settings.API_RESOURCE_CREATE_BURST_WINDOW_MINUTES = int(
+                rate_cfg["resource_create_burst_window_minutes"]
+            )
+        if "resource_create_sustained_per_minute" in rate_cfg:
+            settings.API_RESOURCE_CREATE_SUSTAINED_PER_MINUTE = int(
+                rate_cfg["resource_create_sustained_per_minute"]
+            )
+        if "resource_create_org_per_hour" in rate_cfg:
+            settings.API_RESOURCE_CREATE_ORG_PER_HOUR = int(
+                rate_cfg["resource_create_org_per_hour"]
+            )
 
     if "flexprice" in config_data:
         flexprice_config = config_data["flexprice"]
@@ -926,6 +1062,10 @@ def load_config_from_file(config_path: str) -> None:
         settings.CELERY_BROKER_URL = settings.REDIS_URL
     if not settings.CELERY_RESULT_BACKEND:
         settings.CELERY_RESULT_BACKEND = settings.REDIS_URL
+
+    from app.core.security_settings import finalize_security_settings
+
+    finalize_security_settings()
 
 
 # Initialize settings with error handling for problematic env vars
@@ -969,3 +1109,8 @@ except Exception as e:
     else:
         # No .env file, create normally
         settings = Settings()
+
+from app.core.security_settings import capture_trusted_hosts_from_env, finalize_security_settings
+
+capture_trusted_hosts_from_env()
+finalize_security_settings()

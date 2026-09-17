@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import { useLicenseStore } from './store/licenseStore'
@@ -106,12 +107,28 @@ import CallImportSchemasPage from './pages/callImports/Schemas'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  // Either credential type counts as "signed in". The backend enforces the
-  // actual authentication on every request; this guard just keeps the SPA
-  // from flashing protected pages when the user clearly has no session.
-  const { apiKey, accessToken } = useAuthStore()
+  const { apiKey, user, sessionReady, bootstrapSession } = useAuthStore()
+  const [bootstrapping, setBootstrapping] = useState(!sessionReady)
 
-  if (!apiKey && !accessToken) {
+  useEffect(() => {
+    let active = true
+    bootstrapSession().finally(() => {
+      if (active) setBootstrapping(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [bootstrapSession, sessionReady])
+
+  if (bootstrapping || !sessionReady) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+      </div>
+    )
+  }
+
+  if (!apiKey && !user) {
     return <Navigate to="/login" replace />
   }
 

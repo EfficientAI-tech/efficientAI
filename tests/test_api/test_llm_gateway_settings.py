@@ -54,8 +54,9 @@ def test_get_llm_gateway_settings_defaults(authenticated_client):
 
 
 def test_update_llm_gateway_settings_persists_bifrost_override(
-    authenticated_client, db_session, org_id
+    authenticated_client, db_session, org_id, monkeypatch
 ):
+    monkeypatch.setattr(settings, "DEBUG", True)
     _set_platform_gateway(enabled=False)
 
     response = authenticated_client.put(
@@ -63,7 +64,7 @@ def test_update_llm_gateway_settings_persists_bifrost_override(
         json={
             "mode": "enabled",
             "gateway_type": "bifrost",
-            "base_url": "http://org-bifrost:8080/litellm",
+            "base_url": "http://127.0.0.1:8080/litellm",
             "virtual_key": "org-virtual-key",
         },
     )
@@ -71,10 +72,10 @@ def test_update_llm_gateway_settings_persists_bifrost_override(
     data = response.json()
     assert data["mode"] == "enabled"
     assert data["gateway_type"] == "bifrost"
-    assert data["base_url"] == "http://org-bifrost:8080/litellm"
+    assert data["base_url"] == "http://127.0.0.1:8080/litellm"
     assert data["has_virtual_key"] is True
     assert data["effective_routing"] == "bifrost"
-    assert data["effective_base_url"] == "http://org-bifrost:8080/litellm"
+    assert data["effective_base_url"] == "http://127.0.0.1:8080/litellm"
 
     org = db_session.query(Organization).filter(Organization.id == org_id).first()
     assert org.llm_gateway_settings["enabled"] is True
@@ -83,8 +84,9 @@ def test_update_llm_gateway_settings_persists_bifrost_override(
 
 
 def test_update_llm_gateway_settings_persists_litellm_proxy_override(
-    authenticated_client, db_session, org_id
+    authenticated_client, db_session, org_id, monkeypatch
 ):
+    monkeypatch.setattr(settings, "DEBUG", True)
     _set_platform_gateway(enabled=False)
 
     response = authenticated_client.put(
@@ -92,7 +94,7 @@ def test_update_llm_gateway_settings_persists_litellm_proxy_override(
         json={
             "mode": "enabled",
             "gateway_type": "litellm_proxy",
-            "base_url": "http://org-proxy:4000",
+            "base_url": "http://127.0.0.1:4000",
             "master_key": "org-master-key",
         },
     )
@@ -101,7 +103,7 @@ def test_update_llm_gateway_settings_persists_litellm_proxy_override(
     assert data["gateway_type"] == "litellm_proxy"
     assert data["has_master_key"] is True
     assert data["effective_routing"] == "litellm_proxy"
-    assert data["effective_base_url"] == "http://org-proxy:4000"
+    assert data["effective_base_url"] == "http://127.0.0.1:4000"
 
     org = db_session.query(Organization).filter(Organization.id == org_id).first()
     assert org.llm_gateway_settings["gateway_type"] == "litellm_proxy"
