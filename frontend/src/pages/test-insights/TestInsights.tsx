@@ -8,12 +8,28 @@ import ConfirmModal from '../../components/ConfirmModal'
 import TableListPagination from '../../components/TableListPagination'
 import TraceDetailDrawer from '../../components/call-recordings/TraceDetailDrawer'
 import { CallAgentLink } from '../observability/CallAgentLink'
+import type { ObservabilityCallAgent } from '../../types/api'
 import { CallSourceBadge, EventBadge, PlatformBadge } from '../observability/observabilityCallUi'
 import { useWorkspaceStore } from '../../store/workspaceStore'
+import { itemsOf } from '../../lib/safeData'
 type StatusFilter = 'all' | 'open' | 'closed'
 type EventFilter = 'all' | 'call_ended' | 'call_started' | 'other'
 
 const PAGE_SIZE = 15
+
+type CallsHubRow = {
+  kind: 'obs' | 'trace'
+  sort_at?: string | null
+  obs?: {
+    id: string
+    call_short_id: string
+    call_event?: string | null
+    provider_platform?: string | null
+    created_at?: string | null
+    agent?: ObservabilityCallAgent | null
+  }
+  trace?: SyntheticTraceRow
+}
 
 type SyntheticTraceRow = {
   id: string
@@ -146,7 +162,7 @@ export default function TestInsights() {
     },
   })
 
-  const hubItems = hubData?.items ?? []
+  const hubItems = itemsOf<CallsHubRow>(hubData)
   const hubSummary = hubData?.summary
   const hubTotal = hubData?.total ?? 0
   const hubPage = hubData?.page ?? callsPage
@@ -303,13 +319,13 @@ export default function TestInsights() {
                   Total
                 </p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-gray-900">
-                  {hubSummary.total}
+                  {hubSummary?.total ?? 0}
                 </p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Open</p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-gray-900">
-                  {hubSummary.traces_open}
+                  {hubSummary?.traces_open ?? 0}
                 </p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
@@ -317,13 +333,13 @@ export default function TestInsights() {
                   Closed
                 </p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-gray-900">
-                  {hubSummary.traces_closed}
+                  {hubSummary?.traces_closed ?? 0}
                 </p>
               </div>
               <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Live</p>
                 <p className="mt-0.5 text-2xl font-semibold tabular-nums text-sky-600">
-                  {hubSummary.obs_live}
+                  {hubSummary?.obs_live ?? 0}
                 </p>
               </div>
             </div>
@@ -520,7 +536,7 @@ export default function TestInsights() {
                       }
 
                       const trace = row.trace as SyntheticTraceRow | undefined
-                      if (!trace) return null
+                      if (!trace?.id) return null
                       return (
                         <tr
                           key={`trace-${trace.id}`}

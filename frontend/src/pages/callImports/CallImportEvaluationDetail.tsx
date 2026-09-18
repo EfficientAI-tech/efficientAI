@@ -59,6 +59,7 @@ import {
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
 import { getApiErrorMessage } from '../../lib/apiErrors'
+import { itemsOf } from '../../lib/safeData'
 import { downloadBlob } from '../../lib/download'
 import {
   isLLMSelectionComplete,
@@ -68,10 +69,12 @@ import { useToast } from '../../hooks/useToast'
 import { useRecordingPresignedUrl } from '../../hooks/useRecordingPresignedUrl'
 import type {
   CallImportEvaluation,
+  DiscoveredMetric,
   CallImportEvaluationBulkActionResponse,
   CallImportEvaluationBaselineCandidate,
   CallImportEvaluationRetryResponse,
   CallImportEvaluationRow,
+  CallImportEvaluationPdfReportListItem,
   CallImportMetricAggregate,
   EvaluationTldrSummary,
   EvaluationMetricClustersState,
@@ -916,7 +919,7 @@ export default function CallImportEvaluationDetail() {
 
   useEffect(() => {
     if (!deepLinkConversationId && !deepLinkRowId) return
-    const items = rowsQuery.data?.items ?? []
+    const items = itemsOf<CallImportEvaluationRow>(rowsQuery.data)
     const match = items.find((row) =>
       deepLinkRowId
         ? row.id === deepLinkRowId
@@ -1481,7 +1484,7 @@ export default function CallImportEvaluationDetail() {
         upsert(mid, {})
       }
     }
-    for (const row of rowsQuery.data?.items ?? []) {
+    for (const row of itemsOf<CallImportEvaluationRow>(rowsQuery.data)) {
       const scores = row.metric_scores
       if (!scores || typeof scores !== 'object') continue
       for (const [metricId, entry] of Object.entries(scores)) {
@@ -2502,7 +2505,7 @@ export default function CallImportEvaluationDetail() {
                     </p>
                   ) : (
                     <ul className="py-1">
-                      {pdfReportsQuery.data!.items.map((item) => (
+                      {itemsOf<CallImportEvaluationPdfReportListItem>(pdfReportsQuery.data).map((item) => (
                         <li key={item.id}>
                           <button
                             type="button"
@@ -3250,7 +3253,7 @@ export default function CallImportEvaluationDetail() {
               <RefreshCw className="h-6 w-6 mx-auto mb-2 animate-spin" />
               <p>Loading visualizations…</p>
             </div>
-          ) : aggregateQuery.data.metrics.length === 0 ? (
+          ) : (aggregateQuery.data.metrics?.length ?? 0) === 0 ? (
             <p className="text-sm text-gray-500">
               No metric data yet. Charts populate as rows finish scoring.
             </p>
@@ -3780,8 +3783,7 @@ export default function CallImportEvaluationDetail() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {rowsQuery.data.items.map(
-                    (row: CallImportEvaluationRow) => (
+                  {itemsOf<CallImportEvaluationRow>(rowsQuery.data).map((row) => (
                       <tr
                         key={row.id}
                         onClick={() => setDetailRow(row)}
@@ -7924,7 +7926,7 @@ function DiscoveredLabelsPanel({
     }
     return set
   }, [parent.children])
-  const items = (discoveredQuery.data?.items ?? []).filter(
+  const items = itemsOf<DiscoveredMetric>(discoveredQuery.data).filter(
     (item) => !childSlugs.has(item.key),
   )
 
@@ -8219,7 +8221,7 @@ function DiscoveredMetricsTopPanel({
     onSuccess: invalidateAll,
   })
 
-  const items = discoveredQuery.data?.items ?? []
+  const items = itemsOf<DiscoveredMetric>(discoveredQuery.data)
   const [collapsed, setCollapsed] = useState(false)
   const [confirmKey, setConfirmKey] = useState<string | null>(null)
   // Per-candidate type override. Defaults to the LLM-suggested type

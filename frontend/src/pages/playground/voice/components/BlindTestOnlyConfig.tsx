@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Plus, X, Mic, Upload, Volume2, FileAudio, Play, Pause } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
+import { itemsOf } from '../../../../lib/safeData'
 import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import type {
   VoicePlaygroundBlindTestAudioRef,
@@ -242,7 +243,12 @@ function RecordingPicker({
     queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
   })
 
-  const rows = data?.items || []
+  type CallImportRow = {
+    id: string
+    conversation_id: string
+    transcript?: string | null
+  }
+  const rows = itemsOf<CallImportRow>(data)
   const filtered = useMemo(() => {
     if (!search.trim()) return rows
     const q = search.toLowerCase()
@@ -264,7 +270,7 @@ function RecordingPicker({
           className="px-2 py-1.5 text-xs border border-gray-300 rounded bg-white"
         >
           <option value="">All call imports</option>
-          {(callImportsList?.items || []).map((ci: any) => (
+          {itemsOf(callImportsList).map((ci: any) => (
             <option key={ci.id} value={ci.id}>
               {ci.original_filename || ci.id}
             </option>

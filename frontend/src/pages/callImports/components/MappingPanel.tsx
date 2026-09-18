@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Layers, Save } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { apiClient } from '../../../lib/api'
+import { itemsOf } from '../../../lib/safeData'
 import { useWorkspaceStore } from '../../../store/workspaceStore'
 import type {
   CallImport,
@@ -91,7 +92,7 @@ export default function MappingPanel({
     queryFn: () => apiClient.listCallImportSchemas(),
   })
   const schemas = useMemo<CallImportSchema[]>(
-    () => schemasResponse?.items ?? [],
+    () => itemsOf(schemasResponse),
     [schemasResponse],
   )
 

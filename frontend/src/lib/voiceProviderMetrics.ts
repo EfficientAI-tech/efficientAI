@@ -49,9 +49,21 @@ export function extractProviderCostSummary(
   }
 
   if (plat === 'retell') {
-    const callCost = callData.call_cost as { combined_cost?: number } | undefined
-    const cents = toNumber(callCost?.combined_cost)
+    const callCost = callData.call_cost as
+      | { combined_cost?: number; total_cost?: number; total_duration_seconds?: number }
+      | undefined
+    const cents =
+      toNumber(callCost?.combined_cost) ??
+      toNumber(callCost?.total_cost) ??
+      toNumber((callData as { combined_cost?: number }).combined_cost)
     if (cents != null) return { total: cents / 100, unit: 'usd' }
+    const productCosts = callCost && Array.isArray((callCost as { product_costs?: unknown[] }).product_costs)
+      ? (callCost as { product_costs: Array<{ cost?: number }> }).product_costs
+      : null
+    if (productCosts?.length) {
+      const sum = productCosts.reduce((acc, row) => acc + (toNumber(row.cost) ?? 0), 0)
+      if (sum > 0) return { total: sum / 100, unit: 'usd' }
+    }
     return null
   }
 

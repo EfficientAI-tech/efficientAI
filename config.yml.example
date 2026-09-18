@@ -168,7 +168,11 @@ api:
   rate_limit_per_minute: 60
 
 
-# Call traces / OTLP observability (Phase 2 scaling)
+# Call traces / OTLP observability (OPTIONAL — playground, evaluators, imports work without this)
+# Self-host without traces: omit the entire `clickhouse:` block below and skip worker-traces.
+# Readiness/health only checks ClickHouse when clickhouse.url is set.
+# Observability → Calls still lists telephony webhook calls; OTLP rows need ClickHouse when
+# traces.defer_parse_to_worker is true (default). OTLP ingest returns 503 until CH is configured.
 traces:
   async_ingest_enabled: true
   rate_limit_per_minute: 120
@@ -184,11 +188,12 @@ traces:
   live_turns_ttl_seconds: 180
   api_key_cache_ttl_seconds: 300
 
-clickhouse:
-  url: "http://localhost:8123"
-  database: "efficientai"
-  user: "default"
-  password: ""
+# Uncomment when enabling OTLP / synthetic call traces (not required for core platform):
+# clickhouse:
+#   url: "http://localhost:8123"
+#   database: "efficientai"
+#   user: "default"
+#   password: ""
 
 
 # -----------------------------------------------------------------------------

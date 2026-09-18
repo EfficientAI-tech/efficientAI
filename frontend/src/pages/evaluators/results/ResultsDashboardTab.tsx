@@ -24,7 +24,9 @@ import type {
   CallImportMetricAggregate,
   EvaluatorResultCounts,
   EvaluatorResultsOverviewResponse,
+  EvaluatorResultRow,
 } from '../../../types/api'
+import { itemsOf } from '../../../lib/safeData'
 
 const CHART_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316']
 const TRENDS_PAGE_LIMIT = 500
@@ -228,7 +230,7 @@ export default function ResultsDashboardTab({
     [overview, agentId, suiteId, scenarioId],
   )
 
-  const results = listResponse?.items ?? []
+  const results = itemsOf<EvaluatorResultRow>(listResponse)
   const totalInRange = listResponse?.total ?? 0
   const truncated = totalInRange > TRENDS_PAGE_LIMIT
 

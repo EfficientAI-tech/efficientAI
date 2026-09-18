@@ -679,18 +679,18 @@ export default function EvaluatorResultDetailPage({
   const callAnalysisSummary =
     resultData.call_data?.call_analysis?.call_summary ||
     (typeof resultData.metric_scores?.summary?.value === 'string'
-      ? resultData.metric_scores.summary.value
+      ? resultData.metric_scores?.summary?.value
       : null)
   const userSentiment =
     resultData.call_data?.call_analysis?.user_sentiment ||
     (typeof resultData.metric_scores?.sentiment?.value === 'string'
-      ? resultData.metric_scores.sentiment.value
+      ? resultData.metric_scores?.sentiment?.value
       : null)
   const callSuccessful =
     resultData.call_data?.call_analysis?.call_successful !== undefined
       ? Boolean(resultData.call_data.call_analysis.call_successful)
       : resultData.metric_scores?.successful?.value !== undefined
-        ? Boolean(resultData.metric_scores.successful.value)
+        ? Boolean(resultData.metric_scores?.successful?.value)
         : null
 
   return (

@@ -257,10 +257,27 @@ function parseSmallestCostSlices(callData: Record<string, unknown>): CostSlice[]
   return []
 }
 
+function countRetellAgentTurns(raw: Record<string, any>): number {
+  const fromObject = (entries: unknown) => {
+    if (!Array.isArray(entries)) return 0
+    return entries.filter((u) => String((u as { role?: string })?.role || '').toLowerCase() === 'agent').length
+  }
+  const fromObjectCount = fromObject(raw.transcript_object) || fromObject(raw.transcript_with_tool_calls)
+  if (fromObjectCount > 0) return fromObjectCount
+  const transcript = typeof raw.transcript === 'string' ? raw.transcript.trim() : ''
+  if (!transcript) return 0
+  const agentLines = transcript
+    .split('\n')
+    .map((line: string) => line.trim())
+    .filter((line: string) => /^agent\s*:/i.test(line) || /^assistant\s*:/i.test(line))
+  return agentLines.length
+}
+
 function parseRetellPipeline(callData: Record<string, unknown>): {
   stages: PipelineStage[]
   turns: TurnLatencyRow[]
   avgTurnMs: number | null
+  turnCount: number
 } {
   const raw = callData as Record<string, any>
   const latency = raw.latency || {}
@@ -270,7 +287,9 @@ function parseRetellPipeline(callData: Record<string, unknown>): {
     { key: 'tts', label: 'TTS', ms: latency.tts?.p50 ?? 0, color: STAGE_COLORS.tts, icon: Speaker },
     { key: 'e2e', label: 'E2E', ms: latency.e2e?.p50 ?? 0, color: STAGE_COLORS.endpointing, icon: Activity },
   ].filter((stage) => stage.ms > 0)
-  return { stages, turns: [], avgTurnMs: latency.e2e?.p50 ?? null }
+  const turnCount = countRetellAgentTurns(raw)
+  const e2e = latency.e2e?.p50 ?? null
+  return { stages, turns: [], avgTurnMs: e2e, turnCount }
 }
 
 function parseSmallestPipeline(callData: Record<string, unknown>): {
@@ -517,11 +536,11 @@ export function ProviderLatencyPanel({
     personaTtsLine: billingScope?.personaTtsLine,
     platform,
   })
-  const { stages, turns, avgTurnMs } = useMemo(() => {
-    if (platform === 'vapi') return parseVapiPipeline(callData)
-    if (platform === 'elevenlabs') return parseElevenLabsPipeline(callData)
+  const { stages, turns, avgTurnMs, turnCount } = useMemo(() => {
+    if (platform === 'vapi') return { ...parseVapiPipeline(callData), turnCount: 0 }
+    if (platform === 'elevenlabs') return { ...parseElevenLabsPipeline(callData), turnCount: 0 }
     if (platform === 'retell') return parseRetellPipeline(callData)
-    if (platform === 'smallest') return parseSmallestPipeline(callData)
+    if (platform === 'smallest') return { ...parseSmallestPipeline(callData), turnCount: 0 }
     const raw = callData as Record<string, any>
     const latency = raw.latency || {}
     const stages: PipelineStage[] = [
@@ -530,22 +549,29 @@ export function ProviderLatencyPanel({
       { key: 'tts', label: 'TTS', ms: latency.tts?.p50 ?? 0, color: STAGE_COLORS.tts, icon: Speaker },
       { key: 'e2e', label: 'E2E', ms: latency.e2e?.p50 ?? 0, color: STAGE_COLORS.endpointing, icon: Activity },
     ].filter((s) => s.ms > 0)
-    return { stages, turns: [] as TurnLatencyRow[], avgTurnMs: latency.e2e?.p50 ?? null }
+    return { stages, turns: [] as TurnLatencyRow[], avgTurnMs: latency.e2e?.p50 ?? null, turnCount: 0 }
   }, [callData, platform])
 
   const pipelineTotal = stages.reduce((sum, s) => sum + s.ms, 0) || 1
+  const displayTurnCount = turns.length || turnCount || 0
 
-  if (!stages.length && !turns.length) {
+  if (!stages.length && !turns.length && !displayTurnCount) {
     return <p className="py-12 text-center text-sm text-gray-500">Latency data not available yet.</p>
   }
 
   return (
     <div className="space-y-5">
       <CallDetailScopeTags tags={latencyScope.tags} hint={latencyScope.hint} />
+      {platform === 'retell' && displayTurnCount > 0 && turns.length === 0 ? (
+        <p className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+          Retell reports call-level ASR, LLM, TTS, and E2E latency percentiles. Turn count is from agent utterances in the
+          transcript; per-turn millisecond breakdown is not provided by Retell.
+        </p>
+      ) : null}
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-medium text-gray-500">Turns</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">{turns.length || '—'}</p>
+          <p className="mt-1 text-2xl font-bold text-gray-900">{displayTurnCount > 0 ? displayTurnCount : '—'}</p>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-medium text-gray-500">Avg turn</p>

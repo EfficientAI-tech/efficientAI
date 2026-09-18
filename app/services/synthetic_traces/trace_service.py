@@ -57,11 +57,21 @@ from app.services.synthetic_traces.otlp_mapper import (
 OPEN_TRACE_IDLE_CLOSE_SECONDS = settings.TRACES_IDLE_CLOSE_SECONDS
 
 
-def _require_pg_trace_storage(db: Session) -> None:
-    """Fail fast when migration 092 removed PG tables and ClickHouse is not configured."""
+def _pg_trace_table_available(db: Session) -> bool:
     from sqlalchemy import inspect
 
-    if inspect(db.get_bind()).has_table("synthetic_call_traces"):
+    return inspect(db.get_bind()).has_table("synthetic_call_traces")
+
+
+def trace_storage_available(db: Session) -> bool:
+    if ch_trace_ops.use_ch():
+        return True
+    return _pg_trace_table_available(db)
+
+
+def _require_pg_trace_storage(db: Session) -> None:
+    """Fail fast when migration 092 removed PG tables and ClickHouse is not configured."""
+    if trace_storage_available(db):
         return
     raise RuntimeError(
         "Trace storage requires ClickHouse (configure clickhouse.url). "
@@ -935,6 +945,9 @@ def list_traces(
     since: Optional[datetime] = None,
     exclude_playground_websocket: bool = False,
 ) -> tuple[List[SyntheticCallTrace], Optional[int], Optional[str], bool]:
+    if not ch_trace_ops.use_ch() and not _pg_trace_table_available(db):
+        return [], 0, None, False
+
     if ch_trace_ops.use_ch():
         return ch_list_traces(
             organization_id=organization_id,

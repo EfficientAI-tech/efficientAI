@@ -512,10 +512,11 @@ export default function SyntheticCallTracePanel({
   const pipelineModels = (data?.pipeline_models ?? {}) as PipelineModels
   const pipelineMode = useMemo(() => sessionPipelineMode(turns), [turns])
 
+  const linkedAgentId = data?.agent_id
   const { data: linkedAgent } = useQuery({
-    queryKey: ['trace-agent', data?.agent_id],
-    queryFn: () => apiClient.getAgent(data!.agent_id),
-    enabled: Boolean(data?.agent_id),
+    queryKey: ['trace-agent', linkedAgentId],
+    queryFn: () => apiClient.getAgent(linkedAgentId!),
+    enabled: Boolean(linkedAgentId),
   })
 
   const traceStartNs = useMemo(() => resolveTraceStartNs(otelSpans), [otelSpans])

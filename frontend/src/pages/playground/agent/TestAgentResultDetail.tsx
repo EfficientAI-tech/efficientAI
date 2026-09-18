@@ -12,6 +12,10 @@ import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDr
 import { prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
 import { hasEvaluatorResultRecording } from '../../../lib/recordingUrls'
 import { agentPlaygroundPath } from '../../../lib/playgroundAgentTabs'
+import {
+  isEvaluatorResultInProgress,
+  type EvaluatorResultStatus,
+} from '../../evaluators/results/evaluatorResultStatus'
 
 export default function TestAgentResultDetail() {
   const { id } = useParams<{ id: string }>()
@@ -37,8 +41,8 @@ export default function TestAgentResultDetail() {
     staleTime: 30_000,
     refetchInterval: (query) => {
       const status = (query.state.data as { status?: string } | undefined)?.status
-      if (status && ['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(status)) {
-        return 5000
+      if (status && isEvaluatorResultInProgress(status as EvaluatorResultStatus)) {
+        return 2000
       }
       return false
     },
@@ -117,7 +121,7 @@ export default function TestAgentResultDetail() {
     result.call_data?.call_analysis?.call_successful !== undefined
       ? result.call_data.call_analysis.call_successful
       : result.metric_scores?.successful?.value !== undefined
-        ? Boolean(result.metric_scores.successful.value)
+        ? Boolean(result.metric_scores?.successful?.value)
         : null
 
   const callShortId =

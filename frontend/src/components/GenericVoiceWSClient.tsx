@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import Button from './Button'
 import { apiClient } from '../lib/api'
+import { evaluationStatusFromRecording } from '../lib/evaluationStatus'
 import type { WSProtocolConfig, TranscriptEntry, ParsedWSMessage } from '../lib/wsProtocols'
 
 // ----- Audio helpers ---------------------------------------------------
@@ -121,7 +122,7 @@ interface WSMessageLog {
 
 type LogEntry = { timestamp: string; message: string; type: 'user' | 'bot' | 'system' }
 
-type EvalStatus = 'idle' | 'queued' | 'evaluating' | 'failed'
+type EvalStatus = 'idle' | 'queued' | 'transcribing' | 'evaluating' | 'failed' | 'completed'
 
 interface SavedSession {
   callShortId: string
@@ -874,6 +875,36 @@ export default function GenericVoiceWSClient({
     }
   }
 
+  useEffect(() => {
+    const tracking = savedSessions.filter((s) =>
+      ['queued', 'transcribing', 'evaluating'].includes(s.evalStatus),
+    )
+    if (tracking.length === 0) return
+
+    const poll = async () => {
+      for (const session of tracking) {
+        try {
+          const rec = await apiClient.getCallRecording(session.callShortId)
+          const serverStatus = evaluationStatusFromRecording(rec)
+          if (!serverStatus) continue
+          if (serverStatus === 'completed') {
+            updateSession(session.callShortId, { evalStatus: 'completed' })
+          } else if (serverStatus === 'failed') {
+            updateSession(session.callShortId, { evalStatus: 'failed' })
+          } else if (['queued', 'transcribing', 'evaluating'].includes(serverStatus)) {
+            updateSession(session.callShortId, { evalStatus: serverStatus as EvalStatus })
+          }
+        } catch {
+          /* ignore transient poll errors */
+        }
+      }
+    }
+
+    void poll()
+    const timer = window.setInterval(() => void poll(), 4000)
+    return () => window.clearInterval(timer)
+  }, [savedSessions])
+
   const handleOpenSession = (callShortId: string) => {
     navigate(`/playground/call-recordings/${callShortId}`)
   }
@@ -1236,15 +1267,15 @@ export default function GenericVoiceWSClient({
                             just saved
                           </span>
                         )}
-                        {s.evalStatus === 'queued' && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                            eval queued
-                          </span>
-                        )}
-                        {s.evalStatus === 'evaluating' && (
+                        {(s.evalStatus === 'queued' || s.evalStatus === 'transcribing' || s.evalStatus === 'evaluating') && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium inline-flex items-center gap-1">
                             <Loader className="h-2.5 w-2.5 animate-spin" />
-                            queuing
+                            eval {s.evalStatus === 'evaluating' ? 'evaluating' : s.evalStatus === 'transcribing' ? 'analyzing audio' : 'queued'}
+                          </span>
+                        )}
+                        {s.evalStatus === 'completed' && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                            eval done
                           </span>
                         )}
                         {s.evalStatus === 'failed' && (
@@ -1271,7 +1302,7 @@ export default function GenericVoiceWSClient({
                     </div>
 
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      {s.evalStatus !== 'queued' && (
+                      {!['queued', 'transcribing', 'evaluating'].includes(s.evalStatus) && (
                         <Button
                           variant="outline"
                           size="sm"

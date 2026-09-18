@@ -24,6 +24,16 @@ import {
   parseAgentPlaygroundTab,
   type AgentPlaygroundTab,
 } from '../../../lib/playgroundAgentTabs'
+import {
+  isEvaluatorResultInProgress,
+  type EvaluatorResultStatus,
+} from '../../../pages/evaluators/results/evaluatorResultStatus'
+import {
+  evaluationStatusFromRecording,
+  isEvaluationStatusInProgress,
+  normalizeCallRecordingList,
+} from '../../../lib/evaluationStatus'
+import { itemsOf, shortId } from '../../../lib/safeData'
 
 const PLAYGROUND_LIST_PAGE_SIZE = 10
 
@@ -141,6 +151,7 @@ export default function AgentPlayground() {
   const elevenLabsConversationRef = useRef<any>(null)
   const smallestClientRef = useRef<any>(null)
   const currentCallShortIdRef = useRef<string | null>(null)
+  const providerCallIdRef = useRef<string | null>(null)
 
   const userInitiatedDisconnectRef = useRef(false)
 
@@ -168,8 +179,21 @@ export default function AgentPlayground() {
     queryFn: async () => {
       return await apiClient.listEvaluatorResults(undefined, true, true)
     },
+    refetchInterval: (query) => {
+      const items = itemsOf<{ status?: string }>(query.state.data)
+      if (!items.length) return false
+      const hasInProgress = items.some((row) =>
+        row.status ? isEvaluatorResultInProgress(row.status as EvaluatorResultStatus) : false,
+      )
+      return hasInProgress ? 5000 : false
+    },
   })
-  const testVoiceAgentResults = testVoiceAgentList?.items ?? []
+  const testVoiceAgentResults = itemsOf<{
+    id: string
+    result_id?: string
+    status?: string
+    agent?: { name?: string }
+  }>(testVoiceAgentList)
 
   // Fetch call recordings (for Voice AI Agents tab)
   const {
@@ -181,15 +205,11 @@ export default function AgentPlayground() {
     queryFn: () => apiClient.listCallRecordings(),
     // Refetch every 5 seconds if there are any evaluations in progress
     refetchInterval: (query) => {
-      const data = query.state.data as any[]
-      if (data && Array.isArray(data)) {
-        const hasInProgress = data.some((recording: any) => 
-          recording.evaluation_status && 
-          ['queued', 'transcribing', 'evaluating'].includes(recording.evaluation_status)
-        )
-        return hasInProgress ? 5000 : false
-      }
-      return false
+      const rows = normalizeCallRecordingList(query.state.data)
+      const hasInProgress = rows.some((recording) =>
+        isEvaluationStatusInProgress(evaluationStatusFromRecording(recording)),
+      )
+      return hasInProgress ? 5000 : false
     },
   })
 
@@ -424,11 +444,9 @@ export default function AgentPlayground() {
           }
           userInitiatedDisconnectRef.current = false
 
-          // Trigger refresh of metrics
           if (currentCallShortIdRef.current) {
-            refreshCallRecordingQueries(queryClient, currentCallShortIdRef.current).catch((err) =>
-              console.error('Failed to refresh metrics', err),
-            )
+            const callShortId = currentCallShortIdRef.current
+            void syncVoiceAiCallAfterEnd(callShortId, providerCallIdRef.current)
           }
         })
 
@@ -455,6 +473,9 @@ export default function AgentPlayground() {
 
         if (webCallResponse.call_short_id) {
           currentCallShortIdRef.current = webCallResponse.call_short_id
+        }
+        if (webCallResponse.call_id) {
+          providerCallIdRef.current = webCallResponse.call_id
         }
 
         // Start call
@@ -498,6 +519,10 @@ export default function AgentPlayground() {
           setIsConnecting(false)
           showToast('Connected to agent', 'success')
 
+          if (call?.id) {
+            providerCallIdRef.current = call.id
+          }
+
           // Update backend with Vapi Call ID
           if (currentCallShortIdRef.current && call?.id) {
             try {
@@ -536,8 +561,9 @@ export default function AgentPlayground() {
               }
             }
 
-            refreshCallRecordingQueries(queryClient, currentCallShortIdRef.current).catch((err) =>
-              console.error('Failed to refresh metrics', err),
+            void syncVoiceAiCallAfterEnd(
+              currentCallShortIdRef.current,
+              call?.id ?? providerCallIdRef.current,
             )
           }
         })
@@ -627,12 +653,8 @@ export default function AgentPlayground() {
             // otherwise the backend has no provider_call_id to fetch metrics for
             if (currentCallShortIdRef.current && elevenLabsConversationIdStored) {
               const callShortId = currentCallShortIdRef.current
-              // ElevenLabs transitions through "processing" before "done",
-              // so wait a few seconds before requesting metrics
               setTimeout(() => {
-                refreshCallRecordingQueries(queryClient, callShortId).catch((err) =>
-                  console.error('Failed to refresh metrics', err),
-                )
+                void syncVoiceAiCallAfterEnd(callShortId, providerCallIdRef.current)
               }, 5000)
             }
           },
@@ -663,6 +685,7 @@ export default function AgentPlayground() {
           console.log('ElevenLabs conversation ID:', conversationId)
           if (currentCallShortIdRef.current && conversationId) {
             await apiClient.updateCallRecording(currentCallShortIdRef.current, conversationId)
+            providerCallIdRef.current = conversationId
             elevenLabsConversationIdStored = true
             console.log('Updated call recording with ElevenLabs conversation ID:', conversationId)
           } else {
@@ -732,9 +755,7 @@ export default function AgentPlayground() {
           if (currentCallShortIdRef.current) {
             const callShortId = currentCallShortIdRef.current
             setTimeout(() => {
-              refreshCallRecordingQueries(queryClient, callShortId).catch((err) =>
-                console.error('Failed to refresh metrics', err),
-              )
+              void syncVoiceAiCallAfterEnd(callShortId, providerCallIdRef.current)
             }, 3000)
           }
         })
@@ -916,8 +937,11 @@ export default function AgentPlayground() {
     }
   }
 
-  const voiceAICallRecordings = callRecordings.filter(isVoiceAiProviderRecording)
-  const customWebsocketSessions = callRecordings.filter((recording: any) => recording.provider_platform === 'custom_websocket')
+  const callRecordingRows = normalizeCallRecordingList(callRecordings)
+  const voiceAICallRecordings = callRecordingRows.filter(isVoiceAiProviderRecording)
+  const customWebsocketSessions = callRecordingRows.filter(
+    (recording: { provider_platform?: string }) => recording?.provider_platform === 'custom_websocket',
+  )
 
   useEffect(() => {
     setListSearchQuery('')
@@ -933,10 +957,36 @@ export default function AgentPlayground() {
     setCustomWsPage(1)
   }, [listSearchQuery, listStatusFilter])
 
+  const syncVoiceAiCallAfterEnd = useCallback(
+    async (callShortId: string, providerCallId?: string | null) => {
+      const providerId = providerCallId ?? providerCallIdRef.current
+      try {
+        await apiClient.finalizePlaygroundCallRecording(callShortId, providerId)
+      } catch (err) {
+        console.error('Failed to finalize playground call recording', err)
+      }
+      try {
+        await refreshCallRecordingQueries(queryClient, callShortId)
+        await queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+      } catch (err) {
+        console.error('Failed to refresh call recording queries', err)
+      }
+      providerCallIdRef.current = null
+    },
+    [queryClient],
+  )
+
   const filteredTestResults = useMemo(() => {
     let rows = testVoiceAgentResults
     if (listStatusFilter !== 'all') {
-      rows = rows.filter((result: { status?: string }) => result.status === listStatusFilter)
+      rows = rows.filter((result: { status?: string }) => {
+        if (listStatusFilter === 'in_progress') {
+          return result.status
+            ? isEvaluatorResultInProgress(result.status as EvaluatorResultStatus)
+            : false
+        }
+        return result.status === listStatusFilter
+      })
     }
     const query = listSearchQuery.trim().toLowerCase()
     if (!query) return rows
@@ -950,11 +1000,14 @@ export default function AgentPlayground() {
   const filteredVoiceAiCalls = useMemo(() => {
     let rows = voiceAICallRecordings
     if (listStatusFilter !== 'all') {
-      rows = rows.filter((recording: { status?: string; evaluation_status?: string }) => {
+      rows = rows.filter((recording) => {
+        if (!recording) return false
+        const evalStatus = evaluationStatusFromRecording(recording)
+        const status = typeof recording.status === 'string' ? recording.status : undefined
         if (listStatusFilter === 'pending_eval') {
-          return !recording.evaluation_status || recording.evaluation_status === 'pending'
+          return !evalStatus || evalStatus === 'pending'
         }
-        return recording.evaluation_status === listStatusFilter || recording.status === listStatusFilter
+        return evalStatus === listStatusFilter || status === listStatusFilter
       })
     }
     const query = listSearchQuery.trim().toLowerCase()
@@ -969,11 +1022,14 @@ export default function AgentPlayground() {
   const filteredCustomWsSessions = useMemo(() => {
     let rows = customWebsocketSessions
     if (listStatusFilter !== 'all') {
-      rows = rows.filter((session: any) => {
+      rows = rows.filter((session) => {
+        if (!session) return false
+        const evalStatus = evaluationStatusFromRecording(session)
+        const status = typeof session.status === 'string' ? session.status : undefined
         if (listStatusFilter === 'pending_eval') {
           return !session.evaluator_result_id
         }
-        return session.evaluation_status === listStatusFilter || session.status === listStatusFilter
+        return evalStatus === listStatusFilter || status === listStatusFilter
       })
     }
     const query = listSearchQuery.trim().toLowerCase()
@@ -1278,6 +1334,7 @@ export default function AgentPlayground() {
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                         {paginatedTestResults.items.map((result: any) => {
+                          if (!result?.id) return null
                           const isSelected = selectedTestResultIds.has(result.id)
                           return (
                             <tr
@@ -1308,17 +1365,21 @@ export default function AgentPlayground() {
                               </td>
                               <td className="px-6 py-5 whitespace-nowrap">
                                 <span className="font-mono text-sm font-semibold text-primary-600">
-                                  {result.result_id || result.id.substring(0, 8)}
+                                  {result.result_id || shortId(result.id)}
                                 </span>
                               </td>
                               <td className="px-6 py-5 whitespace-nowrap">
                                 <span
-                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full capitalize ${
                                     result.status === 'completed'
                                       ? 'bg-green-100 text-green-800'
                                       : result.status === 'failed'
                                       ? 'bg-red-100 text-red-800'
-                                      : 'bg-yellow-100 text-yellow-800'
+                                      : result.status === 'evaluating' || result.status === 'transcribing'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : result.status && isEvaluatorResultInProgress(result.status as EvaluatorResultStatus)
+                                      ? 'bg-yellow-100 text-yellow-800'
+                                      : 'bg-gray-100 text-gray-700'
                                   }`}
                                 >
                                   {result.status}
@@ -1456,6 +1517,8 @@ export default function AgentPlayground() {
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                         {paginatedVoiceAiCalls.items.map((recording: any) => {
+                          if (!recording?.call_short_id) return null
+                          const evalStatus = evaluationStatusFromRecording(recording)
                           const isSelected = selectedCallIds.has(recording.call_short_id)
                           return (
                             <tr
@@ -1499,16 +1562,16 @@ export default function AgentPlayground() {
                                 {recording.evaluator_result_id ? (
                                   <span
                                     className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                      recording.evaluation_status === 'completed'
+                                      evalStatus === 'completed'
                                         ? 'bg-green-100 text-green-800'
-                                        : recording.evaluation_status === 'failed'
+                                        : evalStatus === 'failed'
                                         ? 'bg-red-100 text-red-800'
-                                        : recording.evaluation_status === 'evaluating'
+                                        : evalStatus === 'evaluating'
                                         ? 'bg-blue-100 text-blue-800'
                                         : 'bg-yellow-100 text-yellow-800'
                                     }`}
                                   >
-                                    {recording.evaluation_status || 'queued'}
+                                    {evalStatus || 'queued'}
                                   </span>
                                 ) : recording.status === 'UPDATED' ? (
                                   <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">
@@ -1727,7 +1790,10 @@ export default function AgentPlayground() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-200 bg-white">
-                            {paginatedCustomWsSessions.items.map((session: any) => (
+                            {paginatedCustomWsSessions.items.map((session: any) => {
+                              if (!session?.call_short_id) return null
+                              const sessionEvalStatus = evaluationStatusFromRecording(session)
+                              return (
                               <tr
                                 key={session.id}
                                 className="hover:bg-gray-50 cursor-pointer transition-colors"
@@ -1740,7 +1806,7 @@ export default function AgentPlayground() {
                                 <td className="px-6 py-5">
                                   {session.evaluator_result_id ? (
                                     <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800">
-                                      {session.evaluation_status || 'queued'}
+                                      {sessionEvalStatus || 'queued'}
                                     </span>
                                   ) : (
                                     <span className="inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700">
@@ -1772,7 +1838,7 @@ export default function AgentPlayground() {
                                   </div>
                                 </td>
                               </tr>
-                            ))}
+                            )})}
                           </tbody>
                         </table>
                       </div>
