@@ -98,7 +98,11 @@ def _lookup_evaluator_result(
 
 
 def _api_base_url(request: Request) -> str:
-    return str(request.base_url).rstrip("/")
+    base = str(request.base_url).rstrip("/")
+    forwarded = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if forwarded == "https" and base.startswith("http://"):
+        return f"https://{base[len('http://'):]}"
+    return base
 
 
 def _build_trace_detail_response(

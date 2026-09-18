@@ -19,9 +19,12 @@
 #   uv pip install "pipecat-ai[silero,websocket,google,runner,webrtc]>=1.4.0"
 #   uv pip install -e '/home/sami/Downloads/work/efficientAI[otel]'
 
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
 import os
 
-from dotenv import load_dotenv
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import LLMRunFrame
@@ -48,7 +51,6 @@ from efficientai.integrations.efficientai_traces import (
     setup_pipecat_worker_tracing,
 )
 
-load_dotenv(override=True)
 require_deployment_trace_env()
 
 SYSTEM_INSTRUCTION = """

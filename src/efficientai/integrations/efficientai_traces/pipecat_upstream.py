@@ -11,14 +11,32 @@ from efficientai.integrations.efficientai_traces.correlation import span_correla
 from efficientai.integrations.efficientai_traces.handshake import parse_trace_handshake
 from efficientai.integrations.efficientai_traces.setup import setup_efficientai_tracing, flush_efficientai_tracing
 
-DEFAULT_API_BASE = os.environ.get("EFFICIENTAI_API_BASE", "http://localhost:8000").rstrip("/")
 DEFAULT_OTLP_PATH = "/api/v1/observability/traces"
+_FALLBACK_API_BASE = "http://localhost:8000"
 _VALID_TRANSPORTS = frozenset({"webrtc", "websocket", "phone", "custom"})
 
 
 def _env(name: str) -> Optional[str]:
     val = os.environ.get(name)
     return str(val).strip() if val and str(val).strip() else None
+
+
+def _api_base_url() -> str:
+    return (_env("EFFICIENTAI_API_BASE") or _FALLBACK_API_BASE).rstrip("/")
+
+
+def _resolve_otlp_endpoint(server_hint: Optional[str] = None) -> str:
+    """OTLP ingest URL for export (prefer deployment env over session http behind TLS)."""
+    explicit = _env("EFFICIENTAI_OTLP_ENDPOINT")
+    if explicit:
+        return explicit.rstrip("/")
+    canonical = f"{_api_base_url()}{DEFAULT_OTLP_PATH}"
+    if not server_hint or not str(server_hint).strip():
+        return canonical
+    hint = str(server_hint).strip().rstrip("/")
+    if _api_base_url().startswith("https://") and hint.startswith("http://"):
+        return canonical
+    return hint
 
 
 def missing_deployment_trace_env() -> list[str]:
@@ -69,18 +87,19 @@ async def mint_trace_session(
     *,
     workspace_id: str,
     api_key: str,
-    api_base_url: str = DEFAULT_API_BASE,
+    api_base_url: Optional[str] = None,
     transport: str = "websocket",
     evaluator_result_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Open an EfficientAI trace session (call_short_id minted server-side)."""
+    base = (api_base_url or _api_base_url()).rstrip("/")
     payload: Dict[str, Any] = {"transport": transport}
     if evaluator_result_id:
         payload["evaluator_result_id"] = evaluator_result_id
 
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.post(
-            f"{api_base_url}/api/v1/observability/traces/sessions",
+            f"{base}/api/v1/observability/traces/sessions",
             headers={
                 "X-API-Key": api_key,
                 "X-Workspace-Id": workspace_id,
@@ -113,8 +132,7 @@ async def ensure_trace_session(
                 "call_short_id": parsed["call_short_id"],
                 "agent_id": parsed.get("agent_id"),
                 "workspace_id": parsed.get("workspace_id"),
-                "otlp_endpoint": otel.get("otlp_endpoint")
-                or f"{DEFAULT_API_BASE}{DEFAULT_OTLP_PATH}",
+                "otlp_endpoint": _resolve_otlp_endpoint(otel.get("otlp_endpoint")),
             }
 
     call_short_id = _env("EFFICIENTAI_CALL_SHORT_ID")
@@ -123,8 +141,7 @@ async def ensure_trace_session(
             "call_short_id": call_short_id,
             "agent_id": _env("EFFICIENTAI_AGENT_ID"),
             "workspace_id": _env("EFFICIENTAI_WORKSPACE_ID"),
-            "otlp_endpoint": _env("EFFICIENTAI_OTLP_ENDPOINT")
-            or f"{DEFAULT_API_BASE}{DEFAULT_OTLP_PATH}",
+            "otlp_endpoint": _resolve_otlp_endpoint(_env("EFFICIENTAI_OTLP_ENDPOINT")),
         }
 
     api_key = _env("EFFICIENTAI_API_KEY")
@@ -135,6 +152,7 @@ async def ensure_trace_session(
     session = await mint_trace_session(
         workspace_id=workspace_id,
         api_key=api_key,
+        api_base_url=_api_base_url(),
         transport=transport,
     )
     otel = session.get("otel_correlation") or {}
@@ -143,7 +161,7 @@ async def ensure_trace_session(
         "trace_id": session.get("trace_id"),
         "workspace_id": session.get("workspace_id") or workspace_id,
         "transport": session.get("transport") or transport,
-        "otlp_endpoint": otel.get("otlp_endpoint") or f"{DEFAULT_API_BASE}{DEFAULT_OTLP_PATH}",
+        "otlp_endpoint": _resolve_otlp_endpoint(otel.get("otlp_endpoint")),
     }
 
 
@@ -201,6 +219,6 @@ async def close_trace_session(trace_ctx: Dict[str, Any]) -> None:
         return
     async with httpx.AsyncClient(timeout=20.0) as client:
         await client.post(
-            f"{DEFAULT_API_BASE}/api/v1/observability/traces/sessions/{call_short_id}/close",
+            f"{_api_base_url()}/api/v1/observability/traces/sessions/{call_short_id}/close",
             headers={"X-API-Key": api_key, "X-Workspace-Id": str(workspace_id)},
         )

@@ -21,13 +21,16 @@
 #   uv run bot.py
 #   Browser → http://localhost:7860/client → WebRTC
 
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
 import os
 from collections import deque
 from functools import lru_cache
 
 import httpx
 
-from dotenv import load_dotenv
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.bus import BusBridgeProcessor
@@ -58,7 +61,6 @@ from efficientai.integrations.efficientai_traces import (
     setup_pipecat_worker_tracing,
 )
 
-load_dotenv(override=True)
 require_deployment_trace_env()
 
 MAIN_NAME = "acme"
