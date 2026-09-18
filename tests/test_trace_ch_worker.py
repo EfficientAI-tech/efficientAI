@@ -45,6 +45,7 @@ def test_ingest_otlp_batch_ch_persists_and_schedules_derive(
     trace = MagicMock()
     trace.id = trace_id
     mock_correlate.return_value = (trace, True)
+    mock_persist.return_value = (trace, 1)
 
     _trace, accepted, correlated = ingest_otlp_batch_ch(
         db_session,
@@ -63,11 +64,15 @@ def test_ingest_otlp_batch_ch_persists_and_schedules_derive(
 @patch("app.services.synthetic_traces.ingest_pipeline.schedule_derive")
 @patch("app.services.synthetic_traces.ch_trace_ops.persist_spans_ch")
 @patch("app.services.synthetic_traces.ingest_pipeline.correlate_batch_ch")
+@patch("app.services.synthetic_traces.clickhouse_store.is_batch_processed", return_value=False)
+@patch("app.services.synthetic_traces.clickhouse_store.mark_batch_processed")
 @patch("app.services.storage.blob_storage_service.blob_storage_service.download_file_by_key")
 @patch("app.services.synthetic_traces.ingest_pipeline.parse_otlp_body")
 def test_process_s3_otlp_batch_downloads_parses_and_persists(
     mock_parse,
     mock_download,
+    _mock_mark_batch,
+    _mock_is_batch_done,
     mock_correlate,
     mock_persist,
     mock_derive,
@@ -81,6 +86,7 @@ def test_process_s3_otlp_batch_downloads_parses_and_persists(
     trace = MagicMock()
     trace.id = trace_id
     mock_correlate.return_value = (trace, True)
+    mock_persist.return_value = (trace, 1)
 
     process_s3_otlp_batch(
         s3_key="audio/org/ws/traces/x/batches/1.json",

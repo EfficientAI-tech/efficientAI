@@ -1,5 +1,6 @@
 """Tests for synthetic trace OTLP ingest correlation."""
 
+import pytest
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -27,6 +28,15 @@ from app.services.synthetic_traces.trace_service import (
     open_trace,
     open_trace_session,
 )
+
+
+@pytest.fixture(autouse=True)
+def _trace_tests_use_postgres_path(monkeypatch):
+    """These tests assert PG SyntheticCallTrace behavior; skip ClickHouse routing."""
+    monkeypatch.setattr(
+        "app.services.synthetic_traces.ch_trace_ops.use_ch",
+        lambda: False,
+    )
 
 
 def _make_evaluator_result_for_trace(
