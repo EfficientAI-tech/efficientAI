@@ -3,6 +3,9 @@ import type { MDXComponents } from 'mdx/types';
 import type { ComponentPropsWithoutRef } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Contributors } from './contributors';
+import { IntegrationProviderNav } from './integration-provider-nav';
+import { MdxPre } from './mdx-pre';
+import { ScreenshotPlaceholder } from './screenshot-placeholder';
 
 function DocsBodyLink({ className, ...props }: ComponentPropsWithoutRef<'a'>) {
   const mergedClassName = ['font-medium', className].filter(Boolean).join(' ');
@@ -23,7 +26,10 @@ export function getMDXComponents(components?: MDXComponents) {
   return {
     ...defaultMdxComponents,
     a: DocsBodyLink,
+    pre: MdxPre,
     Contributors,
+    IntegrationProviderNav,
+    ScreenshotPlaceholder,
     ...components,
   } satisfies MDXComponents;
 }

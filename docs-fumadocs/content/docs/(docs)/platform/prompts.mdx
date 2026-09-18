@@ -1,0 +1,102 @@
+---
+title: Prompts
+icon: ScrollText
+description: Create and manage reusable prompt partials and agent prompts.
+---
+
+# Prompts
+
+Prompts in EfficientAI are reusable instructions you save and apply across agents and evaluations.
+
+## Core workflows
+
+### Create and edit
+
+- Open **Prompts > Partials** in the sidebar.
+- Click **New Prompt** to create a prompt partial or agent prompt.
+- Save updates to version your content over time.
+
+### Search and organize
+
+- Search by name or description.
+- Add tags for filtering and discovery (for example: `evaluation`, `compliance`, `sales`).
+
+### Preview
+
+Switch between **Preview** (rendered markdown) and **Raw** (source markdown) while reviewing content.
+
+## Version history
+
+Each save creates a new version snapshot.
+
+| Action | Description |
+|---|---|
+| View versions | Browse version history with timestamps |
+| Compare | Compare current vs a historical version |
+| Revert | Restore an earlier version (creates a new latest version) |
+| Clone | Duplicate a prompt into a new prompt |
+
+## AI-assisted authoring
+
+Prompt tooling requires at least one configured AI provider.
+
+- **AI Generate:** create a first draft from your objective, tone, and format.
+- **AI Improve:** refine existing content while preserving intent.
+
+Both support provider/model selection, or auto-detecting a default provider.
+
+## Where prompts are used
+
+Saved prompts can be reused in:
+
+- [Evaluator](/docs/platform/evaluator/) flows
+- [Agent](/docs/platform/agent/) configuration
+- Cross-team workflows scoped to the current workspace
+
+## Workspace scoping
+
+Prompts are scoped to the active workspace. Switching workspaces shows a different prompt library. For shared standards, clone prompts into each workspace where needed.
+
+## API
+
+REST endpoints under `/api/v1/prompt-partials`:
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/prompt-partials` | List prompt partials (optional `search`) |
+| `POST` | `/prompt-partials` | Create a partial with initial version |
+| `GET` | `/prompt-partials/{id}` | Get a partial with full version history |
+| `PUT` | `/prompt-partials/{id}` | Update content (creates a new version) |
+| `DELETE` | `/prompt-partials/{id}` | Delete partial and all versions |
+| `POST` | `/prompt-partials/{id}/clone` | Clone to a new partial |
+| `POST` | `/prompt-partials/{id}/revert` | Revert to a specific version |
+| `POST` | `/prompt-partials/generate` | AI-generate content from description |
+| `POST` | `/prompt-partials/improve` | AI-improve existing prompt content |
+
+## How to use prompts
+
+1. Go to **Prompts > Partials**.
+2. Click **New Prompt**.
+3. Choose either **Prompt Partial** or **Agent Prompt**.
+
+![Prompt partial form](/screenshots/Prompts/Prompt_partial.png)
+
+### Prompt Partial
+
+1. Enter name.
+2. Add description.
+3. Add tags.
+4. Write or paste content.
+5. Optionally click **Improve with AI**.
+
+![Create prompt flow](/screenshots/Prompts/Create_prompt,partial.png)
+
+### Agent Prompt
+
+1. Enter name.
+2. Add optional description.
+3. Write or paste content.
+4. Optionally click **Improve with AI**.
+5. Click **Create Prompt**.
+
+![Agent prompt form](/screenshots/Prompts/Agent_prompt,partial.png)

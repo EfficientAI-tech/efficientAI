@@ -1,10 +1,11 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
+@import 'fumadocs-openapi/css/preset.css';
 
 :root {
   --color-docs-warm: oklch(0.68 0.18 60);
-  --color-fd-background: oklch(0.995 0 0);
+  --color-fd-background: oklch(0.954 0.004 95);
   --color-fd-foreground: oklch(0.19 0 0);
   --color-fd-muted: oklch(0.972 0 0);
   --color-fd-muted-foreground: oklch(0.5 0 0);
@@ -19,7 +20,7 @@
 
 .dark {
   --color-docs-warm: oklch(0.78 0.17 65);
-  --color-fd-background: oklch(0.14 0.003 0);
+  --color-fd-background: oklch(0.17 0.004 95);
   --color-fd-foreground: oklch(0.95 0 0);
   --color-fd-muted: oklch(0.19 0.003 0);
   --color-fd-muted-foreground: oklch(0.73 0 0);
@@ -34,6 +35,10 @@
 
 html {
   scrollbar-gutter: stable;
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--fd-docs-row-2, 3.5rem) + 0.75rem);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 html > body[data-scroll-locked] {
@@ -44,73 +49,87 @@ html > body[data-scroll-locked] {
 body {
   background: var(--color-fd-background);
   color: var(--color-fd-foreground);
+  font-family: var(--font-docs-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
-[data-pagefind-body] {
-  line-height: 1.6;
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--color-fd-background);
+}
+
+/* Content lives in #nd-page .prose — not [data-pagefind-body]. */
+#nd-page .prose {
   font-size: 0.95rem;
+  line-height: 1.65;
   color: var(--color-fd-foreground);
 }
 
-[data-pagefind-body] h1 {
-  margin-top: 0.2rem;
-  letter-spacing: -0.025em;
-  font-size: clamp(1.88rem, 1.64rem + 0.86vw, 2.3rem);
-  line-height: 1.08;
-  font-weight: 700;
-  text-wrap: balance;
-  background-image: linear-gradient(
-    to top,
-    color-mix(in oklab, var(--color-docs-warm) 24%, transparent) 0.48em,
-    transparent 0.48em
-  );
-  width: fit-content;
+#nd-page .prose img {
+  width: 100%;
+  max-width: min(100%, 56rem);
+  margin: 1rem auto 1.25rem;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in oklab, var(--color-fd-border) 90%, transparent);
+  background: color-mix(in oklab, var(--color-fd-card) 88%, transparent);
+  outline: none;
+  box-shadow: none;
 }
 
-[data-pagefind-body] h2 {
-  margin-top: 2.1rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid color-mix(in oklab, var(--color-fd-border) 76%, transparent);
-  letter-spacing: -0.018em;
-  font-size: clamp(1.45rem, 1.3rem + 0.55vw, 1.8rem);
-  line-height: 1.2;
-  font-weight: 650;
+#nd-page .prose h1 {
+  margin-top: 0.25rem;
+  margin-bottom: 0.85rem;
+  letter-spacing: -0.024em;
+  font-size: clamp(1.72rem, 1.58rem + 0.56vw, 2.08rem);
+  line-height: 1.12;
+  font-weight: 660;
   text-wrap: balance;
-  background-image: linear-gradient(
-    to top,
-    color-mix(in oklab, var(--color-docs-warm) 18%, transparent) 0.42em,
-    transparent 0.42em
-  );
-  width: fit-content;
 }
 
-[data-pagefind-body] h3 {
-  margin-top: 1.45rem;
-  letter-spacing: -0.012em;
-  font-size: clamp(1.17rem, 1.11rem + 0.28vw, 1.32rem);
-  line-height: 1.28;
+#nd-page .prose h2 {
+  margin-top: 2rem;
+  margin-bottom: 0.6rem;
+  padding-top: 0;
+  border-top: none;
+  letter-spacing: -0.014em;
+  font-size: clamp(1.22rem, 1.12rem + 0.34vw, 1.46rem);
+  line-height: 1.24;
   font-weight: 620;
+  text-wrap: balance;
 }
 
-[data-pagefind-body] p,
-[data-pagefind-body] li {
-  line-height: 1.68;
+#nd-page .prose h3 {
+  margin-top: 1.35rem;
+  margin-bottom: 0.38rem;
+  letter-spacing: -0.009em;
+  font-size: clamp(1.02rem, 0.98rem + 0.2vw, 1.12rem);
+  line-height: 1.32;
+  font-weight: 590;
 }
 
-[data-pagefind-body] p {
+#nd-page .prose p,
+#nd-page .prose li {
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+#nd-page .prose p {
   margin-block: 0.82rem;
 }
 
-[data-pagefind-body] ul,
-[data-pagefind-body] ol {
+#nd-page .prose ul,
+#nd-page .prose ol {
   margin-block: 0.85rem;
 }
 
-[data-pagefind-body] li + li {
+#nd-page .prose li + li {
   margin-top: 0.28rem;
 }
 
-[data-pagefind-body] a {
+#nd-page .prose a {
   color: color-mix(in oklab, var(--color-docs-warm) 82%, var(--color-fd-foreground));
   text-decoration-color: color-mix(in oklab, var(--color-fd-primary) 45%, transparent);
   text-underline-offset: 2px;
@@ -118,12 +137,12 @@ body {
   transition: color 160ms ease, text-decoration-color 160ms ease;
 }
 
-[data-pagefind-body] a:hover {
+#nd-page .prose a:hover {
   color: var(--color-docs-warm);
   text-decoration-color: color-mix(in oklab, var(--color-docs-warm) 75%, transparent);
 }
 
-[data-pagefind-body] :not(pre) > code {
+#nd-page .prose :not(pre) > code {
   border: 1px solid color-mix(in oklab, var(--color-fd-border) 70%, transparent);
   background: color-mix(in oklab, var(--color-fd-muted) 80%, transparent);
   border-radius: 0.38rem;
@@ -131,32 +150,161 @@ body {
   font-size: 0.88em;
 }
 
-[data-pagefind-body] blockquote,
-[data-pagefind-body] table,
-[data-pagefind-body] pre {
+#nd-page .prose blockquote,
+#nd-page .prose table,
+#nd-page .prose pre {
   border-color: color-mix(in oklab, var(--color-fd-border) 80%, transparent);
 }
 
-[data-pagefind-body] pre {
-  border-radius: 0.65rem;
-  background: color-mix(in oklab, var(--color-fd-card) 85%, var(--color-fd-background));
-  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-fd-primary) 8%, transparent);
+#nd-page .prose pre {
+  border-radius: 0.55rem;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  margin: 0;
 }
 
-[data-pagefind-body] blockquote {
+#nd-page .prose pre code {
+  border: 0;
+  outline: 0;
+}
+
+.docs-diagram {
+  margin: 1rem auto 1.15rem;
+  max-width: min(100%, 45rem);
+  border: 1px solid color-mix(in oklab, var(--color-fd-border) 90%, transparent);
+  border-radius: 0.7rem;
+  background: color-mix(in oklab, var(--color-fd-card) 88%, transparent);
+  overflow: clip;
+}
+
+.docs-diagram-canvas {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.9rem 0.8rem;
+  min-height: 4rem;
+}
+
+.docs-diagram-canvas svg {
+  width: min(100%, 42rem);
+  height: auto;
+  max-width: 42rem;
+  flex: 0 0 auto;
+}
+
+.docs-diagram-canvas svg text {
+  font-weight: 550;
+  letter-spacing: 0.002em;
+}
+
+#nd-page .prose .docs-diagram + .docs-diagram {
+  margin-top: 0.7rem;
+}
+
+.docs-code-block {
+  margin: 1rem 0 1.25rem;
+  border: 1px solid color-mix(in oklab, var(--color-fd-border) 88%, transparent);
+  border-radius: 0.55rem;
+  background: color-mix(in oklab, var(--color-fd-card) 85%, var(--color-fd-background));
+  overflow: hidden;
+}
+
+.docs-code-block-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  border-bottom: 1px solid color-mix(in oklab, var(--color-fd-border) 84%, transparent);
+  padding: 0.3rem 0.45rem;
+}
+
+.docs-code-copy-markdown {
+  border: 1px solid color-mix(in oklab, var(--color-fd-border) 84%, transparent);
+  background: color-mix(in oklab, var(--color-fd-card) 92%, transparent);
+  border-radius: 0.4rem;
+  padding: 0.18rem 0.45rem;
+  font-size: 0.74rem;
+  font-weight: 550;
+  color: var(--color-fd-muted-foreground);
+  cursor: pointer;
+}
+
+.docs-code-copy-markdown:hover {
+  color: var(--color-fd-foreground);
+  border-color: color-mix(in oklab, var(--color-docs-warm) 35%, var(--color-fd-border));
+}
+
+#nd-page .prose blockquote {
   border-left-width: 2px;
   border-left-color: color-mix(in oklab, var(--color-fd-primary) 42%, var(--color-fd-border));
   color: color-mix(in oklab, var(--color-fd-foreground) 88%, var(--color-fd-muted-foreground));
 }
 
 :where(#nd-sidebar, #nd-toc) {
-  background: color-mix(in oklab, var(--color-fd-card) 82%, transparent);
+  background: color-mix(in oklab, var(--color-fd-background) 92%, var(--color-fd-card));
   border-color: color-mix(in oklab, var(--color-fd-border) 86%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-fd-primary) 8%, transparent);
+  border-radius: 0;
+  box-shadow: none;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+#nd-sidebar {
+  padding-top: 0.5rem;
+  border-right: 1px solid color-mix(in oklab, var(--color-fd-border) 92%, transparent);
 }
 
 #nd-toc {
   padding-top: 1.25rem;
+  border-left: 1px solid color-mix(in oklab, var(--color-fd-border) 92%, transparent);
+  scroll-behavior: smooth;
+}
+
+/* Make TOC motion and hierarchy styling uniform (remove jagged path connectors). */
+#nd-toc :is(ul, ol) {
+  list-style: none;
+  margin: 0;
+  padding-left: 0.65rem;
+}
+
+#nd-toc li {
+  margin: 0;
+}
+
+#nd-toc li::before,
+#nd-toc li::after {
+  content: none !important;
+  display: none !important;
+}
+
+#nd-toc * {
+  animation: none !important;
+}
+
+#nd-toc :not(a) {
+  transition: none !important;
+}
+
+#nd-toc a {
+  border: 0 !important;
+  border-left: 1px solid transparent !important;
+  border-radius: 0.35rem;
+  margin: 0.08rem 0;
+  padding-block: 0.32rem;
+  padding-left: 0.55rem;
+  transition: 
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+#nd-toc a:hover {
+  border-left-color: color-mix(in oklab, var(--color-docs-warm) 36%, transparent) !important;
+}
+
+#nd-toc :is(a[aria-current='true'], a[aria-current='page']) {
+  border-left-color: color-mix(in oklab, var(--color-docs-warm) 62%, transparent) !important;
+  background: color-mix(in oklab, var(--color-docs-warm) 10%, transparent) !important;
 }
 
 #nd-sidebar p.inline-flex {
@@ -170,9 +318,10 @@ body {
 }
 
 :where(#nd-sidebar, #nd-toc) a {
-  border-radius: 0.45rem;
+  border-radius: 0.4rem;
   border: 1px solid transparent;
-  padding-block: 0.5rem;
+  padding-block: 0.42rem;
+  font-size: 0.9rem;
   transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
 }
 
@@ -217,7 +366,151 @@ body {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-docs-warm) 45%, transparent);
 }
 
-:where(a, button, [role='button']):active {
-  transform: scale(0.985);
-  transition-duration: 90ms;
+.docs-top-nav-tabs {
+  justify-content: center;
+  flex: 1;
+}
+
+/* Stronger API method color-coding for sidebar + endpoint panels */
+:where(#nd-page, #nd-sidebar, #nd-toc) :is(
+  .text-green-600,
+  .text-blue-600,
+  .text-red-600,
+  .text-yellow-600,
+  .text-orange-600
+).font-mono.font-medium {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3.2rem;
+  border-radius: 0.45rem;
+  padding: 0.12rem 0.48rem;
+  border: 1px solid transparent;
+  font-size: 0.7rem;
+  letter-spacing: 0.01em;
+}
+
+:where(#nd-page, #nd-sidebar, #nd-toc) .text-green-600.font-mono.font-medium {
+  background: color-mix(in oklab, #16a34a 15%, transparent);
+  border-color: color-mix(in oklab, #16a34a 46%, transparent);
+}
+
+:where(#nd-page, #nd-sidebar, #nd-toc) .text-blue-600.font-mono.font-medium {
+  background: color-mix(in oklab, #2563eb 15%, transparent);
+  border-color: color-mix(in oklab, #2563eb 46%, transparent);
+}
+
+:where(#nd-page, #nd-sidebar, #nd-toc) .text-red-600.font-mono.font-medium {
+  background: color-mix(in oklab, #dc2626 15%, transparent);
+  border-color: color-mix(in oklab, #dc2626 46%, transparent);
+}
+
+:where(#nd-page, #nd-sidebar, #nd-toc) .text-yellow-600.font-mono.font-medium {
+  background: color-mix(in oklab, #ca8a04 16%, transparent);
+  border-color: color-mix(in oklab, #ca8a04 50%, transparent);
+}
+
+:where(#nd-page, #nd-sidebar, #nd-toc) .text-orange-600.font-mono.font-medium {
+  background: color-mix(in oklab, #ea580c 16%, transparent);
+  border-color: color-mix(in oklab, #ea580c 50%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+#nd-subnav {
+  z-index: 40;
+}
+
+[data-sidebar-placeholder] {
+  z-index: 20;
+}
+
+.docs-glass-nav {
+  background: color-mix(in oklab, var(--color-fd-card) 64%, transparent);
+  border-color: color-mix(in oklab, var(--color-fd-border) 80%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
+    0 8px 26px color-mix(in oklab, black 11%, transparent);
+  backdrop-filter: blur(14px) saturate(1.15);
+}
+
+.dark .docs-glass-nav {
+  background: color-mix(in oklab, var(--color-fd-card) 45%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, white 8%, transparent),
+    0 10px 30px color-mix(in oklab, black 35%, transparent);
+}
+
+.docs-no-sidebar #nd-sidebar,
+.docs-no-sidebar #nd-toc,
+.docs-no-sidebar [data-sidebar-placeholder] {
+  display: none !important;
+}
+
+.docs-no-toc #nd-toc {
+  display: none !important;
+}
+
+#nd-page {
+  width: 100%;
+  max-width: min(100%, 104rem);
+  margin-inline: auto;
+}
+
+#nd-page main {
+  padding-inline: clamp(1rem, 2vw, 1.8rem);
+}
+
+/* Enterprise page polish */
+#nd-page .enterprise-doc {
+  --enterprise-accent: color-mix(in oklab, var(--color-docs-warm) 72%, #f59e0b);
+}
+
+#nd-page .enterprise-doc .prose h1 {
+  color: var(--enterprise-accent);
+  letter-spacing: -0.02em;
+}
+
+#nd-page .enterprise-doc .prose h2 {
+  margin-top: 2.1rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--enterprise-accent) 30%, transparent);
+  padding-bottom: 0.38rem;
+}
+
+#nd-page .enterprise-doc .prose :is(h3, h4) {
+  color: color-mix(in oklab, var(--enterprise-accent) 65%, var(--color-fd-foreground));
+}
+
+#nd-page .enterprise-doc .prose :is(p, li) {
+  line-height: 1.68;
+}
+
+#nd-page .enterprise-doc .prose a {
+  color: color-mix(in oklab, var(--enterprise-accent) 78%, var(--color-fd-foreground));
+  text-decoration-color: color-mix(in oklab, var(--enterprise-accent) 40%, transparent);
+}
+
+#nd-page .enterprise-doc .prose a:hover {
+  color: var(--enterprise-accent);
+  text-decoration-color: var(--enterprise-accent);
+}
+
+#nd-page .enterprise-doc .prose .info {
+  border: 1px solid color-mix(in oklab, var(--enterprise-accent) 35%, transparent);
+  background: color-mix(in oklab, var(--enterprise-accent) 11%, var(--color-fd-card));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--enterprise-accent) 12%, transparent) inset;
+}
+
+#nd-page .enterprise-doc .prose table {
+  border-radius: 0.6rem;
+  overflow: clip;
+  border-color: color-mix(in oklab, var(--enterprise-accent) 24%, var(--color-fd-border));
+}
+
+#nd-page .enterprise-doc .prose thead tr {
+  background: color-mix(in oklab, var(--enterprise-accent) 16%, transparent);
 }

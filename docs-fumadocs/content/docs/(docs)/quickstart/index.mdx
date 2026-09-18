@@ -1,0 +1,472 @@
+---
+title: Quickstart
+icon: Rocket
+---
+
+<div className="not-prose my-3 text-center">
+  <img
+    src="/EfficientAI%20docs.jpg"
+    alt="EfficientAI Quickstart"
+    style={{ width: '42rem', maxWidth: '100%', height: 'auto' }}
+    className="mx-auto mb-4 rounded-lg border border-fd-border/80 bg-transparent"
+  />
+</div>
+
+## Quick Start
+
+There are two ways to run the application:
+
+### Method 1: Using Docker Compose (Recommended)
+
+#### Start all services
+
+```bash
+docker compose up -d
+```
+
+This will automatically:
+
+- Pull pre-built images from GitHub Container Registry (no build required!)
+- Start all services: `db`, `redis`, `api`, `media`, `worker`, `beat`, `worker-imports`, `worker-usage`
+- Run database migrations automatically on startup
+
+| Service | Purpose |
+|---|---|
+| `db` | PostgreSQL |
+| `redis` | Redis (Celery broker + usage counters) |
+| `api` | HTTP API + frontend |
+| `media` | Live voice WebSocket media server |
+| `worker` | Celery: `celery` (evaluator cron runs), `audio-metrics` queues |
+| `beat` | Celery Beat scheduler + `platform` queue worker (alerts, FX, OSS prune) — single replica |
+| `worker-imports` | Celery: `imports`, `diarization`, `eval-control`, `evaluations` |
+| `worker-usage` | Celery: `usage` queue (flush Redis counters, cost recompute, evaluator cron dispatch) |
+
+Usage costs: token/cost rollups stay stale without `beat`, `worker-usage`, and default `worker` (evaluator cron runs; or `eai start-all`).
+
+#### Using a specific version
+
+```bash
+# Pin to a specific release version
+EFFICIENTAI_VERSION=1.0.0 docker compose up -d
+
+# Or add to your .env file
+echo "EFFICIENTAI_VERSION=1.0.0" >> .env
+docker compose up -d
+```
+
+#### Configure your settings
+
+Edit `config.yml` and `config.docker.yml` with your settings (S3, API keys, etc.). See the Configuration section for details.
+
+Version note: `EFFICIENTAI_VERSION` must match a published Docker image tag (for example `1.0.0`). If a tag is not available yet, use `latest`.
+
+#### Optional: enable observability
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+```
+
+To expose app metrics at `/metrics` and enable in-app Loki/org logging, also set `observability.enabled: true` in `config.docker.yml`. Set `observability.loki.enabled: true` when Loki logging should be active.
+
+#### Create an account
+
+Option A — sign up in the browser (recommended):
+
+```bash
+# Open the app and hit "Create account" on the login screen.
+open http://localhost:8000/
+```
+
+Option B — create an API key from the CLI:
+
+```bash
+docker compose exec api python -m scripts.create_api_key \
+  --new-org "My Organization" --name "My API Key"
+```
+
+#### Access the application
+
+- Frontend: `http://localhost:8000/`
+- API Docs: `http://localhost:8000/docs`
+
+#### Building Locally (for development)
+
+If you want to build images locally instead of pulling pre-built ones:
+
+```bash
+# Edit docker-compose.yml to uncomment the 'build' sections, then:
+docker compose up -d --build
+
+# Or rebuild without cache for a clean build
+docker compose build --no-cache api worker
+docker compose up -d
+```
+
+### Method 2: Using Command Line (CLI)
+
+#### Install the package
+
+```bash
+pip install -e .
+```
+
+#### Generate configuration file
+
+```bash
+eai init-config
+```
+
+#### Edit `config.yml` with your database and Redis connection strings
+
+```yaml
+database:
+  url: "postgresql://efficientai:password@localhost:5432/efficientai"
+
+redis:
+  url: "redis://localhost:6379/0"
+```
+
+#### Start the application and workers
+
+Infra only (optional): if Postgres/Redis run in Docker but the app runs locally:
+
+```bash
+docker compose up -d db redis
+```
+
+Option A: Start everything together (Recommended)
+
+```bash
+eai start-all --config config.yml
+```
+
+This single command spawns:
+
+- API server (uvicorn)
+- Telephony media server (`media` port, default 8001)
+- Celery worker (`celery`, `audio-metrics`)
+- Celery worker (`imports`, `diarization`, `eval-control`, `evaluations`)
+- Celery worker (`usage` — flush + cost recompute)
+- Celery Beat (platform schedules: usage flush, alerts, FX refresh, OSS prune)
+
+It also runs database migrations and builds the frontend when needed.
+
+Press `Ctrl+C` to stop all processes.
+
+Option B: Start separately (for advanced use)
+
+In one terminal, start the application:
+
+```bash
+eai start --config config.yml
+```
+
+In another terminal, start the Celery worker:
+
+```bash
+eai worker --config config.yml
+```
+
+For platform periodic tasks (usage flush, alerts, etc.), start Celery Beat in a separate terminal (single replica):
+
+```bash
+eai beat --config config.yml
+```
+
+Or use the Celery command directly:
+
+```bash
+celery -A app.workers.celery_app worker --loglevel=info
+```
+
+The application will automatically:
+
+- Run database migrations (ensures schema is up to date)
+- Build the frontend (if needed)
+- Start the API server
+- Serve both API and frontend from the same server
+
+Important: Migrations run automatically before startup. If migrations fail, the app won't start.
+
+For development with hot reload:
+
+```bash
+# Enable auto-rebuild of frontend on file changes
+eai start-all --config config.yml --watch-frontend
+```
+
+This will:
+
+- Automatically rebuild the frontend when source files change
+- Keep the backend hot-reload enabled (by default)
+- Perfect for active frontend development
+
+#### Access the application
+
+- Frontend: `http://localhost:8000/`
+- API Docs: `http://localhost:8000/docs`
+
+### Prerequisites
+
+For Docker Compose:
+
+- Docker and Docker Compose installed
+- ~4GB disk space for pre-built images
+
+For CLI:
+
+- Python 3.11+
+- Node.js 18+ and npm
+- PostgreSQL running (locally or remote)
+- Redis running (locally or remote)
+
+### Test Commands (Make)
+
+If you prefer shorthand commands, use the root `Makefile`:
+
+```bash
+# Run all backend tests
+make test
+
+# Run tests against a running Docker Compose Postgres
+make test-docker-db
+
+# Run current Phase 1 suites
+make test-phase1
+
+# Run only unit or integration tests
+make test-unit
+make test-integration
+
+# Run a specific file
+make test-file FILE=tests/test_core/test_password.py
+
+# Run tests by keyword
+make test-k K=password
+```
+
+You can also pass extra pytest args:
+
+```bash
+make test PYTEST_ARGS="-x -vv"
+```
+
+To override DB connection values for `make test-docker-db`:
+
+```bash
+make test-docker-db TEST_DB_HOST=localhost TEST_DB_PORT=5432 TEST_DB_NAME=efficientai TEST_DB_USER=efficientai TEST_DB_PASSWORD=password
+```
+
+## CLI Commands
+
+### Start Application and Worker Together (Recommended)
+
+```bash
+# Start API + all workers with default config.yml
+eai start-all
+
+# Start with custom config
+eai start-all --config production.yml
+
+# Start with frontend file watching (auto-rebuild on changes)
+eai start-all --watch-frontend
+
+# Start without building frontend (if already built)
+eai start-all --no-build-frontend
+
+# Start without auto-reload (production mode)
+eai start-all --no-reload --no-build-frontend
+
+# Customize worker log level
+eai start-all --worker-loglevel debug
+
+# Skip dedicated workers (not recommended for production)
+eai start-all --no-imports-worker
+eai start-all --no-usage-worker
+eai start-all --no-telephony-worker
+
+# Tune usage worker concurrency (default: 4, thread pool)
+eai start-all --usage-worker-concurrency 8
+```
+
+Note: This is the recommended local-dev workflow. One command spawns the API, telephony media server, three Celery workers (`celery,audio-metrics` · `imports,…` · `usage`), and Celery Beat. Press `Ctrl+C` to stop all processes. For Docker deployments, use `docker compose up -d` instead (separate containers per role; see Quick Start).
+
+### Start Application Only
+
+```bash
+# Start just the API server (worker must be started separately)
+eai start --config config.yml
+
+# Start with auto-reload for development
+eai start --reload
+
+# Start with frontend file watching
+eai start --watch-frontend
+```
+
+### Start Worker Only
+
+```bash
+# Start Celery worker with default config.yml
+eai worker
+
+# Start with custom config
+eai worker --config production.yml
+
+# Start with custom log level
+eai worker --loglevel debug
+
+# Or use Celery command directly
+celery -A app.workers.celery_app worker --loglevel=info
+```
+
+Development Mode:
+
+```bash
+# Full development setup with both backend and frontend hot reload
+eai start-all --watch-frontend --reload
+```
+
+### Usage Pricing Ops
+
+Manage model pricing rates and backfill stored usage costs on `llm_usage_daily` rollups. Requires `beat`, `worker-usage`, and default `worker` (or `eai start-all`).
+
+```bash
+# Upsert model_pricing_rates from app/config/models.json
+eai usage seed-rates --config config.yml
+
+# Compare models.json pricing vs Postgres
+eai usage diff-rates --config config.yml
+
+# Backfill costs in-process (all orgs; use after migrate or catalog change)
+eai usage recompute --config config.yml --sync
+
+# Async recompute via usage queue (requires --organization-id)
+eai usage recompute --config config.yml --organization-id <org-uuid>
+
+# Optional: fetch LiteLLM prices into pricing_catalog.json
+eai usage sync-litellm --local
+eai usage sync-litellm --local --write-models
+```
+
+After migrations or catalog changes:
+
+```bash
+eai migrate
+eai usage seed-rates --config config.yml
+eai usage recompute --config config.yml --sync
+```
+
+### Generate Config File
+
+```bash
+# Generate default config.yml
+eai init-config
+
+# Generate custom config file
+eai init-config --output my-config.yml
+```
+
+### Database Migrations
+
+```bash
+# Run pending migrations manually
+eai migrate
+
+# Run migrations with verbose output
+eai migrate --verbose
+```
+
+Note: Migrations run automatically on application startup. You only need to run them manually if you want to apply migrations before starting the server.
+
+## Configuration
+
+### YAML Configuration
+
+EfficientAI uses YAML configuration files for both CLI and Docker deployments. Generate a default config with:
+
+```bash
+eai init-config
+```
+
+```yaml
+# Application Settings
+app:
+  name: "EfficientAI Voice AI Evaluation Platform"
+  version: "0.1.0"
+  debug: true
+  secret_key: "your-secret-key-here-change-in-production"
+
+# Server Settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Database Configuration
+database:
+  url: "postgresql://user:password@host:port/dbname"
+
+# Redis Configuration
+redis:
+  url: "redis://host:port/db"
+
+# Celery Configuration (for background tasks)
+celery:
+  broker_url: "redis://host:port/db"
+  result_backend: "redis://host:port/db"
+
+# File Storage
+storage:
+  upload_dir: "./uploads"
+  max_file_size_mb: 500
+  blob_provider: s3
+  allowed_audio_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "m4a"
+```
+
+### Environment Variables (Optional)
+
+```bash
+POSTGRES_USER=efficientai
+POSTGRES_PASSWORD=password
+POSTGRES_DB=efficientai
+SECRET_KEY=your-secret-key-here
+
+# Optional: GCS blob storage
+BLOB_STORAGE_PROVIDER=gcs
+GCS_BUCKET_NAME=your-gcs-bucket
+GCS_PROJECT_ID=your-gcp-project
+GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/gcp-sa.json
+```
+
+## Troubleshooting
+
+### Database Migration Issues
+
+Problem:
+
+```txt
+psycopg2.errors.UndefinedColumn: column "organization_id" of relation "api_keys" does not exist
+```
+
+Check migration status:
+
+```bash
+python scripts/check_migrations.py
+```
+
+Run migrations manually:
+
+```bash
+eai migrate --verbose
+python -c "from app.core.migrations import run_migrations; run_migrations()"
+```
+
+For Docker setups:
+
+```bash
+docker compose exec api eai migrate --verbose
+```

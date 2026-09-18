@@ -3,11 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "openapi:export": "python3 scripts/export-openapi.py",
+    "openapi:enrich": "node scripts/enrich-openapi.mjs",
+    "openapi:generate": "node scripts/generate-api-docs.mjs",
+    "prebuild": "npm run openapi:enrich && npm run openapi:generate",
     "build": "npm run search:generate && next build",
     "dev": "next dev",
     "start": "next start",
-    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
-    "postinstall": "fumadocs-mdx",
+    "types:check": "next typegen",
+    "postinstall": "npx fumadocs-mdx",
     "lint": "eslint",
     "search:generate": "node scripts/generate-search-index.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
@@ -16,13 +20,17 @@
     "ci:check": "npm run validate:docs && npm run check:links && npm run types:check && npm run build && npm run verify:routes"
   },
   "dependencies": {
-    "fumadocs-core": "16.8.11",
+    "fumadocs-core": "16.15.9",
     "fumadocs-mdx": "15.0.4",
-    "fumadocs-ui": "16.8.11",
+    "fumadocs-openapi": "^11.4.2",
+    "fumadocs-ui": "16.15.9",
     "lucide-react": "^1.14.0",
+    "mermaid": "^12.0.0",
     "next": "16.2.6",
+    "next-themes": "^0.4.6",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "shiki": "^3.13.0",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

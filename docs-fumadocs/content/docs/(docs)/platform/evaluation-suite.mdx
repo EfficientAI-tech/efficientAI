@@ -1,0 +1,41 @@
+---
+title: Evaluation Suite
+icon: Layers
+description: What an evaluation suite is, how combinations expand, and how to configure one.
+---
+
+# Evaluation Suite
+
+## What an evaluation suite is
+
+An **evaluation suite** (called **Evaluator Suite** in some UI and API surfaces) groups one
+agent, one or more personas, and multiple scenarios into run combinations. Every
+persona × scenario pair becomes a test combination, and each combination can be run once or
+many times.
+
+Two personas and two scenarios produce four combinations; with a run count of three that is
+twelve calls. The combination count is the product of your inputs, so grow personas and
+scenarios deliberately.
+
+Suites are what make regression testing practical. They let you standardize a fixed set of
+tests, compare the same tests over time as prompts and models change, and rotate scenarios for
+inbound flows.
+
+## Configure an evaluation suite
+
+### What you configure
+
+- One agent
+- One or more personas
+- One or more scenarios
+- Run count and metric set
+
+### Execution behavior
+
+- **Outbound and web calls:** all combinations run in batches.
+- **Inbound calls:** activate one suite per agent and rotate scenarios, since the agent receives
+  rather than places the call.
+
+See also: [How It Works](/docs/platform/) for how suites sit between your definitions and your results.
+
+For UI steps to create suites and queue runs, see [Evaluator](/docs/platform/evaluator/).

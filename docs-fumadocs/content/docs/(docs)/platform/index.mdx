@@ -1,0 +1,46 @@
+---
+title: How It Works
+icon: Lightbulb
+description: The EfficientAI object model and evaluation lifecycle, end to end.
+---
+
+# How It Works
+
+EfficientAI evaluates voice agents the way your customers experience them: by placing real
+calls against the agent, driving those calls with simulated callers, and scoring what happened.
+
+Everything on the platform is built from six objects. Each one is explained in full on its own
+page in this section — this page shows how they fit together.
+
+## The object model
+
+An **evaluation suite** is the join table: it pairs one agent with every combination of the
+personas and scenarios you attach. Each combination becomes one or more **runs**, and each run
+is scored by the **metrics** you enabled.
+
+## The evaluation lifecycle
+
+Because the persona, scenario, and voice mapping are all pinned configuration, re-running a
+suite after a prompt or model change produces a comparison you can trust rather than a
+one-off anecdote.
+
+## Where each concept is explained
+
+| Concept | What it is | Explained in |
+|---|---|---|
+| Agent | The system under test, plus its call medium and prompts. | [Agent](/docs/platform/agent/) |
+| Persona | The simulated caller: behavior profile plus a pinned voice. | [Persona](/docs/platform/persona/) |
+| Scenario | The goal, context, and success criteria for a conversation. | [Scenario](/docs/platform/scenario/) |
+| Metrics | The scoring rules applied to a finished run. | [Evaluator](/docs/platform/evaluator/) |
+| Evaluator | The engine that runs combinations and applies metrics. | [Evaluator](/docs/platform/evaluator/) |
+| Evaluation suite | The grouping that turns personas and scenarios into run combinations. | [Evaluation Suite](/docs/platform/evaluation-suite/) |
+| STT / LLM / TTS | The three model layers inside a voice bundle. | [Setup](/docs/platform/setup/) |
+| Telephony vs WebRTC | The two call mediums an agent can be tested over. | [Agent](/docs/platform/agent/) |
+
+## Suggested reading order
+
+1. [Setup](/docs/platform/setup/) — credentials, voice bundles, storage.
+2. [Agent](/docs/platform/agent/) — define the system under test.
+3. [Persona](/docs/platform/persona/) and [Scenario](/docs/platform/scenario/) — define who calls and why.
+4. [Evaluation Suite](/docs/platform/evaluation-suite/) — assemble the combinations.
+5. [Evaluator](/docs/platform/evaluator/) — choose metrics and read results.

@@ -1,0 +1,131 @@
+---
+title: Agent
+icon: Bot
+description: What an agent is in EfficientAI, how call mediums differ, and how to configure one.
+---
+
+# Agent
+
+## What an agent is
+
+In EfficientAI, an **agent** is the system under test. It captures the conversation context,
+the prompt behavior, and the execution path used for every evaluation run. Nothing is scored
+in isolation — scores always describe how a specific agent behaved.
+
+An agent can point at one of two execution paths: internal (EfficientAI voice bundle) or external (provider platform mapping).
+
+Use the **internal path** when you want to isolate and A/B individual model layers. Use the
+**external path** when you want to evaluate the exact agent that serves production traffic on
+a provider platform.
+
+## Telephony vs WebRTC
+
+Every agent is also tested over one of two call mediums, set by the `phone_call` / `web_call`
+medium field.
+
+| | Telephony (`phone_call`) | WebRTC (`web_call`) |
+|---|---|---|
+| Transport | PSTN through a telephony provider and carrier webhooks | Browser-style real-time streaming over WebSockets |
+| Requires | Phone numbers, carrier routing, telephony credentials | No phone network dependency |
+| Use when | Production depends on real phone behavior, DTMF, carrier latency and codecs | Your experience is browser-native |
+
+Both mediums are evaluated with the same personas, scenarios, and metrics. They differ only in
+call transport and the integration setup they require, so scores stay comparable across the two
+as long as you don't mix mediums inside one comparison.
+
+## Configure an agent
+
+### What you configure
+
+- Agent identity (name, language)
+- Call type and medium (`inbound` / `outbound`, `phone_call` / `web_call`)
+- Internal voice bundle mapping
+- External voice-platform mapping (integration + provider agent ID)
+- Test prompt and provider prompt surfaces
+
+### Creating a test agent
+
+Use **Create Test Agent** to add a new evaluation configuration. You can create either:
+
+- **Telephony** agents for PSTN call flows.
+- **Existing Platform Integration** agents for Retell, Vapi, ElevenLabs, and other external providers.
+
+For both paths, you configure the production-side prompt and a complementary test prompt that
+EfficientAI uses during evaluations.
+
+### Prompt surfaces
+
+- `provider_prompt`: production prompt used by the external/system agent.
+- `description`: test prompt generated or authored for evaluator-driven simulations.
+
+Use **Generate test prompt** to bootstrap the test prompt from your production prompt, then
+refine it for coverage and repeatability.
+
+### Recommended flow
+
+1. Create a voice bundle and required integrations — see [Setup](/docs/platform/setup/).
+2. Create a test agent.
+3. Attach [personas](/docs/platform/persona/) and [scenarios](/docs/platform/scenario/) through
+   [evaluation suites](/docs/platform/evaluation-suite/).
+
+See also: [How It Works](/docs/platform/) for how the agent connects to the rest of the object model.
+
+## How to set up an agent
+
+1. Go to **Simulations > Agents** in the left navigation.
+2. Click **Create Agent** in the top-right.
+
+![Creating an agent](/screenshots/Agents/Agent_homepage.png)
+
+### If you choose telephony
+
+Enter:
+
+- Name
+- Phone number
+- Language (the language EfficientAI uses with your bot)
+- Call type (`outbound` or `inbound`)
+- End call after silence (how many silence seconds before hang up)
+
+![Telephony agent setup](/screenshots/Agents/Agent_telephony.png)
+
+Then configure your phone integration in [Integrations](/docs/integrations/).
+
+### If you choose web agent
+
+1. Enter the agent name.
+2. Open your provider (Vapi, ElevenLabs, Retell, Smallest, and others).
+3. Click **Connect** so EfficientAI can fetch available provider agent IDs.
+4. If needed, enter the provider agent ID manually.
+
+![WebRTC agent setup](/screenshots/Agents/Agent_webRTC.png)
+
+If your provider is missing, open an issue on [GitHub](https://github.com/EfficientAI-tech/efficientAI/issues/new).
+
+### Prompt setup
+
+You can either:
+
+1. Paste your production prompt and use **Generate test prompt** with provider/model/context settings to produce an adversarial prompt, or
+2. Write the test prompt manually.
+
+For first message behavior, choose:
+
+- **Production agent speaks first** (default)
+- **Test caller speaks first** (the EfficientAI test agent starts)
+
+For the EfficientAI system prompt, define:
+
+1. Role and goal
+2. Talking style
+3. Questions to ask
+4. Information to relay
+5. Constraints
+
+![Prompt partial setup](/screenshots/Agents/Agent_prompt_partial.png)
+
+### Voice bundle
+
+For voice bundle setup, see [Setup](/docs/platform/setup/) and [Persona](/docs/platform/persona/).
+
+Create the agent to finish setup. Editing flow and custom agent testing docs are coming soon.

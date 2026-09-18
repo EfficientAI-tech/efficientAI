@@ -1,0 +1,47 @@
+---
+title: Metrics
+icon: Target
+description: Define success criteria and the metrics to track while evaluating voice agents.
+---
+
+# Metrics
+
+Metrics in EfficientAI are the way to describe success criteria and the list of metrics you want to track while evaluating your voice agents.
+
+![Metrics homepage](/screenshots/Metrics/Metrics_homepage.png)
+
+## What metrics are
+
+Metrics are the scoring rules applied to completed runs. They define what "good" means for your agent, and let you compare changes in prompts, providers, and configurations with consistent criteria.
+
+EfficientAI supports four metric families:
+
+| Family | Measures | Examples |
+|---|---|---|
+| LLM-evaluated conversation | Whether the agent behaved correctly in dialogue | Instruction following, professionalism |
+| Acoustic | Raw signal quality of audio | Jitter, shimmer, pitch variance |
+| AI voice quality | Perceived naturalness and consistency | MOS-style scores, consistency signals |
+| Custom | Product-specific requirements | `boolean`, `enum`, `number_range`, `text`, `rating` |
+
+Custom metrics are useful when a business rule matters to your workflow and should be scored on every run.
+
+## Metric types
+
+There are two core parts in metrics:
+
+- Single metric
+- Categorisation labels
+
+### Single-metric
+
+Use a single metric when you want one direct score or pass/fail signal for a specific behavior.
+
+![Single metric](/screenshots/Metrics/Single_metric.png)
+
+### Categorisation labels
+
+Use categorisation labels when you want to break performance into structured buckets for easier analysis and reporting.
+
+![Categorisation labels](/screenshots/Metrics/Categorizaion_labels.png)
+
+Next: [Evaluator](/docs/platform/evaluator/) and [Evaluation Suite](/docs/platform/evaluation-suite/)

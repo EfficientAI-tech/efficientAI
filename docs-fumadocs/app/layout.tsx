@@ -1,9 +1,9 @@
 import './global.css';
-import { Inter } from 'next/font/google';
+import { Plus_Jakarta_Sans } from 'next/font/google';
 import type { Metadata } from 'next';
 import { DocsProvider } from '@/components/docs-provider';
 
-const inter = Inter({
+const plusJakartaSans = Plus_Jakarta_Sans({
   subsets: ['latin'],
   display: 'swap',
   variable: '--font-docs-sans',
@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 
 export default function Layout({ children }: LayoutProps<'/'>) {
   return (
-    <html lang="en" className={`${inter.className} ${inter.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${plusJakartaSans.className} ${plusJakartaSans.variable}`} suppressHydrationWarning>
       <body className="flex min-h-screen flex-col antialiased">
         <DocsProvider>{children}</DocsProvider>
       </body>
