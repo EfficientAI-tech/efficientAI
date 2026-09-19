@@ -1,76 +1,10 @@
 ---
-id: personas
-title: Personas
-sidebar_position: 2
+title: Personas (Moved)
 ---
 
-# Personas
+# This page moved
 
-A Persona is the caller profile used to test your agent, including a concrete voice mapped from your integrated providers.
+Persona docs were split into concepts and configuration guides.
 
-## Creating a persona
-
-![Creating a persona](/screenshots/creating-personas.png)
-
-## Persona = profile + provider voice mapping
-
-Each persona is explicitly mapped to a concrete voice identity pulled from your configured voice providers:
-
-- `tts_provider`
-- `tts_voice_id`
-- `tts_voice_name`
-- `gender`
-
-This keeps test behavior realistic and reproducible across repeated runs.
-
-## Mapping flow
-
-The current flow is:
-
-1. Select or create a persona profile.
-2. Pick a specific voice from an integrated provider (or custom catalog).
-3. Map that persona to an agent in your test setup.
-
-This ensures each persona-agent pairing uses a known, repeatable voice path during simulation.
-
-## Voice sources
-
-Personas can use:
-
-- built-in voices from integrated providers, or
-- custom voices registered by your organization.
-
-Custom voices appear in the same selection flow as built-in voices during persona creation and edits.
-
-## Why this matters
-
-Persona voice mapping enables:
-
-- consistent replay of the same caller profile and agent mapping,
-- cleaner comparison across model and prompt changes,
-- easier debugging when quality shifts between runs.
-
-## Persona fields
-
-| Field | Description |
-|---|---|
-| `name` | Persona label used in tests. |
-| `gender` | Persona gender metadata. |
-| `tts_provider` | Voice provider used for synthesis. |
-| `tts_voice_id` | Provider-specific voice identifier. |
-| `tts_voice_name` | Human-readable voice name. |
-| `is_custom` | Whether the selected voice is from custom catalog. |
-| `description` | Persona prompt appended to the test caller system prompt during synthetic calls. |
-| `tts_config` | Provider-specific TTS tuning (speed, stability, pitch, etc.). |
-| `llm_temperature` | Caller LLM creativity during simulations. |
-| `llm_max_tokens` | Max tokens per caller reply (verbosity cap). |
-| `response_delay_ms` | Patience — delay before the caller responds. |
-| `max_turns` | Conversation length before the caller wraps up. |
-| `allow_interruptions` | Whether the caller may speak while the agent is talking. |
-
-## Persona prompt
-
-Use **Persona prompt** (`description`) to define caller traits, tone, and speaking style. During evaluator runs this text is merged into the test caller LLM prompt under the `PERSONA` section.
-
-Provider-specific **TTS settings** control how the selected voice sounds. **Caller behavior** settings control how the simulated caller acts (creativity, verbosity, patience, interruptions).
-
+- Concept: [Persona](/docs/platform/persona/)
+- Configuration: [Platform Persona](/docs/platform/persona/)

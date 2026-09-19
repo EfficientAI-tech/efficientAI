@@ -4,7 +4,7 @@ title: Authentication
 sidebar_position: 3
 ---
 
-# 🔐 Authentication
+# Authentication
 
 EfficientAI ships with a pluggable authentication system that scales from a
 single-operator OSS install to an enterprise deployment behind your existing
@@ -26,11 +26,10 @@ identity provider. You pick the providers you want in `config.yml` (or via
   OIDC-compliant IdP (Okta, Azure AD / Entra ID, Google Workspace, AWS
   Cognito, Auth0, Ping, JumpCloud, OneLogin, …) against the issuer's JWKS.
 
-:::info Why no bundled IdP?
-In practice every enterprise already runs one. Shipping our own Keycloak
-alongside the app just added another thing for you to operate and lock
-down. `external_oidc` talks to whatever you already have.
-:::
+> **Why no bundled IdP?**
+> In practice every enterprise already runs one. Shipping our own Keycloak
+> alongside the app just added another thing for you to operate and lock
+> down. `external_oidc` talks to whatever you already have.
 
 ---
 
@@ -161,9 +160,8 @@ they can do.
 The role is stored per membership, so the *same user* can be an `admin`
 in one org and a `reader` in another.
 
-:::note Organization role is not the same as workspace role
-Organization roles (`reader` / `writer` / `admin`) apply org-wide. **Workspace roles** (`Viewer` / `Editor` / `Workspace Admin`) apply per workspace and control access to call imports, metrics, agents, and other scoped data in the active workspace. Both layers apply together — for example, an org **writer** with workspace **Viewer** can browse a workspace but cannot import or delete calls there. See [Workspaces — Access control](/docs/getting-started/workspaces/#access-control-organization-vs-workspace) for the full hierarchy and action matrix.
-:::
+> **Organization role is not the same as workspace role**
+> Organization roles (`reader` / `writer` / `admin`) apply org-wide. **Workspace roles** (`Viewer` / `Editor` / `Workspace Admin`) apply per workspace and control access to call imports, metrics, agents, and other scoped data in the active workspace. Both layers apply together — for example, an org **writer** with workspace **Viewer** can browse a workspace but cannot import or delete calls there. See [Workspaces — Access control](/docs/getting-started/workspaces/#access-control-organization-vs-workspace) for the full hierarchy and action matrix.
 
 ### Inviting a teammate
 
@@ -210,14 +208,13 @@ API keys can't switch organizations — each key is bound to the org it
 was minted in. For programmatic multi-tenant access, create a separate
 API key inside each org you need to reach.
 
-:::tip Why scoped tokens instead of an ambient `X-Organization-Id` header?
-A single-org token keeps every DB query, rate limiter, and audit log
-automatically correct — they only ever see one `organization_id`. An
-ambient header would require auditing every query and rewriting the
-org-resolution layer everywhere, with a much bigger blast radius if a
-check is ever missed. This is also the model Stripe, Linear, and GitHub
-use.
-:::
+> **Why scoped tokens instead of an ambient `X-Organization-Id` header?**
+> A single-org token keeps every DB query, rate limiter, and audit log
+> automatically correct — they only ever see one `organization_id`. An
+> ambient header would require auditing every query and rewriting the
+> org-resolution layer everywhere, with a much bigger blast radius if a
+> check is ever missed. This is also the model Stripe, Linear, and GitHub
+> use.
 
 ---
 
@@ -411,28 +408,6 @@ audience which the backend validates.
 Every route depends on a single authentication step. The provider
 registry walks each enabled provider in a fixed order and authenticates
 the request against the first one whose credential is present:
-
-```mermaid
-flowchart LR
-    Client["Request<br/>(Bearer or X-API-Key)"]
-    Registry[ProviderRegistry]
-    ApiKey[ApiKeyProvider]
-    Local[LocalPasswordProvider]
-    OIDC["ExternalOIDCProvider<br/>(license-gated)"]
-    IdP["Your IdP<br/>(Okta / AAD / Google / Cognito / …)"]
-    Principal["Principal<br/>(org_id, user_id, auth_method)"]
-    Route[Protected route]
-
-    Client --> Registry
-    Registry -->|X-API-Key header| ApiKey
-    Registry -->|"bearer iss=efficientai-local"| Local
-    Registry -->|"bearer (any other issuer)"| OIDC
-    OIDC -.verify via JWKS.-> IdP
-    ApiKey --> Principal
-    Local --> Principal
-    OIDC --> Principal
-    Principal --> Route
-```
 
 - **API key** requests are matched on the `X-API-Key` header.
 - **Bearer** tokens issued by EfficientAI itself are validated locally

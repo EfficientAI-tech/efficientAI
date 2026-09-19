@@ -1,13 +1,17 @@
 import { source } from '@/lib/source';
-import { DocsBody, DocsPage } from 'fumadocs-ui/layouts/docs/page';
+import { DocsBody, DocsPage } from 'fumadocs-ui/layouts/notebook/page';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { ContributorsTocFooter } from '@/components/contributors';
 import { TocHeaderControls } from '@/components/toc-header-controls';
-import type { ComponentPropsWithoutRef } from 'react';
+import { OpenAPIPage } from '@/components/api-page';
+import { CopyPageMarkdown } from '@/components/copy-page-markdown';
+import type { ComponentPropsWithoutRef, ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
+import type { TOCItemType } from 'fumadocs-core/toc';
+import { openapi } from '@/lib/openapi';
 
 function DocsRelativeLink(props: ComponentPropsWithoutRef<'a'> & { resolver: ReturnType<typeof createRelativeLink> }) {
   const { resolver, className, ...rest } = props;
@@ -37,27 +41,57 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
-  const MDX = page.data.body;
+  const pageData = page.data as typeof page.data & {
+    body: ComponentType<{ components?: ReturnType<typeof getMDXComponents> }>;
+    toc?: TOCItemType[];
+    full?: boolean;
+    _openapi?: { method?: string };
+  };
+  const MDX = pageData.body;
+  const markdownPath =
+    page.slugs[0] === 'api-reference' && page.slugs.length > 2 && pageData._openapi?.method
+      ? `/api-md/${page.slugs.slice(1).join('/')}.md`
+      : null;
+  const isEnterprisePage = (page.slugs[0] ?? '') === 'enterprise';
+  const showToc = !isEnterprisePage;
+  const toc = showToc ? pageData.toc : undefined;
+  const full = isEnterprisePage || Boolean(pageData.full);
 
   return (
     <DocsPage
-      toc={page.data.toc}
-      full={page.data.full}
-      breadcrumb={{ enabled: false }}
-      tableOfContent={{
-        header: <TocHeaderControls />,
-        footer: <ContributorsTocFooter featureId={page.slugs.join('/')} />,
-      }}
-      tableOfContentPopover={{
-        header: <TocHeaderControls />,
-        footer: <ContributorsTocFooter featureId={page.slugs.join('/')} />,
-      }}
+      toc={toc}
+      full={full}
+      breadcrumb={{ enabled: !isEnterprisePage }}
+      tableOfContent={
+        showToc
+          ? {
+              header: <TocHeaderControls />,
+              footer: <ContributorsTocFooter featureId={page.slugs.join('/')} />,
+            }
+          : undefined
+      }
+      tableOfContentPopover={
+        showToc
+          ? {
+              header: <TocHeaderControls />,
+              footer: <ContributorsTocFooter featureId={page.slugs.join('/')} />,
+            }
+          : undefined
+      }
     >
-      <DocsBody>
+      <DocsBody className={isEnterprisePage ? 'enterprise-doc' : undefined}>
+        {markdownPath ? (
+          <div className="not-prose mb-4 flex justify-end">
+            <CopyPageMarkdown mdPath={markdownPath} />
+          </div>
+        ) : null}
         <MDX
           components={getMDXComponents({
             // this allows you to link to other pages with relative file paths
             a: (props) => <DocsRelativeLink {...props} resolver={createRelativeLink(source, page)} />,
+            OpenAPIPage: async (props) => (
+              <OpenAPIPage {...(await openapi.preloadOpenAPIPage(page))} {...props} />
+            ),
           })}
         />
       </DocsBody>

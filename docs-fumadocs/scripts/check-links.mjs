@@ -30,9 +30,17 @@ function stripLinkDecorators(raw) {
 function routeExists(routePath) {
   const cleaned = routePath.replace(/^\/docs\/?/, '').replace(/\/$/, '');
   if (!cleaned) return true;
-  const asFile = path.join(docsRoot, `${cleaned}.mdx`);
-  const asDirMeta = path.join(docsRoot, cleaned, 'meta.json');
-  return fs.existsSync(asFile) || fs.existsSync(asDirMeta);
+  const candidates = [cleaned, `(docs)/${cleaned}`];
+
+  for (const candidate of candidates) {
+    const asFile = path.join(docsRoot, `${candidate}.mdx`);
+    const asDirMeta = path.join(docsRoot, candidate, 'meta.json');
+    if (fs.existsSync(asFile) || fs.existsSync(asDirMeta)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function markdownTargetExists(fromFile, href) {

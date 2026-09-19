@@ -1,0 +1,133 @@
+---
+title: Enterprise
+---
+
+# Enterprise
+
+> **Enterprise quickstart**
+> - Start with: [Authentication guide](/docs/getting-started/authentication/)
+> - Free trial: request a trial at [Book a demo](https://cal.com/aadhar-singh-bhadauria/30min)
+> - Talk to us: [sales@efficientai.com](mailto:sales@efficientai.com)
+> - SSO is free for up to 5 users. Beyond that, an enterprise license is required.
+
+## Who is Enterprise for?
+
+Enterprise is designed for teams running voice agent evaluation in production where you need stronger identity controls, post-production analytics, and operational governance.
+
+## Open source vs Enterprise
+
+| Capability | Open source | Enterprise |
+|---|---|---|
+| Voice bundles and BYOK integrations | Included | Included |
+| Agents, personas, scenarios | Included (create + run) | Included (plus advanced simulation workflows) |
+| Metrics and categorisation labels | Included | Included + unlimited metrics `†` |
+| Evaluators, suites, results | Included | Included + failure clustering |
+| Traces and observability | Included | Included |
+| Post-production call analytics | Not included | Included via call imports and batch analytics |
+| Prompt tooling | Prompt partials included | Prompt optimization included |
+| Playground | Agent playground included | Voice playground with blind testing |
+| Usage analytics history | 7-day history | Unlimited history |
+| Usage pricing overrides | Not included | Included |
+| Authentication | API keys + local email/password | OIDC, SAML, SCIM, MFA enforcement, audit export |
+| IAM and workspace roles | Basic workspaces and role controls | Advanced IAM and delegated admin `†` |
+
+`†` Positioned as enterprise entitlement. Enforcement for these controls is rolling out in an upcoming release.
+
+## What is open source
+
+- Voice bundles and integrations (BYOK model and platform providers)
+- Create and use agents, personas, and scenarios
+- Evaluators, evaluator suites, and evaluation results
+- Metrics and categorisation labels
+- Prompt partials and agent playground
+- Traces, observability, and judge alignment
+- Workspaces and standard role workflows
+- API key and local password authentication
+
+## What is Enterprise
+
+### Post-production analytics
+
+- `call_imports` for importing production calls and evaluating at scale
+- `evaluation_clustering` for grouping recurring evaluation failures
+- Extended usage history and pricing controls
+
+### Playground and optimization
+
+- `voice_playground` for TTS comparison and blind tests
+- `gepa_optimization` for reflective prompt optimization loops
+
+### Identity and access
+
+- `oidc_sso` for enterprise OIDC SSO
+- `saml_sso` for SAML-based sign-in
+- `scim_provisioning` for lifecycle automation
+- `mfa_enforce` for mandatory MFA posture
+- `audit_export` for exporting audit and access events
+- Advanced IAM and delegated admin controls `†`
+
+### Advanced simulation
+
+- Persona ambient audio workflows (enterprise entitlement)
+- Unlimited metric scaling `†`
+
+## Feature ID reference
+
+| Feature ID | Enterprise capability |
+|---|---|
+| `voice_playground` | Voice Playground |
+| `gepa_optimization` | Prompt Optimization |
+| `call_imports` | Call Imports |
+| `evaluation_clustering` | Evaluation Failure Clustering |
+| `oidc_sso` | Enterprise SSO (OIDC) |
+| `saml_sso` | SAML SSO |
+| `scim_provisioning` | SCIM User Provisioning |
+| `mfa_enforce` | Enforced MFA |
+| `audit_export` | Audit Log Export |
+
+## Set up a license
+
+Provide the enterprise license key either in environment variables or in config:
+
+```bash title=".env"
+EFFICIENTAI_LICENSE=eyJhbGciOi...
+```
+
+```yaml title="config.yml"
+license:
+  key: "eyJhbGciOi..."
+```
+
+Then restart the EfficientAI backend.
+
+License scope behavior:
+
+- If `org_id` is not set in the license payload, features are enabled deployment-wide.
+- If `org_id` is set, features are enabled only for that organization.
+
+Verify current state from API:
+
+- `GET /api/v1/license-info`
+
+## FAQ
+
+### What happens without a license?
+
+Feature-gated routes return a 403 with `enterprise_feature_required` (or `enterprise_license_required` for entitlement-only gates).
+
+### What is the OSS usage analytics limit?
+
+Open source deployments keep a 7-day usage analytics history by default.
+
+### How do I verify whether my org is licensed?
+
+Check `GET /api/v1/license-info` and confirm `enabled_features` is populated for your organization.
+
+### Where do I configure authentication modes?
+
+Use [Authentication guide](/docs/getting-started/authentication/) and [Configuration reference](/docs/reference/configuration/).
+
+## Talk to us
+
+- Sales and licensing: [sales@efficientai.com](mailto:sales@efficientai.com)
+- Book a demo: [cal.com/aadhar-singh-bhadauria/30min](https://cal.com/aadhar-singh-bhadauria/30min)

@@ -17,13 +17,17 @@
     "ci:check": "npm run validate:docs && npm run check:links && npm run types:check && npm run build && npm run verify:routes"
   },
   "dependencies": {
-    "fumadocs-core": "16.8.11",
+    "fumadocs-core": "16.15.9",
     "fumadocs-mdx": "15.0.4",
-    "fumadocs-ui": "16.8.11",
+    "fumadocs-openapi": "^11.4.2",
+    "fumadocs-ui": "16.15.9",
     "lucide-react": "^1.14.0",
+    "mermaid": "^12.0.0",
     "next": "16.2.6",
+    "next-themes": "^0.4.6",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "shiki": "^4.4.3",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

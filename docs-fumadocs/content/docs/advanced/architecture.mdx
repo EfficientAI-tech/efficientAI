@@ -32,25 +32,6 @@ The platform consists of four primary components:
 3.  **Frontend (React/Vite)**: The user interface.
 4.  **Data Stores**: PostgreSQL (State) and Redis (Queue/Cache).
 
-```mermaid
-graph TD
-    User["User / Client"] --> |HTTP/WS| API["API Server (FastAPI)"]
-    User --> |HTTP| FE["Frontend (React)"]
-    
-    subgraph "EfficientAI Platform"
-        API --> DB[("PostgreSQL")]
-        API --> |Task Queue| Redis[("Redis")]
-        
-        Worker["Celery Worker"] --> |Consume Tasks| Redis
-        Worker --> |Write Results| DB
-        
-        API --> |Orchestrates| TestAgent["Test Agent Service"]
-        TestAgent --> |LLM Inference| LLM["LLM Provider"]
-        TestAgent --> |TTS| TTS["TTS Provider"]
-        TestAgent --> |Audio Stream| Agent["Voice Agent (SUT)"]
-    end
-```
-
 ## Core Services
 
 ### 1. API Server (`app/api`)
