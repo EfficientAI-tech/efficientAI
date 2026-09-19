@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Optional
 
 # OTLP HTTP headers (customer → EfficientAI)
 OTLP_HEADER_API_KEY = "X-API-Key"
+OTLP_HEADER_WORKSPACE_ID = "X-Workspace-Id"
 OTLP_HEADER_CALL_SHORT_ID = "X-EfficientAI-Call-Short-Id"
 OTLP_HEADER_RUN_ID = "X-EfficientAI-Run-Id"
 
@@ -116,6 +117,7 @@ def otlp_export_headers(
     api_key: str,
     call_short_id: Optional[str] = None,
     evaluator_result_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> Dict[str, str]:
     headers = {OTLP_HEADER_API_KEY: api_key}
     cid = _valid_call_short_id(call_short_id)
@@ -123,6 +125,9 @@ def otlp_export_headers(
         headers[OTLP_HEADER_CALL_SHORT_ID] = cid
     if evaluator_result_id:
         headers[OTLP_HEADER_RUN_ID] = str(evaluator_result_id)
+    ws = str(workspace_id).strip() if workspace_id and str(workspace_id).strip() else None
+    if ws:
+        headers[OTLP_HEADER_WORKSPACE_ID] = ws
     return headers
 
 

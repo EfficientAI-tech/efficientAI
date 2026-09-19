@@ -45,6 +45,7 @@ from app.services.synthetic_traces.ingest_pipeline import (
     stage_otlp_ingest,
 )
 from app.services.synthetic_traces.otlp_ingest import parse_otlp_body
+from app.services.synthetic_traces.workspace_ingest import resolve_otlp_ingest_workspace_id
 from app.services.synthetic_traces.trace_service import (
     backfill_missing_traces_from_call_recordings,
     build_otlp_setup_info,
@@ -135,6 +136,7 @@ async def _ingest_otlp_traces_handler(
     db: Session,
     organization_id: UUID,
     workspace_id: UUID,
+    principal: Principal,
     x_efficientai_run_id: Optional[str],
     x_efficientai_agent_id: Optional[str],
     x_efficientai_call_short_id: Optional[str],
@@ -149,6 +151,16 @@ async def _ingest_otlp_traces_handler(
         )
 
     content_type = request.headers.get("content-type", "")
+    workspace_id = await run_in_threadpool(
+        resolve_otlp_ingest_workspace_id,
+        db,
+        organization_id=organization_id,
+        request_workspace_id=workspace_id,
+        principal=principal,
+        header_call_short_id=x_efficientai_call_short_id,
+        body=body,
+        content_type=content_type,
+    )
 
     if settings.TRACES_DEFER_PARSE_TO_WORKER and settings.TRACES_ASYNC_INGEST_ENABLED:
         if not clickhouse_enabled():
@@ -228,7 +240,6 @@ async def ingest_observability_traces(
     x_efficientai_call_short_id: Optional[str] = Header(None, alias="X-EfficientAI-Call-Short-Id"),
 ):
     """Ingest OTLP spans for a live call (primary export endpoint)."""
-    _ = principal
     if settings.TRACES_ASYNC_INGEST_ENABLED:
         response.status_code = status.HTTP_202_ACCEPTED
     else:
@@ -238,6 +249,7 @@ async def ingest_observability_traces(
         db,
         organization_id,
         workspace_id,
+        principal,
         x_efficientai_run_id,
         x_efficientai_agent_id,
         x_efficientai_call_short_id,

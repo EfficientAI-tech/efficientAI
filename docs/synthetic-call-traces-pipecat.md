@@ -24,6 +24,7 @@ Create `.env` in your Pipecat folder (where you run `bot.py`):
 EFFICIENTAI_API_BASE=https://staging.efficientai.cloud
 EFFICIENTAI_WORKSPACE_ID=<from Connect Pipecat tab>
 EFFICIENTAI_API_KEY=<from Settings → API keys>
+EFFICIENTAI_OTLP_ENDPOINT=https://staging.efficientai.cloud/api/v1/observability/traces
 
 # Your voice provider keys
 DEEPGRAM_API_KEY=...

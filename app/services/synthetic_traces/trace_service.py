@@ -1054,7 +1054,7 @@ def build_otlp_setup_info(
             f"EFFICIENTAI_API_BASE={api_base}",
             f"EFFICIENTAI_WORKSPACE_ID={workspace_value}",
             "EFFICIENTAI_API_KEY=",
-            f"# EFFICIENTAI_OTLP_ENDPOINT={otlp_endpoint}",
+            f"EFFICIENTAI_OTLP_ENDPOINT={otlp_endpoint}",
             "",
             "# Optional: webrtc | websocket | phone | custom",
             "# EFFICIENTAI_TRACE_TRANSPORT=websocket",

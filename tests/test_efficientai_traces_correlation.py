@@ -41,6 +41,16 @@ def test_otlp_export_headers_uses_call_short_id():
     assert headers["X-EfficientAI-Call-Short-Id"] == "482931"
 
 
+def test_otlp_export_headers_includes_workspace_id():
+    ws = "a323d9fb-b15e-4684-9c22-48baef807116"
+    headers = otlp_export_headers(
+        api_key="secret",
+        call_short_id="482931",
+        workspace_id=ws,
+    )
+    assert headers["X-Workspace-Id"] == ws
+
+
 def test_extract_call_short_id_from_env_style_webhook_param():
     cid = extract_call_short_id(
         webhook_params={"SipHeader_X-VH-EfficientAI-Call-Short-Id": "654321"},

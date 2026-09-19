@@ -1481,11 +1481,16 @@ def extract_correlation_ids(spans: List[Dict[str, Any]]) -> Dict[str, Optional[s
             if transport_raw and str(transport_raw).strip().lower() in {"webrtc", "websocket", "phone", "custom"}
             else None
         )
-        if result_id or call_short or agent_id or transport:
+        workspace_raw = attrs.get("efficientai.workspace_id")
+        workspace_id = (
+            str(workspace_raw).strip() if workspace_raw and str(workspace_raw).strip() else None
+        )
+        if result_id or call_short or agent_id or transport or workspace_id:
             return {
                 "evaluator_result_id": str(result_id) if result_id else None,
                 "call_short_id": call_short,
                 "agent_id": str(agent_id) if agent_id else None,
                 "transport": transport,
+                "workspace_id": workspace_id,
             }
     return {}

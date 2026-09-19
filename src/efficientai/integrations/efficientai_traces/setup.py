@@ -54,6 +54,7 @@ class _MutableOtlpExporter(SpanExporter):  # type: ignore[misc]
         *,
         call_short_id: Optional[str] = None,
         evaluator_result_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._call_short_id = call_short_id
@@ -64,6 +65,7 @@ class _MutableOtlpExporter(SpanExporter):  # type: ignore[misc]
                     api_key=self._api_key,
                     call_short_id=call_short_id,
                     evaluator_result_id=evaluator_result_id,
+                    workspace_id=workspace_id,
                 ),
             )
 
@@ -133,6 +135,7 @@ def create_otlp_exporter(
     api_key: Optional[str] = None,
     call_short_id: Optional[str] = None,
     evaluator_result_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
     sip_headers: Optional[Mapping[str, Any]] = None,
     webhook_params: Optional[Mapping[str, Any]] = None,
     mutable: bool = True,
@@ -156,6 +159,7 @@ def create_otlp_exporter(
         webhook_params=webhook_params,
     )
     run_id = evaluator_result_id or _env("EFFICIENTAI_RUN_ID")
+    workspace = workspace_id or _env("EFFICIENTAI_WORKSPACE_ID")
 
     if mutable:
         global _mutable_otlp_exporter
@@ -167,6 +171,7 @@ def create_otlp_exporter(
         _mutable_otlp_exporter.configure(
             call_short_id=cid,
             evaluator_result_id=run_id,
+            workspace_id=workspace,
         )
         return _mutable_otlp_exporter
 
@@ -176,6 +181,7 @@ def create_otlp_exporter(
             api_key=resolved_key,
             call_short_id=cid,
             evaluator_result_id=run_id,
+            workspace_id=workspace,
         ),
     )
 
@@ -237,6 +243,7 @@ def setup_efficientai_tracing(
             api_key=api_key,
             call_short_id=cid,
             evaluator_result_id=run_id,
+            workspace_id=workspace,
             sip_headers=sip_headers,
             webhook_params=webhook_params,
             mutable=True,
@@ -249,6 +256,7 @@ def setup_efficientai_tracing(
         api_key=api_key,
         call_short_id=cid,
         evaluator_result_id=run_id,
+        workspace_id=workspace,
         sip_headers=sip_headers,
         webhook_params=webhook_params,
     )
