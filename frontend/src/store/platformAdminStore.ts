@@ -34,9 +34,13 @@ export const usePlatformAdminStore = create<PlatformAdminState>((set, get) => {
     accessToken: storedToken,
     admin: storedAdmin,
     setSession: (token, admin) => {
-      localStorage.setItem(STORAGE_TOKEN, token)
+      if (token) {
+        localStorage.setItem(STORAGE_TOKEN, token)
+      } else {
+        localStorage.removeItem(STORAGE_TOKEN)
+      }
       localStorage.setItem(STORAGE_ADMIN, JSON.stringify(admin))
-      set({ accessToken: token, admin })
+      set({ accessToken: token || null, admin })
     },
     logout: () => {
       const accessToken = get().accessToken
@@ -48,5 +52,6 @@ export const usePlatformAdminStore = create<PlatformAdminState>((set, get) => {
 })
 
 export function isPlatformAdminAuthenticated(): boolean {
-  return Boolean(localStorage.getItem(STORAGE_TOKEN))
+  const state = usePlatformAdminStore.getState()
+  return Boolean(state.accessToken || state.admin)
 }

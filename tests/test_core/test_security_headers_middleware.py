@@ -87,6 +87,7 @@ def test_csp_allows_voice_provider_connect_src(security_client, monkeypatch):
     assert "https://api.vapi.ai" in policy
     assert "https://*.daily.co" in policy
     assert "wss://*.livekit.cloud" in policy
+    assert "https://*.livekit.cloud" in policy
     assert "https://api.elevenlabs.io" in policy
     assert "https://*.ingest.sentry.io" in policy
     assert "'unsafe-eval'" in policy
@@ -117,6 +118,19 @@ def test_asset_routes_use_long_cache(security_client):
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
     assert "Pragma" not in response.headers
+
+
+def test_hsts_header_when_enabled(security_client, monkeypatch):
+    monkeypatch.setattr(settings, "SECURITY_HSTS_ENABLED", True)
+    monkeypatch.setattr(settings, "SECURITY_HSTS_MAX_AGE", 31536000)
+    monkeypatch.setattr(settings, "SECURITY_HSTS_INCLUDE_SUBDOMAINS", True)
+
+    response = security_client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["Strict-Transport-Security"] == (
+        "max-age=31536000; includeSubDomains"
+    )
 
 
 @pytest.mark.skipif(

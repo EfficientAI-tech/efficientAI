@@ -94,6 +94,29 @@ def disable_db_sharding_for_tests(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def disable_cookie_sessions_in_tests(monkeypatch):
+    """Keep legacy Bearer-token API tests stable; cookie auth has dedicated tests."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AUTH_COOKIE_SESSION_ENABLED", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def disable_api_rate_limits_in_tests(monkeypatch, request):
+    """Avoid flaky 429s from shared Redis counters across the full test suite."""
+    fspath = str(getattr(request.node, "fspath", ""))
+    if "test_security_remediation.py" in fspath:
+        yield
+        return
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "API_RATE_LIMIT_ENFORCE", False, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def ensure_workers_tasks_package():
     """Keep ``app.workers.tasks`` importable without eager Celery imports."""
     import importlib
@@ -481,7 +504,11 @@ def _install_static_stubs():
         sys.modules["app.services.testing.test_agent_service"] = fake_test_agent_service_module
 
     if "app.services.voice_providers" not in sys.modules:
-        fake_voice_providers_module = types.ModuleType("app.services.voice_providers")
+        voice_providers_dir = str(
+            Path(__file__).resolve().parents[1] / "app" / "services" / "voice_providers"
+        )
+        fake_voice_providers_pkg = types.ModuleType("app.services.voice_providers")
+        fake_voice_providers_pkg.__path__ = [voice_providers_dir]
 
         class _FakeVoiceProvider:
             def __init__(self, *args, **kwargs):
@@ -493,9 +520,9 @@ def _install_static_stubs():
             def update_agent_prompt(self, **_kwargs):
                 return {"ok": True}
 
-        fake_voice_providers_module.get_voice_provider = lambda *_args, **_kwargs: _FakeVoiceProvider
-        fake_voice_providers_module.sync_provider_prompt = lambda *_args, **_kwargs: {"synced": False}
-        sys.modules["app.services.voice_providers"] = fake_voice_providers_module
+        fake_voice_providers_pkg.get_voice_provider = lambda *_args, **_kwargs: _FakeVoiceProvider
+        fake_voice_providers_pkg.sync_provider_prompt = lambda *_args, **_kwargs: {"synced": False}
+        sys.modules["app.services.voice_providers"] = fake_voice_providers_pkg
 
     if "app.services.voice_agent.bot_fast_api" not in sys.modules:
         voice_agent_dir = str(
@@ -880,6 +907,11 @@ def _build_session_api_app():
     )
 
     app = FastAPI()
+    from app.core.rbac_middleware import ReaderReadOnlyMiddleware
+    from app.core.csrf_middleware import CsrfMiddleware
+
+    app.add_middleware(CsrfMiddleware)
+    app.add_middleware(ReaderReadOnlyMiddleware)
     app.include_router(auth.router, prefix="/api/v1")
     app.include_router(evaluations.router, prefix="/api/v1")
     app.include_router(results.router, prefix="/api/v1")

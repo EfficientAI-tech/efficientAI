@@ -9,6 +9,9 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id
+from app.core.api_rate_limit import enforce_resource_create_rate_limit
+from app.core.auth import Principal
+from app.services.ai.llm_config_safety import sanitize_client_llm_config
 from app.services.ai.llm_service import llm_service
 from app.services.billing.flexprice_service import record_chat_completion
 from app.models.schemas import ModelProvider
@@ -44,7 +47,8 @@ async def chat_completion(
     background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _principal: Principal = Depends(enforce_resource_create_rate_limit),
 ):
     """Generate a chat completion using the specified AI provider and model."""
     try:
@@ -55,6 +59,7 @@ async def chat_completion(
         )
 
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        safe_llm_config = sanitize_client_llm_config(request.llm_config)
 
         with llm_usage_context(
             LLMUsageContext(
@@ -69,7 +74,7 @@ async def chat_completion(
                 llm_model=request.model,
                 organization_id=organization_id,
                 db=db,
-                llm_config=request.llm_config,
+                llm_config=safe_llm_config,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 task_defaults={"temperature": 0.7},

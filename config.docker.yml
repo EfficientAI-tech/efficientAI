@@ -6,7 +6,7 @@ app:
   name: "EfficientAI Voice AI Evaluation Platform"
   version: "0.1.0"
   debug: false
-  secret_key: "your-secret-key-here-change-in-production"
+  secret_key: "${SECRET_KEY}"
   frontend_base_url: "http://localhost:8000"
 
 # Server Settings
@@ -19,12 +19,22 @@ server:
 # Add VPC CIDRs here if Prometheus scrapes /metrics from inside the VPC.
 operational:
   public: false
-  trusted_ips:
-    - "10.0.0.0/8"
+  # trusted_ips: use config.py defaults unless you need a custom list
+  health_rate_limit_per_minute: 60
+  health_readiness_cache_seconds: 10
 
 security:
   csp_enabled: true
   csp_report_only: false
+  # Production: set app.frontend_base_url to your public app URL (Host allowlist = exact hostname).
+  # API on a different host? security.public_base_url: "https://api.example.com"
+  # No localhost in trusted_hosts for production. Local docker only:
+  # trusted_hosts:
+  #   - "localhost"
+  #   - "127.0.0.1"
+  # hsts_enabled: true
+
+# rate_limits: see env.example (self-host defaults off; SaaS sets enforce: true)
 
 # Database Configuration (Docker service name)
 database:

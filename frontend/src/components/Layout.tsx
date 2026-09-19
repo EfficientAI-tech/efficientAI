@@ -39,7 +39,9 @@ import {
   Upload,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { Info, X } from 'lucide-react'
 import Logo from './Logo'
+import { consumeJoinNotice } from '../lib/joinNotice'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
 
@@ -213,6 +215,12 @@ export default function Layout() {
     }
   }, [agents, agentsLoaded, isInitialized, selectedAgent, setSelectedAgent])
 
+  const [joinNotice, setJoinNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    setJoinNotice(consumeJoinNotice())
+  }, [])
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Mobile sidebar */}
@@ -382,6 +390,23 @@ export default function Layout() {
 
         {/* Page content */}
         <main className="flex-1 p-6 transition-all duration-300">
+          {joinNotice && (
+            <div
+              role="status"
+              className="mb-4 flex items-start gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900"
+            >
+              <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+              <p className="min-w-0 flex-1 leading-relaxed">{joinNotice}</p>
+              <button
+                type="button"
+                onClick={() => setJoinNotice(null)}
+                className="flex-shrink-0 text-blue-500 hover:text-blue-700"
+                aria-label="Dismiss"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <div className="min-h-[calc(100vh-7rem)] min-w-0">
             <Outlet />
           </div>
