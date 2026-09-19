@@ -331,7 +331,7 @@ export default function DataSources() {
               }`}
             >
               <Home className="h-4 w-4" />
-              <span>Organization Root</span>
+              <span>Storage root</span>
             </button>
             {breadcrumbSegments.map((segment, index) => {
               const pathUpTo = breadcrumbSegments.slice(0, index + 1).join('/') + '/'
@@ -354,7 +354,7 @@ export default function DataSources() {
 
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold">
-              {currentPath ? `/${currentPath.replace(/\/$/, '')}` : 'Organization Root'}
+              {currentPath ? `/${currentPath.replace(/\/$/, '')}` : 'audio & traces'}
             </h2>
             {currentPath && (
               <Button
@@ -507,14 +507,9 @@ export default function DataSources() {
               <Database className="h-12 w-12 mx-auto mb-3 text-gray-300" />
               <p>This folder is empty</p>
               {!currentPath && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowUploadModal(true)}
-                  className="mt-3"
-                >
-                  Upload your first file
-                </Button>
+                <p className="text-sm text-gray-400 mt-2">
+                  Open the <span className="font-medium">audio</span> folder to upload files.
+                </p>
               )}
             </div>
           )}

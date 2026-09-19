@@ -16,7 +16,58 @@ from app.services.storage.blob_paths import (
     normalize_prefix,
 )
 
-_MERGED_TRACES_PATH_RE = re.compile(r"^workspaces/[^/]+/traces(?:/.*)?$")
+_MERGED_TRACES_STORAGE_PATH_RE = re.compile(r"^workspaces/[^/]+/traces(?:/.*)?$")
+_WORKSPACE_ONLY_STORAGE_PATH_RE = re.compile(r"^workspaces/([^/]+)$")
+
+
+def _storage_nav_name(prefix: str) -> str:
+    normalized = normalize_prefix(prefix)
+    name = normalized.rstrip("/")
+    return name if name else "audio"
+
+
+def _split_storage_nav_path(
+    normalized_path: str,
+    *,
+    audio_nav: str,
+    traces_nav: str,
+) -> tuple[str, str]:
+    """Return (tree, storage_relative). tree is audio, traces, or legacy."""
+    if normalized_path == audio_nav:
+        return "audio", ""
+    if normalized_path.startswith(f"{audio_nav}/"):
+        return "audio", normalized_path[len(audio_nav) + 1 :]
+    if normalized_path == traces_nav:
+        return "traces", ""
+    if normalized_path.startswith(f"{traces_nav}/"):
+        return "traces", normalized_path[len(traces_nav) + 1 :]
+    return "legacy", normalized_path
+
+
+def _nav_path_for_storage_rel(storage_rel: str, nav_prefix: str) -> str:
+    if not storage_rel:
+        return nav_prefix
+    if nav_prefix:
+        return f"{nav_prefix}/{storage_rel}"
+    return storage_rel
+
+
+def _inject_workspace_traces_folder(
+    folders: List[Dict[str, str]],
+    *,
+    storage_rel: str,
+    nav_prefix: str,
+) -> None:
+    match = _WORKSPACE_ONLY_STORAGE_PATH_RE.match(storage_rel)
+    if not match:
+        return
+    ws_id = match.group(1)
+    traces_storage_rel = f"workspaces/{ws_id}/traces"
+    ui_path = _nav_path_for_storage_rel(traces_storage_rel, nav_prefix)
+    if any(folder.get("name") == "traces" for folder in folders):
+        return
+    folders.append({"name": "traces", "path": ui_path})
+    folders.sort(key=lambda item: item["name"].lower())
 
 
 def _merge_browse_results(*results: Dict[str, Any]) -> Dict[str, Any]:
@@ -544,21 +595,47 @@ class S3Service:
             raise StorageError(error_msg)
 
         normalized_path = (path or "").strip().strip("/")
+        audio_nav = _storage_nav_name(settings.S3_PREFIX)
+        traces_nav = _storage_nav_name(settings.TRACES_S3_PREFIX)
         traces_root = (
             f"{normalize_prefix(settings.TRACES_S3_PREFIX)}organizations/{organization_id}/"
         )
 
         try:
             org_root = self.get_organization_root_prefix(organization_id)
-            if _MERGED_TRACES_PATH_RE.match(normalized_path):
+
+            if not normalized_path:
+                return {
+                    "folders": [
+                        {"name": audio_nav, "path": audio_nav},
+                        {"name": traces_nav, "path": traces_nav},
+                    ],
+                    "files": [],
+                    "current_path": "",
+                    "organization_id": organization_id,
+                }
+
+            tree, storage_rel = _split_storage_nav_path(
+                normalized_path,
+                audio_nav=audio_nav,
+                traces_nav=traces_nav,
+            )
+            if tree == "traces":
+                browse_root = traces_root
+                nav_prefix = traces_nav
+            else:
+                browse_root = org_root
+                nav_prefix = audio_nav if tree == "audio" else ""
+
+            if _MERGED_TRACES_STORAGE_PATH_RE.match(storage_rel):
                 audio_result = self._browse_prefix(
                     org_root=org_root,
-                    path=normalized_path,
+                    path=storage_rel,
                     max_keys=max_keys,
                 )
                 traces_result = self._browse_prefix(
                     org_root=traces_root,
-                    path=normalized_path,
+                    path=storage_rel,
                     max_keys=max_keys,
                 )
                 merged = _merge_browse_results(audio_result, traces_result)
@@ -570,13 +647,19 @@ class S3Service:
                 }
 
             result = self._browse_prefix(
-                org_root=org_root,
-                path=normalized_path,
+                org_root=browse_root,
+                path=storage_rel,
                 max_keys=max_keys,
+            )
+            folders = list(result["folders"])
+            _inject_workspace_traces_folder(
+                folders,
+                storage_rel=storage_rel,
+                nav_prefix=nav_prefix,
             )
 
             return {
-                "folders": result["folders"],
+                "folders": folders,
                 "files": result["files"],
                 "current_path": normalized_path,
                 "organization_id": organization_id,
