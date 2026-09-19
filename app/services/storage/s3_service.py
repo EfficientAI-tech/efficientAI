@@ -1,8 +1,10 @@
 """S3 service for handling audio file storage and retrieval from S3 buckets."""
 
+import re
+
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 import uuid
 from app.config import settings
@@ -13,6 +15,80 @@ from app.services.storage.blob_paths import (
     get_organization_root_prefix,
     normalize_prefix,
 )
+
+_MERGED_TRACES_STORAGE_PATH_RE = re.compile(r"^workspaces/[^/]+/traces(?:/.*)?$")
+_WORKSPACE_ONLY_STORAGE_PATH_RE = re.compile(r"^workspaces/([^/]+)$")
+
+
+def _storage_nav_name(prefix: str) -> str:
+    normalized = normalize_prefix(prefix)
+    name = normalized.rstrip("/")
+    return name if name else "audio"
+
+
+def _split_storage_nav_path(
+    normalized_path: str,
+    *,
+    audio_nav: str,
+    traces_nav: str,
+) -> tuple[str, str]:
+    """Return (tree, storage_relative). tree is audio, traces, or legacy."""
+    if normalized_path == audio_nav:
+        return "audio", ""
+    if normalized_path.startswith(f"{audio_nav}/"):
+        return "audio", normalized_path[len(audio_nav) + 1 :]
+    if normalized_path == traces_nav:
+        return "traces", ""
+    if normalized_path.startswith(f"{traces_nav}/"):
+        return "traces", normalized_path[len(traces_nav) + 1 :]
+    return "legacy", normalized_path
+
+
+def _nav_path_for_storage_rel(storage_rel: str, nav_prefix: str) -> str:
+    if not storage_rel:
+        return nav_prefix
+    if nav_prefix:
+        return f"{nav_prefix}/{storage_rel}"
+    return storage_rel
+
+
+def _inject_workspace_traces_folder(
+    folders: List[Dict[str, str]],
+    *,
+    storage_rel: str,
+    nav_prefix: str,
+) -> None:
+    match = _WORKSPACE_ONLY_STORAGE_PATH_RE.match(storage_rel)
+    if not match:
+        return
+    ws_id = match.group(1)
+    traces_storage_rel = f"workspaces/{ws_id}/traces"
+    ui_path = _nav_path_for_storage_rel(traces_storage_rel, nav_prefix)
+    if any(folder.get("name") == "traces" for folder in folders):
+        return
+    folders.append({"name": "traces", "path": ui_path})
+    folders.sort(key=lambda item: item["name"].lower())
+
+
+def _merge_browse_results(*results: Dict[str, Any]) -> Dict[str, Any]:
+    folders_by_name: Dict[str, Dict[str, str]] = {}
+    files_by_key: Dict[str, Dict[str, Any]] = {}
+    for result in results:
+        for folder in result.get("folders") or []:
+            name = folder.get("name")
+            if not name:
+                continue
+            existing = folders_by_name.get(name)
+            if existing is None or len(folder.get("path") or "") < len(existing.get("path") or ""):
+                folders_by_name[name] = folder
+        for file_info in result.get("files") or []:
+            key = file_info.get("key")
+            if key:
+                files_by_key[key] = file_info
+    return {
+        "folders": sorted(folders_by_name.values(), key=lambda item: item["name"].lower()),
+        "files": sorted(files_by_key.values(), key=lambda item: item["filename"].lower()),
+    }
 
 
 class S3Service:
@@ -222,6 +298,29 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
 
+    def iter_file_chunks_by_key(self, key: str, chunk_size: int = 8192):
+        """Stream file content from S3 in chunks (lower time-to-first-byte than full download)."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
+            body = response["Body"]
+            while True:
+                chunk = body.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code in {"NoSuchKey", "404"}:
+                raise StorageError(f"File not found in S3: {key}")
+            raise StorageError(f"Failed to stream file from S3: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error streaming file from S3: {str(e)}")
+
     def delete_file(self, file_id: uuid.UUID, file_format: str) -> bool:
         """Delete file from S3."""
         self._ensure_initialized()
@@ -355,6 +454,47 @@ class S3Service:
         except Exception:
             return False
 
+    def list_objects_with_prefix(
+        self,
+        prefix: str,
+        *,
+        contains: str = "",
+        max_keys: int = 500,
+    ) -> List[tuple]:
+        """List object keys under prefix; returns (key, last_modified) tuples."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            return []
+
+        try:
+            out: List[tuple] = []
+            continuation: Optional[str] = None
+            while len(out) < max_keys:
+                page_size = min(1000, max_keys - len(out))
+                kwargs = {
+                    "Bucket": self.bucket_name,
+                    "Prefix": prefix,
+                    "MaxKeys": page_size,
+                }
+                if continuation:
+                    kwargs["ContinuationToken"] = continuation
+                response = self.s3_client.list_objects_v2(**kwargs)
+                for obj in response.get("Contents") or []:
+                    key = obj["Key"]
+                    if contains and contains not in key:
+                        continue
+                    out.append((key, obj.get("LastModified")))
+                    if len(out) >= max_keys:
+                        break
+                if not response.get("IsTruncated"):
+                    break
+                continuation = response.get("NextContinuationToken")
+                if not continuation:
+                    break
+            return out
+        except Exception as exc:
+            raise StorageError(f"Failed to list S3 objects: {exc}")
+
     def list_audio_files(self, prefix: Optional[str] = None, max_keys: int = 1000, organization_id: Optional[str] = None) -> List[dict]:
         """List audio files in S3 bucket."""
         self._ensure_initialized()
@@ -395,6 +535,50 @@ class S3Service:
         """Get the root S3 prefix for a given organization."""
         return get_organization_root_prefix(settings.S3_PREFIX, organization_id)
 
+    def _browse_prefix(
+        self,
+        *,
+        org_root: str,
+        path: str,
+        max_keys: int,
+    ) -> dict:
+        full_prefix = f"{org_root}{path}"
+        if full_prefix and not full_prefix.endswith("/"):
+            full_prefix += "/"
+
+        response = self.s3_client.list_objects_v2(
+            Bucket=self.bucket_name,
+            Prefix=full_prefix,
+            Delimiter="/",
+            MaxKeys=max_keys,
+        )
+
+        folders = []
+        if "CommonPrefixes" in response:
+            for cp in response["CommonPrefixes"]:
+                folder_key = cp["Prefix"]
+                relative = folder_key[len(org_root):]
+                folder_name = relative.rstrip("/").rsplit("/", 1)[-1]
+                folders.append({
+                    "name": folder_name,
+                    "path": relative.rstrip("/"),
+                })
+
+        files = []
+        if "Contents" in response:
+            for obj in response["Contents"]:
+                key = obj["Key"]
+                if key == full_prefix:
+                    continue
+                files.append({
+                    "key": key,
+                    "filename": Path(key).name,
+                    "size": obj["Size"],
+                    "last_modified": obj["LastModified"].isoformat(),
+                })
+
+        return {"folders": folders, "files": files}
+
     def browse_folder(
         self,
         organization_id: str,
@@ -410,47 +594,74 @@ class S3Service:
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
             raise StorageError(error_msg)
 
-        org_root = self.get_organization_root_prefix(organization_id)
-        full_prefix = f"{org_root}{path}"
-        if full_prefix and not full_prefix.endswith("/"):
-            full_prefix += "/"
+        normalized_path = (path or "").strip().strip("/")
+        audio_nav = _storage_nav_name(settings.S3_PREFIX)
+        traces_nav = _storage_nav_name(settings.TRACES_S3_PREFIX)
+        traces_root = (
+            f"{normalize_prefix(settings.TRACES_S3_PREFIX)}organizations/{organization_id}/"
+        )
 
         try:
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=full_prefix,
-                Delimiter="/",
-                MaxKeys=max_keys,
+            org_root = self.get_organization_root_prefix(organization_id)
+
+            if not normalized_path:
+                return {
+                    "folders": [
+                        {"name": audio_nav, "path": audio_nav},
+                        {"name": traces_nav, "path": traces_nav},
+                    ],
+                    "files": [],
+                    "current_path": "",
+                    "organization_id": organization_id,
+                }
+
+            tree, storage_rel = _split_storage_nav_path(
+                normalized_path,
+                audio_nav=audio_nav,
+                traces_nav=traces_nav,
             )
+            if tree == "traces":
+                browse_root = traces_root
+                nav_prefix = traces_nav
+            else:
+                browse_root = org_root
+                nav_prefix = audio_nav if tree == "audio" else ""
 
-            folders = []
-            if "CommonPrefixes" in response:
-                for cp in response["CommonPrefixes"]:
-                    folder_key = cp["Prefix"]
-                    relative = folder_key[len(org_root):]
-                    folder_name = relative.rstrip("/").rsplit("/", 1)[-1]
-                    folders.append({
-                        "name": folder_name,
-                        "path": relative,
-                    })
+            if _MERGED_TRACES_STORAGE_PATH_RE.match(storage_rel):
+                audio_result = self._browse_prefix(
+                    org_root=org_root,
+                    path=storage_rel,
+                    max_keys=max_keys,
+                )
+                traces_result = self._browse_prefix(
+                    org_root=traces_root,
+                    path=storage_rel,
+                    max_keys=max_keys,
+                )
+                merged = _merge_browse_results(audio_result, traces_result)
+                return {
+                    "folders": merged["folders"],
+                    "files": merged["files"],
+                    "current_path": normalized_path,
+                    "organization_id": organization_id,
+                }
 
-            files = []
-            if "Contents" in response:
-                for obj in response["Contents"]:
-                    key = obj["Key"]
-                    if key == full_prefix:
-                        continue
-                    files.append({
-                        "key": key,
-                        "filename": Path(key).name,
-                        "size": obj["Size"],
-                        "last_modified": obj["LastModified"].isoformat(),
-                    })
+            result = self._browse_prefix(
+                org_root=browse_root,
+                path=storage_rel,
+                max_keys=max_keys,
+            )
+            folders = list(result["folders"])
+            _inject_workspace_traces_folder(
+                folders,
+                storage_rel=storage_rel,
+                nav_prefix=nav_prefix,
+            )
 
             return {
                 "folders": folders,
-                "files": files,
-                "current_path": path,
+                "files": result["files"],
+                "current_path": normalized_path,
                 "organization_id": organization_id,
             }
         except ClientError as e:

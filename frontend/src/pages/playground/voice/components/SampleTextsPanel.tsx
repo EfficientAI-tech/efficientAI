@@ -4,6 +4,7 @@ import { FileText, Sparkles, Bot, Loader2, X, Pencil, Check, Save, Mic } from 'l
 import { createPortal } from 'react-dom'
 import { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { apiClient } from '../../../../lib/api'
+import { itemsOf } from '../../../../lib/safeData'
 import { useToast } from '../../../../hooks/useToast'
 import { useWorkspaceStore } from '../../../../store/workspaceStore'
 import { AIProvider } from '../../../../types/api'
@@ -98,7 +99,7 @@ export default function SampleTextsPanel() {
     enabled: showCallImportsModal,
   })
 
-  const callImportRows = callImportRowsData?.items || []
+  const callImportRows = itemsOf(callImportRowsData)
   const filteredCallImportRows = (() => {
     if (!callImportSearch.trim()) return callImportRows
     const q = callImportSearch.toLowerCase()
@@ -974,7 +975,7 @@ export default function SampleTextsPanel() {
                   className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
                 >
                   <option value="">All call imports</option>
-                  {(callImportsList?.items || []).map((ci: any) => (
+                  {itemsOf(callImportsList).map((ci: any) => (
                     <option key={ci.id} value={ci.id}>
                       {ci.original_filename || ci.id} ({ci.total_rows} rows)
                     </option>

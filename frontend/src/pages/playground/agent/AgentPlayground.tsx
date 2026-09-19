@@ -1,19 +1,107 @@
-import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, RotateCcw } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck, Search } from 'lucide-react'
 import Button from '../../../components/Button'
+import TableListPagination from '../../../components/TableListPagination'
 import { useToast } from '../../../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from '../../../components/VoiceAgent'
 import GenericVoiceWSClient from '../../../components/GenericVoiceWSClient'
+import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
+import PlaygroundTraceOpenButton from './PlaygroundTraceStatusCell'
 import { getProtocolById } from '../../../lib/wsProtocols'
+import { prefetchCallRecordingQuery, refreshCallRecordingQueries, warmCallRecordingQueryFromList } from '../../../lib/callRecordingQuery'
+import { prefetchCallRecordingAudio, prefetchEvaluatorRecordingAudio } from '../../../lib/waveformAudioCache'
 import { getIntegrationPlatformLogo } from '../../../config/providers'
 import { IntegrationPlatform } from '../../../types/api'
+import {
+  DEFAULT_AGENT_PLAYGROUND_TAB,
+  parseAgentPlaygroundTab,
+  type AgentPlaygroundTab,
+} from '../../../lib/playgroundAgentTabs'
+import {
+  isEvaluatorResultInProgress,
+  type EvaluatorResultStatus,
+} from '../../../pages/evaluators/results/evaluatorResultStatus'
+import {
+  evaluationStatusFromRecording,
+  isEvaluationStatusInProgress,
+  normalizeCallRecordingList,
+} from '../../../lib/evaluationStatus'
+import { itemsOf, shortId } from '../../../lib/safeData'
+
+const PLAYGROUND_LIST_PAGE_SIZE = 10
+
+function PlaygroundCallsListLoading({ message }: { message: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-8 text-sm text-gray-600">
+      <RefreshCw className="h-4 w-4 animate-spin text-primary-500" />
+      {message}
+    </div>
+  )
+}
+
+function paginateList<T>(items: T[], page: number, pageSize: number) {
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize))
+  const safePage = Math.min(Math.max(1, page), pageCount)
+  const start = (safePage - 1) * pageSize
+  return {
+    items: items.slice(start, start + pageSize),
+    page: safePage,
+    pageCount,
+    total: items.length,
+  }
+}
+
+function PlaygroundListToolbar({
+  search,
+  onSearchChange,
+  statusOptions,
+  statusFilter,
+  onStatusChange,
+}: {
+  search: string
+  onSearchChange: (value: string) => void
+  statusOptions: Array<{ value: string; label: string }>
+  statusFilter: string
+  onStatusChange: (value: string) => void
+}) {
+  return (
+    <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center gap-1">
+        {statusOptions.map(({ value, label }) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onStatusChange(value)}
+            className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+              statusFilter === value
+                ? 'border-gray-300 bg-gray-200 text-gray-800'
+                : 'border-transparent text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="relative w-full sm:w-auto">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+        <input
+          type="search"
+          placeholder="Search call ID…"
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          className="w-full rounded-lg border border-gray-300 py-1.5 pl-9 pr-3 text-sm focus:border-primary-500 focus:ring-primary-500 sm:w-56"
+        />
+      </div>
+    </div>
+  )
+}
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -32,7 +120,21 @@ export default function AgentPlayground() {
   const { selectedAgent } = useAgentStore()
   const { showToast, ToastContainer } = useToast()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
+  const activeTab = parseAgentPlaygroundTab(searchParams)
+  const setActiveTab = useCallback(
+    (tab: AgentPlaygroundTab) => {
+      const next = new URLSearchParams(searchParams)
+      if (tab === DEFAULT_AGENT_PLAYGROUND_TAB) {
+        next.delete('tab')
+      } else {
+        next.set('tab', tab)
+      }
+      setSearchParams(next, { replace: true })
+    },
+    [searchParams, setSearchParams],
+  )
   const [showModal, setShowModal] = useState(false)
   const [showTestModal, setShowTestModal] = useState(false)
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
@@ -49,7 +151,7 @@ export default function AgentPlayground() {
   const elevenLabsConversationRef = useRef<any>(null)
   const smallestClientRef = useRef<any>(null)
   const currentCallShortIdRef = useRef<string | null>(null)
-  const currentVapiCallIdRef = useRef<string | null>(null)
+  const providerCallIdRef = useRef<string | null>(null)
 
   const userInitiatedDisconnectRef = useRef(false)
 
@@ -68,38 +170,46 @@ export default function AgentPlayground() {
 
 
   // Fetch test voice agent evaluation results (playground results only, excluding Voice AI agent results)
-  const { data: testVoiceAgentList, refetch: refetchTestResults } = useQuery({
+  const {
+    data: testVoiceAgentList,
+    refetch: refetchTestResults,
+    isLoading: testResultsLoading,
+  } = useQuery({
     queryKey: ['test-voice-agent-results'],
     queryFn: async () => {
       return await apiClient.listEvaluatorResults(undefined, true, true)
     },
     refetchInterval: (query) => {
-      const items = (query.state.data as { items?: any[] } | undefined)?.items
-      if (items?.some((result: any) =>
-        ['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
-      )) {
-        return 5000
-      }
-      return false
+      const items = itemsOf<{ status?: string }>(query.state.data)
+      if (!items.length) return false
+      const hasInProgress = items.some((row) =>
+        row.status ? isEvaluatorResultInProgress(row.status as EvaluatorResultStatus) : false,
+      )
+      return hasInProgress ? 5000 : false
     },
   })
-  const testVoiceAgentResults = testVoiceAgentList?.items ?? []
+  const testVoiceAgentResults = itemsOf<{
+    id: string
+    result_id?: string
+    status?: string
+    agent?: { name?: string }
+  }>(testVoiceAgentList)
 
   // Fetch call recordings (for Voice AI Agents tab)
-  const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({
+  const {
+    data: callRecordings = [],
+    refetch: refetchCallRecordings,
+    isLoading: callRecordingsLoading,
+  } = useQuery({
     queryKey: ['call-recordings'],
     queryFn: () => apiClient.listCallRecordings(),
     // Refetch every 5 seconds if there are any evaluations in progress
     refetchInterval: (query) => {
-      const data = query.state.data as any[]
-      if (data && Array.isArray(data)) {
-        const hasInProgress = data.some((recording: any) => 
-          recording.evaluation_status && 
-          ['queued', 'transcribing', 'evaluating'].includes(recording.evaluation_status)
-        )
-        return hasInProgress ? 5000 : false
-      }
-      return false
+      const rows = normalizeCallRecordingList(query.state.data)
+      const hasInProgress = rows.some((recording) =>
+        isEvaluationStatusInProgress(evaluationStatusFromRecording(recording)),
+      )
+      return hasInProgress ? 5000 : false
     },
   })
 
@@ -110,7 +220,11 @@ export default function AgentPlayground() {
     staleTime: 60_000,
   })
 
-  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents' | 'custom_websocket'>('voice_ai_agents')
+  const [testAgentsPage, setTestAgentsPage] = useState(1)
+  const [voiceAiPage, setVoiceAiPage] = useState(1)
+  const [customWsPage, setCustomWsPage] = useState(1)
+  const [listSearchQuery, setListSearchQuery] = useState('')
+  const [listStatusFilter, setListStatusFilter] = useState('all')
   const [customWebsocketUrl, setCustomWebsocketUrl] = useState('')
 
   // Saved WebSocket URLs (persisted in localStorage)
@@ -143,6 +257,21 @@ export default function AgentPlayground() {
   const [selectedCallIds, setSelectedCallIds] = useState<Set<string>>(new Set())
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
+  const [otlpTraceResultId, setOtlpTraceResultId] = useState<string | null>(null)
+  const [otlpTraceCallShortId, setOtplTraceCallShortId] = useState<string | null>(null)
+  const isVoiceAiProviderRecording = (recording: { provider_platform?: string | null }) => {
+    const platform = (recording.provider_platform || '').toLowerCase()
+    return (
+      platform === IntegrationPlatform.RETELL ||
+      platform === IntegrationPlatform.VAPI ||
+      platform === IntegrationPlatform.ELEVENLABS ||
+      platform === IntegrationPlatform.SMALLEST ||
+      platform === 'retell' ||
+      platform === 'vapi' ||
+      platform === 'elevenlabs' ||
+      platform === 'smallest'
+    )
+  }
   const [isDeletingSelectedTests, setIsDeletingSelectedTests] = useState(false)
 
 
@@ -315,11 +444,9 @@ export default function AgentPlayground() {
           }
           userInitiatedDisconnectRef.current = false
 
-          // Trigger refresh of metrics
           if (currentCallShortIdRef.current) {
-            apiClient.refreshCallRecording(currentCallShortIdRef.current)
-              .then(() => refetchCallRecordings())
-              .catch(err => console.error('Failed to refresh metrics', err))
+            const callShortId = currentCallShortIdRef.current
+            void syncVoiceAiCallAfterEnd(callShortId, providerCallIdRef.current)
           }
         })
 
@@ -346,6 +473,9 @@ export default function AgentPlayground() {
 
         if (webCallResponse.call_short_id) {
           currentCallShortIdRef.current = webCallResponse.call_short_id
+        }
+        if (webCallResponse.call_id) {
+          providerCallIdRef.current = webCallResponse.call_id
         }
 
         // Start call
@@ -390,8 +520,10 @@ export default function AgentPlayground() {
           showToast('Connected to agent', 'success')
 
           if (call?.id) {
-            currentVapiCallIdRef.current = call.id
+            providerCallIdRef.current = call.id
           }
+
+          // Update backend with Vapi Call ID
           if (currentCallShortIdRef.current && call?.id) {
             try {
               await apiClient.updateCallRecording(currentCallShortIdRef.current, call.id)
@@ -419,14 +551,21 @@ export default function AgentPlayground() {
           }
           userInitiatedDisconnectRef.current = false
 
+          // Ensure we have provider ID before refreshing
           if (currentCallShortIdRef.current) {
-            const providerCallId = call?.id ?? currentVapiCallIdRef.current
-            apiClient
-              .finalizePlaygroundCallRecording(currentCallShortIdRef.current, providerCallId)
-              .then(() => refetchCallRecordings())
-              .catch((err) => console.error('Failed to refresh metrics', err))
+            if (call?.id) {
+              try {
+                await apiClient.updateCallRecording(currentCallShortIdRef.current, call.id)
+              } catch (e) {
+                console.error('Failed to update call recording on end', e)
+              }
+            }
+
+            void syncVoiceAiCallAfterEnd(
+              currentCallShortIdRef.current,
+              call?.id ?? providerCallIdRef.current,
+            )
           }
-          currentVapiCallIdRef.current = null
         })
 
         client.on('error', (error: any) => {
@@ -442,9 +581,7 @@ export default function AgentPlayground() {
         const vapiCall = await client.start(fullAgent.voice_ai_agent_id)
         console.log('Vapi start returned:', vapiCall)
 
-        if (vapiCall?.id) {
-          currentVapiCallIdRef.current = vapiCall.id
-        }
+        // Try to get ID from return value immediately
         if (currentCallShortIdRef.current && vapiCall?.id) {
           try {
             await apiClient.updateCallRecording(currentCallShortIdRef.current, vapiCall.id)
@@ -516,12 +653,8 @@ export default function AgentPlayground() {
             // otherwise the backend has no provider_call_id to fetch metrics for
             if (currentCallShortIdRef.current && elevenLabsConversationIdStored) {
               const callShortId = currentCallShortIdRef.current
-              // ElevenLabs transitions through "processing" before "done",
-              // so wait a few seconds before requesting metrics
               setTimeout(() => {
-                apiClient.refreshCallRecording(callShortId)
-                  .then(() => refetchCallRecordings())
-                  .catch(err => console.error('Failed to refresh metrics', err))
+                void syncVoiceAiCallAfterEnd(callShortId, providerCallIdRef.current)
               }, 5000)
             }
           },
@@ -552,6 +685,7 @@ export default function AgentPlayground() {
           console.log('ElevenLabs conversation ID:', conversationId)
           if (currentCallShortIdRef.current && conversationId) {
             await apiClient.updateCallRecording(currentCallShortIdRef.current, conversationId)
+            providerCallIdRef.current = conversationId
             elevenLabsConversationIdStored = true
             console.log('Updated call recording with ElevenLabs conversation ID:', conversationId)
           } else {
@@ -621,9 +755,7 @@ export default function AgentPlayground() {
           if (currentCallShortIdRef.current) {
             const callShortId = currentCallShortIdRef.current
             setTimeout(() => {
-              apiClient.refreshCallRecording(callShortId)
-                .then(() => refetchCallRecordings())
-                .catch(err => console.error('Failed to refresh metrics', err))
+              void syncVoiceAiCallAfterEnd(callShortId, providerCallIdRef.current)
             }, 3000)
           }
         })
@@ -704,18 +836,12 @@ export default function AgentPlayground() {
     setShowModal(false)
     setShowTestModal(false)
     setSelectedTestType(null)
-    setTestPersonaId('')
-    setTestScenarioId('')
-    setRunPostCallEvaluation(false)
     setIsConnecting(false)
     setIsConnected(false)
   }
 
   const handleTestTypeSelection = (type: 'test_agent' | 'voice_ai_agent') => {
     setSelectedTestType(type)
-    setTestPersonaId('')
-    setTestScenarioId('')
-    setRunPostCallEvaluation(false)
     if (type === 'voice_ai_agent') {
       setShowModal(true)
       setShowTestModal(false)
@@ -727,30 +853,6 @@ export default function AgentPlayground() {
 
   const handleViewTestResult = (resultId: string) => {
     navigate(`/playground/test-agent-results/${resultId}`)
-  }
-
-  const reEvaluateTestResultMutation = useMutation({
-    mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
-      showToast('Evaluation queued', 'success')
-    },
-    onError: (error: any) => {
-      const detail = error?.response?.data?.detail || error?.message || 'Failed to queue evaluation'
-      showToast(typeof detail === 'string' ? detail : 'Failed to queue evaluation', 'error')
-    },
-  })
-
-  const canRunEvaluation = (result: any) =>
-    result.transcription &&
-    result.status !== 'completed' &&
-    !['queued', 'transcribing', 'evaluating', 'fetching_details'].includes(result.status)
-
-  const getTestResultStatusClass = (status: string) => {
-    if (status === 'completed') return 'bg-green-100 text-green-800'
-    if (status === 'failed') return 'bg-red-100 text-red-800'
-    if (status === 'call_ended') return 'bg-gray-100 text-gray-700'
-    return 'bg-yellow-100 text-yellow-800'
   }
 
   const toggleTestResultSelection = (resultId: string) => {
@@ -801,6 +903,24 @@ export default function AgentPlayground() {
   }
 
 
+  const handleOpenTestAgentTrace = (resultId: string) => {
+    setOtplTraceCallShortId(null)
+    prefetchEvaluatorRecordingAudio(resultId)
+    void queryClient.prefetchQuery({
+      queryKey: ['evaluator-result', resultId],
+      queryFn: () => apiClient.getEvaluatorResult(resultId, true),
+      staleTime: 30_000,
+    })
+    setOtlpTraceResultId(resultId)
+  }
+
+  const handleOpenVoiceAgentTrace = (callShortId: string) => {
+    setOtlpTraceResultId(null)
+    prefetchCallRecordingAudio(callShortId, false)
+    void prefetchCallRecordingQuery(queryClient, callShortId)
+    setOtplTraceCallShortId(callShortId)
+  }
+
   const handleViewCallRecording = (callShortId: string) => {
     navigate(`/playground/call-recordings/${callShortId}`)
   }
@@ -817,8 +937,142 @@ export default function AgentPlayground() {
     }
   }
 
-  const voiceAICallRecordings = callRecordings.filter((recording: any) => recording.provider_platform !== 'custom_websocket')
-  const customWebsocketSessions = callRecordings.filter((recording: any) => recording.provider_platform === 'custom_websocket')
+  const callRecordingRows = normalizeCallRecordingList(callRecordings)
+  const voiceAICallRecordings = callRecordingRows.filter(isVoiceAiProviderRecording)
+  const customWebsocketSessions = callRecordingRows.filter(
+    (recording: { provider_platform?: string }) => recording?.provider_platform === 'custom_websocket',
+  )
+
+  useEffect(() => {
+    setListSearchQuery('')
+    setListStatusFilter('all')
+    setTestAgentsPage(1)
+    setVoiceAiPage(1)
+    setCustomWsPage(1)
+  }, [activeTab])
+
+  useEffect(() => {
+    setTestAgentsPage(1)
+    setVoiceAiPage(1)
+    setCustomWsPage(1)
+  }, [listSearchQuery, listStatusFilter])
+
+  const syncVoiceAiCallAfterEnd = useCallback(
+    async (callShortId: string, providerCallId?: string | null) => {
+      const providerId = providerCallId ?? providerCallIdRef.current
+      try {
+        await apiClient.finalizePlaygroundCallRecording(callShortId, providerId)
+      } catch (err) {
+        console.error('Failed to finalize playground call recording', err)
+      }
+      try {
+        await refreshCallRecordingQueries(queryClient, callShortId)
+        await queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+      } catch (err) {
+        console.error('Failed to refresh call recording queries', err)
+      }
+      providerCallIdRef.current = null
+    },
+    [queryClient],
+  )
+
+  const filteredTestResults = useMemo(() => {
+    let rows = testVoiceAgentResults
+    if (listStatusFilter !== 'all') {
+      rows = rows.filter((result: { status?: string }) => {
+        if (listStatusFilter === 'in_progress') {
+          return result.status
+            ? isEvaluatorResultInProgress(result.status as EvaluatorResultStatus)
+            : false
+        }
+        return result.status === listStatusFilter
+      })
+    }
+    const query = listSearchQuery.trim().toLowerCase()
+    if (!query) return rows
+    return rows.filter((result) => {
+      const callId = String(result.result_id || result.id || '').toLowerCase()
+      const agentName = String(result.agent?.name || '').toLowerCase()
+      return callId.includes(query) || agentName.includes(query)
+    })
+  }, [testVoiceAgentResults, listSearchQuery, listStatusFilter])
+
+  const filteredVoiceAiCalls = useMemo(() => {
+    let rows = voiceAICallRecordings
+    if (listStatusFilter !== 'all') {
+      rows = rows.filter((recording) => {
+        if (!recording) return false
+        const evalStatus = evaluationStatusFromRecording(recording)
+        const status = typeof recording.status === 'string' ? recording.status : undefined
+        if (listStatusFilter === 'pending_eval') {
+          return !evalStatus || evalStatus === 'pending'
+        }
+        return evalStatus === listStatusFilter || status === listStatusFilter
+      })
+    }
+    const query = listSearchQuery.trim().toLowerCase()
+    if (!query) return rows
+    return rows.filter((recording: { call_short_id?: string; provider_platform?: string }) => {
+      const callId = String(recording.call_short_id || '').toLowerCase()
+      const platform = String(recording.provider_platform || '').toLowerCase()
+      return callId.includes(query) || platform.includes(query)
+    })
+  }, [voiceAICallRecordings, listSearchQuery, listStatusFilter])
+
+  const filteredCustomWsSessions = useMemo(() => {
+    let rows = customWebsocketSessions
+    if (listStatusFilter !== 'all') {
+      rows = rows.filter((session) => {
+        if (!session) return false
+        const evalStatus = evaluationStatusFromRecording(session)
+        const status = typeof session.status === 'string' ? session.status : undefined
+        if (listStatusFilter === 'pending_eval') {
+          return !session.evaluator_result_id
+        }
+        return evalStatus === listStatusFilter || status === listStatusFilter
+      })
+    }
+    const query = listSearchQuery.trim().toLowerCase()
+    if (!query) return rows
+    return rows.filter((session: { call_short_id?: string }) =>
+      String(session.call_short_id || '').toLowerCase().includes(query),
+    )
+  }, [customWebsocketSessions, listSearchQuery, listStatusFilter])
+
+  const paginatedTestResults = useMemo(
+    () => paginateList(filteredTestResults, testAgentsPage, PLAYGROUND_LIST_PAGE_SIZE),
+    [filteredTestResults, testAgentsPage],
+  )
+  const paginatedVoiceAiCalls = useMemo(
+    () => paginateList(filteredVoiceAiCalls, voiceAiPage, PLAYGROUND_LIST_PAGE_SIZE),
+    [filteredVoiceAiCalls, voiceAiPage],
+  )
+  const paginatedCustomWsSessions = useMemo(
+    () => paginateList(filteredCustomWsSessions, customWsPage, PLAYGROUND_LIST_PAGE_SIZE),
+    [filteredCustomWsSessions, customWsPage],
+  )
+
+  useEffect(() => {
+    if (paginatedTestResults.page !== testAgentsPage) {
+      setTestAgentsPage(paginatedTestResults.page)
+    }
+  }, [paginatedTestResults.page, testAgentsPage])
+
+  useEffect(() => {
+    if (paginatedVoiceAiCalls.page !== voiceAiPage) {
+      setVoiceAiPage(paginatedVoiceAiCalls.page)
+    }
+  }, [paginatedVoiceAiCalls.page, voiceAiPage])
+
+  useEffect(() => {
+    if (paginatedCustomWsSessions.page !== customWsPage) {
+      setCustomWsPage(paginatedCustomWsSessions.page)
+    }
+  }, [paginatedCustomWsSessions.page, customWsPage])
+
+  useEffect(() => {
+    warmCallRecordingQueryFromList(queryClient, callRecordings)
+  }, [callRecordings, queryClient])
 
 
   const toggleCallSelection = (callShortId: string) => {
@@ -1007,16 +1261,47 @@ export default function AgentPlayground() {
                     </Button>
                   </div>
                 )}
-                {testVoiceAgentResults.length === 0 ? (
+                {testResultsLoading && testVoiceAgentResults.length === 0 ? (
+                  <PlaygroundCallsListLoading message="Loading test agent calls…" />
+                ) : testVoiceAgentResults.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">No test agent results found</p>
                   </div>
                 ) : (
+                  <div className="space-y-3">
+                    <PlaygroundListToolbar
+                      search={listSearchQuery}
+                      onSearchChange={setListSearchQuery}
+                      statusFilter={listStatusFilter}
+                      onStatusChange={setListStatusFilter}
+                      statusOptions={[
+                        { value: 'all', label: 'Any status' },
+                        { value: 'completed', label: 'Completed' },
+                        { value: 'failed', label: 'Failed' },
+                        { value: 'in_progress', label: 'In progress' },
+                      ]}
+                    />
+                    {filteredTestResults.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+                        No calls match your search.{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setListSearchQuery('')
+                            setListStatusFilter('all')
+                          }}
+                          className="font-medium text-primary-600 hover:text-primary-800"
+                        >
+                          Clear filters
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                             <button
                               type="button"
                               onClick={toggleSelectAllTestResults}
@@ -1030,33 +1315,42 @@ export default function AgentPlayground() {
                               )}
                             </button>
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Call ID
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Status
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Agent
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-36">
-                            Actions
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
+                            Trace
                           </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {testVoiceAgentResults.map((result: any) => {
+                        {paginatedTestResults.items.map((result: any) => {
+                          if (!result?.id) return null
                           const isSelected = selectedTestResultIds.has(result.id)
                           return (
                             <tr
                               key={result.id}
                               className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
                               onClick={() => handleViewTestResult(result.id)}
+                              onMouseEnter={() => {
+                                prefetchEvaluatorRecordingAudio(result.id)
+                                void queryClient.prefetchQuery({
+                                  queryKey: ['evaluator-result', result.id],
+                                  queryFn: () => apiClient.getEvaluatorResult(result.id, true),
+                                  staleTime: 30_000,
+                                })
+                              }}
                             >
-                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <button
                                   type="button"
                                   onClick={() => toggleTestResultSelection(result.id)}
@@ -1069,45 +1363,59 @@ export default function AgentPlayground() {
                                   )}
                                 </button>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span className="font-mono text-sm font-semibold text-primary-600">
-                                  {result.result_id || result.id.substring(0, 8)}
+                                  {result.result_id || shortId(result.id)}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span
-                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getTestResultStatusClass(result.status)}`}
+                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full capitalize ${
+                                    result.status === 'completed'
+                                      ? 'bg-green-100 text-green-800'
+                                      : result.status === 'failed'
+                                      ? 'bg-red-100 text-red-800'
+                                      : result.status === 'evaluating' || result.status === 'transcribing'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : result.status && isEvaluatorResultInProgress(result.status as EvaluatorResultStatus)
+                                      ? 'bg-yellow-100 text-yellow-800'
+                                      : 'bg-gray-100 text-gray-700'
+                                  }`}
                                 >
                                   {result.status}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-500">
                                 {result.agent?.name || 'N/A'}
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-500">
                                 {result.created_at
                                   ? new Date(result.created_at).toLocaleString()
                                   : 'N/A'}
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                                {canRunEvaluation(result) && (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => reEvaluateTestResultMutation.mutate(result.id)}
-                                    disabled={reEvaluateTestResultMutation.isPending}
-                                    isLoading={reEvaluateTestResultMutation.isPending && reEvaluateTestResultMutation.variables === result.id}
-                                    leftIcon={!(reEvaluateTestResultMutation.isPending && reEvaluateTestResultMutation.variables === result.id) ? <RotateCcw className="h-3.5 w-3.5" /> : undefined}
-                                  >
-                                    Evaluate
-                                  </Button>
-                                )}
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <PlaygroundTraceOpenButton
+                                  onOpen={() => handleOpenTestAgentTrace(result.id)}
+                                />
                               </td>
                             </tr>
                           )
                         })}
                       </tbody>
                     </table>
+                  </div>
+                    <TableListPagination
+                      page={paginatedTestResults.page}
+                      pageCount={paginatedTestResults.pageCount}
+                      total={paginatedTestResults.total}
+                      pageSize={PLAYGROUND_LIST_PAGE_SIZE}
+                      onPrev={() => setTestAgentsPage((page) => Math.max(1, page - 1))}
+                      onNext={() =>
+                        setTestAgentsPage((page) => Math.min(paginatedTestResults.pageCount, page + 1))
+                      }
+                    />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1130,16 +1438,50 @@ export default function AgentPlayground() {
                     </Button>
                   </div>
                 )}
-                {voiceAICallRecordings.length === 0 ? (
+                {callRecordingsLoading && voiceAICallRecordings.length === 0 ? (
+                  <PlaygroundCallsListLoading message="Loading Voice AI calls…" />
+                ) : voiceAICallRecordings.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                    <p className="text-sm text-gray-600">No call recordings found</p>
+                    <p className="text-sm text-gray-600">
+                      No Retell, Vapi, ElevenLabs, or Smallest calls yet. Start a Voice AI Agent test from the agent sidebar.
+                    </p>
                   </div>
                 ) : (
+                  <div className="space-y-3">
+                    <PlaygroundListToolbar
+                      search={listSearchQuery}
+                      onSearchChange={setListSearchQuery}
+                      statusFilter={listStatusFilter}
+                      onStatusChange={setListStatusFilter}
+                      statusOptions={[
+                        { value: 'all', label: 'Any status' },
+                        { value: 'completed', label: 'Evaluated' },
+                        { value: 'evaluating', label: 'Evaluating' },
+                        { value: 'failed', label: 'Failed' },
+                        { value: 'pending_eval', label: 'Pending eval' },
+                      ]}
+                    />
+                    {filteredVoiceAiCalls.length === 0 ? (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+                        No calls match your search.{' '}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setListSearchQuery('')
+                            setListStatusFilter('all')
+                          }}
+                          className="font-medium text-primary-600 hover:text-primary-800"
+                        >
+                          Clear filters
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                             <button
                               type="button"
                               onClick={toggleSelectAllCalls}
@@ -1153,33 +1495,42 @@ export default function AgentPlayground() {
                               )}
                             </button>
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Call ID
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Status
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Evaluation
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Platform
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
+                            Trace
                           </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {voiceAICallRecordings.map((recording: any) => {
+                        {paginatedVoiceAiCalls.items.map((recording: any) => {
+                          if (!recording?.call_short_id) return null
+                          const evalStatus = evaluationStatusFromRecording(recording)
                           const isSelected = selectedCallIds.has(recording.call_short_id)
                           return (
                             <tr
                               key={recording.id}
                               className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
                               onClick={() => handleViewCallRecording(recording.call_short_id)}
+                              onMouseEnter={() => {
+                                prefetchCallRecordingAudio(recording.call_short_id, false)
+                                void prefetchCallRecordingQuery(queryClient, recording.call_short_id)
+                              }}
                             >
-                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <button
                                   type="button"
                                   onClick={() => toggleCallSelection(recording.call_short_id)}
@@ -1192,12 +1543,12 @@ export default function AgentPlayground() {
                                   )}
                                 </button>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span className="font-mono text-sm font-semibold text-primary-600">
                                   {recording.call_short_id}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <span
                                   className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
                                     ? 'bg-green-100 text-green-800'
@@ -1207,20 +1558,20 @@ export default function AgentPlayground() {
                                   {recording.status}
                                 </span>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 {recording.evaluator_result_id ? (
                                   <span
                                     className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                      recording.evaluation_status === 'completed'
+                                      evalStatus === 'completed'
                                         ? 'bg-green-100 text-green-800'
-                                        : recording.evaluation_status === 'failed'
+                                        : evalStatus === 'failed'
                                         ? 'bg-red-100 text-red-800'
-                                        : recording.evaluation_status === 'evaluating'
+                                        : evalStatus === 'evaluating'
                                         ? 'bg-blue-100 text-blue-800'
                                         : 'bg-yellow-100 text-yellow-800'
                                     }`}
                                   >
-                                    {recording.evaluation_status || 'queued'}
+                                    {evalStatus || 'queued'}
                                   </span>
                                 ) : recording.status === 'UPDATED' ? (
                                   <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">
@@ -1230,7 +1581,7 @@ export default function AgentPlayground() {
                                   <span className="text-xs text-gray-400">—</span>
                                 )}
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
+                              <td className="px-6 py-5 whitespace-nowrap">
                                 <div className="flex items-center gap-2">
                                   {recording.provider_platform ? (() => {
                                     const logo = getIntegrationPlatformLogo(
@@ -1249,16 +1600,35 @@ export default function AgentPlayground() {
                                   </span>
                                 </div>
                               </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              <td className="px-6 py-5 whitespace-nowrap text-sm text-gray-500">
                                 {recording.created_at
                                   ? new Date(recording.created_at).toLocaleString()
                                   : 'N/A'}
+                              </td>
+                              <td className="px-6 py-5 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <PlaygroundTraceOpenButton
+                                  onOpen={() => handleOpenVoiceAgentTrace(recording.call_short_id)}
+                                  title="View provider call and trace"
+                                />
                               </td>
                             </tr>
                           )
                         })}
                       </tbody>
                     </table>
+                  </div>
+                    <TableListPagination
+                      page={paginatedVoiceAiCalls.page}
+                      pageCount={paginatedVoiceAiCalls.pageCount}
+                      total={paginatedVoiceAiCalls.total}
+                      pageSize={PLAYGROUND_LIST_PAGE_SIZE}
+                      onPrev={() => setVoiceAiPage((page) => Math.max(1, page - 1))}
+                      onNext={() =>
+                        setVoiceAiPage((page) => Math.min(paginatedVoiceAiCalls.pageCount, page + 1))
+                      }
+                    />
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1374,35 +1744,69 @@ export default function AgentPlayground() {
                     <h4 className="text-sm font-semibold text-gray-900">Saved Custom Sessions</h4>
                   </div>
                   <div className="p-4">
-                    {customWebsocketSessions.length === 0 ? (
+                    {callRecordingsLoading && customWebsocketSessions.length === 0 ? (
+                      <PlaygroundCallsListLoading message="Loading custom WebSocket sessions…" />
+                    ) : customWebsocketSessions.length === 0 ? (
                       <p className="text-sm text-gray-600">No saved custom websocket sessions yet.</p>
                     ) : (
+                      <div className="space-y-3">
+                        <PlaygroundListToolbar
+                          search={listSearchQuery}
+                          onSearchChange={setListSearchQuery}
+                          statusFilter={listStatusFilter}
+                          onStatusChange={setListStatusFilter}
+                          statusOptions={[
+                            { value: 'all', label: 'Any status' },
+                            { value: 'UPDATED', label: 'Updated' },
+                            { value: 'completed', label: 'Evaluated' },
+                            { value: 'pending_eval', label: 'Pending eval' },
+                          ]}
+                        />
+                        {filteredCustomWsSessions.length === 0 ? (
+                          <div className="rounded-lg border border-gray-200 bg-gray-50 p-6 text-center text-sm text-gray-600">
+                            No calls match your search.{' '}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setListSearchQuery('')
+                                setListStatusFilter('all')
+                              }}
+                              className="font-medium text-primary-600 hover:text-primary-800"
+                            >
+                              Clear filters
+                            </button>
+                          </div>
+                        ) : (
+                          <>
                       <div className="overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200">
                           <thead className="bg-gray-50">
                             <tr>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Call ID</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluation</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Call ID</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluation</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-200 bg-white">
-                            {customWebsocketSessions.map((session: any) => (
+                            {paginatedCustomWsSessions.items.map((session: any) => {
+                              if (!session?.call_short_id) return null
+                              const sessionEvalStatus = evaluationStatusFromRecording(session)
+                              return (
                               <tr
                                 key={session.id}
                                 className="hover:bg-gray-50 cursor-pointer transition-colors"
                                 onClick={() => handleViewCallRecording(session.call_short_id)}
                               >
-                                <td className="px-4 py-3 text-sm font-mono font-semibold text-primary-600">
+                                <td className="px-6 py-5 text-sm font-mono font-semibold text-primary-600">
                                   {session.call_short_id}
                                 </td>
-                                <td className="px-4 py-3 text-sm text-gray-600">{session.status}</td>
-                                <td className="px-4 py-3">
+                                <td className="px-6 py-5 text-sm text-gray-600">{session.status}</td>
+                                <td className="px-6 py-5">
                                   {session.evaluator_result_id ? (
                                     <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800">
-                                      {session.evaluation_status || 'queued'}
+                                      {sessionEvalStatus || 'queued'}
                                     </span>
                                   ) : (
                                     <span className="inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700">
@@ -1410,10 +1814,10 @@ export default function AgentPlayground() {
                                     </span>
                                   )}
                                 </td>
-                                <td className="px-4 py-3 text-sm text-gray-600">
+                                <td className="px-6 py-5 text-sm text-gray-600">
                                   {session.created_at ? new Date(session.created_at).toLocaleString() : 'N/A'}
                                 </td>
-                                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                                   <div className="flex flex-wrap gap-2">
                                     {!session.evaluator_result_id && (
                                       <Button
@@ -1434,9 +1838,22 @@ export default function AgentPlayground() {
                                   </div>
                                 </td>
                               </tr>
-                            ))}
+                            )})}
                           </tbody>
                         </table>
+                      </div>
+                        <TableListPagination
+                          page={paginatedCustomWsSessions.page}
+                          pageCount={paginatedCustomWsSessions.pageCount}
+                          total={paginatedCustomWsSessions.total}
+                          pageSize={PLAYGROUND_LIST_PAGE_SIZE}
+                          onPrev={() => setCustomWsPage((page) => Math.max(1, page - 1))}
+                          onNext={() =>
+                            setCustomWsPage((page) => Math.min(paginatedCustomWsSessions.pageCount, page + 1))
+                          }
+                        />
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1731,7 +2148,7 @@ export default function AgentPlayground() {
                 <div>
                   <p className="text-sm font-medium text-gray-900">Run post-call evaluation</p>
                   <p className="text-xs text-gray-600 mt-0.5">
-                    Off by default. Enable to score this call automatically when it ends, or run evaluation later from the results table.
+                    Off by default. Enable to run automatic scoring when the call ends.
                   </p>
                 </div>
                 <label className="relative inline-flex shrink-0 cursor-pointer items-center">
@@ -1774,12 +2191,25 @@ export default function AgentPlayground() {
                 connectDisabledReason="Select a persona and scenario first"
                 userTranscriptLabel="You (production)"
                 botTranscriptLabel="Test caller"
-                onSessionSaved={() => refetchTestResults()}
+                onSessionSaved={() => {
+                  queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+                  refetchTestResults()
+                }}
               />
             </div>
           </div>
         </div>
       )}
+
+      <TraceDetailDrawer
+        open={Boolean(otlpTraceResultId || otlpTraceCallShortId)}
+        evaluatorResultId={otlpTraceResultId}
+        callShortId={otlpTraceCallShortId}
+        onClose={() => {
+          setOtlpTraceResultId(null)
+          setOtplTraceCallShortId(null)
+        }}
+      />
     </>
   )
 }

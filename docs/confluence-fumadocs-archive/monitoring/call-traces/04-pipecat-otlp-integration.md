@@ -1,0 +1,277 @@
+# Pipecat & OTLP integration
+
+EfficientAI shows **per-turn STT, LLM, and TTS timing** from your voice agent. Traces appear in the **Calls** hub under the **Traces** tab (`/observability/calls`).
+
+You **do not** need to install or run EfficientAI on your computer to use sandbox or staging. You only update your existing Pipecat (or other OTLP-capable) project.
+
+Related: Call Traces overview · Latency metrics · Architecture & scaling
+
+---
+
+## Before you start
+
+You need:
+
+1. An EfficientAI account (for example [staging](https://staging.efficientai.cloud))
+2. A voice agent that can emit OpenTelemetry spans (Pipecat is the documented quick start)
+3. Workspace ID and API base from the **setup API** (see step 2)
+
+---
+
+## Environments
+
+| Environment | `EFFICIENTAI_API_BASE` | UI |
+| --- | --- | --- |
+| **Local EfficientAI** | `http://localhost:8000` | `http://localhost:8000` |
+| **Staging / sandbox** | `https://staging.efficientai.cloud` | `https://staging.efficientai.cloud` |
+
+Set `EFFICIENTAI_API_BASE` once in your agent `.env` file. OTLP export defaults to:
+
+```
+{EFFICIENTAI_API_BASE}/api/v1/observability/traces
+```
+
+Use a **separate workspace** for local vs staging so traces do not mix.
+
+---
+
+## How it works
+
+```
+1. Your bot starts a call → EfficientAI assigns a six-digit Call ID
+2. Your framework records STT / LLM / TTS spans (Pipecat: enable_tracing=True)
+3. The SDK or OTLP exporter sends spans to EfficientAI
+4. worker-traces processes batches → ClickHouse → Calls hub shows latency per turn
+5. Your bot closes the session when the call ends
+```
+
+Each call is linked by **`call_short_id`** (shown as `#482931` in the UI). Do **not** set a Call ID in your `.env` file.
+
+---
+
+## Step-by-step
+
+### 1. Create an API key
+
+1. Log in to EfficientAI
+2. Open **Settings → API keys**
+3. Create a key and copy it
+
+### 2. Copy workspace settings
+
+**Option A — API (recommended)**
+
+```bash
+curl -s "https://staging.efficientai.cloud/api/v1/observability/traces/setup" \
+  -H "X-API-Key: <your-key>" \
+  -H "X-Workspace-Id: <workspace-uuid>"
+```
+
+The JSON response includes an **`env_block`** (workspace ID and API URL pre-filled), **`install_command`**, and code snippets.
+
+**Option B — UI**
+
+1. Confirm the correct **workspace** in the header (traces are workspace-scoped)
+2. Use the setup response above from your browser devtools or any HTTP client with the same headers
+
+Paste your API key on the `EFFICIENTAI_API_KEY=` line in the `.env` block.
+
+### 3. Install the tracing package
+
+In your Pipecat project folder:
+
+```bash
+pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"
+```
+
+You do **not** need to clone the EfficientAI repository.
+
+Also install Pipecat with the extras your bot needs (for example `webrtc`, `runner`, `deepgram`, `openai`).
+
+### 4. Add tracing to your bot (Pipecat)
+
+| Step | Function | Purpose |
+| --- | --- | --- |
+| 1 | `ensure_trace_session()` | Opens a trace and receives a Call ID |
+| 2 | `setup_pipecat_worker_tracing(trace_ctx)` | Sends spans to EfficientAI |
+| 3 | `close_trace_session(trace_ctx)` | Flushes spans and closes the trace |
+
+```python
+from efficientai.integrations.efficientai_traces import (
+    close_trace_session,
+    ensure_trace_session,
+    require_deployment_trace_env,
+    resolve_trace_transport,
+    setup_pipecat_worker_tracing,
+)
+
+require_deployment_trace_env()
+
+async def run_bot(transport, runner_args):
+    trace_ctx = await ensure_trace_session(
+        transport=resolve_trace_transport(runner_args, transport),
+    )
+    tracing = setup_pipecat_worker_tracing(trace_ctx)
+
+    worker = PipelineWorker(
+        pipeline,
+        enable_tracing=True,
+        additional_span_attributes=tracing["additional_span_attributes"],
+    )
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        await worker.cancel()
+        await close_trace_session(trace_ctx)
+```
+
+### 5. Run a test call
+
+```bash
+uv run bot.py
+```
+
+Open your WebRTC client URL → connect → speak → disconnect.
+
+### 6. View traces
+
+**Observability → Calls → Traces** tab → **Refresh** → open your Call ID row.
+
+Allow a few seconds after disconnect for deferred ingest (`worker-traces`) to finish writing ClickHouse.
+
+---
+
+## Required environment variables
+
+```bash
+EFFICIENTAI_API_BASE=https://staging.efficientai.cloud
+EFFICIENTAI_WORKSPACE_ID=<from setup API>
+EFFICIENTAI_API_KEY=<from Settings → API keys>
+```
+
+---
+
+## Framework-agnostic OTLP (LiveKit, custom)
+
+Use the same session API, then point any **OTLP HTTP** exporter at `trace_ctx["otlp_endpoint"]` with:
+
+| Header / attribute | Value |
+| --- | --- |
+| `X-API-Key` | Your API key |
+| `X-Workspace-Id` | Workspace UUID |
+| `X-EfficientAI-Call-Short-Id` | Six-digit Call ID from session |
+| Span attribute `efficientai.call_short_id` | Same Call ID |
+
+The setup API returns `setup_efficientai_tracing()` examples for non-Pipecat stacks.
+
+---
+
+## Alternative Pipecat integrations
+
+### `PipelineTask` (phone / older style)
+
+```python
+from efficientai.integrations.efficientai_traces import configure_pipecat_tracing
+
+task = PipelineTask(
+    pipeline,
+    **configure_pipecat_tracing(call_short_id=call_short_id),
+)
+```
+
+### Playground WebSocket handshake
+
+```python
+configure_pipecat_tracing(handshake=message)
+```
+
+EfficientAI sends `call_short_id` in the handshake — no manual session call needed.
+
+---
+
+## Example bots (EfficientAI repository)
+
+| Use case | File |
+| --- | --- |
+| Multi-agent WebRTC | `docs/examples/pipecat_multi_agent_webrtc_tracing.py` |
+| Single agent, swap STT/LLM/TTS | `docs/examples/pipecat_multi_provider_webrtc_tracing.py` |
+| Gemini Live / S2S | `docs/examples/pipecat_upstream_webrtc_tracing.py` |
+| Custom WebSocket | `docs/examples/pipecat_upstream_websocket_tracing.py` |
+| Inbound phone (SIP) | `docs/examples/pipecat_inbound_phone_tracing.py` |
+
+---
+
+## Local development (optional)
+
+```bash
+# Terminal 1 — EfficientAI (skip if using staging)
+eai start-all
+
+# Terminal 2 — Pipecat
+EFFICIENTAI_API_BASE=http://localhost:8000
+uv run bot.py
+```
+
+Ensure **`worker-traces`** is running locally (`eai start-all` includes `[WORKER-TRACES]`).
+
+---
+
+## API reference
+
+| Environment | Base |
+| --- | --- |
+| Local | `http://localhost:8000` |
+| Staging | `https://staging.efficientai.cloud` |
+
+### Setup endpoint
+
+```http
+GET /api/v1/observability/traces/setup
+```
+
+Returns the `.env` block, install command, and code snippets for the active workspace.
+
+### Create session
+
+```bash
+curl -X POST https://staging.efficientai.cloud/api/v1/observability/traces/sessions \
+  -H "X-API-Key: <key>" \
+  -H "X-Workspace-Id: <workspace-uuid>" \
+  -H "Content-Type: application/json" \
+  -d '{"transport":"webrtc"}'
+```
+
+### Export spans
+
+```http
+POST /api/v1/observability/traces
+```
+
+| Header | Value |
+| --- | --- |
+| `X-API-Key` | API key |
+| `X-Workspace-Id` | workspace uuid |
+| `X-EfficientAI-Call-Short-Id` | 6-digit call id |
+
+Successful deferred ingest returns **HTTP 202**; the trace row appears in the UI after the worker commits to ClickHouse.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| `Transport 'webrtc' is disabled` | `pip install pipecat-ai[webrtc]` |
+| No traces in UI | Check API key and workspace ID; Refresh; confirm `worker-traces` on server |
+| Delay after hang-up | Normal on deferred ingest — wait for worker (few seconds) |
+| `correlated: false` on ingest | Missing Call ID on spans or headers |
+| Call ID in logs but empty trace | `enable_tracing=True`; install `efficientai[otel]` |
+| Trace stays open | Call `close_trace_session()` on disconnect |
+| Wrong workspace | Workspace ID in `.env` must match the UI workspace |
+| Bot sends traces but UI empty | Set `EFFICIENTAI_API_BASE` to staging, not `localhost` |
+
+---
+
+## Other transports
+
+WebSocket and phone use the same API URL and Call ID rules. See the inbound phone example in the EfficientAI repository.

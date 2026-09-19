@@ -1,0 +1,240 @@
+---
+title: Architecture & scaling
+description: OTLP ingest, storage, Calls hub routing, and capacity planning
+---
+
+# Call Traces — architecture & scaling
+
+Technical overview of how EfficientAI ingests Pipecat OTLP spans, stores traces, and routes the Calls hub UI.
+
+Related: [Overview](/docs/monitoring/call-traces/) · [Latency metrics](/docs/monitoring/call-traces/latency-metrics/) · [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)
+
+---
+
+## Plain-English summary
+
+Customers run **Pipecat voice agents** (or connect Vapi / Retell webhooks). During each call they need **per-turn STT → LLM → TTS latency**, model names, and conversation text — without building Honeycomb or Datadog themselves.
+
+EfficientAI:
+
+1. Mints a **6-digit Call ID** (`call_short_id`) per session.
+2. Ingests **OpenTelemetry spans** from the customer's bot (or in-process from Test Agent playground).
+3. Groups spans into **turn rows**, computes **p50 / p90 / p95**, and shows a **waterfall** in the Calls hub.
+
+**Current (S3 WAL + ClickHouse):** With `defer_parse_to_worker: true` and `clickhouse.url` configured, the API PUTs raw OTLP batches to S3 and enqueues `process_s3_otlp_batch` on `worker-traces`. The worker parses, writes `trace_observations` + `call_traces` in ClickHouse, refreshes Redis live turns, and optionally compacts to `spans.json` on close. Postgres holds control-plane links only (`evaluator_results.synthetic_call_trace_id`). Set `defer_parse_to_worker: false` to parse in API (sync path). Legacy PG staging remains when ClickHouse is not configured.
+
+---
+
+## Problem we solve
+
+| Stakeholder | Need |
+| --- | --- |
+| **Customer engineering** | Drop-in OTLP export from Pipecat |
+| **Sales / solutions** | Honest answers on capacity and how p50 is calculated |
+| **Platform / SRE** | Clear ingest boundaries and storage layout |
+| **PM / frontend** | One Calls hub for OTLP traces and webhook calls — without mixing playground test data |
+
+| Problem | Symptom |
+| --- | --- |
+| No stable call correlation | OTLP batches from concurrent calls land on wrong trace |
+| OTel `trace_id` alone insufficient | Tracer restarts change trace ID; UI needs stable `#482931` |
+| Mixed call sources | Same 6-digit ID in playground vs webhook opens wrong drawer |
+| Playground pollution | Voice AI playground calls in production observability list |
+
+---
+
+## Solution overview
+
+| Mechanism | Purpose |
+| --- | --- |
+| **`call_short_id` minting** | Server assigns 6-digit ID; stamped on every span + OTLP header |
+| **Workspace + org scoping** | API key → org; header → workspace |
+| **Three-table trace storage** | Header (list), turns JSON (waterfall), raw spans (debug) |
+| **Sync OTLP ingest** | HTTP parses, appends spans, rebuilds turns, commits |
+| **Turn mapper + percentiles** | Derives STT / LLM / TTS ms; computes p50 / p90 / p95 |
+| **`source` on `call_recordings`** | `playground` vs `webhook` — API filters + drawer routing |
+| **Idle auto-close (120s)** | Open traces close if spans stop arriving |
+| **Poll-based live SSE** | Webhook calls stream transcript from Postgres |
+
+**Key principle:** Correlate on **`call_short_id`**, not OTel `trace_id` alone.
+
+---
+
+## Architecture diagram
+
+```
+┌──────────────────────── Customer ────────────────────────┐
+│  Pipecat bot (OTLP HTTP)     Vapi / Retell webhooks       │
+└──────────────┬──────────────────────────┬──────────────────┘
+               ▼                          ▼
+┌──────────────────── EfficientAI ──────────────────────────┐
+│  FastAPI observability routes    Playground in-process OTLP │
+└──────────────┬──────────────────┬─────────────────────────┘
+               ▼                  ▼
+        Postgres catalog      S3 (audio, imports)
+        synthetic_call_traces
+        call_recordings
+```
+
+### Data flow
+
+| From | Transport | Lands in |
+| --- | --- | --- |
+| Customer Pipecat bot | `POST /observability/traces` | `synthetic_call_traces` |
+| Playground Test Agent | In-process OTLP exporter | `synthetic_call_traces` |
+| Provider webhooks | `POST /observability/calls/webhook/...` | `call_recordings` (`source=webhook`) |
+| Playground Voice AI | Playground APIs + provider poll | `call_recordings` (`source=playground`) |
+
+---
+
+## Database schema
+
+| Table | Purpose | Size per call |
+| --- | --- | --- |
+| `synthetic_call_traces` | Header: status, p50 / p90 / p95, turn_count | ~1 KB |
+| `synthetic_trace_payloads` | Derived turns JSON (waterfall) | ~2–8 KB |
+| `synthetic_trace_otel_payloads` | Raw spans JSON array | ~50–300 KB |
+
+| `call_recordings` column | Values | Used for |
+| --- | --- | --- |
+| `call_short_id` | 6-digit | All surfaces |
+| `source` | `playground` \| `webhook` | API scoping + drawer routing |
+| `call_data` | Provider JSON | Transcript, cost, latency |
+
+Traces live in **catalog Postgres only** — not sharded like call imports.
+
+---
+
+## Calls hub routing
+
+**Route:** `/observability/calls`
+
+| Tab | List API | Rows |
+| --- | --- | --- |
+| **Traces** | `GET /observability/traces` | OTLP / Pipecat |
+| **Calls** | `GET /observability/calls` | Webhook only (`source=webhook`) |
+
+| User action | Query param | Panel |
+| --- | --- | --- |
+| OTLP trace row | `?trace={uuid}` | Pipeline trace drawer |
+| Webhook call row | `?obs={call_short_id}` | Webhook call drawer |
+| Evaluator link | `?result={evaluator_result_id}` | Evaluator drawer |
+
+| Surface | In Calls hub? |
+| --- | --- |
+| OTLP traces | Yes (Traces tab) |
+| Webhook production calls | Yes (Calls tab) |
+| Playground Test Agent | No |
+| Playground Voice AI | No |
+
+:::caution Same Call ID, different source
+The same 6-digit `call_short_id` can exist in `call_recordings` with `source=playground` vs `source=webhook`. Drawer routing uses `call_recording_source`, not `provider_platform` alone.
+:::
+
+---
+
+## OTLP ingest flow
+
+| Step | Action |
+| --- | --- |
+| 1 | `ensure_trace_session()` mints `call_short_id` |
+| 2 | `setup_pipecat_worker_tracing()` stamps spans + headers |
+| 3 | Pipecat `PipelineWorker(enable_tracing=True)` emits stt / llm / tts spans |
+| 4 | OTel exporter `POST /observability/traces` (~every 5s) |
+| 5 | Ingest dedupes, rebuilds turns, updates p50 / p90 / p95 |
+| 6 | `close_trace_session()` on disconnect |
+
+Every batch for one call: read full spans JSON → append + dedupe → re-derive all turns → recompute percentiles → commit. Cost grows with **total spans × batches**, not just new spans.
+
+---
+
+## Metrics computation
+
+| Stage | Output |
+| --- | --- |
+| Parse spans | Normalized span dicts |
+| Group by turn | `stt_ttfb_ms`, `llm_ttfb_ms`, `tts_ttfb_ms`, `sut_response_latency_ms` |
+| Call percentiles | `response_latency_p50_ms`, `p90`, `p95` |
+| Component percentiles | Per-stage p50 on trace header |
+
+| Turn field | OTLP source |
+| --- | --- |
+| `stt_ttfb_ms` | `metrics.ttfb` on `stt` span (seconds × 1000) |
+| `llm_ttfb_ms` | `metrics.ttfb` on `llm` span |
+| `tts_ttfb_ms` | `metrics.ttfb` on `tts` span |
+| `sut_response_latency_ms` | `turn.user_bot_latency_seconds` on `turn` span |
+
+Full formula and examples: [Latency metrics](/docs/monitoring/call-traces/latency-metrics/).
+
+---
+
+## Scaling
+
+### Baseline (staging pilots)
+
+| Metric | v1 design point |
+| --- | --- |
+| Concurrent OTLP calls per workspace | **10–20** |
+| Spans per call | ~40–120 |
+| OTLP batches per call | ~24–96 (~5s interval) |
+| Ingest p95 @ low concurrency | &lt; 200 ms per batch |
+| Idle auto-close | **120 seconds** |
+
+### Throughput model
+
+| Scenario | Concurrent OTLP | v1 (1 API pod) |
+| --- | --- | --- |
+| Team dev | 5 | Comfortable |
+| Pilot customer | 20 | Comfortable |
+| Single tenant | 100 | Monitor CPU + DB |
+| Multi-tenant | 500+ | Phase 2 required |
+
+### Phase roadmap
+
+| Phase | Changes | Unlocks |
+| --- | --- | --- |
+| **Phase 1 (now)** | Sync ingest, catalog JSONB | Pilots, 10–20 concurrent |
+| **Phase 2** | Celery traces queue, S3 span blobs, rate limits | 100–500 concurrent |
+| **Phase 3** | OTel Collector gRPC, rollups, retention | Enterprise, 2k+ |
+
+---
+
+## Authentication & headers
+
+| Header | Purpose |
+| --- | --- |
+| `X-API-Key` | Organization auth |
+| `X-Workspace-Id` | Tenant isolation |
+| `X-EfficientAI-Call-Short-Id` | Route OTLP batch (or span attribute) |
+
+Key span attributes: `efficientai.call_short_id`, `gen_ai.operation.name` (`stt` / `llm` / `tts`), `metrics.ttfb` (seconds), `turn.number`.
+
+---
+
+## API limits
+
+| Setting | Value |
+| --- | --- |
+| Trace list default / max `limit` | 50 / 200 |
+| Calls hub UI page size | 25 |
+| Open trace idle auto-close | **120 seconds** |
+| `call_short_id` range | 100000–999999 |
+
+| Environment | API base |
+| --- | --- |
+| Local | `http://localhost:8000` |
+| Staging | `https://staging.efficientai.cloud` |
+
+---
+
+## Provider vs OTLP metrics
+
+For Vapi / Retell / ElevenLabs playground calls we **display provider fields** from `call_data`. We do not recompute p50 in our backend for those.
+
+| Source | p50 in UI | Computed by us? |
+| --- | --- | --- |
+| OTLP / Pipecat | `response_latency_p50_ms` | **Yes** |
+| Vapi | `turnLatency`, averages | **No** |
+| Retell | `latency.e2e.p50` | **No** |
+
+See [Latency metrics — OTLP vs provider](/docs/monitoring/call-traces/latency-metrics/#9-otlp-vs-provider-metrics).

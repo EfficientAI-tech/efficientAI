@@ -3,7 +3,7 @@ Base Voice Provider Interface
 All voice providers should inherit from this class
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 
 class BaseVoiceProvider(ABC): 
@@ -113,4 +113,16 @@ class BaseVoiceProvider(ABC):
             True if connection is successful, raises an exception otherwise.
         """
         pass
+
+    def list_agents(self, *, search: Optional[str] = None) -> List[Dict[str, str]]:
+        """
+        List remote voice agents for UI selection.
+
+        Returns:
+            List of {"id": str, "name": str} sorted by name.
+
+        Raises:
+            NotImplementedError: Provider does not support listing agents.
+        """
+        raise NotImplementedError(f"{self.__class__.__name__} does not support listing agents")
 

@@ -23,6 +23,10 @@ function walkDocs(dir) {
 }
 
 function expectedOutPath(slug) {
+  if (slug.endsWith('/index')) {
+    const parent = slug.replace(/\/index$/, '');
+    return path.join(outRoot, 'docs', parent, 'index.html');
+  }
   return path.join(outRoot, 'docs', slug, 'index.html');
 }
 

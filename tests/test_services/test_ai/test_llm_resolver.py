@@ -118,3 +118,25 @@ def test_provider_without_model_does_not_fall_back_to_openai(db_session, org):
 
     assert provider_enum == ModelProvider.CUSTOM
     assert model_str == "openai/gpt-4.1"
+
+
+def test_auto_detect_fireworks_uses_provider_default_not_openai(db_session, org):
+    fireworks_row = AIProvider(
+        id=uuid4(),
+        organization_id=org.id,
+        provider="fireworks",
+        api_key=encrypt_api_key("fw-test"),
+        name="Fireworks direct",
+        is_active=True,
+        is_default=True,
+        routing_mode="direct",
+    )
+    db_session.add(fireworks_row)
+    db_session.commit()
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        org.id, db_session, provider=None, model=None
+    )
+
+    assert provider_enum == ModelProvider.FIREWORKS
+    assert model_str == "gpt-oss-20b"

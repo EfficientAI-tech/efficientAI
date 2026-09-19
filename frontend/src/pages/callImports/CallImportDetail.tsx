@@ -41,6 +41,7 @@ import {
   Loader2,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { itemsOf } from '../../lib/safeData'
 import { copyTextToClipboard } from '../../lib/clipboard'
 import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useToast } from '../../hooks/useToast'
@@ -966,7 +967,7 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.listCallImportEvaluations(id!),
     enabled: !!id,
     refetchInterval: (query) => {
-      const rows = query.state.data?.items || []
+      const rows = itemsOf<CallImportEvaluation>(query.state.data)
       if (rows.some((row) => row.bulk_operation)) {
         return EVALUATION_BULK_OPERATION_POLL_MS
       }
@@ -978,10 +979,10 @@ export default function CallImportDetail() {
 
   const evaluationsWithBulkOperation = useMemo(
     () =>
-      (evaluationsData?.items ?? []).filter((evaluation) =>
+      itemsOf<CallImportEvaluation>(evaluationsData).filter((evaluation) =>
         evaluationHasActiveBulkOperation(evaluation),
       ),
-    [evaluationsData?.items],
+    [evaluationsData],
   )
 
   // Insights tab: fetched lazily so we don't pay for the cross-run
@@ -993,7 +994,7 @@ export default function CallImportDetail() {
     queryFn: () => apiClient.getCallImportInsights(id!),
     enabled: !!id && activeTab === 'insights',
     refetchInterval: () => {
-      const rows = evaluationsData?.items || []
+      const rows = itemsOf<CallImportEvaluation>(evaluationsData)
       if (rows.some((row) => row.bulk_operation)) {
         return EVALUATION_BULK_OPERATION_POLL_MS
       }
@@ -3067,7 +3068,7 @@ export default function CallImportDetail() {
             // run is still in a cancellable state (``pending`` /
             // ``running``) — otherwise the button would be a no-op
             // for the operator and just clutter the toolbar.
-            const items = evaluationsData?.items ?? []
+            const items = itemsOf<CallImportEvaluation>(evaluationsData)
             const cancellableSelected = items.filter(
               (run) =>
                 selectedEvalIds.has(run.id) &&
@@ -3172,7 +3173,7 @@ export default function CallImportDetail() {
                 <tr>
                   <th className="w-10 px-3 py-3">
                     {(() => {
-                      const items = evaluationsData?.items ?? []
+                      const items = itemsOf<CallImportEvaluation>(evaluationsData)
                       const allSelected =
                         items.length > 0 &&
                         items.every((row) => selectedEvalIds.has(row.id))
@@ -3211,7 +3212,7 @@ export default function CallImportDetail() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-            {evaluationsData?.items.map((evaluation: CallImportEvaluation) => {
+            {itemsOf<CallImportEvaluation>(evaluationsData).map((evaluation) => {
               const isSelected = selectedEvalIds.has(evaluation.id)
               const bulkOperationActive = evaluationHasActiveBulkOperation(
                 evaluation,

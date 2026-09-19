@@ -83,6 +83,8 @@ def test_catalog_migration_gaps_detect_missing_prerequisites():
 
 def test_catalog_migration_gaps_empty_when_prerequisites_applied():
     applied = {
+        "084_trace_span_batches",
+        "085_trace_ingest_staging",
         "086_user_session_epoch",
         "087_organization_member_credentials",
         "088_refresh_token_authenticated_org_ids",
