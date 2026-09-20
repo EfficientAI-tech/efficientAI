@@ -91,7 +91,7 @@ const navigationSections: NavSection[] = [
     icon: ScrollText,
     items: [
       { name: 'Partials', href: '/prompt-partials', icon: FileText },
-      { name: 'Optimization', href: '/prompt-optimization', icon: Sparkles, enterpriseFeature: 'gepa_optimization' },
+      { name: 'Optimization', href: '/prompt-optimization', icon: Sparkles },
     ],
   },
   {
@@ -113,8 +113,8 @@ const navigationSections: NavSection[] = [
     title: 'Alerting',
     icon: Bell,
     items: [
-      { name: 'Alerts', href: '/alerts', icon: Bell },
-      { name: 'Alert History', href: '/alerts/history', icon: History },
+      { name: 'Alerts', href: '/alerts', icon: Bell, enterpriseFeature: 'alerts' },
+      { name: 'Alert History', href: '/alerts/history', icon: History, enterpriseFeature: 'alerts' },
     ],
   },
   {

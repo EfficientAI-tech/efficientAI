@@ -27,11 +27,12 @@ from app.models.schemas import MessageResponse
 from app.api.v1.routes.profile import get_current_user
 from app.core.exceptions import StorageError
 from app.core.license import (
-    get_feature_catalog,
-    get_license_info,
-    is_feature_enabled,
     ENTERPRISE_FEATURES,
+    get_feature_catalog,
+    get_features_enabled_for_org,
+    get_license_info,
 )
+from app.core.oss_quotas import get_quota_usage, get_quotas_snapshot
 from app.core.usage_entitlement import get_usage_policy
 
 
@@ -77,16 +78,21 @@ MAX_API_KEYS_PER_USER = 5
 
 
 @router.get("/license-info")
-def license_info(organization_id: UUID = Depends(get_organization_id)):
+def license_info(
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
     """
     Return the current enterprise license status and enabled features.
     When the license is scoped to an org_id, only returns features
     that match the requesting organization.
     """
     data = get_license_info()
-    all_licensed = data.get("features", []) if isinstance(data.get("features"), list) else []
-    enabled_for_org = [f for f in all_licensed if is_feature_enabled(f, organization_id)]
+    enabled_for_org = get_features_enabled_for_org(organization_id)
     usage_policy = get_usage_policy(organization_id)
+    quotas = get_quotas_snapshot(organization_id)
+    quota_usage = get_quota_usage(db, organization_id)
+
     return {
         "is_enterprise": bool(enabled_for_org),
         "enabled_features": enabled_for_org,
@@ -94,6 +100,8 @@ def license_info(organization_id: UUID = Depends(get_organization_id)):
         "feature_catalog": get_feature_catalog(),
         "organization": data.get("org_id"),
         "usage_policy": usage_policy.as_dict(),
+        "quotas": quotas.as_dict(),
+        "quota_usage": quota_usage.as_dict(),
     }
 
 

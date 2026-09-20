@@ -1,0 +1,83 @@
+---
+title: Enterprise
+---
+
+# Enterprise
+
+> **Enterprise quickstart**
+>
+> Set `EFFICIENTAI_LICENSE` (or `license.key` in `config.yml`) with a JWT issued
+> by EfficientAI. Restart the backend and open **Settings → License** (or call
+> `GET /api/v1/settings/license-info`) to verify enabled features.
+
+## Commercial license / license key
+
+EfficientAI uses a **dual-license model** (similar to LiteLLM):
+
+- The open-source core is **MIT** — see the root [LICENSE](https://github.com/EfficientAI-tech/efficientAI/blob/main/LICENSE).
+- Enterprise terms for `enterprise/` and gated product capabilities are in
+  [enterprise/LICENSE.md](https://github.com/EfficientAI-tech/efficientAI/blob/main/enterprise/LICENSE.md).
+
+Enterprise features are unlocked with an **`EFFICIENTAI_LICENSE`** JWT (same
+pattern as LiteLLM's `LITELLM_LICENSE` or Bifrost's `BIFROST_LICENSE`). Contact
+[sales@efficientai.com](mailto:sales@efficientai.com) or visit
+[efficientai.cloud](https://efficientai.cloud).
+
+## Who is Enterprise for?
+
+Enterprise is designed for teams running voice agent evaluation in production where you need stronger identity controls, post-production analytics, and operational governance.
+
+## Open source vs Enterprise
+
+| Capability | Open source | Enterprise |
+|---|---|---|
+| Voice bundles / BYOK | Included | Included |
+| Agents, personas, scenarios | Up to **3 agents** | Unlimited |
+| Metrics | Up to **5 user-created** (+ seeded defaults) | Unlimited |
+| Evaluators | Included | + failure clustering |
+| Prompt optimization (GEPA) | **Included** | Included |
+| Agent playground | Included | Included |
+| Metric Studio | **Not included** | Included |
+| Alerts | **Not included** | Included |
+| LLM gateway (Integrations) | **Not included** | Included |
+| DB sharding (call imports) | **Not included** | Included |
+| Post-production analytics | **Not included** | Call imports |
+| Playground | Agent playground | + Voice playground |
+| Usage history | **7 days** | Unlimited |
+| Usage pricing overrides | **Not included** | Included |
+| IAM / workspaces | **2 members**, **1 workspace** | Unlimited |
+| Auth | API key + local password | OIDC, SAML, SCIM, MFA, audit export |
+
+Existing resources above OSS limits are **grandfathered** (readable/editable);
+new creates require an enterprise license.
+
+## What is Enterprise
+
+Enterprise unlocks production-scale evaluation: bulk call import, voice A/B testing,
+extended usage analytics, alerting, metric studio batch runs, LLM gateway routing,
+and optional SSO / SCIM / MFA.
+
+Any valid enterprise contract (JWT with at least one feature) includes default
+offerings: **alerts**, **metric studio**, **DB sharding**, and **LLM gateway**,
+plus a-la-carte features listed in the JWT.
+
+## Feature IDs
+
+| Feature ID | Enterprise capability |
+|---|---|
+| `call_imports` | Call Imports |
+| `voice_playground` | Voice Playground |
+| `evaluation_clustering` | Evaluation Failure Clustering |
+| `alerts` | Alerting |
+| `metric_studio` | Metric Studio |
+| `db_sharding` | Call-import DB sharding |
+| `llm_gateway` | LLM gateway (Bifrost / LiteLLM Proxy) |
+| `enterprise_platform` | Umbrella — unlocks default offerings only |
+| `oidc_sso` | Enterprise SSO (OIDC) |
+| `saml_sso` | SAML SSO |
+| `scim_provisioning` | SCIM User Provisioning |
+| `mfa_enforce` | Enforced MFA |
+| `audit_export` | Audit Log Export |
+
+Open source deployments keep a **7-day** usage analytics history by default.
+Enterprise licenses remove that cap.

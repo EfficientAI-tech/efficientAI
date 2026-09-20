@@ -117,6 +117,20 @@ export interface UsagePolicy {
   max_history_days: number | null
 }
 
+export interface OssQuotas {
+  max_user_metrics: number | null
+  max_agents: number | null
+  max_org_members: number | null
+  max_workspaces: number | null
+}
+
+export interface OssQuotaUsage {
+  user_metrics: number
+  agents: number
+  org_members: number
+  workspaces: number
+}
+
 export interface LicenseInfoResponse {
   is_enterprise: boolean
   enabled_features: string[]
@@ -124,6 +138,8 @@ export interface LicenseInfoResponse {
   feature_catalog?: EnterpriseFeatureCatalog
   organization?: string
   usage_policy?: UsagePolicy
+  quotas?: OssQuotas
+  quota_usage?: OssQuotaUsage
 }
 
 export interface ReportBranding {

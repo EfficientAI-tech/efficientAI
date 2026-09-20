@@ -15,6 +15,7 @@ from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.core.api_rate_limit import enforce_resource_create_rate_limit
+from app.core.oss_quotas import enforce_oss_quota
 from app.core.auth import Principal
 from app.services.billing.flexprice_service import record_agent_test_setup_generated
 from app.models.database import (
@@ -597,6 +598,7 @@ async def create_agent(
     The agent is stamped with the active workspace from the
     ``X-Workspace-Id`` header (falling back to the org's Default).
     """
+    enforce_oss_quota(db, organization_id, "agents")
     # Validate phone_number is provided when call_medium is phone_call
     if agent.call_medium == CallMediumEnumSchema.PHONE_CALL and not agent.phone_number:
         raise HTTPException(

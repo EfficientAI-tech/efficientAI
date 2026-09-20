@@ -21,6 +21,7 @@ import {
   getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import { useLicenseStore } from '../../store/licenseStore'
 import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
@@ -44,6 +45,8 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
 export default function Integrations() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const isFeatureEnabled = useLicenseStore((s) => s.isFeatureEnabled)
+  const llmGatewayLicensed = isFeatureEnabled('llm_gateway')
   const [showModal, setShowModal] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
   const [integrationType, setIntegrationType] = useState<IntegrationType>(null)
@@ -988,6 +991,14 @@ export default function Integrations() {
                 Route batch and evaluation LLM calls through Bifrost or a self-hosted LiteLLM Proxy. Real-time voice agents are unaffected.
               </p>
 
+              {!llmGatewayLicensed && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  LLM gateway enablement is an Enterprise feature. Set{' '}
+                  <code className="font-mono text-xs bg-amber-100 px-1 rounded">EFFICIENTAI_LICENSE</code>{' '}
+                  to unlock Bifrost / LiteLLM Proxy routing.
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={`px-2.5 py-1 text-xs font-medium rounded-full ${
@@ -1011,9 +1022,12 @@ export default function Integrations() {
                   value={llmGatewayMode}
                   onChange={(e) => setLlmGatewayMode(e.target.value as LLMGatewayMode)}
                   className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  disabled={!llmGatewayLicensed && llmGatewayMode !== 'disabled' && llmGatewayMode !== 'inherit'}
                 >
                   <option value="inherit">Inherit platform default</option>
-                  <option value="enabled">Enabled (use gateway)</option>
+                  <option value="enabled" disabled={!llmGatewayLicensed}>
+                    Enabled (use gateway){!llmGatewayLicensed ? ' — Enterprise' : ''}
+                  </option>
                   <option value="disabled">Disabled (direct to providers)</option>
                 </select>
               </div>

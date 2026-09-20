@@ -13,6 +13,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key, get_workspace_id
+from app.core.oss_quotas import enforce_oss_quota
 from app.services.billing.flexprice_service import record_metrics_llm_assist
 from app.models.database import Metric, MetricCategory, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
@@ -240,6 +241,7 @@ def create_metric(
     ``parent_metric_id`` is set so a stale UI can't accidentally split
     a tree across workspaces or scopes.
     """
+    enforce_oss_quota(db, organization_id, "metrics")
     _validate_hierarchy_fields(
         organization_id,
         db,
@@ -359,6 +361,7 @@ def create_metric_draft(
     db: Session = Depends(get_db),
 ):
     """Create a draft metric for Metrics Studio (hidden from production flows)."""
+    enforce_oss_quota(db, organization_id, "metrics")
     _validate_hierarchy_fields(
         organization_id,
         db,
@@ -455,6 +458,12 @@ def _create_metric_with_children(
     lifecycle: str = "active",
     studio_notes: Optional[str] = None,
 ) -> Metric:
+    enforce_oss_quota(
+        db,
+        organization_id,
+        "metrics",
+        additional=1 + len(payload.children),
+    )
     if payload.selection_mode not in _VALID_SELECTION_MODES:
         raise HTTPException(
             status_code=400,
@@ -686,6 +695,7 @@ def add_metric_child(
     db: Session = Depends(get_db),
 ):
     """Append a new child sub-metric under an existing parent."""
+    enforce_oss_quota(db, organization_id, "metrics")
 
     parent = (
         db.query(Metric)

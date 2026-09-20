@@ -91,6 +91,7 @@ def _scrub_for_response(
 
 def _validate_routing_and_api_key(
     *,
+    organization_id: UUID,
     routing_mode: CredentialRoutingMode,
     api_key: Optional[str],
     gateway_model: Optional[str],
@@ -99,14 +100,17 @@ def _validate_routing_and_api_key(
     mode = routing_mode.value if hasattr(routing_mode, "value") else str(routing_mode)
     trimmed_key = (api_key or "").strip()
 
+    if mode == CredentialRoutingMode.GATEWAY.value:
+        from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+
+        assert_llm_gateway_entitlement(organization_id)
+        return
+
     if mode == CredentialRoutingMode.DIRECT.value and not trimmed_key and not has_existing_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="api_key is required when routing_mode is direct.",
         )
-
-    if mode == CredentialRoutingMode.GATEWAY.value:
-        return
 
     if mode == CredentialRoutingMode.INHERIT.value:
         if not trimmed_key and not has_existing_key:
@@ -153,6 +157,7 @@ async def create_aiprovider(
     provider_value = aiprovider.provider.value if hasattr(aiprovider.provider, 'value') else aiprovider.provider
 
     _validate_routing_and_api_key(
+        organization_id=organization_id,
         routing_mode=aiprovider.routing_mode,
         api_key=aiprovider.api_key,
         gateway_model=aiprovider.gateway_model,
@@ -287,6 +292,7 @@ async def update_aiprovider(
 
     if "routing_mode" in update_data or "api_key" in update_data or "gateway_model" in update_data:
         _validate_routing_and_api_key(
+            organization_id=organization_id,
             routing_mode=next_routing_mode,
             api_key=next_api_key,
             gateway_model=next_gateway_model,

@@ -9,12 +9,15 @@ import type { Workspace } from '../types/api'
 import { useCanWrite } from '../hooks/useRole'
 import { useWorkspaceStore } from '../store/workspaceStore'
 import CreateWorkspaceModal from './CreateWorkspaceModal'
+import { useOssQuotas } from '../hooks/useOssQuotas'
 
 export default function WorkspaceSwitcher() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
   const canWrite = useCanWrite()
+  const { isAtLimit, limitMessage } = useOssQuotas()
+  const canCreateWorkspace = canWrite && !isAtLimit('workspaces')
   const activeId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const switchWorkspace = useWorkspaceStore((s) => s.switchWorkspace)
   const setActiveCapabilities = useWorkspaceStore((s) => s.setActiveCapabilities)
@@ -100,6 +103,7 @@ export default function WorkspaceSwitcher() {
   }
 
   const openCreateModal = () => {
+    if (isAtLimit('workspaces')) return
     setOpen(false)
     setShowCreateModal(true)
   }
@@ -140,11 +144,12 @@ export default function WorkspaceSwitcher() {
             <div className="absolute left-0 right-0 mt-2 bg-white rounded-lg shadow-lg border border-gray-200 z-20 overflow-hidden">
               <div className="px-4 py-2 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center justify-between">
                 <span>Workspaces</span>
-                {canWrite && (
+                {canCreateWorkspace && (
                   <button
                     type="button"
                     onClick={openCreateModal}
                     className="text-primary-600 hover:text-primary-700 normal-case font-medium flex items-center gap-1"
+                    title={isAtLimit('workspaces') ? limitMessage('workspaces') : undefined}
                   >
                     <Plus className="h-3 w-3" /> New
                   </button>
@@ -155,7 +160,7 @@ export default function WorkspaceSwitcher() {
                 {workspaces.length === 0 && !isLoading && (
                   <div className="px-4 py-3 text-sm text-gray-500">
                     No workspaces available.
-                    {canWrite && (
+                    {canCreateWorkspace && (
                       <button
                         type="button"
                         onClick={openCreateModal}

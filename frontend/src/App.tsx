@@ -186,7 +186,7 @@ function App() {
           <Route path="agents/:id" element={<AgentsWorkspace />} />
           <Route path="personas" element={<Personas />} />
           <Route path="scenarios" element={<Scenarios />} />
-          <Route path="metrics" element={<Navigate to="/metrics-management/studio" replace />} />
+          <Route path="metrics" element={<Navigate to="/metrics-management" replace />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="telephony-numbers" element={<TelephonyNumbers />} />
           <Route path="data-sources" element={<DataSources />} />
@@ -195,8 +195,8 @@ function App() {
           <Route path="evaluate-test-agents/:id" element={<EvaluatorDetail />} />
           <Route path="metrics-management" element={<MetricsLayout />}>
             <Route index element={<MetricsManagement />} />
-            <Route path="studio" element={<MetricsStudio />} />
-            <Route path="studio/runs/:runId" element={<MetricsStudioRunDetail />} />
+            <Route path="studio" element={<EnterpriseGate feature="metric_studio"><MetricsStudio /></EnterpriseGate>} />
+            <Route path="studio/runs/:runId" element={<EnterpriseGate feature="metric_studio"><MetricsStudioRunDetail /></EnterpriseGate>} />
           </Route>
           <Route path="results" element={<ResultsHub />} />
           <Route path="results/unassigned" element={<ResultsUnassigned />} />
@@ -222,9 +222,9 @@ function App() {
           />
           <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />
-          <Route path="alerts" element={<Alerts />} />
-          <Route path="alerts/:id" element={<AlertDetail />} />
-          <Route path="alerts/history" element={<AlertHistory />} />
+          <Route path="alerts" element={<EnterpriseGate feature="alerts"><Alerts /></EnterpriseGate>} />
+          <Route path="alerts/:id" element={<EnterpriseGate feature="alerts"><AlertDetail /></EnterpriseGate>} />
+          <Route path="alerts/history" element={<EnterpriseGate feature="alerts"><AlertHistory /></EnterpriseGate>} />
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
@@ -245,7 +245,7 @@ function App() {
             path="call-imports/:id/evaluations/:evalId"
             element={<EnterpriseGate feature="call_imports"><CallImportEvaluationDetail /></EnterpriseGate>}
           />
-          <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
+          <Route path="prompt-optimization" element={<PromptOptimization />} />
           <Route path="judge-alignment" element={<JudgeAlignment />} />
           <Route path="judge-alignment/datasets/:datasetId" element={<JudgeDatasetDetail />} />
         </Route>

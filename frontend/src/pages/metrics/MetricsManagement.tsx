@@ -6,6 +6,7 @@ import Button from '../../components/Button'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { useToast } from '../../hooks/useToast'
+import { useOssQuotas } from '../../hooks/useOssQuotas'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import {
   Copy,
@@ -198,7 +199,16 @@ export default function MetricsManagement({
   // the previously-loaded metric library.
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { showToast, ToastContainer } = useToast()
+  const { isAtLimit, limitMessage } = useOssQuotas()
   const [showCreateModal, setShowCreateModal] = useState(false)
+
+  const tryOpenCreateModal = () => {
+    if (isAtLimit('user_metrics')) {
+      showToast(limitMessage('user_metrics'), 'error')
+      return
+    }
+    setShowCreateModal(true)
+  }
   const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
   const [showEnableModal, setShowEnableModal] = useState(false)
   // The unified "Create Metric" modal hosts two flows — pick the
@@ -676,6 +686,11 @@ export default function MetricsManagement({
 
   useEffect(() => {
     if (createModalOnly && createModalOpen) {
+      if (isAtLimit('user_metrics')) {
+        showToast(limitMessage('user_metrics'), 'error')
+        onCreateModalClose?.()
+        return
+      }
       setShowCreateModal(true)
       setIsCustomMetricMode(true)
       setEditingMetric(null)
@@ -1185,6 +1200,10 @@ export default function MetricsManagement({
         setFormData(singleFormFromMetricClipboard(payload, targetScope))
         resetCategoryForm()
       }
+      if (isAtLimit('user_metrics')) {
+        showToast(limitMessage('user_metrics'), 'error')
+        return
+      }
       setShowCreateModal(true)
       showToast('Metric pasted — review scope and save', 'success')
     } catch (err) {
@@ -1516,10 +1535,15 @@ export default function MetricsManagement({
                 scope: 'workspace',
               })
               resetCategoryForm()
-              setShowCreateModal(true)
+              tryOpenCreateModal()
             }}
             leftIcon={<Plus className="w-4 h-4" />}
-            title="Create a single custom metric or a parent category with sub-labels — switch flows from inside the modal"
+            disabled={isAtLimit('user_metrics')}
+            title={
+              isAtLimit('user_metrics')
+                ? limitMessage('user_metrics')
+                : 'Create a single custom metric or a parent category with sub-labels — switch flows from inside the modal'
+            }
           >
             Create Custom Metric
           </Button>

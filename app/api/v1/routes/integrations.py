@@ -72,6 +72,12 @@ async def create_integration(
     Requires at least WRITER role.
     """
     from sqlalchemy import func
+    from app.models.enums import CredentialRoutingMode
+    from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+
+    if integration_data.routing_mode == CredentialRoutingMode.GATEWAY:
+        assert_llm_gateway_entitlement(organization_id)
+
     platform_value = integration_data.platform.value if hasattr(integration_data.platform, 'value') else integration_data.platform
 
     user_details = None
@@ -282,6 +288,11 @@ async def update_integration(
         integration.is_active = integration_update.is_active
 
     if integration_update.routing_mode is not None:
+        from app.models.enums import CredentialRoutingMode
+        from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+
+        if integration_update.routing_mode == CredentialRoutingMode.GATEWAY:
+            assert_llm_gateway_entitlement(organization_id)
         integration.routing_mode = integration_update.routing_mode.value
     
     db.commit()

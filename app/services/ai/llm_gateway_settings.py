@@ -144,6 +144,27 @@ def get_org_settings(organization_id: UUID, db: Session) -> Dict[str, Any]:
     }
 
 
+def assert_llm_gateway_entitlement(organization_id: UUID) -> None:
+    """Raise 403 when LLM gateway enablement requires an enterprise license."""
+    from app.core.license import is_feature_enabled
+
+    if is_feature_enabled("llm_gateway", organization_id):
+        return
+
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "enterprise_feature_required",
+            "feature": "llm_gateway",
+            "message": (
+                "'llm_gateway' is an EfficientAI Enterprise feature. "
+                "Please set EFFICIENTAI_LICENSE in your environment to unlock it. "
+                "Contact sales@efficientai.com to get an enterprise license key."
+            ),
+        },
+    )
+
+
 def set_org_settings(
     organization_id: UUID,
     db: Session,
@@ -161,6 +182,9 @@ def set_org_settings(
     org = db.query(Organization).filter(Organization.id == organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
+
+    if mode == "enabled":
+        assert_llm_gateway_entitlement(organization_id)
 
     existing = dict(org.llm_gateway_settings or {})
     platform = _platform_config()

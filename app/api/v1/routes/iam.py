@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import secrets
 
 from app.dependencies import get_db, get_organization_id, get_api_key
+from app.core.oss_quotas import enforce_oss_quota
 from app.core.auth import Principal, get_principal
 from app.core.auth.rbac import require_admin
 from app.models.database import (
@@ -282,6 +283,7 @@ async def invite_user(
     Invite a user to the organization.
     Requires ADMIN role.
     """
+    enforce_oss_quota(db, organization_id, "org_members")
     # Check if user already exists
     existing_user = db.query(User).filter(User.email == invitation_data.email).first()
     

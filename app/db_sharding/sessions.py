@@ -34,4 +34,25 @@ def row_shard_session(
 
 
 def is_sharding_enabled() -> bool:
-    return db_pool_manager.sharding_enabled
+    if not db_pool_manager.sharding_enabled:
+        return False
+
+    from app.core.license import is_feature_enabled
+    from app.core.usage_entitlement import deployment_has_entitlement
+    from loguru import logger
+
+    if not deployment_has_entitlement():
+        logger.warning(
+            "DB_SHARDING_ENABLED is true but no deployment-wide enterprise "
+            "license is present — sharding remains disabled."
+        )
+        return False
+
+    if not is_feature_enabled("db_sharding"):
+        logger.warning(
+            "DB_SHARDING_ENABLED is true but db_sharding is not enabled "
+            "by the enterprise license — sharding remains disabled."
+        )
+        return False
+
+    return True

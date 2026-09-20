@@ -13,6 +13,7 @@ import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { buildInviteShareUrl } from '../../lib/inviteUrl'
+import { useOssQuotas } from '../../hooks/useOssQuotas'
 
 type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
 
@@ -26,6 +27,7 @@ export default function IAM() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const isAdmin = useIsAdmin()
+  const { isAtLimit, limitMessage } = useOssQuotas()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
   const activeTab: IamTab =
@@ -325,8 +327,16 @@ export default function IAM() {
         {isAdmin && activeTab === 'organization' && (
           <Button
             variant="primary"
-            onClick={() => setShowInviteModal(true)}
+            onClick={() => {
+              if (isAtLimit('org_members')) {
+                showToast(limitMessage('org_members'), 'error')
+                return
+              }
+              setShowInviteModal(true)
+            }}
             leftIcon={<UserPlus className="h-5 w-5" />}
+            disabled={isAtLimit('org_members')}
+            title={isAtLimit('org_members') ? limitMessage('org_members') : undefined}
           >
             Invite User
           </Button>

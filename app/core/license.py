@@ -33,11 +33,6 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "A/B test TTS providers with blind tests and quality analytics.",
         "category": "playground",
     },
-    "gepa_optimization": {
-        "title": "Prompt Optimization",
-        "description": "Self-improving voice agents via reflective prompt evolution.",
-        "category": "optimization",
-    },
     "call_imports": {
         "title": "Call Imports",
         "description": "Bulk-import production call recordings via CSV and run batch evaluations on them.",
@@ -47,6 +42,36 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "title": "Evaluation Failure Clustering",
         "description": "Cluster failed evaluation runs from LLM rationales to surface recurring failure patterns.",
         "category": "evaluation",
+    },
+    "alerts": {
+        "title": "Alerting",
+        "description": "Threshold-based alerts on evaluation metrics with email and webhook notifications.",
+        "category": "monitoring",
+    },
+    "metric_studio": {
+        "title": "Metric Studio",
+        "description": "Batch ad-hoc metric scoring runs against evaluation results and call imports.",
+        "category": "evaluation",
+    },
+    "db_sharding": {
+        "title": "Call Import DB Sharding",
+        "description": "Horizontally shard call-import row storage across multiple database nodes.",
+        "category": "operations",
+    },
+    "llm_gateway": {
+        "title": "LLM Gateway",
+        "description": "Route batch LLM workloads through Bifrost or LiteLLM Proxy from Integrations.",
+        "category": "integrations",
+    },
+    "enterprise_platform": {
+        "title": "Enterprise Platform",
+        "description": "Unlocks default enterprise offerings (alerts, metric studio, sharding, gateway).",
+        "category": "platform",
+    },
+    "gepa_optimization": {
+        "title": "Prompt Optimization",
+        "description": "Self-improving voice agents via reflective prompt evolution (GEPA). Open source — catalog entry kept for legacy JWT compatibility.",
+        "category": "optimization",
     },
     # --- Authentication features (gate pluggable auth providers) ---
     "oidc_sso": {
@@ -88,6 +113,14 @@ AUTH_FEATURES: List[str] = [
 
 # Backward-compatible export used by existing API response shape.
 ENTERPRISE_FEATURES = list(FEATURE_CATALOG.keys())
+
+# Included with any valid enterprise contract (JWT with at least one catalog feature).
+DEFAULT_ENTERPRISE_OFFERINGS: List[str] = [
+    "alerts",
+    "metric_studio",
+    "db_sharding",
+    "llm_gateway",
+]
 
 # RSA public key used to verify enterprise license JWTs.
 # The corresponding private key is kept offline by the EfficientAI team.
@@ -173,26 +206,52 @@ def get_licensed_org_id() -> Optional[str]:
     return get_license_info().get("org_id")
 
 
+def _license_applies_to_org(organization_id: Optional[UUID] = None) -> bool:
+    """True when a valid JWT is present and applies to the given organization."""
+    if not get_enabled_features():
+        return False
+
+    licensed_org = get_license_info().get("org_id")
+    if licensed_org is None:
+        return True
+
+    if organization_id is None:
+        return False
+
+    return str(organization_id) == str(licensed_org)
+
+
 def is_feature_enabled(feature: str, organization_id: Optional[UUID] = None) -> bool:
     """
     Check whether an enterprise feature is enabled.
 
     If the license contains an org_id, the requesting organization must match.
     If org_id is absent from the license, the feature is enabled deployment-wide.
-    """
-    info = get_license_info()
-    if feature not in get_enabled_features():
-        return False
 
-    licensed_org = info.get("org_id")
-    if licensed_org is None:
+    Features in ``DEFAULT_ENTERPRISE_OFFERINGS`` are enabled for any org with
+    a valid enterprise entitlement, even when omitted from the JWT feature list.
+    """
+    if feature in get_enabled_features():
+        return _license_applies_to_org(organization_id)
+
+    if feature in DEFAULT_ENTERPRISE_OFFERINGS and _license_applies_to_org(
+        organization_id
+    ):
         return True
 
-    # For org-scoped licenses, we require a concrete requesting organization.
-    if organization_id is None:
-        return False
+    return False
 
-    return str(organization_id) == str(licensed_org)
+
+def get_features_enabled_for_org(organization_id: Optional[UUID] = None) -> List[str]:
+    """Return all feature IDs enabled for an organization (JWT + default offerings)."""
+    enabled: List[str] = []
+    seen: set[str] = set()
+    for feature_id in FEATURE_CATALOG:
+        if is_feature_enabled(feature_id, organization_id):
+            if feature_id not in seen:
+                enabled.append(feature_id)
+                seen.add(feature_id)
+    return enabled
 
 
 def has_auth_feature(feature: str) -> bool:
