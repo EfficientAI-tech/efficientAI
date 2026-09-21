@@ -18,6 +18,8 @@ import {
   type LLMGenerationConfig,
 } from '../../../config/llmGenerationParams'
 import Button from '../../../components/Button'
+import { resolveActiveAIProvider } from '../../../lib/gatewayRouting'
+import { resolveLLMModelsForCredential } from '../../../lib/llmModelOptions'
 import ParamSlider from './ParamSlider'
 
 type ModelOptionsCache = Record<
@@ -133,6 +135,44 @@ export default function VoiceBundleParamsModal({
   const sttOptions = optionsFor(bundle.stt_provider)
   const llmOptions = optionsFor(bundle.llm_provider)
   const ttsOptions = optionsFor(bundle.tts_provider)
+
+  const editorActive =
+    open || mode === 'expanded' || (mode === 'collapsible' && inlineExpanded)
+
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['aiproviders'],
+    queryFn: () => apiClient.listAIProviders(),
+    staleTime: 5 * 60 * 1000,
+    enabled: editorActive,
+  })
+
+  const llmCredential = useMemo(() => {
+    if (!bundle.llm_provider) return undefined
+    return resolveActiveAIProvider(
+      aiProviders,
+      bundle.llm_provider,
+      bundle.llm_credential_id,
+    )
+  }, [aiProviders, bundle.llm_provider, bundle.llm_credential_id])
+
+  const llmModelResolution = useMemo(() => {
+    const catalog = llmOptions?.llm ?? []
+    return resolveLLMModelsForCredential(llmCredential, catalog)
+  }, [llmCredential, llmOptions?.llm])
+
+  const resolvedGatewayDirectModel =
+    llmModelResolution.mode === 'gateway_direct' ? llmModelResolution.model : null
+
+  const llmModelSelectOptions = useMemo(() => {
+    if (resolvedGatewayDirectModel) return []
+    const enabled =
+      llmModelResolution.mode === 'catalog' ? llmModelResolution.models : []
+    if (draft.llm_model && !enabled.includes(draft.llm_model)) {
+      return [draft.llm_model, ...enabled]
+    }
+    if (enabled.length > 0) return enabled
+    return [draft.llm_model].filter(Boolean)
+  }, [resolvedGatewayDirectModel, llmModelResolution, draft.llm_model])
 
   const ttsVoices =
     bundle.tts_provider && bundle.tts_model
@@ -259,19 +299,34 @@ export default function VoiceBundleParamsModal({
             <label htmlFor={`${idPrefix}-llm-model`} className="block text-xs font-medium text-gray-600 mb-1">
               Model
             </label>
-            <select
-              id={`${idPrefix}-llm-model`}
-              disabled={disabled || !bundle.llm_provider}
-              value={draft.llm_model}
-              onChange={(e) => setDraft((p) => ({ ...p, llm_model: e.target.value }))}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
-            >
-              {(llmOptions?.llm || [draft.llm_model].filter(Boolean)).map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+            {resolvedGatewayDirectModel ? (
+              <>
+                <div
+                  id={`${idPrefix}-llm-model`}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                  title={resolvedGatewayDirectModel}
+                >
+                  {resolvedGatewayDirectModel}
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Model is fixed on the integration — Bifrost gateway routing applies.
+                </p>
+              </>
+            ) : (
+              <select
+                id={`${idPrefix}-llm-model`}
+                disabled={disabled || !bundle.llm_provider}
+                value={draft.llm_model}
+                onChange={(e) => setDraft((p) => ({ ...p, llm_model: e.target.value }))}
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-primary-500"
+              >
+                {llmModelSelectOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
         <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">

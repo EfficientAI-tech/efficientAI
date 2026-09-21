@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
 import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check, Lock } from 'lucide-react'
@@ -28,6 +29,11 @@ const IAM_TABS: {
   { id: 'workspace-members', label: 'Workspace Members', icon: Users, enterpriseOnly: true },
   { id: 'workspace-roles', label: 'Workspace Roles', icon: Shield, adminOnly: true, enterpriseOnly: true },
 ]
+
+function renderIamModal(content: ReactNode) {
+  if (typeof document === 'undefined') return null
+  return createPortal(content, document.body)
+}
 
 export default function IAM() {
   const queryClient = useQueryClient()
@@ -710,70 +716,85 @@ export default function IAM() {
       )}
 
       {/* Invite Modal */}
-      {showInviteModal && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Invite User</h3>
-              <button
-                onClick={() => setShowInviteModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleInvite} className="p-6 space-y-4">
-              <div>
-                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-                  Email Address
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="user@example.com"
-                />
-              </div>
-              <div>
-                <label htmlFor="role" className="block text-sm font-medium text-gray-700 mb-1">
-                  Role
-                </label>
-                <select
-                  id="role"
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value as Role)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                >
-                  <option value={Role.READER}>Reader - View only</option>
-                  <option value={Role.WRITER}>Writer - Create and edit</option>
-                  <option value={Role.ADMIN}>Admin - Full access</option>
-                </select>
-              </div>
-              <div className="flex gap-3 pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
+      {showInviteModal &&
+        renderIamModal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden">
+            <div
+              className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm"
+              onClick={() => setShowInviteModal(false)}
+              aria-hidden
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="invite-user-title"
+              className="relative z-[10000] bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 id="invite-user-title" className="text-lg font-semibold">
+                  Invite User
+                </h3>
+                <button
                   onClick={() => setShowInviteModal(false)}
-                  className="flex-1"
+                  className="text-gray-400 hover:text-gray-600"
+                  type="button"
+                  aria-label="Close"
                 >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  isLoading={inviteMutation.isPending}
-                  className="flex-1"
-                >
-                  Create Invitation
-                </Button>
+                  <X className="h-5 w-5" />
+                </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+              <form onSubmit={handleInvite} className="p-6 space-y-4">
+                <div>
+                  <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    id="email"
+                    type="email"
+                    required
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="user@example.com"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="role" className="block text-sm font-medium text-gray-700 mb-1">
+                    Role
+                  </label>
+                  <select
+                    id="role"
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as Role)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value={Role.READER}>Reader - View only</option>
+                    <option value={Role.WRITER}>Writer - Create and edit</option>
+                    <option value={Role.ADMIN}>Admin - Full access</option>
+                  </select>
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setShowInviteModal(false)}
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    isLoading={inviteMutation.isPending}
+                    className="flex-1"
+                  >
+                    Create Invitation
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+        )}
 
       <ConfirmModal
         isOpen={showRemoveModal && !!memberToRemove}
@@ -819,26 +840,36 @@ export default function IAM() {
       </ConfirmModal>
 
       {/* Admin Reset Password Modal */}
-      {showResetPasswordModal && memberToResetPassword && (
-        <div
-          className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
-          onClick={closeResetPasswordModal}
-        >
-          <div
-            className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Reset User Password</h3>
-              <button
-                onClick={closeResetPasswordModal}
-                className="text-gray-400 hover:text-gray-600"
-                type="button"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleResetPasswordSubmit} className="p-6 space-y-4">
+      {showResetPasswordModal &&
+        memberToResetPassword &&
+        renderIamModal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden">
+            <div
+              className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm"
+              onClick={closeResetPasswordModal}
+              aria-hidden
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="reset-password-title"
+              className="relative z-[10000] bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 id="reset-password-title" className="text-lg font-semibold text-gray-900">
+                  Reset User Password
+                </h3>
+                <button
+                  onClick={closeResetPasswordModal}
+                  className="text-gray-400 hover:text-gray-600"
+                  type="button"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <form onSubmit={handleResetPasswordSubmit} className="p-6 space-y-4">
               <div className="flex items-start gap-4">
                 <div className="flex-shrink-0">
                   <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
@@ -957,9 +988,9 @@ export default function IAM() {
                 </Button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+            </div>
+          </div>,
+        )}
 
       <ConfirmModal
         isOpen={showCancelModal && !!invitationToCancel}

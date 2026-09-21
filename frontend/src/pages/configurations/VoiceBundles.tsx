@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { createPortal } from 'react-dom'
@@ -15,7 +15,12 @@ import {
   summarizeLLMConfig,
   type LLMGenerationConfig,
 } from '../../config/llmGenerationParams'
-import { hasGatewayLLMCredential, providerHasLLMModels } from '../../lib/llmModelOptions'
+import { resolveActiveAIProvider } from '../../lib/gatewayRouting'
+import {
+  hasGatewayLLMCredential,
+  providerHasLLMModels,
+  resolveLLMModelsForCredential,
+} from '../../lib/llmModelOptions'
 
 export default function VoiceBundles() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -469,14 +474,37 @@ export default function VoiceBundles() {
     }
   }
 
+  const resolveLlmModelsForSelection = (
+    provider: ModelProvider,
+    credentialId: string | null = null,
+  ) => {
+    const catalog = getModelOptions(provider).llm
+    const credential = resolveActiveAIProvider(aiproviders, provider, credentialId)
+    const resolution = resolveLLMModelsForCredential(credential, catalog)
+    if (resolution.mode === 'gateway_direct') {
+      return { models: [] as string[], gatewayModel: resolution.model }
+    }
+    return { models: resolution.models, gatewayModel: null as string | null }
+  }
+
   const updateModelOptions = (type: 'stt' | 'llm' | 'tts' | 's2s', provider: ModelProvider) => {
     const options = getModelOptions(provider)
     const models = options[type]
+    if (type === 'llm') {
+      const { models: enabledModels, gatewayModel } = resolveLlmModelsForSelection(provider)
+      if (gatewayModel || enabledModels.length > 0) {
+        setFormData({
+          ...formData,
+          llm_provider: provider,
+          llm_model: gatewayModel ?? enabledModels[0] ?? '',
+          llm_credential_id: null,
+        })
+      }
+      return
+    }
     if (models.length > 0) {
       if (type === 'stt') {
         setFormData({ ...formData, stt_provider: provider, stt_model: models[0], stt_credential_id: null })
-      } else if (type === 'llm') {
-        setFormData({ ...formData, llm_provider: provider, llm_model: models[0], llm_credential_id: null })
       } else if (type === 'tts') {
         const firstModel = models[0]
         const voices = options.tts_voices?.[firstModel] || []
@@ -933,6 +961,72 @@ function VoiceBundleModal({
   const ttsProviders = configuredProviders.filter((provider) => getModelOptions(provider).tts.length > 0)
   const s2sProviders = configuredProviders.filter((provider) => getModelOptions(provider).s2s.length > 0)
 
+  const llmCredential = useMemo(() => {
+    if (!formData.llm_provider) return undefined
+    return resolveActiveAIProvider(
+      aiProviders,
+      formData.llm_provider,
+      formData.llm_credential_id,
+    )
+  }, [aiProviders, formData.llm_provider, formData.llm_credential_id])
+
+  const llmModelResolution = useMemo(() => {
+    if (!formData.llm_provider) {
+      return { mode: 'catalog' as const, models: [] as string[] }
+    }
+    const catalog = getModelOptions(formData.llm_provider).llm
+    return resolveLLMModelsForCredential(llmCredential, catalog)
+  }, [formData.llm_provider, llmCredential, getModelOptions])
+
+  const resolvedGatewayDirectModel =
+    llmModelResolution.mode === 'gateway_direct' ? llmModelResolution.model : null
+
+  const enabledLlmModels =
+    llmModelResolution.mode === 'gateway_direct'
+      ? []
+      : llmModelResolution.models
+
+  const llmModelSelectOptions = useMemo(() => {
+    if (resolvedGatewayDirectModel) return []
+    if (formData.llm_model && !enabledLlmModels.includes(formData.llm_model)) {
+      return [formData.llm_model, ...enabledLlmModels]
+    }
+    return enabledLlmModels
+  }, [resolvedGatewayDirectModel, enabledLlmModels, formData.llm_model])
+
+  const llmSelectionRef = useRef({
+    provider: formData.llm_provider,
+    credentialId: formData.llm_credential_id,
+  })
+
+  useEffect(() => {
+    const prev = llmSelectionRef.current
+    const selectionChanged =
+      prev.provider !== formData.llm_provider ||
+      prev.credentialId !== formData.llm_credential_id
+    llmSelectionRef.current = {
+      provider: formData.llm_provider,
+      credentialId: formData.llm_credential_id,
+    }
+    if (!selectionChanged || !formData.llm_provider) return
+
+    if (resolvedGatewayDirectModel) {
+      if (formData.llm_model !== resolvedGatewayDirectModel) {
+        setFormData({ ...formData, llm_model: resolvedGatewayDirectModel })
+      }
+      return
+    }
+    if (enabledLlmModels.length === 0) return
+    if (formData.llm_model && enabledLlmModels.includes(formData.llm_model)) return
+    setFormData({ ...formData, llm_model: enabledLlmModels[0] })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    formData.llm_provider,
+    formData.llm_credential_id,
+    resolvedGatewayDirectModel,
+    enabledLlmModels,
+  ])
+
   useEffect(() => {
     const handleSttClickOutside = (event: MouseEvent) => {
       if (sttDropdownRef.current && !sttDropdownRef.current.contains(event.target as Node)) {
@@ -1248,24 +1342,43 @@ function VoiceBundleModal({
                   <label htmlFor="llm_model" className="block text-sm font-medium text-gray-700 mb-1">
                     Model *
                   </label>
-                  <select
-                    id="llm_model"
-                    required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
-                    value={formData.llm_model || ''}
-                    onChange={(e) => setFormData({ ...formData, llm_model: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    disabled={!formData.llm_provider}
-                  >
-                    {formData.llm_provider ? (
-                      getModelOptions(formData.llm_provider).llm.map((model: string) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">Select provider first</option>
-                    )}
-                  </select>
+                  {resolvedGatewayDirectModel ? (
+                    <>
+                      <div
+                        id="llm_model"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 truncate"
+                        title={resolvedGatewayDirectModel}
+                      >
+                        {resolvedGatewayDirectModel}
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Model is fixed on the integration — Bifrost gateway routing applies.
+                      </p>
+                    </>
+                  ) : (
+                    <select
+                      id="llm_model"
+                      required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                      value={formData.llm_model || ''}
+                      onChange={(e) => setFormData({ ...formData, llm_model: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      disabled={!formData.llm_provider}
+                    >
+                      {formData.llm_provider ? (
+                        llmModelSelectOptions.length > 0 ? (
+                          llmModelSelectOptions.map((model: string) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))
+                        ) : (
+                          <option value="">No enabled models for this integration</option>
+                        )
+                      ) : (
+                        <option value="">Select provider first</option>
+                      )}
+                    </select>
+                  )}
                 </div>
                 <div className="md:col-span-2">
                   <LLMAdvancedOptionsPanel
@@ -1285,7 +1398,33 @@ function VoiceBundleModal({
                   'llm',
                   formData.llm_provider,
                   formData.llm_credential_id,
-                  (id) => setFormData({ ...formData, llm_credential_id: id }),
+                  (id) => {
+                    if (!formData.llm_provider) {
+                      setFormData({ ...formData, llm_credential_id: id })
+                      return
+                    }
+                    const catalog = getModelOptions(formData.llm_provider).llm
+                    const credential = resolveActiveAIProvider(
+                      aiProviders,
+                      formData.llm_provider,
+                      id,
+                    )
+                    const resolution = resolveLLMModelsForCredential(credential, catalog)
+                    let nextModel = formData.llm_model ?? ''
+                    if (resolution.mode === 'gateway_direct') {
+                      nextModel = resolution.model
+                    } else if (
+                      !resolution.models.includes(nextModel) &&
+                      resolution.models.length > 0
+                    ) {
+                      nextModel = resolution.models[0]
+                    }
+                    setFormData({
+                      ...formData,
+                      llm_credential_id: id,
+                      llm_model: nextModel,
+                    })
+                  },
                 )}
               </div>
             </div>
