@@ -34,8 +34,9 @@ function routeExists(routePath) {
 
   for (const candidate of candidates) {
     const asFile = path.join(docsRoot, `${candidate}.mdx`);
+    const asIndex = path.join(docsRoot, candidate, 'index.mdx');
     const asDirMeta = path.join(docsRoot, candidate, 'meta.json');
-    if (fs.existsSync(asFile) || fs.existsSync(asDirMeta)) {
+    if (fs.existsSync(asFile) || fs.existsSync(asIndex) || fs.existsSync(asDirMeta)) {
       return true;
     }
   }
