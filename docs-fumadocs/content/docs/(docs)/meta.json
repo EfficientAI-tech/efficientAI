@@ -1,0 +1,10 @@
+{
+  "title": "Docs",
+  "icon": "BookText",
+  "root": true,
+  "pages": [
+    "quickstart",
+    "platform",
+    "integrations"
+  ]
+}

@@ -5,6 +5,7 @@ import { usePathname } from 'fumadocs-core/framework';
 import type { BaseLayoutProps, LayoutTab } from 'fumadocs-ui/layouts/shared';
 import { DocsLayout } from 'fumadocs-ui/layouts/notebook';
 import type { ReactNode } from 'react';
+import { DocsSidebarScrollFix } from '@/components/docs-sidebar-scroll-fix';
 import { DocsTopNav } from '@/components/docs-top-nav';
 
 function findRootFolder(tree: PageTree.Root, title: string): PageTree.Folder | undefined {
@@ -103,6 +104,7 @@ export function DocsShell({
         .filter(Boolean)
         .join(' ')}
     >
+      <DocsSidebarScrollFix />
       <DocsLayout
         key={mode}
         tree={sidebarTree}

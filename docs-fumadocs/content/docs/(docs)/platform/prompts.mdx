@@ -57,22 +57,6 @@ Saved prompts can be reused in:
 
 Prompts are scoped to the active workspace. Switching workspaces shows a different prompt library. For shared standards, clone prompts into each workspace where needed.
 
-## API
-
-REST endpoints under `/api/v1/prompt-partials`:
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/prompt-partials` | List prompt partials (optional `search`) |
-| `POST` | `/prompt-partials` | Create a partial with initial version |
-| `GET` | `/prompt-partials/{id}` | Get a partial with full version history |
-| `PUT` | `/prompt-partials/{id}` | Update content (creates a new version) |
-| `DELETE` | `/prompt-partials/{id}` | Delete partial and all versions |
-| `POST` | `/prompt-partials/{id}/clone` | Clone to a new partial |
-| `POST` | `/prompt-partials/{id}/revert` | Revert to a specific version |
-| `POST` | `/prompt-partials/generate` | AI-generate content from description |
-| `POST` | `/prompt-partials/improve` | AI-improve existing prompt content |
-
 ## How to use prompts
 
 1. Go to **Prompts > Partials**.

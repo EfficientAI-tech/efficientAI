@@ -81,6 +81,18 @@ body::before {
   box-shadow: none;
 }
 
+/* Provider logos on integration detail pages should stay compact. */
+#nd-page .prose img.docs-provider-hero-logo {
+  display: block;
+  width: auto;
+  max-width: 14rem;
+  height: 4rem;
+  margin: 0.65rem auto 1rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 #nd-page .prose h1 {
   margin-top: 0.25rem;
   margin-bottom: 0.85rem;
@@ -251,9 +263,73 @@ body::before {
   -webkit-overflow-scrolling: touch;
 }
 
+#nd-notebook-layout {
+  --fd-header-height: 4.5rem;
+}
+
 #nd-sidebar {
-  padding-top: 0.5rem;
   border-right: 1px solid color-mix(in oklab, var(--color-fd-border) 92%, transparent);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#nd-sidebar > .overflow-hidden.min-h-0 {
+  flex: 1 1 0%;
+  min-height: 0 !important;
+}
+
+/* Fumadocs sidebar uses a Radix viewport with inline overflow-y:hidden.
+   Force independent vertical scrolling for long expanded nav trees. */
+#nd-sidebar [data-radix-scroll-area-viewport] {
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+  mask: none !important;
+  -webkit-mask: none !important;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--color-fd-border) 70%, transparent) transparent;
+}
+
+#nd-sidebar [data-radix-scroll-area-viewport]::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+
+#nd-sidebar [data-radix-scroll-area-viewport]::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-fd-border) 75%, transparent);
+}
+
+/* Keep long/expanded section trees usable in the left docs nav. */
+@media (min-width: 64rem) {
+  [data-sidebar-placeholder] {
+    overflow: hidden;
+  }
+
+  #nd-sidebar {
+    max-height: calc(100dvh - var(--fd-docs-row-2, 4.5rem));
+  }
+}
+
+.docs-integration-grid-logo {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: 2.1rem;
+  margin-inline: auto;
+  border: 0 !important;
+  outline: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  object-fit: contain;
 }
 
 #nd-toc {
@@ -433,10 +509,10 @@ body::before {
 
 .docs-glass-nav {
   background: color-mix(in oklab, var(--color-fd-card) 64%, transparent);
-  border-color: color-mix(in oklab, var(--color-fd-border) 80%, transparent);
+  border-color: transparent;
   box-shadow:
     inset 0 1px 0 color-mix(in oklab, white 28%, transparent),
-    0 8px 26px color-mix(in oklab, black 11%, transparent);
+    0 8px 22px color-mix(in oklab, black 8%, transparent);
   backdrop-filter: blur(14px) saturate(1.15);
 }
 

@@ -10,7 +10,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsRoot = path.resolve(__dirname, '..');
 const apiContentDir = path.join(docsRoot, 'content', 'docs', 'api-reference');
 const schemaFile = path.join(docsRoot, 'openapi', 'efficientai.json');
-const authoredPages = ['index', 'authentication', 'errors'];
+const topAuthoredPages = ['index', 'authentication'];
+const bottomAuthoredPages = ['errors'];
+const authoredPages = [...topAuthoredPages, ...bottomAuthoredPages];
 const tagSlugMap = new Map([
   ['Authentication', 'authentication'],
   ['Workspaces', 'workspaces'],
@@ -54,7 +56,7 @@ await generateFiles({
         const meta = JSON.parse(file.content);
         const generatedPages = (meta.pages ?? []).filter((entry) => !authoredPages.includes(entry));
         meta.title = 'API Reference';
-        meta.pages = [...authoredPages, ...generatedPages];
+        meta.pages = [...topAuthoredPages, ...generatedPages, ...bottomAuthoredPages];
         file.content = `${JSON.stringify(meta, null, 2)}\n`;
         continue;
       }

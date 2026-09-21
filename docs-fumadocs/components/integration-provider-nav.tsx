@@ -14,12 +14,12 @@ const providers: Provider[] = [
   { id: 'vapi', label: 'Vapi', href: '/docs/integrations/vapi/', logo: '/vapiai.jpg' },
   { id: 'smallest', label: 'Smallest', href: '/docs/integrations/smallest/', logo: '/smallest.jpeg' },
   { id: 'plivo', label: 'Plivo', href: '/docs/integrations/plivo/', logo: '/plivo.png' },
-  { id: 'vobiz', label: 'Vobiz', href: '/docs/integrations/vobiz/' },
+  { id: 'vobiz', label: 'Vobiz', href: '/docs/integrations/vobiz/', logo: '/vobiz.png' },
 ];
 
 export function IntegrationProviderNav({ active }: { active: Provider['id'] }) {
   return (
-    <div className="not-prose mb-5 overflow-x-auto rounded-lg border border-fd-border/80 bg-fd-card/40 p-2">
+    <div className="not-prose mb-5 overflow-x-auto rounded-lg bg-fd-card/20 p-2">
       <div className="flex min-w-max items-center gap-2">
         {providers.map((provider) => {
           const isActive = provider.id === active;
@@ -28,17 +28,17 @@ export function IntegrationProviderNav({ active }: { active: Provider['id'] }) {
               key={provider.id}
               href={provider.href}
               className={[
-                'inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                'inline-flex items-center gap-2 rounded-md border border-transparent px-3 py-2 text-sm transition-colors',
                 isActive
-                  ? 'border-fd-primary bg-fd-primary/10 text-fd-primary'
-                  : 'border-fd-border/70 text-fd-muted-foreground hover:border-fd-border hover:text-fd-foreground',
+                  ? 'bg-fd-primary/10 text-fd-primary'
+                  : 'text-fd-muted-foreground hover:bg-fd-accent/40 hover:text-fd-foreground',
               ].join(' ')}
             >
               {provider.logo ? (
                 <img
                   src={provider.logo}
                   alt={`${provider.label} logo`}
-                  className="h-4 w-8 object-contain"
+                  className="h-3.5 w-6 object-contain"
                   loading="lazy"
                 />
               ) : null}

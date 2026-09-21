@@ -4,7 +4,12 @@
   "private": true,
   "scripts": {
     "sync:logo": "node scripts/sync-logo.mjs",
-    "build": "npm run sync:logo && npm run search:generate && next build",
+    "openapi:export": "python3 scripts/export-openapi.py",
+    "openapi:enrich": "node scripts/enrich-openapi.mjs",
+    "openapi:generate": "node scripts/generate-api-docs.mjs",
+    "changelog:generate": "node scripts/generate-changelog-nav.mjs",
+    "prebuild": "npm run openapi:enrich && npm run openapi:generate && npm run changelog:generate",
+    "build": "npm run sync:logo && npm run prebuild && npm run search:generate && next build",
     "dev": "npm run sync:logo && next dev",
     "start": "next start",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",

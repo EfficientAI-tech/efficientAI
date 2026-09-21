@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-18T13:14:52.242Z",
-  "count": 241,
+  "generatedAt": "2026-09-21T05:22:20.310Z",
+  "count": 271,
   "records": [
     {
       "id": "(docs)/index",
@@ -1903,21 +1903,291 @@
       "url": "/docs/blog/",
       "title": "Blogs",
       "breadcrumbs": [],
-      "content": "Blogs Long form product and engineering writeups will be published here. Posts are coming soon. Planned topics Evaluation design patterns Telephony vs web call benchmarking Prompt optimization workflows Integration rollout playbooks Suggested post template Problem statement Implementation approach Results and lessons learned"
+      "content": "Blogs Coming soon."
     },
     {
       "id": "changelog/index",
       "url": "/docs/changelog/",
       "title": "Changelog",
       "breadcrumbs": [],
-      "content": "Changelog Track product and platform documentation changes here. Unreleased Docs v2 structure launched with top nav scoped sections. New section model for Quickstart, Key Concepts, Platform, Integrations, and Advanced. Compatibility stubs added for older high traffic URLs. Entry template Use this format for new entries: : concise change summary and impact. Release notes style Added Changed Fixed Deprecated (if applicable)"
+      "content": "Changelog Release notes are synced from . Select a version from the sidebar to view its notes."
+    },
+    {
+      "id": "changelog/v1.5.10",
+      "url": "/docs/changelog/v1.5.10/",
+      "title": "v1.5.10",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.10 Released Jun 28, 2026. . What changed feat: updating azure storage by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/95 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.11",
+      "url": "/docs/changelog/v1.5.11/",
+      "title": "v1.5.11",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.11 Released Jul 3, 2026. . What changed feat: updating gateway integration by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/97 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.12",
+      "url": "/docs/changelog/v1.5.12/",
+      "title": "v1.5.12",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.12 Released Jul 3, 2026. . What changed feat: Flexprice integration by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/96 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.13",
+      "url": "/docs/changelog/v1.5.13/",
+      "title": "v1.5.13",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.13 Released Jul 9, 2026. . What changed fix: call imports by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/98 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.14",
+      "url": "/docs/changelog/v1.5.14/",
+      "title": "v1.5.14",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.14 Released Jul 10, 2026. . What changed feat: updating concurrency limits by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/99 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.15",
+      "url": "/docs/changelog/v1.5.15/",
+      "title": "v1.5.15",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.15 Released Jul 11, 2026. . What changed feat: gateway upgrades by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/100 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.16",
+      "url": "/docs/changelog/v1.5.16/",
+      "title": "v1.5.16",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.16 Released Jul 13, 2026. . What changed fix: updating the page refresh while importing by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/102 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.17",
+      "url": "/docs/changelog/v1.5.17/",
+      "title": "v1.5.17",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.17 Released Jul 17, 2026. . What changed fix: increasing concurrency by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/103 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.18",
+      "url": "/docs/changelog/v1.5.18/",
+      "title": "v1.5.18",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.18 Released Jul 21, 2026. . What changed feat: enable sharding across DBs by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/104 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.19",
+      "url": "/docs/changelog/v1.5.19/",
+      "title": "v1.5.19",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.19 Released Jul 27, 2026. . What changed feat: updating imports and llm cut off chunking by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/105 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.20",
+      "url": "/docs/changelog/v1.5.20/",
+      "title": "v1.5.20",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.20 Released Aug 3, 2026. . What changed feat: updating minor features by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/106 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.21",
+      "url": "/docs/changelog/v1.5.21/",
+      "title": "v1.5.21",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.21 Released Aug 3, 2026. . What changed fix: minor upgrades as per review comments by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/108 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.22",
+      "url": "/docs/changelog/v1.5.22/",
+      "title": "v1.5.22",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.22 Released Aug 4, 2026. . What changed feat: updating telephony by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/101 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.23",
+      "url": "/docs/changelog/v1.5.23/",
+      "title": "v1.5.23",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.23 Released Aug 5, 2026. . What changed Revert \"fix: updating metric library\" by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/109 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.24",
+      "url": "/docs/changelog/v1.5.24/",
+      "title": "v1.5.24",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.24 Released Aug 12, 2026. . What changed Import metadata by @MSami625 in https://github.com/EfficientAI tech/efficientAI/pull/113 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.25",
+      "url": "/docs/changelog/v1.5.25/",
+      "title": "v1.5.25",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.25 Released Aug 14, 2026. . What changed fix: updating metric library by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/111 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.26",
+      "url": "/docs/changelog/v1.5.26/",
+      "title": "v1.5.26",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.26 Released Aug 19, 2026. . What changed Token usage tracking for LLM, STT, and TTS calls and Usage Page. by @MSami625 in https://github.com/EfficientAI tech/efficientAI/pull/114 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.27",
+      "url": "/docs/changelog/v1.5.27/",
+      "title": "v1.5.27",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.27 Released Aug 22, 2026. . What changed feat: updating LLM calls and other minor fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/116 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.28",
+      "url": "/docs/changelog/v1.5.28/",
+      "title": "v1.5.28",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.28 Released Aug 28, 2026. . What changed fix: updating char lenghth by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/121 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.29",
+      "url": "/docs/changelog/v1.5.29/",
+      "title": "v1.5.29",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.29 Released Aug 31, 2026. . What changed Expanded LLM/STT/TTS usage tracking across pre prod flows and some fixes by @MSami625 in https://github.com/EfficientAI tech/efficientAI/pull/119 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.30",
+      "url": "/docs/changelog/v1.5.30/",
+      "title": "v1.5.30",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.30 Released Sep 4, 2026. . What changed feat: Simulation upgrades by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/120 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.31",
+      "url": "/docs/changelog/v1.5.31/",
+      "title": "v1.5.31",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.31 Released Sep 7, 2026. . What changed feat: updating plivo imports by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/122 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.32",
+      "url": "/docs/changelog/v1.5.32/",
+      "title": "v1.5.32",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.32 Released Sep 15, 2026. . What changed feat: updating new logo by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/125 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.33",
+      "url": "/docs/changelog/v1.5.33/",
+      "title": "v1.5.33",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.33 Released Sep 17, 2026. . What changed Security remediation (auth, CSRF, SSRF, rate limits) by @MSami625 in https://github.com/EfficientAI tech/efficientAI/pull/124 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.4",
+      "url": "/docs/changelog/v1.5.4/",
+      "title": "v1.5.4",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.4 Released Jun 14, 2026. . What changed fix: updating entrprise gated docs by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/90 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.5",
+      "url": "/docs/changelog/v1.5.5/",
+      "title": "v1.5.5",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.5 Released Jun 14, 2026. . What changed fix: updating lambda fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/91 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.6",
+      "url": "/docs/changelog/v1.5.6/",
+      "title": "v1.5.6",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.6 Released Jun 14, 2026. . What changed fix: lambda fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/92 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.7",
+      "url": "/docs/changelog/v1.5.7/",
+      "title": "v1.5.7",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.7 Released Jun 15, 2026. . What changed feat: Workspace upgrades by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/89 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.8",
+      "url": "/docs/changelog/v1.5.8/",
+      "title": "v1.5.8",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.8 Released Jun 22, 2026. . What changed fix: updating bugs by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/93 Contributors"
+    },
+    {
+      "id": "changelog/v1.5.9",
+      "url": "/docs/changelog/v1.5.9/",
+      "title": "v1.5.9",
+      "breadcrumbs": [
+        "Changelog"
+      ],
+      "content": "v1.5.9 Released Jun 23, 2026. . What changed fix: updating security fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/94 Contributors"
     },
     {
       "id": "enterprise/index",
       "url": "/docs/enterprise/",
       "title": "Enterprise",
       "breadcrumbs": [],
-      "content": "Enterprise Enterprise quickstart Start with: Free trial: request a trial at Talk to us: SSO is free for up to 5 users. Beyond that, an enterprise license is required. Who is Enterprise for? Enterprise is designed for teams running voice agent evaluation in production where you need stronger identity controls, post production analytics, and operational governance. Open source vs Enterprise | Capability | Open source | Enterprise | | | | | | Voice bundles and BYOK integrations | Included | Included | | Agents, personas, scenarios | Included (create + run) | Included (plus advanced simulation workflows) | | Metrics and categorisation labels | Included | Included + unlimited metrics | | Evaluators, suites, results | Included | Included + failure clustering | | Traces and observability | Included | Included | | Post production call analytics | Not included | Included via call imports and batch analytics | | Prompt tooling | Prompt partials included | Prompt optimization included | | Playground | Agent playground included | Voice playground with blind testing | | Usage analytics history | 7 day history | Unlimited history | | Usage pricing overrides | Not included | Included | | Authentication | API keys + local email/password | OIDC, SAML, SCIM, MFA enforcement, audit export | | IAM and workspace roles | Basic workspaces and role controls | Advanced IAM and delegated admin | Positioned as enterprise entitlement. Enforcement for these controls is rolling out in an upcoming release. What is open source Voice bundles and integrations (BYOK model and platform providers) Create and use agents, personas, and scenarios Evaluators, evaluator suites, and evaluation results Metrics and categorisation labels Prompt partials and agent playground Traces, observability, and judge alignment Workspaces and standard role workflows API key and local password authentication What is Enterprise Post production analytics for importing production calls and evaluating at scale for grouping recurring evaluation failures Extended usage history and pricing controls Playground and optimization for TTS comparison and blind tests for reflective prompt optimization loops Identity and access for enterprise OIDC SSO for SAML based sign in for lifecycle automation for mandatory MFA posture for exporting audit and access events Advanced IAM and delegated admin controls Advanced simulation Persona ambient audio workflows (enterprise entitlement) Unlimited metric scaling Feature ID reference | Feature ID | Enterprise capability | | | | | | Voice Playground | | | Prompt Optimization | | | Call Imports | | | Evaluation Failure Clustering | | | Enterprise SSO (OIDC) | | | SAML SSO | | | SCIM User Provisioning | | | Enforced MFA | | | Audit Log Export | Set up a license Provide the enterprise license key either in environment variables or in config: Then restart the EfficientAI backend. License scope behavior: If is not set in the license payload, features are enabled deployment wide. If is set, features are enabled only for that organization. Verify current state from API: FAQ What happens without a license? Feature gated routes return a 403 with (or for entitlement only gates). What is the OSS usage analytics limit? Open source deployments keep a 7 day usage analytics history by default. How do I verify whether my org is licensed? Check and confirm is populated for your organization. Where do I configure authentication modes? Use and . Talk to us Sales and licensing: Book a demo:"
+      "content": "Enterprise Enterprise quickstart Start with: Free trial: Licensing: Who is Enterprise for? Enterprise is for teams running voice agent evaluation in production who need multi member IAM, extended analytics, gateway routing, and operational controls beyond the open source limits. License model (BSL) EfficientAI open source is released under the Business Source License (BSL) , following the same approach as and : Core evaluation workflows remain free to self host under BSL. Specific production scale capabilities require an Enterprise license key . After the license change date defined in the repository file, covered code converts to Apache 2.0. Enterprise contracts unlock gated features for your organization (or deployment wide when no is set in the license payload). Open source vs Enterprise | Capability | Open source (BSL) | Enterprise | | | | | | Voice bundles and BYOK integrations | Included | Included | | Agents | Up to 3 agents | Unlimited | | Custom metrics | Up to 5 metrics | Unlimited | | Evaluators, suites, results | Included | Included + failure clustering | | Prompt partials | Included | Included | | GEPA / prompt optimization | Included | Included | | Agent playground | Included | Included | | Voice playground (blind testing) | Not included | Included | | Call imports (post production analytics) | Not included | Included | | Metric Studio | Not included | Included | | Alerts | Not included | Included | | Usage analytics history | Last 7 days | Unlimited | | Org members | 1 member per org | Unlimited | | Workspaces | 1 default workspace | Unlimited | | Gateway enablement (integrations) | Not included | Included | | Authentication | API keys + local email/password | OIDC, SAML, SCIM, MFA enforcement, audit export | Open source limits (EFF 70) These limits apply without an Enterprise license: | Limit | Open source cap | | | | | Custom metrics | 5 | | Agents | 3 | | Org members | 1 | | Workspaces | 1 default workspace | | Usage analytics | 7 day history | GEPA / prompt optimization remains available in open source. Usage history is already capped to the last 7 days in open source. Already gated (Enterprise license required) These features are already enforced behind an Enterprise license key: | Feature ID | Capability | | | | | | Post production call imports and batch analytics | | | Voice Playground with blind TTS comparison | Enterprise only capabilities (any Enterprise tier) These require an Enterprise license key to unlock: | Feature ID | Capability | | | | | | Metric Studio (advanced metric authoring workflows) | | | Alerts and notification workflows | | | Gateway enablement in Integrations | | | Evaluation failure clustering | | | Enterprise SSO (OIDC) | | | SAML SSO | | | SCIM user provisioning | | | Enforced MFA | | | Audit log export | | Advanced IAM | Multi member orgs and additional workspaces | Included in open source Voice bundles and integrations (BYOK and platform providers) Agents, personas, and scenarios (within agent cap) Evaluators, evaluator suites, and evaluation results Metrics and categorisation labels (within metric cap) Prompt partials, GEPA / prompt optimization, and agent playground Traces, observability, and judge alignment API key and local password authentication Set up a license Provide the Enterprise license key in environment variables or config: Restart the EfficientAI backend after updating the license. License scope behavior: If is not set in the license payload, features are enabled deployment wide. If is set, features are enabled only for that organization. Verify current state: FAQ What happens without a license? Feature gated routes return with or . Open source limits (agents, metrics, IAM, usage history) apply automatically. What is the OSS usage analytics limit? Open source deployments retain a 7 day usage analytics history. Is GEPA / prompt optimization Enterprise only? No. GEPA / prompt optimization is included in the open source BSL distribution. How do I verify whether my or"
     },
     {
       "id": "getting-started/authentication",
@@ -1987,7 +2257,7 @@
       "url": "/docs/integrations/",
       "title": "Integrations",
       "breadcrumbs": [],
-      "content": "Integrations Overview <IntegrationProviderNav active=\"overview\" / EfficientAI integrations are organized across three layers: 1. Voice platform integrations 2. AI model provider integrations 3. Telephony integrations This section focuses on platform level integration guides for teams connecting external voice systems to EfficientAI. Integration model 1. Configure credentials and endpoints in Configurations Integrations . 2. Attach integration records to your agent definitions. 3. Run evaluations and compare outcomes across integrations with shared metrics. Voice platform integrations <div className=\"not prose mt 4 mb 6 grid grid cols 2 gap 3 sm:grid cols 3 lg:grid cols 5\" , , , , , , , , , ].map((item) = ( <div key= className=\"rounded md border border fd border/70 bg fd card px 2 py 2\" <img src= alt= className=\"h 8 w full object contain\" / <p className=\"mt 2 truncate text center text xs text fd muted foreground\" </p </div ))} </div AI provider integrations <div className=\"not prose mt 4 mb 6 grid grid cols 2 gap 3 sm:grid cols 3 lg:grid cols 6\" , , , , , , , , , , , ].map((item) = ( <div key= className=\"rounded md border border fd border/70 bg fd card px 2 py 2\" <img src= alt= className=\"h 8 w full object contain\" / <p className=\"mt 2 truncate text center text xs text fd muted foreground\" </p </div ))} </div Telephony integrations <div className=\"not prose mt 4 mb 6 grid grid cols 2 gap 3 sm:max w md\" , , ].map((item) = ( <div key= className=\"rounded md border border fd border/70 bg fd card px 2 py 2\" <img src= alt= className=\"h 8 w full object contain\" / <p className=\"mt 2 truncate text center text xs text fd muted foreground\" </p </div ))} </div Platform guides For broader provider coverage and advanced routing details, see . Common outcomes compare provider behavior using the same scenario set, isolate transport/provider issues vs prompt issues, standardize rollout checks across platforms."
+      "content": "Integrations Overview <IntegrationProviderNav active=\"overview\" / EfficientAI integrations are organized across three layers: 1. Voice platform integrations 2. AI model provider integrations 3. Telephony integrations This section focuses on platform level integration guides for teams connecting external voice systems to EfficientAI. Integration model 1. Configure credentials and endpoints in Configurations Integrations . 2. Attach integration records to your agent definitions. 3. Run evaluations and compare outcomes across integrations with shared metrics. Voice platform integrations <div className=\"not prose mt 4 mb 6 grid grid cols 2 gap 3 sm:grid cols 3 lg:grid cols 5\" , , , , , , , , , ].map((item) = ( <div key= className=\"rounded md border border fd border/70 bg fd card px 2 py 2\" <img src= alt= className=\"docs integration grid logo\" loading=\"lazy\" / <p className=\"mt 1.5 truncate text center text xs text fd muted foreground\" </p </div ))} </div AI provider integrations <div className=\"not prose mt 4 mb 6 grid grid cols 2 gap 3 sm:grid cols 3 lg:grid cols 6\" , , , , , , , , , , , ].map((item) = ( <div key= className=\"rounded md border border fd border/70 bg fd card px 2 py 2\" <img src= alt= className=\"docs integration grid logo\" loading=\"lazy\" / <p className=\"mt 1.5 truncate text center text xs text fd muted foreground\" </p </div ))} </div Telephony integrations <div className=\"not prose mt 4 mb 6 grid grid cols 2 gap 3 sm:max w md\" , , , ].map((item) = ( <div key= className=\"rounded md border border fd border/70 bg fd card px 2 py 2\" <img src= alt= className=\"docs integration grid logo\" loading=\"lazy\" / <p className=\"mt 1.5 truncate text center text xs text fd muted foreground\" </p </div ))} </div Platform guides For broader provider coverage and advanced routing details, see . Common outcomes compare provider behavior using the same scenario set, isolate transport/provider issues vs prompt issues, standardize rollout checks across platforms."
     },
     {
       "id": "(docs)/integrations/elevenlabs",
@@ -1996,7 +2266,7 @@
       "breadcrumbs": [
         "Integrations"
       ],
-      "content": "ElevenLabs Integration <IntegrationProviderNav active=\"elevenlabs\" / ElevenLabs integration allows EfficientAI to connect voice platform agents and speech components configured in ElevenLabs. Configure 1. Open Configurations Integrations. 2. Add ElevenLabs API credentials. 3. Save and test connectivity. 4. Link your agent configuration to the ElevenLabs integration and provider side agent identifier. Use with EfficientAI Evaluate production like provider behavior. Compare prompt and voice quality outcomes against other providers. Next:"
+      "content": "ElevenLabs Integration <IntegrationProviderNav active=\"elevenlabs\" / ElevenLabs integration allows EfficientAI to connect voice platform agents and speech components configured in ElevenLabs. <img src=\"/elevenlabs.jpg\" alt=\"ElevenLabs logo\" className=\"docs provider hero logo\" loading=\"lazy\" / Configure 1. Open Configurations Integrations. 2. Add ElevenLabs API credentials. 3. Save and test connectivity. 4. Link your agent configuration to the ElevenLabs integration and provider side agent identifier. Use with EfficientAI Evaluate production like provider behavior. Compare prompt and voice quality outcomes against other providers. Next:"
     },
     {
       "id": "(docs)/integrations/plivo",
@@ -2005,7 +2275,7 @@
       "breadcrumbs": [
         "Integrations"
       ],
-      "content": "Plivo Integration <IntegrationProviderNav active=\"plivo\" / Plivo integration is used for phone number and telephony routing workflows that require PSTN execution paths. Configure 1. Open Configurations Integrations. 2. Add Plivo credentials. 3. Sync or map numbers as needed. 4. Use telephony capable agent settings ( ). Use with EfficientAI Test inbound and outbound phone call flows. Evaluate telephony behavior alongside conversational quality metrics. Next:"
+      "content": "Plivo Integration <IntegrationProviderNav active=\"plivo\" / Plivo integration is used for phone number and telephony routing workflows that require PSTN execution paths. <img src=\"/plivo.png\" alt=\"Plivo logo\" className=\"docs provider hero logo\" loading=\"lazy\" / Configure 1. Open Configurations Integrations. 2. Add Plivo credentials. 3. Sync or map numbers as needed. 4. Use telephony capable agent settings ( ). Use with EfficientAI Test inbound and outbound phone call flows. Evaluate telephony behavior alongside conversational quality metrics. Next:"
     },
     {
       "id": "(docs)/integrations/retell",
@@ -2014,7 +2284,7 @@
       "breadcrumbs": [
         "Integrations"
       ],
-      "content": "Retell Integration <IntegrationProviderNav active=\"retell\" / Retell integration connects externally hosted Retell agents to EfficientAI for evaluation workflows. Configure 1. Open Configurations Integrations. 2. Add Retell credentials and connection details. 3. Save and verify the integration status. 4. In Agent configuration, set the integration and Retell agent ID. Use with EfficientAI Run external provider comparisons with internal bundle runs. Use evaluator suites to score Retell call outcomes with shared metrics. Next:"
+      "content": "Retell Integration <IntegrationProviderNav active=\"retell\" / Retell integration connects externally hosted Retell agents to EfficientAI for evaluation workflows. <img src=\"/retellai.png\" alt=\"Retell logo\" className=\"docs provider hero logo\" loading=\"lazy\" / Configure 1. Open Configurations Integrations. 2. Add Retell credentials and connection details. 3. Save and verify the integration status. 4. In Agent configuration, set the integration and Retell agent ID. Use with EfficientAI Run external provider comparisons with internal bundle runs. Use evaluator suites to score Retell call outcomes with shared metrics. Next:"
     },
     {
       "id": "(docs)/integrations/smallest",
@@ -2023,7 +2293,7 @@
       "breadcrumbs": [
         "Integrations"
       ],
-      "content": "Smallest Integration (Alpha) <IntegrationProviderNav active=\"smallest\" / Smallest integration is currently in alpha support mode. Configure 1. Open Configurations Integrations. 2. Add Smallest credentials and endpoint details. 3. Save and validate that the integration is active. 4. Map the integration to your target agent and provider side agent ID. Notes Treat this integration as evolving functionality. Validate flows in a controlled workspace before broad rollout. Next:"
+      "content": "Smallest Integration (Alpha) <IntegrationProviderNav active=\"smallest\" / Smallest integration is currently in alpha support mode. <img src=\"/smallest.jpeg\" alt=\"Smallest logo\" className=\"docs provider hero logo\" loading=\"lazy\" / Configure 1. Open Configurations Integrations. 2. Add Smallest credentials and endpoint details. 3. Save and validate that the integration is active. 4. Map the integration to your target agent and provider side agent ID. Notes Treat this integration as evolving functionality. Validate flows in a controlled workspace before broad rollout. Next:"
     },
     {
       "id": "(docs)/integrations/vapi",
@@ -2032,7 +2302,7 @@
       "breadcrumbs": [
         "Integrations"
       ],
-      "content": "Vapi Integration <IntegrationProviderNav active=\"vapi\" / Vapi integration maps your Vapi agent configuration into EfficientAI test workflows. Configure 1. Open Configurations Integrations. 2. Add Vapi credentials. 3. Save and confirm integration health. 4. In Agent setup, set the Vapi integration and provider agent ID. Use with EfficientAI Run scenario driven tests on Vapi backed calls. Score outcomes with the same evaluator and metric suite used elsewhere. Next:"
+      "content": "Vapi Integration <IntegrationProviderNav active=\"vapi\" / Vapi integration maps your Vapi agent configuration into EfficientAI test workflows. <img src=\"/vapiai.jpg\" alt=\"Vapi logo\" className=\"docs provider hero logo\" loading=\"lazy\" / Configure 1. Open Configurations Integrations. 2. Add Vapi credentials. 3. Save and confirm integration health. 4. In Agent setup, set the Vapi integration and provider agent ID. Use with EfficientAI Run scenario driven tests on Vapi backed calls. Score outcomes with the same evaluator and metric suite used elsewhere. Next:"
     },
     {
       "id": "(docs)/integrations/vobiz",
@@ -2041,7 +2311,7 @@
       "breadcrumbs": [
         "Integrations"
       ],
-      "content": "Vobiz Integration <IntegrationProviderNav active=\"vobiz\" / Vobiz integration supports telephony webhook and media workflows for live phone call evaluation paths. Configure 1. Open Configurations Integrations. 2. Add Vobiz credentials and webhook base URL values. 3. Ensure telephony/media endpoints are reachable from your Vobiz account. 4. Configure agents for phone call flows and run evaluator suites. Notes Vobiz setup depends on correct webhook routing and media endpoint availability. Use a staging environment to validate inbound and recording event flows before production. Next:"
+      "content": "Vobiz Integration <IntegrationProviderNav active=\"vobiz\" / Vobiz integration supports telephony webhook and media workflows for live phone call evaluation paths. <img src=\"/vobiz.png\" alt=\"Vobiz logo\" className=\"docs provider hero logo\" loading=\"lazy\" / Configure 1. Open Configurations Integrations. 2. Add Vobiz credentials and webhook base URL values. 3. Ensure telephony/media endpoints are reachable from your Vobiz account. 4. Configure agents for phone call flows and run evaluator suites. Notes Vobiz setup depends on correct webhook routing and media endpoint availability. Use a staging environment to validate inbound and recording event flows before production. Next:"
     },
     {
       "id": "intro",
@@ -2136,7 +2406,7 @@
       "url": "/docs/platform/",
       "title": "How It Works",
       "breadcrumbs": [],
-      "content": "How It Works EfficientAI evaluates voice agents the way your customers experience them: by placing real calls against the agent, driving those calls with simulated callers, and scoring what happened. Everything on the platform is built from six objects. Each one is explained in full on its own page in this section — this page shows how they fit together. The object model An evaluation suite is the join table: it pairs one agent with every combination of the personas and scenarios you attach. Each combination becomes one or more runs , and each run is scored by the metrics you enabled. The evaluation lifecycle Because the persona, scenario, and voice mapping are all pinned configuration, re running a suite after a prompt or model change produces a comparison you can trust rather than a one off anecdote. Where each concept is explained | Concept | What it is | Explained in | | | | | | Agent | The system under test, plus its call medium and prompts. | | | Persona | The simulated caller: behavior profile plus a pinned voice. | | | Scenario | The goal, context, and success criteria for a conversation. | | | Metrics | The scoring rules applied to a finished run. | | | Evaluator | The engine that runs combinations and applies metrics. | | | Evaluation suite | The grouping that turns personas and scenarios into run combinations. | | | STT / LLM / TTS | The three model layers inside a voice bundle. | | | Telephony vs WebRTC | The two call mediums an agent can be tested over. | | Suggested reading order 1. — credentials, voice bundles, storage. 2. — define the system under test. 3. and — define who calls and why. 4. — assemble the combinations. 5. — choose metrics and read results."
+      "content": "How It Works EfficientAI evaluates voice agents the way your customers experience them: by placing real calls against the agent and driving those calls with simulated callers. Everything on the platform is built from six objects. Each one is explained in full on its own page in this section — this page shows how they fit together. The object model An evaluation suite is the join table: it pairs one agent with every combination of the personas and scenarios you attach. Each combination becomes one or more runs , and each run is scored by the metrics you enabled. The evaluation lifecycle Because the persona, scenario, and voice mapping are all pinned configuration, re running a suite after a prompt or model change produces a comparison you can trust rather than a one off anecdote. Where each concept is explained | Concept | What it is | Explained in | | | | | | Agent | The system under test, plus its call medium and prompts. | | | Persona | The simulated caller: behavior profile plus a pinned voice. | | | Scenario | The goal, context, and success criteria for a conversation. | | | Metrics | The scoring rules applied to a finished run. | | | Evaluator | The engine that runs combinations and applies metrics. | | | Evaluation suite | The grouping that turns personas and scenarios into run combinations. | | | STT / LLM / TTS | The three model layers inside a voice bundle. | | | Telephony vs WebRTC | The two call mediums an agent can be tested over. | | Suggested reading order 1. — credentials, voice bundles, storage. 2. — define the system under test. 3. and — define who calls and why. 4. — assemble the combinations. 5. — choose metrics and read results."
     },
     {
       "id": "(docs)/platform/agent",
@@ -2145,7 +2415,7 @@
       "breadcrumbs": [
         "Platform"
       ],
-      "content": "Agent What an agent is In EfficientAI, an agent is the system under test. It captures the conversation context, the prompt behavior, and the execution path used for every evaluation run. Nothing is scored in isolation — scores always describe how a specific agent behaved. An agent can point at one of two execution paths: internal (EfficientAI voice bundle) or external (provider platform mapping). Use the internal path when you want to isolate and A/B individual model layers. Use the external path when you want to evaluate the exact agent that serves production traffic on a provider platform. Telephony vs WebRTC Every agent is also tested over one of two call mediums, set by the / medium field. | | Telephony ( ) | WebRTC ( ) | | | | | | Transport | PSTN through a telephony provider and carrier webhooks | Browser style real time streaming over WebSockets | | Requires | Phone numbers, carrier routing, telephony credentials | No phone network dependency | | Use when | Production depends on real phone behavior, DTMF, carrier latency and codecs | Your experience is browser native | Both mediums are evaluated with the same personas, scenarios, and metrics. They differ only in call transport and the integration setup they require, so scores stay comparable across the two as long as you don't mix mediums inside one comparison. Configure an agent What you configure Agent identity (name, language) Call type and medium ( / , / ) Internal voice bundle mapping External voice platform mapping (integration + provider agent ID) Test prompt and provider prompt surfaces Creating a test agent Use Create Test Agent to add a new evaluation configuration. You can create either: Telephony agents for PSTN call flows. Existing Platform Integration agents for Retell, Vapi, ElevenLabs, and other external providers. For both paths, you configure the production side prompt and a complementary test prompt that EfficientAI uses during evaluations. Prompt surfaces : production prompt used by the external/system agent. : test prompt generated or authored for evaluator driven simulations. Use Generate test prompt to bootstrap the test prompt from your production prompt, then refine it for coverage and repeatability. Recommended flow 1. Create a voice bundle and required integrations — see . 2. Create a test agent. 3. Attach and through . See also: for how the agent connects to the rest of the object model. How to set up an agent 1. Go to Simulations Agents in the left navigation. 2. Click Create Agent in the top right. If you choose telephony Enter: Name Phone number Language (the language EfficientAI uses with your bot) Call type ( or ) End call after silence (how many silence seconds before hang up) Then configure your phone integration in . If you choose web agent 1. Enter the agent name. 2. Open your provider (Vapi, ElevenLabs, Retell, Smallest, and others). 3. Click Connect so EfficientAI can fetch available provider agent IDs. 4. If needed, enter the provider agent ID manually. If your provider is missing, open an issue on . Prompt setup You can either: 1. Paste your production prompt and use Generate test prompt with provider/model/context settings to produce an adversarial prompt, or 2. Write the test prompt manually. For first message behavior, choose: Production agent speaks first (default) Test caller speaks first (the EfficientAI test agent starts) For the EfficientAI system prompt, define: 1. Role and goal 2. Talking style 3. Questions to ask 4. Information to relay 5. Constraints Voice bundle For voice bundle setup, see and . Create the agent to finish setup. Editing flow and custom agent testing docs are coming soon."
+      "content": "Agent What an agent is In EfficientAI, an agent is the system under test. It captures the conversation context, the prompt behavior, and the execution path used for every evaluation run. An agent can point at one of two execution paths: internal (EfficientAI voice bundle) or external (provider platform mapping). Use the internal path when you want to isolate and A/B individual model layers. Use the external path when you want to evaluate the exact agent that serves production traffic on a provider platform. Telephony vs WebRTC Every agent is also tested over one of two call mediums, set by the / medium field. | | Telephony ( ) | WebRTC ( ) | | | | | | Transport | PSTN through a telephony provider and carrier webhooks | Browser style real time streaming over WebSockets | | Requires | Phone numbers, carrier routing, telephony credentials | No phone network dependency | | Use when | Production depends on real phone behavior, DTMF, carrier latency and codecs | Your experience is browser native | Both mediums are evaluated with the same personas, scenarios, and metrics. They differ only in call transport and the integration setup they require, so scores stay comparable across the two as long as you don't mix mediums inside one comparison. Configure an agent What you configure Agent identity (name, language) Call type and medium ( / , / ) Internal voice bundle mapping External voice platform mapping (integration + provider agent ID) Test prompt and provider prompt surfaces Creating a test agent Use Create Test Agent to add a new evaluation configuration. You can create either: Telephony agents for PSTN call flows. Existing Platform Integration agents for Retell, Vapi, ElevenLabs, and other external providers. For both paths, you configure the production side prompt and a complementary test prompt that EfficientAI uses during evaluations. Prompt surfaces : production prompt used by the external/system agent. : test prompt generated or authored for evaluator driven simulations. Use Generate test prompt to bootstrap the test prompt from your production prompt, then refine it for coverage and repeatability. Recommended flow 1. Create a voice bundle and required integrations — see . 2. Create a test agent. 3. Attach and through . See also: for how the agent connects to the rest of the object model. How to set up an agent 1. Go to Simulations Agents in the left navigation. 2. Click Create Agent in the top right. If you choose telephony Enter: Name Phone number Language (the language EfficientAI uses with your bot) Call type ( or ) End call after silence (how many silence seconds before hang up) Then configure your phone integration in . If you choose web agent 1. Enter the agent name. 2. Open your provider (Vapi, ElevenLabs, Retell, Smallest, and others). 3. Click Connect so EfficientAI can fetch available provider agent IDs. 4. If needed, enter the provider agent ID manually. If your provider is missing, open an issue on . Prompt setup You can either: 1. Paste your production prompt and use Generate test prompt with provider/model/context settings to produce an adversarial prompt, or 2. Write the test prompt manually. For first message behavior, choose: Production agent speaks first (default) Test caller speaks first (the EfficientAI test agent starts) For the EfficientAI system prompt, define: 1. Role and goal 2. Talking style 3. Questions to ask 4. Information to relay 5. Constraints Voice bundle For voice bundle setup, see and . Create the agent to finish setup. Editing flow and custom agent testing docs are coming soon."
     },
     {
       "id": "(docs)/platform/evaluation-suite",
@@ -2208,7 +2478,7 @@
       "breadcrumbs": [
         "Platform"
       ],
-      "content": "Prompts Prompts in EfficientAI are reusable instructions you save and apply across agents and evaluations. Core workflows Create and edit Open Prompts Partials in the sidebar. Click New Prompt to create a prompt partial or agent prompt. Save updates to version your content over time. Search and organize Search by name or description. Add tags for filtering and discovery (for example: , , ). Preview Switch between Preview (rendered markdown) and Raw (source markdown) while reviewing content. Version history Each save creates a new version snapshot. | Action | Description | | | | | View versions | Browse version history with timestamps | | Compare | Compare current vs a historical version | | Revert | Restore an earlier version (creates a new latest version) | | Clone | Duplicate a prompt into a new prompt | AI assisted authoring Prompt tooling requires at least one configured AI provider. AI Generate: create a first draft from your objective, tone, and format. AI Improve: refine existing content while preserving intent. Both support provider/model selection, or auto detecting a default provider. Where prompts are used Saved prompts can be reused in: flows configuration Cross team workflows scoped to the current workspace Workspace scoping Prompts are scoped to the active workspace. Switching workspaces shows a different prompt library. For shared standards, clone prompts into each workspace where needed. API REST endpoints under : | Method | Path | Description | | | | | | | | List prompt partials (optional ) | | | | Create a partial with initial version | | | | Get a partial with full version history | | | | Update content (creates a new version) | | | | Delete partial and all versions | | | | Clone to a new partial | | | | Revert to a specific version | | | | AI generate content from description | | | | AI improve existing prompt content | How to use prompts 1. Go to Prompts Partials . 2. Click New Prompt . 3. Choose either Prompt Partial or Agent Prompt . Prompt Partial 1. Enter name. 2. Add description. 3. Add tags. 4. Write or paste content. 5. Optionally click Improve with AI . Agent Prompt 1. Enter name. 2. Add optional description. 3. Write or paste content. 4. Optionally click Improve with AI . 5. Click Create Prompt ."
+      "content": "Prompts Prompts in EfficientAI are reusable instructions you save and apply across agents and evaluations. Core workflows Create and edit Open Prompts Partials in the sidebar. Click New Prompt to create a prompt partial or agent prompt. Save updates to version your content over time. Search and organize Search by name or description. Add tags for filtering and discovery (for example: , , ). Preview Switch between Preview (rendered markdown) and Raw (source markdown) while reviewing content. Version history Each save creates a new version snapshot. | Action | Description | | | | | View versions | Browse version history with timestamps | | Compare | Compare current vs a historical version | | Revert | Restore an earlier version (creates a new latest version) | | Clone | Duplicate a prompt into a new prompt | AI assisted authoring Prompt tooling requires at least one configured AI provider. AI Generate: create a first draft from your objective, tone, and format. AI Improve: refine existing content while preserving intent. Both support provider/model selection, or auto detecting a default provider. Where prompts are used Saved prompts can be reused in: flows configuration Cross team workflows scoped to the current workspace Workspace scoping Prompts are scoped to the active workspace. Switching workspaces shows a different prompt library. For shared standards, clone prompts into each workspace where needed. How to use prompts 1. Go to Prompts Partials . 2. Click New Prompt . 3. Choose either Prompt Partial or Agent Prompt . Prompt Partial 1. Enter name. 2. Add description. 3. Add tags. 4. Write or paste content. 5. Optionally click Improve with AI . Agent Prompt 1. Enter name. 2. Add optional description. 3. Write or paste content. 4. Optionally click Improve with AI . 5. Click Create Prompt ."
     },
     {
       "id": "(docs)/platform/scenario",

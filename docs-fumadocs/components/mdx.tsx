@@ -3,6 +3,7 @@ import type { MDXComponents } from 'mdx/types';
 import type { ComponentPropsWithoutRef } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Contributors } from './contributors';
+import { ChangelogReleases } from './changelog-releases';
 import { IntegrationProviderNav } from './integration-provider-nav';
 import { MdxPre } from './mdx-pre';
 import { ScreenshotPlaceholder } from './screenshot-placeholder';
@@ -28,6 +29,7 @@ export function getMDXComponents(components?: MDXComponents) {
     a: DocsBodyLink,
     pre: MdxPre,
     Contributors,
+    ChangelogReleases,
     IntegrationProviderNav,
     ScreenshotPlaceholder,
     ...components,

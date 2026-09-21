@@ -6,88 +6,97 @@ title: Enterprise
 
 > **Enterprise quickstart**
 > - Start with: [Authentication guide](/docs/getting-started/authentication/)
-> - Free trial: request a trial at [Book a demo](https://cal.com/aadhar-singh-bhadauria/30min)
-> - Talk to us: [sales@efficientai.com](mailto:sales@efficientai.com)
-> - SSO is free for up to 5 users. Beyond that, an enterprise license is required.
+> - Free trial: [Book a demo](https://cal.com/aadhar-singh-bhadauria/30min)
+> - Licensing: [sales@efficientai.com](mailto:sales@efficientai.com)
 
 ## Who is Enterprise for?
 
-Enterprise is designed for teams running voice agent evaluation in production where you need stronger identity controls, post-production analytics, and operational governance.
+Enterprise is for teams running voice agent evaluation in production who need multi-member IAM, extended analytics, gateway routing, and operational controls beyond the open-source limits.
+
+## License model (BSL)
+
+EfficientAI open source is released under the **Business Source License (BSL)**, following the same approach as [LiteLLM](https://github.com/BerriAI/litellm) and [Bifrost](https://github.com/maximhq/bifrost):
+
+- Core evaluation workflows remain free to self-host under BSL.
+- Specific production-scale capabilities require an **Enterprise license key**.
+- After the license change date defined in the repository `LICENSE` file, covered code converts to Apache 2.0.
+
+Enterprise contracts unlock gated features for your organization (or deployment-wide when no `org_id` is set in the license payload).
 
 ## Open source vs Enterprise
 
-| Capability | Open source | Enterprise |
+| Capability | Open source (BSL) | Enterprise |
 |---|---|---|
 | Voice bundles and BYOK integrations | Included | Included |
-| Agents, personas, scenarios | Included (create + run) | Included (plus advanced simulation workflows) |
-| Metrics and categorisation labels | Included | Included + unlimited metrics `†` |
+| Agents | Up to **3** agents | Unlimited |
+| Custom metrics | Up to **5** metrics | Unlimited |
 | Evaluators, suites, results | Included | Included + failure clustering |
-| Traces and observability | Included | Included |
-| Post-production call analytics | Not included | Included via call imports and batch analytics |
-| Prompt tooling | Prompt partials included | Prompt optimization included |
-| Playground | Agent playground included | Voice playground with blind testing |
-| Usage analytics history | 7-day history | Unlimited history |
-| Usage pricing overrides | Not included | Included |
+| Prompt partials | Included | Included |
+| GEPA / prompt optimization | **Included** | Included |
+| Agent playground | Included | Included |
+| Voice playground (blind testing) | Not included | Included |
+| Call imports (post-production analytics) | Not included | Included |
+| Metric Studio | Not included | Included |
+| Alerts | Not included | Included |
+| Usage analytics history | Last **7 days** | Unlimited |
+| Org members | **1 member** per org | Unlimited |
+| Workspaces | **1 default workspace** | Unlimited |
+| Gateway enablement (integrations) | Not included | Included |
 | Authentication | API keys + local email/password | OIDC, SAML, SCIM, MFA enforcement, audit export |
-| IAM and workspace roles | Basic workspaces and role controls | Advanced IAM and delegated admin `†` |
 
-`†` Positioned as enterprise entitlement. Enforcement for these controls is rolling out in an upcoming release.
+## Open-source limits (EFF-70)
 
-## What is open source
+These limits apply without an Enterprise license:
 
-- Voice bundles and integrations (BYOK model and platform providers)
-- Create and use agents, personas, and scenarios
-- Evaluators, evaluator suites, and evaluation results
-- Metrics and categorisation labels
-- Prompt partials and agent playground
-- Traces, observability, and judge alignment
-- Workspaces and standard role workflows
-- API key and local password authentication
-
-## What is Enterprise
-
-### Post-production analytics
-
-- `call_imports` for importing production calls and evaluating at scale
-- `evaluation_clustering` for grouping recurring evaluation failures
-- Extended usage history and pricing controls
-
-### Playground and optimization
-
-- `voice_playground` for TTS comparison and blind tests
-- `gepa_optimization` for reflective prompt optimization loops
-
-### Identity and access
-
-- `oidc_sso` for enterprise OIDC SSO
-- `saml_sso` for SAML-based sign-in
-- `scim_provisioning` for lifecycle automation
-- `mfa_enforce` for mandatory MFA posture
-- `audit_export` for exporting audit and access events
-- Advanced IAM and delegated admin controls `†`
-
-### Advanced simulation
-
-- Persona ambient audio workflows (enterprise entitlement)
-- Unlimited metric scaling `†`
-
-## Feature ID reference
-
-| Feature ID | Enterprise capability |
+| Limit | Open source cap |
 |---|---|
-| `voice_playground` | Voice Playground |
-| `gepa_optimization` | Prompt Optimization |
-| `call_imports` | Call Imports |
-| `evaluation_clustering` | Evaluation Failure Clustering |
+| Custom metrics | 5 |
+| Agents | 3 |
+| Org members | 1 |
+| Workspaces | 1 default workspace |
+| Usage analytics | 7-day history |
+
+GEPA / prompt optimization remains available in open source. Usage history is already capped to the last 7 days in open source.
+
+## Already gated (Enterprise license required)
+
+These features are already enforced behind an Enterprise license key:
+
+| Feature ID | Capability |
+|---|---|
+| `call_imports` | Post-production call imports and batch analytics |
+| `voice_playground` | Voice Playground with blind TTS comparison |
+
+## Enterprise-only capabilities (any Enterprise tier)
+
+These require an Enterprise license key to unlock:
+
+| Feature ID | Capability |
+|---|---|
+| `metric_studio` | Metric Studio (advanced metric authoring workflows) |
+| `alerting` | Alerts and notification workflows |
+| `gateway_enablement` | Gateway enablement in Integrations |
+| `evaluation_clustering` | Evaluation failure clustering |
 | `oidc_sso` | Enterprise SSO (OIDC) |
 | `saml_sso` | SAML SSO |
-| `scim_provisioning` | SCIM User Provisioning |
+| `scim_provisioning` | SCIM user provisioning |
 | `mfa_enforce` | Enforced MFA |
-| `audit_export` | Audit Log Export |
+| `audit_export` | Audit log export |
+| Advanced IAM | Multi-member orgs and additional workspaces |
+
+## Included in open source
+
+- Voice bundles and integrations (BYOK and platform providers)
+- Agents, personas, and scenarios (within agent cap)
+- Evaluators, evaluator suites, and evaluation results
+- Metrics and categorisation labels (within metric cap)
+- Prompt partials, GEPA / prompt optimization, and agent playground
+- Traces, observability, and judge alignment
+- API key and local password authentication
 
 ## Set up a license
 
-Provide the enterprise license key either in environment variables or in config:
+Provide the Enterprise license key in environment variables or config:
 
 ```bash title=".env"
 EFFICIENTAI_LICENSE=eyJhbGciOi...
@@ -98,14 +107,14 @@ license:
   key: "eyJhbGciOi..."
 ```
 
-Then restart the EfficientAI backend.
+Restart the EfficientAI backend after updating the license.
 
 License scope behavior:
 
 - If `org_id` is not set in the license payload, features are enabled deployment-wide.
 - If `org_id` is set, features are enabled only for that organization.
 
-Verify current state from API:
+Verify current state:
 
 - `GET /api/v1/license-info`
 
@@ -113,11 +122,15 @@ Verify current state from API:
 
 ### What happens without a license?
 
-Feature-gated routes return a 403 with `enterprise_feature_required` (or `enterprise_license_required` for entitlement-only gates).
+Feature-gated routes return `403` with `enterprise_feature_required` or `enterprise_license_required`. Open-source limits (agents, metrics, IAM, usage history) apply automatically.
 
 ### What is the OSS usage analytics limit?
 
-Open source deployments keep a 7-day usage analytics history by default.
+Open-source deployments retain a **7-day** usage analytics history.
+
+### Is GEPA / prompt optimization Enterprise-only?
+
+No. GEPA / prompt optimization is included in the open-source BSL distribution.
 
 ### How do I verify whether my org is licensed?
 
@@ -125,7 +138,7 @@ Check `GET /api/v1/license-info` and confirm `enabled_features` is populated for
 
 ### Where do I configure authentication modes?
 
-Use [Authentication guide](/docs/getting-started/authentication/) and [Configuration reference](/docs/reference/configuration/).
+See [Authentication guide](/docs/getting-started/authentication/) and [Configuration reference](/docs/reference/configuration/).
 
 ## Talk to us
 
