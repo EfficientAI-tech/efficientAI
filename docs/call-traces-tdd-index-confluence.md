@@ -21,7 +21,11 @@ Technical design documentation for **voice call observability** in EfficientAI: 
 | [TDD: Call Traces (Pipecat OTLP Observability)](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) | Backend, SRE, frontend, sales/solutions | Architecture, OTLP ingest, drawer routing, provider vs OTLP metrics |
 | [TDD: Call Traces — Scaling & Bottlenecks](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/72417282) | Platform, SRE, architects | **SaaS-scale capacity**, bottleneck map, gRPC/collector path, Prometheus/Tempo comparison, Phase 3–4 options |
 | [Call Traces: Latency Metrics Explained](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/71434241) | Everyone — support, sales, customers | **Plain-language p50/p90/p95**, Listen/Think/Speak, formulas, examples, customer FAQ |
-| [Pipecat quick start](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/68616193) (repo) | Customer engineers | SDK hooks, env vars, local WebRTC — `docs/synthetic-call-traces-pipecat.md` |
+
+| [Pipecat & OTLP integration](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76808193/Pipecat+OTLP+integration) | Customer engineers, demos, CS | Sandbox vs local, agent lab quickstart, SDK reference (Fumadocs archive) |
+
+| Pipecat quick start (repo) | Customer engineers | `docs/synthetic-call-traces-pipecat.md` |
+| Pipecat & OTLP (repo → Confluence archive) | Customer engineers | `docs/confluence-fumadocs-archive/monitoring/call-traces/04-pipecat-otlp-integration.md` |
 
 **Style reference:** Same narrative as [Call Import Concurrency](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/48103425) and [Usage & Cost Tracking](https://efficientai.atlassian.net/wiki/spaces/ETD/pages/63045633) — problem first, then solution, then deep sections.
 

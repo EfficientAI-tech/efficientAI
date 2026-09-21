@@ -18,6 +18,7 @@ from app.services.storage.blob_paths import (
 
 _MERGED_TRACES_STORAGE_PATH_RE = re.compile(r"^workspaces/[^/]+/traces(?:/.*)?$")
 _WORKSPACE_ONLY_STORAGE_PATH_RE = re.compile(r"^workspaces/([^/]+)$")
+_ORG_WORKSPACES_LIST_REL = "workspaces"
 
 
 def _storage_nav_name(prefix: str) -> str:
@@ -50,6 +51,37 @@ def _nav_path_for_storage_rel(storage_rel: str, nav_prefix: str) -> str:
     if nav_prefix:
         return f"{nav_prefix}/{storage_rel}"
     return storage_rel
+
+
+def _apply_nav_prefix_to_folders(
+    folders: List[Dict[str, str]],
+    nav_prefix: str,
+) -> List[Dict[str, str]]:
+    if not nav_prefix:
+        return folders
+    return [
+        {
+            "name": folder["name"],
+            "path": _nav_path_for_storage_rel(folder["path"], nav_prefix),
+        }
+        for folder in folders
+    ]
+
+
+def _workspace_child_ui_paths(
+    folders: List[Dict[str, str]],
+    *,
+    ui_parent_path: str,
+) -> List[Dict[str, str]]:
+    parent = (ui_parent_path or "").strip().strip("/")
+    out: List[Dict[str, str]] = []
+    for folder in folders:
+        name = folder.get("name")
+        if not name:
+            continue
+        path = f"{parent}/{name}" if parent else name
+        out.append({"name": name, "path": path})
+    return sorted(out, key=lambda item: item["name"].lower())
 
 
 def _inject_workspace_traces_folder(
@@ -639,8 +671,35 @@ class S3Service:
                     max_keys=max_keys,
                 )
                 merged = _merge_browse_results(audio_result, traces_result)
+                merged["folders"] = _apply_nav_prefix_to_folders(
+                    merged["folders"],
+                    nav_prefix,
+                )
                 return {
                     "folders": merged["folders"],
+                    "files": merged["files"],
+                    "current_path": normalized_path,
+                    "organization_id": organization_id,
+                }
+
+            if storage_rel == _ORG_WORKSPACES_LIST_REL:
+                audio_result = self._browse_prefix(
+                    org_root=org_root,
+                    path=storage_rel,
+                    max_keys=max_keys,
+                )
+                traces_result = self._browse_prefix(
+                    org_root=traces_root,
+                    path=storage_rel,
+                    max_keys=max_keys,
+                )
+                merged = _merge_browse_results(audio_result, traces_result)
+                ui_parent = normalized_path.rstrip("/")
+                return {
+                    "folders": _workspace_child_ui_paths(
+                        merged["folders"],
+                        ui_parent_path=ui_parent,
+                    ),
                     "files": merged["files"],
                     "current_path": normalized_path,
                     "organization_id": organization_id,
@@ -651,7 +710,7 @@ class S3Service:
                 path=storage_rel,
                 max_keys=max_keys,
             )
-            folders = list(result["folders"])
+            folders = _apply_nav_prefix_to_folders(list(result["folders"]), nav_prefix)
             _inject_workspace_traces_folder(
                 folders,
                 storage_rel=storage_rel,

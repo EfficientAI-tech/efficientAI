@@ -19,9 +19,12 @@ from efficientai.integrations.efficientai_traces import (
 )
 from efficientai.pipeline.task import PipelineTask
 
-# One-time env (from Test Insights → Pipecat setup):
-# EFFICIENTAI_OTLP_ENDPOINT=https://<host>/api/v1/observability/traces
-# EFFICIENTAI_API_KEY=<your-api-key>
+# .env (copy docs/examples/pipecat.env.example — sandbox or local, not both):
+#   EFFICIENTAI_API_BASE=https://sandbox.efficientai.cloud
+#   EFFICIENTAI_OTLP_ENDPOINT=https://sandbox.efficientai.cloud/api/v1/observability/traces
+#   EFFICIENTAI_WORKSPACE_ID=<uuid>
+#   EFFICIENTAI_API_KEY=<key>
+# Call ID comes from SIP X-VH-EfficientAI-Call-Short-Id (EfficientAI dial-out), not .env.
 
 
 def sip_headers_from_exotel_webhook(form: dict) -> dict:

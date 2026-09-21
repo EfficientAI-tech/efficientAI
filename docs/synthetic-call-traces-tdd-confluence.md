@@ -234,7 +234,7 @@ Every OTLP batch for one call:
 | Environment | API base |
 | --- | --- |
 | Local | `http://localhost:8000` |
-| Staging | `https://staging.efficientai.cloud` |
+| Sandbox (hosted pilots) | `https://sandbox.efficientai.cloud` |
 | Production | Not GA for traces yet — same SDK, change `EFFICIENTAI_API_BASE` |
 
 ---
@@ -463,20 +463,31 @@ For Vapi/Retell/ElevenLabs/Smallest playground calls we **display provider field
 
 ### Customer onboarding (condensed)
 
+**Lab layout:** `pipecat-agent/` — full steps in Fumadocs archive (section *Agent lab quickstart*):  
+`docs/confluence-fumadocs-archive/monitoring/call-traces/04-pipecat-otlp-integration.md`
+
 ```bash
-uv pip install "pipecat-ai[...]>=1.4.0"
-uv pip install -e '/path/to/efficientAI[otel]'
+mkdir -p /path/to/work/pipecat-agent && cd /path/to/work/pipecat-agent
+uv venv && source .venv/bin/activate
+cp /path/to/work/efficientAI/docs/examples/pipecat_multi_agent_webrtc_tracing.py bot.py
+cp /path/to/work/efficientAI/docs/examples/pipecat.env.example .env
+# edit .env (sandbox URLs + keys)
+uv pip install "pipecat-ai[silero,elevenlabs,fireworks,deepgram,runner,webrtc]>=1.4.0"
+uv pip install python-dotenv loguru httpx
+uv pip install -e '/path/to/work/efficientAI[otel]'
+uv run bot.py
 ```
 
 ```bash
-EFFICIENTAI_API_KEY=<key>
+# Sandbox .env
+EFFICIENTAI_API_BASE=https://sandbox.efficientai.cloud
+EFFICIENTAI_OTLP_ENDPOINT=https://sandbox.efficientai.cloud/api/v1/observability/traces
 EFFICIENTAI_WORKSPACE_ID=<workspace-uuid>
-EFFICIENTAI_API_BASE=https://staging.efficientai.cloud
+EFFICIENTAI_API_KEY=<key>
 ```
 
-**Three SDK hooks:** `ensure_trace_session()` → `setup_pipecat_worker_tracing()` → `close_trace_session()`.
-
-Example: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`
+**Three SDK hooks:** `ensure_trace_session()` → `setup_pipecat_worker_tracing()` → `close_trace_session()`.  
+Simpler bot: `pipecat_upstream_webrtc_tracing.py`. Voice runs if tracing is off (`enabled: false`).
 
 ---
 
@@ -499,8 +510,8 @@ Example: `docs/examples/pipecat_multi_agent_webrtc_tracing.py`
 2. Bot calls `ensure_trace_session()` at call start — never hardcode Call ID in env
 3. `PipelineWorker(enable_tracing=True)` + `setup_pipecat_worker_tracing()`
 4. `close_trace_session()` on disconnect (or rely on 120s idle close)
-5. Verify in staging UI: `/observability/calls` → traces tab
-6. For sales demos: use **separate workspace** for local vs staging
+5. Verify in **sandbox** UI: `/observability/calls` → traces tab
+6. For sales demos: use **separate workspace** for local vs sandbox
 7. Before enterprise pitch: read §5 throughput table — quote **10–20 concurrent** for v1
 
 ---

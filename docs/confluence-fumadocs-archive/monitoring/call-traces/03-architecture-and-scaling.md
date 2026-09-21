@@ -241,7 +241,7 @@ Key span attributes: `efficientai.call_short_id`, `gen_ai.operation.name` (`stt`
 | Environment | API base |
 | --- | --- |
 | Local | `http://localhost:8000` |
-| Staging | `https://staging.efficientai.cloud` |
+| Sandbox (hosted pilots) | `https://sandbox.efficientai.cloud` |
 
 ---
 

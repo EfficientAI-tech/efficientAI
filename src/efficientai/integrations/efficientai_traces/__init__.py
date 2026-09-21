@@ -12,6 +12,7 @@ from efficientai.integrations.efficientai_traces.handshake import (
     parse_trace_handshake,
 )
 from efficientai.integrations.efficientai_traces.pipecat_upstream import (
+    TraceSessionError,
     close_trace_session,
     ensure_trace_session,
     mint_trace_session,
@@ -19,6 +20,8 @@ from efficientai.integrations.efficientai_traces.pipecat_upstream import (
     require_deployment_trace_env,
     resolve_trace_transport,
     setup_pipecat_worker_tracing,
+    trace_session_enabled,
+    warn_deployment_trace_env,
 )
 from efficientai.integrations.efficientai_traces.setup import (
     configure_pipecat_tracing,
@@ -46,4 +49,7 @@ __all__ = [
     "setup_efficientai_tracing",
     "setup_pipecat_worker_tracing",
     "span_correlation_attributes",
+    "TraceSessionError",
+    "trace_session_enabled",
+    "warn_deployment_trace_env",
 ]

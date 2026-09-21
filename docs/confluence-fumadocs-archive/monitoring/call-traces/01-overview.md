@@ -102,4 +102,4 @@ Setup helper (returns `.env` block and snippets for the active workspace):
 GET /api/v1/observability/traces/setup
 ```
 
-Full integration steps: Pipecat & OTLP integration.
+Pipecat walkthrough (including `pipecat-agent` lab steps): **Pipecat & OTLP integration** in this archive.

@@ -79,7 +79,7 @@ Playground recordings (`source=playground`) are **not** listed in the production
 
 | Question | Short answer |
 | --- | --- |
-| How many concurrent OTLP calls today? | **10–20** comfortably on staging |
+| How many concurrent OTLP calls today? | **10–20** comfortably on sandbox |
 | What limits us? | Sync ingest + JSONB span rewrite per batch |
 | What unlocks 500+ concurrent? | Async Celery ingest + S3 span blobs (Phase 2) |
 | Are traces sharded? | **No** — catalog Postgres only |
@@ -99,4 +99,4 @@ POST {EFFICIENTAI_API_BASE}/api/v1/observability/traces
 
 Session lifecycle: `POST /observability/traces/sessions` and `POST /observability/traces/sessions/{call_short_id}/close`.
 
-Full integration steps: [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/).
+**Pipecat onboarding:** [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/).

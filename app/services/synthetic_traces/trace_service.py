@@ -1045,7 +1045,7 @@ def build_otlp_setup_info(
     install_command = (
         'pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"'
     )
-    docs_url = "https://docs.efficientai.cloud/docs/monitoring/call-traces/"
+    docs_url = "https://docs.efficientai.cloud/docs/monitoring/call-traces/pipecat-integration/"
     env_block = "\n".join(
         [
             "# Save as .env next to your voice agent (Pipecat, LiveKit worker, etc.).",
@@ -1065,12 +1065,12 @@ def build_otlp_setup_info(
 from efficientai.integrations.efficientai_traces import (
     close_trace_session,
     ensure_trace_session,
-    require_deployment_trace_env,
     setup_efficientai_tracing,
+    warn_deployment_trace_env,
 )
 
 load_dotenv(override=True)
-require_deployment_trace_env()
+warn_deployment_trace_env()
 '''
     pipecat_example = '''# Framework-agnostic session + OTLP (works for any stack that exports spans)
 

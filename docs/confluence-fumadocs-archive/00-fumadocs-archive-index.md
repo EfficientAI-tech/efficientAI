@@ -15,9 +15,9 @@
 | Call Traces — overview | Everyone | `monitoring/call-traces/01-overview.md` |
 | Latency metrics (p50, p90, p95) | Support, sales, customers | `monitoring/call-traces/02-latency-metrics.md` |
 | Architecture & scaling | Engineers, SRE | `monitoring/call-traces/03-architecture-and-scaling.md` |
-| Pipecat & OTLP integration | Customer engineers | `monitoring/call-traces/04-pipecat-otlp-integration.md` |
+| Pipecat & OTLP integration (includes agent lab quickstart) | Customer engineers, demos, CS | `monitoring/call-traces/04-pipecat-otlp-integration.md` |
 
-**Baseline:** OTLP ingest with **S3 WAL → `worker-traces` → ClickHouse**; Postgres control plane only. Setup via `GET /api/v1/observability/traces/setup` (not a separate “Connect Pipecat” tab).
+**Baseline:** OTLP ingest with **S3 WAL → `worker-traces` → ClickHouse**; Postgres control plane only.
 
 ---
 

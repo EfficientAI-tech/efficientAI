@@ -7,7 +7,7 @@ Public docs live in `docs-fumadocs/`. While that tree is locked for parallel edi
 | `monitoring/call-traces/01-overview.md` | `monitoring/call-traces/index.mdx` | Call Traces — overview |
 | `monitoring/call-traces/02-latency-metrics.md` | `monitoring/call-traces/latency-metrics.mdx` | Latency metrics |
 | `monitoring/call-traces/03-architecture-and-scaling.md` | `monitoring/call-traces/architecture.mdx` | Architecture & scaling |
-| `monitoring/call-traces/04-pipecat-otlp-integration.md` | `monitoring/call-traces/pipecat-integration.mdx` | Pipecat & OTLP integration |
+| `monitoring/call-traces/04-pipecat-otlp-integration.md` (incl. `pipecat-agent` lab) | `monitoring/call-traces/pipecat-integration.mdx` | Pipecat & OTLP integration |
 
 **Content baseline:** `otel-traces` branch — ClickHouse span storage, S3 WAL, `worker-traces`, deferred ingest (HTTP **202**). Postgres is control-plane only (`evaluator_results.synthetic_call_trace_id`); migration **092** removes legacy PG trace tables.
 

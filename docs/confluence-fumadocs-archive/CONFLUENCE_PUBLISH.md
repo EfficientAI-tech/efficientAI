@@ -45,6 +45,7 @@ Record created page IDs below after publish:
 | Call Traces — overview | 76775425 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76775425 |
 | Latency metrics | 76840961 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76840961 |
 | Architecture & scaling | 76873729 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76873729 |
-| Pipecat & OTLP integration | 76808193 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76808193 |
+| Pipecat & OTLP integration (includes **agent lab quickstart**) | 76808193 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76808193 |
+| ~~Pipecat agent lab~~ (redirect only — do not maintain) | 78774273 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/78774273 |
 | Scaling TDD v2.0 (internal) | 76349452 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/76349452 |
 | Old scaling URL (redirect) | 72417282 | https://efficientai.atlassian.net/wiki/spaces/ETD/pages/72417282 |

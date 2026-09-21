@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -11,9 +12,19 @@ from efficientai.integrations.efficientai_traces.correlation import span_correla
 from efficientai.integrations.efficientai_traces.handshake import parse_trace_handshake
 from efficientai.integrations.efficientai_traces.setup import setup_efficientai_tracing, flush_efficientai_tracing
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_OTLP_PATH = "/api/v1/observability/traces"
 _FALLBACK_API_BASE = "http://localhost:8000"
 _VALID_TRANSPORTS = frozenset({"webrtc", "websocket", "phone", "custom"})
+
+
+class TraceSessionError(Exception):
+    """EfficientAI session API failed (connection, HTTP status, or bad response)."""
+
+    def __init__(self, message: str, *, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _env(name: str) -> Optional[str]:
@@ -39,6 +50,15 @@ def _resolve_otlp_endpoint(server_hint: Optional[str] = None) -> str:
     return hint
 
 
+def _format_http_error_response(resp: httpx.Response) -> str:
+    body = (resp.text or "").strip()
+    if len(body) > 500:
+        body = body[:500] + "…"
+    if body:
+        return f"HTTP {resp.status_code} from {resp.request.url}: {body}"
+    return f"HTTP {resp.status_code} from {resp.request.url}"
+
+
 def missing_deployment_trace_env() -> list[str]:
     """Return unset deployment env vars needed when no handshake is present."""
     required = (
@@ -57,6 +77,18 @@ def require_deployment_trace_env() -> None:
             + ", ".join(missing)
             + ". Add them once (see docs/synthetic-call-traces-pipecat.md), then restart bot.py."
         )
+
+
+def warn_deployment_trace_env() -> List[str]:
+    """Log missing env vars; voice can still run without tracing."""
+    missing = missing_deployment_trace_env()
+    if missing:
+        logger.warning(
+            "EfficientAI call traces disabled — missing .env: %s. "
+            "Pipecat will run without exporting spans.",
+            ", ".join(missing),
+        )
+    return missing
 
 
 def resolve_trace_transport(runner_args: Any = None, transport: Any = None) -> str:
@@ -83,6 +115,18 @@ def resolve_trace_transport(runner_args: Any = None, transport: Any = None) -> s
     return "webrtc"
 
 
+def _disabled_trace_context(error: str) -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "error": error,
+        "call_short_id": None,
+    }
+
+
+def trace_session_enabled(trace_ctx: Dict[str, Any]) -> bool:
+    return bool(trace_ctx.get("enabled") and trace_ctx.get("call_short_id"))
+
+
 async def mint_trace_session(
     *,
     workspace_id: str,
@@ -93,28 +137,43 @@ async def mint_trace_session(
 ) -> Dict[str, Any]:
     """Open an EfficientAI trace session (call_short_id minted server-side)."""
     base = (api_base_url or _api_base_url()).rstrip("/")
+    url = f"{base}/api/v1/observability/traces/sessions"
     payload: Dict[str, Any] = {"transport": transport}
     if evaluator_result_id:
         payload["evaluator_result_id"] = evaluator_result_id
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(
-            f"{base}/api/v1/observability/traces/sessions",
-            headers={
-                "X-API-Key": api_key,
-                "X-Workspace-Id": workspace_id,
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
-        resp.raise_for_status()
-        return resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                url,
+                headers={
+                    "X-API-Key": api_key,
+                    "X-Workspace-Id": workspace_id,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise TraceSessionError(
+            _format_http_error_response(exc.response),
+            status_code=exc.response.status_code,
+        ) from exc
+    except httpx.ConnectError as exc:
+        raise TraceSessionError(
+            f"Cannot connect to EfficientAI at {url} "
+            f"(check EFFICIENTAI_API_BASE={base!r} and network). Detail: {exc}",
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise TraceSessionError(f"Timed out calling EfficientAI session API at {url}: {exc}") from exc
 
 
 async def ensure_trace_session(
     *,
     transport: str = "websocket",
     handshake: Optional[Dict[str, Any]] = None,
+    strict: bool = False,
 ) -> Dict[str, Any]:
     """
     Resolve per-call trace context.
@@ -123,12 +182,15 @@ async def ensure_trace_session(
     1. EfficientAI WS handshake (playground custom WebSocket)
     2. EFFICIENTAI_CALL_SHORT_ID env (manual dev fallback)
     3. POST /observability/traces/sessions using deployment env (API key + workspace)
+
+    When ``strict`` is False (default), failures return ``enabled: False`` and Pipecat can continue.
     """
     if handshake:
         parsed = parse_trace_handshake(handshake)
         if parsed:
             otel = parsed.get("otel_correlation") or {}
             return {
+                "enabled": True,
                 "call_short_id": parsed["call_short_id"],
                 "agent_id": parsed.get("agent_id"),
                 "workspace_id": parsed.get("workspace_id"),
@@ -138,25 +200,39 @@ async def ensure_trace_session(
     call_short_id = _env("EFFICIENTAI_CALL_SHORT_ID")
     if call_short_id:
         return {
+            "enabled": True,
             "call_short_id": call_short_id,
             "agent_id": _env("EFFICIENTAI_AGENT_ID"),
             "workspace_id": _env("EFFICIENTAI_WORKSPACE_ID"),
             "otlp_endpoint": _resolve_otlp_endpoint(_env("EFFICIENTAI_OTLP_ENDPOINT")),
         }
 
+    missing = missing_deployment_trace_env()
+    if missing:
+        msg = "Missing EfficientAI env: " + ", ".join(missing)
+        if strict:
+            require_deployment_trace_env()
+        logger.warning("%s — voice will run without call traces.", msg)
+        return _disabled_trace_context(msg)
+
     api_key = _env("EFFICIENTAI_API_KEY")
     workspace_id = _env("EFFICIENTAI_WORKSPACE_ID")
-    if not api_key or not workspace_id:
-        require_deployment_trace_env()
+    try:
+        session = await mint_trace_session(
+            workspace_id=workspace_id,
+            api_key=api_key,
+            api_base_url=_api_base_url(),
+            transport=transport,
+        )
+    except TraceSessionError as exc:
+        if strict:
+            raise
+        logger.error("EfficientAI trace session failed: %s", exc)
+        return _disabled_trace_context(str(exc))
 
-    session = await mint_trace_session(
-        workspace_id=workspace_id,
-        api_key=api_key,
-        api_base_url=_api_base_url(),
-        transport=transport,
-    )
     otel = session.get("otel_correlation") or {}
     return {
+        "enabled": True,
         "call_short_id": session["call_short_id"],
         "trace_id": session.get("trace_id"),
         "workspace_id": session.get("workspace_id") or workspace_id,
@@ -169,17 +245,16 @@ def setup_pipecat_worker_tracing(trace_ctx: Dict[str, Any]) -> Dict[str, Any]:
     """
     Configure OTLP export and return kwargs for upstream ``PipelineWorker``.
 
-    Usage::
-
-        trace_ctx = await ensure_trace_session()
-        tracing = setup_pipecat_worker_tracing(trace_ctx)
-        worker = PipelineWorker(
-            pipeline,
-            enable_tracing=True,
-            additional_span_attributes=tracing["additional_span_attributes"],
-            ...
-        )
+    When trace_ctx has ``enabled: False``, returns ``enabled: False`` and empty span attrs.
     """
+    if not trace_session_enabled(trace_ctx):
+        return {
+            "enabled": False,
+            "additional_span_attributes": {},
+            "call_short_id": None,
+            "transport": trace_ctx.get("transport"),
+        }
+
     call_short_id = trace_ctx["call_short_id"]
     agent_id = trace_ctx.get("agent_id")
     workspace_id = trace_ctx.get("workspace_id")
@@ -203,6 +278,7 @@ def setup_pipecat_worker_tracing(trace_ctx: Dict[str, Any]) -> Dict[str, Any]:
         transport=str(transport) if transport else None,
     )
     return {
+        "enabled": True,
         "additional_span_attributes": attrs,
         "call_short_id": call_short_id,
         "transport": transport,
@@ -211,14 +287,23 @@ def setup_pipecat_worker_tracing(trace_ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 async def close_trace_session(trace_ctx: Dict[str, Any]) -> None:
     """Close trace row when Pipecat call ends."""
+    if not trace_session_enabled(trace_ctx):
+        return
     flush_efficientai_tracing()
     call_short_id = trace_ctx.get("call_short_id")
     api_key = _env("EFFICIENTAI_API_KEY")
     workspace_id = trace_ctx.get("workspace_id") or _env("EFFICIENTAI_WORKSPACE_ID")
     if not call_short_id or not api_key or not workspace_id:
         return
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        await client.post(
-            f"{_api_base_url()}/api/v1/observability/traces/sessions/{call_short_id}/close",
-            headers={"X-API-Key": api_key, "X-Workspace-Id": str(workspace_id)},
-        )
+    url = f"{_api_base_url()}/api/v1/observability/traces/sessions/{call_short_id}/close"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                url,
+                headers={"X-API-Key": api_key, "X-Workspace-Id": str(workspace_id)},
+            )
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("EfficientAI trace close failed: %s", _format_http_error_response(exc.response))
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        logger.warning("EfficientAI trace close failed: %s", exc)

@@ -2,24 +2,29 @@
 #
 # Stack: Fireworks LLM (2 agents), ElevenLabs TTS, STT = ElevenLabs or Deepgram.
 #
-# .env:
+# .env — copy template, then add provider keys:
+#   EXAMPLES="https://raw.githubusercontent.com/EfficientAI-tech/efficientAI/otel-traces/docs/examples"
+#   curl -fsSL "$EXAMPLES/pipecat.env.example" -o .env
+#   # or: cp /path/to/efficientAI/docs/examples/pipecat.env.example .env
+#   # Sandbox (default): EFFICIENTAI_API_BASE + EFFICIENTAI_OTLP_ENDPOINT → sandbox.efficientai.cloud
+#   # Local dev only: swap to localhost block in pipecat.env.example (separate workspace UUID)
+#   # Or: GET /api/v1/observability/traces/setup → paste env_block (see pipecat-integration docs)
 #   FIREWORKS_API_KEY=...
 #   ELEVENLABS_API_KEY=...
 #   ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM          # optional
-#   FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4-flash-0731  # optional; auto-picked if unset
+#   FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4-flash-0731  # optional
 #   PIPECAT_STT_PROVIDER=elevenlabs                    # or deepgram
 #   DEEPGRAM_API_KEY=...                                # when STT=deepgram
-#   EFFICIENTAI_API_KEY=...
-#   EFFICIENTAI_WORKSPACE_ID=...
 #
 # Install:
 #   uv pip install "pipecat-ai[silero,elevenlabs,fireworks,deepgram,runner,webrtc]>=1.4.0"
-#   uv pip install -e '/path/to/efficientAI[otel]'
+#   uv pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git@otel-traces"
+#   # or: uv pip install -e '/path/to/efficientAI[otel]' while developing the SDK
 #
 # Run:
-#   cp docs/examples/pipecat_multi_agent_webrtc_tracing.py bot.py
+#   curl -fsSL "$EXAMPLES/pipecat_multi_agent_webrtc_tracing.py" -o bot.py
 #   uv run bot.py
-#   Browser → http://localhost:7860/client → WebRTC
+#   Browser → http://localhost:7860/client → WebRTC → traces in sandbox Calls hub
 
 from dotenv import load_dotenv
 
@@ -56,12 +61,10 @@ from pipecat.workers.runner import WorkerRunner
 from efficientai.integrations.efficientai_traces import (
     close_trace_session,
     ensure_trace_session,
-    require_deployment_trace_env,
     resolve_trace_transport,
     setup_pipecat_worker_tracing,
+    warn_deployment_trace_env,
 )
-
-require_deployment_trace_env()
 
 MAIN_NAME = "acme"
 GREETER_NAME = "greeter"
@@ -224,6 +227,7 @@ class AcmeLLMWorker(LLMWorker):
         span_attrs: dict[str, str],
         trace_ctx: dict | None = None,
         bridged: tuple[str, ...] | None = (),
+        enable_tracing: bool = True,
     ):
         self._defer_tool_frames = True
         self._tool_call_inflight = 0
@@ -241,8 +245,8 @@ class AcmeLLMWorker(LLMWorker):
             bridged=bridged,
             enable_rtvi=bridged is None,
             idle_timeout_secs=None,
-            enable_tracing=True,
-            additional_span_attributes=span_attrs,
+            enable_tracing=enable_tracing,
+            additional_span_attributes=span_attrs if enable_tracing else {},
             params=PipelineParams(
                 enable_metrics=True,
                 enable_usage_metrics=True,
@@ -279,7 +283,11 @@ class AcmeLLMWorker(LLMWorker):
         await self.end(reason=reason)
 
 
-def build_greeter(span_attrs: dict[str, str], trace_ctx: dict | None = None) -> AcmeLLMWorker:
+def build_greeter(
+    span_attrs: dict[str, str],
+    trace_ctx: dict | None = None,
+    enable_tracing: bool = True,
+) -> AcmeLLMWorker:
     llm = _fireworks_llm(
         system_instruction=(
             "You are a friendly greeter for Acme Corp. Products: Rocket Boots, "
@@ -295,10 +303,15 @@ def build_greeter(span_attrs: dict[str, str], trace_ctx: dict | None = None) -> 
         llm=llm,
         span_attrs=_worker_trace_attrs(span_attrs, GREETER_NAME),
         trace_ctx=trace_ctx,
+        enable_tracing=enable_tracing,
     )
 
 
-def build_support(span_attrs: dict[str, str], trace_ctx: dict | None = None) -> AcmeLLMWorker:
+def build_support(
+    span_attrs: dict[str, str],
+    trace_ctx: dict | None = None,
+    enable_tracing: bool = True,
+) -> AcmeLLMWorker:
     llm = _fireworks_llm(
         system_instruction=(
             "You are Acme Corp support. Rocket Boots ($299, up to 60 mph), "
@@ -313,6 +326,7 @@ def build_support(span_attrs: dict[str, str], trace_ctx: dict | None = None) -> 
         llm=llm,
         span_attrs=_worker_trace_attrs(span_attrs, SUPPORT_NAME),
         trace_ctx=trace_ctx,
+        enable_tracing=enable_tracing,
     )
 
 
@@ -320,14 +334,19 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     _require_provider_keys()
 
     trace_transport = _trace_transport(runner_args, transport)
+    warn_deployment_trace_env()
     trace_ctx = await ensure_trace_session(transport=trace_transport)
     tracing = setup_pipecat_worker_tracing(trace_ctx)
-    span_attrs = tracing["additional_span_attributes"]
-    logger.info(
-        "EfficientAI trace session transport={} call_short_id={}",
-        trace_transport,
-        tracing["call_short_id"],
-    )
+    tracing_on = bool(tracing.get("enabled"))
+    span_attrs = tracing.get("additional_span_attributes") or {} if tracing_on else {}
+    if tracing_on:
+        logger.info(
+            "EfficientAI trace session transport={} call_short_id={}",
+            trace_transport,
+            tracing["call_short_id"],
+        )
+    else:
+        logger.warning("EfficientAI tracing off: {}", trace_ctx.get("error"))
 
     logger.info(
         "Voice stack: STT={} | TTS=ElevenLabs | LLM=Fireworks ({}) | agents=greeter,support",
@@ -371,15 +390,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
-        enable_tracing=True,
+        enable_tracing=tracing_on,
         additional_span_attributes=span_attrs,
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
         processor_unusable_policy=ProcessorUnusablePolicy.END,
     )
 
     await runner.add_workers(
-        build_greeter(span_attrs, trace_ctx),
-        build_support(span_attrs, trace_ctx),
+        build_greeter(span_attrs, trace_ctx, tracing_on),
+        build_support(span_attrs, trace_ctx, tracing_on),
         worker,
     )
 

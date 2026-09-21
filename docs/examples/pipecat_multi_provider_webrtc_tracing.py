@@ -1,18 +1,17 @@
 # Multi-provider Pipecat bot (STT + LLM + TTS) with EfficientAI observability.
 #
-# This matches how prod customers run: separate APIs per component → real STT/LLM/TTS spans.
+# Separate STT / LLM / TTS APIs → real per-component spans in Calls.
 #
-# One-time setup (pipecat-examples/websocket/.env):
+# .env:
+#   cp /path/to/efficientAI/docs/examples/pipecat.env.example .env
+#   # Sandbox: EFFICIENTAI_API_BASE + EFFICIENTAI_OTLP_ENDPOINT (see template)
 #   DEEPGRAM_API_KEY=...
 #   OPENAI_API_KEY=...
 #   CARTESIA_API_KEY=...
-#   EFFICIENTAI_API_KEY=<workspace api key>
-#   EFFICIENTAI_WORKSPACE_ID=<workspace uuid>
 #
 # Install:
-#   cd ~/Downloads/work/pipecat-examples/websocket
-#   uv pip install "pipecat-ai[silero,websocket,deepgram,openai,cartesia,runner,webrtc]>=1.4.0"
-#   uv pip install -e '/home/sami/Downloads/work/efficientAI[otel]'
+#   uv pip install "pipecat-ai[silero,deepgram,openai,cartesia,runner,webrtc]>=1.4.0"
+#   uv pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"
 #
 # Run:
 #   cp /path/to/efficientAI/docs/examples/pipecat_multi_provider_webrtc_tracing.py bot.py
@@ -48,12 +47,10 @@ from pipecat.workers.runner import WorkerRunner
 from efficientai.integrations.efficientai_traces import (
     close_trace_session,
     ensure_trace_session,
-    require_deployment_trace_env,
     resolve_trace_transport,
     setup_pipecat_worker_tracing,
+    warn_deployment_trace_env,
 )
-
-require_deployment_trace_env()
 
 SYSTEM_INSTRUCTION = """
 You are a helpful voice assistant. Keep responses to one or two short sentences.
@@ -96,13 +93,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     _require_provider_keys()
 
     trace_transport = _trace_transport(runner_args, transport)
+    warn_deployment_trace_env()
     trace_ctx = await ensure_trace_session(transport=trace_transport)
     tracing = setup_pipecat_worker_tracing(trace_ctx)
-    logger.info(
-        "EfficientAI trace session transport={} call_short_id={}",
-        trace_transport,
-        tracing["call_short_id"],
-    )
+    if tracing.get("enabled"):
+        logger.info(
+            "EfficientAI trace session transport={} call_short_id={}",
+            trace_transport,
+            tracing["call_short_id"],
+        )
+    else:
+        logger.warning(
+            "EfficientAI tracing off — voice still runs. {}",
+            trace_ctx.get("error") or "session not started",
+        )
 
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
     llm = OpenAILLMService(
@@ -143,8 +147,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
-        enable_tracing=True,
-        additional_span_attributes=tracing["additional_span_attributes"],
+        enable_tracing=bool(tracing.get("enabled")),
+        additional_span_attributes=tracing.get("additional_span_attributes") or {},
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 

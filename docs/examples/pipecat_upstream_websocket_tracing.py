@@ -1,23 +1,20 @@
-# Patch for ~/Downloads/work/pipecat-examples/websocket/bot.py
+# Gemini Live + WebRTC and WebSocket transports with EfficientAI OTLP export.
 #
-# WebRTC + WebSocket Pipecat runner with EfficientAI OTLP export.
+# WebRTC: http://localhost:7860/client → **WebRTC** → Connect
+# Protobuf WS client (optional): cd client && npm run dev → http://localhost:5173
+# This file enables both transports in transport_params.
 #
-# WebRTC (recommended): http://localhost:7860/client → pick **WebRTC** → Connect
-# Protobuf websocket client: cd client && npm run dev → http://localhost:5173
-#
-# Do NOT use WebRTC on :7860 if you only enable websocket in transport_params.
-# Do NOT use :5173 if you only enable webrtc in transport_params.
-# This file enables BOTH so either client works.
-#
-# One-time setup (pipecat-examples/websocket/.env):
+# .env:
+#   cp /path/to/efficientAI/docs/examples/pipecat.env.example .env
 #   GOOGLE_API_KEY=...
-#   EFFICIENTAI_API_KEY=<workspace api key>
-#   EFFICIENTAI_WORKSPACE_ID=<workspace uuid>
 #
-# One-time install:
-#   cd ~/Downloads/work/pipecat-examples/websocket
+# Install:
 #   uv pip install "pipecat-ai[silero,websocket,google,runner,webrtc]>=1.4.0"
-#   uv pip install -e '/home/sami/Downloads/work/efficientAI[otel]'
+#   uv pip install "efficientai[otel] @ git+https://github.com/EfficientAI-tech/efficientAI.git"
+#
+# Run:
+#   cp /path/to/efficientAI/docs/examples/pipecat_upstream_websocket_tracing.py bot.py
+#   uv run bot.py
 
 from dotenv import load_dotenv
 
@@ -46,12 +43,10 @@ from pipecat.workers.runner import WorkerRunner
 from efficientai.integrations.efficientai_traces import (
     close_trace_session,
     ensure_trace_session,
-    require_deployment_trace_env,
     resolve_trace_transport,
     setup_pipecat_worker_tracing,
+    warn_deployment_trace_env,
 )
-
-require_deployment_trace_env()
 
 SYSTEM_INSTRUCTION = """
 You are Gemini Chatbot, a friendly, helpful robot.
@@ -78,8 +73,11 @@ def _trace_transport(runner_args: RunnerArguments, transport: BaseTransport) -> 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     trace_transport = _trace_transport(runner_args, transport)
+    warn_deployment_trace_env()
     trace_ctx = await ensure_trace_session(transport=trace_transport)
     tracing = setup_pipecat_worker_tracing(trace_ctx)
+    if not tracing.get("enabled"):
+        logger.warning("EfficientAI tracing off: {}", trace_ctx.get("error"))
     logger.info(
         "EfficientAI trace session transport={} call_short_id={}",
         trace_transport,
@@ -117,8 +115,8 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
-        enable_tracing=True,
-        additional_span_attributes=tracing["additional_span_attributes"],
+        enable_tracing=bool(tracing.get("enabled")),
+        additional_span_attributes=tracing.get("additional_span_attributes") or {},
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
 
