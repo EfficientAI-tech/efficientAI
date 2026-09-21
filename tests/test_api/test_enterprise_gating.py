@@ -64,4 +64,13 @@ def test_license_info_includes_oss_quotas(unlicensed_client):
     body = response.json()
     assert body["quotas"]["max_user_metrics"] == 5
     assert body["quotas"]["max_agents"] == 3
+    assert body["quotas"]["max_org_members"] == 1
     assert "quota_usage" in body
+
+
+def test_workspace_iam_forbidden_without_license(unlicensed_client, default_workspace):
+    response = unlicensed_client.get(
+        f"/api/v1/workspaces/{default_workspace.id}/members"
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_license_required"

@@ -3,7 +3,7 @@ import { apiClient } from '../../lib/api'
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
-import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check } from 'lucide-react'
+import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check, Lock } from 'lucide-react'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
@@ -17,17 +17,23 @@ import { useOssQuotas } from '../../hooks/useOssQuotas'
 
 type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
 
-const IAM_TABS: { id: IamTab; label: string; icon: typeof Building2; adminOnly?: boolean }[] = [
+const IAM_TABS: {
+  id: IamTab
+  label: string
+  icon: typeof Building2
+  adminOnly?: boolean
+  enterpriseOnly?: boolean
+}[] = [
   { id: 'organization', label: 'Organization', icon: Building2 },
-  { id: 'workspace-members', label: 'Workspace Members', icon: Users },
-  { id: 'workspace-roles', label: 'Workspace Roles', icon: Shield, adminOnly: true },
+  { id: 'workspace-members', label: 'Workspace Members', icon: Users, enterpriseOnly: true },
+  { id: 'workspace-roles', label: 'Workspace Roles', icon: Shield, adminOnly: true, enterpriseOnly: true },
 ]
 
 export default function IAM() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const isAdmin = useIsAdmin()
-  const { isAtLimit, limitMessage } = useOssQuotas()
+  const { isAtLimit, limitMessage, isEnterprise } = useOssQuotas()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
   const activeTab: IamTab =
@@ -42,6 +48,15 @@ export default function IAM() {
       setSearchParams({ tab: 'organization' }, { replace: true })
     }
   }, [activeTab, isAdmin, setSearchParams])
+
+  useEffect(() => {
+    if (
+      !isEnterprise &&
+      (activeTab === 'workspace-members' || activeTab === 'workspace-roles')
+    ) {
+      setSearchParams({}, { replace: true })
+    }
+  }, [activeTab, isEnterprise, setSearchParams])
 
   const setActiveTab = (tab: IamTab) => {
     setSearchParams(tab === 'organization' ? {} : { tab })
@@ -345,21 +360,42 @@ export default function IAM() {
 
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex gap-6 overflow-x-auto" aria-label="IAM sections">
-          {visibleTabs.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setActiveTab(id)}
-              className={`flex items-center gap-2 px-1 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
-                activeTab === id
-                  ? 'border-primary-600 text-primary-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
+          {visibleTabs.map(({ id, label, icon: Icon, enterpriseOnly }) => {
+            const isTabDisabled = Boolean(enterpriseOnly && !isEnterprise)
+            return (
+              <button
+                key={id}
+                type="button"
+                disabled={isTabDisabled}
+                onClick={() => {
+                  if (isTabDisabled) {
+                    showToast(
+                      'Workspace Members and Workspace Roles require an Enterprise license (EFFICIENTAI_LICENSE).',
+                      'error',
+                    )
+                    return
+                  }
+                  setActiveTab(id)
+                }}
+                className={`flex items-center gap-2 px-1 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
+                  activeTab === id
+                    ? 'border-primary-600 text-primary-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                } ${isTabDisabled ? 'opacity-60 cursor-not-allowed hover:border-transparent hover:text-gray-500' : ''}`}
+                title={
+                  isTabDisabled
+                    ? 'Requires an Enterprise license to manage workspace access'
+                    : undefined
+                }
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+                {isTabDisabled && (
+                  <Lock className="h-3 w-3 text-amber-600" aria-label="Enterprise feature" />
+                )}
+              </button>
+            )
+          })}
         </nav>
       </div>
 
@@ -665,9 +701,9 @@ export default function IAM() {
         </>
       )}
 
-      {activeTab === 'workspace-members' && <WorkspaceMembersSection />}
+      {activeTab === 'workspace-members' && isEnterprise && <WorkspaceMembersSection />}
 
-      {activeTab === 'workspace-roles' && isAdmin && (
+      {activeTab === 'workspace-roles' && isAdmin && isEnterprise && (
         <div className="bg-white shadow rounded-lg p-6">
           <WorkspaceRolesSection />
         </div>

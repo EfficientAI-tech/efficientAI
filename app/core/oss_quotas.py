@@ -15,7 +15,7 @@ from app.models.database import Agent, Metric, OrganizationMember, Workspace
 
 OSS_MAX_USER_METRICS = 5
 OSS_MAX_AGENTS = 3
-OSS_MAX_ORG_MEMBERS = 2
+OSS_MAX_ORG_MEMBERS = 1
 OSS_MAX_WORKSPACES = 1
 
 OssQuotaResource = Literal["metrics", "agents", "org_members", "workspaces"]
@@ -39,7 +39,8 @@ _RESOURCE_MESSAGES: dict[OssQuotaResource, str] = {
     ),
     "org_members": (
         f"Open source deployments are limited to {OSS_MAX_ORG_MEMBERS} "
-        "organization members (including the creator)."
+        "organization member (solo use). Invite additional users with an "
+        "Enterprise license."
     ),
     "workspaces": (
         f"Open source deployments are limited to {OSS_MAX_WORKSPACES} "

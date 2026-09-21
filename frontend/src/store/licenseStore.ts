@@ -16,7 +16,7 @@ const DEFAULT_USAGE_POLICY: UsagePolicy = {
 const DEFAULT_OSS_QUOTAS: OssQuotas = {
   max_user_metrics: 5,
   max_agents: 3,
-  max_org_members: 2,
+  max_org_members: 1,
   max_workspaces: 1,
 }
 

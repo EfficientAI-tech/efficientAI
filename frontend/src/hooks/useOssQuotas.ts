@@ -41,7 +41,7 @@ export function useOssQuotas() {
         'Open source limit: 5 user-created metrics. Upgrade with EFFICIENTAI_LICENSE for unlimited metrics.',
       agents: 'Open source limit: 3 agents. Upgrade with EFFICIENTAI_LICENSE for unlimited agents.',
       org_members:
-        'Open source limit: 2 organization members. Upgrade with EFFICIENTAI_LICENSE to invite more.',
+        'Open source limit: 1 organization member (solo use). Upgrade with EFFICIENTAI_LICENSE to invite more users.',
       workspaces:
         'Open source limit: 1 workspace. Upgrade with EFFICIENTAI_LICENSE to create additional workspaces.',
     }
