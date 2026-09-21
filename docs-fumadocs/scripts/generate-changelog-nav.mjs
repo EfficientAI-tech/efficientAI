@@ -89,15 +89,28 @@ function buildReleaseMdx(release) {
   return `${lines.join('\n')}\n`;
 }
 
+function hasCommittedReleasePages() {
+  if (!fs.existsSync(changelogDir)) return false;
+  return fs.readdirSync(changelogDir).some((entry) => /^v\d/.test(entry) && entry.endsWith('.mdx'));
+}
+
 async function fetchReleases() {
+  const token = process.env.GITHUB_TOKEN?.trim();
   const response = await fetch(RELEASES_URL, {
     headers: {
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
 
   if (!response.ok) {
+    if (hasCommittedReleasePages()) {
+      console.warn(
+        `Skipping changelog regeneration (GitHub releases request failed with ${response.status}); using committed pages.`,
+      );
+      process.exit(0);
+    }
     throw new Error(`GitHub releases request failed (${response.status})`);
   }
 
