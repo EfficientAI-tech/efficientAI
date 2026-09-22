@@ -17,6 +17,12 @@ Two personas and two scenarios produce four combinations; with a run count of th
 twelve calls. The combination count is the product of your inputs, so grow personas and
 scenarios deliberately.
 
+### How combinations are calculated
+
+EfficientAI executes persona x scenario pairs (Cartesian product) for each suite.
+If you first choose subsets from larger candidate pools, that selection stage can be modeled with
+nCr, then expanded into persona-scenario run pairs.
+
 Suites are what make regression testing practical. They let you standardize a fixed set of
 tests, compare the same tests over time as prompts and models change, and rotate scenarios for
 inbound flows.

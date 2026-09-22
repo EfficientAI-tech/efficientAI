@@ -18,6 +18,17 @@ An **evaluation suite** is the join table: it pairs one agent with every combina
 personas and scenarios you attach. Each combination becomes one or more **runs**, and each run
 is scored by the **metrics** you enabled.
 
+### Combination math (nCr + pairing)
+
+Evaluation suite runs are based on persona-scenario pairing:
+
+- If personas and scenarios are already selected in the suite, total combinations are `P x S`
+  (Cartesian product).
+- If subsets are selected from larger pools first, use nCr for each selection stage:
+  - Personas selected: `nCk`
+  - Scenarios selected: `mCr`
+  - Then suite combinations expand to `(nCk) x (mCr)` before applying run count.
+
 ## The evaluation lifecycle
 
 Because the persona, scenario, and voice mapping are all pinned configuration, re-running a
