@@ -99,7 +99,13 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
 }
 
 export async function generateStaticParams() {
-  return source.generateParams();
+  const params = source.generateParams();
+  if (params.length === 0) {
+    throw new Error(
+      'Docs source returned no static params. Run `npx fumadocs-mdx` in docs-fumadocs and restart the dev server.',
+    );
+  }
+  return params;
 }
 
 export async function generateMetadata(props: PageProps<'/docs/[[...slug]]'>): Promise<Metadata> {

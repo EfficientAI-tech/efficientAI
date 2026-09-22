@@ -5,7 +5,7 @@ title: Enterprise
 # Enterprise
 
 > **Enterprise quickstart**
-> - Start with: [Authentication guide](/docs/getting-started/authentication/)
+> - Start with: [Authentication guide](https://docs.efficientai.cloud/docs/getting-started/authentication/)
 > - Free trial: [Book a demo](https://cal.com/aadhar-singh-bhadauria/30min)
 > - Licensing: [contact@efficientai.cloud](mailto:contact@efficientai.cloud)
 
@@ -27,36 +27,22 @@ Enterprise contracts unlock gated features for your organization (or deployment-
 
 | Capability | Open source (BSL) | Enterprise |
 |---|---|---|
-| Voice bundles and BYOK integrations | Included | Included |
-| Agents | Up to **3** agents | Unlimited |
-| Custom metrics | Up to **5** metrics | Unlimited |
-| Evaluators, suites, results | Included | Included + failure clustering |
-| Prompt partials | Included | Included |
-| GEPA / prompt optimization | **Included** | Included |
-| Agent playground | Included | Included |
-| Voice playground (blind testing) | Not included | Included |
-| Call imports (post-production analytics) | Not included | Included |
-| Metric Studio | Not included | Included |
-| Alerts | Not included | Included |
-| Usage analytics history | Last **7 days** | Unlimited |
-| Org members | **1 member** per org | Unlimited |
-| Workspaces | **1 default workspace** | Unlimited |
-| Gateway enablement (integrations) | Not included | Included |
-| Authentication | API keys + local email/password | OIDC, SAML, SCIM, MFA enforcement, audit export |
-
-## Open-source limits (EFF-70)
-
-These limits apply without an Enterprise license:
-
-| Limit | Open source cap |
-|---|---|
-| Custom metrics | 5 |
-| Agents | 3 |
-| Org members | 1 |
-| Workspaces | 1 default workspace |
-| Usage analytics | 7-day history |
-
-GEPA / prompt optimization remains available in open source. Usage history is already capped to the last 7 days in open source.
+| Voice bundles and BYOK integrations | Included | ✅ Included |
+| Agents | Up to **3** agents | ✅ Unlimited |
+| Custom metrics | Up to **5** metrics | ✅ Unlimited |
+| Evaluators, suites, results | Included | ✅ Included + failure clustering |
+| Prompt partials | Included | ✅ Included |
+| GEPA / prompt optimization | **Included** | ✅ Included |
+| Agent playground | Included | ✅ Included |
+| Voice playground (blind testing) | Not included | ✅ Included |
+| Call imports (post-production analytics) | Not included | ✅ Included |
+| Metric Studio | Not included | ✅ Included |
+| Alerts | Not included | ✅ Included |
+| Usage analytics history | Last **7 days** | ✅ Unlimited |
+| Org members | **1 member** per org | ✅ Unlimited |
+| Workspaces | **1 default workspace** | ✅ Unlimited |
+| Gateway enablement (integrations) | Not included | ✅ Included |
+| Authentication | API keys + local email/password | ✅ OIDC, SAML, SCIM, MFA enforcement, audit export |
 
 ## Already gated (Enterprise license required)
 
@@ -66,23 +52,6 @@ These features are already enforced behind an Enterprise license key:
 |---|---|
 | `call_imports` | Post-production call imports and batch analytics |
 | `voice_playground` | Voice Playground with blind TTS comparison |
-
-## Enterprise-only capabilities (any Enterprise tier)
-
-These require an Enterprise license key to unlock:
-
-| Feature ID | Capability |
-|---|---|
-| `metric_studio` | Metric Studio (advanced metric authoring workflows) |
-| `alerting` | Alerts and notification workflows |
-| `gateway_enablement` | Gateway enablement in Integrations |
-| `evaluation_clustering` | Evaluation failure clustering |
-| `oidc_sso` | Enterprise SSO (OIDC) |
-| `saml_sso` | SAML SSO |
-| `scim_provisioning` | SCIM user provisioning |
-| `mfa_enforce` | Enforced MFA |
-| `audit_export` | Audit log export |
-| Advanced IAM | Multi-member orgs and additional workspaces |
 
 ## Included in open source
 
@@ -138,7 +107,7 @@ Check `GET /api/v1/license-info` and confirm `enabled_features` is populated for
 
 ### Where do I configure authentication modes?
 
-See [Authentication guide](/docs/getting-started/authentication/) and [Configuration reference](/docs/reference/configuration/).
+See [Authentication guide](https://docs.efficientai.cloud/docs/getting-started/authentication/) and [Configuration reference](/docs/reference/configuration/).
 
 ## Talk to us
 

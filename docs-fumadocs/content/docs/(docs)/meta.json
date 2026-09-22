@@ -5,6 +5,7 @@
   "pages": [
     "quickstart",
     "platform",
-    "integrations"
+    "integrations",
+    "advanced"
   ]
 }
