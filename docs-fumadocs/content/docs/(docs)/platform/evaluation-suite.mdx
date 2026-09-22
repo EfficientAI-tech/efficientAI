@@ -19,9 +19,20 @@ scenarios deliberately.
 
 ### How combinations are calculated
 
-EfficientAI executes persona x scenario pairs (Cartesian product) for each suite.
-If you first choose subsets from larger candidate pools, that selection stage can be modeled with
-nCr, then expanded into persona-scenario run pairs.
+EfficientAI executes a Cartesian product across personas and scenarios for each suite.
+
+<div className="not-prose my-7 rounded-xl border border-fd-border/70 bg-fd-card/40 p-6 text-center">
+  <p className="text-3xl font-semibold tracking-tight text-fd-foreground">
+    Total combinations = Personas × Scenarios
+  </p>
+  <p className="mt-3 text-2xl font-medium text-fd-foreground/90">
+    Example: 2 personas × 5 scenarios = 10 combinations
+  </p>
+</div>
+
+If you run each combination multiple times, multiply by run count (for example, 10 combinations ×
+3 runs = 30 total calls). If you first choose subsets from larger pools, that selection stage can
+be modeled with nCr before expanding into persona-scenario pairs.
 
 Suites are what make regression testing practical. They let you standardize a fixed set of
 tests, compare the same tests over time as prompts and models change, and rotate scenarios for
