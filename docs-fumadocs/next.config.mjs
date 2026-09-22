@@ -8,7 +8,9 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 /** @type {import('next').NextConfig} */
 const config = {
   reactStrictMode: true,
-  output: 'export',
+  // Static export is required for production deploys; skip in dev so Turbopack
+  // can serve new doc routes without pre-registering every slug.
+  ...(process.env.NODE_ENV === 'production' ? { output: 'export' } : {}),
   trailingSlash: true,
   images: {
     unoptimized: true,

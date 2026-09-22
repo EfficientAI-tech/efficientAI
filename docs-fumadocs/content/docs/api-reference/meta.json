@@ -1,0 +1,21 @@
+{
+  "pages": [
+    "index",
+    "authentication",
+    "agents",
+    "personas",
+    "scenarios",
+    "integrations",
+    "voice-bundles",
+    "ai-providers",
+    "evaluators",
+    "evaluator-suites",
+    "metrics",
+    "evaluator-results",
+    "observability",
+    "call-imports",
+    "workspaces",
+    "errors"
+  ],
+  "title": "API Reference"
+}

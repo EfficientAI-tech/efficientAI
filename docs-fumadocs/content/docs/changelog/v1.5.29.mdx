@@ -1,0 +1,39 @@
+---
+title: v1.5.29
+description: Release notes for v1.5.29.
+---
+
+# v1.5.29
+
+Released Aug 31, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.29).
+
+Primary pull request: [#119](https://github.com/EfficientAI-tech/efficientAI/pull/119) by [@MSami625](https://github.com/MSami625).
+
+## What changed
+
+- Expanded LLM/STT/TTS usage tracking across pre-prod flows: evaluator results, Metrics Studio runs, persona generation, playground voice calls, and test-agent LLM-to-LLM simulation
+- Added `external_agent_usage.py` to extract and record provider usage from Vapi, Retell, ElevenLabs, and Smallest call payloads
+- Wired usage recording into playground polling, evaluator result processing, and test-agent bridge/simulation paths (with dedup via `external_usage_recorded`)
+- Added LLM-to-LLM evaluator simulation for voice-bundle-only agents (no external voice provider)
+- Fixed Celery `run_evaluator` asyncio event loop handling for voice-bridge runs
+- Improved playground polling (skip duplicate processing, Vapi polls on refresh only)
+- Relaxed CSP `connect-src` / `worker-src` for voice provider WebRTC connections
+- Added tests for pre-prod usage, simulation usage, LLM-to-LLM simulation, and CSP voice provider rules
+
+## Why
+
+Pre-prod testing (evaluators, playground, personas, Metrics Studio) was not consistently attributing LLM/STT/TTS usage, and external voice provider token usage from call payloads was not being captured. This gives accurate per-workspace usage/cost tracking across synthetic testing and live provider calls.
+
+## How to test
+
+1. `pytest tests/test_services/test_usage/test_pre_prod_usage.py tests/test_services/test_usage/test_test_agent_simulation_usage.py tests/test_services/test_testing/test_llm_to_llm_evaluator_simulation.py tests/test_core/test_security_headers_middleware.py -v`
+2. Run an evaluator with voice bundle only → confirm LLM-to-LLM simulation completes and usage is recorded under `TEST_AGENT`
+3. Run an evaluator with voice bridge → confirm bridge call works (no asyncio event loop error) and usage is tracked
+4. Make a playground web call (Vapi/Retell/ElevenLabs) → confirm provider LLM/STT/TTS usage is recorded once
+5. Run a Metrics Studio batch → confirm usage is attributed to the metric studio run
+6. Verify playground loads and connects to voice providers without CSP errors
+
+## Contributors
+
+- [@MSami625](https://github.com/MSami625)
+

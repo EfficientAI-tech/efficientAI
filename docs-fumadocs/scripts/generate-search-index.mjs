@@ -59,6 +59,13 @@ function cleanContent(markdown) {
     .slice(0, 4000);
 }
 
+// Route groups like `(docs)` and trailing `index` segments are not part of the public URL.
+function toRouteSegments(featureId) {
+  const segments = featureId.split('/').filter((segment) => !/^\(.*\)$/.test(segment));
+  if (segments.at(-1) === 'index') segments.pop();
+  return segments;
+}
+
 function toLabel(segment) {
   return segment
     .replace(/[-_]/g, ' ')
@@ -71,11 +78,11 @@ function buildRecords() {
     const raw = fs.readFileSync(absolute, 'utf8');
     const { frontmatter, body } = stripFrontmatter(raw);
     const featureId = relative.replace(/\.mdx$/, '');
-    const fallbackTitle = toLabel(path.basename(featureId));
+    const segments = toRouteSegments(featureId);
+    const fallbackTitle = toLabel(segments.at(-1) ?? 'Docs');
     const title = parseTitle(frontmatter, body, fallbackTitle);
-    const segments = featureId.split('/');
     const breadcrumbs = segments.slice(0, -1).map(toLabel);
-    const url = `/docs/${featureId}/`;
+    const url = segments.length > 0 ? `/docs/${segments.join('/')}/` : '/docs/';
     return {
       id: featureId,
       url,

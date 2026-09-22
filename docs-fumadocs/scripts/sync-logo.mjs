@@ -11,6 +11,11 @@ const destinations = [
 ];
 
 if (!fs.existsSync(src)) {
+  const hasExisting = destinations.some((dest) => fs.existsSync(dest));
+  if (hasExisting) {
+    console.warn(`Logo source not found (${src}); keeping existing docs logo assets.`);
+    process.exit(0);
+  }
   console.error(`Logo source not found: ${src}`);
   process.exit(1);
 }

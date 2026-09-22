@@ -1,5 +1,7 @@
 import data from '@/content/feature-contributors.json';
 import profiles from '@/content/contributor-profiles.json';
+import { resolveFeatureId } from '@/lib/resolve-feature-id';
+import { fetchGitHubReleases } from '@/lib/github-releases';
 import { DocsActionLink } from './docs-action-link';
 
 type ContributorEntry = {
@@ -30,6 +32,8 @@ const featureMap = new Map(
 
 const profileMap = profiles as Record<string, ContributorProfile>;
 
+const DEFAULT_OWNERS = ['aadhar-EAI', 'Tejas Narayan'];
+
 function toGithubUrl(name: string, email?: string) {
   const mapped = profileMap[name]?.github;
   if (mapped) return `https://github.com/${mapped}`;
@@ -55,9 +59,20 @@ function uniqueContributors(values: ContributorItem[]) {
   return items;
 }
 
-export function getFeatureContributors(featureId: string): ContributorItem[] {
+function defaultContributors(): ContributorItem[] {
+  return DEFAULT_OWNERS.map((name) => ({
+    name,
+    url: toGithubUrl(name),
+  }));
+}
+
+export function getFeatureContributors(slugPath: string): ContributorItem[] {
+  const featureId = resolveFeatureId(slugPath);
   const feature = featureMap.get(featureId);
-  if (!feature) return [];
+
+  if (!feature) {
+    return defaultContributors();
+  }
 
   const ownerEntries = feature.owners.map((name) => ({
     name,
@@ -68,8 +83,37 @@ export function getFeatureContributors(featureId: string): ContributorItem[] {
     url: toGithubUrl(contributor.name, contributor.email),
   }));
 
-  // Prefer manually curated owners first, then include git-derived contributors.
-  return uniqueContributors([...ownerEntries, ...gitEntries]).slice(0, 6);
+  const resolved = uniqueContributors([...ownerEntries, ...gitEntries]);
+  return (resolved.length > 0 ? resolved : defaultContributors()).slice(0, 6);
+}
+
+async function getChangelogContributors(): Promise<ContributorItem[]> {
+  try {
+    const releases = await fetchGitHubReleases();
+    const handles = new Set<string>();
+    for (const release of releases) {
+      for (const handle of release.contributors) {
+        handles.add(handle);
+      }
+    }
+
+    if (handles.size === 0) return defaultContributors();
+
+    return [...handles].slice(0, 8).map((handle) => ({
+      name: `@${handle}`,
+      url: `https://github.com/${handle}`,
+    }));
+  } catch {
+    return defaultContributors();
+  }
+}
+
+async function resolveContributors(slugPath: string): Promise<ContributorItem[]> {
+  if (slugPath === 'changelog' || slugPath.startsWith('changelog/')) {
+    return getChangelogContributors();
+  }
+
+  return getFeatureContributors(slugPath);
 }
 
 export function Contributors({ featureId }: { featureId: string }) {
@@ -162,9 +206,8 @@ export function DocsBottomMeta({
   );
 }
 
-export function ContributorsTocFooter({ featureId }: { featureId: string }) {
-  const contributors = getFeatureContributors(featureId);
-  if (contributors.length === 0) return null;
+export async function ContributorsTocFooter({ featureId }: { featureId: string }) {
+  const contributors = await resolveContributors(featureId);
 
   return (
     <div className="mt-auto border-t border-fd-border/70 pt-4">
@@ -174,10 +217,14 @@ export function ContributorsTocFooter({ featureId }: { featureId: string }) {
       <ul className="space-y-1">
         {contributors.map((contributor) => (
           <li key={`${featureId}-toc-${contributor.name}`}>
-            <span className="inline-flex w-full items-center gap-1.5 truncate rounded border border-transparent px-1.5 py-1 text-xs text-fd-muted-foreground">
-              <span className="size-1.5 shrink-0 rounded-full bg-fd-border/80" />
-              <span className="truncate">{contributor.name}</span>
-            </span>
+            <DocsActionLink
+              href={contributor.url}
+              target="_blank"
+              rel="noreferrer"
+              className="w-full justify-start px-1.5 py-1 text-xs"
+            >
+              {contributor.name}
+            </DocsActionLink>
           </li>
         ))}
       </ul>

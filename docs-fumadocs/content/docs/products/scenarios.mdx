@@ -1,49 +1,10 @@
 ---
-id: scenarios
-title: Scenarios
-sidebar_position: 3
+title: Scenarios (Moved)
 ---
 
-# Scenarios
+# This page moved
 
-A Scenario defines the goal and context for a test conversation.
+Scenario docs were split into concepts and configuration guides.
 
-## Creating a scenario
-
-![Creating a scenario](/screenshots/creating-scenarios.png)
-
-## How scenarios are created
-
-EfficientAI supports three scenario creation paths:
-
-1. **Generate from Agent Prompt (AI-assisted)**  
-   Generate scenario drafts from the selected agent's **test agent prompt** (`description`). Uses the same backend generator as agent creation stage 2. Each draft includes structured markdown sections: Background, Caller Intent, Conversation Flow, Success Criteria, and Edge Cases to Probe (150-300 words per scenario), plus an optional `goal` in `required_info`.
-2. **Generate from Call data**  
-   Derive scenario content from call transcripts or call data.
-3. **Create Manually**  
-   Write a fully custom scenario.
-
-## Scenario structure
-
-| Field | Description |
-|---|---|
-| `name` | Scenario title. |
-| `description` | What should happen in the conversation. AI-generated scenarios use structured sections (Background, Caller Intent, Conversation Flow, Success Criteria, Edge Cases) at 150-300 words. |
-| `required_info` | Structured key/value expectations for the test. |
-| `agent_id` | Optional linked agent for context. |
-
-## How scenarios are used
-
-Scenarios are used to:
-
-- compose the **test agent simulation prompt** with the linked agent's core prompt during evaluator runs (web and phone simulator paths),
-- guide persona behavior during tests via a dedicated **Persona** section in the simulator LLM prompt,
-- provide evaluation context for scoring,
-- keep testing reproducible across repeated runs.
-
-Link scenarios to an agent with `agent_id` for organization and filtering on the Scenarios page. Linked scenarios can also inform AI **Generate Description** on the agent (context only).
-
-Filter the scenario list by **linked agent** (all, unlinked, or a specific test agent) from the Scenarios header.
-
-A good scenario is specific enough to be measurable, but open enough to preserve natural conversation flow.
-
+- Concept: [Scenario](/docs/platform/scenario/)
+- Configuration: [Platform Scenario](/docs/platform/scenario/)
