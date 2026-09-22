@@ -153,12 +153,25 @@ Alert history entries progress through **Triggered → Notified → Acknowledged
 
 ## Automatic evaluation
 
-Alerts are automatically evaluated every **60 seconds** by a background worker (Celery Beat). Ensure your Celery workers and Beat scheduler are running:
+Alerts are automatically evaluated every **5 minutes** by a Celery Beat schedule (`evaluate_alerts`, routed to the **`platform`** queue). Beat only enqueues tasks — you must also run a worker that consumes the `platform` queue, or evaluations and notifications will not run.
+
+Recommended (starts Beat plus a co-located `platform` worker):
 
 ```bash
-celery -A app.workers.celery_app worker --loglevel=info
+eai beat --config config.yml
+```
+
+Or run Beat and the platform worker separately:
+
+```bash
+# Worker for alert evaluation (and other platform tasks)
+celery -A app.workers.celery_app worker --queues=platform --pool=threads --loglevel=info
+
+# Scheduler (single replica)
 celery -A app.workers.celery_app beat --loglevel=info
 ```
+
+A default-queue worker (`celery -A app.workers.celery_app worker` with no `--queues`) does **not** process `evaluate_alerts`.
 
 ## Common patterns
 

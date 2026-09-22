@@ -267,7 +267,7 @@ From the alerts list page, the **Evaluate All** button triggers evaluation of ev
 
 ## Automatic Evaluation
 
-Alerts are automatically evaluated every **60 seconds** by a background worker (Celery Beat). You do not need to manually trigger evaluations — they run continuously as long as your workers are running.
+Alerts are automatically evaluated every **5 minutes** by a Celery Beat schedule (`evaluate_alerts`, routed to the **`platform`** queue). You do not need to manually trigger evaluations — they run continuously as long as Beat and a `platform` queue worker are running.
 
 The evaluation cycle:
 1. Fetches all **active** alerts for the organization
@@ -379,15 +379,25 @@ Or via environment variables:
 
 ### Celery Workers
 
-Alert evaluation runs as a Celery Beat periodic task. Ensure your Celery workers and Beat scheduler are running:
+Alert evaluation runs as a Celery Beat periodic task on the **`platform`** queue. Beat only enqueues tasks — you must also run a worker that consumes `platform`.
+
+Recommended:
 
 ```bash
-# Start Celery worker
-celery -A app.workers.celery_app worker --loglevel=info
+eai beat --config config.yml
+```
 
-# Start Celery Beat scheduler
+Or run Beat and the platform worker separately:
+
+```bash
+# Worker for alert evaluation (and other platform tasks)
+celery -A app.workers.celery_app worker --queues=platform --pool=threads --loglevel=info
+
+# Scheduler (single replica)
 celery -A app.workers.celery_app beat --loglevel=info
 ```
+
+A default-queue worker does **not** process `evaluate_alerts`.
 
 ---
 

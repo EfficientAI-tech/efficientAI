@@ -30,7 +30,12 @@ Manage organization roles from **IAM → Organization** (admin only) or **Settin
 > **Org readers are always read-only**
 > If your organization role is **Reader**, every mutating API call (`POST`, `PATCH`, `DELETE`) is blocked — even if you hold **Workspace Admin** in a workspace. Workspace roles cannot override an org-level read-only membership.
 
-Org admins **bypass workspace membership checks** and receive all workspace capabilities in every workspace. API keys also bypass workspace RBAC (they remain org-scoped).
+Org admins **bypass workspace membership checks** and receive all workspace capabilities in every workspace.
+
+**API keys** behave differently depending on whether they are linked to a user:
+
+- **User-bound keys** (created while signed in) carry the linked user's organization role, workspace memberships, and capabilities. They are subject to the same RBAC rules as that user's session.
+- **Unbound keys** (legacy keys with no linked user) bypass workspace membership and capability checks and receive full workspace access within the key's organization. Prefer user-bound keys for least-privilege automation.
 
 ## Workspace roles
 
