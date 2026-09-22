@@ -26,6 +26,7 @@ from uuid import UUID
 from loguru import logger
 
 _license_cache: Dict[str, Any] | None = None
+_license_token_cached: str | None = None
 
 FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
     "voice_playground": {
@@ -180,7 +181,11 @@ def _decode_license() -> Dict[str, Any]:
 
 def get_license_info() -> Dict[str, Any]:
     """Return cached license payload, decoding on first call."""
-    global _license_cache
+    global _license_cache, _license_token_cached
+    current_token = _get_license_token()
+    if current_token != _license_token_cached:
+        _license_cache = None
+        _license_token_cached = current_token
     if _license_cache is None:
         _license_cache = _decode_license()
     return _license_cache
@@ -206,12 +211,13 @@ def get_licensed_org_id() -> Optional[str]:
     return get_license_info().get("org_id")
 
 
-def _license_applies_to_org(organization_id: Optional[UUID] = None) -> bool:
-    """True when a valid JWT is present and applies to the given organization."""
-    if not get_enabled_features():
+def has_valid_license(organization_id: Optional[UUID] = None) -> bool:
+    """True when EFFICIENTAI_LICENSE is a valid, non-expired JWT for this org."""
+    info = get_license_info()
+    if not info:
         return False
 
-    licensed_org = get_license_info().get("org_id")
+    licensed_org = info.get("org_id")
     if licensed_org is None:
         return True
 
@@ -219,6 +225,14 @@ def _license_applies_to_org(organization_id: Optional[UUID] = None) -> bool:
         return False
 
     return str(organization_id) == str(licensed_org)
+
+
+def _license_applies_to_org(organization_id: Optional[UUID] = None) -> bool:
+    """True when a valid JWT is present and applies to the given organization."""
+    if not get_enabled_features():
+        return False
+
+    return has_valid_license(organization_id)
 
 
 def is_feature_enabled(feature: str, organization_id: Optional[UUID] = None) -> bool:
@@ -270,5 +284,6 @@ def has_auth_feature(feature: str) -> bool:
 
 def reset_license_cache() -> None:
     """Force re-evaluation of the license (useful after env change in tests)."""
-    global _license_cache
+    global _license_cache, _license_token_cached
     _license_cache = None
+    _license_token_cached = None

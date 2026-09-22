@@ -55,7 +55,47 @@ def test_llm_gateway_enable_forbidden_without_license(unlicensed_client):
         json={"mode": "enabled", "gateway_type": "inherit", "gateway_interface": "inherit"},
     )
     assert response.status_code == 403
-    assert response.json()["detail"]["feature"] == "llm_gateway"
+    assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
+def test_aiprovider_gateway_routing_forbidden_without_license(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "OSS should not gateway",
+            "routing_mode": "gateway",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
+def test_aiprovider_inherit_routing_forbidden_without_license(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "OSS inherit blocked",
+            "routing_mode": "inherit",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
+def test_aiprovider_direct_routing_allowed_without_license(unlicensed_client):
+    response = unlicensed_client.post(
+        "/api/v1/aiproviders",
+        json={
+            "provider": "openai",
+            "name": "OSS direct ok",
+            "api_key": "sk-test-direct-only",
+            "routing_mode": "direct",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["routing_mode"] == "direct"
 
 
 def test_license_info_includes_oss_quotas(unlicensed_client):

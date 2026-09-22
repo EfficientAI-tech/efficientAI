@@ -516,9 +516,9 @@ def resolve_effective_routing(
     if credential_mode == "direct":
         return None, "direct"
 
-    from app.core.license import is_feature_enabled
+    from app.core.license import has_valid_license
 
-    if not is_feature_enabled("llm_gateway", organization_id):
+    if not has_valid_license(organization_id):
         return None, "direct"
 
     use_gateway = _org_wants_gateway(org, platform, credential_mode=credential_mode)

@@ -29,6 +29,7 @@ const DEFAULT_QUOTA_USAGE: OssQuotaUsage = {
 
 interface LicenseState {
   isEnterprise: boolean
+  gatewayRoutingAllowed: boolean
   enabledFeatures: string[]
   allEnterpriseFeatures: string[]
   featureCatalog: EnterpriseFeatureCatalog
@@ -44,6 +45,7 @@ interface LicenseState {
 
 export const useLicenseStore = create<LicenseState>((set, get) => ({
   isEnterprise: false,
+  gatewayRoutingAllowed: false,
   enabledFeatures: [],
   allEnterpriseFeatures: [],
   featureCatalog: {},
@@ -57,6 +59,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
       const info = await apiClient.getLicenseInfo()
       set({
         isEnterprise: info.is_enterprise,
+        gatewayRoutingAllowed: info.gateway_routing_allowed ?? info.is_enterprise,
         enabledFeatures: info.enabled_features,
         allEnterpriseFeatures: info.all_enterprise_features,
         featureCatalog: info.feature_catalog ?? {},
@@ -68,6 +71,7 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
     } catch {
       set({
         isEnterprise: false,
+        gatewayRoutingAllowed: false,
         enabledFeatures: [],
         allEnterpriseFeatures: [],
         featureCatalog: {},

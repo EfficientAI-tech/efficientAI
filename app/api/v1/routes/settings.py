@@ -31,6 +31,7 @@ from app.core.license import (
     get_feature_catalog,
     get_features_enabled_for_org,
     get_license_info,
+    has_valid_license,
 )
 from app.core.oss_quotas import get_quota_usage, get_quotas_snapshot
 from app.core.usage_entitlement import get_usage_policy
@@ -93,8 +94,11 @@ def license_info(
     quotas = get_quotas_snapshot(organization_id)
     quota_usage = get_quota_usage(db, organization_id)
 
+    licensed = has_valid_license(organization_id)
+
     return {
-        "is_enterprise": bool(enabled_for_org),
+        "is_enterprise": licensed,
+        "gateway_routing_allowed": licensed,
         "enabled_features": enabled_for_org,
         "all_enterprise_features": ENTERPRISE_FEATURES,
         "feature_catalog": get_feature_catalog(),

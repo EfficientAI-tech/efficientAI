@@ -133,6 +133,7 @@ export interface OssQuotaUsage {
 
 export interface LicenseInfoResponse {
   is_enterprise: boolean
+  gateway_routing_allowed?: boolean
   enabled_features: string[]
   all_enterprise_features: string[]
   feature_catalog?: EnterpriseFeatureCatalog

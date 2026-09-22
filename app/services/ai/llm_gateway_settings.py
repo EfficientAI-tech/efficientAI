@@ -145,24 +145,52 @@ def get_org_settings(organization_id: UUID, db: Session) -> Dict[str, Any]:
 
 
 def assert_llm_gateway_entitlement(organization_id: UUID) -> None:
-    """Raise 403 when LLM gateway enablement requires an enterprise license."""
-    from app.core.license import is_feature_enabled
+    """Raise 403 when LLM gateway enablement requires a valid enterprise license."""
+    from app.core.license import has_valid_license
 
-    if is_feature_enabled("llm_gateway", organization_id):
+    if has_valid_license(organization_id):
         return
 
     raise HTTPException(
         status_code=403,
         detail={
-            "error": "enterprise_feature_required",
-            "feature": "llm_gateway",
+            "error": "enterprise_license_required",
             "message": (
-                "'llm_gateway' is an EfficientAI Enterprise feature. "
-                "Please set EFFICIENTAI_LICENSE in your environment to unlock it. "
-                "Contact sales@efficientai.com to get an enterprise license key."
+                "LLM gateway routing requires a valid EfficientAI Enterprise license. "
+                "Set EFFICIENTAI_LICENSE in your environment to unlock it. "
+                "Contact sales@efficientai.com to get a license key."
             ),
         },
     )
+
+
+def assert_credential_routing_allowed(
+    organization_id: UUID,
+    routing_mode: Any,
+) -> None:
+    """OSS installs may only use direct API key routing on integrations."""
+    from app.core.license import has_valid_license
+
+    if has_valid_license(organization_id):
+        return
+
+    mode = (
+        routing_mode.value
+        if hasattr(routing_mode, "value")
+        else str(routing_mode or "inherit")
+    )
+    if mode != "direct":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "enterprise_license_required",
+                "message": (
+                    "Open source installs must use direct API key routing for "
+                    "integrations. Set EFFICIENTAI_LICENSE to unlock Bifrost / "
+                    "LiteLLM gateway routing."
+                ),
+            },
+        )
 
 
 def set_org_settings(

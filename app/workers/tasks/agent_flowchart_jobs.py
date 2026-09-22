@@ -23,6 +23,23 @@ def _supports_flowchart(partial: PromptPartial) -> bool:
     return partial_supports_flowchart(partial.tags if isinstance(partial.tags, list) else None)
 
 
+def _compact_error_message(exc: BaseException) -> str:
+    """Store a short user-facing message instead of a full Python traceback."""
+    text = str(exc).strip() or exc.__class__.__name__
+    for marker in (
+        "\nTraceback (most recent call last):",
+        "\nDuring handling of the above exception",
+    ):
+        idx = text.find(marker)
+        if idx >= 0:
+            text = text[:idx].strip()
+            break
+    first_line = text.split("\n", 1)[0].strip()
+    if len(first_line) <= 500:
+        return first_line or text[:500]
+    return first_line[:497] + "..."
+
+
 @celery_app.task(name="generate_agent_flowchart", bind=True, max_retries=0)
 def generate_agent_flowchart_task(
     self,
@@ -104,7 +121,7 @@ def generate_agent_flowchart_task(
             )
             partial.agent_flowchart = {
                 **flowchart_payload,
-                "generation_error": str(exc),
+                "generation_error": _compact_error_message(exc),
             }
             partial.agent_flowchart_status = "failed"
             flag_modified(partial, "agent_flowchart")
@@ -194,7 +211,7 @@ def map_agent_flowchart_prompt_sections_task(
             )
             partial.agent_flowchart = {
                 **flowchart_payload,
-                "mapping_error": str(exc),
+                "mapping_error": _compact_error_message(exc),
             }
             partial.agent_flowchart_status = "completed"
             flag_modified(partial, "agent_flowchart")

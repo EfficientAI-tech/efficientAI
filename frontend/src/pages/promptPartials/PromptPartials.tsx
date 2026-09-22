@@ -11,7 +11,12 @@ import {
   Edit3,
   Trash2,
   Copy,
+  ClipboardCopy,
   History,
+  PanelLeftClose,
+  PanelLeft,
+  PanelRightClose,
+  PanelRight,
   RotateCcw,
   X,
   ChevronRight,
@@ -29,9 +34,11 @@ import {
   Tags,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import { copyTextToClipboard } from '../../lib/clipboard'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import AgentFlowChart from './components/AgentFlowChart'
+import FlowchartErrorPanel from './components/FlowchartErrorPanel'
 import MetricPartialEditor from './components/MetricPartialEditor'
 import AgentPromptSectionView, {
   type PromptHighlightRange,
@@ -81,6 +88,16 @@ const KIND_TABS: { id: PartialKind; label: string }[] = [
 
 const toolBtn =
   'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors'
+
+const PARTIALS_LIST_COLLAPSED_KEY = 'promptPartialsListCollapsed'
+
+function readListCollapsedPreference(): boolean {
+  try {
+    return localStorage.getItem(PARTIALS_LIST_COLLAPSED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
 
 function parseKindParam(value: string | null): PartialKind {
   if (
@@ -150,6 +167,17 @@ export default function PromptPartials() {
   const [selectedFlowNodeId, setSelectedFlowNodeId] = useState<string | null>(null)
   const [promptHighlight, setPromptHighlight] = useState<PromptHighlightRange | null>(null)
   const [nodeMapError, setNodeMapError] = useState<string | null>(null)
+  const [listSidebarCollapsed, setListSidebarCollapsed] = useState(readListCollapsedPreference)
+  const [agentDiagramCollapsed, setAgentDiagramCollapsed] = useState(false)
+
+  const toggleListSidebar = (collapsed: boolean) => {
+    setListSidebarCollapsed(collapsed)
+    try {
+      localStorage.setItem(PARTIALS_LIST_COLLAPSED_KEY, String(collapsed))
+    } catch {
+      // ignore storage failures
+    }
+  }
 
   useEffect(() => {
     if (!routePartialId) return
@@ -222,8 +250,8 @@ export default function PromptPartials() {
       setNodeMapError(null)
       queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedPartial?.id] })
     },
-    onError: (e: any) => {
-      setFlowchartError(e?.response?.data?.detail || 'Failed to generate flowchart.')
+    onError: (e: unknown) => {
+      setFlowchartError(getApiErrorMessage(e, 'Failed to generate flowchart.'))
     },
   })
 
@@ -265,6 +293,21 @@ export default function PromptPartials() {
     setCreateModalDefaultAgent(false)
   }
 
+  const handleCopyPrompt = () => {
+    const content = partialDetail?.content || selectedPartial?.content || ''
+    if (!content.trim()) return
+    copyTextToClipboard(content, () =>
+      showToast('Prompt copied to clipboard', 'success'),
+    )
+  }
+
+  const startVersionCompare = (version: PromptPartialVersion) => {
+    setCompareVersion(version)
+    if (selectedPartial && isImportedAgent(selectedPartial)) {
+      setAgentDiagramCollapsed(true)
+    }
+  }
+
   const handleSelectPartial = (partial: PromptPartial, kind?: PartialKind) => {
     const effectiveKind = kind ?? kindFilter
     setSelectedPartial(partial as PromptPartialDetail)
@@ -273,6 +316,7 @@ export default function PromptPartials() {
     setSelectedFlowNodeId(null)
     setPromptHighlight(null)
     setNodeMapError(null)
+    setAgentDiagramCollapsed(false)
     navigate(
       `/prompt-partials/${partial.id}${effectiveKind === 'all' ? '' : `?kind=${effectiveKind}`}`,
     )
@@ -289,9 +333,9 @@ export default function PromptPartials() {
       setNodeMapError(null)
       queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedPartial?.id] })
     },
-    onError: (e: any) => {
+    onError: (e: unknown) => {
       setNodeMapError(
-        e?.response?.data?.detail || 'Failed to map prompt sections for flowchart nodes.',
+        getApiErrorMessage(e, 'Failed to map prompt sections for flowchart nodes.'),
       )
     },
   })
@@ -433,10 +477,12 @@ export default function PromptPartials() {
       {/* Main Content - Split View */}
       <div className="flex-1 flex gap-4 min-h-0">
         {/* Left Panel - List */}
+        {!listSidebarCollapsed ? (
         <div className="w-80 flex-shrink-0 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           {/* Search + kind filter */}
           <div className="p-3 border-b border-gray-200 space-y-2">
-            <div className="relative">
+            <div className="flex items-center gap-2">
+            <div className="relative flex-1 min-w-0">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
               <input
                 type="text"
@@ -445,6 +491,16 @@ export default function PromptPartials() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
               />
+            </div>
+            <button
+              type="button"
+              onClick={() => toggleListSidebar(true)}
+              className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-gray-300 bg-white text-gray-600 hover:bg-gray-50 transition-colors"
+              title="Hide partials list"
+              aria-label="Hide partials list"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
             </div>
             <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
               {KIND_TABS.map((tab) => (
@@ -573,6 +629,17 @@ export default function PromptPartials() {
             )}
           </div>
         </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => toggleListSidebar(false)}
+            className="flex-shrink-0 flex flex-col items-center justify-center w-10 rounded-xl border border-gray-200 bg-white shadow-sm hover:bg-gray-50 transition-colors"
+            title="Show partials list"
+            aria-label="Show partials list"
+          >
+            <PanelLeft className="h-4 w-4 text-gray-600" />
+          </button>
+        )}
 
         {/* Right Panel - Detail / Preview */}
         <div className="flex-1 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden min-w-0">
@@ -618,6 +685,15 @@ export default function PromptPartials() {
                   </div>
 
                   <button
+                    onClick={handleCopyPrompt}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+                    title="Copy prompt to clipboard"
+                  >
+                    <ClipboardCopy className="h-3.5 w-3.5" />
+                    Copy
+                  </button>
+
+                  <button
                     onClick={() => setShowVersionHistory(!showVersionHistory)}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
                       showVersionHistory
@@ -638,9 +714,10 @@ export default function PromptPartials() {
                   <button
                     onClick={() => cloneMutation.mutate(selectedPartial.id)}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
-                    title="Clone"
+                    title="Clone partial"
                   >
                     <Copy className="h-3.5 w-3.5" />
+                    Clone
                   </button>
                   <button
                     onClick={() => setShowDeleteConfirm(selectedPartial.id)}
@@ -684,8 +761,12 @@ export default function PromptPartials() {
               {/* Content Area */}
               <div className="flex-1 flex min-h-0">
                 {selectedIsAgent ? (
-                  <div className="flex-1 flex flex-row min-h-0 min-w-0">
-                    <div className="flex-1 min-w-0 overflow-y-auto border-r border-gray-200">
+                  <div className="flex-1 flex flex-row min-h-0 min-w-0 relative">
+                    <div
+                      className={`flex-1 min-w-0 overflow-y-auto ${
+                        !agentDiagramCollapsed ? 'border-r border-gray-200' : ''
+                      }`}
+                    >
                       {compareVersion ? (
                         <div className="p-6 space-y-4">
                           <div className="flex items-center justify-between">
@@ -748,7 +829,11 @@ export default function PromptPartials() {
                                 </div>
                               </div>
                               {nodeMapError ? (
-                                <p className="text-xs text-red-600">{nodeMapError}</p>
+                                <FlowchartErrorPanel
+                                  variant="inline"
+                                  error={nodeMapError}
+                                  title="Could not map prompt sections"
+                                />
                               ) : null}
                             </div>
                           ) : null}
@@ -756,10 +841,23 @@ export default function PromptPartials() {
                             content={partialDetail?.content || selectedPartial.content}
                             highlight={promptHighlight}
                             previewMode={previewMode}
+                            onCopied={() => showToast('Prompt copied to clipboard', 'success')}
                           />
                         </>
                       )}
                     </div>
+                    {agentDiagramCollapsed ? (
+                      <button
+                        type="button"
+                        onClick={() => setAgentDiagramCollapsed(false)}
+                        className="absolute right-0 top-1/2 z-10 -translate-y-1/2 flex flex-col items-center gap-1 rounded-l-lg border border-r-0 border-gray-200 bg-white px-2 py-3 text-[10px] font-medium text-gray-600 shadow-sm hover:bg-gray-50"
+                        title="Show agent diagram"
+                        aria-label="Show agent diagram"
+                      >
+                        <PanelRight className="h-4 w-4" />
+                        Diagram
+                      </button>
+                    ) : (
                     <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-gray-50/30">
                       <div className="px-4 py-3 border-b border-gray-200 bg-white space-y-2 flex-shrink-0">
                         <div className="flex items-center justify-between gap-2">
@@ -769,6 +867,17 @@ export default function PromptPartials() {
                               Click a node to jump to its prompt section
                             </p>
                           </div>
+                          <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setAgentDiagramCollapsed(true)}
+                            className={`${toolBtn}`}
+                            title="Hide agent diagram"
+                            aria-label="Hide agent diagram"
+                          >
+                            <PanelRightClose className="h-3.5 w-3.5" />
+                            Hide
+                          </button>
                           <button
                             type="button"
                             onClick={() => flowchartMutation.mutate(Boolean(flowchart))}
@@ -782,6 +891,7 @@ export default function PromptPartials() {
                             )}
                             {flowchart ? 'Regenerate' : 'Generate'}
                           </button>
+                          </div>
                         </div>
                         <AIProviderModelPicker
                           provider={pickerProvider}
@@ -837,13 +947,32 @@ export default function PromptPartials() {
                           </div>
                         ) : null}
                         {flowchartError ? (
-                          <p className="text-xs text-red-600">{flowchartError}</p>
+                          <FlowchartErrorPanel
+                            variant="inline"
+                            error={flowchartError}
+                            title="Could not start flowchart generation"
+                          />
+                        ) : null}
+                        {flowchart?.generation_error ? (
+                          <FlowchartErrorPanel
+                            variant="inline"
+                            error={flowchart.generation_error}
+                            title={
+                              flowchart.nodes?.length
+                                ? 'Regeneration failed — showing previous diagram'
+                                : 'Flowchart generation failed'
+                            }
+                          />
                         ) : null}
                         {nodeMapError ? (
-                          <p className="text-xs text-red-600">{nodeMapError}</p>
+                          <FlowchartErrorPanel
+                            variant="inline"
+                            error={nodeMapError}
+                            title="Could not map prompt sections"
+                          />
                         ) : null}
                       </div>
-                      <div className="flex-1 min-h-0">
+                      <div className="flex-1 min-h-0 overflow-hidden">
                         {flowchart && flowchart.nodes?.length ? (
                           <AgentFlowChart
                             data={flowchart}
@@ -853,22 +982,23 @@ export default function PromptPartials() {
                             highlightNodeId={selectedFlowNodeId}
                             onNodeClick={handleFlowNodeClick}
                           />
+                        ) : flowchartStatus === 'generating' || flowchartMutation.isPending ? (
+                          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
+                            <span className="inline-flex items-center gap-2">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Generating flowchart…
+                            </span>
+                          </div>
+                        ) : flowchart?.generation_error || flowchartStatus === 'failed' ? (
+                          <FlowchartErrorPanel error={flowchart?.generation_error} />
                         ) : (
-                          <div className="h-full flex items-center justify-center text-sm text-gray-500 px-6 text-center">
-                            {flowchartStatus === 'generating' || flowchartMutation.isPending ? (
-                              <span className="inline-flex items-center gap-2">
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                                Generating flowchart…
-                              </span>
-                            ) : flowchart?.generation_error ? (
-                              flowchart.generation_error
-                            ) : (
-                              'Generate a flowchart to visualize agent logic.'
-                            )}
+                          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-500">
+                            Generate a flowchart to visualize agent logic.
                           </div>
                         )}
                       </div>
                     </div>
+                    )}
                   </div>
                 ) : selectedIsMetric ? (
                   <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
@@ -1024,7 +1154,7 @@ export default function PromptPartials() {
                           </div>
                           <div className="flex items-center gap-2 mt-2">
                             <button
-                              onClick={() => setCompareVersion(version)}
+                              onClick={() => startVersionCompare(version)}
                               className="text-xs text-gray-600 hover:text-gray-900 font-medium"
                             >
                               Compare

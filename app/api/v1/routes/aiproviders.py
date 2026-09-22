@@ -89,6 +89,38 @@ def _scrub_for_response(
     )
 
 
+def _assert_gateway_fields_allowed(
+    organization_id: UUID,
+    *,
+    gateway_model: Optional[str] = None,
+    gateway_interface: Optional[str] = None,
+    gateway_base_url: Optional[str] = None,
+    gateway_auth_header: Optional[str] = None,
+    gateway_auth_secret_env: Optional[str] = None,
+    gateway_auth_secret: Optional[str] = None,
+    gateway_extra_headers: Optional[dict] = None,
+) -> None:
+    from app.core.license import has_valid_license
+    from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+
+    if has_valid_license(organization_id):
+        return
+
+    has_gateway_fields = any(
+        [
+            (gateway_model or "").strip(),
+            gateway_interface not in (None, "", "inherit"),
+            (gateway_base_url or "").strip(),
+            (gateway_auth_header or "").strip(),
+            (gateway_auth_secret_env or "").strip(),
+            (gateway_auth_secret or "").strip(),
+            bool(gateway_extra_headers),
+        ]
+    )
+    if has_gateway_fields:
+        assert_llm_gateway_entitlement(organization_id)
+
+
 def _validate_routing_and_api_key(
     *,
     organization_id: UUID,
@@ -97,13 +129,14 @@ def _validate_routing_and_api_key(
     gateway_model: Optional[str],
     has_existing_key: bool = False,
 ) -> None:
+    from app.services.ai.llm_gateway_settings import assert_credential_routing_allowed
+
+    assert_credential_routing_allowed(organization_id, routing_mode)
+
     mode = routing_mode.value if hasattr(routing_mode, "value") else str(routing_mode)
     trimmed_key = (api_key or "").strip()
 
     if mode == CredentialRoutingMode.GATEWAY.value:
-        from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
-
-        assert_llm_gateway_entitlement(organization_id)
         return
 
     if mode == CredentialRoutingMode.DIRECT.value and not trimmed_key and not has_existing_key:
@@ -156,11 +189,37 @@ async def create_aiprovider(
     """Create a new AI Provider credential row."""
     provider_value = aiprovider.provider.value if hasattr(aiprovider.provider, 'value') else aiprovider.provider
 
+    from app.core.license import has_valid_license
+
+    if str(provider_value).lower() == "custom" and not has_valid_license(organization_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "enterprise_license_required",
+                "message": (
+                    "Custom Bifrost model integrations require a valid "
+                    "EFFICIENTAI_LICENSE key."
+                ),
+            },
+        )
+
     _validate_routing_and_api_key(
         organization_id=organization_id,
         routing_mode=aiprovider.routing_mode,
         api_key=aiprovider.api_key,
         gateway_model=aiprovider.gateway_model,
+    )
+    _assert_gateway_fields_allowed(
+        organization_id,
+        gateway_model=aiprovider.gateway_model,
+        gateway_interface=aiprovider.gateway_interface.value
+        if hasattr(aiprovider.gateway_interface, "value")
+        else aiprovider.gateway_interface,
+        gateway_base_url=aiprovider.gateway_base_url,
+        gateway_auth_header=aiprovider.gateway_auth_header,
+        gateway_auth_secret_env=aiprovider.gateway_auth_secret_env,
+        gateway_auth_secret=aiprovider.gateway_auth_secret,
+        gateway_extra_headers=aiprovider.gateway_extra_headers,
     )
 
     existing_default = db.query(AIProvider).filter(
@@ -301,6 +360,28 @@ async def update_aiprovider(
                 and not is_gateway_managed_stored_key(db_aiprovider.api_key)
             ),
         )
+
+    next_gateway_interface = (
+        update_data["gateway_interface"].value
+        if update_data.get("gateway_interface") is not None
+        else db_aiprovider.gateway_interface
+    )
+    _assert_gateway_fields_allowed(
+        organization_id,
+        gateway_model=update_data.get("gateway_model", db_aiprovider.gateway_model),
+        gateway_interface=next_gateway_interface,
+        gateway_base_url=update_data.get("gateway_base_url", db_aiprovider.gateway_base_url),
+        gateway_auth_header=update_data.get(
+            "gateway_auth_header", db_aiprovider.gateway_auth_header
+        ),
+        gateway_auth_secret_env=update_data.get(
+            "gateway_auth_secret_env", db_aiprovider.gateway_auth_secret_env
+        ),
+        gateway_auth_secret=update_data.get("gateway_auth_secret"),
+        gateway_extra_headers=update_data.get(
+            "gateway_extra_headers", db_aiprovider.gateway_extra_headers
+        ),
+    )
 
     skip_fields = {
         "api_key",

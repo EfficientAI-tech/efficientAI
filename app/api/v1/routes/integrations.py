@@ -73,10 +73,9 @@ async def create_integration(
     """
     from sqlalchemy import func
     from app.models.enums import CredentialRoutingMode
-    from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+    from app.services.ai.llm_gateway_settings import assert_credential_routing_allowed
 
-    if integration_data.routing_mode == CredentialRoutingMode.GATEWAY:
-        assert_llm_gateway_entitlement(organization_id)
+    assert_credential_routing_allowed(organization_id, integration_data.routing_mode)
 
     platform_value = integration_data.platform.value if hasattr(integration_data.platform, 'value') else integration_data.platform
 
@@ -289,10 +288,9 @@ async def update_integration(
 
     if integration_update.routing_mode is not None:
         from app.models.enums import CredentialRoutingMode
-        from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+        from app.services.ai.llm_gateway_settings import assert_credential_routing_allowed
 
-        if integration_update.routing_mode == CredentialRoutingMode.GATEWAY:
-            assert_llm_gateway_entitlement(organization_id)
+        assert_credential_routing_allowed(organization_id, integration_update.routing_mode)
         integration.routing_mode = integration_update.routing_mode.value
     
     db.commit()
