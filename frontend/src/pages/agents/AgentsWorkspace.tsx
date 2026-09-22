@@ -13,6 +13,7 @@ import AgentsListSidebar, { agentMatchesRoute, agentRouteId } from './components
 import { CreateAgentModal, DeleteAgentModal } from './components'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 import { useOssQuotas } from '../../hooks/useOssQuotas'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 
 const AGENTS_NAV_CRUMBS: AgentsHierarchyCrumb[] = [{ label: 'Test Agents', to: '/agents' }]
 
@@ -127,10 +128,12 @@ export default function AgentsWorkspace() {
   const handleCreateSuccess = () => {
     queryClient.invalidateQueries({ queryKey: ['agents'] })
     queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
+    void refreshOssQuotaUsage()
     setShowCreateModal(false)
   }
 
   const handleDeleteSuccess = () => {
+    void refreshOssQuotaUsage()
     setShowDeleteModal(false)
     setSelectedAgent(null)
     setBlockingConversations([])
@@ -139,6 +142,7 @@ export default function AgentsWorkspace() {
 
   const handleAgentDeletedFromDetail = () => {
     queryClient.invalidateQueries({ queryKey: ['agents'] })
+    void refreshOssQuotaUsage()
     const remaining = agents.filter(
       (a: TestAgent) => !routeAgentId || !agentMatchesRoute(a, routeAgentId)
     )
@@ -185,6 +189,7 @@ export default function AgentsWorkspace() {
 
       if (successCount > 0) {
         queryClient.invalidateQueries({ queryKey: ['agents'] })
+        void refreshOssQuotaUsage()
       }
 
       if (failedAgents.length === 0) {

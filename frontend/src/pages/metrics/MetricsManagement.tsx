@@ -7,6 +7,7 @@ import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { useToast } from '../../hooks/useToast'
 import { useOssQuotas } from '../../hooks/useOssQuotas'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import {
   Copy,
@@ -707,6 +708,7 @@ export default function MetricsManagement({
       draftMode ? apiClient.createMetricDraft(data as any) : apiClient.createMetric(data),
     onSuccess: (metric) => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      void refreshOssQuotaUsage()
       onMetricCreated?.(metric)
       showToast(
         draftMode ? 'Draft metric created' : 'Metric created',
@@ -736,6 +738,7 @@ export default function MetricsManagement({
     mutationFn: (id: string) => apiClient.deleteMetric(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      void refreshOssQuotaUsage()
     },
     onError: (err: unknown) => {
       showToast(getApiErrorMessage(err, 'Failed to delete metric'), 'error')
@@ -804,6 +807,7 @@ export default function MetricsManagement({
         : apiClient.createMetricWithChildren(payload),
     onSuccess: (metric) => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      void refreshOssQuotaUsage()
       onMetricCreated?.(metric)
       closeModal()
       if (!draftMode) {

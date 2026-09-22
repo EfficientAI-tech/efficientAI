@@ -6,10 +6,15 @@ from contextlib import contextmanager
 from typing import Iterator, Tuple
 from uuid import UUID
 
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.db_sharding.pool_manager import db_pool_manager, open_row_shard_session
 from app.db_sharding.pool_manager import open_catalog_session
+
+
+class ShardingEntitlementError(RuntimeError):
+    """Sharding pools are configured but deployment entitlement is missing."""
 
 
 @contextmanager
@@ -39,20 +44,21 @@ def is_sharding_enabled() -> bool:
 
     from app.core.license import is_feature_enabled
     from app.core.usage_entitlement import deployment_has_entitlement
-    from loguru import logger
 
     if not deployment_has_entitlement():
-        logger.warning(
+        message = (
             "DB_SHARDING_ENABLED is true but no deployment-wide enterprise "
-            "license is present — sharding remains disabled."
+            "license is present. Refusing catalog fallback to avoid split storage."
         )
-        return False
+        logger.error(message)
+        raise ShardingEntitlementError(message)
 
     if not is_feature_enabled("db_sharding"):
-        logger.warning(
+        message = (
             "DB_SHARDING_ENABLED is true but db_sharding is not enabled "
-            "by the enterprise license — sharding remains disabled."
+            "by the enterprise license. Refusing catalog fallback to avoid split storage."
         )
-        return False
+        logger.error(message)
+        raise ShardingEntitlementError(message)
 
     return True

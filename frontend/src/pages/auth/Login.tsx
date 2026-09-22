@@ -13,6 +13,7 @@ import {
   storePendingInviteToken,
 } from '../../lib/inviteToken'
 import { storeJoinNotice } from '../../lib/joinNotice'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody, Button, Divider, Tabs, Tab } from '@heroui/react'
@@ -150,6 +151,7 @@ export default function Login() {
       const accepted = await apiClient.acceptInvitationByToken(token)
       consumePendingInviteToken()
       storeJoinNotice(accepted.join_notice)
+      void refreshOssQuotaUsage()
       setSession(
         accepted.user,
         accepted.access_token

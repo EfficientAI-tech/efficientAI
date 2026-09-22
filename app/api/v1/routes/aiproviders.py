@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
@@ -121,6 +121,59 @@ def _assert_gateway_fields_allowed(
         assert_llm_gateway_entitlement(organization_id)
 
 
+def _normalize_gateway_interface(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _assert_gateway_update_allowed(
+    organization_id: UUID,
+    db_aiprovider: AIProvider,
+    update_data: dict,
+) -> None:
+    """Reject new gateway configuration on OSS; allow clears and unrelated edits."""
+    from app.core.license import has_valid_license
+    from app.services.ai.llm_gateway_settings import assert_llm_gateway_entitlement
+
+    if has_valid_license(organization_id):
+        return
+
+    def _enabling(field: str, value: Any) -> bool:
+        if field == "gateway_interface":
+            normalized = (_normalize_gateway_interface(value) or "").strip().lower()
+            return normalized not in ("", "inherit")
+        if field == "gateway_extra_headers":
+            return bool(value)
+        return bool((value or "").strip())
+
+    checks: list[tuple[str, Any]] = [
+        ("gateway_model", db_aiprovider.gateway_model),
+        ("gateway_interface", db_aiprovider.gateway_interface),
+        ("gateway_base_url", db_aiprovider.gateway_base_url),
+        ("gateway_auth_header", db_aiprovider.gateway_auth_header),
+        ("gateway_auth_secret_env", db_aiprovider.gateway_auth_secret_env),
+        ("gateway_extra_headers", db_aiprovider.gateway_extra_headers),
+    ]
+
+    for field, stored in checks:
+        if field not in update_data:
+            continue
+        new_value = update_data[field]
+        if not _enabling(field, new_value):
+            continue
+        stored_cmp = stored
+        if field == "gateway_interface":
+            new_value = _normalize_gateway_interface(new_value)
+            stored_cmp = _normalize_gateway_interface(stored)
+        if new_value != stored_cmp:
+            assert_llm_gateway_entitlement(organization_id)
+            return
+
+    if update_data.get("gateway_auth_secret"):
+        assert_llm_gateway_entitlement(organization_id)
+
+
 def _validate_routing_and_api_key(
     *,
     organization_id: UUID,
@@ -128,10 +181,12 @@ def _validate_routing_and_api_key(
     api_key: Optional[str],
     gateway_model: Optional[str],
     has_existing_key: bool = False,
+    check_routing_entitlement: bool = True,
 ) -> None:
     from app.services.ai.llm_gateway_settings import assert_credential_routing_allowed
 
-    assert_credential_routing_allowed(organization_id, routing_mode)
+    if check_routing_entitlement:
+        assert_credential_routing_allowed(organization_id, routing_mode)
 
     mode = routing_mode.value if hasattr(routing_mode, "value") else str(routing_mode)
     trimmed_key = (api_key or "").strip()
@@ -342,46 +397,35 @@ async def update_aiprovider(
         )
 
     update_data = aiprovider_update.model_dump(exclude_unset=True)
-    next_routing_mode = update_data.get(
-        "routing_mode",
-        CredentialRoutingMode(db_aiprovider.routing_mode),
-    )
+    stored_routing_mode = CredentialRoutingMode(db_aiprovider.routing_mode)
+    next_routing_mode = update_data.get("routing_mode", stored_routing_mode)
     next_gateway_model = update_data.get("gateway_model", db_aiprovider.gateway_model)
     next_api_key = update_data.get("api_key")
+    has_existing_key = (
+        bool(db_aiprovider.api_key)
+        and not is_gateway_managed_stored_key(db_aiprovider.api_key)
+    )
 
-    if "routing_mode" in update_data or "api_key" in update_data or "gateway_model" in update_data:
+    if "routing_mode" in update_data:
         _validate_routing_and_api_key(
             organization_id=organization_id,
             routing_mode=next_routing_mode,
             api_key=next_api_key,
             gateway_model=next_gateway_model,
-            has_existing_key=(
-                bool(db_aiprovider.api_key)
-                and not is_gateway_managed_stored_key(db_aiprovider.api_key)
-            ),
+            has_existing_key=has_existing_key,
+            check_routing_entitlement=True,
+        )
+    elif "api_key" in update_data:
+        _validate_routing_and_api_key(
+            organization_id=organization_id,
+            routing_mode=stored_routing_mode,
+            api_key=next_api_key,
+            gateway_model=next_gateway_model,
+            has_existing_key=has_existing_key,
+            check_routing_entitlement=False,
         )
 
-    next_gateway_interface = (
-        update_data["gateway_interface"].value
-        if update_data.get("gateway_interface") is not None
-        else db_aiprovider.gateway_interface
-    )
-    _assert_gateway_fields_allowed(
-        organization_id,
-        gateway_model=update_data.get("gateway_model", db_aiprovider.gateway_model),
-        gateway_interface=next_gateway_interface,
-        gateway_base_url=update_data.get("gateway_base_url", db_aiprovider.gateway_base_url),
-        gateway_auth_header=update_data.get(
-            "gateway_auth_header", db_aiprovider.gateway_auth_header
-        ),
-        gateway_auth_secret_env=update_data.get(
-            "gateway_auth_secret_env", db_aiprovider.gateway_auth_secret_env
-        ),
-        gateway_auth_secret=update_data.get("gateway_auth_secret"),
-        gateway_extra_headers=update_data.get(
-            "gateway_extra_headers", db_aiprovider.gateway_extra_headers
-        ),
-    )
+    _assert_gateway_update_allowed(organization_id, db_aiprovider, update_data)
 
     skip_fields = {
         "api_key",

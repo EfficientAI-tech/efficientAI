@@ -95,3 +95,8 @@ export const useLicenseStore = create<LicenseState>((set, get) => ({
     return get().usagePolicy.extended_history
   },
 }))
+
+/** Re-fetch OSS quota usage after resource create/delete mutations. */
+export async function refreshOssQuotaUsage(): Promise<void> {
+  await useLicenseStore.getState().fetchLicense()
+}

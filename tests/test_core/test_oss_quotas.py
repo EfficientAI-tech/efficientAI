@@ -125,6 +125,44 @@ def test_user_metrics_exclude_defaults(
     assert exc.value.detail["current"] == 5
 
 
+def test_enforce_oss_quota_locks_organization_on_postgres(
+    db_session, org_id, monkeypatch
+):
+    lock_called: list[bool] = []
+
+    class _FakeQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def with_for_update(self):
+            lock_called.append(True)
+            return self
+
+        def one(self):
+            return object()
+
+    monkeypatch.setattr(
+        quotas_module,
+        "has_enterprise_entitlement",
+        lambda _org: False,
+    )
+    monkeypatch.setattr(
+        db_session,
+        "get_bind",
+        lambda: type(
+            "Bind",
+            (),
+            {"dialect": type("Dialect", (), {"name": "postgresql"})()},
+        )(),
+    )
+    monkeypatch.setattr(db_session, "query", lambda *_args, **_kwargs: _FakeQuery())
+    monkeypatch.setattr(quotas_module, "_count_for_resource", lambda *_a, **_k: 0)
+
+    quotas_module.enforce_oss_quota(db_session, org_id, "agents")
+
+    assert lock_called
+
+
 def test_workspace_quota_blocks_second_workspace(
     db_session, org_id, seed_org, default_workspace, monkeypatch
 ):

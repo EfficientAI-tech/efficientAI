@@ -11,7 +11,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.usage_entitlement import has_enterprise_entitlement
-from app.models.database import Agent, Metric, OrganizationMember, Workspace
+from app.models.database import Agent, Metric, Organization, OrganizationMember, Workspace
 
 OSS_MAX_USER_METRICS = 5
 OSS_MAX_AGENTS = 3
@@ -165,6 +165,15 @@ def _count_for_resource(
     raise ValueError(f"Unknown OSS quota resource: {resource}")
 
 
+def _lock_organization_for_quota(db: Session, organization_id: UUID) -> None:
+    """Serialize concurrent quota checks for the same organization (PostgreSQL)."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+
+    db.query(Organization).filter(Organization.id == organization_id).with_for_update().one()
+
+
 def enforce_oss_quota(
     db: Session,
     organization_id: UUID,
@@ -175,6 +184,8 @@ def enforce_oss_quota(
     """Raise HTTP 403 when an OSS org would exceed a quantity cap."""
     if has_enterprise_entitlement(organization_id):
         return
+
+    _lock_organization_for_quota(db, organization_id)
 
     limit = _RESOURCE_LIMITS[resource]
     current = _count_for_resource(db, organization_id, resource)

@@ -8,6 +8,7 @@ import Button from './Button'
 import { useToast } from '../hooks/useToast'
 import { getApiErrorMessage } from '../lib/apiErrors'
 import { useAuthStore } from '../store/authStore'
+import { refreshOssQuotaUsage } from '../store/licenseStore'
 
 export interface PendingWorkspaceMember {
   user_id: string
@@ -185,6 +186,7 @@ export default function CreateWorkspaceModal({
       }
 
       resetForm()
+      void refreshOssQuotaUsage()
       await onCreated(created)
       onClose()
 

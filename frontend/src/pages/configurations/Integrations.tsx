@@ -432,9 +432,7 @@ export default function Integrations() {
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
-    setCredentialRoutingMode(
-      gatewayRoutingAllowed ? (integration.routing_mode || 'inherit') : 'direct',
-    )
+    setCredentialRoutingMode(integration.routing_mode || 'inherit')
     setIsEditMode(true)
     setShowModal(true)
   }
@@ -442,9 +440,7 @@ export default function Integrations() {
   const handleEditAIProvider = (provider: AIProvider) => {
     setIntegrationType('ai_provider'); setSelectedAIProvider(provider); setSelectedProvider(provider.provider)
     setName(provider.name || ''); setApiKey('')
-    setCredentialRoutingMode(
-      gatewayRoutingAllowed ? (provider.routing_mode || 'inherit') : 'direct',
-    )
+    setCredentialRoutingMode(provider.routing_mode || 'inherit')
     setAzureEndpointUrl(provider.endpoint_url || '')
     setGatewayModel(provider.gateway_model || ''); setGatewayInterface(provider.gateway_interface || 'inherit')
     setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
@@ -475,7 +471,10 @@ export default function Integrations() {
         if (name !== (selectedIntegration.name || '')) updateData.name = name || undefined
         if (apiKey) updateData.api_key = apiKey
         if (publicKey !== (selectedIntegration.public_key || '')) updateData.public_key = publicKey || undefined
-        if (effectiveCredentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')) {
+        if (
+          gatewayRoutingAllowed &&
+          effectiveCredentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')
+        ) {
           updateData.routing_mode = effectiveCredentialRoutingMode
         }
         if (Object.keys(updateData).length > 0) updateIntegrationMutation.mutate({ id: selectedIntegration.id, data: updateData })
@@ -530,7 +529,10 @@ export default function Integrations() {
         if (trimmedAzureEndpointUrl !== (selectedAIProvider.endpoint_url || '')) {
           updateData.endpoint_url = trimmedAzureEndpointUrl || null
         }
-        if (effectiveCredentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')) {
+        if (
+          gatewayRoutingAllowed &&
+          effectiveCredentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')
+        ) {
           updateData.routing_mode = effectiveCredentialRoutingMode
         }
         if (gatewayRoutingAllowed) {

@@ -15,6 +15,7 @@ import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSectio
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { buildInviteShareUrl } from '../../lib/inviteUrl'
 import { useOssQuotas } from '../../hooks/useOssQuotas'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 
 type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
 
@@ -159,6 +160,7 @@ export default function IAM() {
     mutationFn: (userId: string) => apiClient.removeUser(userId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['iam', 'users'] })
+      void refreshOssQuotaUsage()
       setShowRemoveModal(false)
       setMemberToRemove(null)
       showToast('User removed successfully', 'success')

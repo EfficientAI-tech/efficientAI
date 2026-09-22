@@ -12,6 +12,7 @@ import { buildAuthorizeUrl } from '../../lib/oidc'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { storePendingInviteToken } from '../../lib/inviteToken'
 import { storeJoinNotice } from '../../lib/joinNotice'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 
 type Mode = 'signup' | 'password' | 'sso'
 
@@ -125,6 +126,7 @@ export default function InviteAccept() {
       .then((res) => {
         if (!active) return
         storeJoinNotice(res.join_notice)
+        void refreshOssQuotaUsage()
         setSession(
           res.user,
           res.access_token ? { access: res.access_token, refresh: res.refresh_token } : undefined,
@@ -214,6 +216,7 @@ export default function InviteAccept() {
       }
       const accepted = await apiClient.acceptInvitationByToken(token)
       storeJoinNotice(accepted.join_notice)
+      void refreshOssQuotaUsage()
       setSession(
         accepted.user,
         accepted.access_token

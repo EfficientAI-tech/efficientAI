@@ -61,9 +61,16 @@ def sharding_postgres_env():
     config_module.settings = _Settings()
     db_pool_manager.reset()
 
-    from app.db_sharding.sessions import is_sharding_enabled
+    from app.db_sharding.sessions import ShardingEntitlementError, is_sharding_enabled
 
-    if not is_sharding_enabled():
+    try:
+        sharding_active = is_sharding_enabled()
+    except ShardingEntitlementError as exc:
+        config_module.settings = prior_settings
+        db_pool_manager.reset()
+        pytest.skip(str(exc))
+
+    if not sharding_active:
         config_module.settings = prior_settings
         db_pool_manager.reset()
         pytest.skip("pool manager did not enable sharding")

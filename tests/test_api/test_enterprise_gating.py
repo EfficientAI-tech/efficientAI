@@ -108,6 +108,114 @@ def test_license_info_includes_oss_quotas(unlicensed_client):
     assert "quota_usage" in body
 
 
+def test_update_gateway_aiprovider_name_allowed_without_license(
+    unlicensed_client, db_session, org_id
+):
+    from app.core.encryption import encrypt_api_key
+    from app.models.database import AIProvider
+    from app.services.ai.llm_gateway import GATEWAY_MANAGED_KEY_SENTINEL
+
+    row = AIProvider(
+        organization_id=org_id,
+        provider="openai",
+        api_key=encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL),
+        name="Before",
+        routing_mode="gateway",
+        gateway_model="prod-gpt4",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = unlicensed_client.put(
+        f"/api/v1/aiproviders/{row.id}",
+        json={"name": "After"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "After"
+    assert body["routing_mode"] == "gateway"
+    assert body["gateway_model"] == "prod-gpt4"
+
+
+def test_update_gateway_aiprovider_api_key_allowed_without_license(
+    unlicensed_client, db_session, org_id
+):
+    from app.core.encryption import encrypt_api_key
+    from app.models.database import AIProvider
+    from app.services.ai.llm_gateway import GATEWAY_MANAGED_KEY_SENTINEL
+
+    row = AIProvider(
+        organization_id=org_id,
+        provider="openai",
+        api_key=encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL),
+        name="Gateway row",
+        routing_mode="inherit",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = unlicensed_client.put(
+        f"/api/v1/aiproviders/{row.id}",
+        json={"api_key": "sk-test-direct-key"},
+    )
+    assert response.status_code == 200
+    assert response.json()["routing_mode"] == "inherit"
+
+
+def test_update_aiprovider_gateway_field_blocked_without_license(
+    unlicensed_client, db_session, org_id
+):
+    from app.core.encryption import encrypt_api_key
+    from app.models.database import AIProvider
+    from app.services.ai.llm_gateway import GATEWAY_MANAGED_KEY_SENTINEL
+
+    row = AIProvider(
+        organization_id=org_id,
+        provider="openai",
+        api_key=encrypt_api_key(GATEWAY_MANAGED_KEY_SENTINEL),
+        name="Gateway row",
+        routing_mode="gateway",
+        gateway_model="prod-gpt4",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = unlicensed_client.put(
+        f"/api/v1/aiproviders/{row.id}",
+        json={"gateway_model": "new-production-model"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
+def test_update_aiprovider_routing_mode_gateway_blocked_without_license(
+    unlicensed_client, db_session, org_id
+):
+    from app.core.encryption import encrypt_api_key
+    from app.models.database import AIProvider
+
+    row = AIProvider(
+        organization_id=org_id,
+        provider="openai",
+        api_key=encrypt_api_key("sk-existing-direct"),
+        name="Direct row",
+        routing_mode="direct",
+        is_active=True,
+    )
+    db_session.add(row)
+    db_session.commit()
+
+    response = unlicensed_client.put(
+        f"/api/v1/aiproviders/{row.id}",
+        json={"routing_mode": "gateway"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error"] == "enterprise_license_required"
+
+
 def test_workspace_iam_forbidden_without_license(unlicensed_client, default_workspace):
     response = unlicensed_client.get(
         f"/api/v1/workspaces/{default_workspace.id}/members"
