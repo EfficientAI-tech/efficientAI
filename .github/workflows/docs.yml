@@ -35,6 +35,8 @@ jobs:
       - name: Run docs quality checks
         run: npm run ci:check
         working-directory: docs-fumadocs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Upload docs site
         uses: actions/upload-artifact@v4
