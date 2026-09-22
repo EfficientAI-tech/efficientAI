@@ -15,6 +15,7 @@ def unlicensed_client(authenticated_client, monkeypatch):
 
     monkeypatch.setattr(settings, "EFFICIENTAI_LICENSE", None, raising=False)
     monkeypatch.delenv("EFFICIENTAI_LICENSE", raising=False)
+    monkeypatch.setattr(license_module, "get_license_info", lambda: {})
     license_module.reset_license_cache()
     # conftest._build_session_api_app() stubs app.dependencies.is_feature_enabled;
     # require_enterprise_feature() resolves that name at call time.

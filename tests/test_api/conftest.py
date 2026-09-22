@@ -611,17 +611,3 @@ def make_prompt_optimization_candidate(db_session, default_workspace):
 
     return _make_prompt_optimization_candidate
 
-
-@pytest.fixture(autouse=True)
-def _enable_enterprise_entitlement_for_api_tests(monkeypatch, request):
-    """Most API route tests assume an entitled deployment unless testing OSS gates."""
-    if request.module.__name__.endswith("test_enterprise_gating"):
-        return
-
-    import app.core.usage_entitlement as usage_entitlement_module
-
-    monkeypatch.setattr(
-        usage_entitlement_module,
-        "has_enterprise_entitlement",
-        lambda organization_id=None: True,
-    )
