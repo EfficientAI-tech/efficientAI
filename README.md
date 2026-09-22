@@ -983,4 +983,11 @@ See `CONTRIBUTING.md` for PR format, review expectations, and release label conv
 
 ## 📄 License
 
-MIT License - see LICENSE file for details
+The open-source core is licensed under the **MIT License** — see [LICENSE](LICENSE).
+
+Content under the `enterprise/` directory is licensed separately under
+[enterprise/LICENSE.md](enterprise/LICENSE.md). Enterprise product capabilities
+(unlimited usage history, call imports, voice playground, alerts, and more) require
+a valid **`EFFICIENTAI_LICENSE`** JWT key. Contact
+[sales@efficientai.com](mailto:sales@efficientai.com) or visit
+[efficientai.cloud](https://efficientai.cloud).

@@ -66,12 +66,16 @@ class AlertEvaluationService:
         """
         logger.info("[AlertEvaluation] Starting evaluation of all active alerts")
 
-        # Get all active alerts
-        active_alerts = (
-            db.query(Alert)
+        from app.core.license import is_feature_enabled
+
+        # Get all active alerts for orgs with alerting entitlement
+        active_alerts = [
+            alert
+            for alert in db.query(Alert)
             .filter(Alert.status == AlertStatus.ACTIVE.value)
             .all()
-        )
+            if is_feature_enabled("alerts", alert.organization_id)
+        ]
 
         logger.info(f"[AlertEvaluation] Found {len(active_alerts)} active alerts to evaluate")
 

@@ -1,9 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
-import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check } from 'lucide-react'
+import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check, Lock } from 'lucide-react'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
@@ -13,19 +14,33 @@ import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { buildInviteShareUrl } from '../../lib/inviteUrl'
+import { useOssQuotas } from '../../hooks/useOssQuotas'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 
 type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
 
-const IAM_TABS: { id: IamTab; label: string; icon: typeof Building2; adminOnly?: boolean }[] = [
+const IAM_TABS: {
+  id: IamTab
+  label: string
+  icon: typeof Building2
+  adminOnly?: boolean
+  enterpriseOnly?: boolean
+}[] = [
   { id: 'organization', label: 'Organization', icon: Building2 },
-  { id: 'workspace-members', label: 'Workspace Members', icon: Users },
-  { id: 'workspace-roles', label: 'Workspace Roles', icon: Shield, adminOnly: true },
+  { id: 'workspace-members', label: 'Workspace Members', icon: Users, enterpriseOnly: true },
+  { id: 'workspace-roles', label: 'Workspace Roles', icon: Shield, adminOnly: true, enterpriseOnly: true },
 ]
+
+function renderIamModal(content: ReactNode) {
+  if (typeof document === 'undefined') return null
+  return createPortal(content, document.body)
+}
 
 export default function IAM() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const isAdmin = useIsAdmin()
+  const { isAtLimit, limitMessage, isEnterprise } = useOssQuotas()
   const [searchParams, setSearchParams] = useSearchParams()
   const tabParam = searchParams.get('tab')
   const activeTab: IamTab =
@@ -40,6 +55,15 @@ export default function IAM() {
       setSearchParams({ tab: 'organization' }, { replace: true })
     }
   }, [activeTab, isAdmin, setSearchParams])
+
+  useEffect(() => {
+    if (
+      !isEnterprise &&
+      (activeTab === 'workspace-members' || activeTab === 'workspace-roles')
+    ) {
+      setSearchParams({}, { replace: true })
+    }
+  }, [activeTab, isEnterprise, setSearchParams])
 
   const setActiveTab = (tab: IamTab) => {
     setSearchParams(tab === 'organization' ? {} : { tab })
@@ -136,6 +160,7 @@ export default function IAM() {
     mutationFn: (userId: string) => apiClient.removeUser(userId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['iam', 'users'] })
+      void refreshOssQuotaUsage()
       setShowRemoveModal(false)
       setMemberToRemove(null)
       showToast('User removed successfully', 'success')
@@ -325,8 +350,16 @@ export default function IAM() {
         {isAdmin && activeTab === 'organization' && (
           <Button
             variant="primary"
-            onClick={() => setShowInviteModal(true)}
+            onClick={() => {
+              if (isAtLimit('org_members')) {
+                showToast(limitMessage('org_members'), 'error')
+                return
+              }
+              setShowInviteModal(true)
+            }}
             leftIcon={<UserPlus className="h-5 w-5" />}
+            disabled={isAtLimit('org_members')}
+            title={isAtLimit('org_members') ? limitMessage('org_members') : undefined}
           >
             Invite User
           </Button>
@@ -335,21 +368,42 @@ export default function IAM() {
 
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex gap-6 overflow-x-auto" aria-label="IAM sections">
-          {visibleTabs.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setActiveTab(id)}
-              className={`flex items-center gap-2 px-1 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
-                activeTab === id
-                  ? 'border-primary-600 text-primary-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-            </button>
-          ))}
+          {visibleTabs.map(({ id, label, icon: Icon, enterpriseOnly }) => {
+            const isTabDisabled = Boolean(enterpriseOnly && !isEnterprise)
+            return (
+              <button
+                key={id}
+                type="button"
+                disabled={isTabDisabled}
+                onClick={() => {
+                  if (isTabDisabled) {
+                    showToast(
+                      'Workspace Members and Workspace Roles require an Enterprise license (EFFICIENTAI_LICENSE).',
+                      'error',
+                    )
+                    return
+                  }
+                  setActiveTab(id)
+                }}
+                className={`flex items-center gap-2 px-1 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
+                  activeTab === id
+                    ? 'border-primary-600 text-primary-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                } ${isTabDisabled ? 'opacity-60 cursor-not-allowed hover:border-transparent hover:text-gray-500' : ''}`}
+                title={
+                  isTabDisabled
+                    ? 'Requires an Enterprise license to manage workspace access'
+                    : undefined
+                }
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+                {isTabDisabled && (
+                  <Lock className="h-3 w-3 text-amber-600" aria-label="Enterprise feature" />
+                )}
+              </button>
+            )
+          })}
         </nav>
       </div>
 
@@ -655,79 +709,94 @@ export default function IAM() {
         </>
       )}
 
-      {activeTab === 'workspace-members' && <WorkspaceMembersSection />}
+      {activeTab === 'workspace-members' && isEnterprise && <WorkspaceMembersSection />}
 
-      {activeTab === 'workspace-roles' && isAdmin && (
+      {activeTab === 'workspace-roles' && isAdmin && isEnterprise && (
         <div className="bg-white shadow rounded-lg p-6">
           <WorkspaceRolesSection />
         </div>
       )}
 
       {/* Invite Modal */}
-      {showInviteModal && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Invite User</h3>
-              <button
-                onClick={() => setShowInviteModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleInvite} className="p-6 space-y-4">
-              <div>
-                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
-                  Email Address
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  required
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="user@example.com"
-                />
-              </div>
-              <div>
-                <label htmlFor="role" className="block text-sm font-medium text-gray-700 mb-1">
-                  Role
-                </label>
-                <select
-                  id="role"
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value as Role)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                >
-                  <option value={Role.READER}>Reader - View only</option>
-                  <option value={Role.WRITER}>Writer - Create and edit</option>
-                  <option value={Role.ADMIN}>Admin - Full access</option>
-                </select>
-              </div>
-              <div className="flex gap-3 pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
+      {showInviteModal &&
+        renderIamModal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden">
+            <div
+              className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm"
+              onClick={() => setShowInviteModal(false)}
+              aria-hidden
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="invite-user-title"
+              className="relative z-[10000] bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 id="invite-user-title" className="text-lg font-semibold">
+                  Invite User
+                </h3>
+                <button
                   onClick={() => setShowInviteModal(false)}
-                  className="flex-1"
+                  className="text-gray-400 hover:text-gray-600"
+                  type="button"
+                  aria-label="Close"
                 >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  isLoading={inviteMutation.isPending}
-                  className="flex-1"
-                >
-                  Create Invitation
-                </Button>
+                  <X className="h-5 w-5" />
+                </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
+              <form onSubmit={handleInvite} className="p-6 space-y-4">
+                <div>
+                  <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    id="email"
+                    type="email"
+                    required
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="user@example.com"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="role" className="block text-sm font-medium text-gray-700 mb-1">
+                    Role
+                  </label>
+                  <select
+                    id="role"
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as Role)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  >
+                    <option value={Role.READER}>Reader - View only</option>
+                    <option value={Role.WRITER}>Writer - Create and edit</option>
+                    <option value={Role.ADMIN}>Admin - Full access</option>
+                  </select>
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setShowInviteModal(false)}
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    isLoading={inviteMutation.isPending}
+                    className="flex-1"
+                  >
+                    Create Invitation
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+        )}
 
       <ConfirmModal
         isOpen={showRemoveModal && !!memberToRemove}
@@ -773,26 +842,36 @@ export default function IAM() {
       </ConfirmModal>
 
       {/* Admin Reset Password Modal */}
-      {showResetPasswordModal && memberToResetPassword && (
-        <div
-          className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
-          onClick={closeResetPasswordModal}
-        >
-          <div
-            className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Reset User Password</h3>
-              <button
-                onClick={closeResetPasswordModal}
-                className="text-gray-400 hover:text-gray-600"
-                type="button"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleResetPasswordSubmit} className="p-6 space-y-4">
+      {showResetPasswordModal &&
+        memberToResetPassword &&
+        renderIamModal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden">
+            <div
+              className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm"
+              onClick={closeResetPasswordModal}
+              aria-hidden
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="reset-password-title"
+              className="relative z-[10000] bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 id="reset-password-title" className="text-lg font-semibold text-gray-900">
+                  Reset User Password
+                </h3>
+                <button
+                  onClick={closeResetPasswordModal}
+                  className="text-gray-400 hover:text-gray-600"
+                  type="button"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <form onSubmit={handleResetPasswordSubmit} className="p-6 space-y-4">
               <div className="flex items-start gap-4">
                 <div className="flex-shrink-0">
                   <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
@@ -911,9 +990,9 @@ export default function IAM() {
                 </Button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
+            </div>
+          </div>,
+        )}
 
       <ConfirmModal
         isOpen={showCancelModal && !!invitationToCancel}

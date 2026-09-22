@@ -5,7 +5,7 @@ This runbook tracks the Fumadocs rollout strategy.
 ## Cutover steps
 
 1. Ensure `docs-fumadocs` checks are green in the `Docs` workflow `build` job.
-2. Confirm CloudFront has the viewer-request function from [`infra/cloudfront-viewer-request.js`](infra/cloudfront-viewer-request.js) attached and no 404→`/index.html` SPA fallback.
+2. Confirm CloudFront has the **latest** viewer-request function from [`infra/cloudfront-viewer-request.js`](infra/cloudfront-viewer-request.js) attached and no 404→`/index.html` SPA fallback. Republish after doc deploys — versioned routes like `/docs/changelog/v1.5.33/` require the updated rewrite logic (do not skip rewrite when a path segment contains dots).
 3. Trigger the `Docs` workflow `deploy` job (or push to `main` with docs changes).
 4. Verify production routes (direct URL and refresh — not just sidebar clicks):
    - `https://docs.efficientai.cloud/docs/intro/`

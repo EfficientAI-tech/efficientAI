@@ -25,6 +25,8 @@ export default async function Layout({ children }: LayoutProps<'/docs'>) {
   const tree = source.getPageTree();
   const docsRoot = findRootFolder(tree, 'Docs');
   const apiRoot = findRootFolder(tree, 'API Reference');
+  const changelogRoot = findRootFolder(tree, 'Changelog');
+  const blogRoot = findRootFolder(tree, 'Blogs');
   const tabs: LayoutTab[] = [
     {
       title: 'Docs',
@@ -39,14 +41,17 @@ export default async function Layout({ children }: LayoutProps<'/docs'>) {
     {
       title: 'Enterprise',
       url: '/docs/enterprise/',
+      urls: new Set(['/docs/enterprise/']),
     },
     {
       title: 'Changelog',
       url: '/docs/changelog/',
+      urls: new Set(changelogRoot ? folderUrls(changelogRoot) : ['/docs/changelog/']),
     },
     {
       title: 'Blogs',
       url: '/docs/blog/',
+      urls: new Set(blogRoot ? folderUrls(blogRoot) : ['/docs/blog/']),
     },
   ];
 

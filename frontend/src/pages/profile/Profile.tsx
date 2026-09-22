@@ -9,6 +9,7 @@ import { redirectToLoginWithMessage } from '../../lib/authSession'
 import { PASSWORD_POLICY_HINT, validatePasswordPolicy } from '../../lib/passwordPolicy'
 import { useOrgSwitch } from '../../hooks/useOrgSwitch'
 import OrgReauthModal from '../../components/OrgReauthModal'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 
 export default function Profile() {
   const queryClient = useQueryClient()
@@ -159,6 +160,7 @@ export default function Profile() {
     onSuccess: (data, invitation) => {
       queryClient.invalidateQueries({ queryKey: ['profile'] })
       queryClient.invalidateQueries({ queryKey: ['iam'] })
+      void refreshOssQuotaUsage()
       setJustJoined({
         organizationId: invitation.organization_id,
         organizationName: invitation.organization_name || 'the organization',

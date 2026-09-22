@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { AlertTriangle } from 'lucide-react'
 import Button from './Button'
 
@@ -55,17 +56,19 @@ export default function ConfirmModal({
 
   if (!isOpen) return null
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="flex min-h-screen items-center justify-center p-4">
-        {/* Backdrop */}
-        <div
-          className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-          onClick={onCancel}
-        />
-        
-        {/* Modal Content */}
-        <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+  const modal = (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 overflow-y-auto overflow-x-hidden">
+      <div
+        className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm transition-opacity"
+        onClick={onCancel}
+        aria-hidden
+      />
+
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="relative z-[10000] bg-white rounded-2xl shadow-xl max-w-md w-full p-6"
+      >
           {/* Header */}
           <div className="flex items-center gap-3 mb-4">
             {(variant === 'danger' || variant === 'warning') && (
@@ -118,7 +121,9 @@ export default function ConfirmModal({
             </button>
           </div>
         </div>
-      </div>
     </div>
   )
+
+  if (typeof document === 'undefined') return null
+  return createPortal(modal, document.body)
 }

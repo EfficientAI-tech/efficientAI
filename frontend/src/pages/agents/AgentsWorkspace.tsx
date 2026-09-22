@@ -12,6 +12,8 @@ import AgentWorkspaceDetail from './AgentWorkspaceDetail'
 import AgentsListSidebar, { agentMatchesRoute, agentRouteId } from './components/AgentsListSidebar'
 import { CreateAgentModal, DeleteAgentModal } from './components'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import { useOssQuotas } from '../../hooks/useOssQuotas'
+import { refreshOssQuotaUsage } from '../../store/licenseStore'
 
 const AGENTS_NAV_CRUMBS: AgentsHierarchyCrumb[] = [{ label: 'Test Agents', to: '/agents' }]
 
@@ -28,6 +30,15 @@ export default function AgentsWorkspace() {
   const queryClient = useQueryClient()
   const { selectedAgent: globalSelectedAgent, setSelectedAgent: setGlobalSelectedAgent } = useAgentStore()
   const { showToast, ToastContainer } = useToast()
+  const { isAtLimit, limitMessage } = useOssQuotas()
+
+  const tryOpenCreateModal = () => {
+    if (isAtLimit('agents')) {
+      showToast(limitMessage('agents'), 'error')
+      return
+    }
+    setShowCreateModal(true)
+  }
 
   const [isEditMode, setIsEditMode] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -117,10 +128,12 @@ export default function AgentsWorkspace() {
   const handleCreateSuccess = () => {
     queryClient.invalidateQueries({ queryKey: ['agents'] })
     queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] })
+    void refreshOssQuotaUsage()
     setShowCreateModal(false)
   }
 
   const handleDeleteSuccess = () => {
+    void refreshOssQuotaUsage()
     setShowDeleteModal(false)
     setSelectedAgent(null)
     setBlockingConversations([])
@@ -129,6 +142,7 @@ export default function AgentsWorkspace() {
 
   const handleAgentDeletedFromDetail = () => {
     queryClient.invalidateQueries({ queryKey: ['agents'] })
+    void refreshOssQuotaUsage()
     const remaining = agents.filter(
       (a: TestAgent) => !routeAgentId || !agentMatchesRoute(a, routeAgentId)
     )
@@ -175,6 +189,7 @@ export default function AgentsWorkspace() {
 
       if (successCount > 0) {
         queryClient.invalidateQueries({ queryKey: ['agents'] })
+        void refreshOssQuotaUsage()
       }
 
       if (failedAgents.length === 0) {
@@ -304,8 +319,10 @@ export default function AgentsWorkspace() {
           )}
           <Button
             variant="primary"
-            onClick={() => setShowCreateModal(true)}
+            onClick={tryOpenCreateModal}
             leftIcon={<Plus className="w-4 h-4" />}
+            disabled={isAtLimit('agents')}
+            title={isAtLimit('agents') ? limitMessage('agents') : undefined}
           >
             Create Agent
           </Button>
@@ -318,7 +335,7 @@ export default function AgentsWorkspace() {
           <Phone className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No agents yet</h3>
           <p className="text-gray-500 mb-4">Create your first test agent to get started</p>
-          <Button variant="ghost" onClick={() => setShowCreateModal(true)}>
+          <Button variant="ghost" onClick={tryOpenCreateModal} disabled={isAtLimit('agents')}>
             Create your first agent →
           </Button>
         </div>

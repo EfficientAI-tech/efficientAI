@@ -23,18 +23,21 @@ def _supports_flowchart(partial: PromptPartial) -> bool:
     return partial_supports_flowchart(partial.tags if isinstance(partial.tags, list) else None)
 
 
-def _user_facing_flowchart_error(exc: Exception) -> str:
-    message = str(exc).strip()
-    if "\nDetails:" in message:
-        message = message.split("\nDetails:", 1)[0].strip()
-    if "\nTraceback" in message:
-        message = message.split("\nTraceback", 1)[0].strip()
-    prefix = "LLM generation failed for "
-    if message.startswith(prefix) and ": " in message:
-        message = message.split(": ", 1)[1]
-    if len(message) > 500:
-        message = message[:497] + "..."
-    return message or "Flowchart generation failed."
+def _compact_error_message(exc: BaseException) -> str:
+    """Store a short user-facing message instead of a full Python traceback."""
+    text = str(exc).strip() or exc.__class__.__name__
+    for marker in (
+        "\nTraceback (most recent call last):",
+        "\nDuring handling of the above exception",
+    ):
+        idx = text.find(marker)
+        if idx >= 0:
+            text = text[:idx].strip()
+            break
+    first_line = text.split("\n", 1)[0].strip()
+    if len(first_line) <= 500:
+        return first_line or text[:500]
+    return first_line[:497] + "..."
 
 
 @celery_app.task(name="generate_agent_flowchart", bind=True, max_retries=0)
@@ -44,7 +47,6 @@ def generate_agent_flowchart_task(
     *,
     provider: str | None = None,
     model: str | None = None,
-    credential_id: str | None = None,
 ):
     db = SessionLocal()
     partial: PromptPartial | None = None
@@ -79,7 +81,6 @@ def generate_agent_flowchart_task(
                 db=db,
                 provider=provider,
                 model=model,
-                credential_id=UUID(credential_id) if credential_id else None,
             )
         partial.agent_flowchart = graph.model_dump(mode="json")
         if isinstance(partial.agent_flowchart, dict):
@@ -120,7 +121,7 @@ def generate_agent_flowchart_task(
             )
             partial.agent_flowchart = {
                 **flowchart_payload,
-                "generation_error": _user_facing_flowchart_error(exc),
+                "generation_error": _compact_error_message(exc),
             }
             partial.agent_flowchart_status = "failed"
             flag_modified(partial, "agent_flowchart")
@@ -136,7 +137,6 @@ def map_agent_flowchart_prompt_sections_task(
     *,
     provider: str | None = None,
     model: str | None = None,
-    credential_id: str | None = None,
 ):
     db = SessionLocal()
     partial: PromptPartial | None = None
@@ -180,7 +180,6 @@ def map_agent_flowchart_prompt_sections_task(
                 db=db,
                 provider=provider,
                 model=model,
-                credential_id=UUID(credential_id) if credential_id else None,
             )
         partial.agent_flowchart = mapped_graph.model_dump(mode="json")
         if isinstance(partial.agent_flowchart, dict):
@@ -212,7 +211,7 @@ def map_agent_flowchart_prompt_sections_task(
             )
             partial.agent_flowchart = {
                 **flowchart_payload,
-                "mapping_error": _user_facing_flowchart_error(exc),
+                "mapping_error": _compact_error_message(exc),
             }
             partial.agent_flowchart_status = "completed"
             flag_modified(partial, "agent_flowchart")

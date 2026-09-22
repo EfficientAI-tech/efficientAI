@@ -7,9 +7,38 @@ description: Release notes for v1.5.9.
 
 Released Jun 23, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.9).
 
+Primary pull request: [#94](https://github.com/EfficientAI-tech/efficientAI/pull/94) by [@TEJASNARAYANS](https://github.com/TEJASNARAYANS).
+
 ## What changed
 
-- fix: updating security fixes by @TEJASNARAYANS in https://github.com/EfficientAI-tech/efficientAI/pull/94
+### Docker / CVE-2025-68121
+- Converted `docker/Dockerfile.api` to a **multi-stage build**:
+  - Stage 1: `node:18-bookworm-slim` builds the frontend
+  - Stage 2: `python:3.11-slim` runtime copies **only** `frontend/dist/` (no `node_modules`, Node.js, or esbuild)
+- Added committed `.dockerignore` and removed it from `.gitignore`
+### HTTP security headers
+- Extended `app/core/security_headers_middleware.py`:
+  - `Cache-Control`: no-store for API/SPA; long cache for `/assets/*`
+  - `Content-Security-Policy-Report-Only` (tuned for Google Fonts, WebSockets, blob/media URLs)
+- Added CSP settings to `app/config.py`: `CSP_ENABLED`, `CSP_REPORT_ONLY`, `CSP_POLICY`
+- Existing headers unchanged: `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`
+### Operational endpoints (Actuator false positive)
+- New `app/core/operational_access_middleware.py`:
+  - Default `OPERATIONAL_PUBLIC=false` → anonymous public clients get **404** on `/health` and `/metrics`
+  - **ALB health checks** allowed via `ELB-HealthChecker` / `kube-probe` User-Agent
+  - **Trusted IPs** via `OPERATIONAL_TRUSTED_IPS` (CIDR support, uses `X-Forwarded-For`)
+  - Authenticated callers (API key / Bearer) also allowed
+- `app/core/health.py` + `app/main.py`:
+  - `GET /health` → minimal `{"status":"healthy"}` or `{"status":"degraded"}` (503 when degraded)
+  - `GET /health/detail` → full migration diagnostics, **org admin only**
+- OpenAPI docs disabled when `DEBUG=false` (`/docs`, `/redoc`, `/openapi.json`)
+- `app/core/migration_middleware.py` gates doc bypass paths on `DEBUG`
+### Config & docs
+- `config.yml.example` — new `operational` section
+- `docs-fumadocs/content/docs/getting-started/authentication.mdx` — hardening guidance for CSP, docs, and operational endpoints
+### Tests
+- `tests/test_core/test_security_headers_middleware.py` — 6 tests
+- `tests/test_core/test_operational_endpoints.py` — 11 tests
 
 ## Contributors
 

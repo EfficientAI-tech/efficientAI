@@ -1,5 +1,5 @@
 """
-API routes for GEPA prompt optimization (Enterprise feature).
+API routes for GEPA prompt optimization.
 
 Allows users to trigger optimization runs for voice agents, view candidates,
 accept the best prompt, and push it to the voice provider.
@@ -19,7 +19,6 @@ from app.dependencies import (
     get_organization_id,
     get_workspace_id,
     get_api_key,
-    require_enterprise_feature,
 )
 from app.services.billing.flexprice_service import record_prompt_optimization_run_started
 from app.models.database import (
@@ -38,7 +37,6 @@ from app.services.voice_providers import get_voice_provider
 router = APIRouter(
     prefix="/prompt-optimization",
     tags=["Prompt Optimization"],
-    dependencies=[Depends(require_enterprise_feature("gepa_optimization"))],
 )
 
 

@@ -19,7 +19,7 @@ from app.core.auth.capabilities import (
 )
 from app.core.auth.rbac import require_admin
 from app.database import get_db
-from app.dependencies import get_organization_id
+from app.dependencies import get_organization_id, require_enterprise_entitlement
 from app.models.database import OrganizationMember, User, Workspace, WorkspaceMember, WorkspaceRole
 from app.models.schemas import (
     CapabilityDomainResponse,
@@ -39,7 +39,10 @@ from app.services.workspace_rbac import (
 )
 
 
-router = APIRouter(tags=["Workspace IAM"])
+router = APIRouter(
+    tags=["Workspace IAM"],
+    dependencies=[Depends(require_enterprise_entitlement())],
+)
 
 
 def _require_workspace_in_org(

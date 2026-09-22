@@ -28,7 +28,7 @@ Routing: `SHA256(workspace_id:entity_id) mod N` over configured data shards (see
 | `call_imports`, `call_import_evaluations`, `call_import_shard_slices` | Catalog |
 | `call_import_rows`, `call_import_evaluation_rows` | Data shards |
 
-Routing uses `(call_import_id, row_index // chunk_size)` — see [call-import-sharding](../docs-fumadocs/content/docs/advanced/call-import-sharding.mdx).
+Routing uses `(call_import_id, row_index // chunk_size)` — see [call-import-sharding](../docs-fumadocs/content/docs/operations/call-import-sharding.mdx).
 
 ## Operations
 

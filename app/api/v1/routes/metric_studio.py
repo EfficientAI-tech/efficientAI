@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id, get_workspace_id
+from app.dependencies import (
+    get_api_key,
+    get_organization_id,
+    get_workspace_id,
+    require_enterprise_feature,
+)
 from app.models.database import (
     Metric,
     MetricStudioRun,
@@ -28,7 +33,11 @@ from app.services.metric_studio.metric_selection import expand_studio_metric_sel
 from app.services.metric_studio.run_rollup import rollup_metric_studio_run
 from app.services.metric_studio.source_resolver import resolve_source
 
-router = APIRouter(prefix="/metric-studio", tags=["metric-studio"])
+router = APIRouter(
+    prefix="/metric-studio",
+    tags=["metric-studio"],
+    dependencies=[Depends(require_enterprise_feature("metric_studio"))],
+)
 
 
 def _serialize_run(run: MetricStudioRun) -> MetricStudioRunResponse:

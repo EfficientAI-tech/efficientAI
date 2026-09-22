@@ -1,5 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { ClipboardCopy, Check } from 'lucide-react'
+import { copyTextToClipboard } from '../../../lib/clipboard'
 
 export interface PromptHighlightRange {
   start: number
@@ -7,14 +9,50 @@ export interface PromptHighlightRange {
   excerpt: string
 }
 
+function PromptCopyButton({ content, onCopied }: { content: string; onCopied?: () => void }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    copyTextToClipboard(content, () => {
+      onCopied?.()
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      disabled={!content.trim()}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+      title="Copy prompt to clipboard"
+    >
+      {copied ? (
+        <>
+          <Check className="h-3.5 w-3.5 text-green-600" />
+          Copied
+        </>
+      ) : (
+        <>
+          <ClipboardCopy className="h-3.5 w-3.5" />
+          Copy
+        </>
+      )}
+    </button>
+  )
+}
+
 export default function AgentPromptSectionView({
   content,
   highlight,
   previewMode,
+  onCopied,
 }: {
   content: string
   highlight: PromptHighlightRange | null
   previewMode: 'preview' | 'raw'
+  onCopied?: () => void
 }) {
   const highlightRef = useRef<HTMLElement>(null)
 
@@ -26,19 +64,31 @@ export default function AgentPromptSectionView({
     return () => clearTimeout(handle)
   }, [highlight?.start, highlight?.end, previewMode])
 
+  const copyBar = (
+    <div className="sticky top-0 z-10 flex items-center justify-end border-b border-gray-100 bg-white/95 px-4 py-2 backdrop-blur-sm">
+      <PromptCopyButton content={content} onCopied={onCopied} />
+    </div>
+  )
+
   if (!highlight || highlight.start == null || highlight.end == null) {
     if (previewMode === 'preview') {
       return (
-        <div className="p-6 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700">
-          <ReactMarkdown>{content}</ReactMarkdown>
+        <div>
+          {copyBar}
+          <div className="p-6 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700">
+            <ReactMarkdown>{content}</ReactMarkdown>
+          </div>
         </div>
       )
     }
     return (
-      <div className="p-6">
-        <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
-          {content}
-        </pre>
+      <div>
+        {copyBar}
+        <div className="p-6">
+          <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
+            {content}
+          </pre>
+        </div>
       </div>
     )
   }
@@ -49,7 +99,9 @@ export default function AgentPromptSectionView({
 
   if (previewMode === 'preview') {
     return (
-      <div className="p-6 space-y-4">
+      <div>
+        {copyBar}
+        <div className="p-6 space-y-4">
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           Showing mapped prompt section. Switch to <strong>Raw</strong> for exact position in
           the full prompt.
@@ -63,22 +115,26 @@ export default function AgentPromptSectionView({
             <ReactMarkdown>{content}</ReactMarkdown>
           </div>
         </details>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="p-6">
-      <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
-        {before}
-        <mark
-          ref={highlightRef}
-          className="bg-amber-200 text-gray-900 rounded-sm px-0.5"
-        >
-          {highlighted || highlight.excerpt}
-        </mark>
-        {after}
-      </pre>
+    <div>
+      {copyBar}
+      <div className="p-6">
+        <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
+          {before}
+          <mark
+            ref={highlightRef}
+            className="bg-amber-200 text-gray-900 rounded-sm px-0.5"
+          >
+            {highlighted || highlight.excerpt}
+          </mark>
+          {after}
+        </pre>
+      </div>
     </div>
   )
 }
