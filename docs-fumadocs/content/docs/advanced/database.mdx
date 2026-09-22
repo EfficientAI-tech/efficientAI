@@ -4,7 +4,7 @@ title: Database
 sidebar_position: 1
 ---
 
-# 🗄️ Database Migrations
+# Database Migrations
 
 The application includes an automatic migration system that runs database schema changes on startup.
 
@@ -44,12 +44,12 @@ def upgrade(db):
 
 **Automatic (Recommended - Default Behavior):**
 
-- ✅ Migrations run automatically when you start the app with `eai start`
-- ✅ Migrations also run automatically when the application starts (via lifespan handler)
-- ✅ If migrations fail, the application will NOT start - this ensures database consistency
-- ✅ API requests are blocked if migrations are pending
-- ✅ When cloning from main, migrations will run automatically on first startup
-- ✅ Each migration only runs once (tracked in `schema_migrations` table)
+- Migrations run automatically when you start the app with `eai start`
+- Migrations also run automatically when the application starts (via lifespan handler)
+- If migrations fail, the application will NOT start - this ensures database consistency
+- API requests are blocked if migrations are pending
+- When cloning from main, migrations will run automatically on first startup
+- Each migration only runs once (tracked in `schema_migrations` table)
 
 **Manual:**
 
@@ -76,7 +76,7 @@ eai start --skip-migrations
 4. Use `IF NOT EXISTS` checks for idempotent operations
 5. See `migrations/README.md` for detailed documentation.
 
-# 📊 Database ER Diagram
+# Database ER Diagram
 
 Generate a visual Entity-Relationship (ER) diagram of your database schema to visualize table structures and relationships.
 

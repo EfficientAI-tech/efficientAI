@@ -99,9 +99,8 @@ Each request sends **one call** at a time. The payload is flat (not nested insid
 | `recording_url` | String | No | URL to the call recording file (WAV, MP3, etc.) — used later for audio-based evaluations |
 | `provider_platform` | String | No | Name of the voice AI platform (e.g., `"vapi"`, `"retell"`, `"custom"`). Defaults to `"external"`. |
 
-:::tip Extra Fields
-The endpoint accepts additional fields beyond those listed above. Any extra fields are automatically captured and stored in the call data, so you can forward your provider's full payload without stripping fields.
-:::
+> **Extra fields**
+> The endpoint accepts additional fields beyond those listed above. Any extra fields are automatically captured and stored in the call data, so you can forward your provider's full payload without stripping fields.
 
 ### Message Object
 
@@ -258,9 +257,8 @@ Forwarding        https://a1b2c3d4.ngrok-free.app -> http://localhost:8000
 
 Copy the `https://....ngrok-free.app` URL — this is your public webhook URL.
 
-:::info ngrok dashboard
-ngrok also starts a local inspection dashboard at `http://localhost:4040` where you can see all incoming webhook requests, replay them, and inspect payloads — useful for debugging.
-:::
+> **ngrok dashboard**
+> ngrok also starts a local inspection dashboard at `http://localhost:4040` where you can see all incoming webhook requests, replay them, and inspect payloads — useful for debugging.
 
 ### Step 5: Configure your Voice AI provider
 
@@ -282,9 +280,8 @@ Paste the appropriate URL into your provider's webhook/server-url configuration.
 
 Make a call to your Voice AI agent. You should see the webhook hit in the ngrok terminal and the call appear in the EfficientAI Calls dashboard.
 
-:::caution ngrok URL Changes
-The free tier of ngrok generates a new URL each time you restart it. If you need a stable URL, consider ngrok's paid plan with custom domains, or use a tool like [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
-:::
+> **Caution: ngrok URL changes**
+> The free tier of ngrok generates a new URL each time you restart it. If you need a stable URL, consider ngrok's paid plan with custom domains, or use a tool like [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
 ---
 

@@ -1,0 +1,115 @@
+---
+title: Enterprise
+---
+
+# Enterprise
+
+> **Enterprise quickstart**
+> - Start with: [Authentication guide](https://docs.efficientai.cloud/docs/getting-started/authentication/)
+> - Free trial: [Book a demo](https://cal.com/aadhar-singh-bhadauria/30min)
+> - Licensing: [contact@efficientai.cloud](mailto:contact@efficientai.cloud)
+
+## Who is Enterprise for?
+
+Enterprise is for teams running voice agent evaluation in production who need multi-member IAM, extended analytics, gateway routing, and operational controls beyond the open-source limits.
+
+## License model (BSL)
+
+EfficientAI open source is released under the **Business Source License (BSL)**, following the same approach as [LiteLLM](https://github.com/BerriAI/litellm) and [Bifrost](https://github.com/maximhq/bifrost):
+
+- Core evaluation workflows remain free to self-host under BSL.
+- Specific production-scale capabilities require an **Enterprise license key**.
+- After the license change date defined in the repository `LICENSE` file, covered code converts to Apache 2.0.
+
+Enterprise contracts unlock gated features for your organization (or deployment-wide when no `org_id` is set in the license payload).
+
+## Open source vs Enterprise
+
+| Capability | Open source (BSL) | Enterprise |
+|---|---|---|
+| Voice bundles and BYOK integrations | Included | ✅ Included |
+| Agents | Up to **3** agents | ✅ Unlimited |
+| Custom metrics | Up to **5** metrics | ✅ Unlimited |
+| Evaluators, suites, results | Included | ✅ Included + failure clustering |
+| Prompt partials | Included | ✅ Included |
+| GEPA / prompt optimization | **Included** | ✅ Included |
+| Agent playground | Included | ✅ Included |
+| Voice playground (blind testing) | Not included | ✅ Included |
+| Call imports (post-production analytics) | Not included | ✅ Included |
+| Metric Studio | Not included | ✅ Included |
+| Alerts | Not included | ✅ Included |
+| Usage analytics history | Last **7 days** | ✅ Unlimited |
+| Org members | **1 member** per org | ✅ Unlimited |
+| Workspaces | **1 default workspace** | ✅ Unlimited |
+| Gateway enablement (integrations) | Not included | ✅ Included |
+| Authentication | API keys + local email/password | ✅ OIDC, SAML, SCIM, MFA enforcement, audit export |
+
+## Already gated (Enterprise license required)
+
+These features are already enforced behind an Enterprise license key:
+
+| Feature ID | Capability |
+|---|---|
+| `call_imports` | Post-production call imports and batch analytics |
+| `voice_playground` | Voice Playground with blind TTS comparison |
+
+## Included in open source
+
+- Voice bundles and integrations (BYOK and platform providers)
+- Agents, personas, and scenarios (within agent cap)
+- Evaluators, evaluator suites, and evaluation results
+- Metrics and categorisation labels (within metric cap)
+- Prompt partials, GEPA / prompt optimization, and agent playground
+- Traces, observability, and judge alignment
+- API key and local password authentication
+
+## Set up a license
+
+Provide the Enterprise license key in environment variables or config:
+
+```bash title=".env"
+EFFICIENTAI_LICENSE=eyJhbGciOi...
+```
+
+```yaml title="config.yml"
+license:
+  key: "eyJhbGciOi..."
+```
+
+Restart the EfficientAI backend after updating the license.
+
+License scope behavior:
+
+- If `org_id` is not set in the license payload, features are enabled deployment-wide.
+- If `org_id` is set, features are enabled only for that organization.
+
+Verify current state:
+
+- `GET /api/v1/license-info`
+
+## FAQ
+
+### What happens without a license?
+
+Feature-gated routes return `403` with `enterprise_feature_required` or `enterprise_license_required`. Open-source limits (agents, metrics, IAM, usage history) apply automatically.
+
+### What is the OSS usage analytics limit?
+
+Open-source deployments retain a **7-day** usage analytics history.
+
+### Is GEPA / prompt optimization Enterprise-only?
+
+No. GEPA / prompt optimization is included in the open-source BSL distribution.
+
+### How do I verify whether my org is licensed?
+
+Check `GET /api/v1/license-info` and confirm `enabled_features` is populated for your organization.
+
+### Where do I configure authentication modes?
+
+See [Authentication guide](https://docs.efficientai.cloud/docs/getting-started/authentication/) and [Configuration reference](/docs/reference/configuration/).
+
+## Talk to us
+
+- Sales and licensing: [contact@efficientai.cloud](mailto:contact@efficientai.cloud)
+- Book a demo: [cal.com/aadhar-singh-bhadauria/30min](https://cal.com/aadhar-singh-bhadauria/30min)

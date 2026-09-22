@@ -5,8 +5,12 @@ export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
       title: <Logo />,
-      url: '/docs/intro/',
+      url: '/docs/quickstart/',
     },
-    themeSwitch: { enabled: false },
+    links: [],
+    themeSwitch: {
+      enabled: true,
+      mode: 'light-dark',
+    },
   };
 }

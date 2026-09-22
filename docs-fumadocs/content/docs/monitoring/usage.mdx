@@ -80,18 +80,6 @@ Filters narrow the summary cards and drill-down table. All filter state is store
 
 Click rows in the breakdown table to drill deeper. Breadcrumbs at the top show your current path; click a breadcrumb to go back up.
 
-```mermaid
-flowchart TD
-  Org[Organization] --> Workspace[Workspace]
-  Workspace --> Composite[Call imports and product areas]
-  Composite --> CallImport[Call import batch]
-  CallImport --> EvalRun[Evaluation run]
-  EvalRun --> Model[Model]
-  Model --> Kind[Usage kind]
-  Composite --> ProductSection[Product section]
-  ProductSection --> Model
-```
-
 At the organization level, the table groups by **workspace**. Inside a workspace you see a composite view:
 
 - **Call import batches** — CSV uploads or manual audio recordings

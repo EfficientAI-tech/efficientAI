@@ -1,0 +1,71 @@
+---
+title: Scenario
+icon: Route
+description: What a scenario is, how it shapes a simulated call, and how to configure one.
+---
+
+# Scenario
+
+## What a scenario is
+
+A **scenario** defines the goal and context for a conversation test. Where a
+[persona](/docs/platform/persona/) says *who* is calling, the scenario says *why* they are
+calling and what a good outcome looks like.
+
+The scenario feeds two places at once: it shapes the simulation prompt that drives the caller,
+and its `required_info` gives the metric engine concrete expectations to validate against. That
+is what keeps scoring consistent across repeated runs while the conversation itself still flows
+naturally.
+
+## Configure a scenario
+
+### Creation paths
+
+- Generate from agent prompt
+- Generate from call data
+- Create manually
+
+### Scenario structure
+
+| Field | Description |
+|---|---|
+| `name` | Scenario title. |
+| `description` | Conversation intent, flow, and success expectation. |
+| `required_info` | Structured key/value expectations for validation. |
+| `agent_id` | Optional linked agent for context and filtering. |
+
+### Recommended flow
+
+1. Write or generate scenario descriptions.
+2. Add required success information where needed.
+3. Link scenarios to target agents.
+4. Use scenarios in [evaluation suites](/docs/platform/evaluation-suite/).
+
+See also: [How It Works](/docs/platform/) for how scenarios expand into run combinations.
+
+## How to create a scenario
+
+1. Go to **Simulations > Scenarios**.
+2. Click **Create Scenario** on the top-right.
+
+![Creating a scenario](/screenshots/Scenario/creating-scenarios.png)
+
+EfficientAI supports three creation paths:
+
+### A) Generate from test agent
+
+1. Select the target agent.
+2. Choose how many scenarios to generate.
+3. Select AI provider.
+4. Select model.
+5. Click **Generate**.
+
+### B) Generate from calls
+
+This path is currently in beta.
+
+### C) Generate manually
+
+1. Enter scenario name.
+2. Link the scenario to an agent.
+3. Enter manual description or paste the agent prompt.

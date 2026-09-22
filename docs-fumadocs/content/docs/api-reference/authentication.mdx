@@ -1,0 +1,38 @@
+---
+title: Authentication Guide
+description: How to authenticate requests against EfficientAI API endpoints.
+---
+
+# Authentication Guide
+
+EfficientAI accepts either bearer tokens or organization API keys on most authenticated endpoints.
+
+## Header options
+
+- `Authorization: Bearer <token>`
+- `X-API-Key: <api-key>`
+- Optional workspace scoping: `X-Workspace-Id: <workspace-uuid>`
+
+## Bearer token flow
+
+1. Create a session with `POST /api/v1/auth/login`.
+2. Use the returned access token in `Authorization` for subsequent requests.
+3. Refresh with `POST /api/v1/auth/refresh` when required.
+
+## API key flow
+
+1. Authenticate once with bearer credentials.
+2. Generate a key using `POST /api/v1/auth/generate-key`.
+3. Send that key in `X-API-Key` for service-to-service usage.
+
+## Public endpoints
+
+These routes are intentionally unauthenticated:
+
+- `GET /api/v1/auth/config`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/signup`
+- `POST /api/v1/auth/refresh`
+- `GET /api/v1/auth/invitations/preview/{token}`
+
+All other pages in this API Reference assume authenticated access unless explicitly marked otherwise.
