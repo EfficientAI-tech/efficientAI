@@ -33,11 +33,13 @@ Typical flow:
 4. Poll provider call details (status, transcript, audio).
 5. Create evaluator result and run metrics.
 
-Pipeline timing (Listen / Think / Speak) for Test Agent calls appears under **Calls → Traces** when OTLP is enabled. See [Call Traces](/docs/monitoring/call-traces/).
+Provider timing on these runs comes from the voice platform, not the **Calls → Traces** pipeline view. See [Traces and Logs](/docs/platform/traces-and-logs/).
 
 ### Test Agent mode
 
 Uses the internal EfficientAI voice path with your configured voice bundle. This is useful for controlled comparisons of STT, LLM, and TTS choices.
+
+When pipeline tracing is enabled for your deployment, **Listen / Think / Speak** appears on the Playground result → **Call details** → **Pipeline**.
 
 ## Prerequisites
 

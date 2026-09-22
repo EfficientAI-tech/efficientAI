@@ -56,8 +56,8 @@ Dollar cost from OTLP spans (cost comes from provider `call_data`). Enterprise-s
 | `?obs={call_short_id}` | Webhook call drawer |
 | `?result={evaluator_result_id}` | Evaluator call drawer |
 
-:::caution Playground isolation
-Playground recordings (`source=playground`) are **not** listed in the production Calls hub. Only webhook production calls and OTLP traces appear there.
+:::caution Where to look in the UI
+**Calls → Traces** — deployed agent pipeline traces and phone evaluation traces. **Calls → Calls** — production webhook ingest. **Playground** test runs — result page → **Call details** → **Pipeline**. Overview: [Traces and Logs](/docs/platform/traces-and-logs/).
 :::
 
 ---
