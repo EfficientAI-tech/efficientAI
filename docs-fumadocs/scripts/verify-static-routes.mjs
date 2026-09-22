@@ -23,7 +23,16 @@ function walkDocs(dir) {
 }
 
 function expectedOutPath(slug) {
-  return path.join(outRoot, 'docs', slug, 'index.html');
+  const segments = slug
+    .split('/')
+    .filter(Boolean)
+    .filter((segment) => !/^\(.*\)$/.test(segment));
+
+  if (segments[segments.length - 1] === 'index') {
+    segments.pop();
+  }
+
+  return path.join(outRoot, 'docs', ...segments, 'index.html');
 }
 
 if (!fs.existsSync(outRoot)) {

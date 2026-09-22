@@ -1,0 +1,85 @@
+---
+title: Persona
+icon: UserRound
+description: What a persona is, why voice mapping is pinned, and how to configure one.
+---
+
+# Persona
+
+## What a persona is
+
+A **persona** is the simulated caller on the other end of the line. It combines caller behavior
+instructions with a concrete voice identity, so the agent under test hears a realistic and —
+crucially — repeatable caller on every run.
+
+A persona controls speaking style and intent, response timing and turn behavior, and the LLM
+settings used to drive the simulation. Pair it with a [scenario](/docs/platform/scenario/) to
+say *why* this caller is calling.
+
+## Why the voice mapping is pinned
+
+Every persona is bound to a specific provider voice rather than "any female voice":
+
+- `tts_provider`
+- `tts_voice_id`
+- `tts_voice_name`
+- `gender`
+
+Audio characteristics change acoustic and voice-quality scores. Pinning the voice means that
+when a score moves between runs, the cause is the change you made — a prompt revision, a model
+swap, an evaluator update — and not a different voice on the caller side. You can use built-in
+provider voices or custom catalog voices from your organization.
+
+## Configure a persona
+
+### What you configure
+
+- Persona profile and description
+- Voice provider and voice mapping
+- Simulation controls (temperature, delay, max turns, interruption behavior)
+
+### Recommended flow
+
+1. Create the persona profile.
+2. Select the provider voice.
+3. Tune behavior controls for realism.
+4. Reuse the persona across [evaluation suites](/docs/platform/evaluation-suite/).
+
+Reuse matters: a small, stable library of personas gives you a consistent baseline to compare
+against over months, instead of a new caller definition for every test.
+
+See also: [How It Works](/docs/platform/) for how personas combine with scenarios into runs.
+
+## How to create a persona
+
+1. Go to **Simulations > Personas**.
+2. Click **Create Persona** on the top-right.
+
+![Creating a persona](/screenshots/Persona/Persona_Page.png)
+
+Then complete:
+
+- Persona name
+- Target agent mapping (the persona is tied to a specific agent)
+- Optional **Generate agent prompt** for a faster first draft
+
+![Persona prompt generation](/screenshots/Persona/Persona_prompt.png)
+
+### Voice section
+
+Select the voice configuration for the persona. Example:
+
+- Provider: ElevenLabs
+- Model/voice: Rachel
+- Gender: female
+
+If voice providers are not configured yet, see [Integrations](/docs/integrations/).
+
+![Persona voice selection](/screenshots/Persona/Persona_voice.png)
+
+### TTS and behavior controls
+
+Tune TTS settings and behavior settings as needed. Recommended default is to keep these unchanged unless you have a clear reason to modify them.
+
+![Persona TTS settings](/screenshots/Persona/Persona_TTS.png)
+![Persona behavior settings](/screenshots/Persona/Persona_behaviour.png)

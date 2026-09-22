@@ -24,8 +24,6 @@ From the switcher you can:
 - Switch to another workspace in your organization
 - Create a new workspace (display name + slug)
 
-![Create workspace modal](/screenshots/create_workspace.png)
-
 When creating a workspace, you set a display name and optional slug. You are added automatically as **Workspace Admin**; you can optionally invite org members and assign each a workspace role (Viewer, Editor, or Workspace Admin) before saving.
 
 When you switch workspaces, all data views refetch automatically so you never see stale rows from the previous workspace.
@@ -49,22 +47,6 @@ EfficientAI uses **two independent permission layers**. Both apply on every requ
 
 A user must satisfy **both** layers to perform an action. Your organization role controls whether you can write **anywhere** in the org; your workspace role controls what you can do **inside the active workspace**.
 
-```mermaid
-flowchart TD
-    request[API request with X-Workspace-Id]
-    orgCheck{Org role}
-    wsCheck{Workspace capabilities}
-    allow[Action succeeds]
-    denyOrg["403: org reader cannot mutate"]
-    denyWs["403: insufficient workspace role"]
-
-    request --> orgCheck
-    orgCheck -->|reader + POST/PATCH/DELETE| denyOrg
-    orgCheck -->|writer or admin| wsCheck
-    wsCheck -->|capability present| allow
-    wsCheck -->|capability missing| denyWs
-```
-
 ### Organization roles
 
 | Role | Scope | Typical use |
@@ -73,11 +55,15 @@ flowchart TD
 | **Writer** | Create, update, and delete most org resources | Engineers and operators doing day-to-day work |
 | **Admin** | Everything a writer can do, plus user/team management, API keys, and org settings | Org owners and IT admins |
 
-:::info Org readers are always read-only
-If your organization role is **Reader**, every mutating API call (`POST`, `PATCH`, `DELETE`) is blocked — even if you hold **Workspace Admin** in a workspace. Workspace roles cannot override an org-level read-only membership.
-:::
+> **Org readers are always read-only**
+> If your organization role is **Reader**, every mutating API call (`POST`, `PATCH`, `DELETE`) is blocked — even if you hold **Workspace Admin** in a workspace. Workspace roles cannot override an org-level read-only membership.
 
-Org admins **bypass workspace membership checks** and receive all workspace capabilities in every workspace. API keys also bypass workspace RBAC (they remain org-scoped).
+Org admins **bypass workspace membership checks** and receive all workspace capabilities in every workspace.
+
+**API keys** behave differently depending on whether they are linked to a user:
+
+- **User-bound keys** (created while signed in) carry the linked user's organization role, workspace memberships, and capabilities. They are subject to the same RBAC rules as that user's session.
+- **Unbound keys** (legacy keys with no linked user) bypass workspace membership and capability checks and receive full workspace access within the key's organization. Prefer user-bound keys for least-privilege automation.
 
 Manage organization roles from **Settings → Team** (admin only). See [Authentication — Team management](/docs/getting-started/authentication/#team-management-invitations--organizations).
 
@@ -141,8 +127,6 @@ Org admins should review **IAM → Workspace Members** after creating workspaces
 1. Open **Identity & Access Management** in the sidebar.
 2. Go to **Workspace Members**, select a workspace, and assign roles to org members.
 3. Org admins can define custom roles under **Workspace Roles**.
-
-![IAM Workspace Members](/screenshots/iam_workspaces.png)
 
 The workspace dropdown shows your current role in the selected workspace (for example, **Viewer**). Use the members table to review who has access and change roles — if you hold **Workspace Admin** in that workspace and are an org Writer or Admin.
 

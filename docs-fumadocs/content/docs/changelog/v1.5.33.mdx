@@ -1,0 +1,48 @@
+---
+title: v1.5.33
+description: Release notes for v1.5.33.
+---
+
+# v1.5.33
+
+Released Sep 17, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.33).
+
+Primary pull request: [#124](https://github.com/EfficientAI-tech/efficientAI/pull/124) by [@MSami625](https://github.com/MSami625).
+
+## What changed
+
+Security remediation from the  audit, cherry-picked onto `main` (replaces the old `security-patches` branch):
+
+- **Auth:** httpOnly cookie sessions (`eai_access` / `eai_refresh` / `eai_csrf`), CSRF middleware, session epoch invalidation on password change, strong `SECRET_KEY` enforcement when `debug: false`
+- **API hardening:** SSRF checks on recording/audio URLs, reader RBAC query-token bypass fix, abuse-only rate limits on auth/resource creates, LLM config sanitization
+- **Headers:** TrustedHost + HSTS support
+- **Frontend:** Cookie-session bootstrap, silent refresh, CSRF on axios + Pipecat voice-agent connect, profile/password UX fixes
+- **Fixes:** Duplicate invite → 409, wrong password → 400, expanded recording URL allowlist (incl. R2), App.tsx route cleanup
+
+## Why
+
+The audit flagged token exposure in `localStorage`, missing CSRF protection, SSRF via recording URLs, weak session invalidation, and several auth/RBAC gaps. Cookie-based sessions with double-submit CSRF address browser auth without storing tokens in JS-accessible storage, while SSRF allowlists and outbound URL validation block server-side fetch abuse. Cherry-picking onto `main` keeps the PR focused (~6 commits) instead of the prior branch that included unrelated otel work.
+
+## How to test
+
+1. **Migrate:** `eai migrate` (confirms `086_user_session_epoch`)
+2. **Config:** ensure `auth.local_password.cookie_session.enabled: true` and `security.trusted_hosts` includes `localhost`
+3. **Login:** sign in → DevTools cookies show `eai_access`, `eai_refresh`, `eai_csrf` → refresh page stays logged in
+4. **Voice call:** Agent Playground → start test call → should connect (no CSRF 403)
+5. **Password:** Profile → wrong current password → error toast, **not** logged out; correct change → redirected to login
+6. **Invite:** IAM → invite same email twice → toast: *"An invitation is already pending for this email"*
+7. **Recording:** play audio on a call with R2/Cloudflare URL → no allowlist error
+8. **Tests:**
+   ```bash
+   .venv/bin/pytest tests/test_core/test_auth_cookies.py \
+     tests/test_security_remediation.py tests/test_api/test_security_rbac.py \
+     tests/test_services/test_telephony/test_recording_download.py -v
+   cd frontend && npm run build
+   ```
+
+**Deploy note:** production needs `debug: false`, strong `secret_key`, `cookie_session.secure: true`, `trusted_hosts`, and `hsts_enabled: true`.
+
+## Contributors
+
+- [@MSami625](https://github.com/MSami625)
+

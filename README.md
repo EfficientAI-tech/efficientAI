@@ -13,7 +13,7 @@ Test quality, measure performance, & ship with confidence.
 
 <img src="./assets/Readme%20logo.gif" alt="EfficientAI Demo" width="800">
 
- [📅 Book a Demo](https://cal.com/aadhar-singh-bhadauria/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
+ [📅 Book a Demo](https://cal.com/aadhar-singh-bhadauria/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI) • [💬 Discord](https://discord.gg/Saz9b2NA7)
 
 ⭐ If this saves you time, please consider starring the repo — it helps us a lot.
 
@@ -977,6 +977,7 @@ See `CONTRIBUTING.md` for PR format, review expectations, and release label conv
 - 💬 **LinkedIn**: [Connect with us](https://www.linkedin.com/company/efficientaicloud)
 - 🐦 **X (Twitter)**: [Follow us](https://x.com/AiEfficient)
 - 💻 **GitHub**: [View on GitHub](https://github.com/EfficientAI-tech/efficientAI)
+- 💬 **Discord**: [Join our community](https://discord.gg/Saz9b2NA7)
 
 ---
 

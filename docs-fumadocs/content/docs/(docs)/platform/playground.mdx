@@ -1,0 +1,84 @@
+---
+title: Playground
+icon: Gamepad2
+description: Manually test test-agent and voice-agent connectivity before running simulations.
+---
+
+# Playground
+
+Agent Playground is a real-time environment to validate connectivity before running larger simulated evaluations.
+
+## What it does
+
+From one place, you can:
+
+- Start live tests
+- Monitor call/test status
+- Inspect transcripts and recordings
+- Compare test-agent and voice-agent behavior
+
+## Test modes
+
+### Voice AI Agent mode
+
+Uses external provider configuration and runs a live web call against your provider-side agent.
+
+Supported providers commonly include Retell, Vapi, and ElevenLabs.
+
+Typical flow:
+
+1. Create a web call with the selected agent.
+2. Connect through provider session/client.
+3. Store call recording metadata.
+4. Poll provider call details (status, transcript, audio).
+5. Create evaluator result and run metrics.
+
+### Test Agent mode
+
+Uses the internal EfficientAI voice path with your configured voice bundle. This is useful for controlled comparisons of STT, LLM, and TTS choices.
+
+## Prerequisites
+
+For external live web-call testing:
+
+- `call_medium: web_call`
+- `voice_ai_integration_id` configured
+- `voice_ai_agent_id` configured
+
+For richer playback/storage workflows, ensure storage is configured in [Setup](/docs/platform/setup/).
+
+## How to test in Agent Playground
+
+Agent Playground lets you test either the EfficientAI test agent or your own voice AI agent.
+
+### Test the EfficientAI test agent
+
+Method 1:
+
+1. Go to **Simulations > Agents**.
+2. Click **Test Agent**.
+3. Start speaking with the EfficientAI test agent.
+
+Method 2:
+
+1. Go to **Playground > Agent Playground**.
+2. Click **Test Agent**.
+3. Start speaking with the EfficientAI test agent.
+
+![Playground test agent flow](/screenshots/Playground/Playground_testagent.png)
+
+### Test your voice AI agent
+
+Method 1:
+
+1. Go to **Simulations > Agents**.
+2. Click **Voice Agent**.
+3. Start speaking with your voice AI agent.
+
+Method 2:
+
+1. Go to **Playground > Agent Playground**.
+2. Click **Voice Agent**.
+3. Start speaking with your voice AI agent.
+
+![Playground voice agent flow](/screenshots/Playground/Agent_voiceAI.png)

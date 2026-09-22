@@ -1,0 +1,41 @@
+---
+title: API Reference
+description: REST API reference for EfficientAI platform integrations.
+---
+
+# API Reference
+
+This section documents the public EfficientAI platform API surface under `/api/v1/`.
+
+## Base URL
+
+- Self-hosted default: `http://localhost:8000`
+- Runtime override: set `DOCS_API_URL` while generating docs.
+
+## Authentication
+
+Most endpoints accept either:
+
+- `Authorization: Bearer <token>`
+- `X-API-Key: <api-key>`
+
+Optional workspace scoping header:
+
+- `X-Workspace-Id: <workspace-uuid>`
+
+See [Authentication Guide](/docs/api-reference/authentication/).
+
+## Versioning
+
+All documented REST endpoints are versioned under `/api/v1/`.
+
+## Endpoint groups
+
+Use the left sidebar to browse generated operation pages by functional area:
+
+- Agents, Personas, Scenarios
+- Evaluators, Suites, Metrics, Results
+- Integrations, Voice Bundles, AI Providers
+- Observability, Call Imports, Workspaces
+
+See [Error Model](/docs/api-reference/errors/) for error envelope conventions.

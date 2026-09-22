@@ -1,0 +1,37 @@
+---
+title: Error Model
+description: Common HTTP status and error envelope conventions in EfficientAI APIs.
+---
+
+# Error Model
+
+EfficientAI endpoints return standard HTTP status codes and JSON error payloads.
+
+## Common status codes
+
+- `400` invalid request payload or unsupported parameter.
+- `401` invalid or missing authentication credentials.
+- `403` authenticated but not authorized for the requested scope.
+- `404` resource does not exist in the current workspace context.
+- `409` conflict state (duplicate or invalid transition).
+- `422` validation errors (schema or business-rule failures).
+- `500` unexpected server-side failure.
+
+## Typical error payload
+
+Most route handlers return an HTTP exception style envelope with a `detail` field:
+
+```json
+{
+  "detail": "Human-readable error message"
+}
+```
+
+Some endpoints can return richer validation payloads (for example `422` with field-level details).
+
+## Troubleshooting checklist
+
+- Verify `Authorization` or `X-API-Key` is present.
+- Confirm `X-Workspace-Id` matches an accessible workspace when supplied.
+- Ensure request body fields and enum values match the schema shown on each endpoint page.
+- Retry idempotent operations only after transient `5xx` failures.
