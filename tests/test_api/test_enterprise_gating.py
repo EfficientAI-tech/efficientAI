@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import pytest
 
-import app.dependencies as app_dependencies
 from app.core import license as license_module
 
 
 @pytest.fixture
-def unlicensed_client(authenticated_client):
+def unlicensed_client(authenticated_client, monkeypatch):
     """Authenticated client with real license checks and no enterprise JWT."""
+    import app.dependencies as app_dependencies
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "EFFICIENTAI_LICENSE", None, raising=False)
+    monkeypatch.delenv("EFFICIENTAI_LICENSE", raising=False)
     license_module.reset_license_cache()
-    license_module._license_cache = {}
-    app_dependencies.is_feature_enabled = license_module.is_feature_enabled
+    # conftest._build_session_api_app() stubs app.dependencies.is_feature_enabled;
+    # require_enterprise_feature() resolves that name at call time.
+    monkeypatch.setattr(
+        app_dependencies,
+        "is_feature_enabled",
+        license_module.is_feature_enabled,
+    )
+
     yield authenticated_client
-    app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True
+
     license_module.reset_license_cache()
 
 
