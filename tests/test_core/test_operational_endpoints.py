@@ -188,11 +188,7 @@ def test_docs_not_registered_when_debug_disabled(monkeypatch):
 
     monkeypatch.setattr(settings, "DEBUG", False)
     monkeypatch.setattr(settings, "SECRET_KEY", "test-operational-secret-key-32chars")
-    monkeypatch.setattr(
-        settings,
-        "TRUSTED_HOSTS",
-        ["testserver", "localhost", "127.0.0.1"],
-    )
+    _allow_testserver_hosts(monkeypatch)
     app = create_app()
     route_paths = {getattr(route, "path", None) for route in app.routes}
 
@@ -225,6 +221,17 @@ def _stub_create_app_startup(monkeypatch) -> None:
     monkeypatch.setattr("app.app_factory.check_migrations_status", lambda: (True, []))
 
 
+def _allow_testserver_hosts(monkeypatch) -> None:
+    """finalize_security_settings() rebuilds TRUSTED_HOSTS; pin testserver for TestClient."""
+    monkeypatch.setattr(settings, "TRUSTED_HOSTS_AUTO_FROM_FRONTEND", False)
+    monkeypatch.setattr(
+        settings,
+        "TRUSTED_HOSTS_FROM_ENV",
+        ["testserver", "localhost", "127.0.0.1"],
+    )
+    monkeypatch.setattr(settings, "TRUSTED_HOSTS_EXPLICIT", [])
+
+
 def test_health_detail_returns_migration_info_for_admin(monkeypatch):
     _stub_create_app_startup(monkeypatch)
     monkeypatch.setitem(
@@ -254,11 +261,7 @@ def test_health_detail_returns_migration_info_for_admin(monkeypatch):
     from app.core.auth.rbac import require_admin
     from app.main import create_app
 
-    monkeypatch.setattr(
-        settings,
-        "TRUSTED_HOSTS",
-        ["testserver", "localhost", "127.0.0.1"],
-    )
+    _allow_testserver_hosts(monkeypatch)
     app = create_app()
     app.dependency_overrides[require_admin] = lambda: object()
 
@@ -284,11 +287,7 @@ def test_health_detail_requires_authentication_via_create_app(monkeypatch):
 
     from app.main import create_app
 
-    monkeypatch.setattr(
-        settings,
-        "TRUSTED_HOSTS",
-        ["testserver", "localhost", "127.0.0.1"],
-    )
+    _allow_testserver_hosts(monkeypatch)
     with TestClient(create_app()) as client:
         response = client.get("/health/detail")
 

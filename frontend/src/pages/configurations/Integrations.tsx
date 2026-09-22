@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import type { TelephonyIntegrationResponse } from '../../lib/api'
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star, Network } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, AIProviderUpdate, ModelProvider, TelephonyProvider, CredentialRoutingMode, GatewayInterfaceMode } from '../../types/api'
@@ -21,6 +21,7 @@ import {
   getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import { useLicenseStore } from '../../store/licenseStore'
 import AIProviderEnabledModelsStep from './AIProviderEnabledModelsStep'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
@@ -44,6 +45,10 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
 export default function Integrations() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const gatewayRoutingAllowed = useLicenseStore((s) => s.gatewayRoutingAllowed)
+  const licenseLoaded = useLicenseStore((s) => s.isLoaded)
+  const defaultCredentialRouting = (): CredentialRoutingMode =>
+    gatewayRoutingAllowed ? 'inherit' : 'direct'
   const [showModal, setShowModal] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
   const [integrationType, setIntegrationType] = useState<IntegrationType>(null)
@@ -57,7 +62,10 @@ export default function Integrations() {
   const [publicKey, setPublicKey] = useState('')
   const [name, setName] = useState('')
   const [azureEndpointUrl, setAzureEndpointUrl] = useState('')
-  const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('inherit')
+  const [credentialRoutingMode, setCredentialRoutingMode] = useState<CredentialRoutingMode>('direct')
+  const effectiveCredentialRoutingMode: CredentialRoutingMode = gatewayRoutingAllowed
+    ? credentialRoutingMode
+    : 'direct'
   const [gatewayModel, setGatewayModel] = useState('')
   const [gatewayInterface, setGatewayInterface] = useState<GatewayInterfaceMode>('inherit')
   const [gatewayBaseUrl, setGatewayBaseUrl] = useState('')
@@ -203,16 +211,32 @@ export default function Integrations() {
     String(activeAIProvider || '').toLowerCase() === ModelProvider.CUSTOM
   const aiProviderUsesModelsStep = integrationType === 'ai_provider' && !isCustomAIProvider
   const showGatewayModelField =
+    gatewayRoutingAllowed &&
     integrationType === 'ai_provider' &&
     (isCustomAIProvider ||
       credentialRoutingMode === 'gateway' ||
       (credentialRoutingMode === 'inherit' &&
         llmGatewaySettings?.effective_routing &&
         llmGatewaySettings.effective_routing !== 'direct'))
-  const showGatewayOptionalApiKeyUi = isCustomAIProvider
+  const showGatewayOptionalApiKeyUi = isCustomAIProvider && gatewayRoutingAllowed
   const aiProviderRequiresApiKey = isCustomAIProvider
-    ? credentialRoutingMode === 'direct'
+    ? !gatewayRoutingAllowed || credentialRoutingMode === 'direct'
     : !isEditMode
+
+  useEffect(() => {
+    if (!gatewayRoutingAllowed && credentialRoutingMode !== 'direct') {
+      setCredentialRoutingMode('direct')
+    }
+  }, [gatewayRoutingAllowed, credentialRoutingMode])
+
+  useEffect(() => {
+    if (
+      !gatewayRoutingAllowed &&
+      selectedProvider === ModelProvider.CUSTOM
+    ) {
+      setSelectedProvider(null)
+    }
+  }, [gatewayRoutingAllowed, selectedProvider])
 
   const showLlmGatewayConfigOptions = llmGatewayMode !== 'disabled'
 
@@ -379,16 +403,26 @@ export default function Integrations() {
     return () => { document.removeEventListener('mousedown', handleClickOutside) }
   }, [showProviderDropdown, showPlatformDropdown])
 
-  const resetForm = () => {
-    setShowModal(false); setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
+  const resetFormFields = () => {
+    setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
     setApiKey(''); setPublicKey(''); setName(''); setAzureEndpointUrl('')
-    setCredentialRoutingMode('inherit'); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
+    setCredentialRoutingMode(defaultCredentialRouting()); setGatewayModel(''); setGatewayInterface('inherit'); setGatewayBaseUrl('')
     setGatewayAuthHeader(''); setGatewayAuthSecretEnv(''); setGatewayAuthSecret(''); setClearGatewayAuthSecret(false)
     setGatewayExtraHeadersJson('')
     setAiProviderWizardStep(1); setEnabledModels([])
     setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonyVoiceAppId(''); setTelephonySipDomain('')
     setEditingTelephonyConfigId(null); setTelephonyName('')
+  }
+
+  const resetForm = () => {
+    resetFormFields()
+    setShowModal(false)
+  }
+
+  const openAddIntegrationModal = () => {
+    resetFormFields()
+    setShowModal(true)
   }
 
   const handleEdit = (integration: Integration) => {
@@ -405,7 +439,8 @@ export default function Integrations() {
 
   const handleEditAIProvider = (provider: AIProvider) => {
     setIntegrationType('ai_provider'); setSelectedAIProvider(provider); setSelectedProvider(provider.provider)
-    setName(provider.name || ''); setApiKey(''); setCredentialRoutingMode(provider.routing_mode || 'inherit')
+    setName(provider.name || ''); setApiKey('')
+    setCredentialRoutingMode(provider.routing_mode || 'inherit')
     setAzureEndpointUrl(provider.endpoint_url || '')
     setGatewayModel(provider.gateway_model || ''); setGatewayInterface(provider.gateway_interface || 'inherit')
     setGatewayBaseUrl(provider.gateway_base_url || ''); setGatewayAuthHeader(provider.gateway_auth_header || '')
@@ -436,8 +471,11 @@ export default function Integrations() {
         if (name !== (selectedIntegration.name || '')) updateData.name = name || undefined
         if (apiKey) updateData.api_key = apiKey
         if (publicKey !== (selectedIntegration.public_key || '')) updateData.public_key = publicKey || undefined
-        if (credentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')) {
-          updateData.routing_mode = credentialRoutingMode
+        if (
+          gatewayRoutingAllowed &&
+          effectiveCredentialRoutingMode !== (selectedIntegration.routing_mode || 'inherit')
+        ) {
+          updateData.routing_mode = effectiveCredentialRoutingMode
         }
         if (Object.keys(updateData).length > 0) updateIntegrationMutation.mutate({ id: selectedIntegration.id, data: updateData })
         else resetForm()
@@ -448,7 +486,7 @@ export default function Integrations() {
           api_key: apiKey,
           public_key: publicKey || undefined,
           name: name || undefined,
-          routing_mode: credentialRoutingMode,
+          routing_mode: effectiveCredentialRoutingMode,
         })
       }
     } else if (integrationType === 'ai_provider') {
@@ -491,38 +529,43 @@ export default function Integrations() {
         if (trimmedAzureEndpointUrl !== (selectedAIProvider.endpoint_url || '')) {
           updateData.endpoint_url = trimmedAzureEndpointUrl || null
         }
-        if (credentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')) {
-          updateData.routing_mode = credentialRoutingMode
+        if (
+          gatewayRoutingAllowed &&
+          effectiveCredentialRoutingMode !== (selectedAIProvider.routing_mode || 'inherit')
+        ) {
+          updateData.routing_mode = effectiveCredentialRoutingMode
         }
-        const trimmedGatewayModel = gatewayModel.trim()
-        if (trimmedGatewayModel !== (selectedAIProvider.gateway_model || '')) {
-          updateData.gateway_model = trimmedGatewayModel || null
-        }
-        if (gatewayInterface !== (selectedAIProvider.gateway_interface || 'inherit')) {
-          updateData.gateway_interface = gatewayInterface
-        }
-        const trimmedGatewayBaseUrl = gatewayBaseUrl.trim()
-        if (trimmedGatewayBaseUrl !== (selectedAIProvider.gateway_base_url || '')) {
-          updateData.gateway_base_url = trimmedGatewayBaseUrl || null
-        }
-        const trimmedGatewayAuthHeader = gatewayAuthHeader.trim()
-        if (trimmedGatewayAuthHeader !== (selectedAIProvider.gateway_auth_header || '')) {
-          updateData.gateway_auth_header = trimmedGatewayAuthHeader || null
-        }
-        const trimmedGatewayAuthSecretEnv = gatewayAuthSecretEnv.trim()
-        if (trimmedGatewayAuthSecretEnv !== (selectedAIProvider.gateway_auth_secret_env || '')) {
-          updateData.gateway_auth_secret_env = trimmedGatewayAuthSecretEnv || null
-        }
-        if (clearGatewayAuthSecret) {
-          updateData.clear_gateway_auth_secret = true
-        } else if (gatewayAuthSecret.trim()) {
-          updateData.gateway_auth_secret = gatewayAuthSecret.trim()
-        }
-        const existingExtraHeadersJson = formatGatewayExtraHeadersJson(
-          selectedAIProvider.gateway_extra_headers,
-        )
-        if (gatewayExtraHeadersJson.trim() !== existingExtraHeadersJson.trim()) {
-          updateData.gateway_extra_headers = parsedGatewayExtraHeaders
+        if (gatewayRoutingAllowed) {
+          const trimmedGatewayModel = gatewayModel.trim()
+          if (trimmedGatewayModel !== (selectedAIProvider.gateway_model || '')) {
+            updateData.gateway_model = trimmedGatewayModel || null
+          }
+          if (gatewayInterface !== (selectedAIProvider.gateway_interface || 'inherit')) {
+            updateData.gateway_interface = gatewayInterface
+          }
+          const trimmedGatewayBaseUrl = gatewayBaseUrl.trim()
+          if (trimmedGatewayBaseUrl !== (selectedAIProvider.gateway_base_url || '')) {
+            updateData.gateway_base_url = trimmedGatewayBaseUrl || null
+          }
+          const trimmedGatewayAuthHeader = gatewayAuthHeader.trim()
+          if (trimmedGatewayAuthHeader !== (selectedAIProvider.gateway_auth_header || '')) {
+            updateData.gateway_auth_header = trimmedGatewayAuthHeader || null
+          }
+          const trimmedGatewayAuthSecretEnv = gatewayAuthSecretEnv.trim()
+          if (trimmedGatewayAuthSecretEnv !== (selectedAIProvider.gateway_auth_secret_env || '')) {
+            updateData.gateway_auth_secret_env = trimmedGatewayAuthSecretEnv || null
+          }
+          if (clearGatewayAuthSecret) {
+            updateData.clear_gateway_auth_secret = true
+          } else if (gatewayAuthSecret.trim()) {
+            updateData.gateway_auth_secret = gatewayAuthSecret.trim()
+          }
+          const existingExtraHeadersJson = formatGatewayExtraHeadersJson(
+            selectedAIProvider.gateway_extra_headers,
+          )
+          if (gatewayExtraHeadersJson.trim() !== existingExtraHeadersJson.trim()) {
+            updateData.gateway_extra_headers = parsedGatewayExtraHeaders
+          }
         }
         updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
       } else {
@@ -542,15 +585,19 @@ export default function Integrations() {
           provider: selectedProvider,
           api_key: apiKey.trim() || undefined,
           name: name || null,
-          routing_mode: credentialRoutingMode,
+          routing_mode: effectiveCredentialRoutingMode,
           endpoint_url: selectedProvider === ModelProvider.AZURE ? azureEndpointUrl.trim() : undefined,
-          gateway_model: gatewayModel.trim() || undefined,
-          gateway_interface: gatewayInterface,
-          gateway_base_url: gatewayBaseUrl.trim() || undefined,
-          gateway_auth_header: gatewayAuthHeader.trim() || undefined,
-          gateway_auth_secret_env: gatewayAuthSecretEnv.trim() || undefined,
-          gateway_auth_secret: gatewayAuthSecret.trim() || undefined,
-          gateway_extra_headers: parsedGatewayExtraHeaders || undefined,
+          ...(gatewayRoutingAllowed
+            ? {
+                gateway_model: gatewayModel.trim() || undefined,
+                gateway_interface: gatewayInterface,
+                gateway_base_url: gatewayBaseUrl.trim() || undefined,
+                gateway_auth_header: gatewayAuthHeader.trim() || undefined,
+                gateway_auth_secret_env: gatewayAuthSecretEnv.trim() || undefined,
+                gateway_auth_secret: gatewayAuthSecret.trim() || undefined,
+                gateway_extra_headers: parsedGatewayExtraHeaders || undefined,
+              }
+            : {}),
           enabled_models: resolvedEnabledModels || undefined,
         })
       }
@@ -630,7 +677,14 @@ export default function Integrations() {
 
   // AI Integration section should only show LLM providers.
   // Voice vendors belong under Voice Platform integrations.
-  const availableProviders = AI_INTEGRATION_PROVIDERS
+  const availableProviders = useMemo(
+    () =>
+      AI_INTEGRATION_PROVIDERS.filter(
+        (provider) =>
+          gatewayRoutingAllowed || provider !== ModelProvider.CUSTOM,
+      ),
+    [gatewayRoutingAllowed],
+  )
   const aiIntegrationProviders = (aiproviders as AIProvider[]).filter((p) =>
     AI_INTEGRATION_PROVIDERS.includes(p.provider as ModelProvider)
   )
@@ -654,11 +708,19 @@ export default function Integrations() {
         <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
           <Button
             variant="outline"
-            onClick={openLlmGatewayModal}
+            onClick={gatewayRoutingAllowed ? openLlmGatewayModal : undefined}
+            disabled={!licenseLoaded || !gatewayRoutingAllowed}
+            title={
+              !licenseLoaded
+                ? 'Checking license…'
+                : gatewayRoutingAllowed
+                ? 'Configure organization LLM gateway routing'
+                : 'LLM gateway routing requires a valid EFFICIENTAI_LICENSE key'
+            }
             leftIcon={<Network className="h-5 w-5" />}
           >
             LLM Gateway
-            {llmGatewaySettings && (
+            {gatewayRoutingAllowed && llmGatewaySettings ? (
               <span
                 className={`ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded ${
                   llmGatewaySettings.effective_routing !== 'direct'
@@ -668,9 +730,13 @@ export default function Integrations() {
               >
                 {llmGatewayRoutingLabel(llmGatewaySettings.effective_routing)}
               </span>
-            )}
+            ) : !gatewayRoutingAllowed ? (
+              <span className="ml-1.5 px-1.5 py-0.5 text-xs font-medium rounded bg-amber-100 text-amber-800">
+                Enterprise
+              </span>
+            ) : null}
           </Button>
-          <Button variant="primary" onClick={() => setShowModal(true)} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
+          <Button variant="primary" onClick={openAddIntegrationModal} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
           <WalkthroughToggleButton />
         </div>
       </div>
@@ -988,6 +1054,14 @@ export default function Integrations() {
                 Route batch and evaluation LLM calls through Bifrost or a self-hosted LiteLLM Proxy. Real-time voice agents are unaffected.
               </p>
 
+              {!gatewayRoutingAllowed && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  LLM gateway enablement is an Enterprise feature. Set{' '}
+                  <code className="font-mono text-xs bg-amber-100 px-1 rounded">EFFICIENTAI_LICENSE</code>{' '}
+                  to unlock Bifrost / LiteLLM Proxy routing.
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={`px-2.5 py-1 text-xs font-medium rounded-full ${
@@ -1011,9 +1085,12 @@ export default function Integrations() {
                   value={llmGatewayMode}
                   onChange={(e) => setLlmGatewayMode(e.target.value as LLMGatewayMode)}
                   className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                  disabled={!gatewayRoutingAllowed && llmGatewayMode !== 'disabled' && llmGatewayMode !== 'inherit'}
                 >
                   <option value="inherit">Inherit platform default</option>
-                  <option value="enabled">Enabled (use gateway)</option>
+                  <option value="enabled" disabled={!gatewayRoutingAllowed}>
+                    Enabled (use gateway){!gatewayRoutingAllowed ? ' — Enterprise' : ''}
+                  </option>
                   <option value="disabled">Disabled (direct to providers)</option>
                 </select>
               </div>
@@ -1207,6 +1284,7 @@ export default function Integrations() {
                         setSelectedPlatform(null)
                         setSelectedProvider(null)
                         setAiProviderWizardStep(1)
+                        setCredentialRoutingMode(defaultCredentialRouting())
                       }}
                       className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'ai_provider'
                         ? 'border-primary-500 bg-primary-50'
@@ -1273,6 +1351,7 @@ export default function Integrations() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Name (Optional)</label>
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="Integration name" />
                   </div>
+                  {gatewayRoutingAllowed && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
                     <select
@@ -1288,6 +1367,7 @@ export default function Integrations() {
                       Applies to batch LLM workloads when this credential is used. Real-time voice agents always use direct API keys.
                     </p>
                   </div>
+                  )}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">{selectedPlatform === IntegrationPlatform.VAPI ? 'Private API Key' : 'API Key'} {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}</label>
                     <input type="password" required={!isEditMode} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
@@ -1353,6 +1433,14 @@ export default function Integrations() {
                       </p>
                     </div>
                   )}
+                  {!gatewayRoutingAllowed && licenseLoaded && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      Gateway routing is locked on open source installs. Set{' '}
+                      <code className="font-mono text-xs bg-amber-100 px-1 rounded">EFFICIENTAI_LICENSE</code>{' '}
+                      in config or your environment, then restart the API server.
+                    </div>
+                  )}
+                  {gatewayRoutingAllowed && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">LLM Routing</label>
                     <select
@@ -1368,6 +1456,7 @@ export default function Integrations() {
                       Controls whether batch/eval LLM calls use your org gateway or call the provider directly.
                     </p>
                   </div>
+                  )}
                   {showGatewayModelField && (
                     <>
                     <div>

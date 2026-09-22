@@ -128,6 +128,10 @@ def accept_invitation(
         db.commit()
         return existing_member
 
+    from app.core.oss_quotas import enforce_oss_quota
+
+    enforce_oss_quota(db, invitation.organization_id, "org_members")
+
     member = OrganizationMember(
         organization_id=invitation.organization_id,
         user_id=user.id,

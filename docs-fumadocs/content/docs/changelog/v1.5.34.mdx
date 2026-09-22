@@ -1,0 +1,126 @@
+---
+title: v1.5.34
+description: Release notes for v1.5.34.
+---
+
+# v1.5.34
+
+Released Sep 22, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.34).
+
+Primary pull request: [#127](https://github.com/EfficientAI-tech/efficientAI/pull/127) by [@aadhar-EAI](https://github.com/aadhar-EAI).
+
+## What changed
+
+This PR is a major docs revamp on the `doctor` branch — **520 files changed** (~54k insertions). It replaces the legacy docs layout with a Fumadocs v2 site, adds a full OpenAPI-driven API reference, and ships new product guides with screenshots.
+
+### Docs site structure (Fumadocs v2)
+
+- **Quickstart** — end-to-end onboarding guide
+- **Platform** — product guides for agents, personas, scenarios, evaluators, evaluation suites, metrics, prompts, playground, observability, and setup (with screenshots)
+- **Integrations** — provider-specific pages (ElevenLabs, Plivo, Retell, Smallest, Vapi, Vobiz)
+- **Advanced** — new section (expanded by default) with:
+  - **[IAM](/docs/advanced/iam/)** — org/workspace roles, membership, custom roles, Enterprise IAM
+  - **[Alerting](/docs/advanced/alerting/)** — threshold rules, Slack/email notifications, alert history (Enterprise feature)
+- **API reference** — generated from OpenAPI spec (`efficientai.json`) covering agents, auth, call imports, evaluators, integrations, metrics, observability, personas, scenarios, voice bundles, and workspaces
+- **Changelog** — versioned release pages (v1.5.4–v1.5.33) with enriched PR context
+- **Enterprise** — BSL licensing overview and open-source vs Enterprise comparison table
+
+### Enterprise page updates
+
+- Added ✅ to every Enterprise column cell in the comparison table for quick visual scanning
+- Authentication guide links now point to `https://docs.efficientai.cloud/docs/getting-started/authentication/` (not localhost)
+- Licensing contact updated to `contact@efficientai.cloud`
+- Removed redundant sections: "Open-source limits (EFF-70)" and "Enterprise-only capabilities (any Enterprise tier)"
+
+### Docs UX & navigation
+
+- **Community & contact footer** on docs pages (GitHub issues, Discord)
+- **Top nav** — GitHub link and light/dark theme toggle moved to the right
+- **Sidebar** — Advanced section uses `defaultOpen: true`; trimmed Advanced nav to IAM + Alerting only (removed Reference, Monitoring, Engineering stubs from nav)
+- **README** — Discord added to hero quick links and Support section
+- New screenshots for Agents, Evaluators, Metrics, Personas, Playground, Prompts, IAM, and Alerts
+
+### Changelog generation
+
+Enhanced changelog generation to parse linked PR descriptions and include structured sections when present:
+
+- `What changed`
+- `Why`
+- `How to test`
+
+### Build & dev fixes
+
+- **`next.config.mjs`** — `output: 'export'` only when `NODE_ENV === 'production'` (fixes dev `generateStaticParams` errors)
+- **`ensure-collections.mjs`** — regenerate `.source/` when content is newer than cache
+- **`page.tsx`** — guard when `generateParams()` returns empty
+- **`docs-shell.tsx`** — `sidebar={{ defaultOpenLevel: 1 }}`
+- Fixed MDX hydration errors and removed broken screenshot refs (`create_workspace.png`, `iam_workspaces.png`); replaced with `/screenshots/IAM/iam.png` and `/screenshots/Alerts/alerts.png`
+
+## Why
+
+The previous docs site lacked structured product guides, a browsable API reference, and clear Enterprise/IAM/Alerting documentation. Reviewers and users had to dig through scattered pages or the codebase to understand capabilities and licensing boundaries.
+
+This revamp:
+
+- **Improves discoverability** — Platform, Integrations, and Advanced guides follow a consistent format with screenshots
+- **Documents Enterprise gating** — IAM multi-member limits, alerting, and feature comparison are explicit
+- **Enables self-serve API usage** — OpenAPI-generated reference with copy-paste examples
+- **Improves release transparency** — Changelog pages preserve PR rationale and test steps
+- **Fixes dev ergonomics** — Static export and collection caching no longer break local `npm run dev`
+
+## How to test
+
+1. **Run docs checks locally:**
+   ```bash
+   cd docs-fumadocs
+   npm run validate:docs
+   npm run check:links
+   ./node_modules/.bin/fumadocs-mdx
+   ./node_modules/.bin/next typegen
+   ./node_modules/.bin/tsc --noEmit
+   npm run build
+   npm run verify:routes
+   ```
+
+2. **Run changelog generation:**
+   ```bash
+   cd docs-fumadocs
+   npm run changelog:generate
+   ```
+
+3. **Verify navigation & new guides:**
+   - Open `/docs/` and confirm sidebar shows Quickstart, Platform, Integrations, Advanced (expanded)
+   - Open `/docs/advanced/iam/` — IAM screenshot renders, org/workspace role tables present
+   - Open `/docs/advanced/alerting/` — Enterprise callout visible, alerting screenshot renders
+   - Open `/docs/platform/agent/` and spot-check other Platform pages for screenshots
+
+4. **Verify Enterprise page:**
+   - Open `/docs/enterprise/`
+   - Confirm every Enterprise column cell has ✅
+   - Confirm auth links go to `https://docs.efficientai.cloud/docs/getting-started/authentication/`
+   - Confirm licensing contact is `contact@efficientai.cloud`
+   - Confirm removed sections ("Open-source limits", "Enterprise-only capabilities") are gone
+
+5. **Verify docs UI changes:**
+   - Confirm `Community & contact` footer on docs pages
+   - Confirm top nav has GitHub + theme toggle on the right
+
+6. **Verify API reference:**
+   - Open `/docs/api-reference/` and browse a few endpoints (e.g. agents, evaluators)
+   - Confirm request/response schemas render
+
+7. **Verify changelog enrichment:**
+   - Open `/docs/changelog/v1.5.33/` and confirm detailed PR sections render (`What changed`, `Why`, `How to test`)
+
+8. **Verify dev mode:**
+   ```bash
+   cd docs-fumadocs
+   npm run dev
+   ```
+   - Confirm no `generateStaticParams` / `output: export` errors in dev
+   - Navigate to Advanced → IAM and Alerting without 500s
+
+## Contributors
+
+- [@aadhar-EAI](https://github.com/aadhar-EAI)
+

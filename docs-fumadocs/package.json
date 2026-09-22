@@ -9,7 +9,7 @@
     "openapi:generate": "node scripts/generate-api-docs.mjs",
     "changelog:generate": "node scripts/generate-changelog-nav.mjs",
     "prebuild": "npm run openapi:enrich && npm run openapi:generate",
-    "build": "node scripts/ensure-collections.mjs && npm run sync:logo && npm run prebuild && npm run search:generate && next build",
+    "build": "npm run changelog:generate && node scripts/ensure-collections.mjs && npm run sync:logo && npm run prebuild && npm run search:generate && next build",
     "dev:stop": "lsof -ti:3000 | xargs kill 2>/dev/null || true",
     "dev": "node scripts/ensure-collections.mjs && npm run sync:logo && next dev --hostname 127.0.0.1 --port 3000",
     "start": "next start",
@@ -20,7 +20,8 @@
     "validate:docs": "node scripts/validate-docs.mjs",
     "check:links": "node scripts/check-links.mjs",
     "verify:routes": "node scripts/verify-static-routes.mjs",
-    "ci:check": "npm run validate:docs && npm run check:links && npm run types:check && npm run build && npm run verify:routes"
+    "test:cloudfront-uri": "node scripts/test-cloudfront-uri-rewrite.mjs",
+    "ci:check": "npm run validate:docs && npm run check:links && npm run test:cloudfront-uri && npm run types:check && npm run build && npm run verify:routes"
   },
   "dependencies": {
     "fumadocs-core": "16.15.9",

@@ -12,8 +12,8 @@ const githubOwner = 'EfficientAI-tech';
 const githubRepo = 'efficientAI';
 const pullUrlPattern = /https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/(\d+)/gi;
 
-const RELEASES_URL =
-  `https://api.github.com/repos/${githubOwner}/${githubRepo}/releases?per_page=30`;
+const RELEASES_BASE_URL =
+  `https://api.github.com/repos/${githubOwner}/${githubRepo}/releases`;
 
 function parseReleaseBody(body) {
   const changes = [];
@@ -199,25 +199,36 @@ function hasCommittedReleasePages() {
 
 async function fetchReleases() {
   const token = process.env.GITHUB_TOKEN?.trim();
-  const response = await fetch(RELEASES_URL, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 
-  if (!response.ok) {
-    if (hasCommittedReleasePages()) {
-      console.warn(
-        `Skipping changelog regeneration (GitHub releases request failed with ${response.status}); using committed pages.`,
-      );
-      process.exit(0);
+  const releases = [];
+  let page = 1;
+
+  while (true) {
+    const response = await fetch(`${RELEASES_BASE_URL}?per_page=100&page=${page}`, { headers });
+
+    if (!response.ok) {
+      if (hasCommittedReleasePages()) {
+        console.warn(
+          `Skipping changelog regeneration (GitHub releases request failed with ${response.status}); using committed pages.`,
+        );
+        process.exit(0);
+      }
+      throw new Error(`GitHub releases request failed (${response.status})`);
     }
-    throw new Error(`GitHub releases request failed (${response.status})`);
+
+    const batch = await response.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    releases.push(...batch);
+    if (batch.length < 100) break;
+    page += 1;
   }
 
-  return response.json();
+  return releases;
 }
 
 function cleanupGeneratedReleasePages() {

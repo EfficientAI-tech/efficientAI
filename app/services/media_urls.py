@@ -63,6 +63,15 @@ def ws_base_from_http_host(host: str, *, scheme: str = "http") -> str:
     return f"{ws_scheme}://{host.rstrip('/')}"
 
 
+def _host_from_public_url(url: str) -> str | None:
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return (urlparse(raw).hostname or "").strip().lower() or None
+
+
 def resolve_voice_agent_ws_base(
     *,
     fallback_host: Optional[str] = None,
@@ -72,8 +81,22 @@ def resolve_voice_agent_ws_base(
     ws_base = media_ws_base_url()
     if ws_base:
         return ws_base
-    if (settings.PUBLIC_BASE_URL or "").strip():
-        public = settings.PUBLIC_BASE_URL.strip().rstrip("/")
+
+    fallback_ws = (
+        ws_base_from_http_host(fallback_host, scheme=fallback_scheme)
+        if fallback_host
+        else None
+    )
+
+    public = (settings.PUBLIC_BASE_URL or "").strip()
+    if public:
+        public_host = _host_from_public_url(public)
+        request_host = (fallback_host or "").split(":", 1)[0].strip().lower() or None
+        if request_host and public_host and request_host != public_host:
+            # Browser/API host differs from PUBLIC_BASE_URL (TestClient, local proxy).
+            # Use same-host WS so httpOnly session cookies authenticate the socket.
+            if fallback_ws:
+                return fallback_ws
         if public.startswith("https://"):
             return "wss://" + public[len("https://") :]
         if public.startswith("http://"):
@@ -81,15 +104,17 @@ def resolve_voice_agent_ws_base(
         if public.startswith("wss://") or public.startswith("ws://"):
             return public
         return f"wss://{public}"
-    if fallback_host:
-        return ws_base_from_http_host(fallback_host, scheme=fallback_scheme)
+
+    if fallback_ws:
+        return fallback_ws
     return f"ws://localhost:{settings.PORT}"
 
 
 def cross_host_voice_ws(ws_base: str, request: Request) -> bool:
     """True when the WS host cannot receive the API's host-scoped session cookies."""
     ws_hostname = (urlparse(ws_base).hostname or "").lower()
-    req_hostname = (request.url.hostname or "").lower()
+    host_header = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
+    req_hostname = host_header or (request.url.hostname or "").lower()
     if not ws_hostname or not req_hostname:
         return False
     return ws_hostname != req_hostname

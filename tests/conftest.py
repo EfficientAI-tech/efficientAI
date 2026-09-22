@@ -138,6 +138,46 @@ def ensure_workers_tasks_package():
     ]
 
 
+def _is_license_behavior_test_module(module_name: str) -> bool:
+    """Pytest module names are ``test_core.test_license``, not ``tests.test_core...``."""
+    leaf = module_name.rsplit(".", 1)[-1]
+    return leaf in {
+        "test_enterprise_gating",
+        "test_license",
+        "test_license_offerings",
+        "test_oss_quotas",
+        "test_oss_quotas_org_members",
+        "test_usage_entitlement",
+    }
+
+_FAKE_DEPLOYMENT_LICENSE = {
+    "org": "Pytest Enterprise",
+    "org_id": None,
+    "features": [
+        "voice_playground",
+        "gepa_optimization",
+        "call_imports",
+        "evaluation_clustering",
+        "oidc_sso",
+    ],
+}
+
+
+@pytest.fixture(autouse=True)
+def _deployment_enterprise_license_for_tests(monkeypatch, request):
+    """CI has no EFFICIENTAI_LICENSE; most tests assume an entitled deployment."""
+    if _is_license_behavior_test_module(request.module.__name__):
+        yield
+        return
+
+    import app.core.license as license_module
+
+    monkeypatch.setattr(license_module, "get_license_info", lambda: dict(_FAKE_DEPLOYMENT_LICENSE))
+    license_module.reset_license_cache()
+    yield
+    license_module.reset_license_cache()
+
+
 @pytest.fixture
 def org_id():
     """Stable org UUID for auth-related tests."""

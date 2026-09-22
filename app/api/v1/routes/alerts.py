@@ -9,7 +9,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 
 from app.database import get_db
-from app.dependencies import get_organization_id
+from app.dependencies import get_organization_id, require_enterprise_feature
 from app.models.database import Alert, AlertHistory
 from app.models.enums import AlertStatus, AlertHistoryStatus
 from app.models.schemas import (
@@ -22,7 +22,11 @@ from app.models.schemas import (
 from app.services.alerts.alert_evaluation_service import alert_evaluation_service
 from app.services.alerts.alert_notification_service import alert_notification_service
 
-router = APIRouter(prefix="/alerts", tags=["alerts"])
+router = APIRouter(
+    prefix="/alerts",
+    tags=["alerts"],
+    dependencies=[Depends(require_enterprise_feature("alerts"))],
+)
 
 
 # ============================================

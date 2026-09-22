@@ -36,7 +36,9 @@ The `build` job runs the same checks on pull requests. Only public docs content 
 
 ### CloudFront routing (required)
 
-Next.js static export with `trailingSlash: true` writes pages as `out/docs/<slug>/index.html`. S3 REST origins do not resolve directory URLs automatically. Without CloudFront URI rewriting, direct URLs and page refreshes fail and may fall back to `/index.html`, which redirects to `/docs/intro/`.
+Next.js static export with `trailingSlash: true` writes pages as `out/docs/<slug>/index.html`. S3 REST origins do not resolve directory URLs automatically. Without CloudFront URI rewriting, direct URLs and page refreshes fail and may fall back to `/index.html`, which redirects to `/docs/quickstart/`.
+
+The viewer-request function must **not** treat every `.` in the path as a static file. Versioned routes such as `/docs/changelog/v1.5.33/` contain dots but still require `index.html` rewriting.
 
 **Required AWS configuration:**
 

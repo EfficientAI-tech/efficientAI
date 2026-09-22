@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Sparkles, Loader2, RefreshCw, Wand2 } from 'lucide-react'
+import { Sparkles, Loader2, RefreshCw, Wand2, PanelRightClose, PanelRight } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
+import { getApiErrorMessage } from '../../../lib/apiErrors'
 import { useToast } from '../../../hooks/useToast'
 import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
 import AgentFlowChart from '../../promptPartials/components/AgentFlowChart'
+import FlowchartErrorPanel from '../../promptPartials/components/FlowchartErrorPanel'
 import AgentPromptSectionView, {
   type PromptHighlightRange,
 } from '../../promptPartials/components/AgentPromptSectionView'
@@ -41,6 +43,7 @@ export default function AgentPromptVisualization({
   const [nodeMapError, setNodeMapError] = useState<string | null>(null)
   const [llmProvider, setLlmProvider] = useState('')
   const [llmModel, setLlmModel] = useState('')
+  const [flowchartCollapsed, setFlowchartCollapsed] = useState(false)
 
   const { data: partials = [], isLoading: isLoadingPartials } = useQuery({
     queryKey: ['agent-prompt-partials', agentId, linkTag],
@@ -101,8 +104,8 @@ export default function AgentPromptVisualization({
       queryClient.invalidateQueries({ queryKey: ['prompt-partial', linkedPartialId] })
       showToast('Flowchart generation started', 'success')
     },
-    onError: (err: any) => {
-      showToast(err?.response?.data?.detail || err?.message || 'Failed to generate flowchart', 'error')
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to generate flowchart'), 'error')
     },
   })
 
@@ -126,8 +129,8 @@ export default function AgentPromptVisualization({
       refetchPartial()
       showToast('Prompt mapping started', 'success')
     },
-    onError: (err: any) => {
-      showToast(err?.response?.data?.detail || 'Failed to map prompt sections', 'error')
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to map prompt sections'), 'error')
     },
   })
 
@@ -268,12 +271,31 @@ export default function AgentPromptVisualization({
         ) : null}
       </div>
 
-      {nodeMapError && (
-        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{nodeMapError}</p>
-      )}
+      {nodeMapError ? (
+        <FlowchartErrorPanel
+          variant="inline"
+          error={nodeMapError}
+          title="Could not map prompt sections"
+        />
+      ) : null}
+      {flowchart?.generation_error ? (
+        <FlowchartErrorPanel
+          variant="inline"
+          error={flowchart.generation_error}
+          title={
+            flowchart.nodes?.length
+              ? 'Regeneration failed — showing previous diagram'
+              : 'Flowchart generation failed'
+          }
+        />
+      ) : null}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[480px]">
-        <div className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-gray-50 min-h-[400px]">
+      <div
+        className={`grid gap-4 min-h-[480px] ${
+          flowchartCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-2'
+        }`}
+      >
+        <div className="relative border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-gray-50 min-h-[400px]">
           <div className="px-4 py-2 border-b border-gray-200 bg-gray-100/80 text-sm font-medium text-gray-900">
             Prompt
           </div>
@@ -282,39 +304,70 @@ export default function AgentPromptVisualization({
               content={agentPromptContent}
               highlight={promptHighlight}
               previewMode={previewMode}
+              onCopied={() => showToast('Prompt copied to clipboard', 'success')}
             />
           </div>
+          {flowchartCollapsed ? (
+            <button
+              type="button"
+              onClick={() => setFlowchartCollapsed(false)}
+              className="absolute right-0 top-1/2 z-10 -translate-y-1/2 flex flex-col items-center gap-1 rounded-l-lg border border-r-0 border-gray-200 bg-white px-2 py-3 text-[10px] font-medium text-gray-600 shadow-sm hover:bg-gray-50"
+              title="Show flowchart"
+              aria-label="Show flowchart"
+            >
+              <PanelRight className="h-4 w-4" />
+              Chart
+            </button>
+          ) : null}
         </div>
 
-        <div className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-white min-h-[400px]">
-          <div className="px-4 py-2 border-b border-gray-200 bg-gray-100/80 flex items-center justify-between">
-            <span className="text-sm font-medium text-gray-900">Flowchart</span>
-            {isFlowchartJobRunning && (
-              <span className="inline-flex items-center gap-1 text-xs text-gray-500">
-                <RefreshCw className="h-3 w-3 animate-spin" />
-                {flowchartStatus}…
-              </span>
-            )}
-          </div>
-          <div className="flex-1 min-h-[360px]">
-            {flowchart?.nodes?.length ? (
-              <AgentFlowChart
-                data={flowchart}
-                title={agentName}
-                onSaveLayout={(nodes) => saveLayoutMutation.mutate(nodes)}
-                savingLayout={saveLayoutMutation.isPending}
-                highlightNodeId={selectedFlowNodeId}
-                onNodeClick={handleFlowNodeClick}
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-sm text-gray-400 p-8 text-center">
-                {isFlowchartJobRunning
-                  ? 'Generating flowchart…'
-                  : 'Click "Generate flowchart" to visualize this agent prompt.'}
+        {!flowchartCollapsed ? (
+          <div className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-white min-h-[400px]">
+            <div className="px-4 py-2 border-b border-gray-200 bg-gray-100/80 flex items-center justify-between gap-2">
+              <span className="text-sm font-medium text-gray-900">Flowchart</span>
+              <div className="flex items-center gap-2">
+                {isFlowchartJobRunning ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    {flowchartStatus}…
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setFlowchartCollapsed(true)}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
+                  title="Hide flowchart"
+                  aria-label="Hide flowchart"
+                >
+                  <PanelRightClose className="h-3.5 w-3.5" />
+                  Hide
+                </button>
               </div>
-            )}
+            </div>
+            <div className="flex-1 min-h-[360px] overflow-hidden">
+              {flowchart?.nodes?.length ? (
+                <AgentFlowChart
+                  data={flowchart}
+                  title={agentName}
+                  onSaveLayout={(nodes) => saveLayoutMutation.mutate(nodes)}
+                  savingLayout={saveLayoutMutation.isPending}
+                  highlightNodeId={selectedFlowNodeId}
+                  onNodeClick={handleFlowNodeClick}
+                />
+              ) : isFlowchartJobRunning ? (
+                <div className="flex h-full items-center justify-center p-8 text-center text-sm text-gray-400">
+                  Generating flowchart…
+                </div>
+              ) : flowchart?.generation_error || flowchartStatus === 'failed' ? (
+                <FlowchartErrorPanel error={flowchart?.generation_error} />
+              ) : (
+                <div className="flex h-full items-center justify-center p-8 text-center text-sm text-gray-400">
+                  Click &quot;Generate flowchart&quot; to visualize this agent prompt.
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
     </div>
   )

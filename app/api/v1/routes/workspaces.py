@@ -15,6 +15,7 @@ from app.core.auth.capabilities import WORKSPACE_SETTINGS, capability_denied_mes
 from app.core.auth.rbac import get_org_role, require_admin, require_writer
 from app.database import get_db
 from app.dependencies import get_organization_id
+from app.core.oss_quotas import enforce_oss_quota
 from app.models.database import RoleEnum, Workspace, WorkspaceMember, WorkspaceRole
 from app.models.schemas import (
     WorkspaceCreate,
@@ -104,6 +105,7 @@ def create_workspace(
     db: Session = Depends(get_db),
 ):
     """Create a new (non-default) workspace; creator becomes Workspace Admin."""
+    enforce_oss_quota(db, organization_id, "workspaces")
     slug = (payload.slug or _slugify(payload.name)).strip().lower()
     if not slug:
         raise HTTPException(

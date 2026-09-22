@@ -43,6 +43,28 @@ describe('resolveLLMModelsForCredential', () => {
     })
   })
 
+  it('intersects catalog with enabled_models allowlist', () => {
+    const credential = makeCredential({
+      provider: 'openai',
+      gateway_model: undefined,
+      enabled_models: ['gpt-4o', 'gpt-4o-mini'],
+    })
+    const catalog = [
+      'gpt-4o',
+      'gpt-4o-mini',
+      'gpt-4.1',
+      'gpt-5-mini',
+      'o3-mini',
+    ]
+
+    const resolution = resolveLLMModelsForCredential(credential, catalog)
+
+    expect(resolution).toEqual({
+      mode: 'catalog',
+      models: ['gpt-4o', 'gpt-4o-mini'],
+    })
+  })
+
   it('returns allowlist when catalog is empty for non-custom provider', () => {
     const credential = makeCredential({
       provider: 'fireworks',

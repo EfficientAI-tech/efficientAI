@@ -35,6 +35,71 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback
 }
 
+function coerceToErrorText(raw: unknown): string {
+  if (raw == null) return ''
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'object' && raw !== null && 'message' in raw) {
+    return String((raw as { message: unknown }).message)
+  }
+  return String(raw)
+}
+
+function stripPythonTraceback(text: string): string {
+  let result = text
+  for (const marker of [
+    '\nTraceback (most recent call last):',
+    '\nDuring handling of the above exception',
+  ]) {
+    const idx = result.indexOf(marker)
+    if (idx >= 0) {
+      result = result.slice(0, idx)
+    }
+  }
+  return result.trim()
+}
+
+function pickBestErrorLine(lines: string[]): string | null {
+  if (!lines.length) return null
+  const preferred = lines.find(
+    (line) =>
+      /does not exist|not found|invalid|failed|error|exception|unauthorized|rate limit/i.test(
+        line,
+      ) &&
+      !line.startsWith('File ') &&
+      !line.includes('site-packages'),
+  )
+  return preferred || lines[0]
+}
+
+/** Turn a long LLM/stack-trace failure into a short label plus optional detail text. */
+export function summarizeFlowchartError(raw: unknown): {
+  summary: string
+  details: string | null
+} {
+  const text = coerceToErrorText(raw).trim()
+  if (!text) {
+    return { summary: 'Flowchart generation failed.', details: null }
+  }
+
+  const withoutTrace = stripPythonTraceback(text)
+  const lines = withoutTrace
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  let summary = pickBestErrorLine(lines) || 'Flowchart generation failed.'
+  if (summary.length > 320) {
+    summary = `${summary.slice(0, 317)}…`
+  }
+
+  const hadTraceback = text.length > withoutTrace.length + 10
+  const details =
+    hadTraceback || withoutTrace.length > summary.length + 24
+      ? withoutTrace
+      : null
+
+  return { summary, details: details && details !== summary ? details : null }
+}
+
 /** Like getApiErrorMessage, but parses JSON error bodies returned as Blob (e.g. responseType: 'blob'). */
 export async function getBlobApiErrorMessage(
   error: unknown,
