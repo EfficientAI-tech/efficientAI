@@ -5,6 +5,7 @@ import { usePathname } from 'fumadocs-core/framework';
 import { isLayoutTabActive } from 'fumadocs-ui/layouts/shared';
 import type { ReactNode } from 'react';
 import { Logo } from '@/components/logo';
+import { NavHeaderActions } from '@/components/nav-header-actions';
 
 interface DocsTopNavTab {
   title: ReactNode;
@@ -51,7 +52,9 @@ export function DocsTopNav({ tabs }: { tabs: DocsTopNavTab[] }) {
           ))}
         </nav>
 
-        <div className="flex flex-1 items-center justify-end" />
+        <div className="flex flex-1 items-center justify-end">
+          <NavHeaderActions />
+        </div>
       </div>
 
       <div data-header-tabs="" className="docs-glass-nav mt-2 h-10 overflow-x-auto rounded-xl border px-4 lg:hidden">

@@ -7,9 +7,34 @@ description: Release notes for v1.5.26.
 
 Released Aug 19, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.26).
 
+Primary pull request: [#114](https://github.com/EfficientAI-tech/efficientAI/pull/114) by [@MSami625](https://github.com/MSami625).
+
 ## What changed
 
-- Token usage tracking for LLM, STT, and TTS calls and Usage Page. by @MSami625 in https://github.com/EfficientAI-tech/efficientAI/pull/114
+Added usage tracking for LLM, STT, and TTS calls, including voice agent usage.
+
+* Track LLM input/output, cache, reasoning tokens, and call count.
+* Track STT and TTS usage from voice agent calls.
+* Added Redis-based usage counters with batched Postgres rollups.
+* Added usage context for organization, workspace, product, and resource.
+* Added Usage API for summary and breakdown.
+* Added a single `/usage` page with filters and grouping.
+* Added scheduled flushing of usage data from Redis to Postgres.
+
+## Why
+
+We need a centralized way to track AI usage across different products and voice agents without adding significant overhead to individual calls.
+
+Usage is aggregated in Redis first and periodically flushed to Postgres, instead of creating a database record for every request. This keeps the system scalable while allowing usage to be viewed from a single Usage page.
+
+## How to test
+
+1. Run an LLM request/evaluation.
+2. Run a voice agent call using STT, LLM, and TTS.
+3. Open the `/usage` page.
+4. Verify that the usage data is recorded correctly.
+5. Test filters for workspace, product, model, and resource.
+6. Verify that usage data is updated after the Redis flush.
 
 ## Contributors
 

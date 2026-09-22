@@ -5,9 +5,9 @@ import { getMDXComponents } from '@/components/mdx';
 import type { Metadata } from 'next';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import { ContributorsTocFooter } from '@/components/contributors';
-import { TocHeaderControls } from '@/components/toc-header-controls';
 import { OpenAPIPage } from '@/components/api-page';
 import { CopyPageMarkdown } from '@/components/copy-page-markdown';
+import { CommunityContactFooter } from '@/components/community-contact-footer';
 import type { ComponentPropsWithoutRef, ComponentType } from 'react';
 import { ExternalLink } from 'lucide-react';
 import type { TOCItemType } from 'fumadocs-core/toc';
@@ -65,7 +65,6 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
       tableOfContent={
         showToc
           ? {
-              header: <TocHeaderControls />,
               footer: <ContributorsTocFooter featureId={page.slugs.join('/')} />,
             }
           : undefined
@@ -73,7 +72,6 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
       tableOfContentPopover={
         showToc
           ? {
-              header: <TocHeaderControls />,
               footer: <ContributorsTocFooter featureId={page.slugs.join('/')} />,
             }
           : undefined
@@ -94,6 +92,7 @@ export default async function Page(props: PageProps<'/docs/[[...slug]]'>) {
             ),
           })}
         />
+        {!isEnterprisePage ? <CommunityContactFooter /> : null}
       </DocsBody>
     </DocsPage>
   );

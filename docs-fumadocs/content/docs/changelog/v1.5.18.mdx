@@ -7,9 +7,18 @@ description: Release notes for v1.5.18.
 
 Released Jul 21, 2026. [View on GitHub](https://github.com/EfficientAI-tech/efficientAI/releases/tag/v1.5.18).
 
-## What changed
+Primary pull request: [#104](https://github.com/EfficientAI-tech/efficientAI/pull/104) by [@TEJASNARAYANS](https://github.com/TEJASNARAYANS).
 
-- feat: enable sharding across DBs by @TEJASNARAYANS in https://github.com/EfficientAI-tech/efficientAI/pull/104
+## Why
+
+Large call imports and evaluations (70k+ rows) were slow or unstable due to full-shard scans, aggressive UI polling, eval rows failing while imports retried, and Exotel 400 responses blocking all workers sharing a credential.
+
+## How to test
+
+- [ ] Run evaluation on a large sharded import; confirm page 1 loads quickly and progress polling is reasonable
+- [ ] Start eval with rows needing recording fetch; confirm transient import errors do not permanently fail eval rows
+- [ ] Import 300+ Exotel rows; confirm flaky 400s retry without credential-wide 60s blocks
+- [ ] `pytest tests/test_db_sharding/test_eval_rows_pagination.py tests/test_workers/test_eval_dispatch_import.py tests/test_services/test_telephony/test_recording_download.py tests/test_workers/test_process_call_import_row.py`
 
 ## Contributors
 
