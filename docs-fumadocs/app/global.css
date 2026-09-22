@@ -1,6 +1,6 @@
 @import 'tailwindcss';
-@import 'fumadocs-ui/css/neutral.css';
-@import 'fumadocs-ui/css/preset.css';
+@import '../node_modules/fumadocs-ui/css/neutral.css';
+@import '../node_modules/fumadocs-ui/css/preset.css';
 /* Tailwind cannot resolve the fumadocs-openapi package CSS export from app/. */
 @import '../node_modules/@fumadocs/api-docs/css/generated/shared.css';
 @import '../node_modules/fumadocs-openapi/css/generated/shared.css';
