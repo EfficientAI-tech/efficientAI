@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-22T17:33:09.077Z",
-  "count": 276,
+  "generatedAt": "2026-09-22T19:19:51.029Z",
+  "count": 265,
   "records": [
     {
       "id": "(docs)/index",
@@ -26,105 +26,6 @@
       "content": "Alerting Enterprise feature — requires the feature in your . See for licensing details. What alerting is Alerting lets you set up automatic notifications when something important happens with your voice AI agents. Instead of manually checking dashboards, you define rules — and EfficientAI notifies you via Slack , email , or both when those rules are triggered. Think of it as a smoke detector for your voice AI operations. You tell it what to watch (for example, \"error rate is above 10%\"), and it rings the alarm when something goes wrong. Quick example \"If the average latency of my Customer Support Agent exceeds 3 seconds over the last 30 minutes , send a Slack notification to ops alerts.\" Key concepts Alert An alert is a monitoring rule. It defines: What to measure (metric + aggregation) When to fire (threshold + operator) How far back to look (time window) Who to notify (emails + webhooks) How often to notify (frequency / cooldown) Alert history Every time an alert's condition is met and fires, an Alert History record is created. This gives you a full audit trail of when alerts were triggered, what the value was, and whether notifications were sent. Configure an alert What you configure Alert name and optional description Metric condition (metric, aggregation, operator, threshold, time window) Agent scope (all agents or specific agents) Notification channels (email recipients, Slack webhooks) Notification frequency (cooldown between repeat notifications) Recommended flow 1. Confirm SMTP is configured if you want email notifications (see ). 2. Create a Slack incoming webhook if you want Slack notifications. 3. Create the alert from Alerting → Alerts . 4. Use Test Notification to verify delivery, then Trigger to validate the condition. How to set up an alert 1. Go to Alerting → Alerts in the sidebar. 2. Click Create Alert . Basic information | Field | Required | Description | | | | | | Alert Name | Yes | A descriptive name, e.g., \"High Error Rate Production\" | | Description | No | Optional notes about what this alert monitors | Metric condition | Field | Required | Description | | | | | | Metric | Yes | What to measure (see ) | | Aggregation | Yes | How to combine values over the time window | | Operator | Yes | Comparison operator ( , , , , , ) | | Threshold | Yes | The value to compare against | | Time Window | Yes | Minutes of data to look back (e.g., = last 1 hour) | Example: over a window means: if the average latency across all calls in the last 30 minutes exceeds 3 seconds, fire the alert. Agent selection All Agents — monitors every agent in your organization (default) Specific Agents — select one or more agents to scope the alert Notification settings | Field | Required | Description | | | | | | Notification Frequency | Yes | How often to re notify if the condition persists | | Email Recipients | No | One or more email addresses | | Webhooks | No | Slack incoming webhook URLs | You must configure at least one email or webhook for notifications to work. 3. Click Create Alert . Your alert is now Active and will be evaluated automatically. Available metrics | Metric | Value | Description | | | | | | Number of Calls | | Total count of calls in the time window | | Call Duration | | Duration of calls (in seconds) | | Error Rate | | Percentage of calls that resulted in errors | | Success Rate | | Percentage of calls that completed successfully | | Latency | | Response latency of the voice AI agent | | Custom | | Custom metric (for advanced use cases) | Aggregations | Aggregation | Value | Description | | | | | | Sum | | Total sum of all values | | Average | | Arithmetic mean of all values | | Count | | Number of data points | | Minimum | | Lowest value in the window | | Maximum | | Highest value in the window | Notification channels Slack webhooks EfficientAI sends rich Slack messages using formatting. Each notification includes the alert name, triggered value vs. threshold, timestamp, and agent scope. 1. Go to your Slack works"
     },
     {
-      "id": "(docs)/advanced/architecture-guide",
-      "url": "/docs/advanced/architecture-guide/",
-      "title": "Architecture",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Architecture Architecture details are now grouped under Advanced in Docs v2. See ."
-    },
-    {
-      "id": "advanced/architecture",
-      "url": "/docs/advanced/architecture/",
-      "title": "Architecture",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Architecture Simple Overview EfficientAI is built like a modern web application. The Brain (API Server) : Controls everything. The Worker : Does the heavy lifting in the background, like processing audio files so the website stays fast. The Interface (Frontend) : The website you see and click on. The Memory (Database) : Where we store all your agents, test results, and user data. Technical Deep Dive EfficientAI is built as a modular, containerized application designed for scalability and extensibility. (See original Architecture documentation below) System Components The platform consists of four primary components: 1. API Server (FastAPI) : The central control plane. 2. Worker (Celery) : Handles asynchronous background tasks (transcription, evaluation). 3. Frontend (React/Vite) : The user interface. 4. Data Stores : PostgreSQL (State) and Redis (Queue/Cache). Core Services 1. API Server ( ) Built with FastAPI, it provides REST endpoints for: Resource Management : CRUD for Agents, Personas, Scenarios. Orchestration : Real time control of test conversations. Analysis : Serving evaluation results and dashboards. 2. Asynchronous Workers ( ) Powered by Celery and Redis, the workers handle long running operations: Transcription : Processing audio files (using Whisper, Deepgram, etc.). Evaluation : Running metric calculations (WER/CER) on completed conversations. 3. Test Agent Service ( ) This is the heart of the testing engine. It: Manages the state of the conversation. Generates accurate system prompts for the Persona. Handles the latency sensitive loop of: ."
-    },
-    {
-      "id": "advanced/call-import-sharding",
-      "url": "/docs/advanced/call-import-sharding/",
-      "title": "Call Import Sharding",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Call Import Sharding For large batches (10k+ rows), call import row data can be spread across multiple PostgreSQL data shards with a catalog database for metadata, routing, and parent counters. Architecture Catalog DB — , , shard slice registry, dispatch metadata Data shards — , (partitioned by consistent hash on ) Scatter/gather reads — API and workers query each shard and merge results Fair dispatch — import/eval workers respect per shard pending scans and Redis progress keys Enable sharding in under . See and for profiles. Live telephony / evaluator results use a separate payload sharding path ( , ) keyed by workspace — see in the repo. Operations Connection pools When , use smaller per process pools ( 3–5, 5–10) so API + workers × shards stay under Postgres . PgBouncer (optional) Point , , and each shard at PgBouncer ( ) in transaction pooling mode. Keep SQLAlchemy enabled. Observability Row Celery tasks log on the import worker hot path. Watch Redis eval/import progress keys ( , ) alongside catalog parent counters. Rebalance Dry run registry updates: Use only after pausing the import. The rebalance tool copies rows to the target shard, updates the catalog registry, then removes copies from the source shard. Troubleshooting stalled evaluations If evaluation runs stall after recordings import (rows show import but no diarization/scoring): 1. Restart API and after deploying fixes. 2. Retry evaluation from the UI (use Overwrite existing transcripts if diarization previously failed). 3. Ensure the imports worker consumes ."
-    },
-    {
-      "id": "(docs)/advanced/calls",
-      "url": "/docs/advanced/calls/",
-      "title": "Calls",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Calls Calls monitoring documentation is now grouped under Advanced in Docs v2. See ."
-    },
-    {
-      "id": "(docs)/advanced/cli-commands",
-      "url": "/docs/advanced/cli-commands/",
-      "title": "CLI Commands",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "CLI Commands This content moved under Advanced in Docs v2. See the full reference at ."
-    },
-    {
-      "id": "(docs)/advanced/configuration",
-      "url": "/docs/advanced/configuration/",
-      "title": "Configuration",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Configuration This content moved under Advanced in Docs v2. See the full reference at ."
-    },
-    {
-      "id": "(docs)/advanced/cron-jobs",
-      "url": "/docs/advanced/cron-jobs/",
-      "title": "Cron Jobs",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Cron Jobs Cron job operational documentation is now grouped under Advanced in Docs v2. See ."
-    },
-    {
-      "id": "(docs)/advanced/database-guide",
-      "url": "/docs/advanced/database-guide/",
-      "title": "Database",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Database Database internals are now grouped under Advanced in Docs v2. See ."
-    },
-    {
-      "id": "advanced/database",
-      "url": "/docs/advanced/database/",
-      "title": "Database",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Database Migrations The application includes an automatic migration system that runs database schema changes on startup. How It Works Automatic Execution : Migrations run automatically when the application starts Version Tracking : Applied migrations are tracked in the table Idempotent : Each migration only runs once, even if the application restarts Ordered Execution : Migrations run in alphabetical order (use numbered prefixes like 001 , 002 , etc.) Migration Files Migrations are stored in the directory. Each migration file should: 1. Have a numeric prefix: , , etc. 2. Include a variable 3. Have an function that takes a SQLAlchemy Session Example migration: Running Migrations Automatic (Recommended Default Behavior): Migrations run automatically when you start the app with Migrations also run automatically when the application starts (via lifespan handler) If migrations fail, the application will NOT start this ensures database consistency API requests are blocked if migrations are pending When cloning from main, migrations will run automatically on first startup Each migration only runs once (tracked in table) Manual: Skip migrations (not recommended): Creating New Migrations 1. Create a new file in directory with the next sequential number 2. Follow the format shown above 3. Test the migration on a development database first 4. Use checks for idempotent operations 5. See for detailed documentation. Database ER Diagram Generate a visual Entity Relationship (ER) diagram of your database schema to visualize table structures and relationships. Prerequisites Install the required system and Python packages: Generating the ER Diagram Run the script to generate a PNG ER diagram: This will create in the project root directory, showing: All database tables Column names and types Primary keys Foreign key relationships Indexes Note : The diagram is automatically generated from your current database schema, so make sure your database is running and migrations are up to date."
-    },
-    {
-      "id": "(docs)/advanced/development-guide",
-      "url": "/docs/advanced/development-guide/",
-      "title": "Development",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Development Developer workflow details are now grouped under Advanced in Docs v2. See ."
-    },
-    {
-      "id": "advanced/development",
-      "url": "/docs/advanced/development/",
-      "title": "Development & Troubleshooting",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Development Running Locally Start PostgreSQL and Redis: Run the application with hot reload: The flag automatically rebuilds the frontend whenever you modify source files ( , , , etc.), so you don't need to manually rebuild after each change. Run Celery worker (in separate terminal): Frontend Development Option 1: Using CLI with watch mode (Recommended) Option 2: Using Vite dev server (for instant hot module replacement) This runs Vite dev server on http://localhost:3000 with instant hot module replacement. Note : You'll need to run the backend separately on port 8000. Troubleshooting Database Migration Issues Problem : After cloning the repository, you see errors like: Cause : The database schema is out of sync with the code. This happens when: The database was created before migrations were added Migrations failed to run on startup The database was created using an older version of the code Solution : Check migration status: This will show which migrations have been applied and identify any schema issues. Run migrations manually: If you're using a fresh database (just created/nuked): The migration system now handles fresh databases correctly If tables don't exist, migrations will skip them and will create them with the correct schema However, if you see this error on a fresh DB, try: If migrations still fail: 1. Ensure your database connection is correct in or 2. Check that you have the necessary permissions on the database 3. Review the migration logs for specific errors 4. You may need to manually add missing columns (see migration files in directory) For fresh databases : Make sure migrations run BEFORE any tables are created. For Docker setups : Important for Docker : If you nuked the DB container and created a new one: The new container starts with an empty database Migrations should run automatically on startup If they don't, run them manually as shown above Prevention : Always ensure migrations run successfully before using the application. Check the startup logs for migration status messages. Support Email: tejas@efficientai.cloud Book a Demo: Schedule a call LinkedIn: Connect with us X (Twitter): Follow us GitHub: View on GitHub License MIT License see LICENSE file for details"
-    },
-    {
       "id": "(docs)/advanced/iam",
       "url": "/docs/advanced/iam/",
       "title": "IAM",
@@ -132,15 +33,6 @@
         "Advanced"
       ],
       "content": "IAM What IAM is Identity & Access Management (IAM) controls who can access your EfficientAI organization and what they can do inside each workspace. EfficientAI uses two independent permission layers on every request: 1. Organization role — set per membership ( , , or ). 2. Workspace role — set per workspace ( , , or , plus optional custom roles). A user must satisfy both layers to perform an action. Your organization role controls whether you can write anywhere in the org; your workspace role controls what you can do inside the active workspace. Open source deployments are capped at 1 org member and 1 default workspace . Multi member orgs and additional workspaces require an . Organization roles Manage organization roles from IAM → Organization (admin only) or Settings → Team . | Role | Scope | Typical use | | | | | | Reader | Read only for the entire organization | Auditors, stakeholders who only view dashboards | | Writer | Create, update, and delete most org resources | Engineers and operators doing day to day work | | Admin | Everything a writer can do, plus user/team management, API keys, and org settings | Org owners and IT admins | Org readers are always read only If your organization role is Reader , every mutating API call ( , , ) is blocked — even if you hold Workspace Admin in a workspace. Workspace roles cannot override an org level read only membership. Org admins bypass workspace membership checks and receive all workspace capabilities in every workspace. API keys behave differently depending on whether they are linked to a user: User bound keys (created while signed in) carry the linked user's organization role, workspace memberships, and capabilities. They are subject to the same RBAC rules as that user's session. Unbound keys (legacy keys with no linked user) bypass workspace membership and capability checks and receive full workspace access within the key's organization. Prefer user bound keys for least privilege automation. Workspace roles Each workspace has its own membership list. When you are added to a workspace, you receive one of three seeded system roles (or a custom role defined by an org admin): | Workspace role | Can do | Cannot do | | | | | | Viewer | View calls, metrics, evals, simulations, reports, and workspace members | Import, edit, delete, run evaluations, change settings, manage members | | Editor | Everything Viewer can do, plus create/update resources | Delete call imports, rename workspace, add/remove members, change workspace roles | | Workspace Admin | Full access in that workspace, including delete, workspace settings, and member management | — | Roles are cumulative : Editor includes all Viewer permissions; Workspace Admin includes all Editor permissions. What each role needs for common actions | Action | Minimum org role | Minimum workspace role | | | | | | View call imports, agents, metrics | Reader | Viewer | | Upload / import calls, edit rows | Writer | Editor | | Delete call imports or batches | Writer | Workspace Admin | | Create or edit metrics (workspace scoped) | Writer | Editor | | Run evaluations | Writer | Editor | | Rename a workspace | Writer | Workspace Admin | | Add/remove workspace members | Writer | Workspace Admin | | Create a new workspace | Writer | (creator becomes Workspace Admin automatically) | | Delete a workspace | Admin | (org admin only) | | Manage organization users & invitations | Admin | (not workspace scoped) | Configure IAM What you configure Organization name and membership (invitations, roles, password resets) Workspace membership and per workspace roles Custom workspace roles (capability bundles for narrow access slices) IAM tabs Open IAM in the sidebar. The page has three tabs: | Tab | Who can access | Purpose | | | | | | Organization | Admin | Org name, member list, invitations, password resets | | Workspace Members | All members | Assign org users to workspaces with roles | | Workspace Roles | Admin | Define custom workspace roles from the cap"
-    },
-    {
-      "id": "(docs)/advanced/usage",
-      "url": "/docs/advanced/usage/",
-      "title": "Usage",
-      "breadcrumbs": [
-        "Advanced"
-      ],
-      "content": "Usage Usage monitoring documentation is now grouped under Advanced in Docs v2. See ."
     },
     {
       "id": "api-reference/index",
@@ -1928,7 +1820,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.10 Released Jun 28, 2026. . What changed feat: updating azure storage by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/95 Contributors"
+      "content": "v1.5.10 Released Jun 28, 2026. . Primary pull request: by . What changed Adding Azure blob storage integration option. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.11",
@@ -1955,7 +1847,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.13 Released Jul 9, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
+      "content": "v1.5.13 Released Jul 8, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.14",
@@ -1973,7 +1865,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.15 Released Jul 11, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
+      "content": "v1.5.15 Released Jul 10, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.16",
@@ -2081,7 +1973,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.27 Released Aug 22, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
+      "content": "v1.5.27 Released Aug 21, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.28",
@@ -2090,7 +1982,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.28 Released Aug 28, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
+      "content": "v1.5.28 Released Aug 27, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.29",
@@ -2138,13 +2030,13 @@
       "content": "v1.5.33 Released Sep 17, 2026. . Primary pull request: by . What changed Security remediation from the audit, cherry picked onto (replaces the old branch): Auth: httpOnly cookie sessions ( / / ), CSRF middleware, session epoch invalidation on password change, strong enforcement when API hardening: SSRF checks on recording/audio URLs, reader RBAC query token bypass fix, abuse only rate limits on auth/resource creates, LLM config sanitization Headers: TrustedHost + HSTS support Frontend: Cookie session bootstrap, silent refresh, CSRF on axios + Pipecat voice agent connect, profile/password UX fixes Fixes: Duplicate invite → 409, wrong password → 400, expanded recording URL allowlist (incl. R2), App.tsx route cleanup Why The audit flagged token exposure in , missing CSRF protection, SSRF via recording URLs, weak session invalidation, and several auth/RBAC gaps. Cookie based sessions with double submit CSRF address browser auth without storing tokens in JS accessible storage, while SSRF allowlists and outbound URL validation block server side fetch abuse. Cherry picking onto keeps the PR focused (~6 commits) instead of the prior branch that included unrelated otel work. How to test 1. Migrate: (confirms ) 2. Config: ensure and includes 3. Login: sign in → DevTools cookies show , , → refresh page stays logged in 4. Voice call: Agent Playground → start test call → should connect (no CSRF 403) 5. Password: Profile → wrong current password → error toast, not logged out; correct change → redirected to login 6. Invite: IAM → invite same email twice → toast: \"An invitation is already pending for this email\" 7. Recording: play audio on a call with R2/Cloudflare URL → no allowlist error 8. Tests: Deploy note: production needs , strong , , , and . Contributors"
     },
     {
-      "id": "changelog/v1.5.4",
-      "url": "/docs/changelog/v1.5.4/",
-      "title": "v1.5.4",
+      "id": "changelog/v1.5.34",
+      "url": "/docs/changelog/v1.5.34/",
+      "title": "v1.5.34",
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.4 Released Jun 14, 2026. . What changed fix: updating entrprise gated docs by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/90 Contributors"
+      "content": "v1.5.34 Released Sep 22, 2026. . Primary pull request: by . What changed This PR is a major docs revamp on the branch — 520 files changed (~54k insertions). It replaces the legacy docs layout with a Fumadocs v2 site, adds a full OpenAPI driven API reference, and ships new product guides with screenshots. Docs site structure (Fumadocs v2) Quickstart — end to end onboarding guide Platform — product guides for agents, personas, scenarios, evaluators, evaluation suites, metrics, prompts, playground, observability, and setup (with screenshots) Integrations — provider specific pages (ElevenLabs, Plivo, Retell, Smallest, Vapi, Vobiz) Advanced — new section (expanded by default) with: — org/workspace roles, membership, custom roles, Enterprise IAM — threshold rules, Slack/email notifications, alert history (Enterprise feature) API reference — generated from OpenAPI spec ( ) covering agents, auth, call imports, evaluators, integrations, metrics, observability, personas, scenarios, voice bundles, and workspaces Changelog — versioned release pages (v1.5.4–v1.5.33) with enriched PR context Enterprise — BSL licensing overview and open source vs Enterprise comparison table Enterprise page updates Added ✅ to every Enterprise column cell in the comparison table for quick visual scanning Authentication guide links now point to (not localhost) Licensing contact updated to Removed redundant sections: \"Open source limits (EFF 70)\" and \"Enterprise only capabilities (any Enterprise tier)\" Docs UX & navigation Community & contact footer on docs pages (GitHub issues, Discord) Top nav — GitHub link and light/dark theme toggle moved to the right Sidebar — Advanced section uses ; trimmed Advanced nav to IAM + Alerting only (removed Reference, Monitoring, Engineering stubs from nav) README — Discord added to hero quick links and Support section New screenshots for Agents, Evaluators, Metrics, Personas, Playground, Prompts, IAM, and Alerts Changelog generation Enhanced changelog generation to parse linked PR descriptions and include structured sections when present: Build & dev fixes — only when (fixes dev errors) — regenerate when content is newer than cache — guard when returns empty — Fixed MDX hydration errors and removed broken screenshot refs ( , ); replaced with and Why The previous docs site lacked structured product guides, a browsable API reference, and clear Enterprise/IAM/Alerting documentation. Reviewers and users had to dig through scattered pages or the codebase to understand capabilities and licensing boundaries. This revamp: Improves discoverability — Platform, Integrations, and Advanced guides follow a consistent format with screenshots Documents Enterprise gating — IAM multi member limits, alerting, and feature comparison are explicit Enables self serve API usage — OpenAPI generated reference with copy paste examples Improves release transparency — Changelog pages preserve PR rationale and test steps Fixes dev ergonomics — Static export and collection caching no longer break local How to test 1. Run docs checks locally: 2. Run changelog generation: 3. Verify navigation & new guides: Open and confirm sidebar shows Quickstart, Platform, Integrations, Advanced (expanded) Open — IAM screenshot renders, org/workspace role tables present Open — Enterprise callout visible, alerting screenshot renders Open and spot check other Platform pages for screenshots 4. Verify Enterprise page: Open Confirm every Enterprise column cell has ✅ Confirm auth links go to Confirm licensing contact is Confirm removed sections (\"Open source limits\", \"Enterprise only capabilities\") are gone 5. Verify docs UI changes: Confirm footer on docs pages Confirm top nav has GitHub + theme toggle on the right 6. Verify API reference: Open and browse a few endpoints (e.g. agents, evaluators) Confirm request/response schemas render 7. Verify changelog enrichment: Open and confirm detailed PR sections render ( , , ) 8. Verify dev mode: Confirm no / errors in dev Navigate to Ad"
     },
     {
       "id": "changelog/v1.5.5",
@@ -2153,7 +2045,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.5 Released Jun 14, 2026. . What changed fix: updating lambda fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/91 Contributors"
+      "content": "v1.5.5 Released Jun 13, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.6",
@@ -2162,7 +2054,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.6 Released Jun 14, 2026. . What changed fix: lambda fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/92 Contributors"
+      "content": "v1.5.6 Released Jun 13, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.7",
@@ -2171,7 +2063,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.7 Released Jun 15, 2026. . What changed feat: Workspace upgrades by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/89 Contributors"
+      "content": "v1.5.7 Released Jun 15, 2026. . Primary pull request: by . What changed Adding RBAC to workspaces. Adding newer models and providers. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.8",
@@ -2180,7 +2072,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.8 Released Jun 22, 2026. . What changed fix: updating bugs by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/93 Contributors"
+      "content": "v1.5.8 Released Jun 22, 2026. . Primary pull request: by . What changed Briefly describe what this PR changes. Why Explain the problem this solves and why this approach was chosen. How to test List clear steps for reviewers to verify the change. Contributors"
     },
     {
       "id": "changelog/v1.5.9",
@@ -2189,7 +2081,7 @@
       "breadcrumbs": [
         "Changelog"
       ],
-      "content": "v1.5.9 Released Jun 23, 2026. . What changed fix: updating security fixes by @TEJASNARAYANS in https://github.com/EfficientAI tech/efficientAI/pull/94 Contributors"
+      "content": "v1.5.9 Released Jun 23, 2026. . Primary pull request: by . What changed Docker / CVE 2025 68121 Converted to a multi stage build : Stage 1: builds the frontend Stage 2: runtime copies only (no , Node.js, or esbuild) Added committed and removed it from HTTP security headers Extended : : no store for API/SPA; long cache for (tuned for Google Fonts, WebSockets, blob/media URLs) Added CSP settings to : , , Existing headers unchanged: , , Operational endpoints (Actuator false positive) New : Default → anonymous public clients get 404 on and ALB health checks allowed via / User Agent Trusted IPs via (CIDR support, uses ) Authenticated callers (API key / Bearer) also allowed + : → minimal or (503 when degraded) → full migration diagnostics, org admin only OpenAPI docs disabled when ( , , ) gates doc bypass paths on Config & docs — new section — hardening guidance for CSP, docs, and operational endpoints Tests — 6 tests — 11 tests Contributors"
     },
     {
       "id": "enterprise/index",
@@ -2499,7 +2391,7 @@
       "breadcrumbs": [
         "Platform"
       ],
-      "content": "Observability EfficientAI observability spans pipeline traces , production calls , and usage tracking. Start here — OTLP call traces, Calls hub, Playground pipeline timing, debugging surfaces — webhook ingest for production voice calls (Vapi, Retell, custom) — LLM, STT, and TTS consumption and cost estimates Deep technical reference for trace ingest and scaling: ."
+      "content": "Observability EfficientAI observability spans pipeline traces , production calls , and usage tracking. Start here — pipeline timing, Calls hub, Playground, debugging — webhook ingest for production voice calls (Vapi, Retell, custom) — LLM, STT, and TTS consumption and cost estimates Technical reference for trace ingest: ."
     },
     {
       "id": "(docs)/platform/persona",
@@ -2572,6 +2464,15 @@
         "Products"
       ],
       "content": "Alerting What is Alerting? Alerting lets you set up automatic notifications when something important happens with your voice AI agents. Instead of manually checking dashboards, you define rules — and EfficientAI will notify you via Slack , email , or both when those rules are triggered. Think of it as a smoke detector for your voice AI operations. You tell it what to watch (e.g., \"error rate is above 10%\"), and it will ring the alarm when something goes wrong. Quick Example \"If the average latency of my Customer Support Agent exceeds 3 seconds over the last 30 minutes , send a Slack notification to ops alerts.\" That's it — one alert rule, and you'll never miss a latency spike again. Key Concepts Alert An Alert is a monitoring rule. It defines: What to measure (metric + aggregation) When to fire (threshold + operator) How far back to look (time window) Who to notify (emails + webhooks) How often to notify (frequency / cooldown) Alert History Every time an alert's condition is met and fires, an Alert History record is created. This gives you a full audit trail of when alerts were triggered, what the value was, and whether notifications were sent. Setting Up an Alert Step 1: Navigate to Alerts From the sidebar, go to Alerting Alerts . You'll see a list of all configured alerts. Step 2: Create a New Alert Click Create Alert and fill in the following: Basic Information | Field | Required | Description | | | | | | Alert Name | Yes | A descriptive name, e.g., \"High Error Rate Production\" | | Description | No | Optional notes about what this alert monitors | Metric Condition This is the core of your alert — the rule that determines when it fires. | Field | Required | Description | | | | | | Metric | Yes | What to measure (see ) | | Aggregation | Yes | How to combine values over the time window (see ) | | Operator | Yes | The comparison operator ( , , , , , ) | | Threshold | Yes | The value to compare against | | Time Window | Yes | How many minutes of data to look back (e.g., = last 1 hour) | Example: over a window means: \"If the average latency across all calls in the last 30 minutes exceeds 3 seconds, fire the alert.\" Agent Selection Choose which agents this alert applies to: All Agents — monitors every agent in your organization (default) Specific Agents — select one or more agents to scope the alert Notification Settings | Field | Required | Description | | | | | | Notification Frequency | Yes | How often to re notify if the condition persists (see ) | | Email Recipients | No | One or more email addresses to receive alert emails | | Webhooks | No | One or more webhook URLs (e.g., Slack incoming webhooks) | You must configure at least one email or webhook for notifications to work. Step 3: Save Click Create Alert . Your alert is now Active and will be evaluated automatically. Available Metrics | Metric | Value | Description | | | | | | Number of Calls | | Total count of calls in the time window | | Call Duration | | Duration of calls (in seconds) | | Error Rate | | Percentage of calls that resulted in errors | | Success Rate | | Percentage of calls that completed successfully | | Latency | | Response latency of the voice AI agent | | Custom | | Custom metric (for advanced use cases) | Aggregations Aggregations determine how metric values are combined over the time window: | Aggregation | Value | Description | | | | | | Sum | | Total sum of all values | | Average | | Arithmetic mean of all values | | Count | | Number of data points | | Minimum | | Lowest value in the window | | Maximum | | Highest value in the window | Operators | Operator | Description | | | | | | Greater than | | | Less than | | | Greater than or equal to | | | Less than or equal to | | | Equal to | | | Not equal to | Notification Channels Slack Webhooks EfficientAI sends rich Slack messages using formatting. Each notification includes: Alert name and severity The triggered metric value vs. the threshold Timestamp and agent scope To set up a Slack webhook: 1. Go t"
+    },
+    {
+      "id": "products/call-imports",
+      "url": "/docs/products/call-imports/",
+      "title": "Call Imports",
+      "breadcrumbs": [
+        "Products"
+      ],
+      "content": "Call Imports Call Imports lets you bulk import production call recordings via CSV and run batch evaluations on them. Enterprise feature — requires in your . At a glance Upload CSV datasets and optional audio files Map columns with reusable schemas Run metrics and insights across imported production calls Contact the EfficientAI team for a license. Sharded evaluation pipeline (ops) If evaluation runs stall after recordings import (rows show import but no diarization/scoring): 1. Restart API and after deploying fixes. 2. Retry evaluation from the UI (use Overwrite existing transcripts if diarization previously failed). 3. Or clear stale dispatch locks on shard DBs: Abort and force fail run on the queue (before on ) so they are not blocked behind large scoring backlogs. When running locally via or , the imports worker must consume . If is missing, Run Evaluation will enqueue materialize tasks that never run and recording imports will not start. Database sharding (enterprise scale) For large batches (10k+ rows), call import row data can be spread across multiple PostgreSQL data shards with a catalog database for metadata and routing. See for the full system design, configuration, and scaling guide."
     },
     {
       "id": "products/evaluators",

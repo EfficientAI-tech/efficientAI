@@ -61,7 +61,6 @@ import type { AgentFlowGraph, AgentFlowNode } from '../../types/api'
 import {
   countMappedNodes,
   flowchartNeedsPromptMapping,
-  formatFlowchartErrorMessage,
   nodeHasValidMapping,
 } from './flowchartUtils'
 

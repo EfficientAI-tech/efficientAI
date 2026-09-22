@@ -10,7 +10,7 @@ EfficientAI **Call Traces** show how your voice agent behaved on each turn: **Li
 
 Use traces when you need to answer: *“Was this call slow because of speech recognition, the model, or TTS?”*
 
-Production call ingest (Vapi, Retell, custom webhooks) is documented in [Calls](/docs/advanced/calls/). In the app, **Traces** and **Calls** live under the same **Calls** sidebar entry, on different tabs.
+Production call ingest (Vapi, Retell, custom webhooks) is documented in [Calls](/docs/monitoring/calls/). In the app, **Traces** and **Calls** live under the same **Calls** sidebar entry, on different tabs.
 
 ---
 
@@ -96,9 +96,9 @@ EfficientAI is not a full centralized log platform. For debugging, use:
 | --- | --- |
 | **Evaluator results** | Run status, scores, transcripts, and artifacts |
 | **Call or trace detail** | Turn timing, transcripts, and metadata |
-| **Usage** | LLM, STT, and TTS consumption — [Usage](/docs/advanced/usage/) |
+| **Usage** | LLM, STT, and TTS consumption — [Usage](/docs/monitoring/usage/) |
 
-Webhook ingest and evaluations on production calls: [Calls](/docs/advanced/calls/).
+Webhook ingest and evaluations on production calls: [Calls](/docs/monitoring/calls/).
 
 <ScreenshotPlaceholder label="Evaluator result — transcript and scores (/screenshots/traces/evaluator-result-debug.png)" />
 
@@ -113,4 +113,4 @@ Webhook ingest and evaluations on production calls: [Calls](/docs/advanced/calls
 | [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/) | Sandbox quickstart and configuration |
 | [Architecture](/docs/monitoring/call-traces/architecture/) | Ingest and storage (operators) |
 
-Self-hosted deployments: trace-related settings in [Configuration](/docs/advanced/configuration/).
+Self-hosted deployments: trace-related settings in [Configuration](/docs/reference/configuration/).
