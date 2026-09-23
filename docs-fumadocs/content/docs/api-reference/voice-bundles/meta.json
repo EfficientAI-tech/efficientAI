@@ -1,0 +1,11 @@
+{
+  "title": "Voice Bundles",
+  "description": "Voice bundle configuration endpoints.",
+  "pages": [
+    "listVoiceBundles",
+    "createVoiceBundle",
+    "get_voicebundle_api_v1_voicebundles__voicebundle_id__get",
+    "deleteVoiceBundle",
+    "updateVoiceBundle"
+  ]
+}

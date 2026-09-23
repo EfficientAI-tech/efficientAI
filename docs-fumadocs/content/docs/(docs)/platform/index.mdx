@@ -7,51 +7,50 @@ description: The EfficientAI object model and evaluation lifecycle, end to end.
 # How It Works
 
 EfficientAI evaluates voice agents the way your customers experience them: by placing real
-calls against the agent and driving those calls with simulated callers.
+calls against the production agent and driving those calls with simulated callers.
 
-Everything on the platform is built from six objects. Each one is explained in full on its own
+Everything on the platform is built from a small set of objects. Each one is explained on its own
 page in this section — this page shows how they fit together.
 
 ## The object model
 
-An **evaluation suite** is the join table: it pairs one agent with every combination of the
-personas and scenarios you attach. Each combination becomes one or more **runs**, and each run
-is scored by the **metrics** you enabled.
+An **evaluation suite** groups one production agent with persona and scenario combinations. Each combination
+becomes one or more **runs**, and each run is scored by the **metrics** you enabled.
 
-### Combination math (nCr + pairing)
+### Combination math
 
-Evaluation suite runs are based on persona-scenario pairing:
+Evaluation suite runs use persona–scenario pairing:
 
-- If personas and scenarios are already selected in the suite, total combinations are `P x S`
-  (Cartesian product).
-- If subsets are selected from larger pools first, use nCr for each selection stage:
-  - Personas selected: `nCk`
-  - Scenarios selected: `mCr`
-  - Then suite combinations expand to `(nCk) x (mCr)` before applying run count.
+- If personas and scenarios are selected in the suite, total combinations are `P × S` (Cartesian product).
+- Run count multiplies that total (for example, 10 combinations × 3 runs = 30 calls).
 
 ## The evaluation lifecycle
 
-Because the persona, scenario, and voice mapping are all pinned configuration, re-running a
-suite after a prompt or model change produces a comparison you can trust rather than a
-one-off anecdote.
+Because persona, scenario, and voice mapping are pinned configuration, re-running a suite after a
+prompt or model change produces a comparison you can trust rather than a one-off anecdote.
 
 ## Where each concept is explained
 
 | Concept | What it is | Explained in |
 |---|---|---|
-| Agent | The system under test, plus its call medium and prompts. | [Agent](/docs/platform/agent/) |
-| Persona | The simulated caller: behavior profile plus a pinned voice. | [Persona](/docs/platform/persona/) |
-| Scenario | The goal, context, and success criteria for a conversation. | [Scenario](/docs/platform/scenario/) |
-| Metrics | The scoring rules applied to a finished run. | [Evaluator](/docs/platform/evaluator/) |
-| Evaluator | The engine that runs combinations and applies metrics. | [Evaluator](/docs/platform/evaluator/) |
-| Evaluation suite | The grouping that turns personas and scenarios into run combinations. | [Evaluation Suite](/docs/platform/evaluation-suite/) |
-| STT / LLM / TTS | The three model layers inside a voice bundle. | [Setup](/docs/platform/setup/) |
-| Telephony vs WebRTC | The two call mediums an agent can be tested over. | [Agent](/docs/platform/agent/) |
+| Setup | Credentials, voice bundles, storage | [Setup](/docs/platform/setup/) |
+| Agent | Test configuration used to evaluate your production agent | [Agent](/docs/platform/agent/) |
+| Metrics | Scoring rules for finished runs | [Metrics](/docs/platform/metrics/) |
+| Persona | Simulated caller personality, voice, tone, and pace | [Persona](/docs/platform/persona/) |
+| Scenario | Test cases and situations for synthetic testing | [Scenario](/docs/platform/scenario/) |
+| Evaluator | Suite of production agent + persona + scenario runs | [Evaluator](/docs/platform/evaluator/) |
+| Evaluation suite | Grouping that defines combinations and run counts | [Evaluation Suite](/docs/platform/evaluation-suite/) |
+| Prompts & partials | Instructions for the LLM, versioned like code | [Prompts](/docs/platform/prompts/) |
+| Playground | Manual browser tests before simulations | [Playground](/docs/platform/playground/) |
+| Traces | Pipeline timing (STT / LLM / TTS) | [Traces and Logs](/docs/platform/traces-and-logs/) |
 
 ## Suggested reading order
 
-1. [Setup](/docs/platform/setup/) — credentials, voice bundles, storage.
-2. [Agent](/docs/platform/agent/) — define the system under test.
-3. [Persona](/docs/platform/persona/) and [Scenario](/docs/platform/scenario/) — define who calls and why.
-4. [Evaluation Suite](/docs/platform/evaluation-suite/) — assemble the combinations.
-5. [Evaluator](/docs/platform/evaluator/) — choose metrics and read results.
+1. [Setup](/docs/platform/setup/)
+2. [Agent](/docs/platform/agent/)
+3. [Playground](/docs/platform/playground/)
+4. [Metrics](/docs/platform/metrics/)
+5. [Persona](/docs/platform/persona/) and [Scenario](/docs/platform/scenario/)
+6. [Evaluator](/docs/platform/evaluator/) and [Evaluation Suite](/docs/platform/evaluation-suite/)
+7. [Prompts](/docs/platform/prompts/)
+8. [Traces and Logs](/docs/platform/traces-and-logs/)

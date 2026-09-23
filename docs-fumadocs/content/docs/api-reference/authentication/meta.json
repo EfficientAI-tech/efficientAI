@@ -1,0 +1,18 @@
+{
+  "title": "Authentication",
+  "description": "Session and API-key authentication endpoints.",
+  "pages": [
+    "get_auth_config_api_v1_auth_config_get",
+    "preview_invitation_api_v1_auth_invitations_preview__token__get",
+    "accept_invitation_by_token_api_v1_auth_invitations_accept_by_token_post",
+    "signup_api_v1_auth_signup_post",
+    "login_api_v1_auth_login_post",
+    "me_api_v1_auth_me_get",
+    "logout_api_v1_auth_logout_post",
+    "refresh_session_api_v1_auth_refresh_post",
+    "switch_organization_api_v1_auth_switch_org_post",
+    "set_password_api_v1_auth_password_post",
+    "generate_api_key_api_v1_auth_generate_key_post",
+    "validate_api_key_api_v1_auth_validate_post"
+  ]
+}

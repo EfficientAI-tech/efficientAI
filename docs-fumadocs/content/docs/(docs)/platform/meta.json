@@ -1,0 +1,16 @@
+{
+  "title": "Platform",
+  "pages": [
+    "index",
+    "setup",
+    "agent",
+    "playground",
+    "metrics",
+    "persona",
+    "scenario",
+    "evaluator",
+    "evaluation-suite",
+    "prompts",
+    "traces-and-logs"
+  ]
+}

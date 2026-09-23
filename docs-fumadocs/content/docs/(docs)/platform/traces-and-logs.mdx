@@ -1,116 +1,44 @@
 ---
 title: Traces and Logs
 icon: FileSearch
-description: Per-turn pipeline timing (Listen, Think, Speak), the Calls hub, and where to debug runs.
+description: Per-turn pipeline timing (Listen, Think, Speak) and the Calls hub.
 ---
 
 # Traces and Logs
 
-EfficientAI **Call Traces** show how your voice agent behaved on each turn: **Listen** (STT), **Think** (LLM), and **Speak** (TTS), plus call-level latency summaries (**p50 / p90 / p95**).
+EfficientAI **Call Traces** show how your production voice agent behaved on each turn: **Listen** (STT),
+**Think** (LLM), and **Speak** (TTS), plus call-level latency summaries (**p50 / p90 / p95**).
 
-Use traces when you need to answer: *“Was this call slow because of speech recognition, the model, or TTS?”*
+Use traces when you need to answer: *Was this call slow because of speech recognition, the model, or TTS?*
 
-Production call ingest (Vapi, Retell, custom webhooks) is documented in [Calls](/docs/monitoring/calls/). In the app, **Traces** and **Calls** live under the same **Calls** sidebar entry, on different tabs.
+Your production agent sends **OpenTelemetry spans** to EfficientAI. We assign a six-digit **Call ID**,
+group spans into **turns**, and show a **waterfall** in the trace detail view.
 
----
+Rows labeled **Pipeline trace** in **Observability → Calls** use this pipeline view.
+**Webhook call** rows are production ingest — see [Calls](/docs/monitoring/calls/).
 
-## What you get
+## View traces in the app
 
-During a traced call, EfficientAI:
+1. Open **Observability → Calls** in the workspace where the production agent runs.
+2. Open a row with source **Pipeline trace**.
+3. Use **Trace**, **Waterfall**, and **Pipeline** in the drawer.
 
-1. Assigns a **Call ID** (six-digit id shown as `#482931` in the UI).
-2. Collects pipeline timing from your agent integration.
-3. Groups data into **turns**, computes percentiles, and shows a **waterfall** in the trace detail view.
+![Calls hub](/screenshots/Calls/Calls_traces_tab.png)
 
-| Concept | Meaning |
-| --- | --- |
-| **Trace** | One conversation session (one Call ID) |
-| **Turn** | One user speak → agent reply cycle |
-| **Listen / Think / Speak** | STT, LLM, and TTS timing for that turn |
-| **Response p50 / p90 / p95** | How fast replies were across the whole call |
+![Trace detail](/screenshots/Calls/Calls_trace_detail.png)
 
-For definitions and examples of percentiles, see [Latency metrics](/docs/monitoring/call-traces/latency-metrics/).
+## Connect a Pipecat production agent
 
----
+1. Select the **workspace** where traces should appear.
+2. Create an **API key** under **Settings → API keys**.
 
-## Where to find traces
+![Settings — API keys](/screenshots/Calls/Calls_api_keys.png)
 
-**Sidebar:** **Calls**
-
-| Tab | What it lists |
-| --- | --- |
-| **Traces** | Pipeline traces from connected voice agents (for example Pipecat) and phone evaluation runs |
-| **Calls** | Production webhook calls (Vapi, Retell, custom) |
-
-<ScreenshotPlaceholder label="Calls hub — Traces tab (/screenshots/traces/calls-hub-traces-tab.png)" />
-
-Open a trace to see header metrics, the turn table, and the pipeline waterfall.
-
-<ScreenshotPlaceholder label="Trace detail — turn table and waterfall (/screenshots/traces/trace-detail-waterfall.png)" />
-
-### Playground and production calls
-
-| Run type | Where to view pipeline timing |
-| --- | --- |
-| **Agent Playground → Test Agent** | Playground result → **Call details** → **Pipeline** |
-| **Agent Playground → Voice AI** (Retell, Vapi, ElevenLabs) | Call recording detail — **provider** timing, not the Traces tab |
-| **Deployed Pipecat agent** (WebRTC or phone) | **Calls → Traces** (same workspace as your API key) |
-| **Phone simulations / evaluations** | **Calls → Traces** when pipeline tracing is enabled for the run |
-| **Production webhook calls** | **Calls → Calls** |
-
-Telephony carriers move audio only; pipeline timing comes from your agent setup and EfficientAI tracing, not from the carrier dashboard.
-
----
-
-## Traces vs provider metrics
-
-| Source | EfficientAI pipeline percentiles? |
-| --- | --- |
-| **Pipeline / OTLP traces** | **Yes** — see [Latency metrics](/docs/monitoring/call-traces/latency-metrics/) |
-| **Vapi, Retell, ElevenLabs (provider fields)** | **No** — use the vendor’s definitions |
-
-If the UI shows **Pipeline** or **OTLP**, use our metrics guide. If it shows a provider name, treat values as vendor-reported.
-
----
-
-## Connect a Pipecat agent
-
-1. Sign in and select the **workspace** where traces should appear.
-2. Create an **API key** under **Settings → API keys** and note the workspace id.
-3. Configure your Pipecat project using the setup guide (env vars and SDK hooks).
-4. Run a call, then open **Calls → Traces** in that workspace and refresh after hang-up.
-
-<ScreenshotPlaceholder label="Settings — API key and workspace (/screenshots/traces/api-key-workspace.png)" />
-
-Step-by-step quickstart and copy-paste examples:
-
-- [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)
-
----
-
-## Logs and debugging
-
-EfficientAI is not a full centralized log platform. For debugging, use:
-
-| Surface | What you see |
-| --- | --- |
-| **Evaluator results** | Run status, scores, transcripts, and artifacts |
-| **Call or trace detail** | Turn timing, transcripts, and metadata |
-| **Usage** | LLM, STT, and TTS consumption — [Usage](/docs/monitoring/usage/) |
-
-Webhook ingest and evaluations on production calls: [Calls](/docs/monitoring/calls/).
-
-<ScreenshotPlaceholder label="Evaluator result — transcript and scores (/screenshots/traces/evaluator-result-debug.png)" />
-
----
+3. Configure your Pipecat project (see [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)).
+4. Run a call, then refresh **Observability → Calls** after hang-up.
 
 ## Go deeper
 
-| Guide | Topics |
-| --- | --- |
-| [Call Traces overview](/docs/monitoring/call-traces/) | UI map and metrics sources |
-| [Latency metrics](/docs/monitoring/call-traces/latency-metrics/) | p50 / p90 / p95 and Listen / Think / Speak |
-| [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/) | Sandbox quickstart and configuration |
-| [Architecture](/docs/monitoring/call-traces/architecture/) | Ingest and storage (operators) |
-
-Self-hosted deployments: trace-related settings in [Configuration](/docs/reference/configuration/).
+- [Call Traces overview](/docs/monitoring/call-traces/)
+- [Latency metrics](/docs/monitoring/call-traces/latency-metrics/)
+- [Pipecat integration](/docs/monitoring/call-traces/pipecat-integration/)

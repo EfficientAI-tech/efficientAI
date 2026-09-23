@@ -1,0 +1,14 @@
+{
+  "title": "Evaluators",
+  "description": "Evaluator configuration endpoints.",
+  "pages": [
+    "format_custom_prompt_api_v1_evaluators_format_prompt_post",
+    "list_evaluators_api_v1_evaluators_get",
+    "create_evaluator_api_v1_evaluators_post",
+    "create_evaluators_bulk_api_v1_evaluators_bulk_post",
+    "get_evaluator_api_v1_evaluators__evaluator_id__get",
+    "delete_evaluator_api_v1_evaluators__evaluator_id__delete",
+    "update_evaluator_api_v1_evaluators__evaluator_id__put",
+    "run_evaluators_api_v1_evaluators_run_post"
+  ]
+}

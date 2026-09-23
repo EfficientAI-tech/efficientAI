@@ -1,0 +1,21 @@
+{
+  "title": "Metrics",
+  "description": "Metric definition and execution endpoints.",
+  "pages": [
+    "list_metrics_api_v1_metrics_get",
+    "create_metric_api_v1_metrics_post",
+    "createMetricDraft",
+    "createMetricDraftWithChildren",
+    "promoteMetricDraft",
+    "createMetricWithChildren",
+    "addMetricChild",
+    "promoteDiscoveredChild",
+    "promoteDiscoveredMetric",
+    "get_metric_api_v1_metrics__metric_id__get",
+    "delete_metric_api_v1_metrics__metric_id__delete",
+    "update_metric_api_v1_metrics__metric_id__put",
+    "seed_default_metrics_api_v1_metrics_seed_defaults_post",
+    "generate_metric_api_v1_metrics_generate_post",
+    "parse_bulk_metric_api_v1_metrics_parse_bulk_post"
+  ]
+}
