@@ -34,7 +34,7 @@ export default function TraceDetailDrawer({
     : observabilityCallShortId
       ? 'Observability call detail'
       : evaluatorResultId
-        ? 'Test agent call trace'
+        ? 'Evaluation transcript'
         : 'Call trace detail'
 
   useEffect(() => {

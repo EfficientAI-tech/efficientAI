@@ -26,6 +26,8 @@ import {
   assembleTestAgentPrompt,
   isTemplateFilled,
 } from './agentTestSetupConstants'
+import { isChatMedium } from '../../../lib/agentMedium'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 
 interface FormData {
   name: string
@@ -36,7 +38,7 @@ interface FormData {
   prompt_variables: Record<string, string>
   silence_hangup_secs: number
   call_type: string
-  call_medium: 'phone_call' | 'web_call'
+  call_medium: 'phone_call' | 'web_call' | 'chat'
   telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
@@ -248,6 +250,7 @@ export default function AgentEditForm({
       : OVERVIEW_NOT_CONFIGURED
 
   const hasPlatformLink = Boolean(formData.voice_ai_integration_id || formData.voice_ai_agent_id)
+  const isChatAgent = isChatMedium(formData.call_medium)
 
   const productionPromptProse =
     'prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700'
@@ -259,7 +262,9 @@ export default function AgentEditForm({
           <div>
             <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
             <p className="text-sm text-gray-500 mt-1">
-              Identity, call routing, voice stacks, and session behavior.
+              {isChatAgent
+                ? 'Text chat agent — name, language, and production prompt.'
+                : 'Identity, call routing, voice stacks, and session behavior.'}
             </p>
           </div>
 
@@ -303,8 +308,21 @@ export default function AgentEditForm({
             </div>
           </OverviewSection>
 
-          <OverviewSection title="Call setup" description="How sessions are placed and routed.">
+          <OverviewSection
+            title={isChatAgent ? 'Chat setup' : 'Call setup'}
+            description={
+              isChatAgent ? 'Text medium for LLM-to-LLM simulation.' : 'How sessions are placed and routed.'
+            }
+          >
             <div className="space-y-5">
+              {isChatAgent ? (
+                <div className="rounded-lg border border-violet-100 bg-violet-50/50 px-4 py-3">
+                  <CallTypeBadge medium={formData.call_medium} callType={formData.call_type} />
+                  <p className="text-xs text-violet-900 mt-2">
+                    Chat agents do not use phone numbers, voice bundles, or voice platform integrations.
+                  </p>
+                </div>
+              ) : (
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Call medium *</span>
                 <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50/80 p-1 shadow-sm">
@@ -330,7 +348,9 @@ export default function AgentEditForm({
                   ))}
                 </div>
               </div>
+              )}
 
+              {!isChatAgent ? (
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Call type</span>
                 <div className="inline-flex rounded-xl border border-gray-200 bg-gray-50/80 p-1 shadow-sm">
@@ -366,6 +386,7 @@ export default function AgentEditForm({
                   ))}
                 </div>
               </div>
+              ) : null}
 
               {formData.call_medium === 'phone_call' && (
                 <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50/50 p-4">
@@ -479,23 +500,25 @@ export default function AgentEditForm({
             </div>
           </OverviewSection>
 
-          <OverviewSection title="Live session" description="Hang up when neither side speaks for too long.">
-            <ParamSlider
-              label="End call after silence"
-              helpText={`${formatSilenceHangupLabel(formData.silence_hangup_secs)} · Resets on voice activity. Default 15. Set to 0 to disable.`}
-              min={0}
-              max={600}
-              step={1}
-              integer
-              value={formData.silence_hangup_secs}
-              onChange={(next) =>
-                onChange({
-                  ...formData,
-                  silence_hangup_secs: next ?? 0,
-                })
-              }
-            />
-          </OverviewSection>
+          {!isChatAgent ? (
+            <OverviewSection title="Live session" description="Hang up when neither side speaks for too long.">
+              <ParamSlider
+                label="End call after silence"
+                helpText={`${formatSilenceHangupLabel(formData.silence_hangup_secs)} · Resets on voice activity. Default 15. Set to 0 to disable.`}
+                min={0}
+                max={600}
+                step={1}
+                integer
+                value={formData.silence_hangup_secs}
+                onChange={(next) =>
+                  onChange({
+                    ...formData,
+                    silence_hangup_secs: next ?? 0,
+                  })
+                }
+              />
+            </OverviewSection>
+          ) : null}
 
           <div className="flex gap-3 pt-2">
             <Button
@@ -510,50 +533,105 @@ export default function AgentEditForm({
           </div>
             </div>
 
-            <div className="space-y-5 min-w-0">
-              <OverviewSection
-                title="Test agent (EfficientAI)"
-                description="Configure voice stack on the Test Agent tab."
-              >
-                <dl>
-                  <OverviewDetailRow
-                    label="Status"
-                    value={<OverviewConfigBadge configured={testAgentConfigured} />}
-                  />
-                  <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
-                </dl>
-              </OverviewSection>
+            {!isChatAgent ? (
+              <div className="space-y-5 min-w-0">
+                <OverviewSection
+                  title="Test agent (EfficientAI)"
+                  description="Configure voice stack on the Test Agent tab."
+                >
+                  <dl>
+                    <OverviewDetailRow
+                      label="Status"
+                      value={<OverviewConfigBadge configured={testAgentConfigured} />}
+                    />
+                    <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                  </dl>
+                </OverviewSection>
 
-              <OverviewSection
-                title="Voice AI agent"
-                description="Configure integration on the Voice AI Agent tab."
-              >
-                <dl>
-                  <OverviewDetailRow
-                    label="Status"
-                    value={<OverviewConfigBadge configured={voiceAiConfigured} />}
-                  />
-                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
-                  <OverviewDetailRow
-                    label="Provider agent ID"
-                    value={
-                      formData.voice_ai_agent_id?.trim() ? (
-                        <span className="font-mono text-xs font-semibold text-primary-700">
-                          {formData.voice_ai_agent_id.trim()}
-                        </span>
-                      ) : (
-                        OVERVIEW_NOT_CONFIGURED
-                      )
-                    }
-                  />
-                </dl>
-              </OverviewSection>
-            </div>
+                <OverviewSection
+                  title="Voice AI agent"
+                  description="Configure integration on the Voice AI Agent tab."
+                >
+                  <dl>
+                    <OverviewDetailRow
+                      label="Status"
+                      value={<OverviewConfigBadge configured={voiceAiConfigured} />}
+                    />
+                    <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                    <OverviewDetailRow
+                      label="Provider agent ID"
+                      value={
+                        formData.voice_ai_agent_id?.trim() ? (
+                          <span className="font-mono text-xs font-semibold text-primary-700">
+                            {formData.voice_ai_agent_id.trim()}
+                          </span>
+                        ) : (
+                          OVERVIEW_NOT_CONFIGURED
+                        )
+                      }
+                    />
+                  </dl>
+                </OverviewSection>
+              </div>
+            ) : null}
           </div>
         </div>
       )}
 
-      {activeTab === 'test_agent' && (
+      {activeTab === 'test_agent' && isChatAgent && (
+        <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+          <div className="flex items-center justify-between mb-3">
+            <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setProviderPromptEditorMode('write')}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  providerPromptEditorMode === 'write'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Code className="h-3 w-3" />
+                Write
+              </button>
+              <button
+                type="button"
+                onClick={() => setProviderPromptEditorMode('preview')}
+                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                  providerPromptEditorMode === 'preview'
+                    ? 'bg-white text-gray-900 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Eye className="h-3 w-3" />
+                Preview
+              </button>
+            </div>
+          </div>
+          {providerPromptEditorMode === 'write' ? (
+            <textarea
+              value={formData.provider_prompt}
+              onChange={(e) => onChange({ ...formData, provider_prompt: e.target.value })}
+              className="w-full min-h-[380px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
+              rows={16}
+              placeholder="Paste or edit the production system prompt for chat simulation…"
+            />
+          ) : (
+            <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 bg-white">
+              {formData.provider_prompt?.trim() ? (
+                <div className={productionPromptProse}>
+                  <ReactMarkdown>{formData.provider_prompt}</ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-gray-400 italic">Nothing to preview yet…</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'test_agent' && !isChatAgent && (
         <div className="w-full space-y-4">
           <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
 
@@ -820,7 +898,7 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'voice_ai_agent' && hasPlatformLink && (
+      {activeTab === 'voice_ai_agent' && !isChatAgent && hasPlatformLink && (
         <div className="w-full space-y-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider</label>
@@ -872,7 +950,7 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'voice_ai_agent' && !hasPlatformLink && (
+      {activeTab === 'voice_ai_agent' && !isChatAgent && !hasPlatformLink && (
         <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
           <div className="flex items-center justify-between mb-3">
             <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>

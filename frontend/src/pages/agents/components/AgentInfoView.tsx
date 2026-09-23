@@ -12,7 +12,10 @@ import {
   PhoneCall,
   Radio,
   Hash,
+  MessagesSquare,
 } from 'lucide-react'
+import { isChatMedium } from '../../../lib/agentMedium'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
   AGENT_LANGUAGE_LABELS,
@@ -123,6 +126,7 @@ export default function AgentInfoView({
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
 
   if (activeTab === 'overview') {
+    const isChatAgent = isChatMedium(agent.call_medium)
     const silenceSecs = agent.silence_hangup_secs ?? 15
     const hasVoiceBundle = Boolean(agent.voice_bundle_id && linkedBundle)
     const testAgentConfigured = hasVoiceBundle && linkedBundle!.is_active !== false
@@ -155,8 +159,19 @@ export default function AgentInfoView({
         <div>
           <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
           <p className="text-sm text-gray-500 mt-1">
-            Identity, call routing, voice stacks, and session behavior.
+            {isChatAgent
+              ? 'Text chat agent — LLM-to-LLM pre-prod (no phone or WebRTC).'
+              : 'Identity, call routing, voice stacks, and session behavior.'}
           </p>
+          {isChatAgent ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2">
+              <MessagesSquare className="h-4 w-4 text-violet-700 shrink-0" />
+              <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+              <span className="text-xs text-violet-900">
+                Evaluations run as simulated text chat, not voice calls.
+              </span>
+            </div>
+          ) : null}
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
@@ -173,44 +188,70 @@ export default function AgentInfoView({
               </div>
             </OverviewSection>
 
-            <OverviewSection title="Call setup" description="Medium, direction, and phone number.">
+            <OverviewSection
+              title={isChatAgent ? 'Chat setup' : 'Call setup'}
+              description={
+                isChatAgent
+                  ? 'Text medium and connection (internal LLM).'
+                  : 'Medium, direction, and phone number.'
+              }
+            >
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <OverviewStatCard
-                  icon={PhoneCall}
-                  label="Call medium"
-                  value={agent.call_medium === 'phone_call' ? 'Phone call' : 'Web call'}
+                  icon={isChatAgent ? MessagesSquare : PhoneCall}
+                  label="Medium"
+                  value={
+                    isChatAgent ? (
+                      <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+                    ) : (
+                      agent.call_medium === 'phone_call' ? 'Phone call' : 'Web call'
+                    )
+                  }
                   accent="emerald"
                 />
-                <OverviewStatCard
-                  icon={Phone}
-                  label="Call type"
-                  value={<span className="capitalize">{agent.call_type}</span>}
-                />
-                <OverviewStatCard
-                  icon={Hash}
-                  label="Phone number"
-                  value={agent.phone_number?.trim() || OVERVIEW_NOT_CONFIGURED}
-                />
+                {!isChatAgent ? (
+                  <>
+                    <OverviewStatCard
+                      icon={Phone}
+                      label="Call type"
+                      value={<span className="capitalize">{agent.call_type}</span>}
+                    />
+                    <OverviewStatCard
+                      icon={Hash}
+                      label="Phone number"
+                      value={agent.phone_number?.trim() || OVERVIEW_NOT_CONFIGURED}
+                    />
+                  </>
+                ) : (
+                  <OverviewStatCard
+                    icon={Globe}
+                    label="Connection"
+                    value="Internal LLM"
+                    accent="violet"
+                  />
+                )}
               </div>
             </OverviewSection>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-              <OverviewSection
-                title="Live session"
-                description="Automatic hangup when the line stays silent."
-              >
-                <ParamSlider
-                  label="End call after silence"
-                  helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable. Use Edit to change.`}
-                  min={0}
-                  max={600}
-                  step={1}
-                  integer
-                  value={silenceSecs}
-                  onChange={() => {}}
-                  disabled
-                />
-              </OverviewSection>
+            <div className={`grid grid-cols-1 ${isChatAgent ? '' : 'lg:grid-cols-2'} gap-5`}>
+              {!isChatAgent ? (
+                <OverviewSection
+                  title="Live session"
+                  description="Automatic hangup when the line stays silent."
+                >
+                  <ParamSlider
+                    label="End call after silence"
+                    helpText={`${formatSilenceHangupLabel(silenceSecs)} · Resets when either side speaks. Set to 0 to disable. Use Edit to change.`}
+                    min={0}
+                    max={600}
+                    step={1}
+                    integer
+                    value={silenceSecs}
+                    onChange={() => {}}
+                    disabled
+                  />
+                </OverviewSection>
+              ) : null}
 
               <OverviewSection title="Timeline">
                 <div className="space-y-1">
@@ -227,52 +268,86 @@ export default function AgentInfoView({
             </div>
           </div>
 
-          <div className="space-y-5 min-w-0">
-            <OverviewSection
-              title="Test agent (EfficientAI)"
-              description="Internal voice stack for playground and evaluator runs."
-            >
-              <dl>
-                <OverviewDetailRow
-                  label="Status"
-                  value={<OverviewConfigBadge configured={testAgentConfigured} />}
-                />
-                <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
-              </dl>
-            </OverviewSection>
+          {!isChatAgent ? (
+            <div className="space-y-5 min-w-0">
+              <OverviewSection
+                title="Test agent (EfficientAI)"
+                description="Internal voice stack for playground and evaluator runs."
+              >
+                <dl>
+                  <OverviewDetailRow
+                    label="Status"
+                    value={<OverviewConfigBadge configured={testAgentConfigured} />}
+                  />
+                  <OverviewDetailRow label="Voice bundle" value={voiceBundleLabel} />
+                </dl>
+              </OverviewSection>
 
-            <OverviewSection
-              title="Voice AI agent"
-              description="External provider agent for side-by-side evaluation."
-            >
-              <dl>
-                <OverviewDetailRow
-                  label="Status"
-                  value={<OverviewConfigBadge configured={voiceAiConfigured} />}
-                />
-                <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
-                <OverviewDetailRow
-                  label="Provider agent ID"
-                  value={
-                    hasVoiceAiAgentId ? (
-                      <span className="font-mono text-xs font-semibold text-primary-700">
-                        {voiceAiAgentId}
-                      </span>
-                    ) : (
-                      OVERVIEW_NOT_CONFIGURED
-                    )
-                  }
-                />
-              </dl>
-            </OverviewSection>
-          </div>
+              <OverviewSection
+                title="Voice AI agent"
+                description="External provider agent for side-by-side evaluation."
+              >
+                <dl>
+                  <OverviewDetailRow
+                    label="Status"
+                    value={<OverviewConfigBadge configured={voiceAiConfigured} />}
+                  />
+                  <OverviewDetailRow label="Integration" value={voiceAiIntegrationLabel} />
+                  <OverviewDetailRow
+                    label="Provider agent ID"
+                    value={
+                      hasVoiceAiAgentId ? (
+                        <span className="font-mono text-xs font-semibold text-primary-700">
+                          {voiceAiAgentId}
+                        </span>
+                      ) : (
+                        OVERVIEW_NOT_CONFIGURED
+                      )
+                    }
+                  />
+                </dl>
+              </OverviewSection>
+            </div>
+          ) : null}
         </div>
       </div>
     )
   }
 
   if (activeTab === 'test_agent') {
+    const isChatAgent = isChatMedium(agent.call_medium)
     const canTalk = !!agent.voice_bundle_id
+
+    if (isChatAgent) {
+      const chatPrompt = providerPromptText || agent.description?.trim() || ''
+      return (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">Production prompt</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              System instructions for the agent under test in LLM-to-LLM evaluations.
+            </p>
+          </div>
+          <section className="rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+            <div className="border-b border-gray-200 bg-white px-4 py-3">
+              <h4 className="text-sm font-semibold text-gray-900">Prompt</h4>
+            </div>
+            <div className="p-5 max-h-[60vh] overflow-y-auto">
+              {chatPrompt ? (
+                <div className={PROSE}>
+                  <ReactMarkdown>{chatPrompt}</ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400 italic">
+                  No production prompt yet. Use Edit to add one.
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
+      )
+    }
+
     return (
       <div className="space-y-4">
         <TestAgentSubTabNav value={testAgentSubTab} onChange={setTestAgentSubTab} />
@@ -396,6 +471,10 @@ export default function AgentInfoView({
         )}
       </div>
     )
+  }
+
+  if (isChatMedium(agent.call_medium)) {
+    return null
   }
 
   return (

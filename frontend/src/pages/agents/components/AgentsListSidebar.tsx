@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
 import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
+import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
+import { isChatMedium } from '../../../lib/agentMedium'
 
 export function agentRouteId(agent: TestAgent): string {
   return agent.agent_id || agent.id
@@ -119,16 +121,18 @@ export default function AgentsListSidebar({
                 className="flex-1 min-w-0 text-left px-2 py-2.5"
               >
                 <div className="flex items-center gap-1.5">
-                  {getIntegrationLogo(agent)}
+                  {!isChatMedium(agent.call_medium) ? getIntegrationLogo(agent) : null}
                   <span className="font-mono text-xs font-semibold text-primary-600 truncate">
                     {agent.agent_id || agent.id.slice(0, 8)}
                   </span>
                 </div>
                 <p className="text-sm font-medium text-gray-900 truncate mt-0.5">{agent.name}</p>
-                <p className="text-xs text-gray-500 mt-0.5 capitalize">
-                  {agent.call_medium === 'phone_call' ? 'Phone' : 'Web'} · {agent.language.toUpperCase()} ·{' '}
-                  {agent.call_type}
-                </p>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+                  <span className="text-xs text-gray-500">
+                    {agent.language.toUpperCase()} · {agent.call_type}
+                  </span>
+                </div>
               </button>
             </div>
           )

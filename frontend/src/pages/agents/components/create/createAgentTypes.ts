@@ -1,7 +1,7 @@
 import type { TestAgentTemplateDraft } from '../agentTestSetupConstants'
 import { defaultTestAgentTemplate } from '../agentTestSetupConstants'
 
-export type CreateAgentPath = 'telephony' | 'platform'
+export type CreateAgentPath = 'telephony' | 'platform' | 'chat'
 
 export interface CreateAgentFormData {
   name: string
@@ -10,7 +10,7 @@ export interface CreateAgentFormData {
   description: string
   test_agent_template: TestAgentTemplateDraft
   call_type: string
-  call_medium: 'phone_call'
+  call_medium: 'phone_call' | 'web_call' | 'chat'
   telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
@@ -43,6 +43,12 @@ export const PLATFORM_STEPS = [
   { id: 1, title: 'Connect', description: 'Choose platform, integration, agent' },
   { id: 2, title: 'Voice', description: 'Select voice bundle' },
   { id: 3, title: 'Prompts', description: 'Imported prompt → test prompt' },
+] as const
+
+export const CHAT_STEPS = [
+  { id: 1, title: 'Basics', description: 'Name and language' },
+  { id: 2, title: 'Production prompt', description: 'Paste your live agent prompt' },
+  { id: 3, title: 'Connection', description: 'How we reach the agent (internal LLM)' },
 ] as const
 
 export type CreateStepId = 1 | 2 | 3

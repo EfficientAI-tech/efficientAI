@@ -36,6 +36,8 @@ def agent_persona_tts_mismatch(
     persona: Persona,
 ) -> Optional[AgentPersonaTtsMismatch]:
     """Return mismatch details when persona and bundle TTS providers differ."""
+    if (agent.call_medium or "").lower() == "chat":
+        return None
     if not agent.voice_bundle_id or not persona.tts_provider:
         return None
     voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()

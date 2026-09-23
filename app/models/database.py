@@ -566,7 +566,17 @@ class Agent(Base):
     prompt_variables = Column(JSON, nullable=True)
     test_agent_template = Column(JSON, nullable=True)
     silence_hangup_secs = Column(Integer, nullable=False, server_default="15")
-    
+
+    chat_connection_type = Column(String(32), nullable=True)
+    main_llm_provider = Column(String(64), nullable=True)
+    main_llm_model = Column(String(255), nullable=True)
+    main_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
+    main_llm_config = Column(JSON, nullable=True)
+    test_llm_provider = Column(String(64), nullable=True)
+    test_llm_model = Column(String(255), nullable=True)
+    test_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
+    test_llm_config = Column(JSON, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)

@@ -11,6 +11,8 @@ import { displayEvaluatorResultStatus } from './evaluatorResultStatus'
 import ResultsHierarchyNav from './ResultsHierarchyNav'
 import { resolveTraceDrawerTargets } from '../../../lib/callDetailRouting'
 import TraceDetailDrawer from '../../../components/call-recordings/TraceDetailDrawer'
+import { isChatEvalResult } from '../../../lib/agentMedium'
+import { EvalRunKindBadge } from '../components/evaluatorUi'
 
 const LEGACY_CATEGORY_LABEL_METRIC_NAMES = new Set([
   'yes',
@@ -240,7 +242,7 @@ interface EvaluatorResultDetail {
   }
 }
 
-function EvaluationStepper({ status }: { status: string }) {
+function EvaluationStepper({ status, isChat = false }: { status: string; isChat?: boolean }) {
   const [dots, setDots] = useState('')
 
   useEffect(() => {
@@ -248,19 +250,31 @@ function EvaluationStepper({ status }: { status: string }) {
     return () => clearInterval(id)
   }, [])
 
-  const steps = [
-    { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
-    { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
-    { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
-  ]
+  const steps = isChat
+    ? [
+        { key: 'queued', label: 'Queued', sublabel: 'Preparing simulation' },
+        { key: 'transcribing', label: 'Simulating chat', sublabel: 'LLM-to-LLM turns' },
+        { key: 'evaluating', label: 'Evaluating', sublabel: 'Conversation metrics' },
+      ]
+    : [
+        { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
+        { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
+        { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
+      ]
 
   const activeIdx = Math.max(0, steps.findIndex(s => s.key === status))
 
-  const statusMessages: Record<string, string> = {
-    queued: 'Downloading audio & preparing evaluation',
-    transcribing: 'Running acoustic analysis & voice quality metrics',
-    evaluating: 'Evaluating conversation quality with LLM',
-  }
+  const statusMessages: Record<string, string> = isChat
+    ? {
+        queued: 'Preparing LLM chat simulation',
+        transcribing: 'Running simulated chat turns',
+        evaluating: 'Scoring conversation with evaluators',
+      }
+    : {
+        queued: 'Downloading audio & preparing evaluation',
+        transcribing: 'Running acoustic analysis & voice quality metrics',
+        evaluating: 'Evaluating conversation quality with LLM',
+      }
 
   return (
     <div className="py-8 px-4">
@@ -693,6 +707,8 @@ export default function EvaluatorResultDetailPage({
         ? Boolean(resultData.metric_scores?.successful?.value)
         : null
 
+  const isChatRun = isChatEvalResult(resultData)
+
   return (
     <div
       className={
@@ -732,6 +748,9 @@ export default function EvaluatorResultDetailPage({
               <p className="text-sm text-gray-500 mt-1">
                 Result ID: <span className="font-mono font-semibold text-primary-600">{resultData.result_id}</span>
               </p>
+              <div className="mt-2">
+                <EvalRunKindBadge isChat={isChatEvalResult(resultData)} />
+              </div>
             </div>
             <div className="flex items-center gap-3">
               {callDetailsInDrawer ? (
@@ -741,7 +760,7 @@ export default function EvaluatorResultDetailPage({
                   onClick={() => setDetailDrawerOpen(true)}
                   leftIcon={<Activity className="w-4 h-4" />}
                 >
-                  Call details
+                  {isChatEvalResult(resultData) ? 'Chat transcript' : 'Call details'}
                 </Button>
               ) : null}
               {!reEvalInProgress && (resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
@@ -788,7 +807,8 @@ export default function EvaluatorResultDetailPage({
                 <div>
                   <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
                   <p className="text-sm text-gray-900">{resultData.persona.name}</p>
-                  {(resultData.persona.tts_provider || resultData.persona.tts_voice_name) && (
+                  {!isChatRun &&
+                    (resultData.persona.tts_provider || resultData.persona.tts_voice_name) && (
                     <p className="text-xs text-gray-500 mt-0.5">
                       {[resultData.persona.tts_provider, resultData.persona.tts_voice_name]
                         .filter(Boolean)
@@ -799,11 +819,15 @@ export default function EvaluatorResultDetailPage({
               ) : null}
               {resultData.provider_platform ? (
                 <div>
-                  <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
-                  <p className="text-sm text-gray-900 capitalize">{resultData.provider_platform}</p>
+                  <p className="text-xs text-gray-500 font-medium mb-1">
+                    {isChatEvalResult(resultData) ? 'Simulation' : 'Platform'}
+                  </p>
+                  <p className="text-sm text-gray-900 capitalize">
+                    {isChatEvalResult(resultData) ? 'LLM chat (internal)' : resultData.provider_platform}
+                  </p>
                 </div>
               ) : null}
-              {resultData.provider_call_id ? (
+              {resultData.provider_call_id && !isChatRun ? (
                 <div className="lg:col-span-2">
                   <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
                   <p className="text-sm font-mono text-gray-900 text-xs break-all">
@@ -849,11 +873,14 @@ export default function EvaluatorResultDetailPage({
           {/* Stepper progress (re-evaluate or initial evaluation) */}
           {!reEvalInProgress && displayStatus === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
            : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(displayStatus) ? (
-            <EvaluationStepper status={
+            <EvaluationStepper
+              isChat={isChatRun}
+              status={
               reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
                 ? 'queued'
                 : displayStatus
-            } />
+            }
+            />
           ) : null}
 
           {/* Error state */}
@@ -905,7 +932,7 @@ export default function EvaluatorResultDetailPage({
               return (
                 <div className="space-y-8">
                   {/* AI Voice Quality Metrics */}
-                  {aiVoiceMetrics.length > 0 && (
+                  {!isChatRun && aiVoiceMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <Sparkles className="w-4 h-4 text-purple-600" />
@@ -928,7 +955,7 @@ export default function EvaluatorResultDetailPage({
                   )}
                   
                   {/* Acoustic Metrics */}
-                  {acousticMetrics.length > 0 && (
+                  {!isChatRun && acousticMetrics.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <AudioWaveform className="w-4 h-4 text-violet-600" />
@@ -988,7 +1015,9 @@ export default function EvaluatorResultDetailPage({
       {callDetailsInDrawer &&
         (callAnalysisSummary || userSentiment || callSuccessful !== null) && (
           <div className="mb-6 bg-white rounded-lg shadow p-6">
-            <h2 className="text-sm font-semibold text-gray-900 mb-3">Call summary</h2>
+            <h2 className="text-sm font-semibold text-gray-900 mb-3">
+              {isChatRun ? 'Conversation summary' : 'Call summary'}
+            </h2>
             {callAnalysisSummary ? (
               <p className="text-sm text-gray-700 leading-relaxed mb-4">{callAnalysisSummary}</p>
             ) : null}
@@ -1009,13 +1038,15 @@ export default function EvaluatorResultDetailPage({
               ) : null}
             </div>
             <p className="text-xs text-gray-500 mt-4">
-              Recording, full transcript, and provider details are in{' '}
+              {isChatRun
+                ? 'Full message transcript is in '
+                : 'Recording, full transcript, and provider details are in '}
               <button
                 type="button"
                 className="font-medium text-primary-600 hover:text-primary-800"
                 onClick={() => setDetailDrawerOpen(true)}
               >
-                Call details
+                {isChatRun ? 'Chat transcript' : 'Call details'}
               </button>
               .
             </p>

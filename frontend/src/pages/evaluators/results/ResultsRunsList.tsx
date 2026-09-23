@@ -18,6 +18,8 @@ import {
   displayEvaluatorResultStatus,
   isEvaluatorResultInProgress,
 } from './evaluatorResultStatus'
+import { isChatEvalResult } from '../../../lib/agentMedium'
+import { EvalRunKindBadge } from '../components/evaluatorUi'
 import { formatDuration, formatTimestamp, getStatusConfig } from './resultsFormatting'
 import { itemsOf } from '../../../lib/safeData'
 
@@ -204,6 +206,7 @@ export default function ResultsRunsList({
                   <th className="px-4 py-3 w-10" />
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result ID</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run type</th>
                   {showAgentColumn && (
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Agent</th>
                   )}
@@ -244,8 +247,16 @@ export default function ResultsRunsList({
                       </td>
                       <td className="px-4 py-3 font-mono text-sm text-primary-600">{result.result_id}</td>
                       <td className="px-4 py-3 text-sm text-gray-900">{result.name}</td>
+                      <td className="px-4 py-3">
+                        <EvalRunKindBadge isChat={isChatEvalResult(result)} />
+                      </td>
                       {showAgentColumn && (
-                        <td className="px-4 py-3 text-sm text-gray-600">{result.agent?.name ?? '—'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          <span>{result.agent?.name ?? '—'}</span>
+                          {result.agent?.call_medium === 'chat' ? (
+                            <span className="ml-1.5 text-xs text-violet-600">(chat)</span>
+                          ) : null}
+                        </td>
                       )}
                       {showPersonaColumn && (
                         <td className="px-4 py-3 text-sm text-gray-600">{result.persona?.name ?? '—'}</td>

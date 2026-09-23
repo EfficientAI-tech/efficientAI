@@ -32,6 +32,10 @@ def scenario_reference_token(scenario: Scenario) -> str:
     return f"@scenario{{{scenario.id}}}"
 
 
+def is_chat_agent(agent: Agent) -> bool:
+    return (getattr(agent, "call_medium", None) or "").lower() == "chat"
+
+
 def get_agent_base_prompt(agent: Agent) -> str:
     """Return the core agent prompt text used for simulation composition."""
     description = strip_scenario_reference_appendix(agent.description or "")
@@ -41,6 +45,15 @@ def get_agent_base_prompt(agent: Agent) -> str:
     if provider:
         return provider
     return "A voice AI assistant"
+
+
+def production_prompt_for_simulation(agent: Agent) -> str:
+    """Prompt for the agent-under-test leg (chat agents prefer synced provider_prompt)."""
+    if is_chat_agent(agent):
+        provider = (getattr(agent, "provider_prompt", None) or "").strip()
+        if provider:
+            return provider
+    return get_agent_base_prompt(agent)
 
 
 def _format_required_info(required_info: Any) -> str:
@@ -169,6 +182,15 @@ def build_test_agent_system_prompt(
     persona_description: Optional[str] = None,
 ) -> str:
     """Full caller LLM system prompt: simulation core + persona + instructions."""
+    if is_chat_agent(agent):
+        return build_test_agent_chat_system_prompt(
+            agent,
+            persona,
+            scenario,
+            max_turns=max_turns,
+            agent_name=agent_name,
+            persona_description=persona_description,
+        )
     under_test_name = (agent_name or agent.name or "Voice AI Agent").strip()
     persona_name = (persona.name or "Caller").strip()
     effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
@@ -200,6 +222,45 @@ INSTRUCTIONS:
 
 You are calling: {under_test_name}
 After {effective_max_turns} exchanges, wrap up the conversation politely."""
+
+
+def build_test_agent_chat_system_prompt(
+    agent: Agent,
+    persona: Persona,
+    scenario: Scenario,
+    *,
+    max_turns: Optional[int] = None,
+    agent_name: Optional[str] = None,
+    persona_description: Optional[str] = None,
+) -> str:
+    """Simulated end-user for text chat (testing agent)."""
+    under_test_name = (agent_name or agent.name or "Chat Agent").strip()
+    persona_name = (persona.name or "User").strip()
+    effective_max_turns = max_turns if max_turns is not None else resolve_persona_max_turns(persona)
+    scenario_block = format_scenario_prompt(scenario)
+    persona_block = format_persona_block(
+        persona,
+        persona_description=persona_description or build_persona_description_for_bridge(persona),
+    )
+    return f"""You are {persona_name}, a real user in a text chat with a support agent.
+
+CONTEXT (do not reveal to the agent)
+You are testing: {under_test_name}
+
+Scenario:
+{scenario_block}
+
+PERSONA
+{persona_block}
+
+INSTRUCTIONS:
+1. Stay in character as {persona_name}
+2. Work toward the scenario goal in natural chat messages
+3. Keep messages concise (1-4 sentences)
+4. If the goal is met or the thread is done, say goodbye
+5. Output ONLY the user message text — no labels or stage directions
+
+After about {effective_max_turns} message exchanges, wrap up politely."""
 
 
 def build_live_test_agent_system_prompt(

@@ -5,6 +5,7 @@ export type EvaluatorCallScope = {
   personaName?: string | null
   personaTtsLine?: string | null
   platform?: string | null
+  chatSimulation?: boolean
 }
 
 function platformLabel(platform?: string | null): string | null {
@@ -64,11 +65,17 @@ export function evaluatorDrawerScopeTags(
   switch (tab) {
     case 'transcript':
       return {
-        tags: [
-          'Full conversation',
-          agent ? `Agent: ${agent}` : 'Agent under test',
-          caller ? `Caller: ${caller}` : 'Simulated caller',
-        ],
+        tags: scope.chatSimulation
+          ? [
+              'Text conversation',
+              agent ? `Agent: ${agent}` : 'Agent under test',
+              scope.personaName?.trim() ? `Persona: ${scope.personaName}` : 'Simulated persona',
+            ]
+          : [
+              'Full conversation',
+              agent ? `Agent: ${agent}` : 'Agent under test',
+              caller ? `Caller: ${caller}` : 'Simulated caller',
+            ],
       }
     case 'analysis':
       return {

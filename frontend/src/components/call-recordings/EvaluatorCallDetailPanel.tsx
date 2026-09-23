@@ -35,6 +35,7 @@ import {
   evaluatorDrawerScopeTags,
   type EvaluatorCallScope,
 } from './callDetailScope'
+import { isChatEvalResult } from '../../lib/agentMedium'
 
 type DrawerTab =
   | 'transcript'
@@ -215,16 +216,21 @@ export default function EvaluatorCallDetailPanel({
     staleTime: 60_000,
   })
 
+  const isChatRun = Boolean(result && isChatEvalResult(result))
+
   const showProviderTab = Boolean(
-    result && isVoiceAiProviderPlatform(result.provider_platform) && result.call_data,
+    result &&
+      !isChatRun &&
+      isVoiceAiProviderPlatform(result.provider_platform) &&
+      result.call_data,
   )
 
   const visibleTabs = useMemo(() => {
     const tabs = [...BASE_TABS]
     if (showProviderTab) tabs.push(...PROVIDER_METRIC_TABS)
-    if (hasPipelineTrace) tabs.push(...PIPELINE_SUB_TABS)
+    if (hasPipelineTrace && !isChatRun) tabs.push(...PIPELINE_SUB_TABS)
     return tabs
-  }, [hasPipelineTrace, showProviderTab])
+  }, [hasPipelineTrace, showProviderTab, isChatRun])
 
   useEffect(() => {
     if (PIPELINE_TAB_IDS.includes(tab as SyntheticTraceDetailTab) && !hasPipelineTrace) {
@@ -339,17 +345,17 @@ export default function EvaluatorCallDetailPanel({
   }, [result])
 
   const audioPlayback = useMemo(() => {
-    if (!result) return {}
+    if (!result || isChatRun) return {}
     return resolveEvaluatorAudioPlayback({
       callShortId: callShortIdFromData,
       providerPlatform: result.provider_platform,
       callRecordingSource: (result as { call_recording_source?: string | null }).call_recording_source,
       evaluatorResultId,
     })
-  }, [result, callShortIdFromData, evaluatorResultId])
+  }, [result, callShortIdFromData, evaluatorResultId, isChatRun])
 
   useEffect(() => {
-    if (!result) return
+    if (!result || isChatRun) return
     if (audioPlayback.callShortId) {
       prefetchCallRecordingAudio(audioPlayback.callShortId, false)
       return
@@ -361,19 +367,19 @@ export default function EvaluatorCallDetailPanel({
     if (hasEvaluatorResultRecording(result)) {
       prefetchEvaluatorRecordingAudio(evaluatorResultId)
     }
-  }, [result, audioPlayback, evaluatorResultId])
+  }, [result, audioPlayback, evaluatorResultId, isChatRun])
 
   if (!result && (isLoading || isFetching)) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8">
         <div className="h-10 w-10 animate-spin rounded-full border-2 border-primary-500 border-t-transparent" />
-        <p className="text-sm text-gray-500">Loading call details…</p>
+        <p className="text-sm text-gray-500">Loading…</p>
       </div>
     )
   }
 
   if (!result && !isLoading && !isFetching) {
-    return <div className="p-8 text-sm text-gray-600">Call details not found.</div>
+    return <div className="p-8 text-sm text-gray-600">Details not found.</div>
   }
 
   const fetchError =
@@ -401,11 +407,13 @@ export default function EvaluatorCallDetailPanel({
   const callScope: EvaluatorCallScope = {
     agentName: result?.agent?.name,
     personaName: result?.persona?.name,
-    personaTtsLine:
-      result?.persona?.tts_provider || result?.persona?.tts_voice_name
+    personaTtsLine: isChatRun
+      ? null
+      : result?.persona?.tts_provider || result?.persona?.tts_voice_name
         ? [result.persona.tts_provider, result.persona.tts_voice_name].filter(Boolean).join(' · ')
         : null,
-    platform: result?.provider_platform,
+    platform: isChatRun ? null : result?.provider_platform,
+    chatSimulation: isChatRun,
   }
   const tabScope = evaluatorDrawerScopeTags(tab, callScope)
   const providerBillingScope = {
@@ -419,8 +427,14 @@ export default function EvaluatorCallDetailPanel({
       <div className="shrink-0 border-b border-gray-200 bg-white px-5 py-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-gray-900">Call details</h2>
+            <h2 className="text-lg font-semibold text-gray-900">
+              {isChatRun ? 'Chat transcript' : 'Call details'}
+            </h2>
             <p className="mt-0.5 text-xs text-gray-500">
+              {isChatRun ? (
+                <span className="text-violet-700 font-medium">LLM chat simulation</span>
+              ) : null}
+              {isChatRun ? ' · ' : null}
               Result{' '}
               <span className="font-mono font-medium text-primary-600">
                 {result?.result_id ?? evaluatorResultId}
@@ -459,13 +473,15 @@ export default function EvaluatorCallDetailPanel({
             </div>
           ) : null}
 
-          <CallWaveformPlayer
-            evaluatorResultId={audioPlayback.evaluatorResultId}
-            callShortId={audioPlayback.callShortId}
-            observabilityCallShortId={audioPlayback.observabilityCallShortId}
-            callData={result?.call_data}
-            platform={result?.provider_platform}
-          />
+          {!isChatRun ? (
+            <CallWaveformPlayer
+              evaluatorResultId={audioPlayback.evaluatorResultId}
+              callShortId={audioPlayback.callShortId}
+              observabilityCallShortId={audioPlayback.observabilityCallShortId}
+              callData={result?.call_data}
+              platform={result?.provider_platform}
+            />
+          ) : null}
 
           <div className="-mx-5 flex flex-nowrap gap-0.5 overflow-x-auto border-t border-gray-200 bg-white px-5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {visibleTabs.map(({ id, label, icon: Icon }) => (
@@ -501,14 +517,14 @@ export default function EvaluatorCallDetailPanel({
                 isLive={isLiveCall}
                 agentName={result?.agent?.name || 'Agent'}
                 heightClass="min-h-[320px]"
-                emptyMessage="Waiting for speech…"
+                emptyMessage={isChatRun ? 'Waiting for messages…' : 'Waiting for speech…'}
               />
             ) : (
               <div className="rounded-xl border border-gray-200 bg-white p-4">
                 <div className="space-y-3 pr-1">
                   {speakerSegments.length > 0 ? (
                     speakerSegments.map((segment, idx) => {
-                      const timing = segmentTimingLabel(segment)
+                      const timing = isChatRun ? null : segmentTimingLabel(segment)
                       return (
                         <div
                           key={idx}

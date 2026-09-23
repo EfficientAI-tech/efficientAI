@@ -64,8 +64,19 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         has_voice_ai_integration = (
             agent.voice_ai_integration_id is not None and agent.voice_ai_agent_id is not None
         )
+        from app.services.agents.chat_llm_config import (
+            agent_has_chat_simulation_config,
+            should_use_llm_text_simulation,
+        )
 
-        if has_voice_bundle and has_voice_ai_integration:
+        call_medium = (agent.call_medium or "phone_call").lower()
+        use_llm_text_simulation = should_use_llm_text_simulation(
+            agent,
+            has_voice_bundle=has_voice_bundle,
+            has_voice_ai_integration=has_voice_ai_integration,
+        )
+
+        if has_voice_bundle and has_voice_ai_integration and not use_llm_text_simulation:
             try:
                 result.status = EvaluatorResultStatus.CALL_INITIATING.value
                 result.call_event = "task_started"
@@ -111,7 +122,7 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 db.commit()
                 raise
 
-        elif has_voice_bundle:
+        elif use_llm_text_simulation:
             from app.models.database import Persona, Scenario
             from app.services.testing.llm_to_llm_evaluator_simulation import (
                 run_llm_to_llm_evaluator_simulation,
@@ -177,9 +188,13 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         else:
             logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Agent missing required configuration")
             result.status = EvaluatorResultStatus.FAILED.value
+            has_main_llm = agent_has_chat_simulation_config(agent)
             result.error_message = (
-                f"Agent missing required configuration: voice_bundle={has_voice_bundle}, "
-                f"voice_ai_integration={has_voice_ai_integration}"
+                "Agent missing required configuration for this run. "
+                f"call_medium={call_medium}, main_llm_connection={has_main_llm}, "
+                f"voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}. "
+                "Chat agents need call_medium=chat with main LLM on the connection layer "
+                "(or restart Celery workers after upgrading). Voice agents need a voice bundle or integration."
             )
             result.call_event = "configuration_error"
             db.commit()

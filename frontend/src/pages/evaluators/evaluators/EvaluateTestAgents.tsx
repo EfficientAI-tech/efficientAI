@@ -17,6 +17,7 @@ import {
   PhoneIncoming,
   PhoneOutgoing,
   ChevronRight,
+  MessagesSquare,
 } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
@@ -76,8 +77,9 @@ export default function EvaluateTestAgents() {
       (s) => s.agent_call_medium === 'phone_call' && s.agent_call_type !== 'inbound',
     ).length
     const web = suites.filter((s) => s.agent_call_medium === 'web_call').length
+    const chat = suites.filter((s) => s.agent_call_medium === 'chat').length
     const combinations = suites.reduce((sum, s) => sum + s.combination_count, 0)
-    return { total: suites.length, inbound, outbound, web, combinations }
+    return { total: suites.length, inbound, outbound, web, chat, combinations }
   }, [suites])
 
   const sortedSuites = useMemo(() => {
@@ -210,7 +212,7 @@ export default function EvaluateTestAgents() {
       {/* Summary stats */}
       {!isLoading && suites.length > 0 && (
         <motion.div
-          className="grid grid-cols-2 md:grid-cols-4 gap-4"
+          className={`grid grid-cols-2 gap-4 ${stats.chat > 0 ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
@@ -247,6 +249,16 @@ export default function EvaluateTestAgents() {
             iconClass="text-amber-500"
             icon={<PhoneIncoming className="w-5 h-5" />}
           />
+          {stats.chat > 0 ? (
+            <StatCard
+              label="Text chat"
+              value={stats.chat}
+              accentClass="text-violet-700"
+              iconBgClass="bg-violet-50"
+              iconClass="text-violet-600"
+              icon={<MessagesSquare className="w-5 h-5" />}
+            />
+          ) : null}
         </motion.div>
       )}
 

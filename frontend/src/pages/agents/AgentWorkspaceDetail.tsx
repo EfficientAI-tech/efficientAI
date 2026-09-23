@@ -8,6 +8,8 @@ import { useAgentStore } from '../../store/agentStore'
 import { useToast } from '../../hooks/useToast'
 import { TestAgentConversation, VoiceBundle, Integration } from '../../types/api'
 import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
+import { isChatMedium } from '../../lib/agentMedium'
+import { CallTypeBadge } from '../evaluators/components/evaluatorUi'
 import type { AgentDetailTab } from './components/AgentInfoView'
 import AgentEditForm from './components/AgentEditForm'
 import AgentTalkSidebar, { type AgentTalkMode } from './components/AgentTalkSidebar'
@@ -30,8 +32,10 @@ function parseTabFromSearch(params: URLSearchParams): AgentDetailTab {
   return 'overview'
 }
 
-function normalizeCallMedium(value: string | undefined | null): 'phone_call' | 'web_call' {
-  return value === 'web_call' ? 'web_call' : 'phone_call'
+function normalizeCallMedium(value: string | undefined | null): 'phone_call' | 'web_call' | 'chat' {
+  if (value === 'web_call') return 'web_call'
+  if (value === 'chat') return 'chat'
+  return 'phone_call'
 }
 
 function agentToFormData(agent: NonNullable<Awaited<ReturnType<typeof apiClient.getAgent>>>): FormData {
@@ -62,7 +66,7 @@ interface FormData {
   prompt_variables: Record<string, string>
   silence_hangup_secs: number
   call_type: string
-  call_medium: 'phone_call' | 'web_call'
+  call_medium: 'phone_call' | 'web_call' | 'chat'
   telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
@@ -144,6 +148,17 @@ export default function AgentWorkspaceDetail({
     queryFn: () => apiClient.getAgent(agentRouteId!),
     enabled: Boolean(agentRouteId),
   })
+
+  const isChatAgent = agent ? isChatMedium(agent.call_medium) : false
+
+  useEffect(() => {
+    if (!isChatAgent) return
+    if (activeTab === 'voice_ai_agent') {
+      const next = new URLSearchParams(searchParams)
+      next.delete('tab')
+      setSearchParams(next, { replace: true })
+    }
+  }, [isChatAgent, activeTab, searchParams, setSearchParams])
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
@@ -386,9 +401,14 @@ export default function AgentWorkspaceDetail({
         <div className="shrink-0 border-b border-gray-200 px-4 pt-3 pb-0">
           <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
             <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-semibold text-gray-900 truncate">
-                {isEditMode ? 'Editing' : agent.name}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <h2 className="text-lg font-semibold text-gray-900 truncate">
+                  {isEditMode ? 'Editing' : agent.name}
+                </h2>
+                {isChatMedium(agent.call_medium) ? (
+                  <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
+                ) : null}
+              </div>
               {agent.agent_id && (
                 <p className="text-xs text-gray-500 mt-0.5">
                   Agent ID:{' '}
@@ -409,11 +429,16 @@ export default function AgentWorkspaceDetail({
           </div>
           <nav className="-mb-px flex space-x-6 overflow-x-auto" aria-label="Agent detail tabs">
             {(
-              [
-                { id: 'overview' as const, label: 'Overview' },
-                { id: 'test_agent' as const, label: 'Test Agent' },
-                { id: 'voice_ai_agent' as const, label: 'Voice AI Agent' },
-              ] as const
+              isChatAgent
+                ? [
+                    { id: 'overview' as const, label: 'Overview' },
+                    { id: 'test_agent' as const, label: 'Production prompt' },
+                  ]
+                : [
+                    { id: 'overview' as const, label: 'Overview' },
+                    { id: 'test_agent' as const, label: 'Test Agent' },
+                    { id: 'voice_ai_agent' as const, label: 'Voice AI Agent' },
+                  ]
             ).map((tab) => (
               <button
                 key={tab.id}
@@ -563,14 +588,16 @@ export default function AgentWorkspaceDetail({
           </div>
         )}
 
-      <AgentTalkSidebar
-        isOpen={talkSidebarOpen}
-        mode={talkMode}
-        agent={agent}
-        integrations={integrations}
-        onClose={() => setTalkSidebarOpen(false)}
-        showToast={showToast}
-      />
+      {!isChatAgent ? (
+        <AgentTalkSidebar
+          isOpen={talkSidebarOpen}
+          mode={talkMode}
+          agent={agent}
+          integrations={integrations}
+          onClose={() => setTalkSidebarOpen(false)}
+          showToast={showToast}
+        />
+      ) : null}
 
       <ToastContainer />
     </div>

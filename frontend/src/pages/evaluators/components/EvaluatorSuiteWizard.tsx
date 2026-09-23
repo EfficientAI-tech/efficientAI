@@ -87,9 +87,11 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
     ? String(agentVoiceBundle.tts_provider).toLowerCase()
     : null
 
-  const filteredPersonas = voiceBundleTtsProvider
-    ? personas.filter((p: any) => p.tts_provider?.toLowerCase() === voiceBundleTtsProvider)
-    : personas
+  const isChatAgent = selectedAgentObj?.call_medium === 'chat'
+  const filteredPersonas =
+    isChatAgent || !voiceBundleTtsProvider
+      ? personas
+      : personas.filter((p: any) => p.tts_provider?.toLowerCase() === voiceBundleTtsProvider)
 
   const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
 
@@ -308,7 +310,9 @@ export default function EvaluatorSuiteWizard({ open, onClose, isSubmitting, onSu
                   className={MODERN_INPUT_CLASS}
                 />
               </div>
-              {isOutboundPhone || selectedAgentObj?.call_medium === 'web_call' ? (
+              {isOutboundPhone ||
+              selectedAgentObj?.call_medium === 'web_call' ||
+              selectedAgentObj?.call_medium === 'chat' ? (
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Default runs per combination</label>
                   <input

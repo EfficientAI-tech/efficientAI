@@ -7,7 +7,7 @@ from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
-    LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
+    LanguageEnum, CallTypeEnum, CallMediumEnum, ChatConnectionTypeEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     BackgroundNoiseSourceEnum,
     IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
@@ -215,7 +215,19 @@ class AgentCreate(BaseModel):
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     telephony_phone_number_id: Optional[UUID] = None
-    voice_bundle_id: UUID = Field(..., description="Required voice bundle for test agent execution")
+    voice_bundle_id: Optional[UUID] = Field(
+        None,
+        description="Required for voice agents; optional for chat (use main_llm_* instead)",
+    )
+    chat_connection_type: Optional[ChatConnectionTypeEnum] = None
+    main_llm_provider: Optional[ModelProvider] = None
+    main_llm_model: Optional[str] = None
+    main_llm_credential_id: Optional[UUID] = None
+    main_llm_config: Optional[Dict[str, Any]] = None
+    test_llm_provider: Optional[ModelProvider] = None
+    test_llm_model: Optional[str] = None
+    test_llm_credential_id: Optional[UUID] = None
+    test_llm_config: Optional[Dict[str, Any]] = None
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
@@ -227,13 +239,6 @@ class AgentCreate(BaseModel):
         le=600,
         description="End live calls after this many seconds of silence (0 disables)",
     )
-
-    @field_validator('description')
-    @classmethod
-    def description_min_words(cls, v: str) -> str:
-        if len(v.split()) < 10:
-            raise ValueError('Description must be at least 10 words.')
-        return v
 
     @field_validator('phone_number')
     @classmethod
@@ -249,6 +254,43 @@ class AgentCreate(BaseModel):
         """Ensure phone_number is provided when call_medium is phone_call"""
         if self.call_medium == CallMediumEnum.PHONE_CALL and not self.phone_number:
             raise ValueError('phone_number is required when call_medium is phone_call')
+        return self
+
+    @model_validator(mode='after')
+    def validate_description_for_medium(self):
+        if self.call_medium == CallMediumEnum.CHAT:
+            prompt = (self.provider_prompt or self.description or "").strip()
+            if len(prompt.split()) < 3:
+                raise ValueError(
+                    "Chat agents require a production prompt (provider_prompt) of at least 3 words."
+                )
+            if len(self.description.split()) < 3:
+                object.__setattr__(self, "description", prompt)
+            return self
+        if len((self.description or "").split()) < 10:
+            raise ValueError("Description must be at least 10 words.")
+        return self
+
+    @model_validator(mode='after')
+    def validate_voice_or_chat_connection(self):
+        if self.call_medium == CallMediumEnum.CHAT:
+            conn = self.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+            object.__setattr__(self, "chat_connection_type", conn)
+            if conn == ChatConnectionTypeEnum.INTERNAL_LLM:
+                if not self.main_llm_provider or not (self.main_llm_model or "").strip():
+                    if not self.voice_bundle_id:
+                        raise ValueError(
+                            "Chat agents require main_llm_provider and main_llm_model "
+                            "(connection layer), or a legacy voice_bundle_id."
+                        )
+            elif conn in (
+                ChatConnectionTypeEnum.PROVIDER_CHAT,
+                ChatConnectionTypeEnum.CUSTOMER_API,
+            ):
+                raise ValueError(f"Chat connection type '{conn.value}' is not implemented yet.")
+            return self
+        if not self.voice_bundle_id:
+            raise ValueError("voice_bundle_id is required for voice agents")
         return self
 
     model_config = ConfigDict(json_schema_extra={
@@ -275,6 +317,15 @@ class AgentUpdate(BaseModel):
     call_medium: Optional[CallMediumEnum] = None
     telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
+    chat_connection_type: Optional[ChatConnectionTypeEnum] = None
+    main_llm_provider: Optional[ModelProvider] = None
+    main_llm_model: Optional[str] = None
+    main_llm_credential_id: Optional[UUID] = None
+    main_llm_config: Optional[Dict[str, Any]] = None
+    test_llm_provider: Optional[ModelProvider] = None
+    test_llm_model: Optional[str] = None
+    test_llm_credential_id: Optional[UUID] = None
+    test_llm_config: Optional[Dict[str, Any]] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
     provider_prompt: Optional[str] = None
@@ -435,6 +486,15 @@ class AgentResponse(BaseModel):
     call_medium: CallMediumEnum
     telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID]
+    chat_connection_type: Optional[ChatConnectionTypeEnum] = None
+    main_llm_provider: Optional[ModelProvider] = None
+    main_llm_model: Optional[str] = None
+    main_llm_credential_id: Optional[UUID] = None
+    main_llm_config: Optional[Dict[str, Any]] = None
+    test_llm_provider: Optional[ModelProvider] = None
+    test_llm_model: Optional[str] = None
+    test_llm_credential_id: Optional[UUID] = None
+    test_llm_config: Optional[Dict[str, Any]] = None
     ai_provider_id: Optional[UUID]
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]

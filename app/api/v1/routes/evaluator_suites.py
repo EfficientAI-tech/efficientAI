@@ -51,6 +51,8 @@ router = APIRouter(prefix="/evaluator-suites", tags=["evaluator-suites"])
 def _resolve_run_strategy(agent: Agent) -> str:
     call_medium = agent.call_medium or "phone_call"
     call_type = agent.call_type or "outbound"
+    if call_medium == "chat":
+        return "web_bridge"
     if call_medium == "web_call":
         return "web_bridge"
     if call_medium == "phone_call":

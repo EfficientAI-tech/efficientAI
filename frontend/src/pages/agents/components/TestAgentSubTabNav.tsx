@@ -8,17 +8,20 @@ const SUB_TABS: { id: TestAgentSubTab; label: string }[] = [
 export default function TestAgentSubTabNav({
   value,
   onChange,
+  hideConfiguration = false,
 }: {
   value: TestAgentSubTab
   onChange: (tab: TestAgentSubTab) => void
+  hideConfiguration?: boolean
 }) {
+  const tabs = hideConfiguration ? SUB_TABS.filter((t) => t.id !== 'configuration') : SUB_TABS
   return (
     <div
       className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
       role="tablist"
       aria-label="Test agent sections"
     >
-      {SUB_TABS.map((tab) => (
+      {tabs.map((tab) => (
         <button
           key={tab.id}
           type="button"

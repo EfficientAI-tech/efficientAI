@@ -606,19 +606,49 @@ async def create_agent(
             detail="phone_number is required when call_medium is phone_call"
         )
     
-    # Validate voice_bundle_id exists, is active, and belongs to organization
-    voice_bundle = db.query(VoiceBundle).filter(
-        and_(
-            VoiceBundle.id == agent.voice_bundle_id,
-            VoiceBundle.organization_id == organization_id,
-            VoiceBundle.is_active == True,
-        )
-    ).first()
-    if not voice_bundle:
+    from app.models.enums import ChatConnectionTypeEnum
+
+    is_chat_agent = agent.call_medium == CallMediumEnumSchema.CHAT
+
+    if agent.voice_bundle_id:
+        voice_bundle = db.query(VoiceBundle).filter(
+            and_(
+                VoiceBundle.id == agent.voice_bundle_id,
+                VoiceBundle.organization_id == organization_id,
+                VoiceBundle.is_active == True,
+            )
+        ).first()
+        if not voice_bundle:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Active voice bundle not found",
+            )
+    elif not is_chat_agent:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Active voice bundle not found",
+            detail="voice_bundle_id is required for voice agents",
         )
+
+    if is_chat_agent:
+        from app.api.v1.routes.voicebundles import _validate_credential
+
+        conn = agent.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
+        if conn == ChatConnectionTypeEnum.INTERNAL_LLM and agent.main_llm_provider:
+            _validate_credential(
+                db,
+                organization_id,
+                agent.main_llm_provider,
+                agent.main_llm_credential_id,
+                "llm",
+            )
+            if agent.test_llm_provider:
+                _validate_credential(
+                    db,
+                    organization_id,
+                    agent.test_llm_provider,
+                    agent.test_llm_credential_id,
+                    "llm",
+                )
     
     # Validate voice_ai_integration_id exists and belongs to organization
     if agent.voice_ai_integration_id:
@@ -681,6 +711,27 @@ async def create_agent(
         call_medium=agent.call_medium,
         telephony_phone_number_id=agent.telephony_phone_number_id,
         voice_bundle_id=agent.voice_bundle_id,
+        chat_connection_type=(
+            agent.chat_connection_type.value
+            if agent.chat_connection_type
+            else (ChatConnectionTypeEnum.INTERNAL_LLM.value if is_chat_agent else None)
+        ),
+        main_llm_provider=(
+            agent.main_llm_provider.value
+            if agent.main_llm_provider and hasattr(agent.main_llm_provider, "value")
+            else agent.main_llm_provider
+        ),
+        main_llm_model=agent.main_llm_model,
+        main_llm_credential_id=agent.main_llm_credential_id,
+        main_llm_config=agent.main_llm_config,
+        test_llm_provider=(
+            agent.test_llm_provider.value
+            if agent.test_llm_provider and hasattr(agent.test_llm_provider, "value")
+            else agent.test_llm_provider
+        ),
+        test_llm_model=agent.test_llm_model,
+        test_llm_credential_id=agent.test_llm_credential_id,
+        test_llm_config=agent.test_llm_config,
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
         voice_ai_agent_id=agent.voice_ai_agent_id,

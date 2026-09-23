@@ -9,13 +9,15 @@ from uuid import UUID
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario, VoiceBundle
+from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario
+from app.services.agents.chat_llm_config import resolve_simulation_llm
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
 from app.services.testing.test_agent_simulation_prompt import (
     build_persona_description_for_bridge,
     build_test_agent_system_prompt,
-    get_agent_base_prompt,
+    is_chat_agent,
+    production_prompt_for_simulation,
     resolve_persona_max_turns,
 )
 from app.services.usage.context import (
@@ -33,7 +35,15 @@ _GOODBYE_RE = re.compile(
 
 def _build_agent_system_prompt(agent: Agent) -> str:
     agent_name = (agent.name or "Voice AI Agent").strip()
-    base = get_agent_base_prompt(agent)
+    base = production_prompt_for_simulation(agent)
+    if is_chat_agent(agent):
+        return (
+            f"You are {agent_name}, the production chat agent.\n\n"
+            f"Your instructions:\n{base}\n\n"
+            "Reply in plain text as in a live chat. "
+            "Keep replies concise (1-4 sentences). "
+            "Output ONLY the message text — no markdown headers or stage directions."
+        )
     return (
         f"You are {agent_name}, a voice AI agent on a live phone call.\n\n"
         f"Your instructions:\n{base}\n\n"
@@ -83,28 +93,6 @@ def _agent_messages(system_prompt: str, transcript: list[dict[str, str]]) -> lis
     return messages
 
 
-def _resolve_voice_bundle_llm(
-    db: Session,
-    *,
-    voice_bundle: VoiceBundle,
-    organization_id: UUID,
-) -> tuple[ModelProvider, str, Optional[dict], Optional[UUID]]:
-    raw_provider = voice_bundle.llm_provider
-    if raw_provider is None:
-        raise ValueError("Voice bundle is missing llm_provider")
-    provider = (
-        raw_provider
-        if isinstance(raw_provider, ModelProvider)
-        else ModelProvider(str(raw_provider).lower())
-    )
-    model = (voice_bundle.llm_model or "").strip()
-    if not model:
-        raise ValueError("Voice bundle is missing llm_model")
-    llm_config = voice_bundle.llm_config if isinstance(voice_bundle.llm_config, dict) else None
-    credential_id = getattr(voice_bundle, "llm_credential_id", None)
-    return provider, model, llm_config, credential_id
-
-
 def _generate_turn(
     *,
     messages: list[dict[str, str]],
@@ -142,24 +130,11 @@ def run_llm_to_llm_evaluator_simulation(
     db: Session,
 ) -> dict[str, Any]:
     """Run a text simulation and populate the evaluator result transcript."""
-    if not agent.voice_bundle_id:
-        raise ValueError("Agent does not have a voice bundle configured")
-
-    voice_bundle = (
-        db.query(VoiceBundle)
-        .filter(
-            VoiceBundle.id == agent.voice_bundle_id,
-            VoiceBundle.organization_id == organization_id,
-        )
-        .first()
+    main_llm = resolve_simulation_llm(
+        db, agent=agent, organization_id=organization_id, leg="main"
     )
-    if not voice_bundle:
-        raise ValueError(f"Voice bundle {agent.voice_bundle_id} not found")
-
-    llm_provider, llm_model, llm_config, credential_id = _resolve_voice_bundle_llm(
-        db,
-        voice_bundle=voice_bundle,
-        organization_id=organization_id,
+    test_llm = resolve_simulation_llm(
+        db, agent=agent, organization_id=organization_id, leg="test"
     )
 
     max_turns = resolve_persona_max_turns(persona)
@@ -202,7 +177,11 @@ def run_llm_to_llm_evaluator_simulation(
     )
 
     transcript: list[dict[str, str]] = []
-    first_message = f"Hello, this is {persona.name} calling."
+    chat_mode = is_chat_agent(agent)
+    if chat_mode:
+        first_message = f"Hi, I'm {persona.name}. I need some help."
+    else:
+        first_message = f"Hello, this is {persona.name} calling."
     transcript.append({"speaker": "Speaker 1", "text": first_message})
 
     exchanges = 0
@@ -210,12 +189,12 @@ def run_llm_to_llm_evaluator_simulation(
         with llm_usage_context(agent_ctx):
             agent_text = _generate_turn(
                 messages=_agent_messages(agent_system, transcript),
-                llm_provider=llm_provider,
-                llm_model=llm_model,
+                llm_provider=main_llm.provider,
+                llm_model=main_llm.model,
                 organization_id=organization_id,
                 db=db,
-                llm_config=llm_config,
-                credential_id=credential_id,
+                llm_config=main_llm.llm_config,
+                credential_id=main_llm.credential_id,
             )
         transcript.append({"speaker": "Speaker 2", "text": agent_text})
         exchanges += 1
@@ -225,12 +204,12 @@ def run_llm_to_llm_evaluator_simulation(
         with llm_usage_context(caller_ctx):
             caller_text = _generate_turn(
                 messages=_caller_messages(caller_system, transcript),
-                llm_provider=llm_provider,
-                llm_model=llm_model,
+                llm_provider=test_llm.provider,
+                llm_model=test_llm.model,
                 organization_id=organization_id,
                 db=db,
-                llm_config=llm_config,
-                credential_id=credential_id,
+                llm_config=test_llm.llm_config,
+                credential_id=test_llm.credential_id,
             )
         transcript.append({"speaker": "Speaker 1", "text": caller_text})
         exchanges += 1
@@ -256,6 +235,9 @@ def run_llm_to_llm_evaluator_simulation(
     result.call_data = {
         "source": "llm_to_llm_simulation",
         "simulation": "llm_to_llm",
+        "modality": "chat" if chat_mode else "voice",
+        "main_llm_source": main_llm.source,
+        "test_llm_source": test_llm.source,
         "exchanges": exchanges,
         "messages": transcript,
     }

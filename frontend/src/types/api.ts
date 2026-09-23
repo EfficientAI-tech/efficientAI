@@ -145,7 +145,7 @@ export interface EvaluatorResultRow {
   status: EvaluatorResultStatus
   metric_scores: Record<string, EvaluatorResultMetricScore> | null
   error_message: string | null
-  agent?: { id: string; name: string } | null
+  agent?: { id: string; name: string; call_medium?: string | null } | null
   persona?: { id: string; name: string } | null
   scenario?: { id: string; name: string } | null
 }

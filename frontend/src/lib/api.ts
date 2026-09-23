@@ -1313,6 +1313,13 @@ class ApiClient {
     call_type: string
     call_medium: string
     voice_bundle_id?: string
+    chat_connection_type?: string
+    main_llm_provider?: string
+    main_llm_model?: string
+    main_llm_credential_id?: string
+    test_llm_provider?: string
+    test_llm_model?: string
+    test_llm_credential_id?: string
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string

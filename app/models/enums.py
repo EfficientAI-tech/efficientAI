@@ -62,6 +62,15 @@ class CallMediumEnum(str, enum.Enum):
     PHONE_CALL = "phone_call"
     WEB_CALL = "web_call"
     SIP_CALL = "sip_call"
+    CHAT = "chat"
+
+
+class ChatConnectionTypeEnum(str, enum.Enum):
+    """How the platform reaches the production chat agent under test."""
+    INTERNAL_LLM = "internal_llm"
+    PROVIDER_CHAT = "provider_chat"
+    CUSTOMER_API = "customer_api"
+
 
 class GenderEnum(str, enum.Enum):
     """Gender options for personas"""

@@ -20,7 +20,14 @@ import {
   DEFAULT_CREATE_AGENT_FORM,
   TELEPHONY_STEPS,
   PLATFORM_STEPS,
+  CHAT_STEPS,
 } from './create/createAgentTypes'
+import ChatBasicsStep, { validateChatBasics } from './create/ChatBasicsStep'
+import ChatConnectionStep, {
+  type ChatConnectionForm,
+  validateChatConnection,
+} from './create/ChatConnectionStep'
+import { MODERN_INPUT_CLASS } from '../../evaluators/components/evaluatorUi'
 import { applyGeneratedTemplate } from './TestAgentTemplateEditor'
 import { assembleTestAgentPrompt } from './agentTestSetupConstants'
 
@@ -48,8 +55,22 @@ export default function CreateAgentModal({
   const [aiModel, setAiModel] = useState('')
   const [promptFetchError, setPromptFetchError] = useState<string | null>(null)
   const [hasFetchedPlatformPrompt, setHasFetchedPlatformPrompt] = useState(false)
+  const [chatConnection, setChatConnection] = useState<ChatConnectionForm>({
+    mainLlmProvider: '',
+    mainLlmCredentialId: '',
+    mainLlmModel: '',
+    useSeparateTestLlm: false,
+    testLlmProvider: '',
+    testLlmCredentialId: '',
+    testLlmModel: '',
+  })
 
-  const steps = createPath === 'telephony' ? TELEPHONY_STEPS : PLATFORM_STEPS
+  const steps =
+    createPath === 'telephony'
+      ? TELEPHONY_STEPS
+      : createPath === 'chat'
+        ? CHAT_STEPS
+        : PLATFORM_STEPS
 
   const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
     queryKey: ['voicebundles'],
@@ -185,9 +206,16 @@ export default function CreateAgentModal({
         description: assembledDescription,
         test_agent_template: data.test_agent_template,
         call_type: data.call_type,
-        call_medium: createPath === 'platform' ? 'web_call' : 'phone_call',
-        voice_bundle_id: data.voice_bundle_id.trim(),
+        call_medium:
+          createPath === 'platform'
+            ? 'web_call'
+            : createPath === 'chat'
+              ? 'chat'
+              : 'phone_call',
         silence_hangup_secs: data.silence_hangup_secs ?? 15,
+      }
+      if (createPath !== 'chat' && data.voice_bundle_id?.trim()) {
+        payload.voice_bundle_id = data.voice_bundle_id.trim()
       }
 
       if (createPath === 'telephony') {
@@ -208,6 +236,26 @@ export default function CreateAgentModal({
         }
       }
 
+      if (createPath === 'chat') {
+        const prompt = productionPrompt.trim()
+        payload.provider_prompt = prompt
+        payload.description = prompt || data.name
+        delete payload.test_agent_template
+        payload.chat_connection_type = 'internal_llm'
+        payload.main_llm_provider = chatConnection.mainLlmProvider
+        payload.main_llm_model = chatConnection.mainLlmModel
+        if (chatConnection.mainLlmCredentialId) {
+          payload.main_llm_credential_id = chatConnection.mainLlmCredentialId
+        }
+        if (chatConnection.useSeparateTestLlm) {
+          payload.test_llm_provider = chatConnection.testLlmProvider
+          payload.test_llm_model = chatConnection.testLlmModel
+          if (chatConnection.testLlmCredentialId) {
+            payload.test_llm_credential_id = chatConnection.testLlmCredentialId
+          }
+        }
+      }
+
       return apiClient.createAgent(payload as Parameters<typeof apiClient.createAgent>[0])
     },
     onSuccess: () => {
@@ -217,7 +265,14 @@ export default function CreateAgentModal({
     },
     onError: (error: any) => {
       const conflictMessage = extractPhoneConflictDetail(error.response?.data?.detail)
-      showToast(conflictMessage || `Failed to create agent: ${error.message}`, 'error')
+      const detail = error.response?.data?.detail
+      let message = conflictMessage
+      if (!message && Array.isArray(detail)) {
+        message = detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join(' · ')
+      } else if (!message && typeof detail === 'string') {
+        message = detail
+      }
+      showToast(message || `Failed to create agent: ${error.message}`, 'error')
     },
   })
 
@@ -233,6 +288,15 @@ export default function CreateAgentModal({
     setAiModel('')
     setPromptFetchError(null)
     setHasFetchedPlatformPrompt(false)
+    setChatConnection({
+      mainLlmProvider: '',
+      mainLlmCredentialId: '',
+      mainLlmModel: '',
+      useSeparateTestLlm: false,
+      testLlmProvider: '',
+      testLlmCredentialId: '',
+      testLlmModel: '',
+    })
   }
 
   const handlePathChange = (path: CreateAgentPath) => {
@@ -244,6 +308,15 @@ export default function CreateAgentModal({
     setSelectedPlatform(null)
     setPromptFetchError(null)
     setHasFetchedPlatformPrompt(false)
+    setChatConnection({
+      mainLlmProvider: '',
+      mainLlmCredentialId: '',
+      mainLlmModel: '',
+      useSeparateTestLlm: false,
+      testLlmProvider: '',
+      testLlmCredentialId: '',
+      testLlmModel: '',
+    })
   }
 
   const validateCurrentStep = (): boolean => {
@@ -275,6 +348,30 @@ export default function CreateAgentModal({
       if (currentStep === 3) {
         if (!formData.voice_bundle_id?.trim()) {
           showToast('Voice bundle is required.', 'error')
+          return false
+        }
+        return true
+      }
+    }
+
+    if (createPath === 'chat') {
+      if (currentStep === 1) {
+        if (!validateChatBasics(formData)) {
+          showToast('Name is required.', 'error')
+          return false
+        }
+        return true
+      }
+      if (currentStep === 2) {
+        if (!productionPrompt.trim()) {
+          showToast('Production prompt is required.', 'error')
+          return false
+        }
+        return true
+      }
+      if (currentStep === 3) {
+        if (!validateChatConnection(chatConnection)) {
+          showToast('Select main agent LLM credential and model.', 'error')
           return false
         }
         return true
@@ -331,6 +428,14 @@ export default function CreateAgentModal({
 
   const handleCreate = () => {
     if (currentStep !== 3 || !validateCurrentStep()) return
+    if (createPath === 'chat') {
+      if (!productionPrompt.trim() || !validateChatConnection(chatConnection)) {
+        showToast('Production prompt and connection LLM settings are required.', 'error')
+        return
+      }
+      createMutation.mutate(formData)
+      return
+    }
     if (createPath === 'telephony') {
       if (!validateTelephonyBasics(formData, phoneNumberInputMode, isCheckingPhoneAssignment, hasPhoneConflict)) {
         showToast('Please fix telephony settings.', 'error')
@@ -377,6 +482,35 @@ export default function CreateAgentModal({
   if (!isOpen) return null
 
   const renderStepContent = () => {
+    if (createPath === 'chat') {
+      if (currentStep === 1) {
+        return <ChatBasicsStep formData={formData} onChange={(patch) => setFormData((prev) => ({ ...prev, ...patch }))} />
+      }
+      if (currentStep === 2) {
+        return (
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-gray-700">Production agent prompt</label>
+            <p className="text-xs text-gray-500">
+              Paste the live system prompt (e.g. MoneyView / Sriram Finance). This is the Main Agent in
+              LLM-to-LLM runs.
+            </p>
+            <textarea
+              className={`${MODERN_INPUT_CLASS} min-h-[280px] font-mono text-xs`}
+              value={productionPrompt}
+              onChange={(e) => setProductionPrompt(e.target.value)}
+              placeholder="You are a helpful assistant for…"
+            />
+          </div>
+        )
+      }
+      return (
+        <ChatConnectionStep
+          value={chatConnection}
+          onChange={(patch) => setChatConnection((prev) => ({ ...prev, ...patch }))}
+        />
+      )
+    }
+
     if (createPath === 'telephony') {
       if (currentStep === 1) {
         return (

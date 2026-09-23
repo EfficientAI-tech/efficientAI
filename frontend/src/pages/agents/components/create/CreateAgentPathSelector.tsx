@@ -1,4 +1,4 @@
-import { Phone, Link2 } from 'lucide-react'
+import { Phone, Link2, MessagesSquare } from 'lucide-react'
 import type { CreateAgentPath } from './createAgentTypes'
 
 interface CreateAgentPathSelectorProps {
@@ -22,9 +22,16 @@ export default function CreateAgentPathSelector({ value, onChange }: CreateAgent
     },
   ]
 
+  const chatOption = {
+    id: 'chat' as CreateAgentPath,
+    label: 'Text chat (LLM-LLM)',
+    description: 'Pre-prod: simulate user vs your production prompt',
+    icon: MessagesSquare,
+  }
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      {options.map((option) => {
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {[...options, chatOption].map((option) => {
         const Icon = option.icon
         const isSelected = value === option.id
         return (
