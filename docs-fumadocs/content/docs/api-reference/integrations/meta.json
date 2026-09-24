@@ -9,6 +9,7 @@
     "deleteIntegration",
     "updateIntegration",
     "get_integration_api_key_api_v1_integrations__integration_id__api_key_get",
-    "previewIntegrationAgentPrompt"
+    "previewIntegrationAgentPrompt",
+    "listIntegrationVoiceAgents"
   ]
 }

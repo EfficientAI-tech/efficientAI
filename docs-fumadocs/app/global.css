@@ -561,9 +561,22 @@ body::before {
   text-align: center;
 }
 
-.docs-mode-enterprise .enterprise-doc .prose h1 + blockquote,
 .docs-mode-enterprise .enterprise-doc .prose h1 + p {
   text-align: center;
+}
+
+.docs-mode-enterprise .enterprise-quickstart {
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
+.docs-mode-enterprise .enterprise-contact-cta {
+  max-width: 44rem;
+  margin-inline: auto;
+}
+
+.docs-mode-enterprise .enterprise-comparison > p {
+  text-align: left;
 }
 
 .docs-mode-enterprise .enterprise-doc .prose h2,
@@ -572,7 +585,8 @@ body::before {
 }
 
 .docs-mode-enterprise .enterprise-comparison,
-.docs-mode-enterprise .enterprise-gated {
+.docs-mode-enterprise .enterprise-licensed,
+.docs-mode-enterprise .enterprise-faq {
   max-width: 56rem;
   margin-inline: auto;
 }
@@ -663,6 +677,38 @@ body::before {
 
 #nd-page .enterprise-comparison-row:hover .enterprise-comparison-enterprise-cell {
   background: color-mix(in oklab, var(--enterprise-accent) 11%, transparent);
+}
+
+#nd-page .enterprise-contact-cta,
+#nd-page .enterprise-quickstart {
+  --enterprise-accent: color-mix(in oklab, var(--color-docs-warm) 72%, #f59e0b);
+}
+
+#nd-page .enterprise-btn-demo,
+#nd-page .enterprise-doc .prose a.enterprise-btn-demo {
+  background: color-mix(in oklab, var(--enterprise-accent) 78%, #b45309);
+  color: oklch(0.99 0 0) !important;
+  text-decoration: none;
+  box-shadow: 0 1px 2px color-mix(in oklab, black 12%, transparent);
+}
+
+.dark #nd-page .enterprise-btn-demo {
+  background: color-mix(in oklab, var(--enterprise-accent) 70%, #78350f);
+  color: oklch(0.99 0 0);
+}
+
+#nd-page .enterprise-faq {
+  --enterprise-accent: color-mix(in oklab, var(--color-docs-warm) 72%, #f59e0b);
+}
+
+#nd-page .enterprise-faq-item summary:hover {
+  background: color-mix(in oklab, var(--enterprise-accent) 5%, var(--color-fd-card));
+}
+
+#nd-page .enterprise-faq-item summary:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--enterprise-accent) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 0.75rem;
 }
 
 @media (prefers-reduced-motion: no-preference) {

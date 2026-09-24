@@ -7,6 +7,7 @@
     "accept_invitation_by_token_api_v1_auth_invitations_accept_by_token_post",
     "signup_api_v1_auth_signup_post",
     "login_api_v1_auth_login_post",
+    "establish_oidc_session_api_v1_auth_oidc_session_post",
     "me_api_v1_auth_me_get",
     "logout_api_v1_auth_logout_post",
     "refresh_session_api_v1_auth_refresh_post",

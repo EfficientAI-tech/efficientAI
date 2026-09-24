@@ -119,16 +119,30 @@ const SECTIONS: ComparisonSection[] = [
   },
 ];
 
-const GATED_FEATURES = [
+const LICENSED_CAPABILITIES = [
   {
-    id: 'call_imports',
     title: 'Call imports',
-    description: 'Post-production call imports and batch analytics.',
+    description: 'Import historical conversations from CSV or audio for post-production evaluation.',
   },
   {
-    id: 'voice_playground',
     title: 'Voice playground',
-    description: 'Blind TTS comparison and voice playground workflows.',
+    description: 'Structured blind listening and text-to-speech comparison workflows.',
+  },
+  {
+    title: 'Metric Studio',
+    description: 'Run ad hoc metric scoring across evaluation results and imported calls.',
+  },
+  {
+    title: 'Alerting',
+    description: 'Threshold-based notifications on metric aggregates via email or webhook.',
+  },
+  {
+    title: 'Failure clustering',
+    description: 'Surface recurring failure themes across evaluation runs.',
+  },
+  {
+    title: 'LLM gateway',
+    description: 'Send batch evaluation model traffic through your approved corporate gateway.',
   },
 ] as const;
 
@@ -158,7 +172,7 @@ function PlanCellView({ cell, column }: { cell: PlanCell; column: 'oss' | 'enter
         aria-label="Not included"
       >
         <Minus className="size-4 shrink-0 opacity-60" strokeWidth={2.5} />
-        <span className="text-xs sm:text-sm">—</span>
+        <span className="sr-only">Not included</span>
       </span>
     );
   }
@@ -276,32 +290,18 @@ export function EnterpriseComparison() {
   );
 }
 
-export function EnterpriseGatedFeatures() {
+export function EnterpriseLicensedCapabilities() {
   return (
-    <div className="not-prose enterprise-gated my-6 grid gap-3 sm:grid-cols-2">
-      {GATED_FEATURES.map((item) => (
-        <div
-          key={item.id}
-          className="rounded-xl border border-fd-border bg-fd-card p-4 shadow-sm ring-1 ring-fd-border/40 transition-colors hover:border-[color-mix(in_oklab,var(--enterprise-accent,#f59e0b)_35%,var(--color-fd-border))]"
+    <ul className="not-prose enterprise-licensed my-6 space-y-3">
+      {LICENSED_CAPABILITIES.map((item) => (
+        <li
+          key={item.title}
+          className="rounded-xl border border-fd-border bg-fd-card px-4 py-3.5 shadow-sm ring-1 ring-fd-border/40"
         >
-          <div className="flex items-start gap-3">
-            <span
-              className="shrink-0 rounded-md border border-fd-border bg-fd-muted px-2 py-1 font-mono text-[11px] text-fd-foreground"
-            >
-              {item.id}
-            </span>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-fd-foreground">{item.title}</p>
-              <p className="text-xs text-fd-muted-foreground mt-1 leading-relaxed">{item.description}</p>
-            </div>
-            <Check
-              className="size-4 shrink-0 mt-0.5 text-[color-mix(in_oklab,var(--enterprise-accent,#f59e0b)_70%,#16a34a)]"
-              strokeWidth={2.5}
-              aria-hidden
-            />
-          </div>
-        </div>
+          <p className="text-sm font-semibold text-fd-foreground">{item.title}</p>
+          <p className="text-sm text-fd-muted-foreground mt-1 leading-relaxed">{item.description}</p>
+        </li>
       ))}
-    </div>
+    </ul>
   );
 }

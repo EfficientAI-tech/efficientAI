@@ -66,7 +66,7 @@ from app.services.synthetic_traces.trace_service import (
     delete_call_trace,
 )
 
-router = APIRouter(prefix="/observability/traces", tags=["observability-traces"])
+router = APIRouter(prefix="/observability/traces", tags=["observability"])
 
 
 def _lookup_evaluator_result(
@@ -227,7 +227,13 @@ async def _ingest_otlp_traces_handler(
     )
 
 
-@router.post("", response_model=OtlpIngestResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "",
+    response_model=OtlpIngestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="ingestObservabilityTracesOtlp",
+    summary="Ingest OTLP trace spans (HTTP/protobuf or JSON)",
+)
 async def ingest_observability_traces(
     request: Request,
     response: Response,
@@ -256,7 +262,11 @@ async def ingest_observability_traces(
     )
 
 
-@router.get("/ingest/{staging_id}", response_model=TraceIngestStagingStatus)
+@router.get(
+    "/ingest/{staging_id}",
+    response_model=TraceIngestStagingStatus,
+    operation_id="getObservabilityTraceIngestStaging",
+)
 def get_trace_ingest_staging_status(
     staging_id: UUID,
     db: Session = Depends(get_db),
@@ -276,7 +286,11 @@ def get_trace_ingest_staging_status(
     return TraceIngestStagingStatus.model_validate(row)
 
 
-@router.post("/sessions", response_model=TraceSessionResponse)
+@router.post(
+    "/sessions",
+    response_model=TraceSessionResponse,
+    operation_id="createObservabilityTraceSession",
+)
 def create_trace_session(
     payload: TraceSessionCreateRequest,
     request: Request,
@@ -333,7 +347,11 @@ def create_trace_session(
     )
 
 
-@router.post("/sessions/{call_short_id}/close", response_model=TraceSessionCloseResponse)
+@router.post(
+    "/sessions/{call_short_id}/close",
+    response_model=TraceSessionCloseResponse,
+    operation_id="closeObservabilityTraceSession",
+)
 def close_trace_session_route(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
@@ -356,7 +374,7 @@ def close_trace_session_route(
     )
 
 
-@router.post("/backfill")
+@router.post("/backfill", operation_id="backfillObservabilityTraces")
 def backfill_traces(
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -374,7 +392,12 @@ def backfill_traces(
     return {"created": created}
 
 
-@router.post("/ingest", response_model=JsonTraceIngestResponse, deprecated=True)
+@router.post(
+    "/ingest",
+    response_model=JsonTraceIngestResponse,
+    deprecated=True,
+    operation_id="ingestObservabilityTracesJson",
+)
 def ingest_json_traces(
     payload: JsonTraceIngestRequest,
     organization_id: UUID = Depends(get_organization_id),
@@ -402,7 +425,7 @@ def ingest_json_traces(
     )
 
 
-@router.get("/setup", response_model=OtlpSetupInfo)
+@router.get("/setup", response_model=OtlpSetupInfo, operation_id="getObservabilityTracesSetup")
 def get_otlp_setup(
     request: Request,
     api_key: str = Depends(get_api_key),
@@ -418,7 +441,11 @@ def get_otlp_setup(
     )
 
 
-@router.get("", response_model=SyntheticCallTraceListResponse)
+@router.get(
+    "",
+    response_model=SyntheticCallTraceListResponse,
+    operation_id="listObservabilityTraces",
+)
 def list_observability_traces(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
@@ -452,7 +479,11 @@ def list_observability_traces(
     )
 
 
-@router.get("/results/{evaluator_result_id}", response_model=SyntheticCallTraceDetail)
+@router.get(
+    "/results/{evaluator_result_id}",
+    response_model=SyntheticCallTraceDetail,
+    operation_id="getObservabilityTraceForEvaluatorResult",
+)
 def get_trace_for_evaluator_result(
     evaluator_result_id: str,
     include_spans: bool = Query(True),
@@ -513,7 +544,11 @@ def get_trace_for_evaluator_result(
     return _build_trace_detail_response(db, trace, include_spans=include_spans)
 
 
-@router.get("/by-call-short-id/{call_short_id}", response_model=SyntheticCallTraceDetail)
+@router.get(
+    "/by-call-short-id/{call_short_id}",
+    response_model=SyntheticCallTraceDetail,
+    operation_id="getObservabilityTraceByCallShortId",
+)
 def get_trace_by_call_short_id_route(
     call_short_id: str,
     include_spans: bool = Query(True),
@@ -534,7 +569,11 @@ def get_trace_by_call_short_id_route(
     return _build_trace_detail_response(db, trace, include_spans=include_spans)
 
 
-@router.get("/{trace_id}/spans", response_model=SyntheticTraceSpansResponse)
+@router.get(
+    "/{trace_id}/spans",
+    response_model=SyntheticTraceSpansResponse,
+    operation_id="getObservabilityTraceSpans",
+)
 def get_trace_spans(
     trace_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -555,7 +594,11 @@ def get_trace_spans(
     return SyntheticTraceSpansResponse(**payload)
 
 
-@router.delete("/{trace_id}", dependencies=[Depends(require_capability(CALLS_DELETE))])
+@router.delete(
+    "/{trace_id}",
+    dependencies=[Depends(require_capability(CALLS_DELETE))],
+    operation_id="deleteObservabilityTrace",
+)
 def delete_observability_trace(
     trace_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -575,7 +618,11 @@ def delete_observability_trace(
     return {"message": "Call trace deleted"}
 
 
-@router.get("/{trace_id}", response_model=SyntheticCallTraceDetail)
+@router.get(
+    "/{trace_id}",
+    response_model=SyntheticCallTraceDetail,
+    operation_id="getObservabilityTrace",
+)
 def get_observability_trace(
     trace_id: UUID,
     include_spans: bool = Query(True),

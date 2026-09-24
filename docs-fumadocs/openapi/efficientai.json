@@ -174,7 +174,7 @@
           "Authentication"
         ],
         "summary": "Signup",
-        "description": "Create a new User + Organization pair and return a login token.\n\nOnly available in OSS/self-hosted deployments where\n`auth.local_password.allow_signup = true` (the default). Cloud SaaS\nturns this off and routes signup through the billing flow.",
+        "description": "Create a new User + Organization pair and return a login token.\n\nOnly available in OSS/self-hosted deployments where\n`auth.local_password.allow_signup = true` (the default).     Cloud SaaS\nturns this off and routes signup through the billing flow.",
         "operationId": "signup_api_v1_auth_signup_post",
         "requestBody": {
           "content": {
@@ -260,6 +260,91 @@
           }
         },
         "security": []
+      }
+    },
+    "/api/v1/auth/oidc/session": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Establish Oidc Session",
+        "description": "Exchange a validated external OIDC access token for an app session.",
+        "operationId": "establish_oidc_session_api_v1_auth_oidc_session_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/WorkspaceIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/auth/me": {
@@ -459,15 +544,40 @@
         "summary": "Refresh Session",
         "description": "Rotate a refresh token and issue a new short-lived access token.",
         "operationId": "refresh_session_api_v1_auth_refresh_post",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RefreshRequest"
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RefreshRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -6188,6 +6298,127 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PreviewIntegrationAgentPromptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/integrations/{integration_id}/voice-agents": {
+      "get": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "List Integration Voice Agents Route",
+        "description": "List remote voice agents for an org integration (cached ~60s).",
+        "operationId": "listIntegrationVoiceAgents",
+        "parameters": [
+          {
+            "name": "integration_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Integration Id"
+            }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Refresh"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/WorkspaceIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListIntegrationVoiceAgentsResponse"
                 }
               }
             }
@@ -14282,6 +14513,115 @@
         }
       }
     },
+    "/api/v1/evaluator-results/{id}/metrics": {
+      "get": {
+        "tags": [
+          "evaluator-results"
+        ],
+        "summary": "Get Evaluator Result Metrics",
+        "description": "Get metric scores for an evaluator result in the active workspace.",
+        "operationId": "get_evaluator_result_metrics_api_v1_evaluator_results__id__metrics_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Id"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Evaluator Result Metrics Api V1 Evaluator Results  Id  Metrics Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/evaluator-results/{id}/live-events": {
       "get": {
         "tags": [
@@ -14387,14 +14727,14 @@
         }
       }
     },
-    "/api/v1/evaluator-results/{id}/metrics": {
+    "/api/v1/evaluator-results/{id}/otel-correlation": {
       "get": {
         "tags": [
           "evaluator-results"
         ],
-        "summary": "Get Evaluator Result Metrics",
-        "description": "Get metric scores for an evaluator result in the active workspace.",
-        "operationId": "get_evaluator_result_metrics_api_v1_evaluator_results__id__metrics_get",
+        "summary": "OTLP endpoint and correlation env for Pipecat tracing",
+        "description": "Return OTLP endpoint and correlation env vars for customer Pipecat setup.",
+        "operationId": "getEvaluatorResultOtelCorrelation",
         "parameters": [
           {
             "name": "id",
@@ -14475,11 +14815,7 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
-                  "title": "Response Get Evaluator Result Metrics Api V1 Evaluator Results  Id  Metrics Get"
-                }
+                "schema": {}
               }
             }
           },
@@ -15073,6 +15409,175 @@
         }
       }
     },
+    "/api/v1/observability/calls-hub": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Merged telephony calls and OTLP traces feed",
+        "description": "Merged telephony + OTLP trace feed for the Calls page (server-side pagination).",
+        "operationId": "listObservabilityCallsHub",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Skip"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 15,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Trace status filter: open, closed, or omit for all",
+              "title": "Status"
+            },
+            "description": "Trace status filter: open, closed, or omit for all"
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "event",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Telephony event filter",
+              "default": "all",
+              "title": "Event"
+            },
+            "description": "Telephony event filter"
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Listobservabilitycallshub"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/observability/calls/{call_short_id}": {
       "get": {
         "tags": [
@@ -15410,6 +15915,16 @@
             "schema": {
               "type": "string",
               "title": "Call Short Id"
+            }
+          },
+          {
+            "name": "proxy",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Proxy"
             }
           },
           {
@@ -19827,6 +20342,1497 @@
           }
         }
       }
+    },
+    "/api/v1/observability/traces": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "List Observability Traces",
+        "operationId": "listObservabilityTraces",
+        "parameters": [
+          {
+            "name": "skip",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Skip"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "open or closed",
+              "title": "Status"
+            },
+            "description": "open or closed"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyntheticCallTraceListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Ingest OTLP trace spans (HTTP/protobuf or JSON)",
+        "description": "Ingest OTLP spans for a live call (primary export endpoint).",
+        "operationId": "ingestObservabilityTracesOtlp",
+        "parameters": [
+          {
+            "name": "X-EfficientAI-Run-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Run-Id"
+            }
+          },
+          {
+            "name": "X-EfficientAI-Agent-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Agent-Id"
+            }
+          },
+          {
+            "name": "X-EfficientAI-Call-Short-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Call-Short-Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OtlpIngestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/ingest/{staging_id}": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Get Trace Ingest Staging Status",
+        "operationId": "getObservabilityTraceIngestStaging",
+        "parameters": [
+          {
+            "name": "staging_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Staging Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceIngestStagingStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/sessions": {
+      "post": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Create Trace Session",
+        "operationId": "createObservabilityTraceSession",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TraceSessionCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/sessions/{call_short_id}/close": {
+      "post": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Close Trace Session Route",
+        "operationId": "closeObservabilityTraceSession",
+        "parameters": [
+          {
+            "name": "call_short_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Short Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceSessionCloseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/backfill": {
+      "post": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Backfill Traces",
+        "operationId": "backfillObservabilityTraces",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/ingest": {
+      "post": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Ingest Json Traces",
+        "description": "Deprecated: prefer OTLP export. Simple JSON shim for non-OTel prototypes only.",
+        "operationId": "ingestObservabilityTracesJson",
+        "deprecated": true,
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonTraceIngestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonTraceIngestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/setup": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Get Otlp Setup",
+        "description": "OTLP endpoint, session API, and integration snippets for voice-agent tracing.",
+        "operationId": "getObservabilityTracesSetup",
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OtlpSetupInfo"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/results/{evaluator_result_id}": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Get Trace For Evaluator Result",
+        "operationId": "getObservabilityTraceForEvaluatorResult",
+        "parameters": [
+          {
+            "name": "evaluator_result_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Evaluator Result Id"
+            }
+          },
+          {
+            "name": "include_spans",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Spans"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyntheticCallTraceDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/by-call-short-id/{call_short_id}": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Get Trace By Call Short Id Route",
+        "operationId": "getObservabilityTraceByCallShortId",
+        "parameters": [
+          {
+            "name": "call_short_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Call Short Id"
+            }
+          },
+          {
+            "name": "include_spans",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Spans"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyntheticCallTraceDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/{trace_id}/spans": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Get Trace Spans",
+        "operationId": "getObservabilityTraceSpans",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trace Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyntheticTraceSpansResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/observability/traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Get Observability Trace",
+        "operationId": "getObservabilityTrace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trace Id"
+            }
+          },
+          {
+            "name": "include_spans",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Spans"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyntheticCallTraceDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "observability"
+        ],
+        "summary": "Delete Observability Trace",
+        "operationId": "deleteObservabilityTrace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trace Id"
+            }
+          },
+          {
+            "name": "X-Workspace-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Workspace-Id"
+            }
+          },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          },
+          {
+            "name": "X-EFFICIENTAI-API-KEY",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Efficientai-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -19847,6 +21853,11 @@
           "gated_signup": {
             "type": "boolean",
             "title": "Gated Signup",
+            "default": false
+          },
+          "cookie_session_enabled": {
+            "type": "boolean",
+            "title": "Cookie Session Enabled",
             "default": false
           }
         },
@@ -19963,6 +21974,17 @@
           },
           "user": {
             "$ref": "#/components/schemas/UserSummary"
+          },
+          "join_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Join Notice"
           }
         },
         "type": "object",
@@ -20214,14 +22236,18 @@
       "RefreshRequest": {
         "properties": {
           "refresh_token": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Refresh Token"
           }
         },
         "type": "object",
-        "required": [
-          "refresh_token"
-        ],
         "title": "RefreshRequest"
       },
       "SwitchOrgRequest": {
@@ -22787,6 +24813,53 @@
           "provider_prompt"
         ],
         "title": "PreviewIntegrationAgentPromptResponse"
+      },
+      "ListIntegrationVoiceAgentsResponse": {
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/IntegrationVoiceAgentListItem"
+            },
+            "type": "array",
+            "title": "Agents"
+          },
+          "platform": {
+            "type": "string",
+            "title": "Platform"
+          },
+          "cached": {
+            "type": "boolean",
+            "title": "Cached"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "list_supported": {
+            "type": "boolean",
+            "title": "List Supported"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agents",
+          "platform",
+          "cached",
+          "truncated",
+          "list_supported"
+        ],
+        "title": "ListIntegrationVoiceAgentsResponse"
       },
       "VoiceBundleResponse": {
         "properties": {
@@ -27777,6 +29850,40 @@
             ],
             "title": "Call Data"
           },
+          "call_recording_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Recording Source"
+          },
+          "synthetic_call_trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synthetic Call Trace Id"
+          },
+          "call_trace_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Trace Status"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -30180,6 +32287,751 @@
         "title": "WorkspaceUpdate",
         "description": "Body for PATCH /workspaces/{id} (rename and/or org-admin activation)."
       },
+      "SyntheticCallTraceListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SyntheticCallTraceSummary"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "SyntheticCallTraceListResponse"
+      },
+      "OtlpIngestResponse": {
+        "properties": {
+          "accepted_spans": {
+            "type": "integer",
+            "title": "Accepted Spans",
+            "default": 0
+          },
+          "accepted_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Bytes"
+          },
+          "staging_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staging Id"
+          },
+          "synthetic_call_trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synthetic Call Trace Id"
+          },
+          "correlated": {
+            "type": "boolean",
+            "title": "Correlated",
+            "default": false
+          },
+          "deferred": {
+            "type": "boolean",
+            "title": "Deferred",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "OtlpIngestResponse"
+      },
+      "TraceIngestStagingStatus": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "accepted_spans": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Spans"
+          },
+          "accepted_bytes": {
+            "type": "integer",
+            "title": "Accepted Bytes",
+            "default": 0
+          },
+          "synthetic_call_trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synthetic Call Trace Id"
+          },
+          "correlated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlated"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Received At"
+          },
+          "processed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "received_at"
+        ],
+        "title": "TraceIngestStagingStatus"
+      },
+      "TraceSessionCreateRequest": {
+        "properties": {
+          "evaluator_result_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Result Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport",
+            "default": "websocket"
+          }
+        },
+        "type": "object",
+        "title": "TraceSessionCreateRequest"
+      },
+      "TraceSessionResponse": {
+        "properties": {
+          "trace_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Trace Id"
+          },
+          "call_short_id": {
+            "type": "string",
+            "title": "Call Short Id"
+          },
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workspace Id"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "otel_correlation": {
+            "$ref": "#/components/schemas/TraceSessionOtelCorrelation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trace_id",
+          "call_short_id",
+          "workspace_id",
+          "transport",
+          "status",
+          "otel_correlation"
+        ],
+        "title": "TraceSessionResponse"
+      },
+      "TraceSessionCloseResponse": {
+        "properties": {
+          "trace_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Trace Id"
+          },
+          "call_short_id": {
+            "type": "string",
+            "title": "Call Short Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trace_id",
+          "call_short_id",
+          "status"
+        ],
+        "title": "TraceSessionCloseResponse"
+      },
+      "JsonTraceIngestRequest": {
+        "properties": {
+          "call_short_id": {
+            "type": "string",
+            "title": "Call Short Id"
+          },
+          "spans": {
+            "items": {
+              "$ref": "#/components/schemas/JsonTraceSpanInput"
+            },
+            "type": "array",
+            "title": "Spans"
+          }
+        },
+        "type": "object",
+        "required": [
+          "call_short_id"
+        ],
+        "title": "JsonTraceIngestRequest"
+      },
+      "JsonTraceIngestResponse": {
+        "properties": {
+          "accepted_spans": {
+            "type": "integer",
+            "title": "Accepted Spans"
+          },
+          "synthetic_call_trace_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synthetic Call Trace Id"
+          },
+          "correlated": {
+            "type": "boolean",
+            "title": "Correlated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted_spans"
+        ],
+        "title": "JsonTraceIngestResponse"
+      },
+      "OtlpSetupInfo": {
+        "properties": {
+          "otlp_endpoint": {
+            "type": "string",
+            "title": "Otlp Endpoint"
+          },
+          "sessions_endpoint": {
+            "type": "string",
+            "title": "Sessions Endpoint",
+            "default": ""
+          },
+          "api_key_header": {
+            "type": "string",
+            "title": "Api Key Header",
+            "default": "X-API-Key"
+          },
+          "workspace_header": {
+            "type": "string",
+            "title": "Workspace Header",
+            "default": "X-Workspace-Id"
+          },
+          "setup_intro": {
+            "type": "string",
+            "title": "Setup Intro",
+            "default": ""
+          },
+          "install_command": {
+            "type": "string",
+            "title": "Install Command",
+            "default": ""
+          },
+          "env_block": {
+            "type": "string",
+            "title": "Env Block",
+            "default": ""
+          },
+          "docs_url": {
+            "type": "string",
+            "title": "Docs Url",
+            "default": ""
+          },
+          "bot_imports_snippet": {
+            "type": "string",
+            "title": "Bot Imports Snippet",
+            "default": ""
+          },
+          "run_command": {
+            "type": "string",
+            "title": "Run Command",
+            "default": "uv run bot.py"
+          },
+          "test_client_url": {
+            "type": "string",
+            "title": "Test Client Url",
+            "default": "http://localhost:7860/client"
+          },
+          "example_bot_path": {
+            "type": "string",
+            "title": "Example Bot Path",
+            "default": "docs/examples/"
+          },
+          "one_time_env_vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "One Time Env Vars"
+          },
+          "setup_steps": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Setup Steps"
+          },
+          "setup_sections": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Setup Sections"
+          },
+          "setup_checklist": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Setup Checklist"
+          },
+          "integration_pieces": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Integration Pieces"
+          },
+          "troubleshooting": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Troubleshooting"
+          },
+          "transport_options": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Transport Options"
+          },
+          "per_call_correlation": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Per Call Correlation"
+          },
+          "suggested_span_resource_attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Suggested Span Resource Attributes"
+          },
+          "pipecat_python_example": {
+            "type": "string",
+            "title": "Pipecat Python Example",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "otlp_endpoint"
+        ],
+        "title": "OtlpSetupInfo",
+        "description": "OTLP + session API setup for self-hosted voice agents (Pipecat, LiveKit, custom)."
+      },
+      "SyntheticCallTraceDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "evaluator_result_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Result Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "call_short_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Short Id"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "turn_count": {
+            "type": "integer",
+            "title": "Turn Count",
+            "default": 0
+          },
+          "response_latency_p50_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency P50 Ms"
+          },
+          "response_latency_p90_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency P90 Ms"
+          },
+          "response_latency_p95_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency P95 Ms"
+          },
+          "response_latency_sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency Sample Count"
+          },
+          "component_aggregates": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component Aggregates"
+          },
+          "failure_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Flags"
+          },
+          "call_recording_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Recording Id"
+          },
+          "spans_storage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spans Storage"
+          },
+          "span_count": {
+            "type": "integer",
+            "title": "Span Count",
+            "default": 0
+          },
+          "derive_pending": {
+            "type": "boolean",
+            "title": "Derive Pending",
+            "default": false
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/SyntheticTraceTurn"
+            },
+            "type": "array",
+            "title": "Turns"
+          },
+          "otel_spans": {
+            "items": {
+              "$ref": "#/components/schemas/OtelSpanRecord"
+            },
+            "type": "array",
+            "title": "Otel Spans"
+          },
+          "otel_trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Otel Trace Ids"
+          },
+          "pipeline_models": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Pipeline Models"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "environment",
+          "transport",
+          "tier",
+          "status",
+          "started_at"
+        ],
+        "title": "SyntheticCallTraceDetail"
+      },
+      "SyntheticTraceSpansResponse": {
+        "properties": {
+          "otel_spans": {
+            "items": {
+              "$ref": "#/components/schemas/OtelSpanRecord"
+            },
+            "type": "array",
+            "title": "Otel Spans"
+          },
+          "otel_trace_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Otel Trace Ids"
+          },
+          "spans_storage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spans Storage"
+          }
+        },
+        "type": "object",
+        "title": "SyntheticTraceSpansResponse"
+      },
       "AuthProviderConfig": {
         "properties": {
           "name": {
@@ -30562,6 +33414,24 @@
         ],
         "title": "CredentialRoutingMode",
         "description": "Per-credential LLM routing preference."
+      },
+      "IntegrationVoiceAgentListItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "IntegrationVoiceAgentListItem"
       },
       "VoiceBundleType": {
         "type": "string",
@@ -31990,6 +34860,465 @@
         ],
         "title": "CallImportSchemaParameterResponse",
         "description": "Response shape including the persisted id + ordering."
+      },
+      "SyntheticCallTraceSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "evaluator_result_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Result Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "call_short_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Short Id"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "tier": {
+            "type": "string",
+            "title": "Tier"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "turn_count": {
+            "type": "integer",
+            "title": "Turn Count",
+            "default": 0
+          },
+          "response_latency_p50_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency P50 Ms"
+          },
+          "response_latency_p90_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency P90 Ms"
+          },
+          "response_latency_p95_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency P95 Ms"
+          },
+          "response_latency_sample_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Latency Sample Count"
+          },
+          "component_aggregates": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Component Aggregates"
+          },
+          "failure_flags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Flags"
+          },
+          "call_recording_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Recording Id"
+          },
+          "spans_storage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spans Storage"
+          },
+          "span_count": {
+            "type": "integer",
+            "title": "Span Count",
+            "default": 0
+          },
+          "derive_pending": {
+            "type": "boolean",
+            "title": "Derive Pending",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "environment",
+          "transport",
+          "tier",
+          "status",
+          "started_at"
+        ],
+        "title": "SyntheticCallTraceSummary"
+      },
+      "TraceSessionOtelCorrelation": {
+        "properties": {
+          "otlp_endpoint": {
+            "type": "string",
+            "title": "Otlp Endpoint"
+          },
+          "api_key_header": {
+            "type": "string",
+            "title": "Api Key Header",
+            "default": "X-API-Key"
+          },
+          "suggested_env_vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Suggested Env Vars"
+          },
+          "suggested_otlp_headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Suggested Otlp Headers"
+          },
+          "suggested_span_attributes": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Suggested Span Attributes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "otlp_endpoint"
+        ],
+        "title": "TraceSessionOtelCorrelation"
+      },
+      "JsonTraceSpanInput": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "turn_number": {
+            "type": "integer",
+            "title": "Turn Number"
+          },
+          "ttfb_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttfb Ms"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attributes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "turn_number"
+        ],
+        "title": "JsonTraceSpanInput"
+      },
+      "SyntheticTraceTurn": {
+        "properties": {
+          "turn_number": {
+            "type": "integer",
+            "title": "Turn Number"
+          },
+          "sut_response_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sut Response Latency Ms"
+          },
+          "caller_stream_complete_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caller Stream Complete At"
+          },
+          "sut_speech_start_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sut Speech Start At"
+          },
+          "sut_speech_stop_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sut Speech Stop At"
+          },
+          "talk_over": {
+            "type": "boolean",
+            "title": "Talk Over",
+            "default": false
+          },
+          "stt_ttfb_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stt Ttfb Ms"
+          },
+          "llm_ttfb_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Ttfb Ms"
+          },
+          "tts_ttfb_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tts Ttfb Ms"
+          },
+          "s2s_ttfb_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "S2S Ttfb Ms"
+          },
+          "transcript": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcript"
+          },
+          "extra": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extra"
+          }
+        },
+        "type": "object",
+        "required": [
+          "turn_number"
+        ],
+        "title": "SyntheticTraceTurn"
+      },
+      "OtelSpanRecord": {
+        "properties": {
+          "trace_id": {
+            "type": "string",
+            "title": "Trace Id"
+          },
+          "span_id": {
+            "type": "string",
+            "title": "Span Id"
+          },
+          "parent_span_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Span Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "start_time_unix_nano": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Time Unix Nano"
+          },
+          "end_time_unix_nano": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Time Unix Nano"
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attributes"
+          },
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trace_id",
+          "span_id",
+          "name"
+        ],
+        "title": "OtelSpanRecord"
       },
       "ParsedLabel": {
         "properties": {

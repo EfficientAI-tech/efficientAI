@@ -17,8 +17,9 @@
     "delete_evaluator_results_bulk_api_v1_evaluator_results_delete",
     "get_evaluator_result_api_v1_evaluator_results__id__get",
     "delete_evaluator_result_api_v1_evaluator_results__id__delete",
-    "stream_evaluator_result_live_events_api_v1_evaluator_results__id__live_events_get",
     "get_evaluator_result_metrics_api_v1_evaluator_results__id__metrics_get",
+    "stream_evaluator_result_live_events_api_v1_evaluator_results__id__live_events_get",
+    "getEvaluatorResultOtelCorrelation",
     "stream_evaluator_result_audio_api_v1_evaluator_results__id__audio_get",
     "re_evaluate_result_api_v1_evaluator_results__id__re_evaluate_post"
   ]

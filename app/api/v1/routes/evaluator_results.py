@@ -816,7 +816,11 @@ async def stream_evaluator_result_live_events(
     )
 
 
-@router.get("/{id}/otel-correlation")
+@router.get(
+    "/{id}/otel-correlation",
+    operation_id="getEvaluatorResultOtelCorrelation",
+    summary="OTLP endpoint and correlation env for Pipecat tracing",
+)
 def get_evaluator_result_otel_correlation(
     id: str,
     request: Request,
