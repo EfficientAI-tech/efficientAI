@@ -9,6 +9,7 @@ import {
   ChevronRight,
   ExternalLink,
   Layers,
+  Info,
   Loader2,
   MessageSquare,
   Radio,
@@ -692,6 +693,8 @@ export default function SyntheticCallTracePanel({
   const statusLabel = trace.status === 'finalized' ? 'closed' : trace.status
   const isDrawer = Boolean(onClose)
   const isOpen = trace.status === 'open'
+  const transport = (trace.transport ?? 'webrtc').toLowerCase()
+  const showPhonePipelineHint = transport === 'phone' && otelSpans.length === 0 && !isOpen
 
   const medianMs =
     responseLatencyStats?.p50 ??
@@ -978,6 +981,31 @@ export default function SyntheticCallTracePanel({
             />
             <MetricTile label="Turns" value={String(trace.turn_count)} />
           </div>
+          {showPhonePipelineHint && (
+            <div
+              className="flex gap-2.5 rounded-lg border border-sky-200 bg-sky-50/90 px-3.5 py-3 text-left text-xs leading-relaxed text-sky-950"
+              role="status"
+            >
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" aria-hidden />
+              <p>
+                <span className="font-semibold">Phone evaluation trace.</span> Turn-level response timing is
+                expected here. Waterfall, pipeline stages (STT / LLM / TTS), and in-drawer transcript need
+                OTLP spans—use WebRTC tests with tracing enabled for full pipeline detail. For recording,
+                dialogue, and scores on this run, use{' '}
+                {trace.evaluator_result_id ? (
+                  <Link
+                    to={`/results/${trace.evaluator_result_id}`}
+                    className="font-medium text-sky-800 underline underline-offset-2 hover:text-sky-950"
+                  >
+                    View eval result
+                  </Link>
+                ) : (
+                  'the evaluation result'
+                )}
+                .
+              </p>
+            </div>
+          )}
           {isDrawer ? <TraceTabBar tabs={visibleTabs} activeTab={tab} onSelect={setInternalTab} compact /> : null}
         </div>
 

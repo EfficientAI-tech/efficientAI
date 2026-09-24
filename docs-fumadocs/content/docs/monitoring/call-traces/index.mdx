@@ -41,7 +41,9 @@ Dollar cost from OTLP spans (cost comes from provider `call_data`). Enterprise-s
 
 **Route:** **Observability → Calls** (`/observability/calls`)
 
-One list mixes **Pipeline trace** and **Webhook call** rows (see the **Source** column). **Platform** shows transport (for example WebRTC, phone) or provider (Vapi, Retell).
+One list mixes **Pipeline trace** and **Webhook call** rows (see the **Source** column). **Platform** shows transport (for example WebRTC, phone) or provider (Vapi, Retell, Vobiz).
+
+**Phone** pipeline rows (PSTN evaluation) usually show **turn-level response timing** only unless OTLP spans are also ingested. Full waterfall, pipeline stages, and in-drawer transcript come from **WebRTC + OTLP**; use the linked **evaluation result** for recording and dialogue on phone eval runs.
 
 | Where | Detail view | Metrics source |
 | --- | --- | --- |

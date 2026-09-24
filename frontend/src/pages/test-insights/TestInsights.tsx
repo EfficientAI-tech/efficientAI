@@ -290,8 +290,9 @@ export default function TestInsights() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Calls</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Pipeline traces and webhook calls with recordings, transcripts, and timing.
+          <p className="mt-2 text-sm text-gray-600 max-w-2xl">
+            One list for production webhook calls and pipeline traces. Webhook rows show provider telephony;
+            pipeline rows show OTLP timing (WebRTC) or phone-eval turn timing—open a row to see what applies.
           </p>
         </div>
         <Button
