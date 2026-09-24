@@ -101,6 +101,7 @@ import BlindTestForm from './pages/public/BlindTestForm'
 
 // Call Imports
 import CallImports from './pages/callImports/CallImports'
+import ChatImports from './pages/callImports/ChatImports'
 import CallImportDetail from './pages/callImports/CallImportDetail'
 import CallImportEvaluationDetail from './pages/callImports/CallImportEvaluationDetail'
 import CallImportTagsPage from './pages/callImports/Tags'
@@ -249,6 +250,7 @@ function App() {
             element={<ImportedAgentRedirect />}
           />
           <Route path="call-imports" element={<EnterpriseGate feature="call_imports"><CallImports /></EnterpriseGate>} />
+          <Route path="chat-imports" element={<EnterpriseGate feature="call_imports"><ChatImports /></EnterpriseGate>} />
           <Route path="call-imports/tags" element={<EnterpriseGate feature="call_imports"><CallImportTagsPage /></EnterpriseGate>} />
           <Route path="call-imports/schemas" element={<EnterpriseGate feature="call_imports"><CallImportSchemasPage /></EnterpriseGate>} />
           <Route path="call-imports/:id" element={<EnterpriseGate feature="call_imports"><CallImportDetail /></EnterpriseGate>} />

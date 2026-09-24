@@ -592,6 +592,15 @@ export interface TestAgent {
   voice_ai_agent_id?: string | null
   provider_prompt?: string | null
   provider_prompt_synced_at?: string | null
+  chat_connection_type?: string | null
+  main_llm_provider?: string | null
+  main_llm_model?: string | null
+  main_llm_credential_id?: string | null
+  test_llm_provider?: string | null
+  test_llm_model?: string | null
+  test_llm_credential_id?: string | null
+  chat_connection_config?: Record<string, unknown> | null
+  chat_eval_mode?: string | null
   created_at: string
   updated_at: string
 }
@@ -1179,6 +1188,8 @@ export interface CallImport {
   sheet_name: string | null
   /** Optional free-text dataset label (high-level segregation filter). */
   dataset: string | null
+  /** `chat` for transcript-only post-prod chat batches; null or voice otherwise. */
+  content_modality?: string | null
   /** Tags currently attached to this import. Empty array if untagged. */
   tags: CallImportTag[]
   /**

@@ -10,7 +10,10 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.database import Agent, Evaluator, EvaluatorResult, Persona, Scenario
+from app.services.agents.chat_connection import normalized_chat_connection_type
 from app.services.agents.chat_llm_config import resolve_simulation_llm
+from app.services.agents.chat_production_leg import generate_production_chat_reply
+from app.services.agents.provider_platform_chat import ProviderChatState
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
 from app.services.testing.test_agent_simulation_prompt import (
@@ -130,12 +133,13 @@ def run_llm_to_llm_evaluator_simulation(
     db: Session,
 ) -> dict[str, Any]:
     """Run a text simulation and populate the evaluator result transcript."""
-    main_llm = resolve_simulation_llm(
-        db, agent=agent, organization_id=organization_id, leg="main"
-    )
+    conn_type = normalized_chat_connection_type(agent)
+
     test_llm = resolve_simulation_llm(
         db, agent=agent, organization_id=organization_id, leg="test"
     )
+    provider_chat_state = ProviderChatState()
+    production_leg_meta: dict[str, Any] = {}
 
     max_turns = resolve_persona_max_turns(persona)
     persona_description = build_persona_description_for_bridge(persona)
@@ -146,8 +150,6 @@ def run_llm_to_llm_evaluator_simulation(
         persona_description=persona_description,
         max_turns=max_turns,
     )
-    agent_system = _build_agent_system_prompt(agent)
-
     caller_ctx = usage_context_for_test_agent_simulation(
         organization_id=organization_id,
         workspace_id=evaluator.workspace_id,
@@ -187,15 +189,14 @@ def run_llm_to_llm_evaluator_simulation(
     exchanges = 0
     while exchanges < max_turns:
         with llm_usage_context(agent_ctx):
-            agent_text = _generate_turn(
-                messages=_agent_messages(agent_system, transcript),
-                llm_provider=main_llm.provider,
-                llm_model=main_llm.model,
+            agent_text, leg_meta = generate_production_chat_reply(
+                db,
+                agent=agent,
                 organization_id=organization_id,
-                db=db,
-                llm_config=main_llm.llm_config,
-                credential_id=main_llm.credential_id,
+                transcript=transcript,
+                provider_state=provider_chat_state,
             )
+        production_leg_meta.update(leg_meta)
         transcript.append({"speaker": "Speaker 2", "text": agent_text})
         exchanges += 1
         if _should_end_conversation(agent_text, turn_index=exchanges):
@@ -236,7 +237,8 @@ def run_llm_to_llm_evaluator_simulation(
         "source": "llm_to_llm_simulation",
         "simulation": "llm_to_llm",
         "modality": "chat" if chat_mode else "voice",
-        "main_llm_source": main_llm.source,
+        "chat_connection_type": conn_type,
+        **production_leg_meta,
         "test_llm_source": test_llm.source,
         "exchanges": exchanges,
         "messages": transcript,

@@ -576,6 +576,8 @@ class Agent(Base):
     test_llm_model = Column(String(255), nullable=True)
     test_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
     test_llm_config = Column(JSON, nullable=True)
+    chat_connection_config = Column(JSON, nullable=True)
+    chat_eval_mode = Column(String(32), nullable=True)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -2239,6 +2241,7 @@ class CallImport(Base):
     # Free-text high-level segregation label. Powers the "Dataset" filter
     # at the top of the imports page; multiple imports can share a value.
     dataset = Column(String(255), nullable=True, index=True)
+    content_modality = Column(String(16), nullable=True)
 
     # Reusable Input Parameter schema this batch was uploaded against.
     # NULL on legacy batches uploaded before the schema-driven flow

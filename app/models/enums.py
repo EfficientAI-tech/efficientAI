@@ -70,6 +70,14 @@ class ChatConnectionTypeEnum(str, enum.Enum):
     INTERNAL_LLM = "internal_llm"
     PROVIDER_CHAT = "provider_chat"
     CUSTOMER_API = "customer_api"
+    MESSAGING_CHANNELS = "messaging_channels"
+
+
+class ChatEvalModeEnum(str, enum.Enum):
+    """How chat agents are exercised in evaluator suites vs production data."""
+    PRE_PROD_SIM = "pre_prod_sim"
+    POST_PROD_LIVE = "post_prod_live"
+    POST_PROD_IMPORT = "post_prod_import"
 
 
 class GenderEnum(str, enum.Enum):

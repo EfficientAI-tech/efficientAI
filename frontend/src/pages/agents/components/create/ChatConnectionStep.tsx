@@ -5,7 +5,14 @@ import { AIProvider, ModelProvider } from '../../../../types/api'
 import { MODERN_SELECT_CLASS } from '../../../evaluators/components/evaluatorUi'
 import { resolveLLMModelsForCredential } from '../../../../lib/llmModelOptions'
 
+export type ChatConnectionType =
+  | 'internal_llm'
+  | 'provider_chat'
+  | 'customer_api'
+  | 'messaging_channels'
+
 export type ChatConnectionForm = {
+  connectionType: ChatConnectionType
   mainLlmProvider: string
   mainLlmCredentialId: string
   mainLlmModel: string
@@ -15,20 +22,35 @@ export type ChatConnectionForm = {
   testLlmModel: string
 }
 
+export type ChatEvalMode = 'pre_prod_sim' | 'post_prod_live' | 'post_prod_import'
+
 interface ChatConnectionStepProps {
   value: ChatConnectionForm
   onChange: (patch: Partial<ChatConnectionForm>) => void
+  variant?: 'create' | 'compact'
+  chatEvalMode?: ChatEvalMode
+  onChatEvalModeChange?: (mode: ChatEvalMode) => void
 }
 
 export function validateChatConnection(value: ChatConnectionForm): boolean {
-  if (!value.mainLlmProvider || !value.mainLlmModel.trim()) return false
-  if (value.useSeparateTestLlm && (!value.testLlmProvider || !value.testLlmModel.trim())) {
-    return false
+  if (value.connectionType === 'internal_llm') {
+    if (!value.mainLlmProvider || !value.mainLlmModel.trim()) return false
+    if (value.useSeparateTestLlm && (!value.testLlmProvider || !value.testLlmModel.trim())) {
+      return false
+    }
+    return true
   }
-  return true
+
+  return Boolean(value.testLlmProvider && value.testLlmModel.trim())
 }
 
-export default function ChatConnectionStep({ value, onChange }: ChatConnectionStepProps) {
+export default function ChatConnectionStep({
+  value,
+  onChange,
+  variant = 'create',
+  chatEvalMode = 'pre_prod_sim',
+  onChatEvalModeChange,
+}: ChatConnectionStepProps) {
   const { data: aiProviders = [] } = useQuery({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
@@ -85,34 +107,34 @@ export default function ChatConnectionStep({ value, onChange }: ChatConnectionSt
     : { mode: 'catalog' as const, models: testModelOptions?.llm || [] }
   const testSelectable = testResolution.mode === 'catalog' ? testResolution.models : []
 
+  const showMainLlm = value.connectionType === 'internal_llm'
+
+  const compact = variant === 'compact'
+
   return (
-    <div className="space-y-5">
-      <div className="rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-900">
-        <p className="font-medium">Connection layer (like Cekura)</p>
-        <p className="mt-1 text-violet-800">
-          <strong>Internal LLM</strong> — we run your production prompt on the Main LLM and the
-          simulated customer on the Testing LLM. Provider chat and customer API hooks come next.
-        </p>
-      </div>
+    <div className="w-full space-y-4">
+      {!compact ? (
+        <p className="text-sm font-medium text-gray-900">Evaluation models</p>
+      ) : null}
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium text-gray-700">Connection type</legend>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="radio" checked readOnly className="text-primary-600" />
-          Internal LLM (platform simulation)
-        </label>
-        <label className="flex items-center gap-2 text-sm text-gray-400">
-          <input type="radio" disabled />
-          Provider native chat (Vapi / Retell) — coming soon
-        </label>
-        <label className="flex items-center gap-2 text-sm text-gray-400">
-          <input type="radio" disabled />
-          Customer API (you drive agent turns) — coming soon
-        </label>
-      </fieldset>
+      {!compact && onChatEvalModeChange ? (
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Eval mode</label>
+          <select
+            className={MODERN_SELECT_CLASS}
+            value={chatEvalMode}
+            onChange={(e) => onChatEvalModeChange(e.target.value as ChatEvalMode)}
+          >
+            <option value="pre_prod_sim">Pre-prod simulation</option>
+            <option value="post_prod_live">Post-prod live (platform / API / webhook)</option>
+            <option value="post_prod_import">Post-prod import only</option>
+          </select>
+        </div>
+      ) : null}
 
-      <div className="border border-gray-200 rounded-lg p-4 space-y-3 bg-white">
-        <h4 className="text-sm font-semibold text-gray-900">Main agent LLM (production)</h4>
+      {showMainLlm ? (
+      <div className="border border-gray-200 rounded-lg p-3 space-y-2.5 bg-white">
+        <h4 className="text-xs font-semibold text-gray-900">Main agent LLM</h4>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Credential</label>
           <select
@@ -152,6 +174,17 @@ export default function ChatConnectionStep({ value, onChange }: ChatConnectionSt
           </select>
         </div>
       </div>
+      ) : (
+        <p className="text-sm text-gray-600 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+          Production replies use your{' '}
+          {value.connectionType === 'customer_api'
+            ? 'HTTP API'
+            : value.connectionType === 'provider_chat'
+              ? 'voice platform agent'
+              : 'messaging channel config'}
+          . Configure the simulated customer LLM below.
+        </p>
+      )}
 
       <label className="flex items-center gap-2 text-sm text-gray-700">
         <input
@@ -159,12 +192,22 @@ export default function ChatConnectionStep({ value, onChange }: ChatConnectionSt
           checked={value.useSeparateTestLlm}
           onChange={(e) => onChange({ useSeparateTestLlm: e.target.checked })}
         />
-        Use a different LLM for the simulated customer (testing agent)
+        {showMainLlm
+          ? 'Use a different LLM for the simulated customer (testing agent)'
+          : 'Simulated customer LLM (required for pre-prod evals)'}
       </label>
 
-      {value.useSeparateTestLlm ? (
-        <div className="border border-gray-200 rounded-lg p-4 space-y-3 bg-white">
-          <h4 className="text-sm font-semibold text-gray-900">Testing agent LLM</h4>
+      {!showMainLlm && !value.useSeparateTestLlm ? (
+        <p className="text-xs text-gray-500 -mt-2">
+          Main production LLM fields are hidden — we use this LLM for the persona side of the conversation.
+        </p>
+      ) : null}
+
+      {value.useSeparateTestLlm || !showMainLlm ? (
+        <div className="border border-gray-200 rounded-lg p-3 space-y-2.5 bg-white">
+          <h4 className="text-xs font-semibold text-gray-900">
+            {showMainLlm ? 'Testing agent LLM' : 'Simulated customer LLM'}
+          </h4>
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">Credential</label>
             <select

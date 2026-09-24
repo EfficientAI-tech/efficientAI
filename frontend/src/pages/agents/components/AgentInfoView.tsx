@@ -15,6 +15,9 @@ import {
   MessagesSquare,
 } from 'lucide-react'
 import { isChatMedium } from '../../../lib/agentMedium'
+import { chatEvalModeLabel, connectionTypeLabel } from './create/chatAgentFormUtils'
+import { useMutation } from '@tanstack/react-query'
+import { apiClient } from '../../../lib/api'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
 import ParamSlider from './ParamSlider'
 import {
@@ -125,6 +128,14 @@ export default function AgentInfoView({
 
   const providerPromptText = agent.provider_prompt ? stripCodeFences(agent.provider_prompt) : ''
 
+  const chatImportSetupMutation = useMutation({
+    mutationFn: () => apiClient.setupChatImportForAgent(agent.id),
+    onSuccess: (data) => {
+      const params = new URLSearchParams({ upload: '1', schema_id: data.schema_id })
+      navigate(`/chat-imports?${params.toString()}`)
+    },
+  })
+
   if (activeTab === 'overview') {
     const isChatAgent = isChatMedium(agent.call_medium)
     const silenceSecs = agent.silence_hangup_secs ?? 15
@@ -158,19 +169,10 @@ export default function AgentInfoView({
       <div className="space-y-5 w-full min-w-0">
         <div>
           <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            {isChatAgent
-              ? 'Text chat agent — LLM-to-LLM pre-prod (no phone or WebRTC).'
-              : 'Identity, call routing, voice stacks, and session behavior.'}
-          </p>
-          {isChatAgent ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2">
-              <MessagesSquare className="h-4 w-4 text-violet-700 shrink-0" />
-              <CallTypeBadge medium={agent.call_medium} callType={agent.call_type} />
-              <span className="text-xs text-violet-900">
-                Evaluations run as simulated text chat, not voice calls.
-              </span>
-            </div>
+          {!isChatAgent ? (
+            <p className="text-sm text-gray-500 mt-1">
+              Identity, call routing, voice stacks, and session behavior.
+            </p>
           ) : null}
         </div>
 
@@ -190,11 +192,7 @@ export default function AgentInfoView({
 
             <OverviewSection
               title={isChatAgent ? 'Chat setup' : 'Call setup'}
-              description={
-                isChatAgent
-                  ? 'Text medium and connection (internal LLM).'
-                  : 'Medium, direction, and phone number.'
-              }
+              description={isChatAgent ? undefined : 'Medium, direction, and phone number.'}
             >
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <OverviewStatCard
@@ -223,14 +221,49 @@ export default function AgentInfoView({
                     />
                   </>
                 ) : (
-                  <OverviewStatCard
-                    icon={Globe}
-                    label="Connection"
-                    value="Internal LLM"
-                    accent="violet"
-                  />
+                  <>
+                    <OverviewStatCard
+                      icon={Globe}
+                      label="Connection"
+                      value={connectionTypeLabel(agent.chat_connection_type)}
+                      accent="violet"
+                    />
+                    {agent.main_llm_model ? (
+                      <OverviewStatCard
+                        icon={Radio}
+                        label="Main model"
+                        value={agent.main_llm_model}
+                        accent="primary"
+                      />
+                    ) : null}
+                    {agent.test_llm_model ? (
+                      <OverviewStatCard
+                        icon={Radio}
+                        label="Test model"
+                        value={agent.test_llm_model}
+                      />
+                    ) : null}
+                    <OverviewStatCard
+                      icon={Globe}
+                      label="Eval mode"
+                      value={chatEvalModeLabel(agent.chat_eval_mode)}
+                      accent="emerald"
+                    />
+                  </>
                 )}
               </div>
+              {isChatAgent && (agent.chat_eval_mode || 'pre_prod_sim') === 'post_prod_import' ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => chatImportSetupMutation.mutate()}
+                    isLoading={chatImportSetupMutation.isPending}
+                  >
+                    Open chat import setup
+                  </Button>
+                </div>
+              ) : null}
             </OverviewSection>
 
             <div className={`grid grid-cols-1 ${isChatAgent ? '' : 'lg:grid-cols-2'} gap-5`}>

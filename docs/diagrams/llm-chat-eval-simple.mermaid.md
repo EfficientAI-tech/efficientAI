@@ -29,7 +29,7 @@ flowchart LR
   Test --> Save
 ```
 
-## Three layers (Cekura-style)
+## Three layers (connection → agent → eval)
 
 ```mermaid
 flowchart TB

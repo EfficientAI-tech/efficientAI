@@ -1320,6 +1320,8 @@ class ApiClient {
     test_llm_provider?: string
     test_llm_model?: string
     test_llm_credential_id?: string
+    chat_connection_config?: Record<string, unknown>
+    chat_eval_mode?: string
     ai_provider_id?: string
     voice_ai_integration_id?: string
     voice_ai_agent_id?: string
@@ -1339,6 +1341,16 @@ class ApiClient {
 
   async getAgent(agentId: string): Promise<TestAgent> {
     const response = await this.client.get(`/api/v1/agents/${agentId}`)
+    return response.data
+  }
+
+  async setupChatImportForAgent(agentId: string): Promise<{
+    schema_id: string
+    schema_name: string
+    content_modality: string
+    imports_path: string
+  }> {
+    const response = await this.client.post(`/api/v1/agents/${agentId}/chat-import-setup`)
     return response.data
   }
 
@@ -1372,6 +1384,16 @@ class ApiClient {
     voice_ai_agent_id?: string | null
     provider_prompt?: string | null
     prompt_variables?: Record<string, string>
+    test_agent_template?: unknown
+    chat_connection_type?: string
+    main_llm_provider?: string
+    main_llm_model?: string
+    main_llm_credential_id?: string
+    test_llm_provider?: string
+    test_llm_model?: string
+    test_llm_credential_id?: string
+    chat_connection_config?: Record<string, unknown> | null
+    chat_eval_mode?: string
   }): Promise<TestAgent> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -2257,6 +2279,8 @@ class ApiClient {
        * select the schema dropdown.
        */
       schemaId?: string | null
+      /** Set to `chat` for post-prod transcript-only imports. */
+      contentModality?: 'chat' | 'voice'
     },
   ): Promise<CallImport> {
     const formData = new FormData()
@@ -2269,6 +2293,9 @@ class ApiClient {
     }
     if (options.schemaId) {
       formData.append('schema_id', options.schemaId)
+    }
+    if (options.contentModality) {
+      formData.append('content_modality', options.contentModality)
     }
     const response = await this.client.post('/api/v1/call-imports', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -2518,6 +2545,7 @@ class ApiClient {
       dataset?: string
       tag_id?: string[]
       source_format?: string
+      content_modality?: string
     } = {}
   ): Promise<CallImportListResponse> {
     // Send tag_id repeated rather than as a JSON array.
@@ -2527,6 +2555,7 @@ class ApiClient {
     if (params.status) search.set('status', params.status)
     if (params.dataset !== undefined) search.set('dataset', params.dataset)
     if (params.source_format) search.set('source_format', params.source_format)
+    if (params.content_modality) search.set('content_modality', params.content_modality)
     for (const tag of params.tag_id || []) search.append('tag_id', tag)
     const response = await this.client.get('/api/v1/call-imports', { params: search })
     return response.data

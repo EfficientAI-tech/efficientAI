@@ -1,4 +1,4 @@
-"""Add Cekura-style chat connection + main/test LLM columns on agents."""
+"""Add chat connection type + main/test LLM columns on agents."""
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session

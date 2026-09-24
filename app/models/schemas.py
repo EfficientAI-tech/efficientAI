@@ -7,7 +7,7 @@ from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
-    LanguageEnum, CallTypeEnum, CallMediumEnum, ChatConnectionTypeEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
+    LanguageEnum, CallTypeEnum, CallMediumEnum, ChatConnectionTypeEnum, ChatEvalModeEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     BackgroundNoiseSourceEnum,
     IntegrationPlatform, ModelProvider, CredentialRoutingMode, GatewayInterfaceMode, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
@@ -228,6 +228,8 @@ class AgentCreate(BaseModel):
     test_llm_model: Optional[str] = None
     test_llm_credential_id: Optional[UUID] = None
     test_llm_config: Optional[Dict[str, Any]] = None
+    chat_connection_config: Optional[Dict[str, Any]] = None
+    chat_eval_mode: Optional[ChatEvalModeEnum] = None
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
@@ -276,6 +278,7 @@ class AgentCreate(BaseModel):
         if self.call_medium == CallMediumEnum.CHAT:
             conn = self.chat_connection_type or ChatConnectionTypeEnum.INTERNAL_LLM
             object.__setattr__(self, "chat_connection_type", conn)
+            prompt = (self.provider_prompt or self.description or "").strip()
             if conn == ChatConnectionTypeEnum.INTERNAL_LLM:
                 if not self.main_llm_provider or not (self.main_llm_model or "").strip():
                     if not self.voice_bundle_id:
@@ -283,11 +286,39 @@ class AgentCreate(BaseModel):
                             "Chat agents require main_llm_provider and main_llm_model "
                             "(connection layer), or a legacy voice_bundle_id."
                         )
-            elif conn in (
-                ChatConnectionTypeEnum.PROVIDER_CHAT,
-                ChatConnectionTypeEnum.CUSTOMER_API,
-            ):
-                raise ValueError(f"Chat connection type '{conn.value}' is not implemented yet.")
+            elif conn == ChatConnectionTypeEnum.PROVIDER_CHAT:
+                if not self.voice_ai_integration_id or not (self.voice_ai_agent_id or "").strip():
+                    raise ValueError(
+                        "Provider chat requires voice_ai_integration_id and voice_ai_agent_id."
+                    )
+                if len(prompt.split()) < 3:
+                    raise ValueError("Provider chat requires a production prompt (provider_prompt).")
+            elif conn == ChatConnectionTypeEnum.CUSTOMER_API:
+                cfg = self.chat_connection_config or {}
+                if not (cfg.get("api_base_url") or "").strip():
+                    raise ValueError("Customer API chat requires chat_connection_config.api_base_url.")
+                if len(prompt.split()) < 3:
+                    raise ValueError("Customer API chat requires a production prompt for eval metadata.")
+            elif conn == ChatConnectionTypeEnum.MESSAGING_CHANNELS:
+                cfg = self.chat_connection_config or {}
+                channel = (cfg.get("messaging_channel") or "").strip().lower()
+                if channel not in ("whatsapp", "sms"):
+                    raise ValueError(
+                        "Messaging chat requires chat_connection_config.messaging_channel "
+                        "(whatsapp or sms)."
+                    )
+                if len(prompt.split()) < 3:
+                    raise ValueError("Messaging chat requires a production prompt.")
+            else:
+                raise ValueError(f"Unsupported chat connection type '{conn.value}'.")
+            test_ok = bool(
+                (self.test_llm_provider and (self.test_llm_model or "").strip())
+                or (self.main_llm_provider and (self.main_llm_model or "").strip())
+            )
+            if not test_ok:
+                raise ValueError(
+                    "Chat agents require test LLM settings (or main LLM used for the simulated customer)."
+                )
             return self
         if not self.voice_bundle_id:
             raise ValueError("voice_bundle_id is required for voice agents")
@@ -326,6 +357,8 @@ class AgentUpdate(BaseModel):
     test_llm_model: Optional[str] = None
     test_llm_credential_id: Optional[UUID] = None
     test_llm_config: Optional[Dict[str, Any]] = None
+    chat_connection_config: Optional[Dict[str, Any]] = None
+    chat_eval_mode: Optional[ChatEvalModeEnum] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
     provider_prompt: Optional[str] = None
@@ -495,6 +528,8 @@ class AgentResponse(BaseModel):
     test_llm_model: Optional[str] = None
     test_llm_credential_id: Optional[UUID] = None
     test_llm_config: Optional[Dict[str, Any]] = None
+    chat_connection_config: Optional[Dict[str, Any]] = None
+    chat_eval_mode: Optional[ChatEvalModeEnum] = None
     ai_provider_id: Optional[UUID]
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]
@@ -3478,6 +3513,10 @@ class CallImportResponse(BaseModel):
     original_filename: Optional[str] = None
     sheet_name: Optional[str] = None
     dataset: Optional[str] = None
+    content_modality: Optional[str] = Field(
+        None,
+        description="voice (default) or chat for transcript-only import batches.",
+    )
     tags: List[CallImportTagResponse] = Field(default_factory=list)
     # New schema-driven mapping. Empty on legacy batches; pre-schema
     # batches keep their values in ``column_mapping`` / ``extra_columns``

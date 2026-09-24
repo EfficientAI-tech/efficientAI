@@ -83,6 +83,7 @@ const navigationSections: NavSection[] = [
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
       { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
       { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
+      { name: 'Chat Imports', href: '/chat-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {

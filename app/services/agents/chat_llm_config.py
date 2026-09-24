@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.models.database import Agent, VoiceBundle
 from app.models.database import ModelProvider
-from app.models.enums import CallMediumEnum
+from app.models.enums import CallMediumEnum, ChatConnectionTypeEnum
+from app.services.agents.chat_connection import (
+    agent_has_test_llm_config,
+    normalized_chat_connection_type,
+    validate_chat_connection_for_agent,
+)
 
 
 @dataclass(frozen=True)
@@ -37,13 +42,18 @@ def _provider_field_str(raw) -> str:
 
 
 def agent_has_chat_simulation_config(agent: Agent) -> bool:
-    """True when we can run LLM text simulation (connection layer or legacy bundle)."""
-    main_provider = _provider_field_str(getattr(agent, "main_llm_provider", None))
-    main_model = (getattr(agent, "main_llm_model", None) or "").strip()
-    if main_provider and main_model:
-        return True
+    """True when we can run chat text simulation for this agent."""
     medium = (agent.call_medium or CallMediumEnum.PHONE_CALL.value).lower()
-    if medium == CallMediumEnum.CHAT.value and agent.voice_bundle_id is not None:
+    if medium != CallMediumEnum.CHAT.value:
+        main_provider = _provider_field_str(getattr(agent, "main_llm_provider", None))
+        main_model = (getattr(agent, "main_llm_model", None) or "").strip()
+        if main_provider and main_model:
+            return True
+        return agent.voice_bundle_id is not None
+
+    if validate_chat_connection_for_agent(agent) is None:
+        return True
+    if agent.voice_bundle_id is not None:
         return True
     return False
 
@@ -96,6 +106,23 @@ def resolve_simulation_llm(
             credential_id=credential_id,
             source=source,
         )
+
+    if leg == "main":
+        conn = normalized_chat_connection_type(agent)
+        if conn in (
+            ChatConnectionTypeEnum.PROVIDER_CHAT.value,
+            ChatConnectionTypeEnum.MESSAGING_CHANNELS.value,
+        ) and agent_has_test_llm_config(agent):
+            fallback = resolve_simulation_llm(
+                db, agent=agent, organization_id=organization_id, leg="test"
+            )
+            return ResolvedSimulationLlm(
+                provider=fallback.provider,
+                model=fallback.model,
+                llm_config=fallback.llm_config,
+                credential_id=fallback.credential_id,
+                source="main_via_test_llm",
+            )
 
     if not agent.voice_bundle_id:
         raise ValueError(

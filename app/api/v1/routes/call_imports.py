@@ -1809,6 +1809,10 @@ async def create_call_import(
             "select the schema dropdown."
         ),
     ),
+    content_modality: Optional[str] = Form(
+        None,
+        description="Optional 'chat' for transcript-only post-prod chat imports; omit for voice/call imports.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -1859,6 +1863,16 @@ async def create_call_import(
     # allowed to set it for the first time during MAP).
     if schema_id is not None:
         _resolve_schema(db, organization_id, workspace_id, schema_id)
+
+    normalized_modality: Optional[str] = None
+    if content_modality is not None and content_modality.strip():
+        mod = content_modality.strip().lower()
+        if mod not in ("chat", "voice"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="content_modality must be 'chat' or 'voice' when provided.",
+            )
+        normalized_modality = mod
 
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
@@ -1914,6 +1928,7 @@ async def create_call_import(
         completed_rows=0,
         failed_rows=0,
         status=CallImportStatus.UPLOADED,
+        content_modality=normalized_modality,
     )
     if tag_rows:
         call_import.tags = tag_rows
@@ -2703,6 +2718,10 @@ async def list_call_imports(
             "'__non_audio__' for CSV/Excel/legacy imports."
         ),
     ),
+    content_modality: Optional[str] = Query(
+        None,
+        description="Filter by content_modality (e.g. 'chat'). Use '__voice__' for non-chat batches.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -2734,6 +2753,14 @@ async def list_call_imports(
         )
     elif source_filter:
         query = query.filter(func.lower(CallImport.source_format) == source_filter)
+
+    modality_filter = (content_modality or "").strip().lower()
+    if modality_filter == "chat":
+        query = query.filter(func.lower(CallImport.content_modality) == "chat")
+    elif modality_filter in ("__voice__", "voice"):
+        query = query.filter(
+            or_(CallImport.content_modality.is_(None), func.lower(CallImport.content_modality) != "chat")
+        )
 
     if dataset is not None:
         if dataset == "__none__":

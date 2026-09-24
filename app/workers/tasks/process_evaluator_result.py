@@ -406,6 +406,21 @@ def _extract_audio_url(call_data: dict, platform: str) -> str | None:
     return None
 
 
+def _evaluator_result_is_chat(result, db) -> bool:
+    call_data = result.call_data if isinstance(result.call_data, dict) else {}
+    if call_data.get("modality") == "chat":
+        return True
+    if not result.agent_id:
+        return False
+    from app.models.database import Agent
+
+    agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
+    if not agent:
+        return False
+    medium = getattr(agent.call_medium, "value", agent.call_medium) or ""
+    return str(medium).lower() == "chat"
+
+
 def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True) -> bool:
     """
     Attempt to recover missing audio from provider, upload to S3, and persist key.
@@ -673,7 +688,8 @@ def process_evaluator_result_task(self, result_id: str):
             db.commit()
 
             try:
-                if not result.audio_s3_key:
+                is_chat_eval = _evaluator_result_is_chat(result, db)
+                if not result.audio_s3_key and not is_chat_eval:
                     _recover_missing_audio_for_result(result, db, refresh_call_data=True)
 
                 _hydrate_transcript_from_call_data(result, db)

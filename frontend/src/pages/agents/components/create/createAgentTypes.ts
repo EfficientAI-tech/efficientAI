@@ -3,6 +3,10 @@ import { defaultTestAgentTemplate } from '../agentTestSetupConstants'
 
 export type CreateAgentPath = 'telephony' | 'platform' | 'chat'
 
+export type AgentMedium = 'voice' | 'chat'
+
+export type CreateWizardPhase = 'medium' | 'voice-path' | 'steps'
+
 export interface CreateAgentFormData {
   name: string
   phone_number: string
@@ -46,9 +50,9 @@ export const PLATFORM_STEPS = [
 ] as const
 
 export const CHAT_STEPS = [
-  { id: 1, title: 'Basics', description: 'Name and language' },
-  { id: 2, title: 'Production prompt', description: 'Paste your live agent prompt' },
-  { id: 3, title: 'Connection', description: 'How we reach the agent (internal LLM)' },
+  { id: 1, title: 'Connect', description: 'Production chat integration' },
+  { id: 2, title: 'Agent', description: 'Identity, platform, prompt' },
+  { id: 3, title: 'Pre-prod eval', description: 'Evaluator LLMs & mode' },
 ] as const
 
 export type CreateStepId = 1 | 2 | 3

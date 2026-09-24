@@ -124,9 +124,22 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
 
         elif use_llm_text_simulation:
             from app.models.database import Persona, Scenario
+            from app.models.enums import ChatEvalModeEnum
+            from app.services.agents.chat_production_leg import normalized_chat_eval_mode
             from app.services.testing.llm_to_llm_evaluator_simulation import (
                 run_llm_to_llm_evaluator_simulation,
             )
+
+            if call_medium == "chat" and normalized_chat_eval_mode(agent) == ChatEvalModeEnum.POST_PROD_IMPORT.value:
+                result.status = EvaluatorResultStatus.FAILED.value
+                result.error_message = (
+                    "This chat agent is set to post-prod import evaluation. "
+                    "Upload production transcripts under Monitoring → Call imports "
+                    "(transcript column, no recording required), then run an import evaluation."
+                )
+                result.call_event = "post_prod_import_only"
+                db.commit()
+                return {"error": "post_prod_import_only"}
 
             persona = (
                 db.query(Persona).filter(Persona.id == evaluator.persona_id).first()

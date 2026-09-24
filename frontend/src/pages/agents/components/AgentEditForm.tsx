@@ -28,6 +28,9 @@ import {
 } from './agentTestSetupConstants'
 import { isChatMedium } from '../../../lib/agentMedium'
 import { CallTypeBadge } from '../../evaluators/components/evaluatorUi'
+import ChatAgentEditSection from './ChatAgentEditSection'
+import type { ChatConnectionForm } from './create/ChatConnectionStep'
+import type { ChatConnectionConfigForm } from './create/ChatConnectionDetailsStep'
 
 interface FormData {
   name: string
@@ -57,6 +60,13 @@ interface AgentEditFormProps {
   activeTab: AgentDetailTab
   onSaveSystemPrompt: () => void
   agentId?: string
+  chatConnectionType?: string
+  chatConnection?: ChatConnectionForm
+  onChatConnectionChange?: (patch: Partial<ChatConnectionForm>) => void
+  chatConnectionConfig?: ChatConnectionConfigForm
+  onChatConnectionConfigChange?: (patch: Partial<ChatConnectionConfigForm>) => void
+  chatEditPlatform?: IntegrationPlatform | null
+  onChatEditPlatformChange?: (p: IntegrationPlatform | null) => void
 }
 
 const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
@@ -77,6 +87,13 @@ export default function AgentEditForm({
   activeTab,
   onSaveSystemPrompt,
   agentId,
+  chatConnectionType = 'internal_llm',
+  chatConnection,
+  onChatConnectionChange,
+  chatConnectionConfig,
+  onChatConnectionConfigChange,
+  chatEditPlatform = null,
+  onChatEditPlatformChange,
 }: AgentEditFormProps) {
   const navigate = useNavigate()
   const [providerPromptEditorMode, setProviderPromptEditorMode] = useState<'write' | 'preview'>('write')
@@ -261,11 +278,11 @@ export default function AgentEditForm({
         <div className="space-y-5 w-full min-w-0">
           <div>
             <h2 className="text-lg font-semibold text-gray-900 tracking-tight">Overview</h2>
-            <p className="text-sm text-gray-500 mt-1">
-              {isChatAgent
-                ? 'Text chat agent — name, language, and production prompt.'
-                : 'Identity, call routing, voice stacks, and session behavior.'}
-            </p>
+            {!isChatAgent ? (
+              <p className="text-sm text-gray-500 mt-1">
+                Identity, call routing, voice stacks, and session behavior.
+              </p>
+            ) : null}
           </div>
 
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-5 items-start">
@@ -310,18 +327,11 @@ export default function AgentEditForm({
 
           <OverviewSection
             title={isChatAgent ? 'Chat setup' : 'Call setup'}
-            description={
-              isChatAgent ? 'Text medium for LLM-to-LLM simulation.' : 'How sessions are placed and routed.'
-            }
+            description={isChatAgent ? undefined : 'How sessions are placed and routed.'}
           >
             <div className="space-y-5">
               {isChatAgent ? (
-                <div className="rounded-lg border border-violet-100 bg-violet-50/50 px-4 py-3">
-                  <CallTypeBadge medium={formData.call_medium} callType={formData.call_type} />
-                  <p className="text-xs text-violet-900 mt-2">
-                    Chat agents do not use phone numbers, voice bundles, or voice platform integrations.
-                  </p>
-                </div>
+                <CallTypeBadge medium={formData.call_medium} callType={formData.call_type} />
               ) : (
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Call medium *</span>
@@ -578,58 +588,23 @@ export default function AgentEditForm({
         </div>
       )}
 
-      {activeTab === 'test_agent' && isChatAgent && (
-        <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-          <div className="flex items-center justify-between mb-3">
-            <label className="block text-sm font-medium text-gray-700">Production Agent Prompt</label>
-            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-              <button
-                type="button"
-                onClick={() => setProviderPromptEditorMode('write')}
-                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                  providerPromptEditorMode === 'write'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <Code className="h-3 w-3" />
-                Write
-              </button>
-              <button
-                type="button"
-                onClick={() => setProviderPromptEditorMode('preview')}
-                className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                  providerPromptEditorMode === 'preview'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <Eye className="h-3 w-3" />
-                Preview
-              </button>
-            </div>
-          </div>
-          {providerPromptEditorMode === 'write' ? (
-            <textarea
-              value={formData.provider_prompt}
-              onChange={(e) => onChange({ ...formData, provider_prompt: e.target.value })}
-              className="w-full min-h-[380px] px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm resize-y"
-              rows={16}
-              placeholder="Paste or edit the production system prompt for chat simulation…"
-            />
-          ) : (
-            <div className="min-h-[380px] max-h-[70vh] overflow-y-auto border border-gray-300 rounded-lg p-4 bg-white">
-              {formData.provider_prompt?.trim() ? (
-                <div className={productionPromptProse}>
-                  <ReactMarkdown>{formData.provider_prompt}</ReactMarkdown>
-                </div>
-              ) : (
-                <p className="text-gray-400 italic">Nothing to preview yet…</p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {activeTab === 'test_agent' && isChatAgent && chatConnection && onChatConnectionChange && chatConnectionConfig && onChatConnectionConfigChange && onChatEditPlatformChange ? (
+        <ChatAgentEditSection
+          connectionType={chatConnectionType}
+          formData={formData}
+          onFormChange={(patch) => onChange({ ...formData, ...patch })}
+          providerPrompt={formData.provider_prompt}
+          onProviderPromptChange={(value) => onChange({ ...formData, provider_prompt: value })}
+          chatConnection={chatConnection}
+          onChatConnectionChange={onChatConnectionChange}
+          chatConfig={chatConnectionConfig}
+          onChatConfigChange={onChatConnectionConfigChange}
+          integrations={integrations}
+          selectedPlatform={chatEditPlatform}
+          onSelectPlatform={onChatEditPlatformChange}
+          showToast={showToast}
+        />
+      ) : null}
 
       {activeTab === 'test_agent' && !isChatAgent && (
         <div className="w-full space-y-4">
